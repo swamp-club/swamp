@@ -34,6 +34,7 @@ import {
   isAlwaysLocal,
   LOCK_TIMEOUT_ENV_VAR,
   mergeSetupDatastoreBlock,
+  planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
@@ -421,4 +422,44 @@ Deno.test("inRepoConfigMigrationSkips: maps each role to the paths setup leaves 
     join("config", PULLED_EXTENSIONS_SUBDIR),
   ]);
   assertEquals(inRepoConfigMigrationSkips("instance_local"), ["config"]);
+});
+
+Deno.test("planConfigTierMerge: skips every conflict, keeps and reports only differing ones", () => {
+  const merge = planConfigTierMerge([
+    { path: join("models", "a.yaml"), differs: true },
+    { path: join("workflows", "w.yaml"), differs: false },
+    { path: "upstream_extensions.json", differs: true },
+  ]);
+  assertEquals(merge.copySkips, [
+    join("config", "models", "a.yaml"),
+    join("config", "workflows", "w.yaml"),
+    join("config", "upstream_extensions.json"),
+  ]);
+  assertEquals(merge.cleanupKeeps, [
+    join("config", "models", "a.yaml"),
+    join("config", "upstream_extensions.json"),
+  ]);
+  assertEquals(merge.keptPaths, [
+    join("models", "a.yaml"),
+    "upstream_extensions.json",
+  ]);
+});
+
+Deno.test("planConfigTierMerge: never keeps or reports the migration sentinel", () => {
+  const merge = planConfigTierMerge([
+    { path: "managed-config-migrated.json", differs: true },
+  ]);
+  assertEquals(merge.copySkips, [
+    join("config", "managed-config-migrated.json"),
+  ]);
+  assertEquals(merge.cleanupKeeps, []);
+  assertEquals(merge.keptPaths, []);
+});
+
+Deno.test("planConfigTierMerge: no conflicts leaves everything to migrate", () => {
+  assertEquals(planConfigTierMerge([]), {
+    copySkips: [],
+    cleanupKeeps: [],
+    keptPaths: [],
+  });
 });

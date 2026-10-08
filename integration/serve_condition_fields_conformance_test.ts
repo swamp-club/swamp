@@ -39,6 +39,8 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import type { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
+import { CONDITION_FIELDS } from "../src/domain/access/condition_fields.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import {
   createServeCtx,
@@ -73,7 +75,11 @@ type Category =
   | "access"
   /** Explains a decision for a named resource, judged as a request would be. */
   | "explain"
-  /** A vault, authorized with complete fields (naming is swamp-club#2676). */
+  /**
+   * A vault, authorized as `vault:<name>` under the vault kind's fields —
+   * its name, and the key the request names (swamp-club#2676) — beside its
+   * data names, which carry complete fields.
+   */
   | "vault"
   /** Creates a resource, authorized on its name and type with no tags. */
   | "create";
@@ -154,7 +160,6 @@ const CATEGORIES: Record<string, Category> = {
   "extension.update": "kind",
   "datastore.namespace.list": "kind",
   "datastore.setup.extension": "kind",
-  "vault.migrate": "kind",
   "run.history": "kind",
   "run.doctor": "kind",
   "audit.timeline": "kind",
@@ -203,6 +208,7 @@ const CATEGORIES: Record<string, Category> = {
   "vault.get": "vault",
   "vault.inspect": "vault",
   "vault.list-keys": "vault",
+  "vault.migrate": "vault",
   "vault.put": "vault",
   "vault.read-secret": "vault",
   "vault.search": "vault",
@@ -699,5 +705,125 @@ Deno.test("serve condition-fields conformance: data.query's latestRun needs read
       "data.query",
     );
     assert(open.includes(prodRun.id), open);
+  });
+});
+
+/** Saves the prod and dev vaults into `repo`. */
+async function saveVaults(repo: ServeRepo): Promise<void> {
+  for (const name of ["prod-vault", "dev-vault"]) {
+    await repo.repoContext.vaultConfigRepo.save(
+      VaultConfig.create(crypto.randomUUID(), name, "local_encryption", {}),
+    );
+  }
+}
+
+Deno.test("serve condition-fields conformance: vault requests are classified under the vault kind's fields, a name and the request's key", () => {
+  assertEquals(
+    CONDITION_FIELDS.vault.map((f) => `${f.name}:${f.role}`),
+    ["name:resource", "key:request"],
+  );
+  const vaultTypes = [...serverRequestPayloadFields()]
+    .map(([type]) => type)
+    .filter((type) => type.startsWith("vault.") && type !== "vault.type.search")
+    .filter((type) => type !== "vault.audit-trail")
+    .sort();
+  assertEquals(
+    vaultTypes.filter((type) => CATEGORIES[type] !== "vault"),
+    [],
+    "Every vault request is decided under the vault kind",
+  );
+});
+
+Deno.test("serve condition-fields conformance: vault.search keeps the vaults a vault grant's name condition admits", async () => {
+  await withServeRepo(async (repo) => {
+    await saveVaults(repo);
+    const ctx = createServeCtx(repo, [
+      grant({
+        actions: ["read"],
+        resource: { kind: "vault", pattern: "*" },
+        condition: 'name == "dev-vault"',
+      }),
+    ]);
+    const body = reply(
+      await sendRequest(ctx, request("vault.search", {})),
+      "vault.search",
+    );
+    assert(body.includes("dev-vault"), body);
+    assert(!body.includes("prod-vault"), body);
+  });
+});
+
+Deno.test("serve condition-fields conformance: vault.migrate is refused by a vault deny on the vault's name only", async () => {
+  await withServeRepo(async (repo) => {
+    await saveVaults(repo);
+    const ctx = createServeCtx(repo, [
+      grant({ actions: ["admin"], resource: { kind: "model", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ["admin"],
+        resource: { kind: "vault", pattern: "*" },
+        condition: 'name.startsWith("prod-")',
+      }),
+    ]);
+    const refused = errorFrame(
+      await sendRequest(
+        ctx,
+        request("vault.migrate", {
+          vaultName: "prod-vault",
+          targetType: "local_encryption",
+        }),
+      ),
+    );
+    assertEquals(refused?.error?.code, "unauthorized");
+    assert(
+      refused!.error!.message.includes("vault:prod-vault"),
+      refused!.error!.message,
+    );
+    const other = errorFrame(
+      await sendRequest(
+        ctx,
+        request("vault.migrate", {
+          vaultName: "dev-vault",
+          targetType: "local_encryption",
+        }),
+      ),
+    );
+    assert(other?.error?.code !== "unauthorized", other?.error?.message);
+  });
+});
+
+Deno.test("serve condition-fields conformance: a vault key condition never fails closed on a request without a key", async () => {
+  await withServeRepo(async (repo) => {
+    await saveVaults(repo);
+    const ctx = createServeCtx(repo, [
+      grant({ actions: ["read"], resource: { kind: "data", pattern: "*" } }),
+      grant({
+        effect: "deny",
+        actions: ["read"],
+        resource: { kind: "vault", pattern: "*" },
+        condition: 'key == "root"',
+      }),
+    ]);
+    for (
+      const [type, payload] of [
+        ["vault.get", { vaultNameOrId: "dev-vault" }],
+        ["vault.describe", { vaultNameOrId: "dev-vault" }],
+        ["vault.list-keys", { vaultName: "dev-vault" }],
+        ["vault.search", {}],
+      ] as const
+    ) {
+      const error = errorFrame(await sendRequest(ctx, request(type, payload)));
+      assert(
+        error?.error?.code !== "unauthorized",
+        `${type}: ${error?.error?.message}`,
+      );
+    }
+    const keyed = errorFrame(
+      await sendRequest(
+        ctx,
+        request("vault.inspect", { vaultName: "dev-vault", key: "root" }),
+      ),
+    );
+    assertEquals(keyed?.error?.code, "unauthorized");
   });
 });

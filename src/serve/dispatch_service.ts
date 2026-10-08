@@ -30,6 +30,11 @@
  * fails the run.
  */
 
+import {
+  currentVaultAccess,
+  runGeneratorWithoutVaultAccess,
+  withoutVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
@@ -494,7 +499,10 @@ export class DispatchService {
       outcome = { ok: false, error };
     }
     try {
-      await handOff?.end();
+      // An attempt that failed has nothing to write, so a cancel ends the
+      // wait for a structural command. One that succeeded waits: a cancel
+      // must not discard its result.
+      await handOff?.end(outcome.ok ? undefined : request.signal);
     } catch (error) {
       // The locks could not be taken back, so the step must not write. An
       // attempt that succeeded fails here even when the step was cancelled
@@ -515,7 +523,7 @@ export class DispatchService {
       }
       // A cancelled attempt that failed writes nothing to the model, so the
       // step stays cancelled rather than failing on a structural command it
-      // could not wait out.
+      // did not wait out.
       logger.warn(
         "Could not take back the locks of cancelled step {step}: {error}",
         {
@@ -577,6 +585,9 @@ export class DispatchService {
       ),
       redactor: this.#buildDispatchRedactor(request.secretValues),
       traceHeaders: request.traceHeaders,
+      // The dispatching run's vault scope, so the worker's secret reads and
+      // sensitive writes are held to it (swamp-club#2676).
+      vaultAccess: currentVaultAccess(),
     });
 
     const params: DispatchParams = {
@@ -869,13 +880,17 @@ export class DispatchService {
     methodName: string,
     inputs: Record<string, unknown>,
   ): void {
+    // Control-plane bookkeeping: chained from inside the dispatching run, it
+    // must not be held to that run's vault scope (swamp-club#2676).
     const run = () =>
-      this.#runModelMethod({
-        typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
-        definitionName: PENDING_DISPATCH_INSTANCE_NAME,
-        methodName,
-        inputs,
-      }).catch(() => {});
+      withoutVaultAccess(() =>
+        this.#runModelMethod({
+          typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
+          definitionName: PENDING_DISPATCH_INSTANCE_NAME,
+          methodName,
+          inputs,
+        }).catch(() => {})
+      );
     this.#transitionTail = this.#transitionTail.then(run, run);
   }
 
@@ -883,13 +898,17 @@ export class DispatchService {
     methodName: string,
     inputs: Record<string, unknown>,
   ): Promise<void> {
+    // Control-plane bookkeeping: chained from inside the dispatching run, it
+    // must not be held to that run's vault scope (swamp-club#2676).
     const run = () =>
-      this.#runModelMethod({
-        typeArg: STEP_LEASE_MODEL_TYPE.normalized,
-        definitionName: STEP_LEASE_INSTANCE_NAME,
-        methodName,
-        inputs,
-      });
+      withoutVaultAccess(() =>
+        this.#runModelMethod({
+          typeArg: STEP_LEASE_MODEL_TYPE.normalized,
+          definitionName: STEP_LEASE_INSTANCE_NAME,
+          methodName,
+          inputs,
+        })
+      );
     const next = this.#transitionTail.then(run, run);
     this.#transitionTail = next.then(() => undefined, () => undefined);
     return next;
@@ -908,18 +927,22 @@ export class DispatchService {
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
     });
+    // Control-plane bookkeeping: never held to the dispatching run's vault
+    // scope (swamp-club#2676).
     for await (
-      const event of modelMethodRun(libCtx, deps, {
-        modelIdOrName: input.definitionName,
-        methodName: input.methodName,
-        inputs: input.inputs,
-        lastEvaluated: false,
-        typeArg: input.typeArg,
-        definitionName: input.definitionName,
-        // Control-plane bookkeeping: skip per-run report artifacts so pool
-        // churn stays bounded to the state records themselves.
-        skipAllReports: true,
-      })
+      const event of runGeneratorWithoutVaultAccess(() =>
+        modelMethodRun(libCtx, deps, {
+          modelIdOrName: input.definitionName,
+          methodName: input.methodName,
+          inputs: input.inputs,
+          lastEvaluated: false,
+          typeArg: input.typeArg,
+          definitionName: input.definitionName,
+          // Control-plane bookkeeping: skip per-run report artifacts so pool
+          // churn stays bounded to the state records themselves.
+          skipAllReports: true,
+        })
+      )
     ) {
       if (event.kind === "error") {
         const detail = event.error;

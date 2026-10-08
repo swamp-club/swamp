@@ -81,7 +81,13 @@ function buildCelEnvironment(kind: ResourceKind): Environment {
 export function createConditionEvaluator(): ConditionEvaluator {
   const environments = new Map<ResourceKind, Environment>();
   const references = new Map<string, string[]>();
-  const kinds: ResourceKind[] = ["workflow", "model", "data", "access"];
+  const kinds: ResourceKind[] = [
+    "workflow",
+    "model",
+    "data",
+    "access",
+    "vault",
+  ];
   for (const kind of kinds) {
     environments.set(kind, buildCelEnvironment(kind));
   }
@@ -116,6 +122,32 @@ export function createConditionEvaluator(): ConditionEvaluator {
     const result = env.evaluate(condition, context);
     return result === true;
   };
+}
+
+const referenceEnvironments = new Map<ResourceKind, Environment>();
+
+/**
+ * Whether grant `condition` on resource kind `kind` references condition
+ * variable `field` (structurally, on the parsed condition). A condition that
+ * does not parse counts as referencing it, so a caller that skips deciding
+ * on that variable never decides on a condition it cannot read.
+ */
+export function conditionReferencesField(
+  condition: string,
+  kind: ResourceKind,
+  field: string,
+): boolean {
+  let env = referenceEnvironments.get(kind);
+  if (!env) {
+    env = buildCelEnvironment(kind);
+    referenceEnvironments.set(kind, env);
+  }
+  try {
+    const parsed = env.parse(condition) as unknown as { ast: unknown };
+    return referencedConditionFields(parsed.ast, kind).includes(field);
+  } catch {
+    return true;
+  }
 }
 
 /**

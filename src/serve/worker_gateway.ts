@@ -29,6 +29,7 @@
  * token state machine race-free without datastore CAS.
  */
 
+import { runGeneratorWithoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { createLibSwampContext } from "../libswamp/context.ts";
@@ -1153,18 +1154,22 @@ export class WorkerGateway {
     const libCtx = createLibSwampContext({
       openUnitOfWork: repoUnitOfWorkFactory(this.#options.repoContext),
     });
+    // Control-plane bookkeeping (enrollment tokens): never held to a run's
+    // vault scope (swamp-club#2676).
     for await (
-      const event of modelMethodRun(libCtx, deps, {
-        modelIdOrName: input.definitionName,
-        methodName: input.methodName,
-        inputs: input.inputs,
-        lastEvaluated: false,
-        typeArg: input.typeArg,
-        definitionName: input.definitionName,
-        // Control-plane bookkeeping: skip per-run report artifacts so pool
-        // churn stays bounded to the state records themselves.
-        skipAllReports: true,
-      })
+      const event of runGeneratorWithoutVaultAccess(() =>
+        modelMethodRun(libCtx, deps, {
+          modelIdOrName: input.definitionName,
+          methodName: input.methodName,
+          inputs: input.inputs,
+          lastEvaluated: false,
+          typeArg: input.typeArg,
+          definitionName: input.definitionName,
+          // Control-plane bookkeeping: skip per-run report artifacts so pool
+          // churn stays bounded to the state records themselves.
+          skipAllReports: true,
+        })
+      )
     ) {
       if (event.kind === "error") {
         const detail = event.error;

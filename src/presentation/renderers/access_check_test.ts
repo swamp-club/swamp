@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AccessCheckResult,
   createAccessCheckRenderer,
+  runVaultAccessLines,
 } from "./access_check.ts";
 
 function makeResult(
@@ -314,4 +315,63 @@ Deno.test("accessCheckRenderer json: includes the signal policy when the server 
   }
   assertEquals(JSON.parse(output[0]).signalRequiresExplicitGrant, true);
   assertEquals("signalRequiresExplicitGrant" in JSON.parse(output[1]), false);
+});
+
+Deno.test("accessCheckRenderer log: the run-time vault line is a short tag, spaced alike after an implicit deny and a matched grant", () => {
+  const runVaultAccess = {
+    vault: "erp",
+    action: "read",
+    allowed: false,
+    restricted: true,
+    rule: "vault-scoped",
+    reason:
+      "the principal holds vault grants and none allows read on vault:erp; add a vault:erp allow grant for read to this principal",
+  };
+  const implicit = captureLog(makeResult({ decisions: [], runVaultAccess }));
+  const matched = captureLog(makeResult({ runVaultAccess }));
+  const expected = ["", "In serve runs: DENY read vault erp (vault-scoped)"];
+  assertEquals(implicit.slice(-2), expected);
+  assertEquals(matched.slice(-2), expected);
+});
+
+Deno.test("runVaultAccessLines: a refusal that is not about scoping names its rule", () => {
+  const base = { vault: "erp", action: "read" as const, reason: "r" };
+  assertEquals(
+    runVaultAccessLines({
+      ...base,
+      allowed: false,
+      restricted: false,
+      rule: "vault-deny",
+      grantId: "g1",
+    }),
+    ["In serve runs: DENY read vault erp (vault deny)"],
+  );
+  assertEquals(
+    runVaultAccessLines({
+      ...base,
+      vault: "_token-secrets",
+      allowed: false,
+      restricted: false,
+      rule: "reserved",
+    }),
+    ["In serve runs: DENY read vault _token-secrets (reserved vault)"],
+  );
+  assertEquals(
+    runVaultAccessLines({
+      ...base,
+      allowed: false,
+      restricted: true,
+      rule: "vault-scoped",
+    }),
+    ["In serve runs: DENY read vault erp (vault-scoped)"],
+  );
+  assertEquals(
+    runVaultAccessLines({
+      ...base,
+      allowed: true,
+      restricted: false,
+      rule: "unscoped",
+    }),
+    ["In serve runs: ALLOW read vault erp (not vault-scoped)"],
+  );
 });

@@ -22,6 +22,7 @@ import {
   assertEquals,
   assertGreater,
   assertRejects,
+  assertStringIncludes,
 } from "@std/assert";
 import { SERVER_TOKEN_MODEL_TYPE } from "../../domain/models/access/server_token_model.ts";
 import { ensureDir } from "@std/fs";
@@ -1051,4 +1052,230 @@ Deno.test("withServerTokenWriteLock: a token named by definition id takes the lo
     assertEquals(nameHeld, true);
     assertEquals(idHeld, false);
   });
+});
+
+// --- vault:<name> (swamp-club#2676) ---
+
+const PROD_VAULT = {
+  id: "vault-id-1",
+  name: "prod-db",
+  type: "local_encryption",
+};
+
+/** A ctx whose vault config repository holds only {@link PROD_VAULT}. */
+function withVaultRepo(ctx: ConnectionContext): ConnectionContext {
+  const byName = (name: string) =>
+    Promise.resolve(name === PROD_VAULT.name ? PROD_VAULT : null);
+  return {
+    ...ctx,
+    repoContext: {
+      vaultConfigRepo: {
+        findByName: byName,
+        findById: (_type: string, id: string) =>
+          Promise.resolve(id === PROD_VAULT.id ? PROD_VAULT : null),
+        findAll: () => Promise.resolve([PROD_VAULT]),
+      },
+    } as unknown as ConnectionContext["repoContext"],
+  };
+}
+
+Deno.test("handleAccessCanI: explains vault:<name> as the vault it resolves to, by name or id", async () => {
+  for (const named of ["prod-db", PROD_VAULT.id]) {
+    const { service, calls } = createMockDecisionService();
+    const socket = createMockSocket();
+    await handleAccessCanI(
+      socket,
+      withVaultRepo(createCtx(service)),
+      "req-1",
+      { action: "read", resource: `vault:${named}` },
+      RESUMER,
+    );
+    assertEquals(calls.length, 1, named);
+    assertEquals(calls[0].resource, {
+      kind: "vault",
+      name: "prod-db",
+      fields: { name: "prod-db" },
+    });
+  }
+});
+
+Deno.test("handleAccessCanI: explains an unknown vault by its name and a wildcard as a check on the kind", async () => {
+  const { service, calls } = createMockDecisionService();
+  const ctx = withVaultRepo(createCtx(service));
+  await handleAccessCanI(
+    createMockSocket(),
+    ctx,
+    "req-1",
+    { action: "read", resource: "vault:missing" },
+    RESUMER,
+  );
+  await handleAccessCanI(
+    createMockSocket(),
+    ctx,
+    "req-2",
+    { action: "read", resource: "vault:prod-*" },
+    RESUMER,
+  );
+  assertEquals(calls.map((c) => c.resource), [
+    { kind: "vault", name: "missing", fields: { name: "missing" } },
+    { kind: "vault", name: "prod-*", fields: { name: "*" }, scope: "kind" },
+  ]);
+});
+
+Deno.test("handleAccessCheck: reports the vault grants that decide vault:<name>", async () => {
+  const policyCtx = createPolicyCtx([
+    makeGrant({
+      subject: { kind: "user", name: "resumer" },
+      actions: ["read"],
+      resource: { kind: "vault", pattern: "prod-*" },
+    }),
+    makeGrant({
+      subject: { kind: "user", name: "resumer" },
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind: "vault", pattern: "prod-db" },
+    }),
+  ], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const socket = createMockSocket();
+  await handleAccessCheck(socket, ctx, "req-1", {
+    subject: "user:resumer",
+    action: "read",
+    resource: `vault:${PROD_VAULT.id}`,
+  }, RESUMER);
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(
+    payload.decisions.map((d: { effect: string }) => d.effect),
+    ["deny", "allow"],
+  );
+});
+
+Deno.test("handleAccessCanI: a concrete vault also reports the run-time decision for the caller", async () => {
+  const allow = makeGrant({
+    subject: { kind: "user", name: "resumer" },
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "prod-db" },
+  });
+  const policyCtx = createPolicyCtx([allow], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "token" },
+  });
+  const allowed = createMockSocket();
+  await handleAccessCanI(allowed, ctx, "req-1", {
+    action: "read",
+    resource: `vault:${PROD_VAULT.id}`,
+  }, RESUMER);
+  assertEquals(JSON.parse(allowed.sent[0]).payload.runVaultAccess, {
+    vault: "prod-db",
+    action: "read",
+    allowed: true,
+    restricted: true,
+    rule: "vault-allow",
+    reason: `allowed by grant ${allow.id}`,
+    grantId: allow.id,
+  });
+  const refused = createMockSocket();
+  await handleAccessCanI(refused, ctx, "req-2", {
+    action: "read",
+    resource: "vault:erp",
+  }, RESUMER);
+  const report = JSON.parse(refused.sent[0]).payload.runVaultAccess;
+  assertEquals(report.allowed, false);
+  assertEquals(report.restricted, true);
+  assertEquals(report.rule, "vault-scoped");
+  // A wildcard names no vault, so it has no run-time decision.
+  const wildcard = createMockSocket();
+  await handleAccessCanI(wildcard, ctx, "req-3", {
+    action: "read",
+    resource: "vault:prod-*",
+  }, RESUMER);
+  assertEquals(JSON.parse(wildcard.sent[0]).payload.runVaultAccess, undefined);
+});
+
+Deno.test("handleAccessCheck: a trigger principal's run-time decision says it covers every scheduled or webhook run", async () => {
+  const policyCtx = createPolicyCtx([], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const socket = createMockSocket();
+  await handleAccessCheck(socket, ctx, "req-1", {
+    subject: "service:scheduler",
+    action: "read",
+    resource: "vault:prod-db",
+  }, RESUMER);
+  const report = JSON.parse(socket.sent[0]).payload.runVaultAccess;
+  assertEquals(report.allowed, true);
+  assertEquals(report.rule, "no-vault-grants");
+  assertEquals(report.triggerScope, "every scheduled or webhook run");
+});
+
+Deno.test("handleAccessCheck: another subject's run-time vault decision uses the IdP groups the request simulates", async () => {
+  const opsAllow = makeGrant({
+    subject: { kind: "idp-group", name: "ops" },
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "prod-db" },
+  });
+  const policyCtx = createPolicyCtx([opsAllow], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const socket = createMockSocket();
+  await handleAccessCheck(socket, ctx, "req-1", {
+    subject: "user:stranger",
+    action: "read",
+    resource: "vault:prod-db",
+    groups: ["ops"],
+    collectives: ["acme"],
+  }, RESUMER);
+  const payload = JSON.parse(socket.sent[0]).payload;
+  assertEquals(payload.groups, ["ops"]);
+  assertEquals(payload.collectives, ["acme"]);
+  assertEquals(
+    payload.decisions.map((d: { grantId: string }) => d.grantId),
+    [opsAllow.id],
+  );
+  assertEquals(payload.runVaultAccess.rule, "vault-allow");
+  assertEquals(payload.runVaultAccess.grantId, opsAllow.id);
+  assertEquals(
+    payload.runVaultAccess.reason,
+    `allowed by grant ${opsAllow.id}`,
+  );
+});
+
+Deno.test("handleAccessCheck: another subject's run-time vault decision without simulated groups says IdP groups are not included", async () => {
+  const policyCtx = createPolicyCtx([
+    makeGrant({
+      subject: { kind: "idp-group", name: "ops" },
+      actions: ["read"],
+      resource: { kind: "vault", pattern: "prod-db" },
+    }),
+  ], true);
+  const ctx = withVaultRepo({
+    ...policyCtx,
+    authConfig: { ...policyCtx.authConfig!, mode: "none" },
+  });
+  const other = createMockSocket();
+  await handleAccessCheck(other, ctx, "req-1", {
+    subject: "user:stranger",
+    action: "read",
+    resource: "vault:prod-db",
+  }, RESUMER);
+  const report = JSON.parse(other.sent[0]).payload.runVaultAccess;
+  assertEquals(report.rule, "unscoped");
+  assertStringIncludes(report.reason, "IdP-group memberships are not included");
+  // The caller's own check uses its session's groups, so it has no note.
+  const self = createMockSocket();
+  await handleAccessCheck(self, ctx, "req-2", {
+    subject: "user:resumer",
+    action: "read",
+    resource: "vault:prod-db",
+  }, RESUMER);
+  const selfReport = JSON.parse(self.sent[0]).payload.runVaultAccess;
+  assertEquals(selfReport.reason.includes("not included"), false);
 });

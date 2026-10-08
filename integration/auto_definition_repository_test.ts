@@ -20,10 +20,11 @@
 // Auto-definitions (direct type execution) through the real model delete and
 // model edit wiring: the shared definition repository must find, report,
 // save and delete the file in .swamp/auto-definitions, by id or by name
-// (swamp-club#2515).
+// (swamp-club#2515), and model delete must find it in the datastore when one
+// is configured (swamp-club#2382).
 
 import "../src/domain/models/models.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { Definition } from "../src/domain/definitions/definition.ts";
@@ -38,11 +39,13 @@ import { createModelEditDeps, modelEdit } from "../src/libswamp/models/edit.ts";
 import { createModelGetDeps, modelGet } from "../src/libswamp/models/get.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../src/infrastructure/persistence/paths.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
+import { createRepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 
@@ -180,7 +183,7 @@ async function getAutoCreated(
   for await (
     const event of modelGet(
       createLibSwampContext(),
-      await createModelGetDeps(repoDir),
+      await createModelGetDeps(new YamlDefinitionRepository(repoDir)),
       modelIdOrName,
     )
   ) {
@@ -239,3 +242,81 @@ Deno.test("integration: model delete by uuid of an auto-definition leaves a same
     assertEquals(await fileExists(authoredPath), true);
   });
 });
+
+for (const by of ["uuid", "name"] as const) {
+  Deno.test(`integration: model delete by ${by} removes an auto-definition kept in the datastore (swamp-club#2382)`, async () => {
+    await withTempDir(async (dir) => {
+      const repoDir = join(dir, "repo");
+      const cacheRoot = join(dir, "cache");
+      await Deno.mkdir(repoDir);
+      await Deno.mkdir(cacheRoot);
+      const datastoreResolver = new DefaultDatastorePathResolver(repoDir, {
+        type: "@test/remote",
+        config: {},
+        datastorePath: join(dir, "remote"),
+        cachePath: cacheRoot,
+      });
+      const repoContext = createRepositoryContext({
+        repoDir,
+        enableIndexing: false,
+        datastoreResolver,
+      });
+      try {
+        // Saved the way direct type execution saves it.
+        const autoRepo = new YamlDefinitionRepository(
+          repoDir,
+          undefined,
+          repoContext.autoDefinitionsDir,
+          false,
+        );
+        const definition = Definition.create({
+          name: "auto-sh",
+          type: shellType.normalized,
+          globalArguments: {},
+        });
+        await autoRepo.save(shellType, definition);
+        const path = autoRepo.getPath(shellType, definition.id);
+        assertEquals(path.startsWith(cacheRoot), true);
+        const modelIdOrName = by === "uuid" ? definition.id : definition.name;
+
+        // Deps wired as swamp model delete wires them.
+        const deps = () =>
+          createModelDeleteDeps(
+            repoDir,
+            datastoreResolver,
+            undefined,
+            repoContext.markDirty,
+            repoContext.definitionRepo,
+          );
+
+        const preview = await modelDeletePreview(
+          createLibSwampContext(),
+          deps(),
+          { modelIdOrName, force: true },
+        );
+        assertPathEquals(preview.definitionPath, path);
+
+        let inputPath: string | undefined;
+        for await (
+          const event of modelDelete(createLibSwampContext(), deps(), {
+            modelIdOrName,
+            force: true,
+          })
+        ) {
+          if (event.kind === "error") throw new Error(event.error.message);
+          if (event.kind === "completed") inputPath = event.data.inputPath;
+        }
+
+        assertExists(inputPath);
+        assertPathEquals(inputPath, path);
+        assertEquals(await fileExists(path), false);
+        assertEquals(
+          await fileExists(swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions)),
+          false,
+        );
+      } finally {
+        repoContext.catalogStore.close();
+      }
+    });
+  });
+}

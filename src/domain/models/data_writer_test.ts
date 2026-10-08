@@ -35,11 +35,17 @@ import {
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
+import { sensitiveOutputTargetVaults } from "./sensitive_output_vault.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import { Data } from "../data/data.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+  VaultAccessDeniedError,
+} from "../vaults/run_vault_access.ts";
 
 /**
  * Creates a minimal mock UnifiedDataRepository for tag resolution tests.
@@ -1957,6 +1963,53 @@ Deno.test("createResourceWriter: definition-level vaultName override routes sens
   assertStringIncludes(data.secret as string, "'override-vault'");
 });
 
+Deno.test("createResourceWriter: an empty vaultName override is ignored, so sensitive fields go to the spec vault", async () => {
+  const repo = createMockRepo();
+  const sensitiveResources: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        secret: z.string().meta({ sensitive: true }),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+      vaultName: "spec-vault",
+    },
+  };
+
+  const vaultService = new VaultService();
+  vaultService.registerVault({
+    name: "default-vault",
+    type: "mock",
+    config: {},
+  });
+  vaultService.registerVault({ name: "spec-vault", type: "mock", config: {} });
+
+  const overrides = [{ specName: "creds", vaultName: "" }];
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    sensitiveResources,
+    undefined, // tagOverrides
+    overrides, // dataOutputOverrides
+    undefined, // definitionTags
+    undefined, // runtimeTags
+    undefined, // definitionName
+    vaultService,
+    "create", // methodName
+  );
+
+  const data = { secret: "my-secret-value" };
+  await writeResource("creds", "main", data);
+
+  assertStringIncludes(data.secret as string, "'spec-vault'");
+  // The pre-run prediction resolves the same vault.
+  assertEquals(
+    sensitiveOutputTargetVaults(sensitiveResources, overrides, vaultService),
+    ["spec-vault"],
+  );
+});
+
 Deno.test("processSensitiveResourceData: falls back to vaultNames[0] when no default configured", async () => {
   const spec: ResourceOutputSpec = {
     schema: z.object({
@@ -2286,4 +2339,102 @@ Deno.test("createResourceReader: legacy data without tag or specs skips resoluti
   );
   const result = await readResource("my-instance");
   assertEquals(result?.secret, "${{ vault.get('test-vault', 'k1') }}");
+});
+
+Deno.test("processSensitiveResourceData: decides every target vault before storing any value", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      allowed: z.string().meta({ sensitive: true, vaultName: "outputs" }),
+      refused: z.string().meta({ sensitive: true, vaultName: "erp" }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  };
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "outputs", type: "mock", config: {} });
+  vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+  const outputsBefore = await vaultService.list("outputs");
+  const data: Record<string, unknown> = { allowed: "a", refused: "b" };
+
+  await runWithVaultAccess(
+    RunVaultAccess.create({
+      allowedVaults: ["outputs"],
+      allowListSource: "wf",
+    }),
+    () =>
+      assertRejects(
+        () =>
+          processSensitiveResourceData(
+            data,
+            spec,
+            vaultService,
+            modelType,
+            modelId,
+            "create",
+            "creds",
+            "main",
+          ),
+        VaultAccessDeniedError,
+        "'erp'",
+      ),
+  );
+
+  // The allowed field was not stored ahead of the refusal: no orphan.
+  assertEquals(await vaultService.list("outputs"), outputsBefore);
+  assertEquals(data, { allowed: "a", refused: "b" });
+});
+
+Deno.test("processSensitiveResourceData: decides each target with the key the put names, before storing any value", async () => {
+  const spec: ResourceOutputSpec = {
+    schema: z.object({
+      pinned: z.string().meta({ sensitive: true, vaultKey: "api-token" }),
+      generated: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+    vaultName: "outputs",
+  };
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "outputs", type: "mock", config: {} });
+  const outputsBefore = await vaultService.list("outputs");
+  const data: Record<string, unknown> = { pinned: "a", generated: "b" };
+  const decided: (string | undefined)[] = [];
+
+  await runWithVaultAccess(
+    RunVaultAccess.create({
+      policy: {
+        principal: "user:bot",
+        decide: (_vault, _action, secretKey) => {
+          decided.push(secretKey);
+          return secretKey?.endsWith("-generated")
+            ? { allowed: false, reason: "denied by grant g-key" }
+            : { allowed: true, reason: "granted" };
+        },
+      },
+    }),
+    () =>
+      assertRejects(
+        () =>
+          processSensitiveResourceData(
+            data,
+            spec,
+            vaultService,
+            modelType,
+            modelId,
+            "create",
+            "creds",
+            "main",
+          ),
+        VaultAccessDeniedError,
+        "denied by grant g-key",
+      ),
+  );
+
+  const generatedKey = sanitizeVaultKey(
+    `${modelType.normalized}/${modelId}/create/creds/main/generated`,
+  );
+  assertEquals(decided, ["api-token", generatedKey]);
+  // The allowed field was not stored ahead of the refusal: no orphan.
+  assertEquals(await vaultService.list("outputs"), outputsBefore);
+  assertEquals(data, { pinned: "a", generated: "b" });
 });

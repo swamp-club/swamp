@@ -91,7 +91,15 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
   const _testingCaps: TestingSyncCapabilities | undefined = (
     {} as CanonicalDatastoreSyncService
   ).capabilities?.();
+  // fetchContent has one signature in both packages, in both directions.
+  const _fetchContent: CanonicalDatastoreSyncService["fetchContent"] =
+    sync.fetchContent;
+  const _testingFetchContent: TestingDatastoreSyncService["fetchContent"] = (
+    {} as CanonicalDatastoreSyncService
+  ).fetchContent;
   void [
+    _fetchContent,
+    _testingFetchContent,
     _pull,
     _push,
     _markDirty,
@@ -131,8 +139,17 @@ function _checkLockInfoFields(info: TestingLockInfo) {
   const _acquiredAt: string = info.acquiredAt;
   const _ttlMs: number = info.ttlMs;
   const _nonce: string | undefined = info.nonce;
+  const _holderUnknown: true | undefined = info.holderUnknown;
 
-  void [_holder, _hostname, _pid, _acquiredAt, _ttlMs, _nonce];
+  void [
+    _holder,
+    _hostname,
+    _pid,
+    _acquiredAt,
+    _ttlMs,
+    _nonce,
+    _holderUnknown,
+  ];
 }
 
 Deno.test("testing package datastore types: compile-time compatibility check", () => {

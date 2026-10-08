@@ -26,6 +26,7 @@ import {
   denoToolConfigArgs,
   extensionLintArgs,
 } from "../../domain/extensions/extension_quality_checker.ts";
+import { plainDenoEnv } from "../../domain/runtime/deno_plain_env.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -94,7 +95,7 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
         args: ["fmt", ...denoToolConfigArgs(denoConfigPath), ...files],
         stdout: "piped",
         stderr: "piped",
-        env: { ...denoRuntime.getDenoEnv(), NO_COLOR: "1" },
+        env: plainDenoEnv(denoRuntime.getDenoEnv()),
       });
       const output = await command.output();
       return (
@@ -111,7 +112,7 @@ export async function createExtensionFmtDeps(): Promise<ExtensionFmtDeps> {
         ],
         stdout: "piped",
         stderr: "piped",
-        env: { ...denoRuntime.getDenoEnv(), NO_COLOR: "1" },
+        env: plainDenoEnv(denoRuntime.getDenoEnv()),
       });
       const output = await command.output();
       return (

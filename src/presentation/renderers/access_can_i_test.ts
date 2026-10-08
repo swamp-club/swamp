@@ -378,3 +378,78 @@ Deno.test("accessCanIRenderer json: includes the signal policy when the server r
   });
   assertEquals(JSON.parse(output.join("")).signalRequiresExplicitGrant, true);
 });
+
+Deno.test("accessCanIRenderer: a run-time vault decision is shown in log and json modes", () => {
+  const runVaultAccess = {
+    vault: "erp",
+    action: "read",
+    allowed: false,
+    restricted: true,
+    rule: "vault-scoped",
+    reason:
+      "the principal holds vault grants and none allows read on vault:erp",
+  };
+  const result: AccessCanIResult = {
+    principal: "user:bot",
+    decisions: [],
+    query: { action: "read", resource: "vault:erp" },
+    runVaultAccess,
+  };
+  const lines = captureRender("log", result);
+  // A blank line, then a short tag; the reason stays in the JSON output.
+  assertEquals(lines.slice(-2), [
+    "",
+    "In serve runs: DENY read vault erp (vault-scoped)",
+  ]);
+  const json = JSON.parse(captureRender("json", result).join("\n"));
+  assertEquals(json.runVaultAccess, runVaultAccess);
+});
+
+Deno.test("accessCanIRenderer log: the run-time vault line is spaced alike after an implicit deny and a matched grant", () => {
+  const runVaultAccess = {
+    vault: "erp",
+    action: "read",
+    allowed: true,
+    restricted: false,
+    rule: "unscoped",
+    reason: "no vault grant applies to the principal",
+  };
+  const query = { action: "read", resource: "vault:erp" };
+  const implicit = captureRender("log", {
+    principal: "user:bot",
+    decisions: [],
+    query,
+    runVaultAccess,
+  });
+  const matched = captureRender("log", {
+    principal: "user:bot",
+    decisions: [makeDecision({ action: "read", resource: "vault:erp" })],
+    query,
+    runVaultAccess,
+  });
+  const expected = [
+    "",
+    "In serve runs: ALLOW read vault erp (not vault-scoped)",
+  ];
+  assertEquals(implicit.slice(-2), expected);
+  assertEquals(matched.slice(-2), expected);
+});
+
+Deno.test("accessCanIRenderer log: a trigger principal's run-time decision names its runs", () => {
+  const log = captureRender("log", {
+    principal: "service:webhook",
+    decisions: [makeDecision({ action: "read", resource: "vault:erp" })],
+    query: { action: "read", resource: "vault:erp" },
+    runVaultAccess: {
+      vault: "erp",
+      action: "read",
+      allowed: true,
+      restricted: false,
+      rule: "unscoped",
+      reason: "no vault grant applies to the principal",
+      triggerScope: "every scheduled or webhook run",
+    },
+  }).join("\n");
+  assertStringIncludes(log, "In serve runs: ALLOW read vault erp");
+  assertStringIncludes(log, "every scheduled or webhook run");
+});

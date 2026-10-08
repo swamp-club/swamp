@@ -20,6 +20,8 @@
 import { inMemorySignalWaits } from "./signal_wait_store_test_helpers.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { VaultService } from "../vaults/vault_service.ts";
+import { currentVaultAccess } from "../vaults/run_vault_access.ts";
 import {
   assert,
   assertEquals,
@@ -18263,5 +18265,386 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
         600_000,
       true,
     );
+  });
+});
+
+/** Records the vaults list each step runs under, and reads vault `erp`. */
+class VaultScopeRecordingExecutor implements StepExecutor {
+  seen = new Map<string, string[] | undefined>();
+  constructor(private readonly vaultService?: VaultService) {}
+
+  async execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const allowed = currentVaultAccess()?.allowedVaults;
+    this.seen.set(ctx.stepName, allowed ? [...allowed].sort() : undefined);
+    if (this.vaultService && ctx.stepName === "read-erp") {
+      return { value: await this.vaultService.get("erp", "k") };
+    }
+    return { executed: true };
+  }
+}
+
+function vaultsListWorkflows(): Workflow[] {
+  const child = Workflow.create({
+    name: "vaults-child",
+    vaults: ["b", "c"],
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "child-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "vaults-parent",
+    vaults: ["a", "b"],
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "parent-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("vaults-child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const unlisted = Workflow.create({
+    name: "vaults-unlisted",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "free-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  return [parent, child, unlisted];
+}
+
+Deno.test("run(): a workflow's vaults list scopes its steps, and a nested workflow intersects it", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { service } = await setupNestedCancel(
+      tempDir,
+      vaultsListWorkflows(),
+      executor,
+    );
+
+    const run = await service.execute("vaults-parent");
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.seen.get("parent-step"), ["a", "b"]);
+    assertEquals(executor.seen.get("child-step"), ["b"]);
+
+    const free = await service.execute("vaults-unlisted");
+    assertEquals(free.status, "succeeded");
+    assertEquals(executor.seen.get("free-step"), undefined);
+    assertEquals(currentVaultAccess(), undefined);
+  });
+});
+
+Deno.test("run(): a vault outside the workflow's vaults list is refused to a local run", async () => {
+  await withTempDir(async (tempDir) => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+    await vaultService.put("erp", "k", "secret");
+    const executor = new VaultScopeRecordingExecutor(vaultService);
+    const workflow = Workflow.create({
+      name: "vaults-refused",
+      vaults: ["roomcontrol"],
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "read-erp",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupNestedCancel(tempDir, [workflow], executor);
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "failed");
+    const step = run.getJob("main")!.getStep("read-erp")!;
+    assertStringIncludes(step.error ?? "", "vault 'erp'");
+    assertStringIncludes(step.error ?? "", "workflow 'vaults-refused'");
+    // Outside the run the vault reads as before.
+    assertEquals(await vaultService.get("erp", "k"), "secret");
+  });
+});
+
+/** A workflow repository whose first name lookup throws or finds nothing. */
+class FirstLookupFailsWorkflowRepository extends InMemoryWorkflowRepository {
+  lookups = 0;
+  constructor(private readonly firstLookup: "throws" | "null") {
+    super();
+  }
+
+  override findByName(name: string): Promise<Workflow | null> {
+    this.lookups++;
+    if (this.lookups === 1) {
+      return this.firstLookup === "throws"
+        ? Promise.reject(new Error("transient lookup failure"))
+        : Promise.resolve(null);
+    }
+    return super.findByName(name);
+  }
+
+  override findById(id: WorkflowId): Promise<Workflow | null> {
+    return this.lookups === 1 ? Promise.resolve(null) : super.findById(id);
+  }
+}
+
+for (const firstLookup of ["throws", "null"] as const) {
+  Deno.test(`run(): a first workflow lookup that ${firstLookup === "throws" ? "throws" : "finds nothing"} never runs the workflow outside its vaults list`, async () => {
+    await withTempDir(async (tempDir) => {
+      const [parent, child] = vaultsListWorkflows();
+      const workflowRepo = new FirstLookupFailsWorkflowRepository(firstLookup);
+      await workflowRepo.save(parent);
+      await workflowRepo.save(child);
+      const executor = new VaultScopeRecordingExecutor();
+      const service = serviceWithTracker(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+        new RecordingRunTracker(),
+      );
+
+      let failure: unknown;
+      try {
+        for await (const _event of service.run(parent.name)) {
+          // drain
+        }
+      } catch (error) {
+        failure = error;
+      }
+
+      // The run reuses its one lookup: it reports that lookup's outcome
+      // and no step runs, rather than looking the workflow up again and
+      // running it without its vaults list.
+      assertEquals(workflowRepo.lookups, 1);
+      assertEquals(executor.seen.get("parent-step"), undefined);
+      assertEquals(executor.seen.size, 0);
+      assertStringIncludes(
+        String(failure),
+        firstLookup === "throws"
+          ? "transient lookup failure"
+          : `Workflow not found: ${parent.name}`,
+      );
+    });
+  });
+}
+
+/** A gate, then step `after` (which reads vault `erp` when so named). */
+function gatedVaultsWorkflow(
+  vaults: string[] | undefined,
+  after = "after",
+): Workflow {
+  return Workflow.create({
+    name: "vaults-gated",
+    ...(vaults !== undefined ? { vaults } : {}),
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: after,
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [
+              { step: "gate", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Suspends `workflow` at its gate, saves it edited to `resumeVaults`,
+ * approves the gate and resumes the run.
+ */
+async function resumeWithEditedVaults(
+  tempDir: string,
+  workflow: Workflow,
+  resumeVaults: string[] | undefined,
+  executor: StepExecutor,
+): Promise<{ suspended: WorkflowRun; resumed: WorkflowRun | undefined }> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  await workflowRepo.save(workflow);
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const service = serviceWithTracker(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+    new RecordingRunTracker(),
+  );
+  const suspended = await service.execute(workflow.name);
+  assertEquals(suspended.status, "suspended");
+
+  const { vaults: _vaults, ...rest } = workflow.toData();
+  await workflowRepo.save(
+    Workflow.fromData(
+      resumeVaults !== undefined ? { ...rest, vaults: resumeVaults } : rest,
+    ),
+  );
+  const toApprove = (await runRepo.findById(workflow.id, suspended.id))!;
+  toApprove.getJob("main")!.getStep("gate")!.succeed();
+  await runRepo.save(workflow.id, toApprove);
+
+  const resumed = await drainResume(service, workflow.name, suspended.id);
+  return { suspended, resumed };
+}
+
+Deno.test("resume(): a vaults list widened since the run started does not widen the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+    await vaultService.put("erp", "k", "secret");
+    const executor = new VaultScopeRecordingExecutor(vaultService);
+    const { suspended, resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(["roomcontrol"], "read-erp"),
+      ["roomcontrol", "erp"],
+      executor,
+    );
+    assertEquals(executor.seen.get("read-erp"), ["roomcontrol"]);
+    assertEquals(resumed?.status, "failed");
+    const step = resumed!.getJob("main")!.getStep("read-erp")!;
+    assertStringIncludes(step.error ?? "", "vault 'erp'");
+    assertEquals(suspended.allowedVaults, ["roomcontrol"]);
+  });
+});
+
+Deno.test("resume(): a vaults list narrowed since the run started narrows the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(["a", "b"]),
+      ["a"],
+      executor,
+    );
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.seen.get("after"), ["a"]);
+  });
+});
+
+Deno.test("resume(): a run that recorded no vaults list is held to the current list", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { suspended, resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(undefined),
+      ["a"],
+      executor,
+    );
+    assertEquals(suspended.allowedVaults, undefined);
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.seen.get("after"), ["a"]);
+  });
+});
+
+Deno.test("run(): each run records the vaults list in force, a nested run its intersection with its parent's", async () => {
+  await withTempDir(async (tempDir) => {
+    const [parent, child, unlisted] = vaultsListWorkflows();
+    const { service, runRepo } = await setupNestedCancel(
+      tempDir,
+      [parent, child, unlisted],
+      new VaultScopeRecordingExecutor(),
+    );
+
+    const run = await service.execute(parent.name);
+    assertEquals(run.status, "succeeded");
+    const stored = await runRepo.findById(parent.id, run.id);
+    assertEquals(stored?.allowedVaults, ["a", "b"]);
+    const childRuns = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRuns.length, 1);
+    assertEquals(childRuns[0].allowedVaults, ["b"]);
+
+    const free = await service.execute(unlisted.name);
+    assertEquals(
+      (await runRepo.findById(unlisted.id, free.id))?.allowedVaults,
+      undefined,
+    );
+  });
+});
+
+/** A workflow repository that starts a span for every name lookup. */
+class SpannedLookupWorkflowRepository extends InMemoryWorkflowRepository {
+  lookups = 0;
+  override findByName(name: string): Promise<Workflow | null> {
+    this.lookups++;
+    const span = getTracer().startSpan("test.workflow.lookup");
+    try {
+      return super.findByName(name);
+    } finally {
+      span.end();
+    }
+  }
+}
+
+Deno.test("run(): the one workflow lookup nests under the run's span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "vaults-spanned",
+        vaults: ["a"],
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "only-step",
+                task: StepTask.model("test-model", "run"),
+              }),
+            ],
+          }),
+        ],
+      });
+      const workflowRepo = new SpannedLookupWorkflowRepository();
+      await workflowRepo.save(workflow);
+      const executor = new VaultScopeRecordingExecutor();
+      const service = serviceWithTracker(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+        new RecordingRunTracker(),
+      );
+
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+      assertEquals(executor.seen.get("only-step"), ["a"]);
+      assertEquals(workflowRepo.lookups, 1);
+      const [runSpan] = recorder.named("swamp.workflow.run");
+      const [lookup] = recorder.named("test.workflow.lookup");
+      assertEquals(lookup.parentSpanId, spanIdOf(runSpan));
+    });
   });
 });

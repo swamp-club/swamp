@@ -403,7 +403,8 @@ export class FileLock implements DistributedLock {
   /**
    * Reads the lock without acquiring it. A lock file its holder is still
    * writing cannot name that holder, so it is reported as held by an
-   * unknown holder rather than as no lock; it carries no nonce.
+   * unknown holder rather than as no lock; it carries no nonce and is
+   * marked `holderUnknown`.
    */
   async inspect(): Promise<LockInfo | null> {
     const state = await readLockFileState(this.lockPath, this.ttlMs);
@@ -415,6 +416,7 @@ export class FileLock implements DistributedLock {
       pid: 0,
       acquiredAt: new Date(state.mtimeMs).toISOString(),
       ttlMs: this.ttlMs,
+      holderUnknown: true,
     };
   }
 

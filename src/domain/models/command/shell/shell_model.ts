@@ -102,6 +102,7 @@ async function executeCommand(
   let stderr = "";
   let exitCode = 0;
   let durationMs = 0;
+  let stoppedByCancel = false;
 
   const redact = (text: string) =>
     context.redactor?.hasSecrets ? context.redactor.redact(text) : text;
@@ -174,12 +175,16 @@ async function executeCommand(
     const rawError = error instanceof Error ? error.message : String(error);
     stderr = redact(rawError);
     exitCode = -1;
+    stoppedByCancel = context.signal.aborted;
   }
 
   // The command has returned, so this run no longer waits on anything it
   // left running. Take the locks back before writing under them; a failure
-  // here fails the method with nothing written.
-  await lockHandOff.end();
+  // here fails the method with nothing written. A command the cancel
+  // stopped does not wait for a structural command still working under
+  // them: the end rejects and the step stays cancelled. A command that
+  // finished first waits, so a later cancel does not discard its output.
+  await lockHandOff.end(stoppedByCancel ? context.signal : undefined);
 
   // Persisted before the exit code is judged, not after. The output is the
   // only account of what the command did, and a command that failed is the one

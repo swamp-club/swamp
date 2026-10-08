@@ -32,7 +32,7 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import { redactSensitiveValues } from "../../domain/models/sensitive_field_extractor.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
@@ -103,12 +103,9 @@ export interface ModelGetDeps {
 
 /** Wires real infrastructure into ModelGetDeps. */
 export async function createModelGetDeps(
-  repoDir: string,
-  injectedDefinitionRepo?: YamlDefinitionRepository,
+  definitionRepo: YamlDefinitionRepository,
 ): Promise<ModelGetDeps> {
   await modelRegistry.ensureLoaded();
-  const definitionRepo = injectedDefinitionRepo ??
-    new YamlDefinitionRepository(repoDir);
   const withAutoCreated = async (
     result: DefinitionLookupResult | null,
   ): Promise<ModelGetLookupResult> => {

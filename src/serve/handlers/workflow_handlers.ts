@@ -101,6 +101,12 @@ import {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../deps.ts";
+import {
+  requestRunVaultScope,
+  resumeRunVaultScope,
+  runVaultScopeContext,
+} from "../run_vault_access_policy.ts";
+import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { isWireEvent, serializeEvent } from "../serializer.ts";
 import type {
@@ -239,6 +245,7 @@ import {
 import { expressionsAddedByEdit } from "../../domain/expressions/expression_references.ts";
 import {
   analyzeWorkflowExpressions,
+  changedStepTargets,
   isComputedStepTarget,
   readsSelfOrInputs,
   stepRetargetSourcesChanged,
@@ -249,7 +256,10 @@ import {
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
 import { deliverSignalForCaller } from "../signal_delivery.ts";
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
-import { authorizeStepTargets } from "./workflow_step_authorization.ts";
+import {
+  authorizeChangedSteps,
+  authorizeStepTargets,
+} from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -338,24 +348,34 @@ async function authorizeWorkflowEdit(
       methodName: method,
     }))
   );
-  return await authorizeStepTargets(
+  const checked = workflowStepTargets(after).filter((target) =>
+    !stored.has(stepTargetKey(target)) ||
+    (retargetable && isComputedStepTarget(target) &&
+      readsSelfOrInputs(target))
+  );
+  const stepRefusal = await authorizeStepTargets(
     socket,
     requestId,
     principal,
     ctx,
-    [
-      ...workflowStepTargets(after).filter((target) =>
-        !stored.has(stepTargetKey(target)) ||
-        (retargetable && isComputedStepTarget(target) &&
-          readsSelfOrInputs(target))
-      ),
-      ...expressionRuns,
-    ],
+    [...checked, ...expressionRuns],
     ((computed) =>
       computed && {
         raw: computed.raw,
         unanalyzable: computed.references.unanalyzable,
       })(added.find(({ references }) => references.runsComputed)),
+  );
+  if (stepRefusal) return stepRefusal;
+  // A stored step whose inputs, method or conditions change keeps its
+  // target, so the check above passes it; what it runs with changed
+  // (swamp-club#3131).
+  const checkedAt = new Set(checked.map((t) => t.location));
+  return await authorizeChangedSteps(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    changedStepTargets(before, after).filter((t) => !checkedAt.has(t.location)),
   );
 }
 
@@ -392,6 +412,9 @@ export async function handleWorkflowRun(
   const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
+  // Captured now, while the socket's memberships are at hand: the run's
+  // vault operations are decided for this principal (swamp-club#2676).
+  const vaultAccess = requestRunVaultScope(ctx, socket, principal);
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
@@ -460,7 +483,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       await sending;
       send(socket, { type: "done", id: requestId });
@@ -595,7 +623,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       buffer.finish({ kind: "done" });
     } catch (error) {
@@ -2109,13 +2142,19 @@ export async function handleWorkflowResume(
           const resumeGenerator = async function* (): AsyncGenerator<
             WorkflowRunEvent
           > {
+            // Held to the principal that triggered the run, never the
+            // resumer (swamp-club#2676).
             for await (
-              const event of service.resume(workflowName, run.id, {
-                signal: controller.signal,
-                inputs: resumeInputs,
-                fromStep: payload.from,
-                instanceId: ctx.instanceId,
-              })
+              const event of runGeneratorWithVaultAccess(
+                resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
+                () =>
+                  service.resume(workflowName, run.id, {
+                    signal: controller.signal,
+                    inputs: resumeInputs,
+                    fromStep: payload.from,
+                    instanceId: ctx.instanceId,
+                  }),
+              )
             ) {
               yield mapWorkflowExecutionEvent(event, runRepo);
             }

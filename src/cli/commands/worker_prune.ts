@@ -170,6 +170,7 @@ export const workerPruneCommand = withRemoteOptions(
     datastoreResolver,
     undefined,
     repoContext.markDirty,
+    repoContext.definitionRepo,
   );
 
   const pruneDeps: WorkerPruneDeps = {

@@ -73,7 +73,7 @@ const CreateArgsSchema = z.object({
   effect: EffectSchema,
   actions: z.array(ActionSchema).min(1),
   resourceKind: z.string().min(1).describe(
-    'Resource kind: "workflow", "model", "data", or "access"',
+    'Resource kind: "workflow", "model", "data", "access", or "vault"',
   ),
   resourcePattern: z.string().min(1).describe(
     'Resource pattern (e.g. "@acme/*", "@acme/deploy")',

@@ -341,6 +341,20 @@ Audit queries, alert matches and compliance reports key on `principalId` alone,
 so `service:scheduler` and a user named `scheduler` share a bucket there;
 filter on `principalKind` to tell them apart.
 
+## Run vault denials
+
+A vault operation refused during a serve run by the run-time vault rule (see
+[access-control § Vaults](access-control.md#vaults)) is audited with no
+WebSocket behind it, the way trigger denials are: category `secrets`, action
+`vault.read` or `vault.write`, outcome `denied`, and a decision carrying
+`action` (`read` or `write`), `resourceKind` `vault`, `resourceName` (the
+vault), `effect` and `grantId`. The event names the run's triggering principal
+and carries the run id in its detail. Denials are deduplicated per run, vault,
+key and action, so repeated reads of one refused secret write one event. It
+never carries a secret value. Like trigger audit writes, it never throws into
+the run. Implementation: `emitRunVaultDenial` in
+`src/serve/run_vault_access_policy.ts`.
+
 ## System events
 
 The `system` audit category records infrastructure lifecycle events with

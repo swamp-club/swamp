@@ -20,6 +20,7 @@
 import { join, resolve, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { markErrorPaths } from "../errors.ts";
+import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
 
 /**
  * Client-side scorer for the Swamp Club extension quality rubric.
@@ -542,7 +543,7 @@ export function createRubricScoreDeps(
   extractTarball: ExtractTarball,
   denoEnv?: Record<string, string>,
 ): RubricScoreDeps {
-  const baseEnv = denoEnv ?? Deno.env.toObject();
+  const plainEnv = plainDenoEnv(denoEnv ?? Deno.env.toObject());
   return {
     runDeno: async (args, cwd) => {
       const cmd = new Deno.Command(denoPath, {
@@ -550,7 +551,7 @@ export function createRubricScoreDeps(
         cwd,
         stdout: "piped",
         stderr: "piped",
-        env: { ...baseEnv, NO_COLOR: "1" },
+        env: plainEnv,
       });
       const out = await cmd.output();
       return {

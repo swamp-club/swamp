@@ -21,6 +21,7 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import { Workflow } from "./workflow.ts";
 import {
   analyzeWorkflowExpressions,
+  changedStepTargets,
   isComputedStepTarget,
   readsSelfOrInputs,
   stepRetargetSourcesChanged,
@@ -266,4 +267,88 @@ Deno.test("step scopes: removing an earlier step leaves later steps' scopes alon
       e.paths.filter((p) => p.includes('"keep"'))
     );
   assertEquals(pathsOf(after), pathsOf(before));
+});
+
+Deno.test("changedStepTargets: a changed, renamed or moved step counts; one left alone does not", () => {
+  const restricted = {
+    name: "shell",
+    task: {
+      type: "model_method",
+      modelIdOrName: "deploy",
+      methodName: "execute",
+      inputs: { command: "echo ok" },
+    },
+  };
+  const other = {
+    name: "other",
+    task: { type: "model_method", modelIdOrName: "db", methodName: "get" },
+  };
+  const make = (jobs: { name: string; steps: unknown[] }[]) =>
+    Workflow.fromData(
+      {
+        id: "00000000-0000-4000-8000-000000000003",
+        name: "w",
+        version: 1,
+        jobs,
+      } as unknown as Parameters<typeof Workflow.fromData>[0],
+    );
+  const changedNames = (after: Workflow) =>
+    changedStepTargets(before, after).map((t) =>
+      t.kind === "model" ? t.modelIdOrName : t.kind
+    );
+  const before = make([{ name: "main", steps: [restricted, other] }]);
+
+  assertEquals(
+    changedNames(make([{ name: "main", steps: [restricted, other] }])),
+    [],
+  );
+  const withInputs = structuredClone(restricted);
+  withInputs.task.inputs.command = "rm -rf /";
+  assertEquals(
+    changedNames(make([{ name: "main", steps: [withInputs, other] }])),
+    ["deploy"],
+  );
+  const dependent = {
+    ...restricted,
+    dependsOn: [{ step: "other", condition: { type: "succeeded" } }],
+  };
+  assertEquals(
+    changedNames(make([{ name: "main", steps: [dependent, other] }])),
+    ["deploy"],
+  );
+  assertEquals(
+    changedNames(
+      make([{
+        name: "main",
+        steps: [{ ...restricted, name: "renamed" }, other],
+      }]),
+    ),
+    ["deploy"],
+  );
+  assertEquals(
+    changedNames(
+      make([
+        { name: "main", steps: [other] },
+        { name: "second", steps: [restricted] },
+      ]),
+    ),
+    ["deploy"],
+  );
+  const inserted = {
+    name: "first",
+    task: { type: "model_method", modelIdOrName: "cache", methodName: "get" },
+  };
+  assertEquals(
+    changedNames(
+      make([{ name: "main", steps: [inserted, restricted, other] }]),
+    ),
+    ["cache"],
+  );
+  const otherChanged = structuredClone(other);
+  otherChanged.task.methodName = "list";
+  assertEquals(
+    changedNames(make([{ name: "main", steps: [restricted, otherChanged] }])),
+    ["db"],
+  );
+  assertEquals(changedNames(make([{ name: "main", steps: [other] }])), []);
 });

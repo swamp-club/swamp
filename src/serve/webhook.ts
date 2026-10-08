@@ -29,6 +29,8 @@ import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_se
 import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { errorPaths, markErrorPaths, UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
+import { withoutVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import type { SyncGate } from "./sync_gate.ts";
 import { deleteActiveRun, writeActiveRun } from "./active_run_tracker.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -500,6 +502,11 @@ export interface WebhookServiceDeps {
   authorizeRun?: WebhookRunAuthorizer;
   /** Test seam; defaults to {@link executeWorkflowWithLocks}. */
   executeWorkflow?: typeof executeWorkflowWithLocks;
+  /**
+   * Builds, per run, the vault scope of the webhook principal
+   * (swamp-club#2676). When absent runs are unscoped.
+   */
+  createVaultAccess?: () => ServeRunVaultScope | undefined;
 }
 
 /** What the webhook service asks before it starts a run. */
@@ -991,7 +998,10 @@ export class WebhookService {
             });
           }
         }
-        await this.executeWorkflow(entry);
+        // Each entry starts outside any vault scope: the run enters its own
+        // principal's scope, and the queue's inherited context never carries
+        // another entry's (swamp-club#2676).
+        await withoutVaultAccess(() => this.executeWorkflow(entry));
       }
     } finally {
       this.processing = false;
@@ -1108,6 +1118,7 @@ export class WebhookService {
           syncGate: this.deps.syncGate,
           triggerSource: "webhook",
           initiatedBy: this.deps.initiatedBy,
+          vaultAccess: this.deps.createVaultAccess?.(),
         },
       );
 

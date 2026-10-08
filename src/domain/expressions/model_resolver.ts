@@ -48,6 +48,7 @@ import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
 import { freeRoots } from "./cel_grammar.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { extractOwnNamespaceDataModelNames } from "./dependency_extractor.ts";
 import {
   type VaultRefreshOptions,
@@ -943,7 +944,11 @@ export class ModelResolver {
         vaultService,
         sensitiveValues,
       );
-    } catch {
+    } catch (error) {
+      // A refusal by the run's vault access fails the read like every
+      // other vault path (swamp-club#2676); it is never mistaken for an
+      // unavailable vault.
+      if (error instanceof VaultAccessDeniedError) throw error;
       // Vault unavailable — leave refs unresolved
     }
   }

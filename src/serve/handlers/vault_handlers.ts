@@ -100,8 +100,11 @@ import { VaultConfigParseError } from "../../infrastructure/persistence/yaml_vau
 import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import {
+  admitVaultListingOrReject,
+  admitVaultLookupOrReject,
   authorizeAnyOrReject,
   authorizeOrReject,
+  authorizeVaultOrReject,
   clientErrorDetails,
   type ConnectionContext,
   handlerLibSwampContext,
@@ -112,13 +115,13 @@ import {
   sanitizeErrorForClient,
   send,
   sendError,
+  vaultAccessResource,
+  type VaultAuthorizationResult,
+  vaultListingDecider,
   wasRequestErrored,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import {
-  type AccessResource,
-  kindResource,
-} from "../../domain/access/access_decision_service.ts";
+import { kindResource } from "../../domain/access/access_decision_service.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
@@ -172,14 +175,94 @@ function sendVaultSwampError(
   );
 }
 
+export { vaultAccessResource };
+
 /**
- * The access resource a vault is authorized as. Which name a vault goes by
- * is swamp-club#2676; its fields are complete — a vault has no tags or
- * namespace — so a conditional data deny decides on it rather than failing
- * closed (swamp-club#2675).
+ * A caller admitted only by a `vault:<name>` grant learns nothing about
+ * other vaults: when the vault it names does not exist it gets a fixed
+ * not-found reply instead of libswamp's, which lists every configured vault
+ * (swamp-club#2676). Returns true when it replied.
  */
-export function vaultAccessResource(name: string): AccessResource {
-  return { kind: "data", name, fields: { name, ns: "", tags: {} } };
+async function rejectUnknownVaultForVaultGrant(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  authorized: VaultAuthorizationResult,
+  vaultName: string,
+): Promise<boolean> {
+  if (authorized.admittedBy !== "vault") return false;
+  let found = false;
+  try {
+    found = (await ctx.repoContext.vaultConfigRepo.findByName(vaultName)) !==
+      null;
+  } catch {
+    found = false;
+  }
+  if (found) return false;
+  sendError(socket, requestId, "not_found", `Vault not found: ${vaultName}`);
+  return true;
+}
+
+/**
+ * Resolves the vault a get or describe names by name or id and authorizes
+ * it by the name it resolves to, so an id cannot sidestep a name-scoped
+ * grant. Returns the vault the handler may act on (or the requested name,
+ * when nothing resolves), or null when it replied.
+ */
+async function authorizeVaultByNameOrId(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  vaultNameOrId: string,
+  vaultType: string | undefined,
+): Promise<{ resolved: { id: string; name: string } | null } | null> {
+  const existing = vaultAccessResource("vault");
+  if (
+    !admitVaultLookupOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      existing,
+      ctx,
+    )
+  ) return null;
+  let resolved: { id: string; name: string } | null = null;
+  try {
+    resolved = await findVaultByNameOrId(
+      ctx.repoContext.vaultConfigRepo,
+      vaultNameOrId,
+      vaultType,
+    );
+  } catch {
+    // The use case reports a vault that cannot be loaded; it is authorized
+    // by the requested name.
+  }
+  if (
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: resolved?.name ?? vaultNameOrId,
+      action: "read",
+      existing,
+    }, ctx).allowed
+  ) return null;
+  return { resolved };
+}
+
+/**
+ * Whether a result is the vault that was authorized: the resolved vault by
+ * both id and name, or, when nothing resolved, the requested name or id. A
+ * vault renamed or replaced between the check and the read is not it.
+ */
+function isAuthorizedVault(
+  result: Record<string, unknown>,
+  resolved: { id: string; name: string } | null,
+  vaultNameOrId: string,
+): boolean {
+  if (resolved) {
+    return result.id === resolved.id && result.name === resolved.name;
+  }
+  return result.id === vaultNameOrId || result.name === vaultNameOrId;
 }
 
 export async function handleVaultGet(
@@ -190,16 +273,15 @@ export async function handleVaultGet(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource("vault"),
-      ctx,
-    ).allowed
-  ) return;
+  const authorized = await authorizeVaultByNameOrId(
+    socket,
+    ctx,
+    requestId,
+    principal,
+    payload.vaultNameOrId,
+    payload.vaultType,
+  );
+  if (!authorized) return;
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
@@ -227,7 +309,10 @@ export async function handleVaultGet(
       return;
     }
 
-    if (!result) {
+    if (
+      !result ||
+      !isAuthorizedVault(result, authorized.resolved, payload.vaultNameOrId)
+    ) {
       sendError(socket, requestId, "not_found", "Vault not found");
       return;
     }
@@ -253,29 +338,19 @@ export async function handleVaultPut(
 ): Promise<void> {
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
-  if (payload.refreshFrom !== undefined || payload.clearRefresh) {
-    if (
-      !authorizeOrReject(
-        socket,
-        requestId,
-        principal,
-        "admin",
-        vaultAccessResource("vault"),
-        ctx,
-      ).allowed
-    ) return;
-  } else {
-    if (
-      !authorizeOrReject(
-        socket,
-        requestId,
-        principal,
-        "write",
-        vaultAccessResource("vault"),
-        ctx,
-      ).allowed
-    ) return;
-  }
+  // Storing a value is write, and a vault:<name> grant admits it. Setting or
+  // clearing a refresh hook is admin on data:vault only: the hook is a shell
+  // command serve runs on its host, so a grant on one vault never admits it.
+  const refresh = payload.refreshFrom !== undefined || payload.clearRefresh;
+  if (
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: payload.vaultName,
+      action: refresh ? "admin" : "write",
+      existing: vaultAccessResource("vault"),
+      key: payload.key,
+      ...(refresh ? { vaultGrantAdmits: false } : {}),
+    }, ctx).allowed
+  ) return;
 
   let flush: (() => Promise<void>) | undefined;
   try {
@@ -387,14 +462,12 @@ export async function handleVaultDelete(
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "write",
-      vaultAccessResource("vault"),
-      ctx,
-    ).allowed
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: payload.vaultName,
+      action: "write",
+      existing: vaultAccessResource("vault"),
+      key: payload.key,
+    }, ctx).allowed
   ) return;
 
   let flush: (() => Promise<void>) | undefined;
@@ -529,16 +602,15 @@ export async function handleVaultDescribe(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource("vault"),
-      ctx,
-    ).allowed
-  ) return;
+  const authorized = await authorizeVaultByNameOrId(
+    socket,
+    ctx,
+    requestId,
+    principal,
+    payload.vaultNameOrId,
+    payload.vaultType,
+  );
+  if (!authorized) return;
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
@@ -563,7 +635,10 @@ export async function handleVaultDescribe(
       return;
     }
 
-    if (!result) {
+    if (
+      !result ||
+      !isAuthorizedVault(result, authorized.resolved, payload.vaultNameOrId)
+    ) {
       sendError(socket, requestId, "not_found", "Vault not found");
       return;
     }
@@ -589,15 +664,21 @@ export async function handleVaultInspect(
 ): Promise<void> {
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
+  const authorized = authorizeVaultOrReject(socket, requestId, principal, {
+    vaultName: payload.vaultName,
+    action: "read",
+    existing: vaultAccessResource("vault"),
+    key: payload.key,
+  }, ctx);
+  if (!authorized.allowed) return;
   if (
-    !authorizeOrReject(
+    await rejectUnknownVaultForVaultGrant(
       socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource("vault"),
       ctx,
-    ).allowed
+      requestId,
+      authorized,
+      payload.vaultName,
+    )
   ) return;
 
   try {
@@ -652,15 +733,21 @@ export async function handleVaultListKeys(
     rejectReservedVault(socket, requestId, payload.vaultName)
   ) return;
 
+  const vaultName = payload?.vaultName ?? "";
+  const authorized = authorizeVaultOrReject(socket, requestId, principal, {
+    vaultName,
+    action: "read",
+    existing: vaultAccessResource("vault"),
+  }, ctx);
+  if (!authorized.allowed) return;
   if (
-    !authorizeOrReject(
+    await rejectUnknownVaultForVaultGrant(
       socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource("vault"),
       ctx,
-    ).allowed
+      requestId,
+      authorized,
+      vaultName,
+    )
   ) return;
 
   try {
@@ -707,21 +794,33 @@ export async function handleVaultSearch(
   principal: Principal | null,
   payload?: VaultSearchPayload,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "read",
-      vaultAccessResource("vault"),
-      ctx,
-    ).allowed
-  ) return;
+  // Admitted by today's check for every vault, or by a vault grant for the
+  // caller's own vaults; either way each vault is kept only when the caller
+  // may read it, as a named request would decide (swamp-club#2676).
+  const admission = admitVaultListingOrReject(
+    socket,
+    requestId,
+    principal,
+    "read",
+    vaultAccessResource("vault"),
+    ctx,
+  );
+  if (!admission.allowed) return;
+  const readable = vaultListingDecider(
+    socket,
+    principal,
+    "read",
+    ctx,
+    () => admission.existingAllowed,
+  );
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
     const deps: VaultSearchDeps = {
-      findAllVaults: () => ctx.repoContext.vaultConfigRepo.findAll(),
+      findAllVaults: async () =>
+        (await ctx.repoContext.vaultConfigRepo.findAll()).filter((vault) =>
+          readable(vault.name)
+        ),
     };
 
     let result: Record<string, unknown> | undefined;
@@ -764,15 +863,21 @@ export async function handleVaultAnnotate(
 ): Promise<void> {
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
+  const authorized = authorizeVaultOrReject(socket, requestId, principal, {
+    vaultName: payload.vaultName,
+    action: "write",
+    existing: vaultAccessResource("vault"),
+    key: payload.key,
+  }, ctx);
+  if (!authorized.allowed) return;
   if (
-    !authorizeOrReject(
+    await rejectUnknownVaultForVaultGrant(
       socket,
-      requestId,
-      principal,
-      "write",
-      vaultAccessResource("vault"),
       ctx,
-    ).allowed
+      requestId,
+      authorized,
+      payload.vaultName,
+    )
   ) return;
 
   try {
@@ -846,14 +951,11 @@ export async function handleVaultCreate(
   principal: Principal | null,
 ): Promise<void> {
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "write",
-      vaultAccessResource(payload.name),
-      ctx,
-    ).allowed
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: payload.name,
+      action: "write",
+      existing: vaultAccessResource(payload.name),
+    }, ctx).allowed
   ) return;
 
   // The root pushes only once the success reply was sent (swamp-club#3035).
@@ -964,14 +1066,11 @@ export async function handleVaultEdit(
   const vaultName = resolved?.name ?? payload.vaultNameOrId;
   if (rejectReservedVault(socket, requestId, vaultName)) return;
   if (
-    !authorizeOrReject(
-      socket,
-      requestId,
-      principal,
-      "write",
-      vaultAccessResource(vaultName),
-      ctx,
-    ).allowed
+    !authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName,
+      action: "write",
+      existing: vaultAccessResource(vaultName),
+    }, ctx).allowed
   ) return;
   const target: VaultEditConfigInfo | null = resolved ??
     (repairTarget
@@ -996,6 +1095,13 @@ export async function handleVaultEdit(
     );
     return;
   }
+
+  const authorizeVaultWrite = (name: string): boolean =>
+    authorizeVaultOrReject(socket, requestId, principal, {
+      vaultName: name,
+      action: "write",
+      existing: vaultAccessResource(name),
+    }, ctx).allowed;
 
   // The root pushes only once the success reply was sent (swamp-club#3035).
   let replied = false;
@@ -1036,22 +1142,8 @@ export async function handleVaultEdit(
             // well.
             authorizeUpdate: (before, after) =>
               (!repairTarget ||
-                authorizeOrReject(
-                  socket,
-                  requestId,
-                  principal,
-                  "write",
-                  vaultAccessResource(before.name),
-                  ctx,
-                ).allowed) &&
-              authorizeOrReject(
-                socket,
-                requestId,
-                principal,
-                "write",
-                vaultAccessResource(after.name),
-                ctx,
-              ).allowed,
+                authorizeVaultWrite(before.name)) &&
+              authorizeVaultWrite(after.name),
             ...(repairTarget
               ? {
                 authorizeRepair: (_target, after) =>
@@ -1061,14 +1153,7 @@ export async function handleVaultEdit(
                     fields: {},
                   }, ctx).allowed &&
                   !rejectReservedVault(socket, requestId, after.name) &&
-                  authorizeOrReject(
-                    socket,
-                    requestId,
-                    principal,
-                    "write",
-                    vaultAccessResource(after.name),
-                    ctx,
-                  ).allowed,
+                  authorizeVaultWrite(after.name),
               }
               : {}),
           }),
@@ -1130,24 +1215,37 @@ export async function handleVaultAuditTrail(
   // A named vault is authorized as that vault. Without one the trail covers
   // every vault, so each entry is kept only when its vault is readable, as a
   // named read of it would be (swamp-club#2675).
+  // A vault grant reads a vault's trail as a data grant on its name does
+  // (swamp-club#2676).
   let include: ((entry: { vaultName: string }) => boolean) | undefined;
   if (payload?.vaultName) {
     if (
-      !authorizeOrReject(
+      !authorizeVaultOrReject(socket, requestId, principal, {
+        vaultName: payload.vaultName,
+        action: "read",
+        existing: vaultAccessResource(payload.vaultName),
+      }, ctx).allowed
+    ) return;
+  } else {
+    if (
+      !authorizeAnyOrReject(
         socket,
         requestId,
         principal,
         "read",
-        vaultAccessResource(payload.vaultName),
+        ["data", "vault"],
         ctx,
-      ).allowed
+      )
     ) return;
-  } else {
-    if (
-      !authorizeAnyOrReject(socket, requestId, principal, "read", "data", ctx)
-    ) return;
-    const readable = resourceDecider(socket, principal, "read", ctx);
-    include = (entry) => readable(vaultAccessResource(entry.vaultName));
+    const dataReadable = resourceDecider(socket, principal, "read", ctx);
+    const readable = vaultListingDecider(
+      socket,
+      principal,
+      "read",
+      ctx,
+      (vaultName) => dataReadable(vaultAccessResource(vaultName)),
+    );
+    include = (entry) => readable(entry.vaultName);
   }
 
   try {
@@ -1202,14 +1300,27 @@ export async function handleVaultReadSecret(
 ): Promise<void> {
   if (rejectReservedVault(socket, requestId, payload.vaultName)) return;
 
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
+  const authorized = authorizeVaultOrReject(socket, requestId, principal, {
+    vaultName: payload.vaultName,
+    action: "read",
+    existing: {
       ...vaultAccessResource(payload.vaultName),
       fields: {
         ...vaultAccessResource(payload.vaultName).fields,
         key: payload.secretKey,
       },
-    }, ctx).allowed
+    },
+    key: payload.secretKey,
+  }, ctx);
+  if (!authorized.allowed) return;
+  if (
+    await rejectUnknownVaultForVaultGrant(
+      socket,
+      ctx,
+      requestId,
+      authorized,
+      payload.vaultName,
+    )
   ) return;
 
   try {
@@ -1260,8 +1371,10 @@ export async function handleVaultTypeSearch(
   principal: Principal | null,
   payload?: VaultTypeSearchPayload,
 ): Promise<void> {
+  // A caller whose only read grants are vault grants may list vault types
+  // too (swamp-club#2676); today's refusal is sent unchanged otherwise.
   if (
-    !authorizeOrReject(
+    !admitVaultListingOrReject(
       socket,
       requestId,
       principal,

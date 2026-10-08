@@ -24,6 +24,7 @@ import type { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
+import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import type { SecretRedactor, SecretSink } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
@@ -98,7 +99,8 @@ function parseContent(
 /**
  * Attempts vault resolution on attributes. If resolution fails for any
  * individual reference, that reference is left unresolved — the record
- * is never failed entirely.
+ * is never failed entirely — except when the run's vault access refuses the
+ * read: {@link VaultAccessDeniedError} is rethrown.
  */
 async function resolveVaultRefs(
   attributes: Record<string, unknown>,
@@ -119,7 +121,10 @@ async function resolveVaultRefs(
       options.vaultService,
       options.redactor,
     );
-  } catch {
+  } catch (error) {
+    // A refusal by the run's vault access fails the read like every other
+    // vault path; it is never mistaken for an unavailable vault.
+    if (error instanceof VaultAccessDeniedError) throw error;
     // Vault unavailable or specific keys failed — leave unresolved
   }
 }
@@ -349,7 +354,11 @@ export async function fromResourceHandle(
           vaultService,
           sensitiveValues,
         );
-      } catch {
+      } catch (error) {
+        // A refusal by the run's vault access fails the read like every
+        // other vault path (swamp-club#2676); it is never mistaken for an
+        // unavailable vault.
+        if (error instanceof VaultAccessDeniedError) throw error;
         // Vault unavailable or specific keys failed — leave unresolved
       }
     }

@@ -27,6 +27,7 @@
  * Emits typed events as an AsyncIterable for consumer observation.
  */
 
+import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import {
   type ScheduleEntry,
@@ -756,7 +757,10 @@ export class ScheduledExecutionService {
         if (pendingRunId && this.deps.pendingRunHook) {
           await this.deps.pendingRunHook.delete(pendingRunId);
         }
-        await this.executeWorkflow(entry);
+        // Each entry starts outside any vault scope: the run enters its own
+        // principal's scope, and the queue's inherited context never carries
+        // another entry's (swamp-club#2676).
+        await withoutVaultAccess(() => this.executeWorkflow(entry));
       }
     } finally {
       this.processing = false;

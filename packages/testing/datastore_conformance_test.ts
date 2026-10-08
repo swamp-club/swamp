@@ -24,7 +24,8 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { join, relative, SEPARATOR } from "@std/path";
+import { dirname, join, relative, SEPARATOR } from "@std/path";
+import { Buffer } from "node:buffer";
 import {
   assertDatastoreExportConformance,
   assertLockConformance,
@@ -241,6 +242,10 @@ function inMemoryRemoteFactory(
       failNextPush: withFailureHook
         ? () => remote.failNext("push", undefined, { instance: "first" })
         : undefined,
+      failNextFetch: withFailureHook
+        ? () => remote.failNext("fetch", undefined, { instance: "second" })
+        : undefined,
+      namespace: "conformance-ns",
       cleanup: () => removeTempDir(dir),
     };
     return breakFixture ? breakFixture(fixture) : fixture;
@@ -256,6 +261,9 @@ const ALL_ROUND_TRIP_CASES = [
   "two-phase",
   "pull-nothing-new",
   "forward-slash-paths",
+  "fetch-content",
+  "fetch-content-error",
+  "fetch-content-namespace",
 ];
 
 Deno.test("assertSyncServiceRoundTripConformance: legacy in-memory remote passes and skips only pull-deletes", async () => {
@@ -278,6 +286,7 @@ Deno.test("assertSyncServiceRoundTripConformance: skips failed-push-retry withou
   assertEquals(result.skipped.map((s) => s.name), [
     "pull-deletes",
     "failed-push-retry",
+    "fetch-content-error",
   ]);
 });
 
@@ -288,6 +297,56 @@ Deno.test("assertSyncServiceRoundTripConformance: a remote whose pulls delete pa
   );
   assertEquals(result.skipped, []);
   assertEquals(result.passed, ALL_ROUND_TRIP_CASES);
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: skips every fetch-content case for a service without fetchContent", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => {
+      const { fetchContent: _fetchContent, ...service } =
+        fixture.second.service;
+      return withSecond(fixture, service);
+    }),
+  );
+  const reason = "second.service has no fetchContent";
+  assertEquals(result.skipped.slice(1), [
+    { name: "fetch-content", reason },
+    { name: "fetch-content-error", reason },
+    { name: "fetch-content-namespace", reason },
+  ]);
+  assertEquals(result.skipped[0].name, "pull-deletes");
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: a fetchContent that returns a Buffer passes every fetch-content case", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => {
+      const { service } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: async (relPath, options) => {
+          const bytes = await service.fetchContent!(relPath, options);
+          return bytes && Buffer.from(bytes);
+        },
+      });
+    }),
+  );
+  assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
+  assertEquals(result.passed.includes("fetch-content"), true);
+  assertEquals(result.passed.includes("fetch-content-error"), true);
+  assertEquals(result.passed.includes("fetch-content-namespace"), true);
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: skips fetch-content-namespace for a fixture that names no namespace", async () => {
+  const result = await assertSyncServiceRoundTripConformance(
+    inMemoryRemoteFactory(undefined, true, (fixture) => ({
+      ...fixture,
+      namespace: undefined,
+    })),
+  );
+  assertEquals(result.skipped.map((s) => s.name), [
+    "pull-deletes",
+    "fetch-content-namespace",
+  ]);
+  assertEquals(result.passed.includes("fetch-content"), true);
 });
 
 Deno.test("assertSyncServiceRoundTripConformance: pins that legacy pulls never delete local files", async () => {
@@ -638,6 +697,59 @@ const BROKEN_IMPLEMENTATIONS: BrokenImplementation[] = [
           }
           return changed;
         },
+      });
+    },
+  },
+  {
+    caseName: "fetch-content",
+    bug: "fetchContent writes the fetched file into the cache",
+    breakFixture: (fixture) => {
+      const { service, cacheDir } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: async (relPath, options) => {
+          const bytes = await service.fetchContent!(relPath, options);
+          if (bytes) {
+            const path = join(cacheDir, ...relPath.split("/"));
+            await Deno.mkdir(dirname(path), { recursive: true });
+            await Deno.writeFile(path, bytes);
+          }
+          return bytes;
+        },
+      });
+    },
+  },
+  {
+    caseName: "fetch-content-error",
+    bug: "fetchContent answers null when the remote cannot be read",
+    breakFixture: (fixture) => {
+      const { service } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: async (relPath, options) => {
+          try {
+            return await service.fetchContent!(relPath, options);
+          } catch (error) {
+            // A refused path still rejects, so the earlier case passes.
+            if (String(error).includes("Path traversal")) throw error;
+            return null;
+          }
+        },
+      });
+    },
+  },
+  {
+    caseName: "fetch-content-namespace",
+    bug: "fetchContent adds the namespace a second time",
+    breakFixture: (fixture) => {
+      const { service } = fixture.second;
+      return withSecond(fixture, {
+        ...service,
+        fetchContent: (relPath, options) =>
+          service.fetchContent!(
+            options?.namespace ? `${options.namespace}/${relPath}` : relPath,
+            options,
+          ),
       });
     },
   },

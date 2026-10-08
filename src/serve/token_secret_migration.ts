@@ -36,6 +36,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { withServerTokenLock } from "../infrastructure/persistence/server_token_lock.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
+import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 
 const logger = getSwampLogger(["serve", "token-migration"]);
 
@@ -174,7 +175,8 @@ export async function migrateTokenSecrets(
       }
     } catch (err) {
       failed++;
-      logger.warn`Failed to migrate token ${queried.name}: ${
+      logger
+        .warn`Failed to migrate token ${queried.name}, retrying on the next run: ${
         err instanceof Error ? err.message : String(err)
       }`;
     }
@@ -188,14 +190,23 @@ export async function migrateTokenSecrets(
   return { migrated, skipped, failed };
 }
 
-/** Moves one token's secrets and repoints its record. Runs under its lock. */
+/**
+ * Moves one token's secrets and repoints its record. Runs under its lock.
+ *
+ * Only an OAuth login stores an access token, so its absence is normal. The
+ * vault is listed to tell an absent key from one that failed to read: a listed
+ * key that fails to copy throws before the record is repointed, so the token
+ * stays on its vault and the next run retries (swamp-club#3136). Repointing it
+ * anyway would leave the access token where the collective refresh no longer
+ * looks.
+ */
 async function migrateOne(
   deps: TokenSecretMigrationDeps,
   token: ServerToken,
   rawAttrs: Record<string, unknown>,
 ): Promise<"migrated" | "skipped"> {
   const secretKey = serverTokenSecretKey(token.name);
-  const oauthKey = `oauth-access-token-${token.name}`;
+  const oauthKey = oauthAccessTokenKey(token.name);
 
   let serverSecret: string;
   try {
@@ -209,26 +220,30 @@ async function migrateOne(
     return "skipped";
   }
 
+  const listed = await deps.vaultService.list(token.vaultName);
+  let oauthSecret: string | undefined;
+  if (listed.includes(oauthKey)) {
+    oauthSecret = await deps.vaultService.get(
+      token.vaultName,
+      oauthKey,
+      "serve:token-migration",
+    );
+  } else {
+    logger
+      .debug`OAuth access token not found for ${token.name}, skipping OAuth key migration`;
+  }
+
   await deps.vaultService.put(
     deps.tokenSecretsVaultName,
     secretKey,
     serverSecret,
   );
-
-  try {
-    const oauthSecret = await deps.vaultService.get(
-      token.vaultName,
-      oauthKey,
-      "serve:token-migration",
-    );
+  if (oauthSecret !== undefined) {
     await deps.vaultService.put(
       deps.tokenSecretsVaultName,
       oauthKey,
       oauthSecret,
     );
-  } catch {
-    logger
-      .debug`OAuth access token not found for ${token.name}, skipping OAuth key migration`;
   }
 
   await deps.updateTokenVaultName(
@@ -247,4 +262,163 @@ async function migrateOne(
       .catch(() => {});
   }
   return "migrated";
+}
+
+/**
+ * Recorded in `_token-secrets` once {@link recoverOAuthAccessTokens} has
+ * finished, so later starts never list the user vault for it again.
+ */
+export const OAUTH_ACCESS_TOKENS_RECOVERED_KEY =
+  "oauth-access-tokens-recovered";
+
+export type OAuthAccessTokenRecoveryDeps =
+  & Pick<
+    TokenSecretMigrationDeps,
+    | "tokenSecretsVaultName"
+    | "vaultService"
+    | "dataQueryService"
+    | "withTokenLock"
+    | "readTokenRecord"
+  >
+  & {
+    /** The vault serves before swamp-club#1511 stored token secrets in. */
+    userVaultName: string | undefined;
+  };
+
+/**
+ * Copies OAuth access tokens that an older migration left behind in the user
+ * vault into `_token-secrets` (swamp-club#3136).
+ *
+ * That migration repointed a token at `_token-secrets` even when copying its
+ * access token failed, and the collective refresh reads only `_token-secrets`
+ * for such a record, so the token was never refreshed or revoked. Each active
+ * record that names `_token-secrets` is checked against one listing of the
+ * user vault, and a key `_token-secrets` lacks is copied under the token's
+ * lock. Token names come from the records, never from the vault's keys. Once
+ * the listing succeeded and every key moved, the marker is recorded and the
+ * user vault is not listed again; otherwise the next start retries.
+ */
+export async function recoverOAuthAccessTokens(
+  deps: OAuthAccessTokenRecoveryDeps,
+): Promise<{ recovered: number; failed: number }> {
+  const { tokenSecretsVaultName, userVaultName, vaultService } = deps;
+  let recovered = 0;
+  let failed = 0;
+  if (
+    await hasSecret(
+      vaultService,
+      tokenSecretsVaultName,
+      OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+    )
+  ) {
+    return { recovered, failed };
+  }
+  if (!userVaultName) return { recovered, failed };
+
+  const records = await deps.dataQueryService.query(
+    `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "token-main"`,
+    { loadAttributes: true },
+  );
+  const candidates: ServerToken[] = [];
+  for (const record of records) {
+    const parsed = ServerTokenSchema.safeParse(
+      (record as { attributes?: Record<string, unknown> }).attributes,
+    );
+    if (
+      parsed.success &&
+      parsed.data.state === "active" &&
+      parsed.data.vaultName === tokenSecretsVaultName
+    ) {
+      candidates.push(parsed.data);
+    }
+  }
+
+  if (candidates.length > 0) {
+    let listed: Set<string>;
+    try {
+      listed = new Set(await vaultService.list(userVaultName));
+    } catch (error) {
+      logger
+        .warn`Could not list vault ${userVaultName} to recover OAuth access tokens, retrying on the next start: ${error}`;
+      return { recovered, failed };
+    }
+
+    for (const token of candidates) {
+      const key = oauthAccessTokenKey(token.name);
+      if (!listed.has(key)) continue;
+      try {
+        const outcome = await deps.withTokenLock(
+          token.name,
+          async (): Promise<"recovered" | "skipped"> => {
+            const currentAttrs = await deps.readTokenRecord(token.name);
+            const current = currentAttrs === null
+              ? null
+              : ServerTokenSchema.safeParse(currentAttrs);
+            if (
+              !current?.success ||
+              current.data.state !== "active" ||
+              current.data.vaultName !== tokenSecretsVaultName ||
+              current.data.createdAt !== token.createdAt
+            ) {
+              return "skipped";
+            }
+            // Listed rather than read, so a failed read is not taken for
+            // absence and cannot copy over a key that is there.
+            const present = await vaultService.list(tokenSecretsVaultName);
+            if (present.includes(key)) return "skipped";
+            const value = await vaultService.get(
+              userVaultName,
+              key,
+              "serve:token-migration",
+            );
+            await vaultService.put(tokenSecretsVaultName, key, value);
+            if (
+              typeof vaultService.supportsDelete === "function" &&
+              vaultService.supportsDelete(userVaultName)
+            ) {
+              await vaultService.delete(userVaultName, key).catch(() => {});
+            }
+            return "recovered";
+          },
+        );
+        if (outcome === "recovered") {
+          recovered++;
+          logger
+            .info`Recovered OAuth access token for ${token.name} from vault ${userVaultName}`;
+        }
+      } catch (error) {
+        failed++;
+        logger
+          .warn`Could not recover OAuth access token for ${token.name} from vault ${userVaultName}, retrying on the next start: ${error}`;
+      }
+    }
+    if (failed > 0) return { recovered, failed };
+  }
+
+  // Never fails the start: without the marker the next start just retries.
+  try {
+    await vaultService.put(
+      tokenSecretsVaultName,
+      OAUTH_ACCESS_TOKENS_RECOVERED_KEY,
+      new Date().toISOString(),
+    );
+  } catch (error) {
+    logger
+      .warn`Could not record the OAuth access token recovery, retrying on the next start: ${error}`;
+  }
+  return { recovered, failed };
+}
+
+async function hasSecret(
+  vaultService: Pick<VaultService, "get">,
+  vaultName: string,
+  key: string,
+): Promise<boolean> {
+  try {
+    return Boolean(
+      await vaultService.get(vaultName, key, "serve:token-migration"),
+    );
+  } catch {
+    return false;
+  }
 }

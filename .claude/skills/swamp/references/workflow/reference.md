@@ -1303,6 +1303,26 @@ jobs:
           methodName: invoke
 ```
 
+### Vaults allow-list
+
+A top-level `vaults:` list caps which vaults any run of the workflow may read or
+write — `vault.get`, `context.vaultService` in method code, and sensitive
+outputs. It applies to local runs and serve runs (alongside the triggering
+principal's vault grants); nested workflows intersect with the parent's list.
+
+```yaml
+name: provision-room
+vaults: [roomcontrol, bot-outputs] # include the vault sensitive outputs land in
+jobs: ...
+```
+
+The list must include the vault each step's sensitive outputs are stored in (the
+default vault unless a spec `vaultName` or step `dataOutputOverrides` picks
+another), or the method is refused before it runs. `swamp workflow validate`
+reports unlisted static `vault.get` names and sensitive-output target vaults.
+Older swamp releases reject a workflow file that sets `vaults:`, so upgrade
+every machine and serve replica first.
+
 ## Workflow Example
 
 End-to-end workflow creation:

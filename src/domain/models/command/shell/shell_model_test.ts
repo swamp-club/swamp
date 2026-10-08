@@ -839,6 +839,113 @@ posixOnlyTest(
 );
 
 posixOnlyTest(
+  "shellModel.methods.execute: a cancelled step ends its hand-off with its signal and writes nothing when the locks are not taken back (swamp-club#3157)",
+  async () => {
+    const controller = new AbortController();
+    const { context, getResults } = createTestContext({
+      signal: controller.signal,
+    });
+    const started = await Deno.makeTempFile({ prefix: "swamp-started-" });
+    try {
+      // As the real reclaim does: it rejects once its run is cancelled.
+      let given: AbortSignal | undefined;
+      const locks = {
+        lockIds: () => ["step-lock"],
+        reclaim: (signal?: AbortSignal) => {
+          given = signal;
+          return signal?.aborted
+            ? Promise.reject(new DOMException("cancelled", "AbortError"))
+            : Promise.resolve();
+        },
+      };
+
+      const run = processLockHolderMarker.runHolding(
+        locks,
+        () =>
+          shellModel.methods.execute.execute({
+            run: `echo up > '${started}'; sleep 30`,
+          }, context),
+      );
+      await waitFor(
+        async () => (await Deno.readTextFile(started)).includes("up"),
+        "the command to start",
+      );
+      controller.abort();
+
+      const error = await assertRejects(() => run, DOMException);
+      assertEquals(error.name, "AbortError");
+      assertEquals(given, controller.signal);
+      assertEquals(getResults().length, 0);
+    } finally {
+      await Deno.remove(started).catch(() => {});
+    }
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute: a command that finished before the cancel ends its hand-off with no signal, so its output is kept",
+  async () => {
+    const controller = new AbortController();
+    const { context, getResults } = createTestContext({
+      signal: controller.signal,
+    });
+    const given: Array<AbortSignal | undefined> = [];
+    const locks = {
+      lockIds: () => ["step-lock"],
+      // The cancel arrives while the reclaim is waiting.
+      reclaim: (signal?: AbortSignal) => {
+        given.push(signal);
+        controller.abort();
+        return Promise.resolve();
+      },
+    };
+
+    await processLockHolderMarker.runHolding(
+      locks,
+      () => shellModel.methods.execute.execute({ run: "echo done" }, context),
+    );
+
+    assertEquals(given, [undefined]);
+    assertStringIncludes(getOutputLogContent(getResults()), "done");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute: a cancelled step whose locks were taken back still writes its result and log",
+  async () => {
+    const controller = new AbortController();
+    const { context, getResults } = createTestContext({
+      signal: controller.signal,
+    });
+    const started = await Deno.makeTempFile({ prefix: "swamp-started-" });
+    try {
+      // No structural command at work: the reclaim succeeds though cancelled.
+      const locks = {
+        lockIds: () => ["step-lock"],
+        reclaim: () => Promise.resolve(),
+      };
+      const run = processLockHolderMarker.runHolding(
+        locks,
+        () =>
+          shellModel.methods.execute.execute({
+            run: `echo up > '${started}'; sleep 30`,
+          }, context),
+      );
+      await waitFor(
+        async () => (await Deno.readTextFile(started)).includes("up"),
+        "the command to start",
+      );
+      controller.abort();
+
+      await assertRejects(() => run, Error, "Command exited with code -1");
+      assertEquals(getResults().length, 2);
+    } finally {
+      await Deno.remove(started).catch(() => {});
+    }
+  },
+);
+
+posixOnlyTest(
   "shellModel.methods.execute lets explicit user env override the held locks",
   async () => {
     await withMockedEnv(

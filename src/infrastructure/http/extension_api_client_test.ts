@@ -1302,3 +1302,55 @@ Deno.test("ExtensionApiClient: uses the injected fetch for every request", async
     "https://registry.test/api/v1/extensions/%40test%2Fext/latest",
   ]);
 });
+
+function latestDetailClient(latestVersionDetail: Record<string, unknown>) {
+  return new ExtensionApiClient("https://registry.test", {}, {
+    fetch: () => Promise.resolve(Response.json({ latestVersionDetail })),
+  });
+}
+
+Deno.test("ExtensionApiClient.getLatestVersionDetail: keeps the declared acceptances, nulls dropped", async () => {
+  const client = latestDetailClient({
+    version: "2026.10.08.1",
+    publishedAt: "2026-10-08T14:00:00.000Z",
+    models: [],
+    acceptances: {
+      accepted: [
+        {
+          rule: "credentials-sensitive-field",
+          file: "models/x.ts",
+          line: 12,
+          reason: null,
+          source: "inline",
+        },
+      ],
+      generated: null,
+      total: 3,
+    },
+  });
+  const detail = await client.getLatestVersionDetail("@test/ext");
+  assertEquals(detail?.contentMetadata?.acceptances, {
+    accepted: [{
+      rule: "credentials-sensitive-field",
+      file: "models/x.ts",
+      line: 12,
+      source: "inline",
+    }],
+    total: 3,
+  });
+});
+
+Deno.test("ExtensionApiClient.getLatestVersionDetail: a version with none, or a registry that predates them, adds no acceptances key", async () => {
+  for (const extra of [{}, { acceptances: null }]) {
+    const client = latestDetailClient({
+      version: "2026.10.08.1",
+      publishedAt: "2026-10-08T14:00:00.000Z",
+      ...extra,
+    });
+    const detail = await client.getLatestVersionDetail("@test/ext");
+    assertEquals(
+      Object.keys(detail?.contentMetadata ?? {}).includes("acceptances"),
+      false,
+    );
+  }
+});

@@ -714,3 +714,224 @@ Deno.test("pendingPush: a cache with no sidecar plans a full walk that deletes n
     assertEquals(remote.ops(), []);
   });
 });
+
+Deno.test("fetchContent: returns the committed bytes and null for a key the remote lacks", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    const fetched = await b.fetchContent!("data/m/raw");
+    assertEquals(fetched && new TextDecoder().decode(fetched), "v1");
+    assertEquals(await b.fetchContent!("data/m/missing"), null);
+  });
+});
+
+Deno.test("fetchContent: writes nothing to the cache and keeps a pending push", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "remote");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    await b.fetchContent!("data/m/raw");
+    assertEquals(await read(bCache, "data/m/raw"), undefined);
+
+    await write(bCache, "data/m/raw", "local");
+    await b.markDirty({ relPath: "data/m/raw" });
+    const pending = await remote.pendingPush(bCache);
+    const fetched = await b.fetchContent!("data/m/raw");
+
+    assertEquals(fetched && new TextDecoder().decode(fetched), "remote");
+    assertEquals(await read(bCache, "data/m/raw"), "local");
+    assertEquals(await remote.pendingPush(bCache), pending);
+  });
+});
+
+Deno.test("fetchContent: reads an uncommitted prepare's file only after the commit", async () => {
+  await withTempDir(async (dir) => {
+    const { a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    const manifest = await a.preparePush();
+
+    assertEquals(await b.fetchContent!("data/m/raw"), null);
+    await a.commitPush(manifest);
+    const fetched = await b.fetchContent!("data/m/raw");
+    assertEquals(fetched && new TextDecoder().decode(fetched), "v1");
+  });
+});
+
+Deno.test("fetchContent: returns a copy the caller may change", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache } = await twoMachines(dir);
+    await write(aCache, "data/m/raw", "v1");
+    await a.markDirty({ relPath: "data/m/raw" });
+    await a.pushChanged();
+
+    const fetched = await b.fetchContent!("data/m/raw");
+    fetched!.fill(0);
+    assertEquals(remoteText(remote, "data/m/raw"), "v1");
+  });
+});
+
+Deno.test("fetchContent: records a fetch op with the normalized path", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    await b.fetchContent!("./data//m/raw");
+    assertEquals(remote.ops().at(-1), {
+      instance: "b",
+      op: "fetch",
+      paths: ["data/m/raw"],
+      deleted: [],
+    });
+  });
+});
+
+Deno.test("fetchContent: rejects a path that is absolute or has a dot-dot segment", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    const before = remote.ops().length;
+    for (
+      const relPath of [
+        "../outside",
+        "data/../raw",
+        "data\\..\\raw",
+        "/data/raw",
+        "\\data\\raw",
+        "C:/data/raw",
+      ]
+    ) {
+      await assertRejects(
+        () => b.fetchContent!(relPath),
+        Error,
+        "Path traversal rejected",
+      );
+    }
+    assertEquals(remote.ops().length, before);
+  });
+});
+
+Deno.test("fetchContent: rejects while offline and on an injected fetch failure", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, b } = await twoMachines(dir);
+    remote.offline(true);
+    await assertRejects(() => b.fetchContent!("data/m/raw"), Error, "offline");
+    remote.offline(false);
+
+    remote.failNext("fetch", new Error("fetch broke"));
+    await assertRejects(
+      () => b.fetchContent!("data/m/raw"),
+      Error,
+      "fetch broke",
+    );
+    assertEquals(await b.fetchContent!("data/m/raw"), null);
+  });
+});
+
+Deno.test("fetchContent: is absent when the connect option turns it off", async () => {
+  await withTempDir((dir) => {
+    const remote = createInMemoryRemote();
+    const without = remote.connect(join(dir, "c"), { fetchContent: false });
+    assertEquals(without.fetchContent, undefined);
+    assertEquals(
+      typeof remote.connect(join(dir, "d")).fetchContent,
+      "function",
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("fetchContent: reads a name with a colon that is not a drive letter path", async () => {
+  await withTempDir(async (dir) => {
+    const { b } = await twoMachines(dir);
+    assertEquals(await b.fetchContent!("a:b/raw"), null);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a service keeps the namespace of its first pull or push (S3SYNC:668-686)", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const solo = remote.connect(join(dir, "solo"));
+    await solo.pullChanged();
+    await assertRejects(
+      () => solo.pushChanged({ namespace: "team" }),
+      Error,
+      'Namespace mismatch: bound to undefined but called with "team"',
+    );
+    await assertRejects(
+      () => solo.preparePush({ namespace: "team" }),
+      Error,
+      "Namespace mismatch",
+    );
+    assertEquals(await solo.pullChanged(), 0);
+
+    const team = remote.connect(join(dir, "team"));
+    await team.pushChanged({ namespace: "team" });
+    await assertRejects(
+      () => team.pullChanged(),
+      Error,
+      'Namespace mismatch: bound to "team" but called with undefined',
+    );
+    assertEquals(await team.pullChanged({ namespace: "team" }), 0);
+    // markDirty and fetchContent take no part in the binding.
+    await team.markDirty({ relPath: "x", namespace: "other" });
+    assertEquals(await team.fetchContent!("x", { namespace: "other" }), null);
+  });
+});
+
+Deno.test("createInMemoryRemote: an empty namespace and an unset one are the same binding", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const empty = remote.connect(join(dir, "empty"));
+    await empty.pullChanged({ namespace: "" });
+    assertEquals(await empty.pushChanged(), 0);
+
+    const unset = remote.connect(join(dir, "unset"));
+    await unset.pullChanged();
+    assertEquals(await unset.pushChanged({ namespace: "" }), 0);
+    await assertRejects(
+      () => unset.pullChanged({ namespace: "team" }),
+      Error,
+      'Namespace mismatch: bound to undefined but called with "team"',
+    );
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails still binds its namespace (S3SYNC:2381-2383, 2896-2898, 3415-3417)", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    remote.offline(true);
+    const pulled = remote.connect(join(dir, "pulled"));
+    await assertRejects(
+      () => pulled.pullChanged({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    const pushed = remote.connect(join(dir, "pushed"));
+    await write(join(dir, "pushed"), "x", "1");
+    await assertRejects(
+      () => pushed.pushChanged({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    const prepared = remote.connect(join(dir, "prepared"));
+    await write(join(dir, "prepared"), "x", "1");
+    await assertRejects(
+      () => prepared.preparePush({ namespace: "team" }),
+      Error,
+      "offline",
+    );
+    remote.offline(false);
+
+    for (const service of [pulled, pushed, prepared]) {
+      await assertRejects(
+        () => service.pullChanged(),
+        Error,
+        'Namespace mismatch: bound to "team" but called with undefined',
+      );
+      await service.pullChanged({ namespace: "team" });
+    }
+  });
+});

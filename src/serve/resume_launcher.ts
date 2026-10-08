@@ -65,6 +65,11 @@ import { principalToString } from "../domain/access/principal.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
+import { runGeneratorWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
+import {
+  resumeRunVaultScope,
+  runVaultScopeContext,
+} from "./run_vault_access_policy.ts";
 
 const logger = getSwampLogger(["serve", "resume"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -269,15 +274,25 @@ export async function startDetachedResume(
               ephemeral.catalog,
             );
 
+            // Held to the principal that triggered the run, never the
+            // approver or resumer (swamp-club#2676).
+            const vaultScope = resumeRunVaultScope(
+              runVaultScopeContext(ctx),
+              resolvedRun,
+            );
             const doResume = async () => {
               for await (
-                const event of service.resume(workflowName, resolvedRun.id, {
-                  signal: runController.signal,
-                  inputs: request.inputs ?? {},
-                  fromStep: request.from,
-                  suspendedOnly: request.suspendedOnly,
-                  instanceId: ctx.instanceId,
-                })
+                const event of runGeneratorWithVaultAccess(
+                  vaultScope?.access,
+                  () =>
+                    service.resume(workflowName, resolvedRun.id, {
+                      signal: runController.signal,
+                      inputs: request.inputs ?? {},
+                      fromStep: request.from,
+                      suspendedOnly: request.suspendedOnly,
+                      instanceId: ctx.instanceId,
+                    }),
+                )
               ) {
                 const mapped = mapWorkflowExecutionEvent(event, runRepo);
                 if (!isWireEvent(mapped)) continue;

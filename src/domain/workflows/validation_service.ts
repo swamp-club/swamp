@@ -34,6 +34,8 @@ import {
   extractInputReferences,
   extractWholeFieldInputRef,
 } from "../expressions/expression_parser.ts";
+import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
+import type { DataOutputOverride } from "../models/data_output_override.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -103,6 +105,21 @@ export interface ModelMethodResolver {
 }
 
 /**
+ * Port for predicting the vaults a model-method step's sensitive outputs land
+ * in, with the resolver the data writer stores with
+ * (`sensitive_output_vault.ts`). Returns `undefined` when the step cannot be
+ * resolved statically or its method stores no sensitive output.
+ */
+export interface SensitiveOutputVaultResolver {
+  targetVaults(step: {
+    modelIdOrName: string;
+    methodName: string;
+    modelType?: string;
+    dataOutputOverrides: ReadonlyArray<DataOutputOverride>;
+  }): Promise<string[] | undefined>;
+}
+
+/**
  * Domain service for workflow validation.
  *
  * Validates:
@@ -136,6 +153,7 @@ export class DefaultWorkflowValidationService
   constructor(
     private readonly methodResolver?: ModelMethodResolver,
     private readonly workflowRepo?: WorkflowRepository,
+    private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -192,6 +210,84 @@ export class DefaultWorkflowValidationService
     // 14. writes without placement is a no-op
     results.push(...this.validateWritesPlacement(workflow));
 
+    // 15. Vaults the workflow reads are in its vaults list
+    for (const result of await this.validateVaultsList(workflow)) {
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  /**
+   * With a `vaults:` list, reports each vault the workflow statically uses
+   * but does not list: a quoted `vault.get` in its own steps or inputs, and
+   * each sensitive-output target vault of a mutating model-method step. The
+   * run-time check is the guarantee for dynamic names and for `vault.get`
+   * inside model definitions.
+   */
+  private async validateVaultsList(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    if (workflow.vaults === undefined) return [];
+    const listed = new Set(workflow.vaults);
+    const results: WorkflowValidationResult[] = [];
+    const data = workflow.toData();
+    const { staticRefs } = extractVaultReferences(
+      data.jobs,
+      data.inputs,
+      data.trigger,
+    );
+    const unlisted = [
+      ...new Set(
+        staticRefs.map((ref) => ref.vaultName).filter((name) =>
+          !listed.has(name)
+        ),
+      ),
+    ];
+    const checkName = "Vaults the workflow reads are in its vaults list";
+    if (unlisted.length > 0) {
+      results.push(WorkflowValidationResult.fail(
+        checkName,
+        `vault.get reads ${
+          unlisted.map((n) => `'${n}'`).join(", ")
+        }, not in the workflow's vaults list: add ${
+          unlisted.length === 1 ? "it" : "them"
+        } to vaults or read a listed vault`,
+      ));
+    } else {
+      results.push(WorkflowValidationResult.pass(checkName));
+    }
+
+    if (!this.sensitiveOutputVaults) return results;
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const taskData = step.task?.data;
+        if (taskData?.type !== "model_method") continue;
+        const modelRef = taskData.modelIdOrName ?? taskData.modelName;
+        if (!modelRef) continue;
+        if (
+          (taskData.modelType ?? modelRef).includes("${{") ||
+          taskData.methodName.includes("${{")
+        ) continue;
+        const targets = await this.sensitiveOutputVaults.targetVaults({
+          modelIdOrName: modelRef,
+          methodName: taskData.methodName,
+          modelType: taskData.modelType,
+          dataOutputOverrides: step.dataOutputOverrides,
+        });
+        if (!targets) continue;
+        const missing = targets.filter((name) => !listed.has(name));
+        if (missing.length === 0) continue;
+        results.push(WorkflowValidationResult.fail(
+          `Sensitive outputs of step '${step.name}' in job '${job.name}' land in its vaults list`,
+          `${modelRef}.${taskData.methodName} stores sensitive output in ${
+            missing.map((n) => `'${n}'`).join(", ")
+          }, not in the workflow's vaults list: add ${
+            missing.length === 1 ? "it" : "them"
+          } to vaults or point the output at a listed vault`,
+        ));
+      }
+    }
     return results;
   }
 

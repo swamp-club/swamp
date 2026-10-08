@@ -1590,6 +1590,45 @@ leave attributes empty.
 **CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
 foreign catalog metadata from those namespaces.
 
+### Reading one remote file (`fetchContent`)
+
+Every other read in the sync contract replaces the local copy: `pullChanged` and
+`hydrateFile` write into the cache and overwrite a local file that differs from
+the remote, including one with a change not pushed yet. `fetchForeignContent`
+writes nothing, but it always prefixes its key with a namespace and is for
+another namespace's data. `fetchContent` is the read that leaves the cache
+alone, for a caller that has to compare its cached copy of a file with the
+remote one before acting on it (swamp-club#3159):
+
+```typescript
+fetchContent?(relPath: string, options?: DatastoreSyncOptions): Promise<Uint8Array | null>;
+```
+
+- It resolves to the file's bytes, or `null` when the remote has no such file.
+  Any other failure rejects, so a caller never mistakes an unreachable remote
+  for a deleted file.
+- It writes nothing locally: no cache file is created, replaced or removed, and
+  no dirty state or pull watermark changes. A differing local file is neither
+  returned nor consulted, and its pending push stays pending.
+- `relPath` is cache-relative and forward-slash-normalized, as for `hydrateFile`.
+  The cache mirrors the remote layout (see
+  [Namespace prefixing](#namespace-prefixing-giga-swamp)), so with a namespace
+  the path already starts with `{namespace}/` and the implementation must not
+  add it again. `options.namespace` is the calling repository's namespace; when
+  it is unset the datastore has none and the path is read from its root.
+- A `relPath` that is absolute or has a `..` segment is rejected.
+- The returned bytes must not be kept in instance state, since the sync service
+  lives as long as a `swamp serve` process. The whole file is held in memory, so
+  the method is meant for small files such as run records.
+
+The method is optional and has no `SyncCapabilities` flag: core treats its
+presence as the capability. Core does not call it yet; `swamp serve` will, to
+check a run record before it resumes a suspended run by itself
+(swamp-club#3108). `assertSyncServiceRoundTripConformance` checks an
+implementation with its `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases, and
+`createInMemoryRemote` implements the method for tests.
+
 ### Lazy Hydration
 
 With `hydrationStrategy: "lazy"` on a custom datastore, the initial pull fetches
@@ -1817,10 +1856,14 @@ re-keying") leaves it briefly empty, so a reader can find a held lock's file
 empty or partial. A lockfile that exists but cannot be read therefore counts as held
 until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
 is the one definition of that rule: the acquire path backs off, `inspect()`
-returns a placeholder `LockInfo` with an unknown holder and no nonce, and the
-structural drain (`waitForPerModelLocks`) counts the lock as held. Reading
-such a file as no lock would let a writer and a structural command run at the
-same time (swamp-club#3148).
+returns a placeholder `LockInfo` with an unknown holder and no nonce, marked
+`holderUnknown`, and the structural drain (`waitForPerModelLocks`) counts the
+lock as held. `swamp datastore lock release` does not call `forceRelease` on a
+`holderUnknown` lock: it reports that the lock is being written and to retry.
+`swamp datastore lock status` shows a global lock in that state as locked
+without a PID or hostname; its per-model scan (`scanModelLocks`) still skips an
+unreadable per-model lock file. Reading such a file as no lock would let a
+writer and a structural command run at the same time (swamp-club#3148).
 
 With a `namespace` set, `datastoreGlobalLockOptions` returns
 `{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
@@ -2226,8 +2269,22 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    shell step's timeout kills its command's whole process tree, and the
    lock file a nested structural command leaves behind lasts until its ttl.
    At the timeout it throws `LockTimeoutError` and the run fails without
-   writing. A cancelled dispatch is the exception: it logs the timeout and
-   stays cancelled, because a cancelled step writes nothing to the model.
+   writing.
+
+A hop the cancel stopped does not wait in the reclaim (swamp-club#3157). The
+shell model, when its command was killed by the cancel, and the dispatcher, when
+its attempt failed, end the hand-off with the run's abort signal. The locks are
+re-keyed as always, and if a structural command is still working once the signal
+has aborted, the reclaim rejects with an `AbortError` instead of polling on to
+the timeout. The step then writes nothing to the model and stays cancelled: the
+shell model throws before its writes, and a cancelled dispatch logs the failed
+reclaim and keeps its cancellation. A hop that finished before the cancel has a
+result to write, so its hand-off ends with no signal and waits in full. A
+cancelled run with no structural command at work reclaims as usual, and a global
+lock file caught mid-write is read again rather than taken for a command at
+work. The signal reaches only the reclaim of the scope the hand-off was begun
+in. A scope around it is another run's, which may not be cancelled and may still
+write, so its reclaim waits in full.
 
 Two orderings make this sound. The drain publishes its list and then scans
 again, ending only on a scan that matches what is already published; the
@@ -2465,7 +2522,12 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
 
 1. Checks the target is accessible (writable directory or reachable S3 bucket).
 2. Migrates existing runtime data from `.swamp/` to the new location (skipped
-   with `--skip-migration`).
+   with `--skip-migration`). A filesystem destination whose real path is the
+   migration source (for example `--path .swamp`) has nothing to move: setup
+   skips the copy, the verification and the cleanup, and only writes the
+   datastore block (swamp-club#3162). Without that, the copy fails on files
+   such as `_catalog.db`, and a copy with no failures would let cleanup delete
+   the datastore itself.
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
@@ -2578,6 +2640,33 @@ startup uses):
   because pulled extension sources stay in the repo (swamp-club#2612). If
   `.swamp/config` is a symlink, cleanup leaves the link alone rather than
   deleting the files of its target.
+
+  On an extension setup, the remote may already hold a config tier, for example
+  when a second repo joins a shared datastore that was migrated already. Before
+  anything is copied, setup pulls the remote `config/` into the cache
+  (`subdirs: ["config"]`, the namespace, and `metadataOnly` under lazy
+  hydration) within the setup sync timeout (swamp-club#2844). If that pull
+  fails, timeout included, setup stops: nothing is copied, pushed or cleaned
+  up, and `.swamp.yaml` is not rewritten. This has to cover timeouts, because
+  committing the new datastore without migrating would make a retry classify
+  the tier as instance-local. `listConfigTierConflicts` then lists the local
+  tier files, other than pulled extensions, that already exist in the cache,
+  and `planConfigTierMerge` (`src/domain/datastore/datastore_config.ts`)
+  applies the rule that the remote copy wins:
+  - No clashing file is copied, so none is pushed.
+  - A clashing local copy that differs stays in `.swamp/config`.
+  - An identical copy is cleaned up as usual.
+  - The migration sentinel always differs, so it is never kept or reported.
+  - Local-only files migrate.
+
+  The differing paths are listed in a `remote_config_tier_kept` warning, which
+  appears in `warnings` in JSON output. An extension that ignores `subdirs`
+  pulls everything at this point. That is still correct, only slower.
+
+  The comparison is against the cache, so a retry after a push that failed
+  can find every config file already there and copy nothing. Setup still
+  pushes and cleans up in that case. Two more cases count as differing: a
+  local directory where the cache has a file, and a file that cannot be read.
 - **Instance-local** (the tier is elsewhere, or the current datastore cannot be
   resolved): `.swamp/config` holds only this instance's pulled extension
   sources and the transitional auto-resolve lockfile. Setup leaves it out of

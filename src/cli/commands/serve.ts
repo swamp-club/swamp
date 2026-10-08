@@ -54,6 +54,11 @@ import {
 } from "../../serve/suspended_run_cancel.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
 import {
+  runVaultScopeContext,
+  serviceRunVaultScope,
+} from "../../serve/run_vault_access_policy.ts";
+import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
+import {
   auditScheduledEvent,
   auditWebhookEvent,
   createScheduledRunAuthorizer,
@@ -462,6 +467,20 @@ const DISPATCH_ENV_ALLOW_HELP =
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Runs every HTTP request, WebSocket upgrades included, outside any run's
+ * vault scope (swamp-club#2676). Deno can leave the async context of the
+ * last code that ran current when it calls a serve handler (a first-time
+ * dynamic `import()` inside a run does), so without this a request — and
+ * every message on a connection it upgrades — could inherit another run's
+ * scope, and token authentication would be refused the reserved vault.
+ */
+export function unscopedHttpHandler<A extends Deno.Addr>(
+  handler: Deno.ServeHandler<A>,
+): Deno.ServeHandler<A> {
+  return (req, info) => withoutVaultAccess(() => handler(req, info));
+}
 
 const logger = getSwampLogger(["serve"]);
 
@@ -1593,7 +1612,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -2279,7 +2298,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -2736,6 +2755,12 @@ export const serveCommand = new Command()
     const dataPlane = new DataPlane({
       repoDir: resolvedRepoDir,
       repoContext,
+      // The same default vault as run deps, so a worker's sensitive write
+      // lands in the vault the pre-run check approved (swamp-club#2676).
+      createVaultService: () =>
+        VaultService.fromRepository(resolvedRepoDir, {
+          defaultVaultName: repoMarker?.defaultVault,
+        }),
       sessions: workerGateway.sessions,
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
@@ -3953,8 +3978,11 @@ export const serveCommand = new Command()
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
-      const { createTokenMigrationLockDeps, migrateTokenSecrets } =
-        await import("../../serve/token_secret_migration.ts");
+      const {
+        createTokenMigrationLockDeps,
+        migrateTokenSecrets,
+        recoverOAuthAccessTokens,
+      } = await import("../../serve/token_secret_migration.ts");
       const { createResourceWriter } = await import(
         "../../domain/models/data_writer.ts"
       );
@@ -3962,6 +3990,14 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
+      // The pollers are already running, so each token's pull, write and
+      // push runs under the sync gate as well as its name lock.
+      const migrationLockDeps = createTokenMigrationLockDeps({
+        datastoreConfig,
+        repoContext,
+        syncService,
+        syncGate,
+      });
       await migrateTokenSecrets({
         tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
         vaultService: migrationVaultService,
@@ -3997,14 +4033,18 @@ export const serveCommand = new Command()
             updated as Record<string, unknown>,
           );
         },
-        // The pollers are already running, so each token's pull, write and
-        // push runs under the sync gate as well as its name lock.
-        ...createTokenMigrationLockDeps({
-          datastoreConfig,
-          repoContext,
-          syncService,
-          syncGate,
-        }),
+        ...migrationLockDeps,
+      });
+
+      // Before the first collective refresh and token GC sweep, which read
+      // and delete these keys.
+      await recoverOAuthAccessTokens({
+        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+        vaultService: migrationVaultService,
+        dataQueryService: repoContext.dataQueryService,
+        userVaultName: migrationVaultService.getDefaultVaultName() ??
+          migrationVaultService.getUserVaultNames()[0],
+        ...migrationLockDeps,
       });
 
       const { migrateOAuthSecrets } = await import(
@@ -4734,6 +4774,12 @@ export const serveCommand = new Command()
               syncGate,
               triggerSource: "schedule",
               initiatedBy: input.initiatedBy,
+              // A fresh scope per run of the scheduler principal
+              // (swamp-club#2676).
+              vaultAccess: serviceRunVaultScope(
+                runVaultScopeContext(connectionCtx),
+                SCHEDULER_PRINCIPAL,
+              ),
             },
           ),
         pendingRunHook: {
@@ -5148,6 +5194,11 @@ export const serveCommand = new Command()
           triggerAuthorizer,
           connectionCtx,
         ),
+        createVaultAccess: () =>
+          serviceRunVaultScope(
+            runVaultScopeContext(connectionCtx),
+            WEBHOOK_PRINCIPAL,
+          ),
       });
 
       const webhookRejections = new WebhookRejectionCoalescer();
@@ -5463,7 +5514,7 @@ export const serveCommand = new Command()
           }
         },
       },
-      traceHttpRequests(async (req, info) => {
+      unscopedHttpHandler(traceHttpRequests(async (req, info) => {
         const clientAddress = () =>
           trustProxy
             ? (req.headers.get("x-forwarded-for")
@@ -6323,7 +6374,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      }),
+      })),
     );
 
     // Hot-reload: PID file + SIGHUP handler
@@ -6873,6 +6924,7 @@ export const serveCommand = new Command()
         datastoreResolver,
         undefined,
         repoContext.markDirty,
+        repoContext.definitionRepo,
       );
 
       const buildPruneDeps = (): WorkerPruneDeps => ({

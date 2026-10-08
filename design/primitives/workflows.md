@@ -1444,6 +1444,54 @@ jobs:
 See [expressions](../enablers/expressions.md) for CEL syntax and
 [models](./models.md) for detailed input specification patterns.
 
+### Vaults Allow-List
+
+A workflow can declare `vaults:`, the most vaults any of its runs may read or
+write (swamp-club#2676):
+
+```yaml
+name: provision-room
+vaults: [roomcontrol, bot-outputs]
+jobs:
+# ...
+```
+
+Every vault operation in a run of the workflow — `vault.get` expressions,
+method code using `context.vaultService`, sensitive outputs and their
+read-back — on a vault not listed is refused, whoever triggered the run. The
+list is the author's maximum and needs no serve: it bounds local
+`swamp workflow run` as well as serve runs, where it applies alongside the
+triggering principal's vault grants, so either can refuse (see
+[access-control § Vaults](../enablers/access-control.md#vaults)). A nested
+workflow's list intersects with its parent's, so nesting only narrows. A model
+method run outside a workflow has no list. Without `vaults:` nothing changes.
+
+A run records the list in force when it starts (its own intersected with any
+parent's) as `allowedVaults` on the run record. A resume is held to both that
+recorded list and the workflow's current list, so editing the workflow while a
+run is suspended can narrow the run but never widen it. A run that recorded no
+list (none applied, or it started on an older release) is held to the current
+list alone.
+
+Sensitive outputs land in a vault too, so the list must include the vault each
+step's sensitive outputs are stored in (field `vaultName`, the step's
+`dataOutputOverrides`, the spec's `vaultName`, `defaultVault`, then the first
+user vault). A mutating method whose outputs would land in an unlisted vault is
+refused before it runs.
+
+`swamp workflow validate` reports a static `vault.get` name in the workflow's
+own steps or inputs that is not listed, and each sensitive-output target vault
+of a model-method step that is not listed. Dynamic names and `vault.get` inside
+model definitions are caught only at run time.
+
+The workflow schema is strict, so a release older than the field rejects a
+workflow file that sets `vaults:`. Upgrade every machine and serve replica that
+loads the workflow first.
+
+Implementation: `vaults` in `src/domain/workflows/workflow.ts`, the check in
+`src/domain/workflows/validation_service.ts`, the scope in
+`src/domain/vaults/run_vault_access.ts`.
+
 ### Workflow Triggers
 
 A workflow can declare an optional `trigger` object holding trigger
