@@ -59,9 +59,16 @@ import {
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
 import {
+  continuationRunPrefix,
   serveHolder,
   suspensionKeyOf,
 } from "../src/domain/workflows/continuation_claim.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import { createRunGcDeps } from "../src/libswamp/data/run_gc.ts";
+import {
+  createWorkflowDeleteDeps,
+  workflowDelete,
+} from "../src/libswamp/workflows/delete.ts";
 import { acceptedOutcomeFor } from "../src/domain/workflows/signal_wait_store_test_helpers.ts";
 import { closeRunWaits } from "../src/domain/workflows/signal_wait_cleanup.ts";
 import {
@@ -752,3 +759,100 @@ Deno.test({
     });
   },
 });
+
+/** Runs `workflow` to its end through a sweep, which leaves a claim behind. */
+async function finishBySweep(
+  f: Fixture,
+  a: Instance,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const { run } = await suspend(f, workflow);
+  await settleLocally(f, run);
+  await sweepContinuations(a.ctx, { takeover: true });
+  await idle(a);
+  assertEquals((await loadRun(f, workflow, run.id)).status, "succeeded");
+  assertEquals(
+    (await f.control.list(continuationRunPrefix(run.id))).length,
+    1,
+  );
+  return run;
+}
+
+// Claims are kept wherever a resume takes one, so they are removed with a
+// run whether or not the datastore also holds wait records.
+for (const waits of ["with", "without"] as const) {
+  Deno.test({
+    name:
+      `continuation: run gc removes the claims of a collected run (${waits} wait records)`,
+    ...opts,
+    fn: async () => {
+      await withFixture(async (f) => {
+        const a = instance(f, "a");
+        const run = await finishBySweep(f, a, await f.saveWaiting());
+
+        const gc = createRunGcDeps(
+          f.repo.repoDir,
+          undefined,
+          undefined,
+          waits === "with" ? f.repo.repoContext.signalWaits : undefined,
+          a.ctx.repoContext.continuationClaims!.store,
+        );
+        const result = await gc.gcAll({
+          workflowRunRetentionDays: 0,
+          outputRetentionDays: 0,
+          dryRun: false,
+        });
+
+        assertEquals(result.workflowRunsDeleted, 1);
+        assertEquals(await f.control.list(continuationRunPrefix(run.id)), []);
+      });
+    },
+  });
+
+  Deno.test({
+    name:
+      `continuation: deleting a workflow removes the claims of its runs and no others (${waits} wait records)`,
+    ...opts,
+    fn: async () => {
+      await withFixture(async (f) => {
+        const a = instance(f, "a");
+        const doomed = await f.saveWaiting();
+        const kept = await f.saveWaiting();
+        const doomedRun = await finishBySweep(f, a, doomed);
+        const keptRun = await finishBySweep(f, a, kept);
+
+        for await (
+          const event of workflowDelete(
+            createLibSwampContext(),
+            createWorkflowDeleteDeps(
+              f.repo.repoDir,
+              undefined,
+              undefined,
+              undefined,
+              waits === "with" ? f.repo.repoContext.signalWaits : undefined,
+              a.ctx.repoContext.continuationClaims!.store,
+            ),
+            { workflowIdOrName: doomed.name },
+          )
+        ) {
+          if (event.kind === "error") throw new Error(event.error.message);
+        }
+
+        assertEquals(
+          await f.repo.repoContext.workflowRunRepo.findAllByWorkflowId(
+            doomed.id,
+          ),
+          [],
+        );
+        assertEquals(
+          await f.control.list(continuationRunPrefix(doomedRun.id)),
+          [],
+        );
+        assertEquals(
+          (await f.control.list(continuationRunPrefix(keptRun.id))).length,
+          1,
+        );
+      });
+    },
+  });
+}
