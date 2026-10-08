@@ -278,11 +278,11 @@ function resolveManagedPathsFromContext(
  * pulled-extensions root (swamp-club#2612). Otherwise undefined, and the
  * handler writes the lockfile directly.
  *
- * Each outermost run is the request's root unit of work over
- * `repoContext.markDirty` itself, with no flush and the namespace push as
- * its checkpoint: the publish stages the lockfile into it and pushes at the
- * checkpoint, inside the sync gate and before the global lock is released
- * (swamp-club#3192).
+ * Each outermost run opens its own root unit of work over
+ * `repoContext.markDirty` itself (the extension handlers run outside any
+ * root), with no flush and the namespace push as its checkpoint: the
+ * publish stages the lockfile into it and pushes at the checkpoint, inside
+ * the sync gate and before the global lock is released (swamp-club#3192).
  */
 function extensionLockfileTransaction(
   ctx: ConnectionContext,

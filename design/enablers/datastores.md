@@ -1552,8 +1552,9 @@ writing:
 
 - The extension handlers (`extension.install`, `pull`, `rm`, `update`) change
   the config-tier lockfile inside a managed lockfile transaction, which stages
-  exactly the lockfile into the request's root and pushes at its checkpoint
-  under the datastore global lock (see
+  exactly the lockfile into the root unit of work it opens for each run (the
+  handlers themselves run outside any root) and pushes at that root's
+  checkpoint under the datastore global lock (see
   [Extension commands and the chicken-and-egg](#extension-commands-and-the-chicken-and-egg)). Serve still
   writes extension sources to the repo-local pulled-extensions root
   (swamp-club#2612).
@@ -3039,7 +3040,7 @@ lockfile:
 | Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
 | Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the request root's checkpoint; a failed publish is logged and left pending |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the checkpoint of the root it opens for each run; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 
