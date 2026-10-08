@@ -19,7 +19,10 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { LockfileRepository } from "./lockfile_repository.ts";
+import {
+  lockAttemptOutcome,
+  LockfileRepository,
+} from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -528,4 +531,53 @@ Deno.test("lockfileAdvisoryLockPath: a lockfile outside every managed config bas
     "upstream_extensions.json",
   );
   assertEquals(lockfileAdvisoryLockPath(path), `${path}.lock`);
+});
+
+Deno.test("lockAttemptOutcome: AlreadyExists is retried, then busy, on every OS", () => {
+  const error = new Deno.errors.AlreadyExists("exists");
+  for (const os of ["windows", "linux", "darwin"] as const) {
+    assertEquals(lockAttemptOutcome(error, false, os), "retry");
+    assertEquals(lockAttemptOutcome(error, true, os), "busy");
+  }
+});
+
+Deno.test("lockAttemptOutcome: Windows retries PermissionDenied as a lock pending deletion, then rethrows it (swamp-club#3167)", () => {
+  const error = new Deno.errors.PermissionDenied("denied");
+  assertEquals(lockAttemptOutcome(error, false, "windows"), "retry");
+  assertEquals(lockAttemptOutcome(error, true, "windows"), "rethrow");
+});
+
+Deno.test("lockAttemptOutcome: PermissionDenied is rethrown at once outside Windows", () => {
+  const error = new Deno.errors.PermissionDenied("denied");
+  for (const os of ["linux", "darwin"] as const) {
+    assertEquals(lockAttemptOutcome(error, false, os), "rethrow");
+    assertEquals(lockAttemptOutcome(error, true, os), "rethrow");
+  }
+});
+
+Deno.test("lockAttemptOutcome: other errors are rethrown at once", () => {
+  for (const error of [new Deno.errors.NotFound("gone"), new Error("boom")]) {
+    assertEquals(lockAttemptOutcome(error, false, "windows"), "rethrow");
+    assertEquals(lockAttemptOutcome(error, false, "linux"), "rethrow");
+  }
+});
+
+Deno.test({
+  name:
+    "LockfileRepository.writeEntry: a lock path held by a directory reports a busy lock after the retries",
+  // Which error Windows gives for create-new over a directory depends on how
+  // Deno opens the file; the lockAttemptOutcome tests cover Windows anywhere.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "upstream_extensions.json");
+      await Deno.mkdir(lockfileAdvisoryLockPath(path), { recursive: true });
+      const repo = await LockfileRepository.create(path);
+      await assertRejects(
+        () => repo.writeEntry("@test/blocked", "1.0.0", ["f.ts"], {}),
+        UserError,
+        "Another operation may be in progress",
+      );
+    });
+  },
 });

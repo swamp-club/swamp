@@ -23,6 +23,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
+import { basename } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   executeProcess,
@@ -140,14 +141,21 @@ Deno.test("executeProcess supports env", async () => {
 });
 
 Deno.test("executeProcess supports cwd", async () => {
-  const result = await executeProcess({
-    command: "pwd",
-    cwd: "/tmp",
-  });
+  const dir = await Deno.makeTempDir({ prefix: "swamp-exec-cwd-" });
+  try {
+    const result = await executeProcess({
+      command: "pwd",
+      cwd: dir,
+    });
 
-  assertEquals(result.success, true);
-  // On some systems /tmp may resolve to /private/tmp
-  assertStringIncludes(result.stdout.trim(), "tmp");
+    assertEquals(result.success, true);
+    // pwd may print a different spelling of the directory (/private/tmp on
+    // macOS, an MSYS /c/... path from Git's pwd on Windows), but the last
+    // segment is the same.
+    assertStringIncludes(result.stdout.trim(), basename(dir));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("executeProcess streams to logger", async () => {

@@ -1328,8 +1328,11 @@ export class CatalogStore {
    * Must be called outside any open transaction and only when no other
    * connection is writing the catalog — the compact command holds the
    * datastore-global lock for this reason. Returns `true` on success, or
-   * `false` (after logging a warning) if the rebuild failed, preserving the
-   * graceful-degradation contract: the WAL checkpoint already reclaimed space.
+   * `false` (after logging a warning) if the rebuild or the swap failed,
+   * preserving the graceful-degradation contract: the WAL checkpoint already
+   * reclaimed space, and the store is reopened on the original catalog. Throws
+   * only when neither the original nor the rebuilt catalog can be put back in
+   * place; the store is then closed, so a later close() is a no-op.
    */
   vacuum(): boolean {
     const tmpPath = `${this.dbPath}.compact`;
@@ -1346,25 +1349,72 @@ export class CatalogStore {
     // rename so they cannot shadow the new database.
     this.db.close();
     this.removeDbFiles(this.dbPath, { keepMain: true });
+    let swapError: unknown;
     try {
-      // POSIX renameSync atomically replaces the destination.
-      Deno.renameSync(tmpPath, this.dbPath);
-    } catch {
-      // Windows rejects rename onto an existing file — remove then rename.
+      this.replaceWith(tmpPath);
+    } catch (error) {
+      swapError = error;
+    }
+    if (swapError !== undefined && !this.fileExists(this.dbPath)) {
+      // The old file is gone but the rebuilt one never moved in: it is the
+      // only copy, so retry the rename rather than reopen an empty catalog.
       try {
-        Deno.removeSync(this.dbPath);
+        Deno.renameSync(tmpPath, this.dbPath);
+        swapError = undefined;
       } catch {
-        // Already gone — nothing to remove.
+        // Surface the real failure: with the connection already closed, a
+        // later close() would otherwise throw "database is not open" instead.
+        this.closed = true;
+        throw swapError;
       }
-      Deno.renameSync(tmpPath, this.dbPath);
     }
 
     // Reopen so the store stays valid for the caller, restoring WAL mode. No
     // other process can be opening concurrently (compact holds the global
     // lock), so WAL can be set eagerly without the constructor's retry.
-    this.db = this.openConnection(this.dbPath);
-    this.db.exec("PRAGMA journal_mode=WAL");
+    try {
+      this.db = this.openConnection(this.dbPath);
+      this.db.exec("PRAGMA journal_mode=WAL");
+    } catch (error) {
+      this.closed = true;
+      throw error;
+    }
+    if (swapError !== undefined) {
+      // The original catalog is intact and open again; only the space the
+      // rebuild would have reclaimed is lost (swamp-club#3167).
+      logger.warn`VACUUM skipped: rebuilt catalog not swapped in: ${swapError}`;
+      this.removeDbFiles(tmpPath);
+      return false;
+    }
     return true;
+  }
+
+  /**
+   * Renames `tmpPath` over the catalog file. POSIX replaces the destination
+   * atomically; Windows rejects a rename onto an existing file, so the old
+   * file is removed first. Throws when the rename fails, for example while
+   * another connection still holds the catalog open on Windows.
+   */
+  private replaceWith(tmpPath: string): void {
+    try {
+      Deno.renameSync(tmpPath, this.dbPath);
+    } catch {
+      try {
+        Deno.removeSync(this.dbPath);
+      } catch {
+        // Already gone, or held open — the rename below reports it.
+      }
+      Deno.renameSync(tmpPath, this.dbPath);
+    }
+  }
+
+  private fileExists(path: string): boolean {
+    try {
+      Deno.statSync(path);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
