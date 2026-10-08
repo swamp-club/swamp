@@ -18,13 +18,19 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // S3SYNC citations refer to
-// swamp-extensions@5368cb002:datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts.
-// Each "pins" test asserts today's extension behaviour, including the gaps,
-// so a change to the fake's semantics fails here on purpose.
+// swamp-extensions@7c0b1eacf:datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts.
+// Each "pins" test asserts the extension behaviour of the release range it
+// names (the default semantics: 2026.10.06.1 through 2026.10.07.1),
+// including the gaps, so a change to the fake's semantics fails here on
+// purpose.
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { createInMemoryRemote } from "./in_memory_remote.ts";
+import {
+  createInMemoryRemote,
+  EXTENSION_2026_10_01_SEMANTICS,
+  LEGACY_EXTENSION_SEMANTICS,
+} from "./in_memory_remote.ts";
 import { assertSyncServiceConformance } from "./datastore_conformance.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -142,7 +148,7 @@ Deno.test("createInMemoryRemote: a failed push keeps the path dirty and the next
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a bulk mark uploads everything and deletes nothing (S3SYNC:3095-3165)", async () => {
+Deno.test("createInMemoryRemote: pins that a bulk mark uploads everything and deletes nothing (S3SYNC:3206-3276)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "keep", "k");
@@ -159,7 +165,7 @@ Deno.test("createInMemoryRemote: pins that a bulk mark uploads everything and de
   });
 });
 
-Deno.test("createInMemoryRemote: pins that path marks after a bulk mark are dropped (S3SYNC:1752)", async () => {
+Deno.test("createInMemoryRemote: pins that path marks after a bulk mark are dropped (S3SYNC:1766-1772)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "x", "1");
@@ -190,7 +196,7 @@ Deno.test("createInMemoryRemote: bulkDisablesDeletes false makes a bulk push del
   });
 });
 
-Deno.test("createInMemoryRemote: pins that an overflowed dirty set deletes on its full walk (S3SYNC:1775-1782, 3148-3159)", async () => {
+Deno.test("createInMemoryRemote: pins that an overflowed dirty set deletes on its full walk (S3SYNC:1799-1806, 3259-3270)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir, { dirtyPathsCap: 2 });
     await write(aCache, "gone", "g");
@@ -208,7 +214,7 @@ Deno.test("createInMemoryRemote: pins that an overflowed dirty set deletes on it
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a write that was never marked is never pushed (S3SYNC:1913-1922)", async () => {
+Deno.test("createInMemoryRemote: pins that a write that was never marked is never pushed (S3SYNC:1945-1954)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "unmarked", "u");
@@ -234,21 +240,30 @@ Deno.test("createInMemoryRemote: a cache with no sidecar pushes with a full walk
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a pull never deletes local files by default (S3SYNC:2555-2561)", async () => {
-  await withTempDir(async (dir) => {
-    const { a, b, aCache, bCache } = await twoMachines(dir);
-    await write(aCache, "f", "1");
-    await a.markDirty({ relPath: "f" });
-    await a.pushChanged();
-    await b.pullChanged();
+for (
+  const [range, semantics] of [
+    ["2026.09.24.1 and earlier", LEGACY_EXTENSION_SEMANTICS],
+    ["2026.10.01.1", EXTENSION_2026_10_01_SEMANTICS],
+  ] as const
+) {
+  Deno.test(`createInMemoryRemote: pins that a pull never deletes local files with extensions ${range} (swamp-extensions@5368cb002 s3_cache_sync.ts:2555-2561)`, async () => {
+    await withTempDir(async (dir) => {
+      const { a, b, aCache, bCache } = await twoMachines(dir, { semantics });
+      await write(aCache, "f", "1");
+      await write(aCache, "keep", "k");
+      await a.markDirty({ relPath: "f" });
+      await a.markDirty({ relPath: "keep" });
+      await a.pushChanged();
+      await b.pullChanged();
 
-    await remove(aCache, "f");
-    await a.markDirty({ relPath: "f" });
-    await a.pushChanged();
-    assertEquals(await b.pullChanged(), 0);
-    assertEquals(await read(bCache, "f"), "1");
+      await remove(aCache, "f");
+      await a.markDirty({ relPath: "f" });
+      await a.pushChanged();
+      assertEquals(await b.pullChanged(), 0);
+      assertEquals(await read(bCache, "f"), "1");
+    });
   });
-});
+}
 
 Deno.test("createInMemoryRemote: pullDeletes removes files the remote dropped unless they are dirty locally", async () => {
   await withTempDir(async (dir) => {
@@ -274,7 +289,7 @@ Deno.test("createInMemoryRemote: pullDeletes removes files the remote dropped un
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a pull overwrites a locally dirty file (S3SYNC:2312-2316)", async () => {
+Deno.test("createInMemoryRemote: pins that a pull overwrites a locally dirty file (S3SYNC:2363-2367)", async () => {
   await withTempDir(async (dir) => {
     const { a, b, aCache, bCache } = await twoMachines(dir);
     await write(aCache, "f", "remote");
@@ -288,9 +303,11 @@ Deno.test("createInMemoryRemote: pins that a pull overwrites a locally dirty fil
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a pull of a moved remote drops the pending push (S3SYNC:2742, 2759)", async () => {
+Deno.test("createInMemoryRemote: pins that a pull of a moved remote drops the pending push with extensions 2026.09.24.1 and earlier (swamp-extensions@5368cb002 s3_cache_sync.ts:2742, 2759)", async () => {
   await withTempDir(async (dir) => {
-    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir, {
+      semantics: LEGACY_EXTENSION_SEMANTICS,
+    });
     await write(bCache, "mine", "b");
     await b.markDirty({ relPath: "mine" });
 
@@ -304,7 +321,7 @@ Deno.test("createInMemoryRemote: pins that a pull of a moved remote drops the pe
   });
 });
 
-Deno.test("createInMemoryRemote: a pull of an unchanged remote keeps the pending push (S3SYNC:1852-1864)", async () => {
+Deno.test("createInMemoryRemote: a pull of an unchanged remote keeps the pending push (S3SYNC:1884-1896)", async () => {
   await withTempDir(async (dir) => {
     const { remote, b, bCache } = await twoMachines(dir);
     await write(bCache, "mine", "b");
@@ -316,11 +333,9 @@ Deno.test("createInMemoryRemote: a pull of an unchanged remote keeps the pending
   });
 });
 
-Deno.test("createInMemoryRemote: pullClearsPendingPush false keeps the pending push across a pull", async () => {
+Deno.test("createInMemoryRemote: pins that a pull of a moved remote keeps the pending push (S3SYNC:1843-1877, 2792-2796, 2826-2851)", async () => {
   await withTempDir(async (dir) => {
-    const { remote, a, b, aCache, bCache } = await twoMachines(dir, {
-      semantics: { pullClearsPendingPush: false },
-    });
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir);
     await write(bCache, "mine", "b");
     await b.markDirty({ relPath: "mine" });
     await write(aCache, "theirs", "a");
@@ -377,7 +392,7 @@ Deno.test("createInMemoryRemote: prepare keeps dirty state, so a push without co
   });
 });
 
-Deno.test("createInMemoryRemote: pins that commit clears marks made after prepare (S3SYNC:3918)", async () => {
+Deno.test("createInMemoryRemote: pins that commit clears marks made after prepare (S3SYNC:4051)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "first", "1");
@@ -408,7 +423,7 @@ Deno.test("createInMemoryRemote: injected prepare and commit failures leave the 
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes (S3SYNC:2822, 3194-3196)", async () => {
+Deno.test("createInMemoryRemote: pins that a push failing after its uploads loses the recorded deletes (S3SYNC:2911, 3305-3307)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "gone", "g");
@@ -532,7 +547,7 @@ Deno.test("createInMemoryRemote: afterUploads still fails operations other than 
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads everything and deletes nothing (S3SYNC:3057-3060)", async () => {
+Deno.test("createInMemoryRemote: pins that a mark of the cache root uploads everything and deletes nothing (S3SYNC:3168-3171)", async () => {
   await withTempDir(async (dir) => {
     const { remote, a, aCache } = await twoMachines(dir);
     await write(aCache, "gone", "g");
@@ -615,7 +630,7 @@ Deno.test("createInMemoryRemote: a clean push returns 0 offline and leaves an in
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a peer's commit during a bulk two-phase push is skipped by the next pull (S3SYNC:3882-3893, 4012-4040)", async () => {
+Deno.test("createInMemoryRemote: pins that a peer's commit during a bulk two-phase push is skipped by the next pull (S3SYNC:4015-4026, 4333-4361)", async () => {
   await withTempDir(async (dir) => {
     const { a, b, aCache, bCache } = await twoMachines(dir);
     await write(aCache, "x", "a");
@@ -899,7 +914,7 @@ Deno.test("createInMemoryRemote: an empty namespace and an unset one are the sam
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails still binds its namespace (S3SYNC:2381-2383, 2896-2898, 3415-3417)", async () => {
+Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails still binds its namespace (S3SYNC:2432-2434, 2985-2987, 3526-3528)", async () => {
   await withTempDir(async (dir) => {
     const remote = createInMemoryRemote();
     remote.offline(true);
@@ -933,5 +948,324 @@ Deno.test("createInMemoryRemote: pins that a pull, push or prepare that fails st
       );
       await service.pullChanged({ namespace: "team" });
     }
+  });
+});
+
+/** A and B both synced to `files`, pushed by A and pulled by B. */
+async function syncedPair(
+  dir: string,
+  files: Record<string, string>,
+  options?: Parameters<typeof createInMemoryRemote>[0],
+) {
+  const machines = await twoMachines(dir, options);
+  for (const [rel, text] of Object.entries(files)) {
+    await write(machines.aCache, rel, text);
+    await machines.a.markDirty({ relPath: rel });
+  }
+  await machines.a.pushChanged();
+  await machines.b.pullChanged();
+  return machines;
+}
+
+/** A deletes `rels` and pushes the deletions. */
+async function peerDeletes(
+  machines: Awaited<ReturnType<typeof twoMachines>>,
+  rels: string[],
+): Promise<void> {
+  for (const rel of rels) {
+    await remove(machines.aCache, rel);
+    await machines.a.markDirty({ relPath: rel });
+  }
+  await machines.a.pushChanged();
+}
+
+async function exists(cache: string, rel: string): Promise<boolean> {
+  try {
+    await Deno.stat(join(cache, ...rel.split("/")));
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("createInMemoryRemote: pins that a pull removes an unchanged file a peer deleted and leaves it out of its count (S3SYNC:2537-2543, 2875)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["f"]);
+
+    assertEquals(await b.pullChanged(), 0);
+    assertEquals(await read(bCache, "f"), undefined);
+    assertEquals(await read(bCache, "keep"), "k");
+    assertEquals(remote.ops().at(-1), {
+      instance: "b",
+      op: "pull",
+      paths: [],
+      deleted: ["f"],
+    });
+  });
+});
+
+Deno.test("createInMemoryRemote: a pull keeps a peer-deleted file that changed or is marked locally (S3SYNC:4260-4301)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      changed: "1",
+      marked: "2",
+      keep: "k",
+    });
+    const { b, bCache } = machines;
+    await write(bCache, "changed", "local edit");
+    await b.markDirty({ relPath: "marked" });
+    await peerDeletes(machines, ["changed", "marked"]);
+
+    await b.pullChanged();
+    assertEquals(await read(bCache, "changed"), "local edit");
+    assertEquals(await read(bCache, "marked"), "2");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a pull removes nothing when no committed key is left (S3SYNC:4197-4214)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1" });
+    await peerDeletes(machines, ["f"]);
+
+    assertEquals(await machines.b.pullChanged(), 0);
+    assertEquals(await read(machines.bCache, "f"), "1");
+  });
+});
+
+Deno.test("createInMemoryRemote: a first pull removes nothing, having no last sync to compare with", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote();
+    const aCache = join(dir, "a");
+    const cCache = join(dir, "c");
+    const a = remote.connect(aCache, { instance: "a" });
+    await write(aCache, "keep", "k");
+    await a.markDirty({ relPath: "keep" });
+    await a.pushChanged();
+
+    await write(cCache, "local", "l");
+    const c = remote.connect(cCache, { instance: "c" });
+    assertEquals(await c.pullChanged(), 1);
+    assertEquals(await read(cCache, "local"), "l");
+  });
+});
+
+Deno.test("createInMemoryRemote: a lost sidecar keeps the last sync, so the next pull still removes peer deletes", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    machines.remote.resetSidecar(machines.bCache);
+    await peerDeletes(machines, ["f"]);
+
+    await machines.b.pullChanged();
+    assertEquals(await read(machines.bCache, "f"), undefined);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a subdir-scoped pull removes peer deletes outside its subdirs (S3SYNC:2537-2539)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "config/x": "c",
+      "data/y": "d",
+    });
+    await peerDeletes(machines, ["data/y"]);
+
+    await machines.b.pullChanged({ subdirs: ["config"] });
+    assertEquals(await read(machines.bCache, "data/y"), undefined);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a pull removes the directories a removal empties, up to the top level (S3SYNC:4310-4324)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "data/t/m/v/raw": "1",
+      keep: "k",
+    });
+    await peerDeletes(machines, ["data/t/m/v/raw"]);
+
+    await machines.b.pullChanged();
+    assertEquals(await exists(machines.bCache, "data/t"), false);
+    assertEquals(await exists(machines.bCache, "data"), true);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a bulk push removes a peer-deleted file instead of uploading it again (S3SYNC:3103-3109)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["f"]);
+
+    await b.markDirty();
+    await b.pushChanged();
+    assertEquals(remote.files().has("f"), false);
+    assertEquals(await read(bCache, "f"), undefined);
+    assertEquals(remote.ops().at(-1)?.removed, ["f"]);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a bulk push uploads a peer-deleted file again with extensions 2026.10.01.1 and earlier (swamp-club#2999)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" }, {
+      semantics: EXTENSION_2026_10_01_SEMANTICS,
+    });
+    await peerDeletes(machines, ["f"]);
+
+    await machines.b.markDirty();
+    await machines.b.pushChanged();
+    assertEquals(remoteText(machines.remote, "f"), "1");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that preparePush removes peer deletes and commitPush does not (S3SYNC:3635-3641)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", g: "2", keep: "k" });
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["f"]);
+
+    await b.markDirty();
+    const manifest = await b.preparePush();
+    assertEquals(await read(bCache, "f"), undefined);
+    assertEquals(remote.ops().at(-1)?.removed, ["f"]);
+
+    await peerDeletes(machines, ["g"]);
+    await b.commitPush(manifest);
+    assertEquals(await read(bCache, "g"), "2");
+    assertEquals(remote.ops().at(-1)?.removed, undefined);
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a clean push removes nothing, taking the fast path (S3SYNC:3018-3023)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    await peerDeletes(machines, ["f"]);
+
+    assertEquals(await machines.b.pushChanged(), 0);
+    assertEquals(await read(machines.bCache, "f"), "1");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a scoped push reconciles only the shards its marks read (S3SYNC:1548-1610, 4174-4182)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "data/t/m1/a": "1",
+      "data/t/m1/b": "2",
+      "data/t/m2/c": "3",
+      "data/t/m2/d": "4",
+    });
+    const { b, bCache } = machines;
+    await peerDeletes(machines, ["data/t/m1/b", "data/t/m2/c"]);
+
+    await write(bCache, "data/t/m1/a", "edited");
+    await b.markDirty({ relPath: "data/t/m1/a" });
+    await b.pushChanged();
+    assertEquals(await read(bCache, "data/t/m1/b"), undefined);
+    assertEquals(await read(bCache, "data/t/m2/c"), "3");
+  });
+});
+
+Deno.test("createInMemoryRemote: pins that a marked directory reads every shard below it (S3SYNC:1590-1606)", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, {
+      "data/t/m1/a": "1",
+      "data/t/m1/b": "2",
+      "data/t/m2/c": "3",
+      "data/t/m2/d": "4",
+    });
+    const { b, bCache } = machines;
+    await peerDeletes(machines, ["data/t/m1/b", "data/t/m2/c"]);
+
+    await b.markDirty({ relPath: "data/t" });
+    await b.pushChanged();
+    assertEquals(await read(bCache, "data/t/m1/b"), undefined);
+    assertEquals(await read(bCache, "data/t/m2/c"), undefined);
+  });
+});
+
+Deno.test("createInMemoryRemote: a full push records the whole remote as synced, a scoped push only its own changes (S3SYNC:2289-2344)", async () => {
+  for (const scoped of [false, true]) {
+    await withTempDir(async (dir) => {
+      const { remote, a, b, aCache, bCache } = await twoMachines(dir);
+      await write(aCache, "peer", "same");
+      await write(aCache, "keep", "k");
+      await a.markDirty({ relPath: "peer" });
+      await a.markDirty({ relPath: "keep" });
+      await a.pushChanged();
+
+      // B holds the same bytes without having pulled them.
+      await write(bCache, "peer", "same");
+      await write(bCache, "own", "o");
+      if (scoped) await b.markDirty({ relPath: "own" });
+      else await b.markDirty();
+      await b.pushChanged();
+      assertEquals(remoteText(remote, "own"), "o");
+
+      await remove(aCache, "peer");
+      await a.markDirty({ relPath: "peer" });
+      await a.pushChanged();
+      await b.pullChanged();
+      assertEquals(
+        await read(bCache, "peer"),
+        scoped ? "same" : undefined,
+        scoped ? "scoped" : "full",
+      );
+    });
+  }
+});
+
+Deno.test("createInMemoryRemote: pins that a pull of a moved remote keeps the pending push with extensions 2026.10.01.1 (swamp-club#2888)", async () => {
+  await withTempDir(async (dir) => {
+    const { remote, a, b, aCache, bCache } = await twoMachines(dir, {
+      semantics: EXTENSION_2026_10_01_SEMANTICS,
+    });
+    await write(bCache, "mine", "b");
+    await b.markDirty({ relPath: "mine" });
+    await write(aCache, "theirs", "a");
+    await a.markDirty({ relPath: "theirs" });
+    await a.pushChanged();
+
+    await b.pullChanged();
+    assertEquals(await b.pushChanged(), 1);
+    assertEquals(remote.files().has("mine"), true);
+  });
+});
+
+Deno.test("createInMemoryRemote: pullDeletes decides what a pull removes, counting it, while pushes still remove peer deletes", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" }, {
+      semantics: { pullDeletes: true },
+    });
+    await peerDeletes(machines, ["f"]);
+    assertEquals(await machines.b.pullChanged(), 1);
+    assertEquals(await read(machines.bCache, "f"), undefined);
+  });
+});
+
+Deno.test("createInMemoryRemote: pendingPush leaves out a copy the push removes before it walks", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["f"]);
+    await write(bCache, "new", "n");
+    await b.markDirty();
+
+    const pending = await remote.pendingPush(bCache);
+    assertEquals(pending.uploads, ["new"]);
+    assertEquals(await read(bCache, "f"), "1", "pendingPush removes nothing");
+    await b.pushChanged();
+    assertEquals(remote.ops().at(-1)?.paths, pending.uploads);
+  });
+});
+
+Deno.test("createInMemoryRemote: a push after a lost sidecar still removes peer deletes before its full walk", async () => {
+  await withTempDir(async (dir) => {
+    const machines = await syncedPair(dir, { f: "1", keep: "k" });
+    const { remote, b, bCache } = machines;
+    await peerDeletes(machines, ["f"]);
+    remote.resetSidecar(bCache);
+
+    await b.pushChanged();
+    assertEquals(remote.files().has("f"), false);
+    assertEquals(await read(bCache, "f"), undefined);
   });
 });

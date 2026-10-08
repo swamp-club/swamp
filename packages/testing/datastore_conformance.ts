@@ -851,7 +851,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     skipForOptions: (options) =>
       options.expectPullDeletes
         ? undefined
-        : "S3/GCS pulls never delete local files; set expectPullDeletes to run it",
+        : "S3/GCS pulls do not remove every local file the remote deleted; set expectPullDeletes to run it",
     run: async ({ first, second }) => {
       const rel = `${ROOT}/pull-deletes/raw`;
       const bytes = sampleBytes("pull-deletes");

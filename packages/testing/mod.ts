@@ -180,6 +180,8 @@ export type {
 
 export {
   createInMemoryRemote,
+  EXTENSION_2026_10_01_SEMANTICS,
+  EXTENSION_SEMANTICS,
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 
