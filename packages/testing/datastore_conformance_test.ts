@@ -45,6 +45,7 @@ import {
   createInMemoryRemote,
   type InMemoryRemoteOptions,
   type InMemorySyncService,
+  LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 
 // --- assertDatastoreExportConformance ---
@@ -266,12 +267,12 @@ const ALL_ROUND_TRIP_CASES = [
   "fetch-content-namespace",
 ];
 
-Deno.test("assertSyncServiceRoundTripConformance: legacy in-memory remote passes and skips only pull-deletes", async () => {
+Deno.test("assertSyncServiceRoundTripConformance: the default in-memory remote passes and skips only pull-deletes", async () => {
   const result = await assertSyncServiceRoundTripConformance(
     inMemoryRemoteFactory(),
   );
-  // Known gap: like the S3 and GCS datastores today, the legacy remote never
-  // deletes local files on pull, so pull-deletes is skipped by default.
+  // Known gap: like the S3 and GCS datastores, the remote does not pass
+  // pull-deletes, so it is skipped by default.
   assertEquals(result.skipped.map((s) => s.name), ["pull-deletes"]);
   assertEquals(
     result.passed,
@@ -349,9 +350,24 @@ Deno.test("assertSyncServiceRoundTripConformance: skips fetch-content-namespace 
   assertEquals(result.passed.includes("fetch-content"), true);
 });
 
-Deno.test("assertSyncServiceRoundTripConformance: pins that legacy pulls never delete local files", async () => {
-  // Known gap: S3/GCS pulls keep files the remote deleted. When the legacy
-  // semantics change, this test fails on purpose.
+Deno.test("assertSyncServiceRoundTripConformance: pins that pulls never delete local files with extensions 2026.09.24.1 and earlier", async () => {
+  // Known gap: these S3/GCS releases keep files the remote deleted. When the
+  // legacy semantics change, this test fails on purpose.
+  await assertRejects(
+    () =>
+      assertSyncServiceRoundTripConformance(
+        inMemoryRemoteFactory({ semantics: LEGACY_EXTENSION_SEMANTICS }),
+        { expectPullDeletes: true },
+      ),
+    Error,
+    'case "pull-deletes" failed',
+  );
+});
+
+Deno.test("assertSyncServiceRoundTripConformance: pins that the default remote fails pull-deletes, as extensions from 2026.10.06.1 do", async () => {
+  // Known gap: these releases remove a file a peer deleted only while
+  // another committed file is in scope, and a pull leaves removals out of
+  // its count. The case deletes the only file, so nothing is removed.
   await assertRejects(
     () =>
       assertSyncServiceRoundTripConformance(inMemoryRemoteFactory(), {

@@ -262,16 +262,19 @@ const { provider, isLockHeld } = createDatastoreTestContext();
 
 ### Shared remote across machines
 
-Experimental: the defaults track today's extension behaviour and will change
-during the datastore rework.
+Experimental: the defaults track the current S3/GCS extension releases and will
+change with them and during the datastore rework.
 
 `createInMemoryRemote()` holds remote content in memory; each
 `remote.connect(cacheDir)` is one simulated machine's sync service. Its defaults
-reproduce today's S3/GCS sync gaps (bare marks disable deletes, unmarked writes
-are never pushed, pulls never delete locally), so do not expect it to be
-friendlier than production. Switch a gap off through `semantics`. A service
-keeps the namespace of its first pull or push and rejects a later one with a
-different namespace, so pass the same `namespace` to every call on it.
+reproduce the current S3/GCS sync gaps (bare marks disable deletes, unmarked
+writes are never pushed, pulls overwrite dirty files, and a peer's deletion is
+removed locally only while the copy is unchanged and unmarked), so do not expect
+it to be friendlier than production. Switch a gap off through `semantics`; to
+model an older extension release, pass `EXTENSION_2026_10_01_SEMANTICS` or
+`LEGACY_EXTENSION_SEMANTICS` (2026.09.24.1 and earlier). A service keeps the
+namespace of its first pull or push and rejects a later one with a different
+namespace, so pass the same `namespace` to every call on it.
 
 ```typescript
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -284,7 +287,7 @@ await a.pushChanged();
 await b.pullChanged(); // bCache/note now exists
 await b.fetchContent("note"); // the remote's bytes or null; bCache untouched
 remote.failNext("push"); // also "pull" | "prepare" | "commit" | "fetch"; remote.offline(true)
-remote.ops(); // ordered { instance, op, paths, deleted }
+remote.ops(); // ordered { instance, op, paths, deleted, removed? }
 ```
 
 `remote.connect(cacheDir, { fetchContent: false })` gives a service without
