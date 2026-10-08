@@ -25,8 +25,11 @@ import {
   decideAfterCheck,
   decideBeforeCheck,
   type GateEffects,
+  type IdentityCheckOutcome,
   type LocalProofVerdict,
   type NestedPassVerdict,
+  REFRESH_AFTER_SECONDS,
+  REFRESH_RETRY_SECONDS,
   refreshEffects,
   shouldRefresh,
 } from "../domain/auth/auth_gate_policy.ts";
@@ -39,7 +42,9 @@ import {
   formatNestedGatePass,
   NESTED_GATE_PASS_ENV,
   type NestedGatePass,
+  type OrchestratorGatePass,
   parseNestedGatePass,
+  parseOrchestratorGatePass,
 } from "../domain/auth/nested_gate_pass.ts";
 import {
   computeProofFingerprint,
@@ -371,7 +376,9 @@ export async function runAuthGate(
   // may not write to the config dir skips it.
   const refresh = deps.canWrite !== false &&
       shouldRefresh(verdict, now, await repo.readRefreshAttempt())
-    ? () => runProofRefresh(deps)
+    ? async () => {
+      await runProofRefresh(deps);
+    }
     : undefined;
   if (before.kind === "block") return { kind: "block", reason: before.reason };
   if (before.kind === "pass") {
@@ -455,14 +462,10 @@ async function assessNestedPass(
   const pass = deps.nested?.loadPass();
   if (!deps.nested || !pass) return { verdict: { kind: "absent" } };
 
-  const candidates = await deps.verificationRepo.loadCandidates();
-  const cachedKeys =
-    candidates.find((c) => c.source === "file")?.verification.publicKeys ?? [];
-  const signature = await verifyProofSignature(
-    pass.proof,
-    pass.signature,
-    cachedKeys,
-    { now, ignoreExpiry: true },
+  const signature = await verifyWithTrustedKeys(
+    deps.verificationRepo,
+    pass,
+    now,
   );
   if (!signature.valid) {
     return { verdict: { kind: "invalid", reason: signature.reason } };
@@ -486,6 +489,197 @@ async function assessNestedPass(
       proof: pass.proof,
       signature: pass.signature,
       issuerPid: pass.parentPid,
+    },
+  };
+}
+
+/**
+ * Check a handed-over proof's signature against the keys the gate already
+ * trusts: those cached with the file proof, then the embedded key. Never a
+ * key the pass supplies. Expiry is the caller's rule, so it is ignored here.
+ */
+async function verifyWithTrustedKeys(
+  repo: AuthVerificationRepository,
+  pass: OrchestratorGatePass,
+  now: number,
+): ReturnType<typeof verifyProofSignature> {
+  const candidates = await repo.loadCandidates();
+  const cachedKeys =
+    candidates.find((c) => c.source === "file")?.verification.publicKeys ?? [];
+  return await verifyProofSignature(pass.proof, pass.signature, cachedKeys, {
+    now,
+    ignoreExpiry: true,
+  });
+}
+
+/**
+ * Why a worker without a credential was not admitted:
+ * - `no_pass`: the orchestrator sent none (it predates worker gate passes);
+ * - `serve_without_proof`: it refused, having passed the gate without a
+ *   signed proof of its own (offline on a signin token alone, or fail-open);
+ * - `expired_pass`: its pass had expired, so it could not refresh it;
+ * - `rejected_pass`: its pass is malformed or not signed by a trusted key.
+ */
+export type OrchestratorBlockCause =
+  | "no_pass"
+  | "serve_without_proof"
+  | "expired_pass"
+  | "rejected_pass";
+
+/** What a worker without a credential made of its orchestrator's pass. */
+export type OrchestratorAdmission =
+  | {
+    readonly kind: "pass";
+    /** The proof the worker hands down, naming the worker itself. */
+    readonly handoff: GateHandoff;
+  }
+  | {
+    readonly kind: "block";
+    readonly cause: OrchestratorBlockCause;
+    readonly detail: string;
+  };
+
+/**
+ * Admit a worker that has no credential on the pass the serve enrolling it
+ * sent (design/surfaces/auth-gate.md, "Remote workers"). The serve admitting
+ * the worker stands in for the nested pass's ancestry check; the proof gets
+ * the same checks otherwise: swamp-club signed it (against the keys the gate
+ * already trusts), and it has an `exp` later than `gateTime`, when this
+ * worker reached the gate. The handoff carries no issuer pid, so the worker
+ * names itself to the dispatch runners it starts.
+ */
+export async function admitOrchestratorPass(
+  repo: AuthVerificationRepository,
+  passValue: string | undefined,
+  gateTime: number,
+  serveRefused = false,
+): Promise<OrchestratorAdmission> {
+  if (serveRefused) {
+    return {
+      kind: "block",
+      cause: "serve_without_proof",
+      detail: "the orchestrator has no signed pass to give",
+    };
+  }
+  if (passValue === undefined) {
+    return {
+      kind: "block",
+      cause: "no_pass",
+      detail: "the orchestrator sent no pass",
+    };
+  }
+  const pass = parseOrchestratorGatePass(passValue);
+  if (!pass) {
+    return {
+      kind: "block",
+      cause: "rejected_pass",
+      detail: "the orchestrator's pass is malformed",
+    };
+  }
+  const signature = await verifyWithTrustedKeys(repo, pass, gateTime);
+  if (!signature.valid) {
+    return {
+      kind: "block",
+      cause: "rejected_pass",
+      detail: "the orchestrator's pass is not signed by a swamp-club key " +
+        "this worker trusts",
+    };
+  }
+  if (!admitsNestedRun(signature.payload, gateTime)) {
+    return {
+      kind: "block",
+      cause: "expired_pass",
+      detail: "the orchestrator's pass had expired when this worker reached " +
+        "the gate",
+    };
+  }
+  return {
+    kind: "pass",
+    handoff: { proof: pass.proof, signature: pass.signature },
+  };
+}
+
+/**
+ * The pass a serve hands the workers it enrolls, kept fresh while it runs.
+ * A serve passes the gate once, on a proof that expires 14 days after it
+ * was issued, and its weekly refresh otherwise runs only at exit; without
+ * this, a serve up for longer could no longer admit a worker without a
+ * credential. `tick` re-verifies with swamp-club when the held proof is
+ * older than the weekly-refresh age, at most once an hour. The refreshed
+ * proof is held in memory, so a process that may not write its config dir
+ * still hands it out. A rejection drops it, so the serve stops vouching.
+ */
+export interface GatePassKeeper {
+  /** The pass to hand an enrolling worker, if this serve has one. */
+  current(): OrchestratorGatePass | undefined;
+  /** One check; refreshes only when the held proof is due. */
+  tick(): Promise<void>;
+  /** Check every `intervalMs`, unref'd so it never holds the process open. */
+  start(intervalMs: number): void;
+  /** Stop checking and wait for a check in flight. */
+  stop(): Promise<void>;
+}
+
+/** How often a serve's gate-pass keeper checks whether its proof is due. */
+export const GATE_PASS_KEEPER_INTERVAL_MS = 60 * 60 * 1000;
+
+export function createGatePassKeeper(
+  deps: AuthGateDeps,
+  initial: GateHandoff | undefined,
+): GatePassKeeper {
+  let held: OrchestratorGatePass | undefined = initial
+    ? { proof: initial.proof, signature: initial.signature }
+    : undefined;
+  let lastAttemptAt: number | undefined;
+  let inFlight: Promise<void> | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  const due = (now: number): boolean => {
+    if (!held) return false;
+    const issuedAt = parseProofPayload(held.proof)?.iat;
+    if (issuedAt === undefined || now - issuedAt <= REFRESH_AFTER_SECONDS) {
+      return false;
+    }
+    return lastAttemptAt === undefined ||
+      now - lastAttemptAt >= REFRESH_RETRY_SECONDS;
+  };
+
+  const check = async (): Promise<void> => {
+    const now = deps.now();
+    if (!due(now)) return;
+    lastAttemptAt = now;
+    const result = await runProofRefresh(deps);
+    if (!result) return;
+    if (result.outcome.kind === "rejected") {
+      held = undefined;
+    } else if (result.proof) {
+      held = { proof: result.proof.proof, signature: result.proof.signature };
+    }
+  };
+
+  const tick = (): Promise<void> => {
+    inFlight ??= check().finally(() => {
+      inFlight = undefined;
+    });
+    return inFlight;
+  };
+
+  return {
+    current: () => held,
+    tick,
+    start(intervalMs) {
+      const interval = setInterval(() => {
+        tick().catch(() => {
+          // Best effort — the held proof is kept for the next check.
+        });
+      }, intervalMs);
+      Deno.unrefTimer(interval);
+      timer = interval;
+    },
+    async stop() {
+      if (timer !== undefined) clearInterval(timer);
+      timer = undefined;
+      await inFlight?.catch(() => {});
     },
   };
 }
@@ -521,14 +715,23 @@ function offlineWarning(
     `once it has been unable to verify you for a day.`;
 }
 
+/** What a proof refresh heard, and the fresh proof a verified answer carried. */
+export interface ProofRefreshResult {
+  readonly outcome: IdentityCheckOutcome;
+  readonly proof?: GateHandoff;
+}
+
 /**
  * The weekly background refresh: re-verify a file proof older than seven
  * days. It never changes the run that already passed. A rejection deletes
  * the proof so the next command blocks; any failure keeps it for next time.
+ * Returns undefined when there is no credential to refresh with.
  */
-export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
+export async function runProofRefresh(
+  deps: AuthGateDeps,
+): Promise<ProofRefreshResult | undefined> {
   const credential = await deps.loadCredential();
-  if (!credential) return;
+  if (!credential) return undefined;
   const now = deps.now();
   const assessment = await assessProofs(
     await deps.verificationRepo.loadCandidates(),
@@ -537,10 +740,12 @@ export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
   );
   // Recorded before the call, so a refresh that never answers still waits an
   // hour before the next attempt.
-  try {
-    await deps.verificationRepo.recordRefreshAttempt(now);
-  } catch {
-    // Best effort — without the stamp the next run simply tries again.
+  if (deps.canWrite !== false) {
+    try {
+      await deps.verificationRepo.recordRefreshAttempt(now);
+    } catch {
+      // Best effort — without the stamp the next run simply tries again.
+    }
   }
   const result = await deps.verifyIdentity(
     credential,
@@ -551,6 +756,12 @@ export async function runProofRefresh(deps: AuthGateDeps): Promise<void> {
     fileProofIsActiveKeys: assessment.fileProofIsActiveKeys,
     now,
   });
+  return {
+    outcome: result.outcome,
+    proof: result.outcome.kind === "verified"
+      ? liveProof(result.response)
+      : undefined,
+  };
 }
 
 /**
@@ -696,6 +907,52 @@ export function blockMessage(reason: BlockReason): string {
         "  swamp-club.com returns.",
       ].join("\n");
   }
+}
+
+/**
+ * The error a worker without a credential exits with when its orchestrator
+ * did not vouch for it. Its reason is `no_credential`, as for any run
+ * without a credential; the message says why the orchestrator's pass did
+ * not count.
+ */
+export function orchestratorBlockedError(
+  cause: OrchestratorBlockCause,
+  detail: string,
+): AuthGateBlockedError {
+  const fix = {
+    no_pass: [
+      "  The orchestrator's swamp may predate worker gate passes: upgrade it.",
+    ],
+    serve_without_proof: [
+      "  The orchestrator passed the gate without a signed proof of its own",
+      "  (offline, or on a signin token alone): restart it online on its own",
+      "  swamp-club key.",
+    ],
+    expired_pass: [
+      "  The orchestrator could not refresh its pass: check that it can reach",
+      "  swamp-club.com, or restart it.",
+    ],
+    rejected_pass: [
+      "  Run `swamp update` on the worker and the orchestrator so both trust",
+      "  the same swamp-club keys.",
+    ],
+  }[cause];
+  const remedy = [
+    ...fix,
+    "  Or give the worker a credential (SWAMP_API_KEY_FILE). See",
+    `  ${ACCOUNT_REQUIREMENT_URL}`,
+  ];
+  return new AuthGateBlockedError(
+    { kind: "no_credential" },
+    [
+      "swamp requires a swamp-club.com account to run.",
+      "",
+      "  This worker has no credential of its own, and the orchestrator it",
+      `  enrolled with did not vouch for it: ${detail}.`,
+      "",
+      ...remedy,
+    ].join("\n"),
+  );
 }
 
 /** The error a blocked run exits with, carrying the design's message. */

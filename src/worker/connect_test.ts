@@ -20,8 +20,10 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { runWorker, type WorkerStatusEvent } from "./connect.ts";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   type EnrollParams,
+  GATE_PASS_UNAVAILABLE,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
 } from "../domain/remote/protocol.ts";
@@ -445,4 +447,235 @@ Deno.test("runWorker: an uncoded revoke from an older orchestrator still stops t
     Error,
   );
   assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: a worker that passes the gate itself asks for no pass", async () => {
+  const enrollments: EnrollParams[] = [];
+  let socket: FakeSocket | null = null;
+  await runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    reconnect: false,
+    onStatus: (event) => {
+      if (event.kind === "enrolled") queueMicrotask(() => socket!.drop());
+    },
+    createSocket: () => {
+      socket = new FakeSocket((channel) => {
+        channel.register(RemoteMethod.enroll, (params) => {
+          enrollments.push(params as EnrollParams);
+          return Promise.resolve(enrollResult("ci"));
+        });
+      });
+      return socket as unknown as WebSocket;
+    },
+  });
+  assertEquals("needsGatePass" in enrollments[0], false);
+});
+
+Deno.test("runWorker: a worker without a credential is admitted on the orchestrator's pass once", async () => {
+  const enrollments: EnrollParams[] = [];
+  const admitted: (string | undefined)[] = [];
+  const order: string[] = [];
+  const sockets: FakeSocket[] = [];
+  const controller = new AbortController();
+
+  await runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    admitGatePass: (pass) => {
+      admitted.push(pass);
+      order.push("admitted");
+      return Promise.resolve();
+    },
+    onStatus: (event) => {
+      if (event.kind !== "enrolled") return;
+      order.push("enrolled");
+      if (enrollments.length === 1) {
+        queueMicrotask(() => sockets[0].drop());
+      } else {
+        controller.abort();
+        queueMicrotask(() => sockets[1].drop());
+      }
+    },
+    createSocket: () => {
+      const socket = new FakeSocket((channel) => {
+        channel.register(RemoteMethod.enroll, (params) => {
+          enrollments.push(params as EnrollParams);
+          return Promise.resolve({
+            ...enrollResult("ci"),
+            gatePass: "cHJvb2Y.c2ln",
+          });
+        });
+      });
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  assertEquals(enrollments.length, 2);
+  assertEquals(enrollments[0].needsGatePass, true);
+  // Admitted once per process: a reconnect neither asks nor checks again.
+  assertEquals("needsGatePass" in enrollments[1], false);
+  assertEquals(admitted, ["cHJvb2Y.c2ln"]);
+  assertEquals(order, ["admitted", "enrolled", "enrolled"]);
+});
+
+Deno.test("runWorker: a worker the gate blocks at enrollment stops with the gate's error", async () => {
+  const events: WorkerStatusEvent[] = [];
+  let attempts = 0;
+  const blocked = new AuthGateBlockedError(
+    { kind: "no_credential" },
+    "not vouched for",
+  );
+  const error = await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        admitGatePass: () => Promise.reject(blocked),
+        onStatus: (event) => events.push(event),
+        createSocket: () => {
+          attempts++;
+          return new FakeSocket((channel) => {
+            channel.register(
+              RemoteMethod.enroll,
+              () => Promise.resolve(enrollResult("ci")),
+            );
+          }) as unknown as WebSocket;
+        },
+      }),
+    AuthGateBlockedError,
+  );
+  assertEquals(error, blocked);
+  assertEquals(attempts, 1);
+  assertEquals(events.some((e) => e.kind === "enrolled"), false);
+  assertEquals(events.at(-1)?.kind, "stopped");
+});
+
+Deno.test("runWorker: an orchestrator with no pass to give stops the worker with the gate's error", async () => {
+  const admitted: [string | undefined, boolean | undefined][] = [];
+  await assertRejects(
+    () =>
+      runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        admitGatePass: (pass, serveRefused) => {
+          admitted.push([pass, serveRefused]);
+          return Promise.reject(
+            new AuthGateBlockedError({ kind: "no_credential" }, "no pass"),
+          );
+        },
+        createSocket: () =>
+          rejectingEnroll(
+            new RpcError({
+              code: GATE_PASS_UNAVAILABLE,
+              message: "no pass to give",
+            }),
+          ),
+      }),
+    AuthGateBlockedError,
+    "no pass",
+  );
+  assertEquals(admitted, [[undefined, true]]);
+});
+
+Deno.test("runWorker: admission that settles after the socket closed does not report enrollment", async () => {
+  const events: WorkerStatusEvent[] = [];
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => release = resolve);
+  let admitCalled: () => void = () => {};
+  const admitSeen = new Promise<void>((resolve) => admitCalled = resolve);
+  let socket: FakeSocket | null = null;
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    reconnect: false,
+    admitGatePass: () => {
+      admitCalled();
+      return pending;
+    },
+    onStatus: (event) => events.push(event),
+    createSocket: () => {
+      socket = new FakeSocket((channel) => {
+        channel.register(
+          RemoteMethod.enroll,
+          () => Promise.resolve(enrollResult("ci")),
+        );
+      });
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  // The socket drops while admission is still pending.
+  await admitSeen;
+  socket!.drop();
+  await done.catch(() => {});
+  release();
+  await pending;
+  // One macrotask turn drains every microtask the admission chain queues.
+  // waitFor cannot express this: the assertion is that nothing happens.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assertEquals(events.some((e) => e.kind === "enrolled"), false);
+});
+
+Deno.test("runWorker: a reconnect while admission is pending shares the check", async () => {
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => release = resolve);
+  let admitCalls = 0;
+  let enrollCount = 0;
+  const sockets: FakeSocket[] = [];
+  const controller = new AbortController();
+  let secondEnroll: () => void = () => {};
+  const secondEnrollSeen = new Promise<void>((r) => secondEnroll = r);
+  let firstAdmit: () => void = () => {};
+  const firstAdmitSeen = new Promise<void>((r) => firstAdmit = r);
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    admitGatePass: () => {
+      admitCalls++;
+      firstAdmit();
+      return pending;
+    },
+    onStatus: (event) => {
+      if (event.kind === "enrolled") {
+        controller.abort();
+        queueMicrotask(() => sockets.at(-1)!.drop());
+      }
+    },
+    createSocket: () => {
+      const socket = new FakeSocket((channel) => {
+        channel.register(RemoteMethod.enroll, () => {
+          enrollCount++;
+          if (enrollCount === 2) secondEnroll();
+          return Promise.resolve({
+            ...enrollResult("ci"),
+            gatePass: "cHJvb2Y.c2ln",
+          });
+        });
+      });
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  await firstAdmitSeen;
+  sockets[0].drop();
+  await secondEnrollSeen;
+  // Let the second enrolled reply arrive while the first check still runs.
+  // waitFor cannot express this: the assertion is that no second check starts.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  release();
+  await done;
+  assertEquals(admitCalls, 1);
 });

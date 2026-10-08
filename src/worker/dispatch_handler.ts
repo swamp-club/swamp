@@ -49,6 +49,7 @@ import {
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
+  ChannelClosedError,
   RpcChannel,
   RpcError,
   type RpcHandlerContext,
@@ -101,6 +102,13 @@ export interface DispatchHandlerOptions {
   onDispatch?: (event: WorkerDispatchEvent) => void;
   /** Override the runner command + args (test seam). */
   runnerCommand?: { cmd: string; args: string[] };
+  /**
+   * Settles once a worker without a credential has been admitted through
+   * the auth gate on its orchestrator's pass. A dispatch that arrives first
+   * waits for it; if admission fails (the worker then stops), the dispatch
+   * is refused as `worker_draining`, so the orchestrator re-queues it.
+   */
+  admitted?: Promise<void>;
 }
 
 export interface DispatchHandlerHandle {
@@ -133,6 +141,26 @@ export function registerDispatchHandler(
     }
     activeRunners++;
     try {
+      try {
+        await options.admitted;
+      } catch {
+        // Admission failed and the worker is stopping. Answer as a draining
+        // worker, never with the gate's error: the orchestrator re-queues a
+        // worker_draining dispatch, where any other error fails the step.
+        throw new RpcError({
+          code: "worker_draining",
+          message: "Worker was not admitted through the auth gate and is " +
+            "stopping — no dispatches accepted",
+        });
+      }
+      // The connection closed while this dispatch waited for admission:
+      // nothing could report its result, so the step must not run here. The
+      // orchestrator handles it as it does any dispatch on a dropped worker.
+      if (options.channel.closed) {
+        throw new ChannelClosedError(
+          "connection closed before the worker was admitted",
+        );
+      }
       return await handleDispatch(rawParams, ctx, options);
     } finally {
       activeRunners--;

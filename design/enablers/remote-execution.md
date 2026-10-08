@@ -446,9 +446,10 @@ worker → orchestrator   enroll {
   platform, arch,              // e.g. linux/x86_64
   labels: { region: "us-east", gpu: "true" },   // scheduling selectors
   resourceLimits: { ... },
+  needsGatePass,               // optional: the worker has no swamp-club credential
 }
 
-orchestrator → worker   enrolled { workerId, sessionCredential, sessionExpiresAtMs, protocolVersion }   |   error { ... }
+orchestrator → worker   enrolled { workerId, sessionCredential, sessionExpiresAtMs, protocolVersion, gatePass? }   |   error { ... }
 ```
 
 (`EnrollParamsSchema` / `EnrollResult` in `src/domain/remote/protocol.ts`. The
@@ -466,6 +467,13 @@ data-plane HTTP/2 requests. The pool addresses a worker by its token name (the
 positional `<name>` given to `swamp worker token create`) and its
 `instanceUuid`, and a step may target either (see
 [Scheduling](#scheduling-fan-out-and-provisioning)).
+
+A worker needs no swamp-club credential. `gatePass` is the serve's auth gate
+pass, and a worker without a key of its own passes the gate on it. Such a
+worker sets `needsGatePass`, and a serve with no pass to give refuses it with
+`gate_pass_unavailable` before redeeming the token. Both fields are optional,
+so the protocol version is unchanged. See
+[Auth Gate, Remote workers](../surfaces/auth-gate.md#remote-workers).
 
 ### Enrollment tokens
 

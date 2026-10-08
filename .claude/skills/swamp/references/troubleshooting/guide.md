@@ -86,6 +86,11 @@ swamp-club.com account. The message names the cause:
   outer command instead. On Windows, from a different swamp binary than the
   parent, or when the outer run passed offline on its signin token alone, the
   nested call needs its own login.
+- **`worker connect` with no credential**: it passes on the pass of the serve
+  that enrolls it, so worker pods need no key. If the message says the
+  orchestrator did not vouch for it, upgrade swamp on the serve, check that the
+  serve passed the gate on its own key, or give the worker a key
+  (`SWAMP_API_KEY_FILE`).
 
 Do not work around the block; there is no flag to skip it.
 

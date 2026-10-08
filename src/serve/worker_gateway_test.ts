@@ -36,6 +36,7 @@ import type { EnrollmentToken } from "../domain/models/worker/enrollment_token_m
 import {
   type DispatchParams,
   type EnrollResult,
+  GATE_PASS_UNAVAILABLE,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   WorkerMethod,
@@ -220,6 +221,47 @@ Deno.test("WorkerGateway: failed redemption leaves no pool state behind", async 
   h.failOn.add("redeem");
   const { workerChannel } = connectWorkerSocket(h.gateway);
   await assertRejects(() => enroll(workerChannel), RpcError, "stubbed failure");
+  assertEquals(h.gateway.workers().length, 0);
+  assertEquals(h.idle.length, 0);
+});
+
+Deno.test("WorkerGateway: enrollment hands the worker this serve's gate pass", async () => {
+  const h = createHarness({ gatePass: () => "cHJvb2Y.c2ln" });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel, {
+    ...enrollParams,
+    needsGatePass: true,
+  });
+  assertEquals(result.gatePass, "cHJvb2Y.c2ln");
+});
+
+Deno.test("WorkerGateway: a worker that does not ask for the pass is not sent it", async () => {
+  const h = createHarness({ gatePass: () => "cHJvb2Y.c2ln" });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  assertEquals("gatePass" in result, false);
+});
+
+Deno.test("WorkerGateway: a serve without a pass omits it, and enrolls workers that do not need one", async () => {
+  for (const gatePass of [undefined, () => undefined]) {
+    const h = createHarness({ gatePass });
+    const { workerChannel } = connectWorkerSocket(h.gateway);
+    const result = await enroll(workerChannel);
+    assertEquals("gatePass" in result, false);
+    assertEquals(h.gateway.workers().length, 1);
+  }
+});
+
+Deno.test("WorkerGateway: a worker that needs a pass is refused before the token is redeemed", async () => {
+  const h = createHarness({ gatePass: () => undefined });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const error = await assertRejects(
+    () => enroll(workerChannel, { ...enrollParams, needsGatePass: true }),
+    RpcError,
+  );
+  assertEquals(error.code, GATE_PASS_UNAVAILABLE);
+  // No redeem: the token's enrollment allowance is untouched.
+  assertEquals(h.transitions, []);
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.idle.length, 0);
 });
