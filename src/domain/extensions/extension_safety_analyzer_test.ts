@@ -299,6 +299,22 @@ Deno.test("analyzeExtensionSafety: a file that does not parse falls back to the 
   );
 });
 
+Deno.test("analyzeExtensionSafety: CR and U+2028 line breaks cannot hide a Deno.Command warning", async () => {
+  await withTempFiles(
+    {
+      "cr.ts": 'const a = 1;\rconst b = 2;\rnew Deno.Command("ls");\n',
+      "ls.ts": '/*\u2028\u2028*/ new Deno.Command("ls");\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.map((w) => [w.ruleId, w.line]),
+        [["deno-command", 1], ["deno-command", 1]],
+      );
+    },
+  );
+});
+
 Deno.test("analyzeExtensionSafety: a deno-command acceptance still matches a real call and goes stale over a comment-only mention", async () => {
   const content = [
     "// swamp-quality-ignore deno-command",

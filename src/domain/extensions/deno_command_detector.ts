@@ -133,11 +133,31 @@ function isDenoQualified(node: AstNode | undefined): boolean {
     left?.type === "Identifier" && isGlobalObject(left);
 }
 
+/** Inside `import type X = ...`, which is erased at run time. */
+function inTypeOnlyImportEquals(visit: Visit): boolean {
+  for (let v: Visit | null = visit; v; v = v.parent) {
+    if (v.node.type === "TSImportEqualsDeclaration") {
+      return str(v.node, "importKind") === "type";
+    }
+  }
+  return false;
+}
+
 /** An identifier in a position that declares a name rather than reading one. */
 function isBindingSite(visit: Visit): boolean {
   const parent = visit.parent?.node;
   if (!parent) return false;
   const key = visit.key;
+  if (parent.type === "TSParameterProperty" && key === "parameter") {
+    return true;
+  }
+  // `export { Deno } from "./x.ts"` names the other module's export.
+  if (
+    parent.type === "ExportSpecifier" && key === "local" &&
+    child(visit.parent?.parent?.node, "source") !== undefined
+  ) {
+    return true;
+  }
   if (TS_DECLARATIONS.has(parent.type) && key === "id") return true;
   if (IMPORT_SPECIFIERS.has(parent.type) && key === "local") return true;
   if (parent.type === "CatchClause" && key === "param") return true;
@@ -167,8 +187,45 @@ function patternSource(pattern: Visit): AstNode | undefined {
   return undefined;
 }
 
+/**
+ * Positions of `source` by `\n` alone. Babel also breaks lines at `\r`,
+ * U+2028 and U+2029, but the analyzer, the other line checks and the
+ * acceptance parser split on `\n`, so a finding's line comes from its
+ * offset here rather than from Babel's `loc`, or a file saved with other
+ * line terminators could move a finding off its line or past the last one.
+ */
+class LineIndex {
+  private readonly newlines: number[] = [];
+
+  constructor(source: string) {
+    for (
+      let i = source.indexOf("\n");
+      i >= 0;
+      i = source.indexOf("\n", i + 1)
+    ) {
+      this.newlines.push(i);
+    }
+  }
+
+  /** The 1-based line and column of a 0-based offset. */
+  position(offset: number): { line: number; column: number } {
+    // The number of newlines before `offset`.
+    let low = 0;
+    let high = this.newlines.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.newlines[mid] < offset) low = mid + 1;
+      else high = mid;
+    }
+    const lineStart = low === 0 ? 0 : this.newlines[low - 1] + 1;
+    return { line: low + 1, column: offset - lineStart + 1 };
+  }
+}
+
 class Analyzer {
   private readonly findings: DenoCommandFinding[] = [];
+
+  constructor(private readonly lines: LineIndex) {}
 
   run(program: AstNode): DenoCommandFinding[] {
     walkRuntimeNodes(program, (visit) => this.check(visit));
@@ -176,12 +233,8 @@ class Analyzer {
   }
 
   private flag(node: AstNode, kind: DenoCommandKind): void {
-    const start = node.loc?.start;
-    this.findings.push({
-      line: start?.line ?? 1,
-      column: (start?.column ?? 0) + 1,
-      kind,
-    });
+    const offset = typeof node.start === "number" ? node.start : 0;
+    this.findings.push({ ...this.lines.position(offset), kind });
   }
 
   private check(visit: Visit): void {
@@ -191,7 +244,7 @@ class Analyzer {
     } else if (node.type === "Identifier" && str(node, "name") === DENO) {
       this.checkDenoIdentifier(visit);
     } else if (node.type === "TSQualifiedName") {
-      this.checkQualifiedName(node);
+      if (!inTypeOnlyImportEquals(visit)) this.checkQualifiedName(node);
     } else if (node.type === "ObjectProperty") {
       this.checkPatternKey(visit);
     } else if (isCall(node) || node.type === "NewExpression") {
@@ -217,7 +270,7 @@ class Analyzer {
   }
 
   private checkDenoIdentifier(visit: Visit): void {
-    if (isBindingSite(visit)) return;
+    if (isBindingSite(visit) || inTypeOnlyImportEquals(visit)) return;
     // `globalThis.Deno` in a qualified name (`import D = globalThis.Deno`)
     // is `Deno` read off a global object, judged like the member form.
     const parent = visit.parent;
@@ -308,5 +361,5 @@ export function findDenoCommandUse(
   program: AstNode | null = parseExtensionSource(source),
 ): DenoCommandFinding[] {
   if (!program) return textFallback(source);
-  return new Analyzer().run(program);
+  return new Analyzer(new LineIndex(source)).run(program);
 }

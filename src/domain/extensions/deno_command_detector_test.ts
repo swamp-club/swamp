@@ -133,6 +133,10 @@ const SILENT: Array<[string, string]> = [
   ["Deno import binding", 'import Deno from "./x.ts";'],
   ["Deno class member", "class A { Deno = 1; }"],
   ["Reflect.get without a global", 'Reflect.get(obj, "Deno");'],
+  ["type-only import-equals Command", "import type C = Deno.Command;"],
+  ["type-only import-equals Deno", "import type D = Deno;"],
+  ["re-export from another module", 'export { Deno } from "./x.ts";'],
+  ["parameter property", "class A { constructor(private Deno: number) {} }"],
 ];
 
 for (const [name, source] of SILENT) {
@@ -179,4 +183,25 @@ Deno.test("findDenoCommandUse: uses the program it is given", () => {
     findDenoCommandUse('// new Deno.Command("ls")', null).map((f) => f.kind),
     ["unparsed-text"],
   );
+});
+
+Deno.test("findDenoCommandUse: a CR-only file reports the line the analyzer splits on", () => {
+  // Babel counts \r as a line break; lines here are counted by \n alone.
+  const source = 'const a = 1;\rnew Deno.Command("ls");\n';
+  assertEquals(findDenoCommandUse(source), [
+    { line: 1, column: 23, kind: "command-reference" },
+  ]);
+});
+
+Deno.test("findDenoCommandUse: line breaks Babel reads inside a comment do not move a finding", () => {
+  for (const br of ["\r", "\r\n", "\u2028", "\u2029"]) {
+    const source = `/*${br}${br}*/ new Deno.Command("ls");\nconst b = 2;\n`;
+    const lines = findDenoCommandUse(source).map((f) => f.line);
+    assertEquals(lines, [br === "\r\n" ? 3 : 1], JSON.stringify(br));
+  }
+});
+
+Deno.test("findDenoCommandUse: a U+2028 before a call does not shift later lines", () => {
+  const source = 'const a = "x";\u2028const b = 1;\nnew Deno.Command("ls");\n';
+  assertEquals(findDenoCommandUse(source).map((f) => f.line), [2]);
 });
