@@ -80,9 +80,13 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 2. **Heartbeat**: every 30s, `UPDATE heartbeat_at = now WHERE id = ?`.
 3. **Complete**: on success, failure, cancel or suspend, UPDATE status, guarded
    by `AND status IN ('running', 'suspended')` against TOCTOU races. A
-   cancelled owner completes its own row without a reason, so
-   `swamp model cancel` then records its `--reason` with `recordCancelReason`,
-   which only fills the reason on a `cancelled` row that has none.
+   cancelled method run's owner completes its own row with the cause of the
+   cancel when the abort named one (`timed out`, `cleanup grace expired`, or
+   the reason a cancel through serve or the scheduler gave; see `cancelCause`
+   in `src/domain/models/cancel_cause.ts`), and without a reason for a plain
+   abort. `swamp model cancel` stops its run with a plain abort, so it then
+   records its `--reason` with `recordCancelReason`, which only fills the
+   reason on a `cancelled` row that has none.
 4. **Reap**: find rows with a heartbeat older than 90s. On the same machine,
    check `isProcessDead(pid)` first; across machines, use the TTL alone. Reaped
    runs become `interrupted`, not `failed`, so they are eligible for checkpoint

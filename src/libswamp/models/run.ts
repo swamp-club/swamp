@@ -86,6 +86,7 @@ import type {
   ModelMethodRunView,
 } from "./model_method_run_view.ts";
 import { ModelOutput } from "../../domain/models/model_output.ts";
+import { cancelCause } from "../../domain/models/cancel_cause.ts";
 import {
   coerceInputTypes,
   InputValidationService,
@@ -1073,10 +1074,13 @@ export async function* modelMethodRun(
                 ctx.signal.aborted ||
                 (error instanceof DOMException && error.name === "AbortError")
               ) {
-                output.markCancelled("aborted");
+                // A plain abort names no cause, which leaves the tracker
+                // row's reason for `swamp model cancel` to fill in.
+                const cause = cancelCause(ctx.signal);
+                output.markCancelled(cause ?? "aborted");
                 await deps.outputRepo.save(modelType, input.methodName, output);
                 if (deps.runTracker) {
-                  deps.runTracker.complete(output.id, "cancelled");
+                  deps.runTracker.complete(output.id, "cancelled", cause);
                 }
               } else {
                 output.markFailed({ message: errorMessage, stack: errorStack });
