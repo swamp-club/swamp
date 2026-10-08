@@ -634,6 +634,14 @@ export interface UseCaseRow<S = void> {
    */
   rootUnit?: Partial<Record<Composition, true>>;
   /**
+   * How many root units a `rootUnit` composition opens; 1 when unset. More
+   * than one only where each run of the operation is its own root: the
+   * managed lockfile transaction opens one per outermost run, so a CLI
+   * `extension rm` opens one for its preview refresh and one for the
+   * removal (swamp-club#3192).
+   */
+  rootUnits?: Partial<Record<Composition, number>>;
+  /**
    * {@link syncOrder} for each composition switched to a root unit, recorded
    * from the composition before it adopted the root, so adopting it cannot
    * move a push across a lock release or gate exit. A composition not yet
@@ -867,13 +875,14 @@ function assertUnitsStagedTheirMarks(
 }
 
 /**
- * Root unit (swamp-club#3032): the composition opened exactly one root unit;
- * it staged every mark the row made, use case or not, in the order they
+ * Root unit (swamp-club#3032): the composition opened exactly one root unit
+ * (or the row's {@link UseCaseRow.rootUnits}); together, in opening order,
+ * they staged every mark the row made, use case or not, in the order they
  * reached the remote; and the row's pushes sit where its pinned
  * {@link syncOrder} says relative to lock releases and gate exits.
  */
 export function assertRootUnit(
-  row: Pick<AnyRow, "name" | "parallelMarks" | "syncOrder">,
+  row: Pick<AnyRow, "name" | "parallelMarks" | "syncOrder" | "rootUnits">,
   composition: Composition,
   repos: RowRepos,
   units: readonly CapturedUnit[],
@@ -885,8 +894,15 @@ export function assertRootUnit(
     captured.role === "root" &&
     legacyUnitOfWorkParent(captured.unit) === undefined
   );
-  assertEquals(roots.length, 1, `${label}: expected exactly one root unit`);
-  const staged = marksOf(repos, roots[0].unit);
+  const expectedRoots = row.rootUnits?.[composition] ?? 1;
+  assertEquals(
+    roots.length,
+    expectedRoots,
+    expectedRoots === 1
+      ? `${label}: expected exactly one root unit`
+      : `${label}: expected ${expectedRoots} root units`,
+  );
+  const staged = roots.flatMap((captured) => marksOf(repos, captured.unit));
   const observed = observation.ops.filter((op) => op.startsWith("markDirty"));
   if (row.parallelMarks) {
     assertEquals(

@@ -41,6 +41,7 @@
  * @module
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
@@ -75,6 +76,20 @@ export type BoundUnitOfWorkFactory = (
 ) => UnitOfWork;
 
 let factoryForTesting: BoundUnitOfWorkFactory | undefined;
+
+/** A root {@link runInRootUnitOfWork} opened, with the hook it is bound to. */
+interface AmbientRoot {
+  markDirty: MarkDirtyHook | undefined;
+  root: RootUnitOfWork;
+}
+
+/**
+ * The roots open around the current call, innermost last. A list, not one
+ * entry, so a root for one hook opened inside a root for another leaves the
+ * outer one findable. Async context rather than a map keyed by hook: serve
+ * runs concurrent requests over one shared hook.
+ */
+const ambientRoots = new AsyncLocalStorage<readonly AmbientRoot[]>();
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
@@ -154,8 +169,19 @@ export interface RootUnitOfWork extends Pick<UnitOfWork, "stage" | "staged"> {
    * It lives here and on the legacy adapter, not on the domain
    * {@link UnitOfWork} port: what a Phase 3 commit-log unit means by a
    * partial commit is a Phase 3 decision.
+   *
+   * `signal` is passed to the checkpoint option, so a caller that bounds
+   * the push can abort it. Resolves with what the option resolved with: the
+   * count of files pushed, when its push path reports one (the managed
+   * lockfile publish checks it, swamp-club#3192).
    */
-  checkpoint(): Promise<void>;
+  checkpoint(options?: CheckpointOptions): Promise<number | void>;
+}
+
+/** Options for {@link RootUnitOfWork.checkpoint}. */
+export interface CheckpointOptions {
+  /** Aborts the checkpoint's push. */
+  signal?: AbortSignal;
 }
 
 /** How the operation a root ran ended, as its flush sees it. */
@@ -180,10 +206,11 @@ export interface RootUnitOfWorkOptions {
   pushWhen?: "always" | "completed";
   /**
    * The mid-operation push `root.checkpoint()` runs; absent when the
-   * operation never pushes partway through. See
-   * {@link RootUnitOfWork.checkpoint}.
+   * operation never pushes partway through. It receives the caller's
+   * options, and what it resolves with is what `checkpoint()` resolves with.
+   * See {@link RootUnitOfWork.checkpoint}.
    */
-  checkpoint?: () => Promise<void>;
+  checkpoint?: (options: CheckpointOptions) => Promise<number | void>;
   /**
    * Receives the push error when `fn` threw and the push failed too; `fn`'s
    * error is the one rethrown. Without it the push error is logged at warn.
@@ -253,7 +280,7 @@ export async function runInRootUnitOfWork<T>(
   const view: RootUnitOfWork = {
     stage: (change) => root.stage(change),
     staged: () => root.staged(),
-    async checkpoint() {
+    async checkpoint(checkpointOptions: CheckpointOptions = {}) {
       if (ended) {
         throw new Error("checkpoint called after its root unit of work ended");
       }
@@ -270,12 +297,21 @@ export async function runInRootUnitOfWork<T>(
         );
       }
       await legacyUnitOfWorkSettled(root);
-      await options.checkpoint();
+      return await options.checkpoint(checkpointOptions);
     },
   };
+  // Only a root itself is findable through currentRootUnitOfWork; a nested
+  // call is a child, and its view's checkpoint throws.
+  const run = parent === undefined
+    ? () =>
+      ambientRoots.run(
+        [...(ambientRoots.getStore() ?? []), { markDirty, root: view }],
+        () => fn(view),
+      )
+    : () => fn(view);
   let value: T;
   try {
-    value = await runInUnitOfWork(root, () => fn(view));
+    value = await runInUnitOfWork(root, run);
   } catch (error) {
     ended = true;
     try {
@@ -294,6 +330,27 @@ export async function runInRootUnitOfWork<T>(
   completed = true;
   await root.commit();
   return value;
+}
+
+/**
+ * The root unit of work {@link runInRootUnitOfWork} opened around the
+ * current call over this exact `markDirty` hook, or undefined when there is
+ * none. Hook identity decides, as it decides where `signalChange` stages: a
+ * root over any other function, a wrapper of this one included, is not
+ * returned. Inside a nested call that became a child, it returns the outer
+ * root, which owns the checkpoint. After that root has ended it still
+ * returns it, and its `checkpoint()` throws.
+ *
+ * For code that must publish through the root of the operation it runs in
+ * without being handed it: the managed extension lockfile publish stages the
+ * lockfile and pushes at this root's checkpoint (swamp-club#3192), so its
+ * sync port, and every fake of that port, stays unchanged.
+ */
+export function currentRootUnitOfWork(
+  markDirty: MarkDirtyHook,
+): RootUnitOfWork | undefined {
+  const roots = ambientRoots.getStore() ?? [];
+  return roots.findLast((ambient) => ambient.markDirty === markDirty)?.root;
 }
 
 /**

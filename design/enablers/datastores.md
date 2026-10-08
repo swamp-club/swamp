@@ -1291,7 +1291,13 @@ operation inside a unit of work:
   failing checkpoint rejects inside the work, as a direct push did.
   `checkpoint` lives on `RootUnitOfWork` and the legacy adapter, not on the
   domain `UnitOfWork` port: what a Phase 3 commit-log unit means by a partial
-  commit is a Phase 3 decision.
+  commit is a Phase 3 decision. `root.checkpoint({ signal })` passes the
+  signal to the option and resolves with what it resolved with, so a caller
+  that bounds the push can abort it and read the count of files pushed
+  (swamp-club#3192). `currentRootUnitOfWork(markDirty)` returns the root
+  opened around the current call over that exact hook (a nested call's
+  child sees the outer root), for code that publishes through its
+  operation's root without being handed it.
 - **CLI commands in root units (swamp-club#3033).** Every CLI write command
   runs its write section in `runCommandInRootUnit`
   (`src/cli/command_root_unit.ts`), whose flush is the push the command made
@@ -1380,13 +1386,14 @@ operation inside a unit of work:
     (push, then release): the step's lock owns its push and release, and Phase
     3 replaces model locks with leases.
   - The push functions live in `src/infrastructure/persistence/push_paths.ts`
-    (`pushNamespace`, `pushModelLockScope`, `pushGlobalLockAtEnd`); commands
+    (`pushNamespace`, `pushNamespaceCounted`, `pushModelLockScope`,
+    `pushGlobalLockAtEnd`); commands
     and handlers pass them as a flush or checkpoint and never call
     `pushChanged` themselves. `PINNED_DIRECT_PUSHES`
     (`integration/datastore_write_seams_rules_test.ts`) lists every production
     `pushChanged` call: the push paths, the coordinator, and the deliberate
-    exceptions (`datastore sync`, `datastore setup`'s migration push, the
-    lockfile publish, serve start-up and token GC, serve background GC). In
+    exceptions (`datastore sync`, `datastore setup`'s migration push, serve
+    start-up and token GC, serve background GC). In
     serve, a push-path call outside a root's flush is pinned in
     `integration/serve_root_unit_rules_test.ts`; `pushChangedToRemote`, the
     push path the handlers' flushes call, is the only one.
@@ -1459,9 +1466,6 @@ each site):
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
-- Serve: the extension lockfile (`extensionLockfileTransaction` in
-  `src/serve/handlers/admin_handlers.ts`). Device auth, grant tracking and
-  access reload stage their marks through a root (swamp-club#3034).
 - The serve start-up definition migration, which marks each moved file by path
   (`serveCommand` in `src/cli/commands/serve.ts`).
 - The namespace catalog export, marked by path after it is written before a
@@ -1470,13 +1474,35 @@ each site):
 `buildMarkDirtyHook` in the same file is pinned too, but it is the hook itself,
 not a hand mark.
 
-The lockfile is deferred to Phase 2. `ManagedLockfileTransaction` publishes
-through the port `createDatastoreLockfileSync` builds
-(`src/libswamp/extensions/managed_lockfile_transaction.ts`), whose `publish`
-marks the lockfile path as a publish signal and pushes: with `mustUpload` a
-push that reports sending nothing rejects, and a failed publish is recorded as
-pending and published by the next transaction. swamp-club#2865 has the
-reasoning.
+Serve's device auth, grant tracking and access reload stage their marks
+through a root (swamp-club#3034).
+
+**The extension lockfile publishes through a root's checkpoint
+(swamp-club#3192).** `ManagedLockfileTransaction`
+(`src/libswamp/extensions/managed_lockfile_transaction.ts`) runs each
+outermost `run` inside a root unit of work, which its `inRoot` option opens
+around the lock's acquire and release. A nested `run` joins the outer one and
+its root. Its publish, `createRootLockfileSync`, stages one write of exactly
+the lockfile into that root (found with `currentRootUnitOfWork` by hook
+identity) and pushes at the root's checkpoint, bounded by the datastore's sync
+timeout, before the global lock is released. With `mustUpload`, a checkpoint
+that reports sending nothing rejects. A publish with no root throws rather
+than push by hand. The roots have no flush, so the checkpoint is the only
+push:
+
+- CLI (`buildManagedLockfileTransaction` in `src/cli/managed_config_sync.ts`):
+  a root over the transaction's own mark hook per outermost run, whose
+  checkpoint is `pushNamespaceCounted`. It is per run, not per command,
+  because the extension commands resolve the datastore only on their first
+  lockfile use. A CLI `extension rm` or `update` therefore opens two: the
+  refresh before it reads the lockfile, and the change.
+- Serve (`extensionLockfileTransaction` in
+  `src/serve/handlers/admin_handlers.ts`): a root over `repoContext.markDirty`
+  itself, inside the handler's exclusive sync gate, with the same checkpoint.
+
+The pending record, the replay of an earlier unpublished change, the CLI's
+`throw` and serve's `defer` on a failed publish, and the errors and codes are
+the transaction's own and did not change. swamp-club#2865 has the reasoning.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
@@ -1523,8 +1549,9 @@ that no hooked repository covers. Each marks exactly those files, by path, after
 writing:
 
 - The extension handlers (`extension.install`, `pull`, `rm`, `update`) change
-  the config-tier lockfile inside a managed lockfile transaction, which marks
-  exactly the lockfile and pushes under the datastore global lock (see
+  the config-tier lockfile inside a managed lockfile transaction, which stages
+  exactly the lockfile into the request's root and pushes at its checkpoint
+  under the datastore global lock (see
   [Extension commands and the chicken-and-egg](#extension-commands-and-the-chicken-and-egg)). Serve still
   writes extension sources to the repo-local pulled-extensions root
   (swamp-club#2612).
@@ -1549,8 +1576,9 @@ item's folder.
 The CLI extension commands follow the same rule. `extension pull`, `update`,
 `rm` and `install`, search install, `repo upgrade` and
 `doctor extensions --repair` run their lockfile change in a managed lockfile
-transaction, which marks the config-tier lockfile by path and pushes it,
-bounded by the datastore's sync timeout, instead of the bulk mark that
+transaction, which stages the config-tier lockfile by path into its root and
+pushes it at the root's checkpoint, bounded by the datastore's sync timeout,
+instead of the bulk mark that
 `runManagedConfigMutation` stages. It publishes only when the lockfile changed
 or an earlier publish is still pending. An extension that keeps its dirty set in
 memory still walks the whole cache on a fresh process (rule 4), so "exact
@@ -3009,7 +3037,7 @@ lockfile:
 | Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
 | Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate; a failed publish is logged and left pending |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the request root's checkpoint; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 

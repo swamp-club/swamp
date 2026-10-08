@@ -38,6 +38,7 @@ import {
 } from "./legacy_unit_of_work.ts";
 import {
   type BoundUnitOfWorkOptions,
+  currentRootUnitOfWork,
   openRepoUnitOfWork,
   repoUnitOfWorkFactory,
   type RootUnitOfWork,
@@ -882,4 +883,104 @@ Deno.test("runInRootUnitOfWork: pushWhen completed leaves checkpoint unaffected"
     )
   );
   assertEquals(pushes, ["checkpoint"]);
+});
+
+Deno.test("runInRootUnitOfWork: checkpoint passes the caller's signal to the checkpoint option and resolves with its count", async () => {
+  const { hook } = recordingHook();
+  const signals: (AbortSignal | undefined)[] = [];
+  const controller = new AbortController();
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: undefined,
+      checkpoint: ({ signal }) => {
+        signals.push(signal);
+        return Promise.resolve(3);
+      },
+    },
+    async (root) => {
+      assertEquals(await root.checkpoint({ signal: controller.signal }), 3);
+      assertEquals(await root.checkpoint(), 3);
+    },
+  );
+  assertStrictEquals(signals[0], controller.signal);
+  assertEquals(signals[1], undefined);
+});
+
+Deno.test("currentRootUnitOfWork: returns the root opened over the exact hook, and nothing outside it", async () => {
+  const { hook } = recordingHook();
+  assertEquals(currentRootUnitOfWork(hook), undefined);
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    { flush: undefined },
+    (root) => {
+      assertStrictEquals(currentRootUnitOfWork(hook), root);
+      // A wrapper of the hook is another function: no root.
+      assertEquals(currentRootUnitOfWork((path) => hook(path)), undefined);
+      return Promise.resolve();
+    },
+  );
+  assertEquals(currentRootUnitOfWork(hook), undefined);
+});
+
+Deno.test("currentRootUnitOfWork: inside a nested call it returns the outer root, whose checkpoint runs", async () => {
+  const { hook } = recordingHook();
+  let checkpoints = 0;
+  await runInRootUnitOfWork(
+    { markDirty: hook },
+    {
+      flush: undefined,
+      checkpoint: () => {
+        checkpoints++;
+        return Promise.resolve();
+      },
+    },
+    async (outer) => {
+      await runInRootUnitOfWork(
+        { markDirty: hook },
+        { flush: undefined },
+        async (inner) => {
+          assertNotStrictEquals(inner, outer);
+          assertStrictEquals(currentRootUnitOfWork(hook), outer);
+          await currentRootUnitOfWork(hook)!.checkpoint();
+        },
+      );
+    },
+  );
+  assertEquals(checkpoints, 1);
+});
+
+Deno.test("currentRootUnitOfWork: a root for another hook opened inside leaves the outer root findable", async () => {
+  const first = recordingHook();
+  const second = recordingHook();
+  await runInRootUnitOfWork(
+    { markDirty: first.hook },
+    { flush: undefined },
+    (outer) =>
+      runInRootUnitOfWork(
+        { markDirty: second.hook },
+        { flush: undefined },
+        (inner) => {
+          assertStrictEquals(currentRootUnitOfWork(first.hook), outer);
+          assertStrictEquals(currentRootUnitOfWork(second.hook), inner);
+          return Promise.resolve();
+        },
+      ),
+  );
+});
+
+Deno.test("currentRootUnitOfWork: concurrent roots over one hook each see their own", async () => {
+  const { hook } = recordingHook();
+  const seen: boolean[] = [];
+  const run = () =>
+    runInRootUnitOfWork(
+      { markDirty: hook },
+      { flush: undefined },
+      async (root) => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        seen.push(currentRootUnitOfWork(hook) === root);
+      },
+    );
+  await Promise.all([run(), run()]);
+  assertEquals(seen, [true, true]);
 });

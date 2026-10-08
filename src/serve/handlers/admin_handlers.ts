@@ -39,8 +39,8 @@ import {
 import { buildAggregateState } from "../../libswamp/extensions/doctor_aggregate.ts";
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
 import {
-  createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
+  createRootLockfileSync,
   type LockfileTransaction,
   ManagedLockfileTransaction,
   withManagedLockfileTransaction,
@@ -204,6 +204,7 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { pushNamespaceCounted } from "../../infrastructure/persistence/push_paths.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   getExtensionLoadWarnings,
@@ -276,6 +277,12 @@ function resolveManagedPathsFromContext(
  * lands (swamp-club#2838). Extension sources stay in the repo-local
  * pulled-extensions root (swamp-club#2612). Otherwise undefined, and the
  * handler writes the lockfile directly.
+ *
+ * Each outermost run is the request's root unit of work over
+ * `repoContext.markDirty` itself, with no flush and the namespace push as
+ * its checkpoint: the publish stages the lockfile into it and pushes at the
+ * checkpoint, inside the sync gate and before the global lock is released
+ * (swamp-club#3192).
  */
 function extensionLockfileTransaction(
   ctx: ConnectionContext,
@@ -290,19 +297,32 @@ function extensionLockfileTransaction(
     return undefined;
   }
   const logger = getSwampLogger(["serve", "extension", "lockfile"]);
+  const namespace = isCustomDatastoreConfig(datastoreConfig)
+    ? datastoreConfig.namespace
+    : undefined;
   return new ManagedLockfileTransaction({
     lockfilePath,
+    // The hook itself, not a wrapper: the publish finds the root by hook
+    // identity.
+    inRoot: (fn) =>
+      runInRootUnitOfWork(
+        ctx.repoContext,
+        {
+          flush: undefined,
+          checkpoint: ({ signal }) =>
+            pushNamespaceCounted(syncService, namespace, signal),
+        },
+        () => fn(),
+      ),
     // Taken inside the handler's exclusive sync gate: the gate always comes
     // before the global lock in serve (see sync_gate.ts).
     lock: datastoreGlobalLock(datastoreConfig),
-    sync: createDatastoreLockfileSync({
+    sync: createRootLockfileSync({
       syncService,
-      namespace: isCustomDatastoreConfig(datastoreConfig)
-        ? datastoreConfig.namespace
-        : undefined,
+      namespace,
       timeoutMs: resolveSyncTimeoutMs(datastoreConfig),
       lockfilePath,
-      markDirty: (path) => markDirty(path),
+      markDirty,
     }),
     pending: createRepoPendingLockfileStore(ctx.repoDir),
     // The change has applied on this instance, so the request succeeds; a

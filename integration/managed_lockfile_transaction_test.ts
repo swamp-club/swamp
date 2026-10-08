@@ -37,9 +37,11 @@ import {
   readLockfilePublishPending,
 } from "../src/infrastructure/persistence/pending_lockfile_publish.ts";
 import { readUpstreamExtensions } from "../src/infrastructure/persistence/upstream_extensions.ts";
+import { pushNamespaceCounted } from "../src/infrastructure/persistence/push_paths.ts";
+import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import {
-  createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
+  createRootLockfileSync,
   ManagedLockfileTransaction,
   ManagedLockfileUnpublishedError,
   withManagedLockfileTransaction,
@@ -128,6 +130,8 @@ async function withWorld(fn: (w: World) => Promise<void>): Promise<void> {
     const transaction = () =>
       new ManagedLockfileTransaction({
         lockfilePath,
+        // The fake sync port publishes without a root unit of work.
+        inRoot: (fn) => fn(),
         lock: new FileLock(remoteDir, {
           lockKey: ".datastore.lock",
           maxWaitMs: 10_000,
@@ -361,7 +365,9 @@ function forgetfulSyncService(remoteConfigDir: string, configBase: string) {
   const state = { localDirty: false, failPush: false, forgetful: true };
   return {
     state,
-    markDirty: (absPath: string) => {
+    // A MarkDirtyHook: the publish only ever marks the lockfile by path.
+    markDirty: (absPath?: string) => {
+      if (absPath === undefined) throw new Error("unexpected bulk mark");
       if (state.forgetful && dirty.has(absPath)) return Promise.resolve();
       dirty.add(absPath);
       state.localDirty = true;
@@ -406,11 +412,23 @@ Deno.test("managed lockfile: a change whose push sends nothing after an unscoped
     const transaction = () =>
       new ManagedLockfileTransaction({
         lockfilePath,
+        // As the CLI wires it: a root over the service's hook, pushing the
+        // namespace at its checkpoint (swamp-club#3192).
+        inRoot: (fn) =>
+          runInRootUnitOfWork(
+            { markDirty: service.markDirty },
+            {
+              flush: undefined,
+              checkpoint: ({ signal }) =>
+                pushNamespaceCounted(service, undefined, signal),
+            },
+            () => fn(),
+          ),
         lock: {
           acquire: () => Promise.resolve(),
           release: () => Promise.resolve(),
         },
-        sync: createDatastoreLockfileSync({
+        sync: createRootLockfileSync({
           syncService: service,
           namespace: undefined,
           timeoutMs: 10_000,

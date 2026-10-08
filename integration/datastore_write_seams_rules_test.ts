@@ -473,10 +473,6 @@ const PINNED_MARK_CALL_SITES: readonly string[] = [
   // Use cases that mark directly. datastoreNamespaceMigrate: a bulk
   // migration of the whole tree.
   "src/libswamp/datastores/namespace_migrate.ts: datastoreNamespaceMigrate",
-  "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
-  // The serve extension lockfile, deferred to its own Phase 2 issue. The
-  // other serve hand marks stage through a root unit (swamp-club#3034).
-  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
 ];
 
 const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
@@ -878,9 +874,11 @@ const PINNED_LOCK_FLUSH_CALLERS: readonly string[] = [
 // handlers reach a push only as a root unit's flush or checkpoint, through
 // the push paths; the rest are the coordinator and the deliberate exceptions.
 const PINNED_DIRECT_PUSHES: readonly string[] = [
-  // The push paths every root's flush or checkpoint calls.
+  // The push paths every root's flush or checkpoint calls. pushNamespace
+  // goes through pushNamespaceCounted, which the managed lockfile publish's
+  // checkpoint calls directly for the count and the bound (swamp-club#3192).
   "src/infrastructure/persistence/push_paths.ts: pushModelLockScope (x3)",
-  "src/infrastructure/persistence/push_paths.ts: pushNamespace",
+  "src/infrastructure/persistence/push_paths.ts: pushNamespaceCounted",
   // The coordinator's push, which runInCoordinatorRoot's flush and the
   // mod.ts teardown safety net make.
   "src/infrastructure/persistence/datastore_sync_coordinator.ts: flushDatastoreSyncNamed",
@@ -890,8 +888,6 @@ const PINNED_DIRECT_PUSHES: readonly string[] = [
   "src/libswamp/datastores/sync.ts: createDatastoreSyncDeps (x2)",
   // `datastore setup` pushes the data it migrates to the new datastore.
   "src/libswamp/datastores/setup.ts: datastoreSetupExtension",
-  // The lockfile publish, redesigned by its own Phase 2 issue.
-  "src/libswamp/extensions/managed_lockfile_transaction.ts: createDatastoreLockfileSync",
   // Serve start-up migration and token GC, outside any request.
   "src/cli/commands/serve.ts: serveCommand (x2)",
   "src/serve/token_secret_migration.ts: createTokenMigrationLockDeps",
@@ -903,11 +899,15 @@ const PINNED_DIRECT_PUSHES: readonly string[] = [
 // Every `.checkpoint(` call in src.
 const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   // A root's checkpoint (swamp-club#3053): the CLI commands that push
-  // mid-command. Serve needs none today.
+  // mid-command.
   "src/cli/commands/access_token_mint.ts: accessTokenMintCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
   "src/cli/commands/worker_token_create.ts: workerTokenCreateCommand",
   "src/cli/commands/worker_token_revoke.ts: workerTokenRevokeCommand",
+  // The managed extension lockfile publish, CLI and serve: it stages the
+  // lockfile into the root the transaction runs in and pushes at that
+  // root's checkpoint, under the global lock (swamp-club#3192).
+  "src/libswamp/extensions/managed_lockfile_transaction.ts: createRootLockfileSync",
   // The root running the checkpoint option it was given.
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
   // The catalog's SQLite WAL checkpoint, which shares the name and pushes

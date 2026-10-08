@@ -34,10 +34,13 @@ import type { ExtensionWorkflowRepository } from "../infrastructure/persistence/
 import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import type { RootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import {
-  createDatastoreLockfileSync,
+  type RootUnitOfWork,
+  runInRootUnitOfWork,
+} from "../infrastructure/persistence/repo_unit_of_work.ts";
+import {
   createRepoPendingLockfileStore,
+  createRootLockfileSync,
   type LockfileTransaction,
   type ManagedLockfileLock,
   ManagedLockfileTransaction,
@@ -51,7 +54,10 @@ import {
   requireInitializedRepoUnlocked,
 } from "./repo_context.ts";
 import { runCommandInRootUnit } from "./command_root_unit.ts";
-import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
+import {
+  pushNamespace,
+  pushNamespaceCounted,
+} from "../infrastructure/persistence/push_paths.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
@@ -251,6 +257,13 @@ export interface ManagedLockfileTransactionDeps {
  * publish throws {@link ManagedConfigUnpublishedError} with the change
  * recorded in the repo's `.swamp/` directory, for the next transaction to
  * replay.
+ *
+ * Each outermost run is a root unit of work over the transaction's own mark
+ * hook, with no flush and the namespace push as its checkpoint: the publish
+ * stages the lockfile into it and pushes at the checkpoint, under the lock
+ * (swamp-club#3192). The root is per run, not per command, because the
+ * extension commands resolve the datastore only on their first lockfile
+ * use, and some never make one.
  */
 export function buildManagedLockfileTransaction(
   deps: ManagedLockfileTransactionDeps,
@@ -264,16 +277,30 @@ export function buildManagedLockfileTransaction(
       `the ${datastoreConfig.type} datastore has no local cache`,
     );
   }
-  const sync = createDatastoreLockfileSync({
+  const namespace = datastoreConfig.namespace;
+  // One hook for the root and the publish: the publish finds its root by
+  // hook identity.
+  const markDirty = buildMarkDirtyHook(syncService, cachePath, repoDir);
+  const sync = createRootLockfileSync({
     syncService,
-    namespace: datastoreConfig.namespace,
+    namespace,
     timeoutMs: resolveSyncTimeoutMs(datastoreConfig),
     lockfilePath,
-    markDirty: buildMarkDirtyHook(syncService, cachePath, repoDir),
+    markDirty,
   });
   const logger = getSwampLogger(["cli", "managed-config"]);
   return new ManagedLockfileTransaction({
     lockfilePath,
+    inRoot: (fn) =>
+      runInRootUnitOfWork(
+        { markDirty },
+        {
+          flush: undefined,
+          checkpoint: ({ signal }) =>
+            pushNamespaceCounted(syncService, namespace, signal),
+        },
+        () => fn(),
+      ),
     lock: {
       // A datastore that cannot be reached fails here, before anything is
       // downloaded or changed. Errors that already explain themselves pass

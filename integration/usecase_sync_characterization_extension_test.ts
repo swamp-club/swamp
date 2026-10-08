@@ -95,14 +95,15 @@ async function assertNothingPending(repos: RowRepos): Promise<void> {
 const ROWS: AnyRow[] = [
   row({
     name: "extension install (publish pending)",
-    // The lockfile publish marks the lockfile outside any use case:
-    // createDatastoreLockfileSync (CLI) and extensionLockfileTransaction
-    // (serve) in PINNED_MARK_CALL_SITES.
+    // The lockfile publish stages the lockfile outside any use case, into
+    // the root the managed lockfile transaction runs in, and pushes at its
+    // checkpoint (createRootLockfileSync, swamp-club#3192).
     outsideUseCase: {
       cli: ["markDirty config/upstream_extensions.json"],
       serve: ["markDirty config/upstream_extensions.json"],
     },
     options: { managedConfig: true },
+    rootUnit: { cli: true, serve: true },
     // Recorded before the lockfile publish moved to a root's checkpoint
     // (swamp-club#3192): the fetch, then the publish, then the lock release
     // (and, in serve, the gate exit).
@@ -126,14 +127,18 @@ const ROWS: AnyRow[] = [
   }),
   row({
     name: "extension rm",
-    // The lockfile publish marks the lockfile outside any use case:
-    // createDatastoreLockfileSync (CLI) and extensionLockfileTransaction
-    // (serve) in PINNED_MARK_CALL_SITES.
+    // The lockfile publish stages the lockfile outside any use case, into
+    // the root the managed lockfile transaction runs in, and pushes at its
+    // checkpoint (createRootLockfileSync, swamp-club#3192).
     outsideUseCase: {
       cli: ["markDirty config/upstream_extensions.json"],
       serve: ["markDirty config/upstream_extensions.json"],
     },
     options: { managedConfig: true },
+    rootUnit: { cli: true, serve: true },
+    // One root per lockfile transaction run: the CLI's preview refresh and
+    // its removal are two.
+    rootUnits: { cli: 2 },
     // Recorded before the lockfile publish moved to a root's checkpoint
     // (swamp-club#3192). The CLI's rm preview refreshes in its own
     // transaction (fetch, release), then the removal fetches, publishes and

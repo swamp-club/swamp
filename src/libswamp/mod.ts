@@ -1106,8 +1106,8 @@ export {
 // Managed lockfile transactions — writes to a datastore-shared lockfile
 // fetch it under the datastore global lock first (swamp-club#2838).
 export {
-  createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
+  createRootLockfileSync,
   type LockfileTransaction,
   type ManagedLockfileLock,
   type ManagedLockfileSyncPort,
