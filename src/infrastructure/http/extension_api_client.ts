@@ -88,7 +88,15 @@ export interface ConfirmPushResult {
    * What the registry had to say about a push it accepted, such as client
    * contentMetadata it discarded. Sanitised and bounded; absent when none.
    */
-  warnings?: string[];
+  warnings?: RegistryWarnings;
+}
+
+/** The registry's warnings about a push it accepted, safe to print. */
+export interface RegistryWarnings {
+  /** At most {@link MAX_REGISTRY_WARNINGS} messages, each one line. */
+  messages: string[];
+  /** How many further warnings the registry sent that are not in `messages`. */
+  omitted: number;
 }
 
 /** The most registry warnings a confirm response surfaces. */
@@ -104,10 +112,11 @@ const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 /**
  * Reduces the confirm response's `warnings` to text that is safe to print:
  * strings only, each one printable line of bounded length, and a bounded
- * number of them. Anything else the registry sent there is dropped.
+ * number of them, with a count of the rest. Anything else the registry sent
+ * there is dropped.
  */
-function registryWarnings(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
+function registryWarnings(value: unknown): RegistryWarnings {
+  if (!Array.isArray(value)) return { messages: [], omitted: 0 };
   const cleaned: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") continue;
@@ -120,14 +129,10 @@ function registryWarnings(value: unknown): string[] {
         : text,
     );
   }
-  if (cleaned.length <= MAX_REGISTRY_WARNINGS) return cleaned;
-  const omitted = cleaned.length - MAX_REGISTRY_WARNINGS;
-  return [
-    ...cleaned.slice(0, MAX_REGISTRY_WARNINGS),
-    `${omitted} more registry ${
-      omitted === 1 ? "warning" : "warnings"
-    } omitted`,
-  ];
+  return {
+    messages: cleaned.slice(0, MAX_REGISTRY_WARNINGS),
+    omitted: Math.max(0, cleaned.length - MAX_REGISTRY_WARNINGS),
+  };
 }
 
 /** Information about the latest published version. */
@@ -468,7 +473,7 @@ export class ExtensionApiClient {
       name: data.name,
       version: data.version,
       ...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
-      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(warnings.messages.length > 0 ? { warnings } : {}),
     };
   }
 

@@ -174,7 +174,7 @@ export interface ExtensionPushSuccessData {
    * What the registry said about the push it accepted, such as client
    * contentMetadata it discarded. Present only when it said something.
    */
-  registryWarnings?: string[];
+  registryWarnings?: RegistryWarnings;
 }
 
 /** Data for compilation error output. */
@@ -511,7 +511,7 @@ export interface ExtensionPushExecuteDeps {
     version: string;
     extensionId: string;
     visibility?: "public" | "private";
-    warnings?: string[];
+    warnings?: RegistryWarnings;
   }>;
   getExtensionVisibility: (
     serverUrl: string,
@@ -532,6 +532,7 @@ import {
   ExtensionApiClient,
   type LatestVersionDetail,
   REGISTRY_FORBIDDEN_CODE,
+  type RegistryWarnings,
 } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { findPublishedVersion } from "./published_version_lookup.ts";
@@ -1907,7 +1908,7 @@ export async function* extensionPush(
         version: string;
         extensionId: string;
         visibility?: "public" | "private";
-        warnings?: string[];
+        warnings?: RegistryWarnings;
       };
       try {
         confirmResult = await deps.confirmPush(
@@ -1969,7 +1970,8 @@ export async function* extensionPush(
           skillCount: input.counts.skills,
           channel: input.channel ?? "stable",
           visibility,
-          ...(confirmResult.warnings && confirmResult.warnings.length > 0
+          ...(confirmResult.warnings &&
+              confirmResult.warnings.messages.length > 0
             ? { registryWarnings: confirmResult.warnings }
             : {}),
         },

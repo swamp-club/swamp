@@ -27,6 +27,7 @@ import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   extensionPush,
   type ExtensionPushEvent,
+  type ExtensionPushSuccessData,
 } from "../src/libswamp/extensions/push.ts";
 
 const manifest: ExtensionManifest = {
@@ -124,7 +125,7 @@ async function pushAgainstRegistry(
 
 function registryWarnings(
   event: ExtensionPushEvent | undefined,
-): string[] | undefined {
+): ExtensionPushSuccessData["registryWarnings"] {
   assertEquals(event?.kind, "completed");
   return event?.kind === "completed" ? event.data.registryWarnings : undefined;
 }
@@ -132,9 +133,10 @@ function registryWarnings(
 Deno.test("extension push: a registry warning on the confirm response reaches the completed event", async () => {
   const warning =
     "contentMetadata was rejected (too many methods); the registry listing was extracted from the archive instead";
-  assertEquals(registryWarnings(await pushAgainstRegistry([warning])), [
-    warning,
-  ]);
+  assertEquals(registryWarnings(await pushAgainstRegistry([warning])), {
+    messages: [warning],
+    omitted: 0,
+  });
 });
 
 Deno.test("extension push: registry warnings reach the completed event sanitised and capped", async () => {
@@ -144,10 +146,10 @@ Deno.test("extension push: registry warnings reach the completed event sanitised
     ...Array.from({ length: MAX_REGISTRY_WARNINGS + 1 }, (_, i) => `w${i}`),
   ];
   const received = registryWarnings(await pushAgainstRegistry(sent));
-  assertEquals(received?.length, MAX_REGISTRY_WARNINGS + 1);
-  assertEquals(received?.[0], "escape [2J second line");
-  assertEquals(received?.[1], "w0");
-  assertEquals(received?.at(-1), "2 more registry warnings omitted");
+  assertEquals(received?.messages.length, MAX_REGISTRY_WARNINGS);
+  assertEquals(received?.messages[0], "escape [2J second line");
+  assertEquals(received?.messages[1], "w0");
+  assertEquals(received?.omitted, 2);
 });
 
 for (

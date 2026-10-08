@@ -173,10 +173,13 @@ when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
 `versionBumpUpgrade`, and on a completed push `registry`), and the run
 summary at the top level. The `registry` family is what the registry said
 about a push it accepted, such as client `contentMetadata` it discarded in
-favour of its own extraction (swamp-club#2900); log mode prints it as a
-`Registry warnings:` block after the summary. The API client reduces that
-text to a bounded number of printable single lines before anything prints
-it, and it never gates the push. A blocked
+favour of its own extraction (swamp-club#2900): one `{ "message": ... }`
+object per warning. Log mode prints it as a `Registry warnings:` block after
+the summary. The API client reduces that text to at most 20 printable single
+lines before anything prints it; the number it left out is
+`registryWarningsOmitted` beside the summary, present only when above zero,
+and a closing line of the log block. The family appears only when the confirm
+response was received, and it never gates the push. A blocked
 prepare carries `errors` keyed by the gate that blocked it instead. The
 review-report skeleton is a nested object on its finding. Errors still go to
 stderr as `{"error": ...}`. Log mode prints a path relative to the current
