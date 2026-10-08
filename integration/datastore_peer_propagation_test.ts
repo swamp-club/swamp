@@ -954,8 +954,8 @@ for (const { label, twoPhaseSync } of FLUSH_MODES) {
         );
         // SETTLE/HASALL RESURRECTION: A's full-walk push did not arm the
         // pull fast path because A no longer holds every remote key
-        // (S3SYNC:3398-3427, 4049-4062), so A's
-        // next pull downloads the deleted data back.
+        // (S3SYNC:3398-3427, 4049-4062), so A's next pull downloads the
+        // deleted data back.
         expectOrGap(
           gaps,
           "s7 bare mark with delete: A's next pull brings the deleted data back",

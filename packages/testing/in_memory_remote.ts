@@ -36,8 +36,9 @@
  *   path marks are not recorded (S3SYNC:1757-1817). Past `dirtyPathsCap`
  *   paths the set overflows into bulk (S3SYNC:1799-1806). The extensions
  *   also mark a clean sidecar dirty again for a path it still lists
- *   (S3SYNC:1765-1772, 1794-1798); no sidecar here lists a path while
- *   clean, so that is not modelled.
+ *   (S3SYNC:1765-1772, 1794-1798). Only a pull under
+ *   {@link LEGACY_EXTENSION_SEMANTICS} leaves a sidecar clean with paths
+ *   listed, and those releases keep it clean, so that is not modelled.
  * - Dirty state lives in a per-cache "sidecar" that survives reconnects, like
  *   `.datastore-sync-state.json`. A push with a clean sidecar returns 0
  *   without walking, so a write that was never marked is never pushed
@@ -94,8 +95,9 @@
  * {@link EXTENSION_2026_10_01_SEMANTICS} removes nothing, and
  * {@link LEGACY_EXTENSION_SEMANTICS} (2026.09.24.1 and earlier) also makes
  * an unscoped pull of a moved remote mark the sidecar clean, dropping a
- * pending push, and a later mark of a path it still lists leave it clean. The same type
- * switches behaviours that later phases are expected to change.
+ * pending push, and a later mark of a path it still lists leave it clean.
+ * The same type switches behaviours that later phases are expected to
+ * change.
  *
  * Experimental: the defaults track the current extension releases and will
  * change with them and during the datastore rework.

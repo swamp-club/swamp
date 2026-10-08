@@ -1135,7 +1135,7 @@ Deno.test("createInMemoryRemote: pins that preparePush removes peer deletes and 
   });
 });
 
-Deno.test("createInMemoryRemote: pins that a clean push removes nothing, taking the fast path (S3SYNC:3018-3023)", async () => {
+Deno.test("createInMemoryRemote: pins that a clean push removes nothing, taking the fast path (S3SYNC:1945-1954)", async () => {
   await withTempDir(async (dir) => {
     const machines = await syncedPair(dir, { f: "1", keep: "k" });
     await peerDeletes(machines, ["f"]);
