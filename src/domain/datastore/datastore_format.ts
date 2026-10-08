@@ -118,9 +118,10 @@ export class UnsupportedDatastoreFormatError extends UserError {
         (required !== marker.format
           ? ` Reading it needs format ${required} support.`
           : "") +
-        ` This version of swamp supports format ${
-          supported.join(", ")
-        } only. Upgrade swamp to use it. Nothing was changed.`,
+        ` This version of swamp supports format${
+          supported.length === 1 ? "" : "s"
+        } ${supported.join(", ")} only. Upgrade swamp to use it. Nothing was ` +
+        "changed.",
       DATASTORE_FORMAT_UNSUPPORTED_CODE,
     );
     this.name = "UnsupportedDatastoreFormatError";
@@ -143,7 +144,8 @@ export class InvalidDatastoreFormatMarkerError extends UserError {
     super(
       `The datastore format marker ${source} is not a valid format marker ` +
         `(${reason}). swamp will not use a datastore whose format it cannot ` +
-        `determine. Nothing was changed.`,
+        `determine. Check who wrote it; if swamp did, report it with ` +
+        "`swamp issue bug`. Nothing was changed.",
       DATASTORE_FORMAT_MARKER_INVALID_CODE,
     );
     this.name = "InvalidDatastoreFormatMarkerError";
@@ -239,6 +241,8 @@ export function assertSupportedDatastoreFormat(
     case "present": {
       const marker = parseDatastoreFormatMarker(read.bytes, read.source);
       const required = marker.minReaderFormat ?? marker.format;
+      // An empty supported list cannot occur with the constant; read it as
+      // the unmarked format rather than refusing everything.
       if (required > (maxOf(supported) ?? UNMARKED_DATASTORE_FORMAT)) {
         throw new UnsupportedDatastoreFormatError(marker, supported);
       }

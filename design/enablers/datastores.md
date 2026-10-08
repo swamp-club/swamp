@@ -509,8 +509,9 @@ should revisit that trade-off.
   **target** datastore, before the first write to it.
 - Serve's dedicated audit datastores.
 
-A config that passed is remembered for the rest of the process, keyed on the
-config object, so one command pays one read. Nothing is cached across
+A config that passed, or whose check was skipped, is remembered for the rest
+of the process, keyed on the config object, so one command pays one read (or
+one bounded wait on a degraded remote). A refusal is never remembered. Nothing is cached across
 processes: a datastore can be migrated between runs. `swamp worker` never
 opens a datastore; it reaches one only through serve.
 `integration/datastore_format_guard_rules_test.ts` pins every production call

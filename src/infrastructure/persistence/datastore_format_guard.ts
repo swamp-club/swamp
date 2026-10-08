@@ -32,7 +32,10 @@ import {
 const logger = getLogger(["swamp", "datastore", "format-marker"]);
 
 /**
- * Config objects already checked in this process. `resolveDatastoreForRepo`
+ * Config objects already checked in this process, whether the check passed
+ * or was skipped (a failed read or a datastore that cannot carry a marker),
+ * so a degraded remote costs one bounded wait per config, not one per call.
+ * A refusal is never recorded. `resolveDatastoreForRepo`
  * returns a fresh config each call and the helpers hand that same object on
  * to `acquireModelLocks`, so one command pays one read, while a newly
  * resolved config is always checked again. Nothing outlives the process: a

@@ -80,7 +80,9 @@ export async function readDatastoreFormatMarker(
   if (!config.cachePath) {
     return { kind: "unsupported", reason: `${config.type} has no sync cache` };
   }
-  const source = `_control/${DATASTORE_FORMAT_MARKER_KEY}`;
+  // Names the datastore type too, so a user with several datastores (a
+  // serve audit datastore, say) can tell which one was refused.
+  const source = `_control/${DATASTORE_FORMAT_MARKER_KEY} on ${config.type}`;
   let store: ControlPlaneStore;
   try {
     const provider = await (options.resolveProvider ?? resolveCustomProvider)(

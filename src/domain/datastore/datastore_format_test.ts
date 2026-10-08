@@ -218,3 +218,17 @@ Deno.test("UnsupportedDatastoreFormatError: omits writtenBy when it is blank", (
     "This datastore uses format 3. ",
   );
 });
+
+Deno.test("UnsupportedDatastoreFormatError: names every supported format", () => {
+  assertStringIncludes(
+    new UnsupportedDatastoreFormatError({ format: 4 }, [2, 3]).message,
+    "This version of swamp supports formats 2, 3 only.",
+  );
+});
+
+Deno.test("InvalidDatastoreFormatMarkerError: ends with a next step", () => {
+  assertStringIncludes(
+    new InvalidDatastoreFormatMarkerError(SOURCE, "not valid JSON").message,
+    "Check who wrote it; if swamp did, report it with `swamp issue bug`.",
+  );
+});

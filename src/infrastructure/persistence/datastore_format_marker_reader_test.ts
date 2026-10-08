@@ -189,7 +189,7 @@ Deno.test("readDatastoreFormatMarker: reads the datastore-wide control-plane rec
   );
   assertEquals(read.kind, "present");
   if (read.kind !== "present") return;
-  assertEquals(read.source, "_control/datastore-format");
+  assertEquals(read.source, "_control/datastore-format on @test/store");
   assertEquals(new TextDecoder().decode(read.bytes), '{"format":3}');
   // A read writes nothing.
   assertEquals(remote.ops(), []);
