@@ -491,6 +491,9 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         // The orchestrator counts the worker as ready once enrollment
         // returns, so the handler is registered now; a dispatch that
         // arrives before admission waits for it.
+        // Until admission completes, a reconnect asks for a pass again; if
+        // the serve has since dropped its pass, that refusal stops the
+        // worker even while the first check is pending (fails closed).
         const admitGatePass = options.admitGatePass;
         const admitted = gate.admitted || !admitGatePass
           ? Promise.resolve()
@@ -537,6 +540,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           });
         });
       }).catch(async (error: unknown) => {
+        // Never rejects: everything below is caught and ends in finish().
         // An orchestrator with no pass to give refuses before redeeming the
         // token; admission turns that into the gate's own block.
         let failure = error;

@@ -88,7 +88,8 @@ export function publishNestedGatePass(handoff: GateHandoff | undefined): void {
  * pass its orchestrator sent at enrollment: it throws the gate's block
  * error, or records the run as verified and publishes the worker's own
  * nested pass for the dispatch runners it starts. Undefined when the gate
- * was not deferred: the worker passed on its own credential.
+ * was not deferred: the worker passed on its own credential. Call it from
+ * the command's action, after runCli has begun the session.
  */
 export function deferredWorkerAdmission(
   publish: (handoff: GateHandoff) => void = publishNestedGatePass,

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   overlayEnvironment,
   stripWorkerCredentials,
@@ -130,7 +130,7 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
   assertEquals(drainError?.code, "worker_draining");
 });
 
-Deno.test("registerDispatchHandler: a dispatch waits for admission and fails when it does", async () => {
+Deno.test("registerDispatchHandler: a dispatch waiting on a failed admission is refused as draining, so it is re-queued", async () => {
   const { worker, orchestrator } = channelPair();
   let reject: (error: Error) => void = () => {};
   const admitted = new Promise<void>((_, r) => reject = r);
@@ -149,9 +149,11 @@ Deno.test("registerDispatchHandler: a dispatch waits for admission and fails whe
     dispatchParams(),
     { timeoutMs: 1_000 },
   );
-  reject(new Error("not admitted"));
-  const error = await call.then(() => null, (e: unknown) => e as Error);
-  assertStringIncludes(error?.message ?? "", "not admitted");
+  reject(new Error("not vouched for"));
+  const error = await call.then(() => null, (e: unknown) => e as RpcError);
+  // The orchestrator re-queues worker_draining; any other code fails the step.
+  assertEquals(error?.code, "worker_draining");
+  assertEquals(error?.message.includes("not vouched for"), false);
 });
 
 Deno.test("registerDispatchHandler: a dispatch that waited for admission does not run once the connection closed", async () => {
