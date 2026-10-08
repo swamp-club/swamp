@@ -144,8 +144,6 @@ export function typePatternMatchesIgnoringAt(
   modelType: string,
 ): boolean {
   if (canonicalPattern === "*") return true;
-  const type = normalizeModelTypeName(modelType);
-  if (type === null) return false;
   const wildcard = canonicalPattern.endsWith("*");
   const prefix = (wildcard ? canonicalPattern.slice(0, -1) : canonicalPattern)
     .replace(/^[@/]+/, "");
@@ -155,5 +153,7 @@ export function typePatternMatchesIgnoringAt(
       modelType,
     );
   }
+  const type = normalizeModelTypeName(modelType);
+  if (type === null) return false;
   return wildcard ? type.startsWith(prefix) : type === prefix;
 }
