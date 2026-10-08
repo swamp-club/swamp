@@ -26,7 +26,17 @@ import type {
 import type { ExtensionInfoEvent } from "../../libswamp/extensions/info.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  escapeLogTemplate,
+  getSwampLogger,
+} from "../../infrastructure/logging/logger.ts";
+import { escapeControlCharacters } from "../../domain/control_characters.ts";
+import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
+import {
+  ACCEPTED_HEADER,
+  acceptedLine,
+  generatedDeclarationLine,
+} from "./extension_findings_report.ts";
 import { UserError } from "../../domain/errors.ts";
 
 function extractBasename(name: string): string {
@@ -110,6 +120,52 @@ function renderContentMetadata(
     for (const s of meta.skills) {
       logger.info`  ${s.name} — ${s.description}`;
     }
+  }
+}
+
+/**
+ * Prints what the author acknowledged for the latest version, in the push
+ * report's line format. Read through the registry parser so data relayed by
+ * a remote serve is checked here too; every author-supplied value has its
+ * control characters escaped, and each line is escaped for LogTape (reasons
+ * carry braces).
+ */
+function renderAcceptances(
+  logger: ReturnType<typeof getSwampLogger>,
+  raw: unknown,
+): void {
+  const acceptances = parseRegistryAcceptances(raw);
+  if (!acceptances) return;
+  const line = (text: string) => logger.info(escapeLogTemplate(text));
+  const esc = escapeControlCharacters;
+  logger.info``;
+  line(ACCEPTED_HEADER);
+  if (acceptances.generated) {
+    const { by, source, commit } = acceptances.generated;
+    line(
+      generatedDeclarationLine({
+        by: esc(by),
+        source: esc(source),
+        commit: esc(commit),
+      }),
+    );
+  }
+  for (const a of acceptances.accepted) {
+    const at = a.file !== undefined
+      ? `${esc(a.file)}${a.line !== undefined ? `:${a.line}` : ""}`
+      : "(extension)";
+    line(
+      acceptedLine(
+        esc(a.rule),
+        at,
+        a.reason !== undefined ? esc(a.reason) : undefined,
+      ),
+    );
+  }
+  const more = (acceptances.total ?? acceptances.accepted.length) -
+    acceptances.accepted.length;
+  if (more > 0) {
+    line(`  and ${more} more`);
   }
 }
 
@@ -210,6 +266,7 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
         if (d.contentMetadata) {
           renderContentMetadata(logger, d.contentMetadata, verbose);
         }
+        renderAcceptances(logger, d.contentMetadata?.acceptances);
 
         logger.info``;
 
