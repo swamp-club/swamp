@@ -100,6 +100,10 @@ import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
+import {
+  cleanupGraceSignal,
+  isCleanupGraceSignal,
+} from "../models/cancel_cause.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -10226,6 +10230,62 @@ Deno.test("WorkflowExecutionService: passes the datastore resolver to step, guar
   });
 });
 
+Deno.test("guard: a model.method() call in a run with no signal gets no fallback timer (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    let guardSignal: AbortSignal | undefined;
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        if (ctx.stepName.startsWith("__guard_")) guardSignal = ctx.signal;
+        return Promise.resolve(
+          ctx.stepName.startsWith("__guard_") ? null : { executed: true },
+        );
+      },
+    };
+    const workflow = Workflow.create({
+      name: "guarded-wf",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "guarded",
+          task: StepTask.modelMethod("some-model", "run"),
+          guard: '${{ model.method("infra", "exists") }}',
+        })],
+      })],
+    });
+    await workflowRepo.save(workflow);
+
+    // A timer-backed signal looks like any other until it fires, so count
+    // the timers the run asks for instead of waiting one out.
+    const timeouts: number[] = [];
+    const originalTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) => {
+      timeouts.push(ms);
+      return originalTimeout.call(AbortSignal, ms);
+    };
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const run = await new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      ).execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+    } finally {
+      AbortSignal.timeout = originalTimeout;
+      catalogStore.close();
+    }
+
+    assertExists(guardSignal);
+    assertEquals(guardSignal.aborted, false);
+    assertEquals(timeouts, []);
+  });
+});
+
 Deno.test("WorkflowExecutionService: saves and replays evaluated workflows through the datastore resolver (swamp-club#2381)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
@@ -12111,6 +12171,16 @@ class AbortingStepExecutor extends CountingStepExecutor {
   }
 }
 
+/** An {@link AbortingStepExecutor} that keeps the signal each step ran under. */
+class SignalRecordingAbortingExecutor extends AbortingStepExecutor {
+  readonly signals = new Map<string, AbortSignal>();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.signals.set(`${ctx.jobName}/${ctx.stepName}`, ctx.signal);
+    return super.execute(step, ctx);
+  }
+}
+
 async function finishedRun(
   stream: AsyncIterable<WorkflowExecutionEvent>,
 ): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
@@ -12448,6 +12518,69 @@ Deno.test("abort cleanup: an always-gated cleanup reached after the abort still 
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
     assertEquals(executor.count("main/cleanup"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a cleanup step runs under the cleanup grace signal, not the run's (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "step-grace-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("cleanup", onStep("a", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await runUntilAborted(service, workflow, executor.controller.signal);
+
+    assertEquals(isCleanupGraceSignal(executor.signals.get("main/a")!), false);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("main/cleanup")!),
+      true,
+    );
+  });
+});
+
+Deno.test("abort cleanup: a cleanup job runs under the cleanup grace signal, not the run's (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "job-grace-wf",
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "cleanup",
+          dependsOn: [{ job: "j1", condition: TriggerCondition.always() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await runUntilAborted(service, workflow, executor.controller.signal);
+
+    assertEquals(isCleanupGraceSignal(executor.signals.get("j1/s1")!), false);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("cleanup/c")!),
+      true,
+    );
   });
 });
 
@@ -17332,11 +17465,11 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
 
 /**
  * Runs one model_method step whose method body is `execute`, under the run
- * signal `controller` owns and, when given, as a step of `workflowRun`, and
+ * signal `controller` holds and, when given, as a step of `workflowRun`, and
  * reports the step's output and tracker rows.
  */
 async function runModelStep(
-  controller: AbortController,
+  controller: { signal: AbortSignal },
   execute: () => Promise<Record<string, never>>,
   workflowRun?: WorkflowRun,
 ): Promise<{
@@ -17428,6 +17561,58 @@ Deno.test("DefaultStepExecutor: a method the run's abort stops is recorded cance
     runId: outputs[0].id,
     status: "cancelled",
   }]);
+});
+
+Deno.test("DefaultStepExecutor: a plain abort records the method run as aborted and leaves the tracker row's reason unset (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort();
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "aborted");
+  assertEquals(tracker.completionReasons, [undefined]);
+});
+
+Deno.test("DefaultStepExecutor: a method the run's timeout stops is recorded cancelled as timed out (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort(new DOMException("Signal timed out.", "TimeoutError"));
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "timed out");
+  assertEquals(tracker.completions, [{
+    runId: outputs[0].id,
+    status: "cancelled",
+  }]);
+  assertEquals(tracker.completionReasons, ["timed out"]);
+});
+
+Deno.test("DefaultStepExecutor: a method cancelled with a reason records that reason (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort(new Error("No longer needed"));
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "No longer needed");
+  assertEquals(tracker.completionReasons, ["No longer needed"]);
+});
+
+Deno.test("DefaultStepExecutor: a cleanup method the cleanup grace cuts off is recorded cancelled as cleanup grace expired (swamp-club#2922)", async () => {
+  const signal = cleanupGraceSignal(1);
+  const { outputs, tracker } = await runModelStep({ signal }, async () => {
+    await waitFor(() => signal.aborted, "the cleanup grace to run out");
+    throw new Error("process exited with signal SIGTERM");
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "cleanup grace expired");
+  assertEquals(tracker.completionReasons, ["cleanup grace expired"]);
 });
 
 Deno.test("DefaultStepExecutor: a method that fails without an abort is still recorded failed", async () => {

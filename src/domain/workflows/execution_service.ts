@@ -136,6 +136,7 @@ import {
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
+import { cancelCause, cleanupGraceSignal } from "../models/cancel_cause.ts";
 import { hostname } from "node:os";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
@@ -2097,8 +2098,15 @@ export class DefaultStepExecutor implements StepExecutor {
         // the run's abort stopped was cancelled, not failed.
         const aborted = ctx.signal.aborted ||
           (error instanceof DOMException && error.name === "AbortError");
+        // What stopped it: a plain abort names no cause, which leaves the
+        // tracker row's reason for `swamp model cancel` to fill in.
+        const cause = aborted ? cancelCause(ctx.signal) : undefined;
         if (runTracker) {
-          runTracker.complete(output.id, aborted ? "cancelled" : "failed");
+          runTracker.complete(
+            output.id,
+            aborted ? "cancelled" : "failed",
+            cause,
+          );
         }
 
         await this.handleMethodFailure({
@@ -2116,6 +2124,7 @@ export class DefaultStepExecutor implements StepExecutor {
           reportMethodArgs,
           error,
           aborted,
+          cancelCause: cause,
           output,
           savedArtifacts,
         });
@@ -2546,6 +2555,8 @@ export class DefaultStepExecutor implements StepExecutor {
     error: unknown;
     /** Whether the run's abort stopped the method; it is then cancelled. */
     aborted: boolean;
+    /** What aborted it, when the abort named a cause (see `cancelCause`). */
+    cancelCause?: string;
     output: ModelOutput;
     savedArtifacts: Array<{
       dataId: string;
@@ -2569,6 +2580,7 @@ export class DefaultStepExecutor implements StepExecutor {
       reportMethodArgs,
       error,
       aborted,
+      cancelCause: cause,
       output,
       savedArtifacts,
     } = args;
@@ -2593,7 +2605,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
     if (aborted) {
-      output.markCancelled("aborted");
+      output.markCancelled(cause ?? "aborted");
     } else {
       output.markFailed({ message: errorMessage, stack: errorStack });
     }
@@ -4572,7 +4584,7 @@ export class WorkflowExecutionService {
         const cleanupMode: boolean = (jobFailed || jobUndecided) &&
           (options.signal?.aborted ?? false);
         const levelSignal: AbortSignal | undefined = cleanupMode
-          ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+          ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
           : options.signal;
         const levelOptions = cleanupMode
           ? { ...options, signal: levelSignal, cleanupStepLevel: true }
@@ -6309,7 +6321,7 @@ export class WorkflowExecutionService {
           jobName: job.name,
           stepName: syntheticName,
           repoDir: this.repoDir,
-          signal: options.signal ?? AbortSignal.timeout(30_000),
+          signal: options.signal ?? new AbortController().signal,
           expressionContext: stepExprContext,
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
@@ -6440,7 +6452,7 @@ export class WorkflowExecutionService {
   } {
     const cleanupMode = anyJobFailed && (signal?.aborted ?? false);
     const levelSignal = cleanupMode
-      ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+      ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
       : signal;
     const levelStepOpts = cleanupMode
       ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }

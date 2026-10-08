@@ -46,6 +46,7 @@ import { generateDataId } from "../../domain/data/data_id.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import type { ModelOutput } from "../../domain/models/model_output.ts";
 
 await initializeLogging({});
 
@@ -471,6 +472,83 @@ Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   // The output should have been saved as cancelled
   const cancelledSaves = savedOutputs.filter((o) => o.status === "cancelled");
   assertEquals(cancelledSaves.length > 0, true);
+});
+
+/**
+ * Runs a method that fails once `controller` has aborted, and reports the
+ * cancelled output's error message and the reason its tracker row got.
+ */
+async function cancelledRunRecords(
+  controller: AbortController,
+): Promise<{ message: string | undefined; reason: string | undefined }> {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const messages: (string | undefined)[] = [];
+  const reasons: (string | undefined)[] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () =>
+      createFailingExecutionService(
+        new Error("process exited with signal SIGTERM"),
+      ),
+    outputRepo: {
+      ...createFakeOutputRepo(),
+      save: (_type: unknown, _method: unknown, output: unknown) => {
+        const saved = output as ModelOutput;
+        if (saved.status === "cancelled") messages.push(saved.error?.message);
+        return Promise.resolve();
+      },
+    } as ReturnType<typeof createFakeOutputRepo>,
+    runTracker: {
+      register: () => {},
+      heartbeat: () => {},
+      complete: (_runId: string, _status: string, reason?: string) => {
+        reasons.push(reason);
+      },
+    } as unknown as RunTrackerRepository,
+  };
+
+  await collect(
+    modelMethodRun(
+      createLibSwampContext({ signal: controller.signal }),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  assertEquals(messages.length, 1);
+  assertEquals(reasons.length, 1);
+  return { message: messages[0], reason: reasons[0] };
+}
+
+Deno.test("modelMethodRun: a plain abort records aborted and leaves the tracker row's reason unset (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  assertEquals(await cancelledRunRecords(controller), {
+    message: "aborted",
+    reason: undefined,
+  });
+});
+
+Deno.test("modelMethodRun: a timeout records the run cancelled as timed out (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("Signal timed out.", "TimeoutError"));
+
+  assertEquals(await cancelledRunRecords(controller), {
+    message: "timed out",
+    reason: "timed out",
+  });
+});
+
+Deno.test("modelMethodRun: a cancel with a reason records that reason (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("No longer needed"));
+
+  assertEquals(await cancelledRunRecords(controller), {
+    message: "No longer needed",
+    reason: "No longer needed",
+  });
 });
 
 // --- Error factory tests ---

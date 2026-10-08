@@ -2628,7 +2628,9 @@ order:
 
 - Steps whose dependency conditions are met run with a fresh 30-second cleanup
   signal. `always` is true unconditionally; `completed` is true when the
-  dependency reached `succeeded` or `failed`.
+  dependency reached `succeeded` or `failed`. A cleanup step's model method
+  that the 30 seconds cut off saves its method run `cancelled` with the cause
+  `cleanup grace expired`.
 - Steps whose conditions are not met (`succeeded` on a failed dependency) are
   skipped.
 - An in-flight step stopped by the cancellation signal is marked `failed`. A
@@ -2640,7 +2642,11 @@ order:
   record the run waits for them, and for any guard or assert
   `model.method()` call still in flight, until `STEP_STOP_GRACE_MS` (4 s)
   after the cancellation. Each method therefore saves its method run
-  `cancelled` before `swamp workflow run` pushes its data and exits; a method
+  `cancelled` before `swamp workflow run` pushes its data and exits. The method
+  run's error message is the cause of the cancel (`cancelCause` in
+  `src/domain/models/cancel_cause.ts`): `timed out` when the run's `--timeout`
+  stopped it, the reason a cancel through serve or the scheduler gave, or
+  `aborted` for a cancel that named none. A method
   still running after that keeps its method run `running` (swamp-club#2918),
   as does any method whose owner was killed. The wait counts from the
   cancellation, so a run whose cleanup steps outlast it does not wait at all.

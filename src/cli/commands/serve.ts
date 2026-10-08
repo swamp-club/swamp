@@ -822,8 +822,9 @@ export async function readCancelRequestReason(
 
 /**
  * The body of a successful single-run cancel response. A workflow run also
- * gets the `cancel_reason` serve applied; a method run records no reason, so
- * reporting one would claim a record that does not exist.
+ * gets the `cancel_reason` serve applied. A method run records the reason
+ * itself, once the abort stops it (`cancelCause`), so reporting one here would
+ * claim a record that may not exist yet.
  */
 export function cancelSuccessBody(
   result: CancelResult,
