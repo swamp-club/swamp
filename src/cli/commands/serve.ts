@@ -2380,7 +2380,9 @@ export const serveCommand = new Command()
     "--hydration-timeout <duration:string>",
     "Maximum time to wait for initial datastore cache hydration at startup. " +
       "Accepts seconds (60), explicit units (60s, 5m). Default: 60s. " +
-      "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
+      "Increase for large repos where the initial pull takes longer. " +
+      "With managedConfig it applies to each of 3 attempts, and startup fails if all of them fail " +
+      "(env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
     "--shutdown-drain-timeout <duration:string>",
@@ -3077,11 +3079,17 @@ export const serveCommand = new Command()
         }
       }
 
+      // A managedConfig instance has no state but its datastore, so it
+      // retries a failed hydration and then refuses to start rather than
+      // serve from a partial cache (swamp-club#3180).
+      const hydrationSignal = () => AbortSignal.timeout(hydrationTimeoutMs);
       await hydrateLocalCache({
         syncService,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        signal: AbortSignal.timeout(hydrationTimeoutMs),
         namespace: serveNamespace,
+        ...(repoMarker?.datastore?.managedConfig
+          ? { required: { attemptSignal: hydrationSignal } }
+          : { signal: hydrationSignal() }),
       });
 
       if (serveNamespace && rootReadErrors.length > 0) {

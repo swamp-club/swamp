@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertNotStrictEquals,
+  assertRejects,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
+import { UserError } from "../domain/errors.ts";
 import {
   type BootReconciliationDeps,
   checkTokenHealth,
@@ -33,7 +40,10 @@ import {
   sweepTokenConsistency,
   type TokenConsistencyDeps,
 } from "./boot_reconciliation.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncOptions,
+  DatastoreSyncService,
+} from "../domain/datastore/datastore_sync_service.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -1425,6 +1435,116 @@ Deno.test("hydrateLocalCache: does not invalidate catalog when zero files pulled
   const h = createHydrateDeps({ pullResult: 0 });
   await hydrateLocalCache(h.deps);
   assertEquals(h.invalidated.length, 0);
+});
+
+function createRequiredHydrateDeps(
+  outcomes: Array<number | Error>,
+): {
+  deps: HydrateLocalCacheDeps;
+  pulls: DatastoreSyncOptions[];
+  signals: AbortSignal[];
+  backoffs: number[];
+  invalidated: boolean[];
+} {
+  const pulls: DatastoreSyncOptions[] = [];
+  const signals: AbortSignal[] = [];
+  const backoffs: number[] = [];
+  const invalidated: boolean[] = [];
+  const syncService = {
+    pullChanged: (options?: DatastoreSyncOptions) => {
+      pulls.push(options ?? {});
+      const outcome = outcomes[pulls.length - 1];
+      return outcome instanceof Error
+        ? Promise.reject(outcome)
+        : Promise.resolve(outcome);
+    },
+  } as unknown as DatastoreSyncService;
+  return {
+    deps: {
+      syncService,
+      catalogInvalidate: () => invalidated.push(true),
+      required: {
+        attemptSignal: () => {
+          const signal = new AbortController().signal;
+          signals.push(signal);
+          return signal;
+        },
+        backoff: (failedAttempt) => {
+          backoffs.push(failedAttempt);
+          return Promise.resolve();
+        },
+      },
+    },
+    pulls,
+    signals,
+    backoffs,
+    invalidated,
+  };
+}
+
+Deno.test("hydrateLocalCache: required hydration retries a failed pull with a fresh signal", async () => {
+  const h = createRequiredHydrateDeps([new Error("S3 timeout"), 7]);
+  const result = await hydrateLocalCache(h.deps);
+
+  assertEquals(result.pulled, 7);
+  assertEquals(h.pulls.length, 2);
+  assertEquals(h.backoffs, [1]);
+  assertStrictEquals(h.pulls[0].signal, h.signals[0]);
+  assertStrictEquals(h.pulls[1].signal, h.signals[1]);
+  assertNotStrictEquals(h.signals[0], h.signals[1]);
+  assertEquals(h.invalidated.length, 1);
+});
+
+Deno.test("hydrateLocalCache: required hydration invalidates when a retry pulls nothing more", async () => {
+  // The failed attempt may have downloaded everything before it failed.
+  const h = createRequiredHydrateDeps([new Error("S3 timeout"), 0]);
+  const result = await hydrateLocalCache(h.deps);
+
+  assertEquals(result.pulled, 0);
+  assertEquals(h.invalidated.length, 1);
+});
+
+Deno.test("hydrateLocalCache: required hydration throws after the last attempt fails", async () => {
+  const h = createRequiredHydrateDeps([
+    new Error("first"),
+    new Error("second"),
+    new Error("S3 unreachable."),
+  ]);
+
+  const error = await assertRejects(
+    () => hydrateLocalCache(h.deps),
+    UserError,
+  );
+
+  assertStringIncludes(
+    error.message,
+    "after 3 attempt(s): S3 unreachable. swamp serve",
+  );
+  assertStringIncludes(error.message, "--hydration-timeout");
+  assertEquals(h.pulls.length, 3);
+  assertEquals(h.backoffs, [1, 2]);
+  assertEquals(h.invalidated.length, 0);
+});
+
+Deno.test("hydrateLocalCache: required hydration honours a custom attempt count", async () => {
+  const h = createRequiredHydrateDeps([new Error("only")]);
+  h.deps.required!.attempts = 1;
+
+  await assertRejects(() => hydrateLocalCache(h.deps), UserError);
+  assertEquals(h.pulls.length, 1);
+  assertEquals(h.backoffs, []);
+});
+
+Deno.test("hydrateLocalCache: required hydration falls back to the default for a non-finite attempt count", async () => {
+  const h = createRequiredHydrateDeps([
+    new Error("first"),
+    new Error("second"),
+    new Error("third"),
+  ]);
+  h.deps.required!.attempts = NaN;
+
+  await assertRejects(() => hydrateLocalCache(h.deps), UserError);
+  assertEquals(h.pulls.length, 3);
 });
 
 Deno.test("hydrateLocalCache: catches pull failure and returns zero", async () => {
