@@ -22,6 +22,7 @@ import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import {
   classifyInRepoConfig,
   type ConfigTierConflict,
+  type DatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
@@ -37,6 +38,7 @@ import {
   migrateDatastore,
   verifyMigration,
 } from "../../domain/datastore/datastore_migration_service.ts";
+import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import {
   getMigrationSentinelPath,
@@ -47,6 +49,7 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
+import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import {
   getSwampDataDir,
   swampPath,
@@ -212,6 +215,28 @@ export interface DatastoreSetupDeps {
     datastoreConfig: Record<string, unknown>,
   ) => Promise<void>;
   collapseEnvVars: (path: string) => string;
+  /**
+   * Refuses the target datastore when its format marker names a format this
+   * binary cannot read. Setup calls it before its first write to the
+   * target (swamp-club#3189). `provider` is the target's provider, already
+   * built, for extension datastores.
+   */
+  assertDatastoreFormat: (
+    repoDir: string,
+    config: DatastoreConfig,
+    provider?: DatastoreProvider,
+  ) => Promise<void>;
+}
+
+/** The error event for a datastore format check that refused. */
+function formatRefusal(err: unknown): DatastoreSetupEvent {
+  if (err instanceof UserError && err.code) {
+    return {
+      kind: "error",
+      error: { code: err.code, message: err.message, cause: err },
+    };
+  }
+  throw err;
 }
 
 /** Sets up a filesystem datastore. */
@@ -236,6 +261,16 @@ export async function* datastoreSetupFilesystem(
             message: err instanceof Error ? err.message : String(err),
           },
         };
+        return;
+      }
+
+      try {
+        await deps.assertDatastoreFormat(input.repoDir, {
+          type: "filesystem",
+          path: input.datastorePath,
+        });
+      } catch (err) {
+        yield formatRefusal(err);
         return;
       }
 
@@ -466,6 +501,22 @@ export async function* datastoreSetupExtension(
 
       // Create provider and verify health
       const provider = typeInfo.createProvider(input.config);
+      const cachePath = provider.resolveCachePath?.(input.repoDir) ??
+        join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
+
+      try {
+        await deps.assertDatastoreFormat(input.repoDir, {
+          type: input.type,
+          config: input.config,
+          datastorePath: provider.resolveDatastorePath(input.repoDir),
+          cachePath,
+          ...(input.namespace ? { namespace: input.namespace } : {}),
+        }, provider);
+      } catch (err) {
+        yield formatRefusal(err);
+        return;
+      }
+
       const verifier = provider.createVerifier();
       const health = await verifier.verify();
       if (!health.healthy) {
@@ -534,8 +585,6 @@ export async function* datastoreSetupExtension(
           : DEFAULT_SYNC_TIMEOUT_MS;
       })();
 
-      const cachePath = provider.resolveCachePath?.(input.repoDir) ??
-        join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
       const syncService = provider.createSyncService?.(
         input.repoDir,
         cachePath,
@@ -1116,6 +1165,12 @@ export function createDatastoreSetupDeps(
       };
     },
     collapseEnvVars,
+    assertDatastoreFormat: (repoDir, config, provider) =>
+      ensureSupportedDatastoreFormat(
+        repoDir,
+        config,
+        provider ? { resolveProvider: () => Promise.resolve(provider) } : {},
+      ),
   };
 }
 

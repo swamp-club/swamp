@@ -94,3 +94,18 @@ export { getDatastoreType, getDatastoreTypes } from "./datastore_types.ts";
 
 export { ExtensionLoader } from "../extensions/extension_loader.ts";
 export { datastoreKindAdapter } from "../extensions/datastore_kind_adapter.ts";
+
+export {
+  assertSupportedDatastoreFormat,
+  DATASTORE_FORMAT_MARKER_FILE,
+  DATASTORE_FORMAT_MARKER_INVALID_CODE,
+  DATASTORE_FORMAT_MARKER_KEY,
+  DATASTORE_FORMAT_UNSUPPORTED_CODE,
+  type DatastoreFormatDecision,
+  type DatastoreFormatMarker,
+  type DatastoreFormatMarkerRead,
+  InvalidDatastoreFormatMarkerError,
+  parseDatastoreFormatMarker,
+  SUPPORTED_DATASTORE_FORMATS,
+  UnsupportedDatastoreFormatError,
+} from "./datastore_format.ts";

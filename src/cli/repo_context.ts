@@ -187,6 +187,7 @@ export function createLockProgressWriter(label: string): LockProgressWriter {
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -761,6 +762,10 @@ export async function resolveDatastoreForRepo(
     undefined,
     repoPath.value,
   );
+
+  // Before any caller locks, pulls, pushes or writes: refuse a datastore
+  // marked with a format this binary cannot read (swamp-club#3189).
+  await ensureSupportedDatastoreFormat(repoPath.value, datastoreConfig);
 
   return { repoDir: repoPath.value, datastoreConfig, marker };
 }
@@ -2413,6 +2418,10 @@ export async function acquireModelLocks(
   const logger = getSwampLogger(["datastore", "lock"]);
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
   let synced = false;
+
+  // Free when the config came through resolveDatastoreForRepo; checks a
+  // config resolved any other way before the first lock (swamp-club#3189).
+  await ensureSupportedDatastoreFormat(repoDir ?? ".", config);
 
   // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;

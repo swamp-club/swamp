@@ -21,6 +21,7 @@ import type {
   DatastoreSetupEvent,
   DatastoreSetupWarningData,
 } from "../../libswamp/datastores/setup.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import type { EventHandlers } from "../../libswamp/stream.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -108,10 +109,21 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         writeOutput(lines.join("\n"));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw setupError(e.error);
       },
     };
   }
+}
+
+/**
+ * The error a setup error event throws. A refusal that carries the
+ * datastore's own UserError (the format check, swamp-club#3189) rethrows it,
+ * keeping its code for `--json`; other setup errors render as before.
+ */
+function setupError(error: SwampError): UserError {
+  return error.cause instanceof UserError
+    ? error.cause
+    : new UserError(error.message);
 }
 
 class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
@@ -135,7 +147,7 @@ class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         );
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw setupError(e.error);
       },
     };
   }

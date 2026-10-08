@@ -220,6 +220,7 @@ import {
 } from "../../presentation/output/serve_check_config_output.ts";
 import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import {
   apiKeySourceName,
   CLUB_API_KEY_FILE_FLAG,
@@ -4373,6 +4374,15 @@ export const serveCommand = new Command()
             ".swamp",
             `audit-cache-${entry.target}`,
           );
+          // A dedicated audit datastore is a datastore too: refuse one marked
+          // with a format this binary cannot read before writing to it
+          // (swamp-club#3189).
+          await ensureSupportedDatastoreFormat(resolvedRepoDir, {
+            type: entry.type,
+            config: resolvedConfig,
+            datastorePath: provider.resolveDatastorePath(resolvedRepoDir),
+            cachePath: tmpCachePath,
+          }, { resolveProvider: () => Promise.resolve(provider) });
           const syncService = provider.createSyncService?.(
             resolvedRepoDir,
             tmpCachePath,
