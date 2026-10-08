@@ -109,6 +109,7 @@ import {
   type RecordedOwner,
   resolveModelTarget,
   resolveWorkflowTarget,
+  restrictedModelAuthorization,
   targetArgument,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
@@ -913,17 +914,23 @@ export async function handleDataDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const target = await resolveModelTarget(
+  const resolved = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
     "data",
+  );
+  // Deleting a restricted model's data needs admin (swamp-club#3131).
+  const { action, resolution: target } = restrictedModelAuthorization(
+    resolved,
+    "write",
+    ctx.authConfig.restrictedModelTypes,
   );
   if (
     !authorizeResolved(
       socket,
       requestId,
       principal,
-      "write",
+      action,
       target,
       payload.modelIdOrName,
       "data",
@@ -997,17 +1004,23 @@ export async function handleDataRename(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const target = await resolveModelTarget(
+  const resolved = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
     "data",
+  );
+  // Renaming a restricted model's data needs admin (swamp-club#3131).
+  const { action, resolution: target } = restrictedModelAuthorization(
+    resolved,
+    "write",
+    ctx.authConfig.restrictedModelTypes,
   );
   if (
     !authorizeResolved(
       socket,
       requestId,
       principal,
-      "write",
+      action,
       target,
       payload.modelIdOrName,
       "data",

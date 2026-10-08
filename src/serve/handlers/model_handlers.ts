@@ -119,6 +119,7 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
+import type { Action } from "../../domain/access/action.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import {
   acquireModelLocks,
@@ -179,6 +180,7 @@ import {
   resolveModelTarget,
   resolveOutputAccess,
   type ResourceResolution,
+  restrictedModelAuthorization,
   targetArgument,
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
@@ -1451,16 +1453,22 @@ export async function handleModelDelete(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  const target = await resolveModelTarget(
+  const resolved = await resolveModelTarget(
     ctx.repoContext.definitionRepo,
     payload.modelIdOrName,
+  );
+  // Deleting a model of a restricted type needs admin (swamp-club#3131).
+  const { action, resolution: target } = restrictedModelAuthorization(
+    resolved,
+    "write",
+    ctx.authConfig.restrictedModelTypes,
   );
   if (
     !authorizeResolved(
       socket,
       requestId,
       principal,
-      "write",
+      action,
       target,
       payload.modelIdOrName,
       "model",
@@ -2415,15 +2423,19 @@ export async function handleModelEdit(
       tags: { ...resolved.definition.tags },
     }
     : null;
+  const authorization = current
+    ? modelEditAuthorization(current, ctx.authConfig.restrictedModelTypes)
+    : {
+      action: "write" as const,
+      resource: unresolvedAccessResource("model", payload.modelIdOrName),
+    };
   if (
     !authorizeOrReject(
       socket,
       requestId,
       principal,
-      "write",
-      current
-        ? modelEditResource(current)
-        : unresolvedAccessResource("model", payload.modelIdOrName),
+      authorization.action,
+      authorization.resource,
       ctx,
     ).allowed
   ) return;
@@ -2472,15 +2484,20 @@ export async function handleModelEdit(
             // rename or retag needs write on the result. It runs on every save
             // rather than only on a detected change, so a concurrent retag
             // between the lookup above and the save cannot skip it.
-            authorizeUpdate: (_before, after) =>
-              authorizeOrReject(
+            authorizeUpdate: (_before, after) => {
+              const { action, resource } = modelEditAuthorization(
+                after,
+                ctx.authConfig.restrictedModelTypes,
+              );
+              return authorizeOrReject(
                 socket,
                 requestId,
                 principal,
-                "write",
-                modelEditResource(after),
+                action,
+                resource,
                 ctx,
-              ).allowed,
+              ).allowed;
+            },
             // The expressions the edit adds are authorized against this
             // writer; those already stored are not (swamp-club#2755).
             authorizeContent: async (before, after) => {
@@ -2539,25 +2556,36 @@ export async function handleModelEdit(
 }
 
 /**
- * The resource an edit is authorized on, before and after. A control-plane
- * model (grant, group, token, worker) is its access record, so editing one —
- * or editing a model into one — needs admin (swamp-club#2756).
+ * The action and resource an edit is authorized on, before and after. A
+ * control-plane model (grant, group, token, worker) is its access record, so
+ * editing one — or editing a model into one — needs admin (swamp-club#2756).
+ * A model of a restricted type needs admin on access:*, judged on its fields,
+ * as creating or running one does (swamp-club#3131).
  */
-function modelEditResource(target: ModelEditTarget): AccessResource {
+function modelEditAuthorization(
+  target: ModelEditTarget,
+  restrictedModelTypes: readonly string[],
+): { action: Action; resource: AccessResource } {
   if (isControlPlaneModelType(target.modelType)) {
-    return controlPlaneRecordResource(target.modelType, {
-      name: target.name,
-      tags: target.tags,
-    });
+    return {
+      action: "write",
+      resource: controlPlaneRecordResource(target.modelType, {
+        name: target.name,
+        tags: target.tags,
+      }),
+    };
+  }
+  const fields = {
+    modelType: target.modelType,
+    name: target.name,
+    tags: target.tags,
+  };
+  if (isAdminOnlyModelType(undefined, target.modelType, restrictedModelTypes)) {
+    return { action: "admin", resource: { kind: "access", name: "*", fields } };
   }
   return {
-    kind: "model",
-    name: target.name,
-    fields: {
-      modelType: target.modelType,
-      name: target.name,
-      tags: target.tags,
-    },
+    action: "write",
+    resource: { kind: "model", name: target.name, fields },
   };
 }
 

@@ -61,6 +61,7 @@ import type { Principal } from "../../domain/access/principal.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
+  isAdminOnlyModelType,
   isAuthorized,
   recordAuditedResource,
   sanitizeErrorForClient,
@@ -75,6 +76,8 @@ export type ResourceResolution =
     resource: AccessResource;
     id: string;
     name: string;
+    /** The model's normalized type, for a model reference. */
+    modelType?: string;
   }
   | {
     /**
@@ -202,6 +205,40 @@ async function resolveModel(
     resource: modelAccessResource(result, kind),
     id: result.definition.id,
     name: result.definition.name,
+    modelType: result.type.normalized,
+  };
+}
+
+/**
+ * What a change to a resolved model — editing, deleting, or deleting or
+ * renaming its data — is authorized as: `action` on its resource, or, for a
+ * model of a restricted type, admin on access:* judged on the model's fields,
+ * as creating or running one is (swamp-club#3131). Only the resource and
+ * action change, so the request still acts on the id and name judged. A
+ * control-plane model keeps its access record, which already needs admin.
+ */
+export function restrictedModelAuthorization(
+  resolution: ResourceResolution,
+  action: Action,
+  restrictedModelTypes: readonly string[],
+): { action: Action; resolution: ResourceResolution } {
+  if (
+    resolution.status !== "found" || resolution.modelType === undefined ||
+    isControlPlaneModelType(resolution.modelType) ||
+    !isAdminOnlyModelType(undefined, resolution.modelType, restrictedModelTypes)
+  ) {
+    return { action, resolution };
+  }
+  return {
+    action: "admin",
+    resolution: {
+      ...resolution,
+      resource: {
+        kind: "access",
+        name: "*",
+        fields: resolution.resource.fields,
+      },
+    },
   };
 }
 

@@ -1612,7 +1612,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create, run, edit or delete, including deleting or renaming their data and changing workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -2298,7 +2298,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types that require admin authority to create, run, edit or delete, including deleting or renaming their data and changing workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",

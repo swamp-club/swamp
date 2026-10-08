@@ -132,6 +132,43 @@ export function workflowStepTargets(workflow: Workflow): StepTarget[] {
 }
 
 /**
+ * The targets of the steps an edit adds or changes: each step of `after`
+ * with no stored step at its scope, or whose content — inputs, method,
+ * condition, dependsOn as much as what it runs — differs from the stored
+ * one. A step renamed or moved to another job has a new scope, so it counts
+ * as changed; a step left alone while others are added, removed or
+ * reordered does not. Removed steps are not returned.
+ */
+export function changedStepTargets(
+  before: Workflow,
+  after: Workflow,
+): StepTarget[] {
+  const stored = stepContents(before);
+  const changed = new Set<string>();
+  for (const [scope, content] of stepContents(after)) {
+    if (stored.get(scope) !== content) changed.add(scope);
+  }
+  return workflowStepTargets(after).filter((target) =>
+    target.location !== undefined && changed.has(target.location)
+  );
+}
+
+/** Each step's canonical content, keyed by its scope. */
+function stepContents(workflow: Workflow): Map<string, string> {
+  const scopes = stepScopes(workflow);
+  const contents = new Map<string, string>();
+  workflow.jobs.forEach((job, j) =>
+    job.steps.forEach((step, k) =>
+      contents.set(
+        scopes.get(`jobs[${j}].steps[${k}]`)!,
+        canonicalJson(step.toData()),
+      )
+    )
+  );
+  return contents;
+}
+
+/**
  * Every expression a run of `workflow` evaluates as authored: its `${{ }}`
  * templates and its assert steps' bare predicates. Paths inside a step are
  * given by the step's scope (job and step name), so they match across edits

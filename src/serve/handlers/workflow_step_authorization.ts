@@ -90,6 +90,79 @@ export async function authorizeStepTargets(
   return undefined;
 }
 
+/**
+ * Checks the stored steps an edit changes. A run of the workflow invokes a
+ * step's model with whatever inputs the step holds, so changing a stored
+ * step that runs a restricted or control-plane model changes what that
+ * model runs with, and needs admin as adding it does (swamp-club#3131). A
+ * changed step whose model is computed may run any model, so it needs admin
+ * too. Other changed steps need nothing more: their target was checked when
+ * added. Returns a refusal message, or undefined when all are allowed.
+ */
+export async function authorizeChangedSteps(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  ctx: ConnectionContext,
+  targets: readonly StepTarget[],
+): Promise<string | undefined> {
+  for (const target of targets) {
+    if (target.kind === "workflow") continue;
+    const fields = await adminOnlyStepFields(ctx, target);
+    if (
+      fields &&
+      !isAuthorized(socket, requestId, principal, "admin", {
+        kind: "access",
+        name: "*",
+        fields,
+      }, ctx)
+    ) {
+      return `Access denied: a workflow step changed here runs ${
+        describe(target)
+      }`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The fields to judge admin on when a model step needs it — a computed
+ * target, an unreadable definition, or a restricted or control-plane type —
+ * or undefined when it does not.
+ */
+async function adminOnlyStepFields(
+  ctx: ConnectionContext,
+  target: Exclude<StepTarget, { kind: "workflow" }>,
+): Promise<Record<string, unknown> | undefined> {
+  if (isComputedStepTarget(target)) return {};
+  const name = target.kind === "model"
+    ? target.modelIdOrName
+    : target.modelName;
+  let definition = null;
+  try {
+    definition = await findDefinitionByIdOrName(
+      ctx.repoContext.definitionRepo,
+      name,
+    );
+  } catch {
+    // A target whose fields cannot be read cannot be judged; require admin.
+    return {};
+  }
+  const typeArg = target.kind === "direct" ? target.modelType : undefined;
+  if (
+    !isAdminOnlyModelType(
+      typeArg,
+      definition?.type.normalized,
+      ctx.authConfig.restrictedModelTypes,
+    )
+  ) return undefined;
+  // Without a definition only a direct step's type can restrict it.
+  const base = definition
+    ? modelAccessResource(definition, "model").fields
+    : { name, modelType: normalizedType(typeArg ?? name), tags: {} };
+  return { ...base, methodName: target.methodName };
+}
+
 function describe(target: StepTarget): string {
   switch (target.kind) {
     case "model":

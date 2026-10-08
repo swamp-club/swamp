@@ -30,6 +30,7 @@ import {
   resolveRunAccess,
   resolveWorkflowTarget,
   resolveWorkflowTargetById,
+  restrictedModelAuthorization,
   targetArgument,
 } from "./resource_resolution.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -154,6 +155,69 @@ Deno.test("resolveModelTarget: a failing lookup is reported, never treated as mi
   assertEquals(await resolveModelTarget(repo, "x"), {
     status: "failed",
     error,
+  });
+});
+
+Deno.test("restrictedModelAuthorization: a restricted model needs admin on access:*, acted on by the same id", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "deploy",
+      globalArguments: {},
+      tags: { env: "prod" },
+    });
+    await repo.save(SHELL, definition);
+    const resolution = await resolveModelTarget(repo, "deploy", "data");
+
+    for (
+      const listed of ["command/shell", "@command/shell", "Command::Shell"]
+    ) {
+      const { action, resolution: judged } = restrictedModelAuthorization(
+        resolution,
+        "write",
+        [listed],
+      );
+      assertEquals(action, "admin", listed);
+      assertEquals(judged.status, "found");
+      if (judged.status !== "found") return;
+      assertEquals(judged.resource, {
+        kind: "access",
+        name: "*",
+        fields: { name: "deploy", ns: "", tags: { env: "prod" } },
+      });
+      assertEquals(
+        targetArgument(judged, "deploy"),
+        targetArgument(resolution as typeof judged, "deploy"),
+      );
+    }
+
+    const open = restrictedModelAuthorization(resolution, "write", [
+      "@other/type",
+    ]);
+    assertEquals(open.action, "write");
+    assertStrictEquals(open.resolution, resolution);
+  });
+});
+
+Deno.test("restrictedModelAuthorization: a missing model and a control-plane model keep their resource", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const missing = await resolveModelTarget(repo, "nothing");
+    const judged = restrictedModelAuthorization(missing, "write", [
+      "command/shell",
+    ]);
+    assertEquals(judged.action, "write");
+    assertStrictEquals(judged.resolution, missing);
+
+    const grantType = ModelType.create("swamp/grant");
+    const grantDef = Definition.create({ name: "g", globalArguments: {} });
+    await repo.save(grantType, grantDef);
+    const controlPlane = await resolveModelTarget(repo, "g");
+    const kept = restrictedModelAuthorization(controlPlane, "write", [
+      "swamp/grant",
+    ]);
+    assertEquals(kept.action, "write");
+    assertStrictEquals(kept.resolution, controlPlane);
   });
 });
 
