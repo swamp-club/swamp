@@ -1052,6 +1052,15 @@ that fails it. The printed commands carry `--repo-dir` when the command was
 given one. The command also registers waits of runs suspended before waits were
 registered, and sweeps (see below), so it is not read-only.
 
+Asked with `includeSignalled` (an option of the `workflowWaits` use case and of
+serve's `workflow.waits` request; the CLI does not pass it), the listing also
+returns `signalled`: each wait a signal has settled whose step still waits for
+the resume that applies it, with the receipt, the resume command and
+`awaitingResume`, which is true when nothing else holds the run back. A wait a
+resume has applied is not listed, though its registration stays until the run
+ends. A run or sibling wait that cannot be read lists the wait as not ready to
+resume. The dashboard asks for it.
+
 Through serve, `workflow.waits` and `swamp workflow waits --server` run the same
 listing for a caller with `read` and show the waits of the workflows that caller
 may read. It writes as the local listing does, for every workflow and not only
@@ -1126,6 +1135,49 @@ told to signal the child's wait, then resume the child, then resume the parent.
 Through serve with auto-resume on, the signal continues the child, and the
 parent after it when the signaller may also signal the parent (see "Gates
 inside a nested workflow").
+The parent's `suspended` event names the wait in `nestedSignalWaits`
+(swamp-club#3110): for each nested run still waited on, the open wait at the
+innermost run that has to act, with its workflow, run, job, step, wait ID and
+deadline. The execution service reads it at suspension through
+`NestedRunLink.pendingWaits`, the walk a refused resume uses, whichever step the
+event itself names, so a parent suspended on its own gate names a nested wait
+too. One action is named per nested run, a gate before a wait, so a nested run
+with a gate to decide lists no wait, and one with two open waits lists the
+first. A read that fails is logged and leaves the field off. `workflow run`
+prints each named wait with its signal command and, with `--json`, reports it
+as `signalRequired` and lists all of them under `nestedSignalWaits`.
+
+A wait held further down than the nested run the step waits on is printed with
+the resume of the run that holds it, which has to come first; the closing hint
+then says to resume the direct nested run once the run it waits on finishes.
+The client knows only those two runs, so with more levels the runs between them
+are covered by that sentence and not named. When the direct nested run is not
+shown to the caller (serve removed `nested`, see
+[serve](serve.md)), the output says the step waits on a nested run, offers no
+approve command, and still names a wait the caller may read; `--json` reports
+it as `signalRequired`. A suspension is taken for one on a nested run when it
+has no `nested`, no `wait` and an empty prompt, and its step does not show as
+`waiting`: a gate's prompt is never empty.
+
+The refusal to resume a parent whose nested run has not finished asks the wait
+store whether the nested run's wait is still open (`resolveResumableRun` passes
+it to `assertNestedWaitsSettled`), so after a signal it says to resume the
+nested run, and with several waits it names the first still open.
+
+**Showing a signal before the resume.** A signal never writes the run, so the
+run record shows the step waiting until a resume applies it. `workflow history
+get` reads the wait's outcome when it builds the run view and sets
+`wait.receipt` on a step that still waits (`showAcceptedSignals`,
+`src/libswamp/workflows/history_get.ts`); the log output says a resume applies
+it. The record is not written. The local command reads the store from its
+read-only repository context, which carries it for a filesystem datastore only
+(`requireInitializedRepoReadOnly`). A custom datastore's store pulls its
+namespace when it opens, and that context neither syncs nor holds the lock, so
+there the local command shows the step as the record has it; `workflow history
+get --server` and the dashboard show the receipt. A wait that timed out, or whose outcome cannot
+be read, is shown as the record has it. `awaitingResume` in `workflow history
+get` and in run search is still false for such a run: only the waits listing
+with `includeSignalled` reports that it can resume.
 A parent's `steps.<nested>.outputs` holds the child's `model_method` step
 outputs only, so a parent cannot read a child's signal payload.
 
@@ -1150,9 +1202,14 @@ to start while any of them is still open.
 - Without `swamp serve`, deadlines are noticed only when something looks,
   and an expired wait stays suspended until the next resume. Under serve the
   continuation sweep looks, within the limits listed under "Timing out".
-- A signal does not show in the run record until the run is resumed, so
-  `workflow history` and the dashboard cannot tell a signalled wait from an open
-  one. `workflow waits` can.
+- A signal does not show in the run record until the run is resumed. `workflow
+  history get` and the dashboard read the wait's outcome to show it; `workflow
+  history search` and run search do not, and report such a run as not awaiting
+  resume. The local `workflow history get` on a custom datastore does not
+  either.
+- With two nested workflow steps, the log output cannot tell a sibling nested
+  run's wait from one further down, and words the closing hint as for the
+  latter. The commands it prints are all needed.
 - A binary from swamp-club#3068 cannot read a run that waits for a signal, and
   its repo-wide commands fail while one exists (see "Mixing builds"). Older
   binaries treat a workflow file containing the task as broken.
@@ -1161,7 +1218,8 @@ to start while any of them is still open.
 - A run tracker row whose pid was reused by another live process keeps the
   resume refused until the run is cancelled.
 - The dashboard lists suspended runs as awaiting approval, expired or awaiting
-  resume. A run suspended only on a signal wait is in none of them. Expired
+  resume, and lists waits for a signal with their state and the commands to run
+  next. It cannot send a signal: there is no payload form. Expired
   and awaiting-resume rows have a Cancel action, which sends `workflow.cancel`
   with the run id after a second click to confirm; the sidebar count is of
   gates that can still be decided. Cancel is authorized on `run` access, so a

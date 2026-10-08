@@ -31,7 +31,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requireInitializedRepoReadOnly,
+  signalWaitsOf,
+} from "../repo_context.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -94,6 +97,8 @@ export async function workflowHistoryGetAction(
     repoDir,
     datastoreResolver,
     repoContext.workflowRepo,
+    undefined,
+    signalWaitsOf(repoContext),
   );
 
   const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);

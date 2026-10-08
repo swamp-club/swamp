@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
+import {
+  acceptedOutcomeFor,
+  InMemorySignalWaitStore,
+  unsignalledOutcomeFor,
+} from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -363,6 +367,102 @@ Deno.test("workflowHistoryGet: a signalled step shows the receipt", async () => 
     { kind: "completed" }
   >;
   assertEquals(completed.data.jobs[0].steps[0].wait?.receipt, outcome.receipt);
+});
+
+Deno.test("workflowHistoryGet: a step signalled since the run suspended shows the receipt while it still waits, and the run is not written", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const run = runWaitingForSignal(opened);
+  const review = run.getJob("main")!.getStep("review")!;
+  const store = new InMemorySignalWaitStore();
+  const outcome = acceptedOutcomeFor(review.signalWait!, { ok: true }, {
+    at: opened,
+    runId: run.id,
+  });
+  await store.settle(outcome);
+
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({
+        findLatestRun: () => Promise.resolve(run),
+        signalWaits: { supported: true, store },
+      }),
+      "my-workflow",
+    ),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  const step = completed.data.jobs[0].steps[0];
+  assertEquals(step.status, "waiting");
+  assertEquals(step.wait?.receipt, outcome.receipt);
+  // Only a resume writes a suspended run.
+  assertEquals(review.status, "waiting_signal");
+  assertEquals(review.signalWait?.receipt, undefined);
+});
+
+Deno.test("workflowHistoryGet: an open wait, a timed-out wait and a store that fails all show the wait without a receipt", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const read = async (signalWaits: WorkflowHistoryGetDeps["signalWaits"]) => {
+    const run = runWaitingForSignal(opened);
+    const wait = run.getJob("main")!.getStep("review")!.signalWait!;
+    const events = await collect<WorkflowHistoryGetEvent>(
+      workflowHistoryGet(
+        createLibSwampContext(),
+        makeDeps({ findLatestRun: () => Promise.resolve(run), signalWaits }),
+        "my-workflow",
+      ),
+    );
+    const completed = events[1] as Extract<
+      WorkflowHistoryGetEvent,
+      { kind: "completed" }
+    >;
+    return { wait, shown: completed.data.jobs[0].steps[0].wait };
+  };
+
+  const open = await read({
+    supported: true,
+    store: new InMemorySignalWaitStore(),
+  });
+  assertEquals(open.shown?.receipt, undefined);
+  assertEquals(open.shown?.id, open.wait.id);
+
+  const unsupported = await read({ supported: false, reason: "no store" });
+  assertEquals(unsupported.shown?.receipt, undefined);
+
+  const failing = new InMemorySignalWaitStore();
+  failing.findOutcome = () => Promise.reject(new Error("store is down"));
+  const failed = await read({ supported: true, store: failing });
+  assertEquals(failed.shown?.receipt, undefined);
+  assertEquals(failed.shown?.id, failed.wait.id);
+});
+
+Deno.test("workflowHistoryGet: a wait settled as timed out shows no receipt", async () => {
+  const opened = new Date("2026-01-01T00:00:00.000Z");
+  const run = runWaitingForSignal(opened);
+  const review = run.getJob("main")!.getStep("review")!;
+  const store = new InMemorySignalWaitStore();
+  await store.settle(
+    unsignalledOutcomeFor(review.signalWait!, "timed_out", { runId: run.id }),
+  );
+
+  const events = await collect<WorkflowHistoryGetEvent>(
+    workflowHistoryGet(
+      createLibSwampContext(),
+      makeDeps({
+        findLatestRun: () => Promise.resolve(run),
+        signalWaits: { supported: true, store },
+      }),
+      "my-workflow",
+    ),
+  );
+  const completed = events[1] as Extract<
+    WorkflowHistoryGetEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.jobs[0].steps[0].wait?.receipt, undefined);
 });
 
 Deno.test("nestedWaitView: a run with a finished nested run is not awaiting resume while a step waits for a signal", async () => {

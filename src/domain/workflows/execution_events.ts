@@ -285,4 +285,25 @@ export type WorkflowExecutionEvent =
      * a gate: the wait a signal names. `jobId` and `stepId` are that step.
      */
     wait?: { id: string; deadline: string };
+    /**
+     * The open waits for a signal that nested runs of this run hold, each at
+     * the innermost run that has to act: one per nested run still waited on,
+     * and none for a nested run that has a gate to decide first. Set
+     * whichever step `jobId` and `stepId` name.
+     */
+    nestedSignalWaits?: NestedSignalWait[];
   };
+
+/** An open wait for a signal held by a nested run, as a suspension names it. */
+export interface NestedSignalWait {
+  /** The workflow the wait belongs to, which is the nested run's. */
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobId: string;
+  stepId: string;
+  /** The id `workflow signal` names to settle the wait. */
+  waitId: string;
+  /** When the wait stops accepting a signal, as an ISO timestamp. */
+  deadline: string;
+}

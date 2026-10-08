@@ -136,7 +136,8 @@ export async function findRegistrationOfStep(
 export interface OpenWaitRef {
   jobName: string;
   stepName: string;
-  wait: { id: string };
+  /** The wait's id and when it stops accepting a signal, as an ISO timestamp. */
+  wait: { id: string; deadline: string };
 }
 
 /**
@@ -157,7 +158,7 @@ export async function findUnsettledWait(
         return {
           jobName: job.jobName,
           stepName: step.stepName,
-          wait: { id: ref.waitId },
+          wait: { id: ref.waitId, deadline: ref.deadline },
         };
       }
     }
@@ -224,7 +225,7 @@ export async function applyAcceptedSignals(
         open ??= {
           jobName: job.jobName,
           stepName: step.stepName,
-          wait: { id: ref.waitId },
+          wait: { id: ref.waitId, deadline: ref.deadline },
         };
       } else if (
         stored.kind === "found" && stored.record.kind === "accepted"

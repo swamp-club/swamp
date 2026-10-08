@@ -61,6 +61,7 @@ import {
   NestedRunLink,
   type NestedRunLinkDeps,
 } from "../../domain/workflows/nested_run_link.ts";
+import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 
 /**
  * The nested runs a run waits on, each with its status as read now, and
@@ -104,6 +105,35 @@ export async function nestedWaitView(
     ...(awaitingResume ? { awaitingResume } : {}),
   };
 }
+
+/**
+ * Adds, to each step still waiting for a signal, the receipt of a signal
+ * that has settled its wait and that the next resume applies
+ * (swamp-club#3110). The run record is not written: only a resume writes a
+ * suspended run. A wait whose outcome cannot be read is left as open.
+ */
+export async function showAcceptedSignals(
+  signalWaits: SignalWaitSupport,
+  view: WorkflowRunView,
+): Promise<void> {
+  if (!signalWaits.supported || view.status !== "suspended") return;
+  for (const job of view.jobs) {
+    for (const step of job.steps) {
+      if (step.status !== "waiting" || !step.wait || step.wait.receipt) {
+        continue;
+      }
+      try {
+        const stored = await signalWaits.store.findOutcome(step.wait.id);
+        if (stored.kind === "found" && stored.record.kind === "accepted") {
+          step.wait.receipt = { ...stored.record.receipt };
+        }
+      } catch {
+        // Shown as the run record has it.
+      }
+    }
+  }
+}
+
 export type WorkflowHistoryGetEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowRunView }
@@ -117,6 +147,11 @@ export interface WorkflowHistoryGetDeps extends RunReferenceDeps {
    * resume (swamp-club#2736). Without it, nested waits are not resolved.
    */
   nestedLink?: NestedRunLinkDeps;
+  /**
+   * Where signal wait records are kept. With it a waiting step shows the
+   * receipt of a signal delivered since the run suspended.
+   */
+  signalWaits?: SignalWaitSupport;
   /** Reads a run's step outputs back from the datastore. */
   resolveStepOutputs: (run: WorkflowRun) => Promise<RunStepOutputs>;
 }
@@ -146,6 +181,7 @@ export function createWorkflowHistoryGetDeps(
   datastoreResolver?: DatastorePathResolver,
   injectedWorkflowRepo?: WorkflowRepository,
   canRead?: ResourceReadPolicy,
+  signalWaits?: SignalWaitSupport,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -159,6 +195,7 @@ export function createWorkflowHistoryGetDeps(
   return {
     isPartialId,
     nestedLink: { runRepo, workflowRepo },
+    signalWaits,
     matchRunByPartialId: createRunMatcher(runRepo),
     findWorkflow: async (idOrName) =>
       await workflowRepo.findByName(idOrName) ??
@@ -262,6 +299,7 @@ export async function* workflowHistoryGet(
       if (deps.nestedLink) {
         Object.assign(data, await nestedWaitView(deps.nestedLink, run));
       }
+      if (deps.signalWaits) await showAcceptedSignals(deps.signalWaits, data);
 
       yield { kind: "completed", data };
     })(),

@@ -29,6 +29,7 @@ import { UserError } from "../errors.ts";
 import { quoteShellWord } from "../shell_word.ts";
 import { entryTemplateOf } from "./failed_step_retry.ts";
 import { assertNestedWaitsSettled } from "./nested_run_link.ts";
+import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import {
   checkSuspendedRunResume,
   planFailedRunResume,
@@ -165,6 +166,13 @@ export interface ResolveResumableRunOptions extends ResolveSuspendedRunOptions {
    * Takes precedence over `fromStep`.
    */
   suspendedOnly?: boolean;
+  /**
+   * Where signal wait records are kept. With it, a refusal over a nested run
+   * that waits for a signal asks whether the wait is still open; without
+   * it, the nested run's record is read, which shows a signalled wait as
+   * open until that run is resumed.
+   */
+  signalWaits?: SignalWaitSupport;
 }
 
 /**
@@ -205,7 +213,7 @@ export async function resolveResumableRun(
     );
     checkSuspendedRunResume(resolved.workflow, resolved.run);
     await assertNestedWaitsSettled(
-      { runRepo, workflowRepo },
+      { runRepo, workflowRepo, signalWaits: options.signalWaits },
       resolved.run,
     );
     return resolved;
@@ -246,7 +254,10 @@ export async function resolveResumableRun(
       planFailedRunResume(workflow, run);
     } else if (run.status === "suspended") {
       checkSuspendedRunResume(workflow, run);
-      await assertNestedWaitsSettled({ runRepo, workflowRepo }, run);
+      await assertNestedWaitsSettled(
+        { runRepo, workflowRepo, signalWaits: options.signalWaits },
+        run,
+      );
     } else {
       throw new UserError(
         `Run ${runId} is not suspended or failed (status: ${run.status}).` +

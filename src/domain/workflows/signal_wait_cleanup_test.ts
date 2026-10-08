@@ -177,7 +177,10 @@ Deno.test("applyAcceptedSignals: applies each accepted signal and reports the fi
   assertEquals(open, {
     jobName: "main",
     stepName: "a",
-    wait: { id: stepOf(run, "a").signalWait!.id },
+    wait: {
+      id: stepOf(run, "a").signalWait!.id,
+      deadline: stepOf(run, "a").signalWait!.deadline.toISOString(),
+    },
   });
   assertEquals(stepOf(run, "a").status, "waiting_signal");
   assertEquals(stepOf(run, "b").status, "succeeded");

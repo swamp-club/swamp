@@ -209,6 +209,7 @@ export async function startDetachedResume(
         suspendedOnly: request.suspendedOnly,
         byId: request.byId,
         expectedName: request.expectedName,
+        signalWaits: ctx.repoContext.signalWaits,
       },
     );
     resolvedRun = result.run;

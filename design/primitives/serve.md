@@ -624,10 +624,29 @@ are still authenticating, and should retry. Behind a proxy without
 `--trust-proxy` every caller shares one source address.
 
 `workflow.waits` lists open waits to a caller with `read`, filtered to the
-workflows they may read. A caller with no `read` grant on any workflow, such as
-one granted `signal` alone, is refused as unauthorized. It is the
-same use case as `swamp workflow waits` and, like it, not read-only: see
-"Listing" under Wait for Signal in [workflows](workflows.md).
+workflows they may read. With the optional payload `{ includeSignalled: true }`
+the reply also carries `signalled`, the waits a signal has settled whose run has
+not been resumed, each with its receipt, under the same filter; without it the
+reply is as before, so a client that predates the option sees no change. A
+caller with no `read` grant on any workflow, such as one granted `signal` alone,
+is refused as unauthorized. It is the same use case as `swamp workflow waits`
+and, like it, not read-only: see "Listing" under Wait for Signal in
+[workflows](workflows.md).
+
+**Signal waits in a run stream.** `signal_wait_requested` is never sent to a
+client (`LOCAL_ONLY_EVENT_KINDS`, `src/serve/serializer.ts`): a released client
+dispatches each event by kind and fails on one it does not know. A client learns
+of a wait from fields of the `suspended` event, which it already handles and
+whose unknown fields it ignores: `wait` for the run's own wait, and
+`nestedSignalWaits` for the open waits of nested runs (swamp-club#3110). New
+information for clients goes in such a field, never in a new event kind;
+`src/serve/serializer_test.ts` pins which kinds are sent. `redactStreamEvent`
+(`src/serve/handlers/nested_run_redaction.ts`) keeps a `nestedSignalWaits`
+entry only for a caller who may read the workflow the wait belongs to, which
+can be a grandchild's and differ from the nested run the step waits on. Every
+path that sends run events applies it: a run, a buffered run, a resume, a
+buffered resume, and `run.attach`. For a run on a server the CLI prints the
+signal command with the `--server` it was given.
 
 `swamp workflow signal` and `swamp workflow waits` take `--server`. Against a
 server that predates these requests they report that the server needs an

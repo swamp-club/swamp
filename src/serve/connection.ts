@@ -836,9 +836,13 @@ const WorkflowSignalRequestSchema = z.object({
   }),
 });
 
+// The payload is optional: a client that predates it sends none.
 const WorkflowWaitsRequestSchema = z.object({
   type: z.literal("workflow.waits"),
   id: z.string().min(1).max(256),
+  payload: z.object({
+    includeSignalled: z.boolean().optional(),
+  }).optional(),
 });
 
 const WorkflowCancelRequestSchema = z.object({
@@ -3049,6 +3053,7 @@ export function handleMessage(
           request.id,
           controller,
           principal,
+          request.payload,
         ),
         auditOpts("data", "workflow", "*"),
       );

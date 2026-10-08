@@ -15,5 +15,5 @@
     "allowImportingTsExtensions": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*_test.ts"]
+  "exclude": ["src/**/*_test.ts", "src/**/*_test.tsx"]
 }

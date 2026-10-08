@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { setColorEnabled } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
@@ -1600,7 +1605,7 @@ Deno.test("ConsoleWorkflowRunRenderer: a run suspended on a signal wait shows th
   assertEquals(output.includes("workflow approve"), false);
 });
 
-Deno.test("ConsoleWorkflowRunRenderer: the signal command carries no server target, the resume command does", async () => {
+Deno.test("ConsoleWorkflowRunRenderer: a run on a server prints the signal and resume commands with the server target", async () => {
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "release",
     commandTarget: " --server ws://localhost:9090",
@@ -1626,7 +1631,10 @@ Deno.test("ConsoleWorkflowRunRenderer: the signal command carries no server targ
   });
   const signalLine = lines.find((line) => line.includes("workflow signal"));
   const resumeLine = lines.find((line) => line.includes("workflow resume"));
-  assertEquals(signalLine?.includes("--server"), false);
+  assertStringIncludes(
+    signalLine ?? "",
+    `swamp workflow signal ${WAIT_ID} --payload '<json>' --server ws://localhost:9090`,
+  );
   assertStringIncludes(resumeLine ?? "", "--server ws://localhost:9090");
 });
 
@@ -1634,7 +1642,6 @@ Deno.test("ConsoleWorkflowRunRenderer: the signal command keeps a local reposito
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "release",
     commandTarget: " --repo-dir /repo",
-    localCommandTarget: " --repo-dir /repo",
   });
   const events: WorkflowRunEvent[] = [
     {
@@ -2035,9 +2042,8 @@ Deno.test("ConsoleWorkflowRunRenderer: a parent suspended on a child that waits 
 });
 
 Deno.test("ConsoleWorkflowRunRenderer: a parent suspended on a child that showed neither a gate nor a wait names both ways to decide it", async () => {
-  // A remote stream carries no signal_wait_requested, so a child's wait is
-  // never shown; nor is anything shown when a resume finds the child
-  // suspended again.
+  // A server that predates nestedSignalWaits names no wait, and its stream
+  // carries no signal_wait_requested.
   const renderer = createWorkflowRunRenderer("log", {
     workflowName: "parent",
   });
@@ -2065,4 +2071,401 @@ Deno.test("ConsoleWorkflowRunRenderer: a parent suspended on a child that showed
   assertStringIncludes(output, "approve its gate or signal its wait, then");
   assertEquals(output.includes("as shown above"), false);
   assertStringIncludes(output, "swamp workflow resume child --run child-1");
+});
+
+const NESTED_WAIT = {
+  workflowId: "wf-child",
+  workflowName: "child",
+  runId: "child-1",
+  jobId: "child-job",
+  stepId: "review",
+  waitId: WAIT_ID,
+  deadline: WAIT_DEADLINE,
+};
+
+Deno.test("ConsoleWorkflowRunRenderer: a run on a server names a nested run's wait from the suspension, with a signal command for the server", async () => {
+  // A remote stream carries no signal_wait_requested: the suspended event's
+  // nestedSignalWaits is all the client is told (swamp-club#3110).
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+    commandTarget: " --server ws://localhost:9090",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [NESTED_WAIT],
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(
+    output,
+    `signal required on step review in nested workflow child until ${WAIT_DEADLINE}`,
+  );
+  assertStringIncludes(
+    output,
+    `swamp workflow signal ${WAIT_ID} --payload '<json>' --server ws://localhost:9090`,
+  );
+  assertStringIncludes(output, "signal its wait as shown above");
+  assertEquals(output.includes("approve its gate"), false);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a nested wait shown when it was requested is not printed again at the suspension", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "parent" });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "signal_wait_requested",
+      runId: "child-1",
+      workflowName: "child",
+      jobId: "main",
+      stepId: "review",
+      waitId: WAIT_ID,
+      deadline: WAIT_DEADLINE,
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [NESTED_WAIT],
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  assertEquals(
+    lines.filter((line) => line.includes("workflow signal")).length,
+    1,
+  );
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a run suspended on its own gate also names a nested run's wait", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "parent",
+    commandTarget: " --server ws://localhost:9090",
+  });
+  const events: WorkflowRunEvent[] = [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "parent",
+      jobs: [{ id: "main", stepCount: 2, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "gate",
+      prompt: "Approve?",
+      nestedSignalWaits: [NESTED_WAIT],
+    },
+  ];
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(toStream(events), renderer.handlers());
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "swamp workflow approve");
+  assertStringIncludes(
+    output,
+    `swamp workflow signal ${WAIT_ID} --payload '<json>' --server ws://localhost:9090`,
+  );
+});
+
+Deno.test("JsonWorkflowRunRenderer: a nested suspension names the nested run's wait from the suspension when the stream requested none", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [NESTED_WAIT],
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.signalRequired, {
+    workflowName: "child",
+    runId: "child-1",
+    stepId: "review",
+    jobId: "child-job",
+    waitId: WAIT_ID,
+    deadline: WAIT_DEADLINE,
+  });
+  assertEquals(parsed.approvalRequired, undefined);
+  assertEquals(parsed.nestedSignalWaits, [NESTED_WAIT]);
+});
+
+Deno.test("JsonWorkflowRunRenderer: a wait named for a grandchild is reported when the direct child requested nothing", async () => {
+  const grandchild = { ...NESTED_WAIT, workflowName: "leaf", runId: "leaf-1" };
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [grandchild],
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, { runId: string }>;
+  assertEquals(parsed.signalRequired.runId, "leaf-1");
+});
+
+Deno.test("JsonWorkflowRunRenderer: a suspension with no nested wait carries no nestedSignalWaits", async () => {
+  const { stdout } = await renderJson([
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "release",
+      stepId: "gate",
+      prompt: "Approve?",
+    },
+  ]);
+
+  assertEquals(
+    "nestedSignalWaits" in (stdout[0] as Record<string, unknown>),
+    false,
+  );
+});
+
+// What a caller who may read the leaf workflow but not the middle one is
+// sent: redaction removed `nested`, and the leaf's wait is still named.
+const HIDDEN_CHILD_SUSPENSION: WorkflowRunEvent = {
+  kind: "suspended",
+  run: waitingRunView([{ name: "call-nested", status: "waiting_approval" }]),
+  jobId: "release",
+  stepId: "call-nested",
+  prompt: "",
+  nestedSignalWaits: [{
+    ...NESTED_WAIT,
+    workflowName: "leaf",
+    runId: "leaf-1",
+  }],
+};
+
+Deno.test("JsonWorkflowRunRenderer: a suspension whose direct nested run is hidden still reports the named wait as signalRequired", async () => {
+  const { stdout } = await renderJson([HIDDEN_CHILD_SUSPENSION]);
+
+  const parsed = stdout[0] as Record<string, unknown>;
+  assertEquals(parsed.signalRequired, {
+    workflowName: "leaf",
+    runId: "leaf-1",
+    stepId: "review",
+    jobId: "child-job",
+    waitId: WAIT_ID,
+    deadline: WAIT_DEADLINE,
+  });
+  assertEquals(parsed.approvalRequired, undefined);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a suspension whose direct nested run is hidden offers no approve command, and names the wait it may", async () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "top",
+    commandTarget: " --server ws://localhost:9090",
+  });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "top",
+          jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+        },
+        HIDDEN_CHILD_SUSPENSION,
+      ]),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "step call-nested waits on a nested run");
+  assertEquals(output.includes("workflow approve"), false);
+  assertEquals(output.includes("awaiting approval"), false);
+  assertStringIncludes(
+    output,
+    `swamp workflow signal ${WAIT_ID} --payload '<json>' --server ws://localhost:9090`,
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow resume leaf --run leaf-1 --server ws://localhost:9090",
+  );
+  assertStringIncludes(output, "swamp workflow resume top --run run-1");
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a step waiting on a signal wait that cannot be read is not taken for a nested run", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "top" });
+  const run = waitingRunView([{ name: "review", status: "waiting" }]);
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "top",
+          jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+        },
+        {
+          kind: "suspended",
+          run,
+          jobId: run.jobs[0].name,
+          stepId: "review",
+          prompt: "",
+        },
+      ]),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Suspended");
+  assertEquals(output.includes("waits on a nested run"), false);
+});
+
+function threeLevelEvents(requested: boolean): WorkflowRunEvent[] {
+  return [
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "top",
+      jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+    },
+    { kind: "job_started", jobId: "main" },
+    ...(requested
+      ? [{
+        kind: "signal_wait_requested" as const,
+        runId: "leaf-1",
+        workflowName: "leaf",
+        jobId: "main",
+        stepId: "review",
+        waitId: WAIT_ID,
+        deadline: WAIT_DEADLINE,
+      }]
+      : []),
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-middle",
+      prompt: "",
+      nested: { workflowName: "middle", runId: "middle-1" },
+      nestedSignalWaits: [
+        { ...NESTED_WAIT, workflowName: "leaf", runId: "leaf-1" },
+      ],
+    },
+  ];
+}
+
+for (const requested of [false, true]) {
+  Deno.test(
+    `ConsoleWorkflowRunRenderer: a wait two levels down says to resume the run that holds it before the run above it (wait ${
+      requested ? "shown when requested" : "named only by the suspension"
+    })`,
+    async () => {
+      const renderer = createWorkflowRunRenderer("log", {
+        workflowName: "top",
+      });
+      const lines = await captureOutputAsync(async () => {
+        await consumeStream(
+          toStream(threeLevelEvents(requested)),
+          renderer.handlers(),
+        );
+      });
+      const output = lines.join("\n");
+      assertEquals(
+        lines.filter((line) => line.includes("workflow signal")).length,
+        1,
+      );
+      const leaf = output.indexOf("swamp workflow resume leaf --run leaf-1");
+      const middle = output.indexOf(
+        "once the run it waits on finishes,  swamp workflow resume middle --run middle-1",
+      );
+      const top = output.indexOf("swamp workflow resume top --run run-1");
+      assert(leaf >= 0 && middle > leaf && top > middle, output);
+      assertEquals(output.includes("approve its gate"), false);
+    },
+  );
+}
+
+Deno.test("JsonWorkflowRunRenderer: a wait named for another run does not displace a gate another run requested", async () => {
+  // Two nested steps: the one the suspension names waits on a gate further
+  // down, and the wait named belongs to its sibling.
+  const { stdout } = await renderJson([
+    {
+      kind: "approval_requested",
+      runId: "leaf-gate-1",
+      workflowName: "leaf",
+      jobId: "main",
+      stepId: "gate",
+      prompt: "Ship it?",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [
+        { ...NESTED_WAIT, workflowName: "sibling", runId: "sibling-1" },
+      ],
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, { runId: string } | undefined>;
+  assertEquals(parsed.approvalRequired?.runId, "leaf-gate-1");
+  assertEquals(parsed.signalRequired, undefined);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a suspension whose step is not in the run view keeps the gate wording", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "top" });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "top",
+          jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+        },
+        {
+          kind: "suspended",
+          run: makeRunView("succeeded"),
+          jobId: "nowhere",
+          stepId: "gone",
+          prompt: "",
+        },
+      ]),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("waits on a nested run"), false);
+  assertStringIncludes(output, "awaiting approval on step gone");
 });

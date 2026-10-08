@@ -65,6 +65,11 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  createWorkflowHistoryGetDeps,
+  workflowHistoryGet,
+} from "../src/libswamp/workflows/history_get.ts";
+import { mapWorkflowExecutionEvent } from "../src/libswamp/workflows/run.ts";
 import { createRunGcDeps } from "../src/libswamp/data/run_gc.ts";
 import {
   createWorkflowApproveDeps,
@@ -108,8 +113,11 @@ import type {
 } from "../src/domain/workflows/signal_wait_store.ts";
 import {
   attachSignalWaits,
+  requireInitializedRepoReadOnly,
   resolveSignalWaitSupport,
+  signalWaitsOf,
 } from "../src/cli/repo_context.ts";
+import { resolveResumableRun } from "../src/domain/workflows/suspended_run_resolver.ts";
 
 await initializeLogging({});
 
@@ -2103,5 +2111,349 @@ Deno.test("signal wait: a resume opens the wait store before anything runs, and 
     );
     assertEquals(failed.message.includes("cannot support"), false);
     assertEquals(h.executor.executed, []);
+  });
+});
+
+/** A workflow whose one step runs `child` as a nested workflow. */
+function calling(name: string, child: Workflow, gate = false): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-nested",
+            task: StepTask.workflow(child.name),
+          }),
+          ...(gate
+            ? [
+              Step.create({
+                name: "gate",
+                task: StepTask.manualApproval("Ship it?"),
+              }),
+            ]
+            : []),
+        ],
+      }),
+    ],
+  });
+}
+
+function suspendedOf(events: WorkflowExecutionEvent[]) {
+  const suspended = events.findLast((e) => e.kind === "suspended");
+  assert(suspended?.kind === "suspended");
+  return suspended;
+}
+
+Deno.test("signal wait: a parent's suspension names the open wait of its nested run, and publishes it (swamp-club#3110)", async () => {
+  const child = release("named-child");
+  const parent = calling("naming-parent", child);
+  await withHarness([parent, child], async (h) => {
+    const events = await drain(h.service.run(parent.name));
+    const childRun = await only(h, child);
+    const wait = stepOf(childRun, "review").signalWait!;
+
+    const suspended = suspendedOf(events);
+    assertEquals(suspended.nested?.runId, childRun.id);
+    assertEquals(suspended.nestedSignalWaits, [{
+      workflowId: child.id,
+      workflowName: child.name,
+      runId: childRun.id,
+      jobId: "release",
+      stepId: "review",
+      waitId: wait.id,
+      deadline: wait.deadline.toISOString(),
+    }]);
+
+    // What a client is sent: the wait is in the suspended event, which is
+    // the only place a run on a server learns of it.
+    const published = mapWorkflowExecutionEvent(suspended, h.runRepo);
+    assert(published.kind === "suspended");
+    assertEquals(published.nestedSignalWaits, suspended.nestedSignalWaits);
+  });
+});
+
+Deno.test("signal wait: a parent's suspension names a wait two levels down, under the workflow it belongs to", async () => {
+  const leaf = release("leaf");
+  const middle = calling("middle", leaf);
+  const top = calling("top", middle);
+  await withHarness([top, middle, leaf], async (h) => {
+    const events = await drain(h.service.run(top.name));
+    const leafRun = await only(h, leaf);
+    const middleRun = await only(h, middle);
+
+    const suspended = suspendedOf(events);
+    assertEquals(suspended.nested?.runId, middleRun.id);
+    assertEquals(
+      suspended.nestedSignalWaits?.map((w) => [
+        w.workflowId,
+        w.workflowName,
+        w.runId,
+        w.waitId,
+      ]),
+      [[leaf.id, leaf.name, leafRun.id, waitIdOf(leafRun)]],
+    );
+  });
+});
+
+Deno.test("signal wait: a parent suspended on its own gate still names its nested run's wait", async () => {
+  const child = release("beside-gate-child");
+  const parent = calling("gated-parent", child, true);
+  await withHarness([parent, child], async (h) => {
+    const events = await drain(h.service.run(parent.name));
+    const childRun = await only(h, child);
+
+    const suspended = suspendedOf(events);
+    assertEquals(suspended.stepId, "gate");
+    assertEquals(suspended.nested, undefined);
+    assertEquals(
+      suspended.nestedSignalWaits?.map((w) => w.waitId),
+      [waitIdOf(childRun)],
+    );
+  });
+});
+
+Deno.test("signal wait: a suspension names no nested wait once the wait is signalled, and none for a run with no nested run", async () => {
+  const child = release("settled-child");
+  const parent = calling("settled-parent", child);
+  await withHarness([parent, child], async (h) => {
+    // A run of the child alone holds a wait of its own, and no nested one.
+    const alone = suspendedOf(await drain(h.service.run(child.name)));
+    assertEquals(alone.wait !== undefined, true);
+    assertEquals(alone.nestedSignalWaits, undefined);
+  });
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h, parent);
+    const childRun = await only(h, child);
+    await signalOk(h, waitIdOf(childRun), { verdict: "ship" });
+
+    // The child now needs a resume, not a signal: the refusal names no wait.
+    const error = await assertRejects(
+      () => drain(h.service.resume(parent.name, parentRun.id)),
+    );
+    const message = error instanceof Error ? error.message : "";
+    assertEquals(message.includes("swamp workflow signal"), false);
+    assertStringIncludes(
+      message,
+      `swamp workflow resume ${child.name} --run ${childRun.id}`,
+    );
+  });
+});
+
+Deno.test("signal wait: history get and the waits listing show a signal before the resume applies it", async () => {
+  const workflow = release("receipt-shown");
+  await withHarness([workflow], async (h) => {
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    const waitId = waitIdOf(run);
+    const support = { supported: true as const, store: h.waits };
+
+    const view = async () => {
+      for await (
+        const event of workflowHistoryGet(
+          createLibSwampContext(),
+          createWorkflowHistoryGetDeps(
+            h.repoDir,
+            undefined,
+            h.workflowRepo,
+            undefined,
+            support,
+          ),
+          run.id,
+        )
+      ) {
+        if (event.kind === "completed") return event.data;
+        if (event.kind === "error") throw new Error(event.error.message);
+      }
+      throw new Error("no completed event");
+    };
+    const listed = async () => {
+      for await (
+        const event of workflowWaits(
+          createLibSwampContext(),
+          createWorkflowWaitsDeps(h.runRepo, support),
+          { includeSignalled: true },
+        )
+      ) {
+        if (event.kind === "completed") return event.data;
+        if (event.kind === "error") throw new Error(event.error.message);
+      }
+      throw new Error("no completed event");
+    };
+    const reviewOf = (data: Awaited<ReturnType<typeof view>>) =>
+      data.jobs[0].steps.find((s) => s.name === "review")!;
+
+    assertEquals(reviewOf(await view()).wait?.receipt, undefined);
+    assertEquals((await listed()).signalled, []);
+
+    const delivered = await signalOk(h, waitId, { verdict: "ship" });
+
+    const review = reviewOf(await view());
+    assertEquals(review.status, "waiting");
+    assertEquals(review.wait?.receipt?.id, delivered.signal.id);
+    const after = await listed();
+    assertEquals(after.waits, []);
+    assertEquals(
+      after.signalled?.map((w) => [w.waitId, w.signal.id, w.awaitingResume]),
+      [[waitId, delivered.signal.id, true]],
+    );
+    // Neither read wrote the run: its step still waits until the resume.
+    assertEquals(
+      stepOf(await reload(h, run), "review").status,
+      "waiting_signal",
+    );
+
+    await drain(h.service.resume(workflow.name, run.id));
+    assertEquals((await listed()).signalled, []);
+  });
+});
+
+/** The refusal `workflow resume` gives before it starts anything. */
+async function resumeRefusal(
+  h: Harness,
+  parent: Workflow,
+  parentRun: WorkflowRun,
+  signalWaits?: SignalWaitSupport,
+): Promise<string> {
+  const error = await assertRejects(() =>
+    resolveResumableRun(
+      h.workflowRepo,
+      h.runRepo,
+      parent.name,
+      parentRun.id,
+      { signalWaits },
+    )
+  );
+  return error instanceof Error ? error.message : "";
+}
+
+Deno.test("signal wait: the refusal to resume a parent asks the wait store, so a signalled nested wait is not named again", async () => {
+  const child = release("asked-child");
+  const parent = calling("asking-parent", child);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h, parent);
+    const childRun = await only(h, child);
+    const waitId = waitIdOf(childRun);
+    const support = { supported: true as const, store: h.waits };
+
+    assertStringIncludes(
+      await resumeRefusal(h, parent, parentRun, support),
+      `swamp workflow signal ${waitId}`,
+    );
+
+    await signalOk(h, waitId, { verdict: "ship" });
+
+    const settled = await resumeRefusal(h, parent, parentRun, support);
+    assertEquals(settled.includes("swamp workflow signal"), false);
+    assertStringIncludes(settled, "is ready to resume");
+    assertStringIncludes(
+      settled,
+      `swamp workflow resume ${child.name} --run ${childRun.id}`,
+    );
+    // Without the store only the child's record is read, which shows the
+    // wait open until the child is resumed.
+    assertStringIncludes(
+      await resumeRefusal(h, parent, parentRun),
+      `swamp workflow signal ${waitId}`,
+    );
+  });
+});
+
+Deno.test("signal wait: with two nested waits, the refusal names the one still open after the first is signalled", async () => {
+  const child = Workflow.create({
+    name: "two-waits-child",
+    jobs: [
+      Job.create({
+        name: "release",
+        steps: ["first", "second"].map((name) =>
+          Step.create({
+            name,
+            allowFailure: true,
+            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA),
+          })
+        ),
+      }),
+    ],
+  });
+  const parent = calling("two-waits-parent", child);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h, parent);
+    const childRun = await only(h, child);
+    const first = waitIdOf(childRun, "first");
+    const second = waitIdOf(childRun, "second");
+    const support = { supported: true as const, store: h.waits };
+
+    assertStringIncludes(
+      await resumeRefusal(h, parent, parentRun, support),
+      `swamp workflow signal ${first}`,
+    );
+    await signalOk(h, first, { verdict: "ship" });
+
+    const refusal = await resumeRefusal(h, parent, parentRun, support);
+    assertStringIncludes(refusal, `swamp workflow signal ${second}`);
+    assertEquals(refusal.includes(first), false);
+  });
+});
+
+Deno.test("signal wait: a read-only repository context shows a signal's receipt, as workflow history get builds it", async () => {
+  const workflow = release("read-only-receipt");
+  await withHarness([workflow], async (h) => {
+    await drain(h.service.run(workflow.name));
+    const run = await only(h, workflow);
+    const delivered = await signalOk(h, waitIdOf(run), { verdict: "ship" });
+
+    // The context and dependencies exactly as the command wires them.
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepoReadOnly({
+        repoDir: h.repoDir,
+        outputMode: "json",
+      });
+    const support = signalWaitsOf(repoContext);
+    assertEquals(support.supported, true);
+    const deps = createWorkflowHistoryGetDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.workflowRepo,
+      undefined,
+      support,
+    );
+
+    let receiptId: string | undefined;
+    for await (
+      const event of workflowHistoryGet(createLibSwampContext(), deps, run.id)
+    ) {
+      if (event.kind === "error") throw new Error(event.error.message);
+      if (event.kind === "completed") {
+        receiptId = event.data.jobs[0].steps.find((s) => s.name === "review")
+          ?.wait?.receipt?.id;
+      }
+    }
+    assertEquals(receiptId, delivered.signal.id);
+  });
+});
+
+Deno.test("signal wait: a run still suspends, naming no nested wait, when its nested run cannot be read back", async () => {
+  const child = release("unreadable-child");
+  const parent = calling("unreadable-parent", child);
+  await withHarness([parent, child], async (h) => {
+    // The nested step holds the child in memory; only the walk that names
+    // its wait reads it back from the repository.
+    const original = h.runRepo.findById.bind(h.runRepo);
+    h.runRepo.findById = (workflowId, runId) =>
+      workflowId === child.id
+        ? Promise.reject(new Error("run record cannot be read"))
+        : original(workflowId, runId);
+
+    const events = await drain(h.service.run(parent.name));
+
+    const suspended = suspendedOf(events);
+    assertEquals(suspended.nested !== undefined, true);
+    assertEquals(suspended.nestedSignalWaits, undefined);
+    h.runRepo.findById = original;
+    assertEquals((await only(h, parent)).status, "suspended");
   });
 });

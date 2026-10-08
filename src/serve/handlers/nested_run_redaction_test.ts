@@ -172,6 +172,103 @@ Deno.test("redactStreamEvent: a suspension drops its nested block with the waiti
   });
 });
 
+/** A suspension naming open waits of nested runs (swamp-club#3110). */
+function suspendedOnWaits(
+  waits: { workflowId: string; workflowName: string; waitId: string }[],
+  childId = "readable-id",
+): SerializedEvent {
+  return {
+    kind: "suspended",
+    run: linkedView(childId),
+    jobId: "main",
+    stepId: "call-child",
+    prompt: "",
+    nested: { workflowName: "secret-child", runId: "child-run" },
+    nestedSignalWaits: waits.map((w) => ({
+      ...w,
+      runId: `${w.waitId}-run`,
+      jobId: "job",
+      stepId: "review",
+      deadline: "2026-10-09T00:00:00.000Z",
+    })),
+  };
+}
+
+Deno.test("redactStreamEvent: names a nested run's wait only to a reader of the wait's workflow", async () => {
+  const event = suspendedOnWaits([
+    { workflowId: "readable-id", workflowName: "open", waitId: "w-1" },
+    { workflowId: "secret-id", workflowName: "secret", waitId: "w-2" },
+  ]);
+  const visible = await redactStreamEvent(event, canRead);
+  const waits = visible.nestedSignalWaits as { waitId: string }[];
+  assertEquals(waits.map((w) => w.waitId), ["w-1"]);
+  assert(!JSON.stringify(visible.nestedSignalWaits).includes("w-2"));
+});
+
+Deno.test("redactStreamEvent: drops nestedSignalWaits when no wait is readable", async () => {
+  const visible = await redactStreamEvent(
+    suspendedOnWaits([
+      { workflowId: "secret-id", workflowName: "secret", waitId: "w-2" },
+    ]),
+    canRead,
+  );
+  assertEquals("nestedSignalWaits" in visible, false);
+});
+
+Deno.test("redactStreamEvent: judges a grandchild's wait on its own workflow, not the direct child's", async () => {
+  // The direct child is readable, the wait sits in a grandchild that is not.
+  const hidden = await redactStreamEvent(
+    suspendedOnWaits(
+      [{ workflowId: "secret-id", workflowName: "leaf", waitId: "w-leaf" }],
+      "readable-id",
+    ),
+    canRead,
+  );
+  assertEquals(hidden.nested !== undefined, true);
+  assertEquals("nestedSignalWaits" in hidden, false);
+
+  // The direct child is hidden, the grandchild's wait is readable.
+  const shown = await redactStreamEvent(
+    suspendedOnWaits(
+      [{ workflowId: "readable-id", workflowName: "leaf", waitId: "w-leaf" }],
+      "secret-id",
+    ),
+    canRead,
+  );
+  assertEquals(shown.nested, undefined);
+  assertEquals(
+    (shown.nestedSignalWaits as { waitId: string }[]).map((w) => w.waitId),
+    ["w-leaf"],
+  );
+});
+
+Deno.test("redactStreamEvent: redacting nestedSignalWaits leaves the buffered event other clients share as it was", async () => {
+  const event = suspendedOnWaits([
+    { workflowId: "secret-id", workflowName: "secret", waitId: "w-2" },
+  ]);
+  const before = structuredClone(event);
+  await redactStreamEvent(event, canRead);
+  assertEquals(event, before);
+});
+
+Deno.test("redactStreamEvent: drops a nestedSignalWaits entry that names no workflow, and a field that is not a list", async () => {
+  const malformed = suspendedOnWaits([
+    { workflowId: "readable-id", workflowName: "open", waitId: "w-1" },
+  ]);
+  (malformed.nestedSignalWaits as unknown[]).push({ waitId: "w-anon" });
+  const visible = await redactStreamEvent(malformed, canRead);
+  assertEquals(
+    (visible.nestedSignalWaits as { waitId: string }[]).map((w) => w.waitId),
+    ["w-1"],
+  );
+
+  const notAList = { ...suspendedOnWaits([]), nestedSignalWaits: "w-1" };
+  assertEquals(
+    "nestedSignalWaits" in await redactStreamEvent(notAList, canRead),
+    false,
+  );
+});
+
 Deno.test("redactStreamEvent: keeps only the detached nested runs a superseding stream may name", async () => {
   const detached = [
     { workflowId: "readable-id", workflowName: "a", runId: "1" },

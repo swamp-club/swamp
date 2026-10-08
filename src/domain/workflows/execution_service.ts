@@ -3517,7 +3517,13 @@ export class WorkflowExecutionService {
         if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
         if (this.runTracker) this.runTracker.complete(run.id, "suspended");
         const suspendedEvent = suspendedEventFor(run, workflow);
-        if (suspendedEvent) yield suspendedEvent;
+        if (suspendedEvent) {
+          yield await this.withNestedSignalWaits(
+            suspendedEvent,
+            run,
+            options?.parentRunId,
+          );
+        }
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -3585,14 +3591,18 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(workflowRun.id, "suspended");
         }
-        yield {
-          kind: "suspended" as const,
-          run: workflowRun,
-          jobId: error.jobId,
-          stepId: error.stepId,
-          prompt: error.prompt,
-          timeout: error.timeout,
-        };
+        yield await this.withNestedSignalWaits(
+          {
+            kind: "suspended" as const,
+            run: workflowRun,
+            jobId: error.jobId,
+            stepId: error.stepId,
+            prompt: error.prompt,
+            timeout: error.timeout,
+          },
+          workflowRun,
+          options?.parentRunId,
+        );
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -4344,7 +4354,9 @@ export class WorkflowExecutionService {
           existingRun,
           resolvedWorkflow,
         );
-        if (suspendedEvent) yield suspendedEvent;
+        if (suspendedEvent) {
+          yield await this.withNestedSignalWaits(suspendedEvent, existingRun);
+        }
         return;
       }
 
@@ -4391,14 +4403,17 @@ export class WorkflowExecutionService {
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "suspended");
         }
-        yield {
-          kind: "suspended" as const,
-          run: existingRun,
-          jobId: error.jobId,
-          stepId: error.stepId,
-          prompt: error.prompt,
-          timeout: error.timeout,
-        };
+        yield await this.withNestedSignalWaits(
+          {
+            kind: "suspended" as const,
+            run: existingRun,
+            jobId: error.jobId,
+            stepId: error.stepId,
+            prompt: error.prompt,
+            timeout: error.timeout,
+          },
+          existingRun,
+        );
         return;
       }
       if (options?.signal?.aborted) {
@@ -5751,6 +5766,59 @@ export class WorkflowExecutionService {
         };
       }
       stepSpan.end();
+    }
+  }
+
+  /**
+   * The suspended event with the open waits for a signal that the run's
+   * nested runs hold, so whoever receives the event can name them without
+   * having seen each wait requested (swamp-club#3110). A nested run's own
+   * suspension is read by its parent and never forwarded, so it is left as
+   * it is. Reads only; a failed read leaves the event as it is, since the
+   * run has already suspended. On a custom datastore the first read opens
+   * the wait store, which can pull the namespace: expected here, where the
+   * run holds its lock.
+   */
+  private async withNestedSignalWaits(
+    event: WorkflowExecutionEvent,
+    run: WorkflowRun,
+    parentRunId?: string,
+  ): Promise<WorkflowExecutionEvent> {
+    if (
+      event.kind !== "suspended" || parentRunId !== undefined ||
+      run.findNestedWaits().length === 0
+    ) return event;
+    try {
+      const pending = await new NestedRunLink({
+        runRepo: this.runRepo,
+        workflowRepo: this.workflowRepo,
+        signalWaits: this.signalWaits,
+      }).pendingWaits(run);
+      const nestedSignalWaits = pending.flatMap(({ action }) =>
+        action.kind === "signal"
+          ? [{
+            workflowId: action.target.workflowId,
+            workflowName: action.target.workflowName,
+            runId: action.target.runId,
+            jobId: action.jobName,
+            stepId: action.stepName,
+            waitId: action.waitId,
+            deadline: action.deadline,
+          }]
+          : []
+      );
+      return nestedSignalWaits.length > 0
+        ? { ...event, nestedSignalWaits }
+        : event;
+    } catch (error) {
+      getSwampLogger(["workflow", "run"]).warn(
+        "Could not read the signal waits of the nested runs of run {runId}: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return event;
     }
   }
 

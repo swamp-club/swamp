@@ -377,6 +377,21 @@ Deno.test("requireInitializedRepoReadOnly - returns context for initialized repo
   });
 });
 
+Deno.test("requireInitializedRepoReadOnly - on a filesystem datastore, carries the wait records for reading and installs no save hook", async () => {
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(signalWaitsOf(repoContext).supported, true);
+    // A read-only context writes no wait record when it saves a run.
+    assertEquals(repoContext.workflowRunRepo.beforeSave, undefined);
+  });
+});
+
 Deno.test("requireInitializedRepoReadOnly - throws UserError for non-initialized repo", async () => {
   await withTempDir(async (dir) => {
     const error = await assertRejects(

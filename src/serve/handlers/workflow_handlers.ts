@@ -131,6 +131,7 @@ import type {
   WorkflowTriggerRemovePayload,
   WorkflowTriggerSetPayload,
   WorkflowValidatePayload,
+  WorkflowWaitsPayload,
 } from "../protocol.ts";
 import {
   resolveResumableRun,
@@ -991,6 +992,7 @@ export async function handleWorkflowHistoryGet(
         ctx.datastoreResolver,
         ctx.repoContext.workflowRepo,
         dataReadPolicy(socket, ctx, principal),
+        ctx.repoContext.signalWaits,
       );
       return {
         deps,
@@ -1617,6 +1619,9 @@ export async function handleWorkflowSignal(
  * past its deadline as timed out, and sweeps wait records, for every
  * workflow. Each of those writes depends only on stored state, never on the
  * request.
+ *
+ * With `includeSignalled` the reply also lists, under `signalled`, the waits
+ * a signal has settled whose run has not been resumed (swamp-club#3110).
  */
 export async function handleWorkflowWaits(
   socket: WebSocket,
@@ -1624,6 +1629,7 @@ export async function handleWorkflowWaits(
   requestId: string,
   controller: AbortController,
   principal: Principal | null,
+  payload: WorkflowWaitsPayload = {},
 ): Promise<void> {
   if (
     !authorizeAnyOrReject(
@@ -1643,7 +1649,9 @@ export async function handleWorkflowWaits(
     );
     let listed: WorkflowWaitsData | undefined;
     await consumeStream<WorkflowWaitsEvent>(
-      workflowWaits(handlerLibSwampContext(ctx), deps),
+      workflowWaits(handlerLibSwampContext(ctx), deps, {
+        includeSignalled: payload.includeSignalled === true,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
@@ -1682,10 +1690,29 @@ export async function handleWorkflowWaits(
       ctx,
     );
 
+    // A signalled wait carries its receipt, which names the sender: it is
+    // listed only to a reader of the wait's workflow, as the others are.
+    const signalled = data.signalled
+      ? await filterByResources(
+        data.signalled,
+        ownersOf,
+        socket,
+        principal,
+        "read",
+        ctx,
+      )
+      : undefined;
+
     send(socket, {
       type: "workflow.waits",
       id: requestId,
-      payload: { data: { waits, unreadableWaits } },
+      payload: {
+        data: {
+          waits,
+          unreadableWaits,
+          ...(signalled ? { signalled } : {}),
+        },
+      },
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
@@ -2124,6 +2151,7 @@ export async function handleWorkflowResume(
               fromStep: payload.from,
               byId: workflow.byId,
               expectedName: workflow.expectedName,
+              signalWaits: ctx.repoContext.signalWaits,
             },
           );
 

@@ -321,6 +321,7 @@ export const workflowResumeCommand = withRemoteOptions(
         fromStep,
         ownerIsDead: (candidate) =>
           runHasDeadOwner(candidate, tracker, liveness),
+        signalWaits,
       },
     ).finally(() => tracker.close());
 
@@ -488,9 +489,6 @@ export const workflowResumeCommand = withRemoteOptions(
       quiet: cliCtx.verbosity === "quiet",
       verbose: cliCtx.verbosity === "verbose",
       commandTarget: formatCommandTarget({
-        repoDir: options.repoDir as string | undefined,
-      }),
-      localCommandTarget: formatCommandTarget({
         repoDir: options.repoDir as string | undefined,
       }),
     });

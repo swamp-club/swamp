@@ -580,6 +580,109 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "serve waits: includeSignalled lists a signalled wait with its receipt, to a reader of its workflow only",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const mine = await suspendOnWait(repo);
+      const theirs = await suspendOnWait(repo);
+      const signaller = ctxWith(repo, [workflowGrant(["read", "signal"])]);
+      const receipt = dataOf(
+        await signal(signaller, mine.waitId, { verdict: "ship" }),
+      ).signal as { id: string };
+      const hidden = dataOf(
+        await signal(signaller, theirs.waitId, { verdict: "ship" }),
+      ).signal as { id: string };
+      const reader = ctxWith(repo, [
+        workflowGrant(["read"], mine.workflow.name),
+      ]);
+
+      const frames = await sendRequest(reader, {
+        type: "workflow.waits",
+        id: "waits-1",
+        payload: { includeSignalled: true },
+      });
+
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const data = frames.find((f) => f.type === "workflow.waits")!.payload!
+        .data as {
+          waits: unknown[];
+          signalled: Array<Record<string, unknown>>;
+        };
+      assertEquals(data.waits, []);
+      assertEquals(data.signalled.map((w) => w.waitId), [mine.waitId]);
+      assertEquals((data.signalled[0].signal as { id: string }).id, receipt.id);
+      assertEquals(data.signalled[0].awaitingResume, true);
+      assertEquals(JSON.stringify(frames).includes(theirs.waitId), false);
+      assertEquals(JSON.stringify(frames).includes(hidden.id), false);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve waits: without includeSignalled the reply carries no signalled list, as a client that predates it expects",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await suspendOnWait(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["read", "signal"])]);
+      dataOf(await signal(ctx, w.waitId, { verdict: "ship" }));
+
+      for (
+        const payload of [undefined, {}, { includeSignalled: false }] as const
+      ) {
+        const frames = await sendRequest(ctx, {
+          type: "workflow.waits",
+          id: "waits-1",
+          ...(payload ? { payload } : {}),
+        });
+        const data = frames.find((f) => f.type === "workflow.waits")!.payload!
+          .data as Record<string, unknown>;
+        assertEquals(Object.keys(data).sort(), ["unreadableWaits", "waits"]);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve history get: a step signalled since the run suspended shows the receipt before any resume",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await suspendOnWait(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["read", "signal"])]);
+      const receipt = dataOf(await signal(ctx, w.waitId, { verdict: "ship" }))
+        .signal as { id: string };
+
+      const frames = await sendRequest(ctx, {
+        type: "workflow.history.get",
+        id: "get-1",
+        payload: { workflowIdOrName: w.runId },
+      });
+
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const run = frames.find((f) => f.type === "workflow.history.get")!
+        .payload!.data as {
+          jobs: Array<{
+            steps: Array<{
+              status: string;
+              wait?: { id: string; receipt?: { id: string } };
+            }>;
+          }>;
+        };
+      const step = run.jobs.flatMap((j) => j.steps).find((s) => s.wait)!;
+      assertEquals(step.status, "waiting");
+      assertEquals(step.wait?.id, w.waitId);
+      assertEquals(step.wait?.receipt?.id, receipt.id);
+      assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+    });
+  },
+});
+
+Deno.test({
   name: "serve signal: with authorization off a signal is delivered",
   ...opts,
   fn: async () => {

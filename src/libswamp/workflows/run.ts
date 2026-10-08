@@ -289,8 +289,29 @@ export type WorkflowRunEvent =
      * `workflow signal` names. `jobId` and `stepId` are then that step.
      */
     wait?: { id: string; deadline: string };
+    /**
+     * The open waits for a signal that nested runs of this run hold, each at
+     * the innermost run that has to act (swamp-club#3110). A run on a server
+     * learns of a nested run's wait only here: `signal_wait_requested` is
+     * not sent to a client.
+     */
+    nestedSignalWaits?: NestedSignalWaitData[];
   }
   | { kind: "error"; error: SwampError };
+
+/** An open wait for a signal held by a nested run. */
+export interface NestedSignalWaitData {
+  /** The workflow the wait belongs to, which is the nested run's. */
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  jobId: string;
+  stepId: string;
+  /** The id `workflow signal` names to settle the wait. */
+  waitId: string;
+  /** When the wait stops accepting a signal, as an ISO timestamp. */
+  deadline: string;
+}
 
 /**
  * Narrow callback shape for emitting per-method-invocation telemetry from
@@ -696,6 +717,11 @@ export function mapWorkflowExecutionEvent(
         timeout: event.timeout,
         ...(event.nested ? { nested: { ...event.nested } } : {}),
         ...(event.wait ? { wait: { ...event.wait } } : {}),
+        ...(event.nestedSignalWaits
+          ? {
+            nestedSignalWaits: event.nestedSignalWaits.map((w) => ({ ...w })),
+          }
+          : {}),
       };
     }
     case "step_failed": {
