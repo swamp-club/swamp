@@ -123,8 +123,10 @@ export function canonicalTypePattern(pattern: string): string | null {
  * Whether a model type matches a canonical type pattern when every leading
  * `@` and `/` is ignored on both sides, as `normalizeModelTypeName` compares
  * types (swamp-club#3129): `acme/*` and `@acme/*` both cover `@acme/deploy`
- * and `acme/deploy`. A pattern that is empty once stripped (`@*`) is matched
- * as written, so it never grows to cover every type.
+ * and `acme/deploy`. Only a pattern that names a type path — one with a `/`
+ * once stripped — ignores the `@`. Any other (`a*`, `prod-*`, `@*`) is
+ * matched as written, so a prefix written for model names never grows to
+ * cover extension types (swamp-club#3130).
  */
 export function typePatternMatchesIgnoringAt(
   canonicalPattern: string,
@@ -136,7 +138,7 @@ export function typePatternMatchesIgnoringAt(
   const wildcard = canonicalPattern.endsWith("*");
   const prefix = (wildcard ? canonicalPattern.slice(0, -1) : canonicalPattern)
     .replace(/^[@/]+/, "");
-  if (prefix.length === 0) {
+  if (!prefix.includes("/")) {
     return resourceSelectorMatches(
       { kind: "model", pattern: canonicalPattern },
       modelType,

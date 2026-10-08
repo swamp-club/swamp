@@ -176,6 +176,14 @@ Deno.test("typePatternMatchesIgnoringAt: ignores a leading @ on either side", ()
   assertEquals(typePatternMatchesIgnoringAt("acme/*", "@acmecorp/x"), false);
 });
 
+Deno.test("typePatternMatchesIgnoringAt: a prefix without a type path keeps its @ as written", () => {
+  assertEquals(typePatternMatchesIgnoringAt("a*", "@acme/deploy"), false);
+  assertEquals(typePatternMatchesIgnoringAt("a*", "acme/deploy"), true);
+  assertEquals(typePatternMatchesIgnoringAt("prod-*", "@prod-x/y"), false);
+  assertEquals(typePatternMatchesIgnoringAt("@acme*", "acme/deploy"), false);
+  assertEquals(typePatternMatchesIgnoringAt("@acme*", "@acme/deploy"), true);
+});
+
 Deno.test("typePatternMatchesIgnoringAt: an @-only prefix is matched as written", () => {
   assertEquals(typePatternMatchesIgnoringAt("@*", "@acme/deploy"), true);
   assertEquals(typePatternMatchesIgnoringAt("@*", "command/shell"), false);

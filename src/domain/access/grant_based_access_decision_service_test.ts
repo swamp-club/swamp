@@ -2082,6 +2082,27 @@ for (const { label, pattern, modelType } of SPELLINGS) {
   });
 }
 
+Deno.test("decide: a deny prefix written for model names does not reach @ types", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "a*" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "web",
+    fields: { name: "web", modelType: "@acme/deploy", tags: {} },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
 Deno.test("decide: deny folding never reaches instance names", () => {
   const deny = makeGrant({
     effect: "deny",

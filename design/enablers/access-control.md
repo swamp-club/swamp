@@ -320,8 +320,10 @@ how it matches depends on the grant's effect (swamp-club#3130):
 
 - **A deny matches its type in any spelling.** `deny model:@Acme/*`,
   `deny model:acme/*` and `deny model:AWS::EC2::*` cover `@acme/...` and
-  `aws/ec2/...` types, and a leading `@` is ignored on either side, as
-  `restricted-model-types` compares types. The same holds for an `access:`
+  `aws/ec2/...` types, and for a pattern that names a type path (it has a
+  `/`) a leading `@` is ignored on either side, as `restricted-model-types`
+  compares types. A pattern without one (`a*`, `prod-*`) keeps its `@` as
+  written, so a prefix written for model names never reaches `@` types. The same holds for an `access:`
   deny on a control-plane record (`access:@swamp/grant` covers `swamp/grant`).
   Only the type comparison folds: instance names still match as written,
   though a deny written for mixed-case legacy names (`deny model:Prod-*`)
