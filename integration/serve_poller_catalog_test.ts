@@ -22,11 +22,11 @@
  * (swamp-club#2863). Repo A is the serve side S: its shared sync service and
  * its `repoContext.catalogStore`, plus, in scenario 6, one sync gate shared
  * by the poller and S's gated requests. Repo B is the peer P, writing into
- * its own cache and pushing to the same in-memory remote. Each poller is wired as
- * `src/cli/commands/serve.ts` wires it (`catalogInvalidate` runs
- * `repoContext.catalogStore.invalidate()`), and each scenario checks what S's
- * `DataQueryService`, definition repository or `PolicySnapshotLoader` return
- * after one poll cycle. The later serve-leader phase replaces these pollers
+ * its own cache and pushing to the same in-memory remote. Each poller is
+ * wired as `src/cli/commands/serve.ts` wires it (`catalogInvalidate` runs
+ * `repoContext.catalogStore.invalidate()`), and each scenario checks what
+ * S's `DataQueryService`, definition repository or `PolicySnapshotLoader`
+ * return after one poll cycle. The later serve-leader phase replaces these pollers
  * with a commit feed and has to match this behaviour. The end-to-end
  * counterpart is swamp-uat#491.
  *
@@ -626,6 +626,7 @@ Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", asy
     s.sync.voidPulls = true;
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
 
+    const pullsBefore = s.sync.pullsCompleted;
     const config = new ConfigPoller({
       syncService: s.sync,
       catalogInvalidate: s.catalogInvalidate,
@@ -635,8 +636,12 @@ Deno.test("pollers: s5 a void pull result invalidates in ConfigPoller only", asy
       pollIntervalMs: POLL_INTERVAL_MS,
     });
     await runCycles(config, s.sync);
-    // Unknown count reads as changed (config_poller.ts).
-    assertEquals(s.invalidations.count, 1);
+    // Unknown count reads as changed (config_poller.ts): every void pull
+    // invalidates. A second cycle can start before stop(), so compare with
+    // the pulls that ran rather than with 1.
+    const configPulls = s.sync.pullsCompleted - pullsBefore;
+    assert(configPulls >= 1);
+    assertEquals(s.invalidations.count, configPulls);
     s.invalidations.count = 0;
     // Repopulate S's catalog so the runtime check starts populated.
     assertEquals(await serveView(s, "x"), { latest: null, query: [] });
