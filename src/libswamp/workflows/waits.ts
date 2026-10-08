@@ -19,6 +19,7 @@
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import type { SignalReceipt } from "../../domain/workflows/signal_wait.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -293,10 +294,23 @@ export async function* workflowWaits(
             store && options.includeSignalled &&
             outcome.record.kind === "accepted"
           ) {
-            const run = await deps.runRepo.findById(
-              createWorkflowId(registration.workflowId),
-              createWorkflowRunId(registration.runId),
-            );
+            // A run record or a sibling wait that cannot be read must not
+            // hide the other waits: the wait is listed as signalled, and
+            // not as ready to resume.
+            let run: WorkflowRun | null = null;
+            let awaitingResume = false;
+            try {
+              run = await deps.runRepo.findById(
+                createWorkflowId(registration.workflowId),
+                createWorkflowRunId(registration.runId),
+              );
+              awaitingResume = await isAwaitingResume(store, run);
+            } catch (error) {
+              ctx.logger
+                .warn`Could not tell whether run ${registration.runId} can resume: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
             // A run that has moved on no longer waits; its records go with
             // the next sweep.
             if (run && run.status !== "suspended") continue;
@@ -310,7 +324,7 @@ export async function* workflowWaits(
               waitingSince: registration.registeredAt,
               deadline: registration.deadline,
               signal: { ...outcome.record.receipt },
-              awaitingResume: await isAwaitingResume(store, run),
+              awaitingResume,
               nextCommand: resumeCommandFor(
                 registration.workflowName,
                 registration.runId,

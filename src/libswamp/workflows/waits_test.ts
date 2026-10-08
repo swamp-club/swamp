@@ -515,3 +515,30 @@ Deno.test("workflowWaits: includeSignalled lists open and signalled waits apart,
     [],
   );
 });
+
+Deno.test("workflowWaits: a run record or sibling wait that cannot be read does not hide the other waits", async () => {
+  const open = runWaitingOnlyForSignal("open", T0);
+  const broken = runWaitingOnlyForSignal("broken", T0);
+  const waits = new InMemorySignalWaitStore();
+  await waits.settle(
+    acceptedOutcomeFor(
+      broken.getJob("main")!.getStep("review")!.signalWait!,
+      { verdict: "ship" },
+      { runId: broken.id },
+    ),
+  );
+  const deps = depsOf([open, broken], T1, waits);
+  const findById = deps.runRepo.findById;
+  deps.runRepo.findById = (workflowId, runId) =>
+    runId === broken.id
+      ? Promise.reject(new Error("run record cannot be read"))
+      : findById(workflowId, runId);
+
+  const data = await listAll(deps, true);
+
+  assertEquals(data.waits.map((w) => w.workflowName), ["open"]);
+  assertEquals(
+    data.signalled?.map((w) => [w.workflowName, w.awaitingResume]),
+    [["broken", false]],
+  );
+});

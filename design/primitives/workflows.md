@@ -911,9 +911,11 @@ get` reads the wait's outcome when it builds the run view and sets
 `wait.receipt` on a step that still waits (`showAcceptedSignals`,
 `src/libswamp/workflows/history_get.ts`); the log output says a resume applies
 it. The record is not written. The local command reads the store from its
-read-only repository context (`requireInitializedRepoReadOnly` attaches it); on
-a custom datastore that opens the control-plane store, with its namespace pull,
-the one remote read of that context, made only for a step that still waits. A wait that timed out, or whose outcome cannot
+read-only repository context, which carries it for a filesystem datastore only
+(`requireInitializedRepoReadOnly`). A custom datastore's store pulls its
+namespace when it opens, and that context neither syncs nor holds the lock, so
+there the local command shows the step as the record has it; `workflow history
+get --server` and the dashboard show the receipt. A wait that timed out, or whose outcome cannot
 be read, is shown as the record has it. `awaitingResume` in `workflow history
 get` and in run search is still false for such a run: only the waits listing
 with `includeSignalled` reports that it can resume.
@@ -942,7 +944,11 @@ to start while any of them is still open.
 - A signal does not show in the run record until the run is resumed. `workflow
   history get` and the dashboard read the wait's outcome to show it; `workflow
   history search` and run search do not, and report such a run as not awaiting
-  resume.
+  resume. The local `workflow history get` on a custom datastore does not
+  either.
+- With two nested workflow steps, the log output cannot tell a sibling nested
+  run's wait from one further down, and words the closing hint as for the
+  latter. The commands it prints are all needed.
 - A binary from swamp-club#3068 cannot read a run that waits for a signal, and
   its repo-wide commands fail while one exists (see "Mixing builds"). Older
   binaries treat a workflow file containing the task as broken.

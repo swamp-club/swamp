@@ -1226,9 +1226,13 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         // A step can wait on a nested run this caller is not shown, which
         // leaves no `nested`: a wait further down is then all there is.
         const hiddenNested = waitsOnNestedRun(e);
+        // A wait named for another run is the answer only when no gate of
+        // another run is known: with two nested steps it can be a sibling's.
+        const otherGate = this._gates.findLast((g) => g.runId !== e.run.id);
         const ownWait = nested && !ownGate
           ? this._waits.findLast((w) => w.runId === nested.runId) ??
-            namedWaits.find((w) => w.runId === nested.runId) ?? namedWaits[0]
+            namedWaits.find((w) => w.runId === nested.runId) ??
+            (otherGate ? undefined : namedWaits[0])
           : hiddenNested
           ? namedWaits[0]
           : undefined;

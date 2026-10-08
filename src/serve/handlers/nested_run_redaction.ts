@@ -141,9 +141,8 @@ export async function redactRunViewLinks(
  * (swamp-club#2736), and a nested workflow step's failure that names a
  * hidden nested run reports {@link HIDDEN_NESTED_STEP_ERROR} instead. A
  * suspension names a nested run's open wait for a signal only to a reader of
- * the wait's workflow. A
- * buffered event is shared by every client attached to the run, so an event
- * that needs a change is copied first. A nested run's own events, forwarded
+ * the wait's workflow. A buffered event is shared by every client attached
+ * to the run, so an event that needs a change is copied first. A nested run's own events, forwarded
  * into its parent's stream, are left as they are.
  */
 export async function redactStreamEvent(

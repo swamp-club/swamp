@@ -65,7 +65,7 @@ export function SignalWaitsPanel(
     <div className="panel" style={{ marginTop: 14 }}>
       <div className="panel-header">
         <div className="panel-title">
-          Waiting for signal <span className="panel-count">{rows.length}</span>
+          Signal waits <span className="panel-count">{rows.length}</span>
         </div>
       </div>
       {rows.map((row) => (

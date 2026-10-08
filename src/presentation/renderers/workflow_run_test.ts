@@ -2404,3 +2404,33 @@ for (const requested of [false, true]) {
     },
   );
 }
+
+Deno.test("JsonWorkflowRunRenderer: a wait named for another run does not displace a gate another run requested", async () => {
+  // Two nested steps: the one the suspension names waits on a gate further
+  // down, and the wait named belongs to its sibling.
+  const { stdout } = await renderJson([
+    {
+      kind: "approval_requested",
+      runId: "leaf-gate-1",
+      workflowName: "leaf",
+      jobId: "main",
+      stepId: "gate",
+      prompt: "Ship it?",
+    },
+    {
+      kind: "suspended",
+      run: makeRunView("succeeded"),
+      jobId: "main",
+      stepId: "call-child",
+      prompt: "",
+      nested: { workflowName: "child", runId: "child-1" },
+      nestedSignalWaits: [
+        { ...NESTED_WAIT, workflowName: "sibling", runId: "sibling-1" },
+      ],
+    },
+  ]);
+
+  const parsed = stdout[0] as Record<string, { runId: string } | undefined>;
+  assertEquals(parsed.approvalRequired?.runId, "leaf-gate-1");
+  assertEquals(parsed.signalRequired, undefined);
+});
