@@ -1450,10 +1450,11 @@ acceptable on its own (see Declared acceptances):
   global object, `import C = Deno.Command`) and `Deno` itself used as a value,
   since an alias reaches `Command` (`const d = Deno`, destructuring from `Deno`,
   passing it, `Deno[key]` with a non-literal key). A member named `Command` on
-  any other object is not flagged. Not caught: an alias of the global object
-  itself (`const g = globalThis; new g.Deno.Command()`, or a parameter pattern
-  given it, `(({ Deno: d }) => ...)(globalThis)`) and names assembled at
-  runtime. A file that does not parse falls back to the old text check
+  any other object is not flagged, but `Command` read off a member named `Deno`
+  on any receiver is (`g.Deno.Command`, `this.Deno.Command`). Not caught: other
+  uses of an alias of the global object (`const d = g.Deno; new d.Command()`, or
+  a parameter pattern given it, `(({ Deno: d }) => ...)(globalThis)`) and names
+  assembled at runtime. A file that does not parse falls back to the old text check
   (`Deno.Command(` on the line). Other process APIs (`node:child_process`) are
   not covered by this rule (swamp-club#3169).
 - `ipv4-address-literals`: IPv4 address literals in `.md` and `.txt` files

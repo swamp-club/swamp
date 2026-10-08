@@ -38,10 +38,13 @@
  * Member reads of any other `Deno` key (`Deno.env`), `typeof Deno` and
  * `"x" in Deno` are not flagged, nor is a member named `Command` on any other
  * object: a CLI framework's `Command` class or a field named `Command` is
- * not a subprocess. Not caught: an alias of the global object itself
- * (`const g = globalThis; new g.Deno.Command()`, or a parameter pattern
- * given it: `(({ Deno: d }) => ...)(globalThis)`), since following it would
- * mean flagging every member named `Deno`, and names assembled at runtime
+ * not a subprocess. `Command` read off a member named `Deno` on any receiver
+ * (`g.Deno.Command`, `this.Deno.Command`) is flagged, since the receiver may
+ * be the global object under another name. Not caught: other uses of such an
+ * alias (`const g = globalThis; const d = g.Deno; new d.Command()`, or a
+ * parameter pattern given it: `(({ Deno: d }) => ...)(globalThis)`), since
+ * following them would mean flagging every member named `Deno`, and names
+ * assembled at runtime
  * (`globalThis["De" + "no"]`). A file that does not parse falls back to the
  * old text check: each line containing `Deno.Command(`.
  */
@@ -126,14 +129,26 @@ function isDeno(node: AstNode | undefined): boolean {
     isGlobalObject(child(target, "object"));
 }
 
-/** A TypeScript qualified name `Deno` or `<global>.Deno`, as in `import D = globalThis.Deno`. */
+/**
+ * A TypeScript qualified name `Deno`, or `<anything>.Deno`, as on the left
+ * of `import C = Deno.Command` or `import C = g.Deno.Command`.
+ */
 function isDenoQualified(node: AstNode | undefined): boolean {
   if (!node) return false;
   if (node.type === "Identifier") return str(node, "name") === DENO;
-  if (node.type !== "TSQualifiedName") return false;
-  const left = child(node, "left");
-  return str(child(node, "right"), "name") === DENO &&
-    left?.type === "Identifier" && isGlobalObject(left);
+  return node.type === "TSQualifiedName" &&
+    str(child(node, "right"), "name") === DENO;
+}
+
+/**
+ * The expression is a member named `Deno` on any receiver (`g.Deno`,
+ * `this.Deno`). Reading `Command` off it is flagged, as the text check did
+ * for `g.Deno.Command(`; the receiver may be the global object under
+ * another name. A bare `x.Deno` is not flagged.
+ */
+function isDenoMember(node: AstNode | undefined): boolean {
+  const target = unwrap(node);
+  return isMember(target) && memberName(target) === DENO;
 }
 
 /** Inside `import type X = ...`, which is erased at run time. */
@@ -177,7 +192,6 @@ function isBindingSite(visit: Visit): boolean {
     visit.parent?.parent?.node.type === "ObjectPattern";
 }
 
-/** The expression a pattern destructures: `const <pattern> = <source>`. */
 /** A pattern property's key name: `Deno` in `{ Deno: d }` or `{ ["Deno"]: d }`. */
 function propertyKeyName(property: AstNode): string | undefined {
   const key = child(property, "key");
@@ -208,6 +222,7 @@ function destructuresGlobalObject(pattern: Visit): boolean {
   return false;
 }
 
+/** The expression a pattern destructures: `const <pattern> = <source>`. */
 function patternSource(pattern: Visit): AstNode | undefined {
   const owner = pattern.parent;
   if (!owner) return undefined;
@@ -292,14 +307,18 @@ class Analyzer {
   /** `Deno.Command`, `Deno[key]`, and `globalThis.Deno` used as a value. */
   private checkMember(visit: Visit): void {
     const node = visit.node;
-    if (isDeno(child(node, "object"))) {
-      const name = memberName(node);
-      const property = child(node, "property") ?? node;
-      if (name === COMMAND) {
-        if (!isTypeofOperand(visit)) this.flag(property, "command-reference");
-      } else if (name === undefined && node.computed === true) {
-        this.flag(property, "deno-computed-access");
-      }
+    const object = child(node, "object");
+    const name = memberName(node);
+    const property = child(node, "property") ?? node;
+    if (
+      name === COMMAND && (isDeno(object) || isDenoMember(object)) &&
+      !isTypeofOperand(visit)
+    ) {
+      this.flag(property, "command-reference");
+    } else if (
+      name === undefined && node.computed === true && isDeno(object)
+    ) {
+      this.flag(property, "deno-computed-access");
     }
     if (memberName(node) === DENO && isGlobalObject(child(node, "object"))) {
       this.checkDenoValue(visit, child(node, "property") ?? node);
