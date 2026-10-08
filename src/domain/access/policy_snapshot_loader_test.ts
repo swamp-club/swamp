@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { readConditionTypeLiterals } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { EventBus } from "../events/event_bus.ts";
@@ -893,4 +894,49 @@ Deno.test("conditionReferencesField: finds a variable structurally; an unparsabl
     false,
   );
   assertEquals(conditionReferencesField("key ==", "vault", "key"), true);
+});
+
+Deno.test("PolicySnapshotLoader.load: names each non-canonical type spelling once across reloads (swamp-club#3130)", async () => {
+  const deny = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+    source: "file:grants-dir/deny.yaml",
+  });
+  const allow = makeGrant({
+    resource: { kind: "model", pattern: "*" },
+    condition: 'modelType == "Acme.Tools.Probe"',
+  });
+  const canonical = makeGrant({
+    resource: { kind: "model", pattern: "@acme/*" },
+    condition: 'modelType == "exp/probe"',
+  });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: deny, modelId: "g1", dataName: "grant-main" },
+      { attrs: allow, modelId: "g2", dataName: "grant-main" },
+      { attrs: canonical, modelId: "g3", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(
+    dataRepo,
+    new EventBus(),
+    "auto",
+    {},
+    readConditionTypeLiterals,
+  );
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const forDeny = warnings.filter((w) => w.includes(deny.id));
+  assertEquals(forDeny.length, 1);
+  assertEquals(forDeny[0].includes("model:aws/ec2/*"), true);
+  assertEquals(forDeny[0].includes("file:grants-dir/deny.yaml"), true);
+  const forAllow = warnings.filter((w) => w.includes(allow.id));
+  assertEquals(forAllow.length, 1);
+  assertEquals(forAllow[0].includes("acme/tools/probe"), true);
+  assertEquals(warnings.filter((w) => w.includes(canonical.id)), []);
 });

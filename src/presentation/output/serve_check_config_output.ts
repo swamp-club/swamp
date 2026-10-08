@@ -22,6 +22,7 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { AccessListCheckEntry } from "../../serve/oauth_access_list_resolution.ts";
 import type { OutputMode } from "./output.ts";
 import type { IneffectiveRestriction } from "../../domain/access/serve_auth_config.ts";
+import type { GrantFileCheckIssue } from "../../domain/access/grant_file_loader.ts";
 
 export interface ServeCheckConfigData {
   /** True when every name resolved and serve would start. */
@@ -46,6 +47,18 @@ export interface ServeCheckConfigData {
    * fail the check.
    */
   readonly restrictionWarnings?: readonly IneffectiveRestriction[];
+  /**
+   * Grant-file problems that would stop serve starting; any one fails the
+   * check. Only grant files are read — stored grants are reported by serve
+   * at startup.
+   */
+  readonly grantErrors?: readonly GrantFileCheckIssue[];
+  /**
+   * Advisory: grant type spellings that match no type as written
+   * (swamp-club#3130), and grant sources absent where the check ran. They do
+   * not fail the check.
+   */
+  readonly grantWarnings?: readonly GrantFileCheckIssue[];
 }
 
 /** Whether the external token secrets key resolves. Never holds the key. */
@@ -70,6 +83,12 @@ function entryLines(
       ? `  ${green(CHECKMARK)} ${e.entry} ${dim(`${ARROW} ${e.sub}`)}`
       : `  ${red(CROSS)} ${e.entry} ${red(`${ARROW} not found on ${provider}`)}`
   );
+}
+
+function grantIssueLocation(issue: GrantFileCheckIssue): string {
+  return issue.entry !== undefined
+    ? `${issue.file} entry ${issue.entry}`
+    : issue.file;
 }
 
 export function renderServeCheckConfig(
@@ -127,6 +146,23 @@ export function renderServeCheckConfig(
     }
   }
 
+  const grantErrors = data.grantErrors ?? [];
+  const grantWarnings = data.grantWarnings ?? [];
+  if (grantErrors.length > 0 || grantWarnings.length > 0) {
+    lines.push("");
+    lines.push(cyan("Grant files:"));
+    for (const issue of grantErrors) {
+      lines.push(
+        `  ${red(CROSS)} ${grantIssueLocation(issue)}: ${issue.message}`,
+      );
+    }
+    for (const issue of grantWarnings) {
+      lines.push(
+        `  ${yellow("!")} ${grantIssueLocation(issue)}: ${issue.message}`,
+      );
+    }
+  }
+
   const tokenKey = data.tokenSecretsKey;
   if (tokenKey) {
     lines.push("");
@@ -145,7 +181,8 @@ export function renderServeCheckConfig(
   const notFound = data.entries.filter((e) => e.status === "not-found").length;
   let result = green("PASSED");
   if (!data.passed) {
-    const why = data.refusal !== undefined || tokenKey?.status === "failed"
+    const why = data.refusal !== undefined || tokenKey?.status === "failed" ||
+        grantErrors.length > 0
       ? "swamp serve would refuse to start"
       : `${notFound} unknown name(s); swamp serve would start without them`;
     result = `${red("FAILED")} ${dim(`(${why})`)}`;

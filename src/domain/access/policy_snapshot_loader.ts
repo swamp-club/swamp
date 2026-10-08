@@ -20,6 +20,10 @@
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  type ConditionTypeLiteralReader,
+  findGrantSpellingIssues,
+} from "./grant_spelling.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { EventBus } from "../events/event_bus.ts";
 import type {
@@ -189,14 +193,23 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  /** Spelling findings already reported, so a reload does not repeat them. */
+  readonly #reportedSpellings = new Set<string>();
+  readonly #readTypeLiterals: ConditionTypeLiteralReader | undefined;
 
+  /**
+   * `readTypeLiterals` lets the loader report condition literals no type is
+   * spelled as; without it only selectors are checked.
+   */
   constructor(
     dataRepo: UnifiedDataRepository,
     eventBus: EventBus,
     mode: PolicyReloadMode = "auto",
     decisionOptions: GrantBasedAccessDecisionServiceOptions = {},
+    readTypeLiterals?: ConditionTypeLiteralReader,
   ) {
     this.#dataRepo = dataRepo;
+    this.#readTypeLiterals = readTypeLiterals;
     this.#decisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
@@ -325,11 +338,35 @@ export class PolicySnapshotLoader {
       logger
         .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
     }
+    this.#reportSpellings(grants);
     return {
       snapshot: new PolicySnapshot(grants, groups, this.#conditionEvaluator),
       grantCount: grants.length,
       groupCount: groups.length,
     };
+  }
+
+  /**
+   * Names each active grant whose type spelling matches no type as written,
+   * once per grant and spelling (swamp-club#3130). The grant keeps working
+   * as it did: a deny matches its type in any spelling, an allow or a
+   * condition literal only as written.
+   */
+  #reportSpellings(grants: readonly Grant[]): void {
+    for (const grant of grants) {
+      for (
+        const finding of findGrantSpellingIssues(
+          grant,
+          this.#readTypeLiterals,
+        )
+      ) {
+        const key = `${grant.id}|${finding.part}|${finding.written}`;
+        if (this.#reportedSpellings.has(key)) continue;
+        this.#reportedSpellings.add(key);
+        logger
+          .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${finding.message}`;
+      }
+    }
   }
 
   async #readAttributes(

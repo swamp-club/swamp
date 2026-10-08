@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   MAX_AST_DEPTH,
+  readConditionTypeLiterals,
   validateGrantCondition,
 } from "./grant_condition_environment.ts";
 
@@ -358,4 +359,38 @@ Deno.test("validateGrantCondition: all existing condition patterns pass cost bou
     );
     assertEquals(result, { valid: true }, `Failed for: ${condition}`);
   }
+});
+
+Deno.test("readConditionTypeLiterals: finds literals compared with modelType", () => {
+  assertEquals(
+    readConditionTypeLiterals(
+      `modelType == "AWS::EC2::VPC" || "x/y" != modelType || modelType in ["A/b", name] || (modelType.startsWith("Acme.") && modelType.endsWith("Probe"))`,
+      "model",
+    ),
+    [
+      { literal: "AWS::EC2::VPC", match: "exact" },
+      { literal: "x/y", match: "exact" },
+      { literal: "A/b", match: "exact" },
+      { literal: "Acme.", match: "prefix" },
+      { literal: "Probe", match: "fragment" },
+    ],
+  );
+});
+
+Deno.test("readConditionTypeLiterals: ignores literals compared with other fields", () => {
+  assertEquals(
+    readConditionTypeLiterals(`name == "Prod" && tags.env == "A::B"`, "model"),
+    [],
+  );
+});
+
+Deno.test("readConditionTypeLiterals: reads name on access resources only", () => {
+  assertEquals(readConditionTypeLiterals(`name == "@swamp/grant"`, "access"), [
+    { literal: "@swamp/grant", match: "exact" },
+  ]);
+  assertEquals(readConditionTypeLiterals(`name == "X::Y"`, "workflow"), []);
+});
+
+Deno.test("readConditionTypeLiterals: returns no literals for a condition that does not parse", () => {
+  assertEquals(readConditionTypeLiterals(`modelType == `, "model"), []);
 });

@@ -244,3 +244,47 @@ Deno.test("renderServeCheckConfig: restriction warnings are shown in every mode 
   );
   assertEquals(json.restrictionWarnings, [warning]);
 });
+
+Deno.test("renderServeCheckConfig: log mode lists grant-file errors and warnings (swamp-club#3130)", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderServeCheckConfig({
+        passed: false,
+        authMode: "token",
+        entries: [],
+        allowedCollectives: [],
+        wouldStart: false,
+        grantErrors: [{ file: "bad.yaml", entry: 1, message: "bad action" }],
+        grantWarnings: [{
+          file: "spelled.yaml",
+          entry: 2,
+          message: "model:AWS::EC2::* names types spelled model:aws/ec2/*",
+        }],
+      }, "log")
+    ),
+  );
+  assertStringIncludes(output, "Grant files:");
+  assertStringIncludes(output, "✗ bad.yaml entry 1: bad action");
+  assertStringIncludes(output, "! spelled.yaml entry 2: model:AWS::EC2::*");
+  assertStringIncludes(output, "FAILED (swamp serve would refuse to start)");
+});
+
+Deno.test("renderServeCheckConfig: grant warnings alone do not fail the check", () => {
+  const data: ServeCheckConfigData = {
+    passed: true,
+    authMode: "token",
+    entries: [],
+    allowedCollectives: [],
+    wouldStart: true,
+    grantWarnings: [{ file: "/etc/grants", message: "not found here" }],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(data, "log")),
+  );
+  assertStringIncludes(output, "! /etc/grants: not found here");
+  assertStringIncludes(output, "Result: PASSED");
+  assertEquals(
+    JSON.parse(captureLogs(() => renderServeCheckConfig(data, "json"))),
+    data,
+  );
+});

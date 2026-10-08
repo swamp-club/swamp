@@ -238,3 +238,116 @@ Deno.test("revoke: preserves methods field", async () => {
   assertEquals(revoked.methods, ["read"]);
   assertEquals(revoked.state, "revoked");
 });
+
+/** A context whose logger records the warnings a method logs. */
+function createWarningContext() {
+  const { context, store } = createTestContext();
+  const warnings: string[] = [];
+  const logger = {
+    ...context.logger,
+    warn: (message: TemplateStringsArray | string, ...values: unknown[]) => {
+      warnings.push(
+        typeof message === "string"
+          ? message
+          : message.reduce((acc, part, i) =>
+            acc + part + (i < values.length ? String(values[i]) : ""), ""),
+      );
+    },
+  } as unknown as typeof context.logger;
+  return { context: { ...context, logger }, store, warnings };
+}
+
+for (
+  const condition of [
+    'modelType == "AWS::EC2::VPC"',
+    'modelType != "@Exp/Probe"',
+    'modelType in ["Acme.Tools.X"]',
+    'modelType.startsWith("AWS::")',
+  ]
+) {
+  Deno.test(`create: refuses a modelType literal spelled ${condition}`, async () => {
+    const { context, store } = createTestContext();
+    await assertRejects(
+      () =>
+        grantModel.methods.create.execute(
+          {
+            ...VALID_CREATE_ARGS,
+            resourceKind: "model",
+            resourcePattern: "*",
+            condition,
+          },
+          context,
+        ),
+      Error,
+      "types are spelled",
+    );
+    assertEquals(store.has("grant-main"), false);
+  });
+}
+
+Deno.test("create: accepts a bare modelType literal (built-in types are bare)", async () => {
+  const { context, store } = createTestContext();
+  await grantModel.methods.create.execute(
+    {
+      ...VALID_CREATE_ARGS,
+      effect: "deny",
+      resourceKind: "model",
+      resourcePattern: "*",
+      condition: 'modelType == "exp/probe"',
+    },
+    context,
+  );
+  assertEquals(store.has("grant-main"), true);
+});
+
+Deno.test("create: refuses an access name literal spelling a control-plane type with @", async () => {
+  const { context } = createTestContext();
+  await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        {
+          ...VALID_CREATE_ARGS,
+          actions: ["admin"],
+          resourceKind: "access",
+          resourcePattern: "*",
+          condition: 'name == "@swamp/grant"',
+        },
+        context,
+      ),
+    Error,
+    "swamp/grant",
+  );
+});
+
+for (
+  const [effect, pattern, canonical] of [
+    ["allow", "@Acme/*", "model:@acme/*"],
+    ["deny", "AWS::EC2::*", "model:aws/ec2/*"],
+  ] as const
+) {
+  Deno.test(`create: stores a ${effect} on model:${pattern} and warns with ${canonical}`, async () => {
+    const { context, store, warnings } = createWarningContext();
+    await grantModel.methods.create.execute(
+      {
+        ...VALID_CREATE_ARGS,
+        effect,
+        resourceKind: "model",
+        resourcePattern: pattern,
+      },
+      context,
+    );
+    const grant = store.get("grant-main") as unknown as Grant;
+    assertEquals(grant.resource, { kind: "model", pattern });
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0].includes(canonical), true);
+  });
+}
+
+Deno.test("create: does not warn for a canonical selector", async () => {
+  const { context, warnings } = createWarningContext();
+  await grantModel.methods.create.execute(
+    { ...VALID_CREATE_ARGS, resourceKind: "model", resourcePattern: "@acme/*" },
+    context,
+  );
+  assertEquals(warnings, []);
+});
