@@ -773,6 +773,14 @@ export async function handleWorkflowSearch(
   }
 }
 
+/** The fields of an approvals row that its read filter and redaction use. */
+interface ApprovalsRow {
+  workflowId: string;
+  workflowName: string;
+  parentRun?: NamedWorkflow;
+  parentWaiting?: boolean;
+}
+
 export async function handleWorkflowApprovals(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -833,33 +841,36 @@ export async function handleWorkflowApprovals(
       return;
     }
 
-    const data = (result ?? {}) as {
-      approvals?: Array<
-        {
-          workflowId: string;
-          workflowName: string;
-          parentRun?: NamedWorkflow;
-          parentWaiting?: boolean;
-        }
-      >;
+    // The reply is built from the lists filtered here, never the generator's
+    // object as it came: a list the generator adds later is withheld until
+    // it is filtered too. `approvals` stays the first key, which dashboards
+    // older than the expired list read by position.
+    const listed = (result ?? {}) as {
+      approvals?: ApprovalsRow[];
+      expired?: ApprovalsRow[];
     };
-    if (data.approvals) {
-      const canonical = canonicalResources(ctx);
-      data.approvals = await filterByResources(
-        data.approvals,
+    const canonical = canonicalResources(ctx);
+    // A nested run's row names its parent only to a reader of the
+    // parent's workflow (swamp-club#2736).
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    const readable = async (rows: ApprovalsRow[] | undefined) => {
+      const kept = await filterByResources(
+        rows ?? [],
         (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
         ctx,
       );
-      // A nested run's row names its parent only to a reader of the
-      // parent's workflow (swamp-club#2736).
-      const canRead = nestedRunReadDecider(ctx, socket, principal);
-      for (const item of data.approvals) {
+      for (const item of kept) {
         await redactParentRun(item, canRead);
       }
-    }
+      return kept;
+    };
+    const data = {
+      approvals: await readable(listed.approvals),
+      expired: await readable(listed.expired),
+    };
 
     send(socket, {
       type: "workflow.approvals",

@@ -134,10 +134,21 @@ steps:
 - `timeout` (optional, number): seconds. Checked at both approve and reject
   time against when the step was suspended (`evaluateApprovalTimeout` in
   `src/libswamp/workflows/approve.ts` and `reject.ts`). Once it expires,
-  approve and reject are both refused and the run is left out of
-  `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`). The run
-  stays `suspended`; cancel it to clear it (for a run `swamp serve` started,
-  `swamp workflow cancel --run <id> --server <url>`).
+  approve and reject are both refused and the gate is an **expired gate**: the
+  run stays `suspended` and can only be cancelled.
+  `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`) lists it
+  in an `expired` list beside `approvals`, with the run, the step, when it
+  suspended, the timeout and when it expired. It is never counted as pending.
+  Log mode prints it in its own section with the command that cancels the run
+  (for a run `swamp serve` started,
+  `swamp workflow cancel --run <id> --server <url>`, since a local cancel
+  refuses it). Through serve, the `expired` list is filtered like `approvals`:
+  a row is returned only to a reader of its workflow, and a nested run's row
+  names its parent only to a reader of the parent's workflow. The handler
+  builds the reply from the lists it filtered, so a list added to the
+  generator later is withheld until the handler filters it. An expired gate on
+  a nested run leaves its parent suspended when the child is cancelled; the
+  row says so.
 
 **Lifecycle: suspend → approve → resume**
 
@@ -1149,8 +1160,13 @@ to start while any of them is still open.
   suspended in is not refused: the run tracker is local to a host.
 - A run tracker row whose pid was reused by another live process keeps the
   resume refused until the run is cancelled.
-- The dashboard lists suspended runs as awaiting approval or awaiting resume.
-  A run suspended only on a signal wait is in neither list.
+- The dashboard lists suspended runs as awaiting approval, expired or awaiting
+  resume. A run suspended only on a signal wait is in none of them. Expired
+  and awaiting-resume rows have a Cancel action, which sends `workflow.cancel`
+  with the run id after a second click to confirm; the sidebar count is of
+  gates that can still be decided. Cancel is authorized on `run` access, so a
+  reader without it sees the refusal. When the cancelled run waited on nested
+  runs, the view lists the ones left suspended with their cancel commands.
 
 ### Retry Failed Steps
 
