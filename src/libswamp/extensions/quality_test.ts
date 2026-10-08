@@ -452,6 +452,34 @@ Deno.test("extensionQuality: a file a safety error rejects is reported as left o
   });
 });
 
+const UNCATALOGUED_MODEL_SOURCE =
+  'const definition = { version: "2026.09.25.1" };\n' +
+  'export const model = {\n  ...definition,\n  type: "@testuser/echo",\n};\n';
+
+Deno.test("extensionQuality: a model without a literal version is reported as uncatalogued on a fresh run and on a cache hit", async () => {
+  await withQualityFixture(
+    UNCATALOGUED_MODEL_SOURCE,
+    async (repoDir, cacheRoot) => {
+      const manifest = makeManifest();
+      const input = makeQualityInput(repoDir, manifest);
+      const deps = makeQualityDeps(cacheRoot);
+
+      for (const run of ["fresh", "cache hit"]) {
+        const data = completedData(
+          await collect(extensionQuality(ctx, deps, input)),
+        );
+        const findings = data.findings.reviewRulesResult.warnings.filter((
+          w,
+        ) => w.ruleId === "uncatalogued-model");
+        assertEquals(findings.length, 1, run);
+        assertStringIncludes(findings[0].message, "string-literal version");
+        assertEquals(data.registryScorable, true, run);
+        assertEquals(data.cacheHit, run === "cache hit", run);
+      }
+    },
+  );
+});
+
 const BARE_IMPORT_MODEL_SOURCE =
   'import { z } from "zod";\nexport const schema = z.string();\n';
 
