@@ -254,8 +254,14 @@ Deno.test("renderServeCheckConfig: log mode lists grant-file errors and warnings
         entries: [],
         allowedCollectives: [],
         wouldStart: false,
-        grantErrors: [{ file: "bad.yaml", entry: 1, message: "bad action" }],
+        grantErrors: [{
+          reason: "invalid",
+          file: "bad.yaml",
+          entry: 1,
+          message: "bad action",
+        }],
         grantWarnings: [{
+          reason: "spelling",
           file: "spelled.yaml",
           entry: 2,
           message: "model:AWS::EC2::* names types spelled model:aws/ec2/*",
@@ -276,7 +282,11 @@ Deno.test("renderServeCheckConfig: grant warnings alone do not fail the check", 
     entries: [],
     allowedCollectives: [],
     wouldStart: true,
-    grantWarnings: [{ file: "/etc/grants", message: "not found here" }],
+    grantWarnings: [{
+      reason: "missing-source",
+      file: "/etc/grants",
+      message: "not found here",
+    }],
   };
   const output = stripAnsiCode(
     captureLogs(() => renderServeCheckConfig(data, "log")),

@@ -70,6 +70,11 @@ export type GrantsDirLoad =
 export interface ServeGrantFiles {
   /** The repository grants/ directory, by file name. */
   readonly repo: Map<string, GrantFileParseResult>;
+  /**
+   * Set when grants/ exists but cannot be listed; `repo` is then empty.
+   * Serve startup rethrows the cause, as it always has.
+   */
+  readonly repoUnreadable?: { readonly path: string; readonly cause: unknown };
   readonly grantsFile?: GrantsFileLoad;
   readonly grantsDir?: GrantsDirLoad;
 }
@@ -162,11 +167,18 @@ export async function readServeGrantFiles(
   repoDir: string,
   options: ServeGrantFileOptions,
 ): Promise<ServeGrantFiles> {
-  const repo = await readGrantFiles(
-    join(repoDir, "grants"),
-    options.validateCondition,
-    options.readTypeLiterals,
-  );
+  const repoGrantsDir = join(repoDir, "grants");
+  let repo = new Map<string, GrantFileParseResult>();
+  let repoUnreadable: ServeGrantFiles["repoUnreadable"];
+  try {
+    repo = await readGrantFiles(
+      repoGrantsDir,
+      options.validateCondition,
+      options.readTypeLiterals,
+    );
+  } catch (cause) {
+    repoUnreadable = { path: repoGrantsDir, cause };
+  }
   const grantsFilePath = resolveExternalGrantsFile(
     repoDir,
     options.grantsFile,
@@ -184,11 +196,28 @@ export async function readServeGrantFiles(
       ? await readGrantsDir(grantsDirPath, options)
       : { status: "same-as-repo", configured: options.grantsDir };
   }
-  return { repo, grantsFile, grantsDir };
+  return {
+    repo,
+    ...(repoUnreadable ? { repoUnreadable } : {}),
+    grantsFile,
+    grantsDir,
+  };
 }
+
+/**
+ * Why a grant file was reported: it fails to load (`invalid`), cannot be
+ * read (`unreadable`), is absent where the check ran (`missing-source`), or
+ * spells a type no type is stored as (`spelling`).
+ */
+export type GrantFileCheckReason =
+  | "invalid"
+  | "unreadable"
+  | "missing-source"
+  | "spelling";
 
 /** One grant-file finding, located by file and, when known, entry. */
 export interface GrantFileCheckIssue {
+  readonly reason: GrantFileCheckReason;
   readonly file: string;
   /** 1-based entry number within the file. */
   readonly entry?: number;
@@ -210,6 +239,8 @@ function resultIssues(
 ): void {
   for (const e of result.errors) {
     errors.push({
+      // readGrantFiles records a file it could not read as this error.
+      reason: e.message.startsWith("Failed to read") ? "unreadable" : "invalid",
       file: locate(e.filename),
       ...(e.entryIndex !== undefined ? { entry: e.entryIndex + 1 } : {}),
       message: e.message,
@@ -217,6 +248,7 @@ function resultIssues(
   }
   for (const w of result.warnings) {
     warnings.push({
+      reason: "spelling",
       file: locate(w.filename),
       entry: w.entryIndex + 1,
       message: w.message,
@@ -233,6 +265,13 @@ function resultIssues(
 export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   const errors: GrantFileCheckIssue[] = [];
   const warnings: GrantFileCheckIssue[] = [];
+  if (files.repoUnreadable) {
+    errors.push({
+      reason: "unreadable",
+      file: files.repoUnreadable.path,
+      message: `Failed to read: ${files.repoUnreadable.cause}`,
+    });
+  }
   // Repository grant files are parsed under their bare names; name the
   // directory too, since external sources are listed beside them.
   for (const result of files.repo.values()) {
@@ -241,12 +280,14 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   const grantsFile = files.grantsFile;
   if (grantsFile?.status === "missing") {
     warnings.push({
+      reason: "missing-source",
       file: grantsFile.path,
       message:
         "Grants file not found here; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsFile?.status === "unreadable") {
     errors.push({
+      reason: "unreadable",
       file: grantsFile.path,
       message: `Failed to read: ${grantsFile.cause}`,
     });
@@ -256,12 +297,14 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   const grantsDir = files.grantsDir;
   if (grantsDir?.status === "missing") {
     warnings.push({
+      reason: "missing-source",
       file: grantsDir.path,
       message:
         "Grants directory not found here; swamp serve refuses to start if it is missing where serve runs",
     });
   } else if (grantsDir?.status === "unreadable") {
     errors.push({
+      reason: "unreadable",
       file: grantsDir.path,
       message: `Failed to read: ${grantsDir.cause}`,
     });
@@ -269,6 +312,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
     for (const file of grantsDir.files) {
       if (file.readError !== undefined) {
         errors.push({
+          reason: "unreadable",
           file: file.path,
           message: `Failed to read: ${file.readError}`,
         });

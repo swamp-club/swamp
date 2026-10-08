@@ -164,3 +164,51 @@ Deno.test("checkServeGrantFiles: invalid grants-file and grants-dir entries are 
     assertEquals(check.errors.length, 2);
   });
 });
+
+Deno.test("checkServeGrantFiles: every finding carries a reason", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "grants"));
+    await Deno.writeTextFile(join(repoDir, "grants", "bad.yaml"), INVALID);
+    await Deno.writeTextFile(
+      join(repoDir, "grants", "spelled.yaml"),
+      MISSPELLED_DENY,
+    );
+    const check = checkServeGrantFiles(
+      await readServeGrantFiles(repoDir, {
+        ...OPTIONS,
+        grantsFile: "absent.yaml",
+      }),
+    );
+    assertEquals(check.errors.map((e) => e.reason), ["invalid"]);
+    assertEquals(check.warnings.map((w) => w.reason), [
+      "spelling",
+      "missing-source",
+    ]);
+  });
+});
+
+Deno.test({
+  name:
+    "checkServeGrantFiles: a grants/ directory that cannot be listed is an error, not a crash",
+  // Windows has no directory permission bits to deny listing.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      const grantsDir = join(repoDir, "grants");
+      await ensureDir(grantsDir);
+      await Deno.chmod(grantsDir, 0o000);
+      try {
+        const files = await readServeGrantFiles(repoDir, OPTIONS);
+        // A process that ignores permissions (root) can still list it.
+        if (files.repoUnreadable === undefined) return;
+        assertEquals(files.repo.size, 0);
+        const check = checkServeGrantFiles(files);
+        assertEquals(check.errors.map((e) => [e.reason, e.file]), [
+          ["unreadable", grantsDir],
+        ]);
+      } finally {
+        await Deno.chmod(grantsDir, 0o755);
+      }
+    });
+  },
+});

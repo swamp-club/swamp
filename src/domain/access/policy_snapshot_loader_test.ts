@@ -940,3 +940,37 @@ Deno.test("PolicySnapshotLoader.load: names each non-canonical type spelling onc
   assertEquals(forAllow[0].includes("acme/tools/probe"), true);
   assertEquals(warnings.filter((w) => w.includes(canonical.id)), []);
 });
+
+Deno.test("PolicySnapshotLoader.load: reports a spelling again once its grant returns after a revoke", async () => {
+  const deny = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+  });
+  const withGrant = createMockDataRepo(
+    [{ attrs: deny, modelId: "g1", dataName: "grant-main" }],
+    [],
+  );
+  const revoked = createMockDataRepo(
+    [{
+      attrs: { ...deny, state: "revoked" },
+      modelId: "g1",
+      dataName: "grant-main",
+    }],
+    [],
+  );
+  let current = withGrant;
+  const dataRepo = new Proxy({} as UnifiedDataRepository, {
+    get: (_, key) => current[key as keyof UnifiedDataRepository],
+  });
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    current = revoked;
+    await loader.load();
+    current = withGrant;
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(warnings.filter((w) => w.includes(deny.id)).length, 2);
+});

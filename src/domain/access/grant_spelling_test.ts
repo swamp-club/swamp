@@ -56,7 +56,7 @@ Deno.test("findGrantSpellingIssues: says a deny matches in any spelling", () => 
     effect: "deny",
     resource: { kind: "model", pattern: "AWS::EC2::*" },
   });
-  assertStringIncludes(finding.message, "matches them in any spelling");
+  assertStringIncludes(finding.message, "a deny matches any spelling");
 });
 
 Deno.test("findGrantSpellingIssues: access selectors are checked only when they name a control-plane type", () => {
@@ -135,4 +135,34 @@ Deno.test("findGrantSpellingIssues: conditions are skipped without a literal rea
     }),
     [],
   );
+});
+
+Deno.test("findGrantSpellingIssues: an allow message reads a wildcard as a pattern", () => {
+  const [wildcard] = findGrantSpellingIssues({
+    effect: "allow",
+    resource: { kind: "model", pattern: "@Acme/*" },
+  });
+  assertStringIncludes(wildcard.message, "model names matching '@Acme/*'");
+  const [exact] = findGrantSpellingIssues({
+    effect: "allow",
+    resource: { kind: "model", pattern: "AWS::EC2::VPC" },
+  });
+  assertStringIncludes(exact.message, "a model named exactly 'AWS::EC2::VPC'");
+});
+
+Deno.test("findGrantSpellingIssues: literal messages fit exact, prefix and fragment matches", () => {
+  const messages = findGrantSpellingIssues(
+    {
+      effect: "deny",
+      resource: { kind: "model", pattern: "*" },
+      condition:
+        `modelType == "AWS::EC2::VPC" || modelType.startsWith("Acme::") || modelType.contains("My Probe")`,
+    },
+    readConditionTypeLiterals,
+  ).map((f) => f.message);
+  assertStringIncludes(messages[0], "compared with 'AWS::EC2::VPC'");
+  assertStringIncludes(messages[0], "write 'aws/ec2/vpc'");
+  assertStringIncludes(messages[1], "modelType.startsWith('Acme::')");
+  assertStringIncludes(messages[2], "checked for 'My Probe'");
+  assertStringIncludes(messages[2], "write 'my/probe'");
 });

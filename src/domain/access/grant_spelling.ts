@@ -102,6 +102,15 @@ function canonicalAccessPattern(pattern: string): string | null {
   return wildcard ? `${bare}*` : bare;
 }
 
+/**
+ * A value as shown in a finding. Single quotes, so a value with spaces stays
+ * visible and log output, which double-quotes the whole message, does not
+ * escape them.
+ */
+function shown(value: string): string {
+  return `'${value}'`;
+}
+
 function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
   const { kind, pattern } = grant.resource;
   let canonical: string | null = null;
@@ -110,11 +119,20 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
   if (canonical === null || canonical === pattern) return null;
   const written = resourceSelectorToString(grant.resource);
   const canonicalSelector = `${kind}:${canonical}`;
+  const names = pattern.endsWith("*")
+    ? `model names matching ${shown(pattern)}`
+    : `a model named exactly ${shown(pattern)}`;
   const message = grant.effect === "deny"
-    ? `${written} names types spelled ${canonicalSelector}; the deny matches them in any spelling — write ${canonicalSelector} so the grant reads as it is enforced`
+    ? `${shown(written)} is enforced as ${
+      shown(canonicalSelector)
+    } (a deny matches any spelling); write it that way`
     : kind === "model"
-    ? `${written} matches no model type: types are spelled ${canonicalSelector}, so write that to grant on them (as written it matches only model names spelled exactly ${pattern})`
-    : `${written} matches no control-plane record: records are spelled ${canonicalSelector}, so write that to grant on them`;
+    ? `${shown(written)} matches no model type; write ${
+      shown(canonicalSelector)
+    } to grant on those types (as written it matches only ${names})`
+    : `${shown(written)} matches no control-plane record; write ${
+      shown(canonicalSelector)
+    } to grant on those records`;
   return { part: "selector", written, canonical: canonicalSelector, message };
 }
 
@@ -145,6 +163,27 @@ function canonicalAccessNameLiteral(
   return bare !== null && namesControlPlaneType(bare, false) ? bare : null;
 }
 
+function literalMessage(
+  field: string,
+  { literal, match }: ConditionTypeLiteral,
+  canonical: string,
+): string {
+  const fix = `write ${shown(canonical)}`;
+  if (match === "prefix") {
+    return `${field}.startsWith(${
+      shown(literal)
+    }) matches no type as written; ${fix}`;
+  }
+  if (match === "fragment") {
+    return `${field} is checked for ${
+      shown(literal)
+    }, which no type contains as written (types are lowercase, with / between segments); ${fix}`;
+  }
+  return `${field} is compared with ${
+    shown(literal)
+  }, which matches no type as written; ${fix}`;
+}
+
 function conditionFindings(
   grant: SpelledGrant,
   readTypeLiterals: ConditionTypeLiteralReader,
@@ -162,8 +201,7 @@ function conditionFindings(
       part: "condition",
       written: typeLiteral.literal,
       canonical,
-      message:
-        `${field} is compared with ${typeLiteral.literal}, which matches no type as written; write ${canonical}`,
+      message: literalMessage(field, typeLiteral, canonical),
     });
   }
   return findings;

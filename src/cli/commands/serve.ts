@@ -3710,12 +3710,19 @@ export const serveCommand = new Command()
       grantsDir: merged.grantsDir,
       validateCondition: validateGrantCondition,
     });
+    if (grantFiles.repoUnreadable) throw grantFiles.repoUnreadable.cause;
     const grantFileErrors = collectErrors(grantFiles.repo);
 
     if (grantFileErrors.length > 0) {
+      // Named as grants/<name>, as swamp serve check-config names them.
       throw new UserError(
         `Grant file validation failed — refusing to start:\n${
-          formatGrantFileErrorLines(grantFileErrors)
+          formatGrantFileErrorLines(
+            grantFileErrors.map((e) => ({
+              ...e,
+              filename: join("grants", e.filename),
+            })),
+          )
         }`,
       );
     }

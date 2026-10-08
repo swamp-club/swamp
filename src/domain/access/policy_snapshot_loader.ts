@@ -353,6 +353,14 @@ export class PolicySnapshotLoader {
    * condition literal only as written.
    */
   #reportSpellings(grants: readonly Grant[]): void {
+    // Forget grants no longer active, so the set stays bounded by the
+    // policy, and a grant that comes back is reported again.
+    const active = new Set(grants.map((grant) => grant.id));
+    for (const key of this.#reportedSpellings) {
+      if (!active.has(key.slice(0, key.indexOf("|")))) {
+        this.#reportedSpellings.delete(key);
+      }
+    }
     for (const grant of grants) {
       for (
         const finding of findGrantSpellingIssues(
