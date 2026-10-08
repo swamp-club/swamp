@@ -93,7 +93,11 @@ Deno.test("readServeGrantFiles: reads grants/, grants-file and grants-dir as ser
       files.grantsDir.files.map((f) => [f.sourceName, f.result === null]),
       [["grants-dir/b.yaml", false], ["grants-dir/empty.yaml", true]],
     );
-    assertEquals(checkServeGrantFiles(files), { errors: [], warnings: [] });
+    assertEquals(checkServeGrantFiles(files), {
+      filesChecked: 4,
+      errors: [],
+      warnings: [],
+    });
   });
 });
 

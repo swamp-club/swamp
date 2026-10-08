@@ -298,3 +298,24 @@ Deno.test("renderServeCheckConfig: grant warnings alone do not fail the check", 
     data,
   );
 });
+
+Deno.test("renderServeCheckConfig: a clean grant check says how many files it read", () => {
+  const data: ServeCheckConfigData = {
+    passed: true,
+    authMode: "token",
+    entries: [],
+    allowedCollectives: [],
+    wouldStart: true,
+    grantFilesChecked: 3,
+    grantErrors: [],
+    grantWarnings: [],
+  };
+  const output = stripAnsiCode(
+    captureLogs(() => renderServeCheckConfig(data, "log")),
+  );
+  assertStringIncludes(output, "Grant files: 3 file(s) checked, no problems");
+  assertEquals(
+    JSON.parse(captureLogs(() => renderServeCheckConfig(data, "json"))),
+    data,
+  );
+});

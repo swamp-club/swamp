@@ -52,9 +52,21 @@ export interface GrantsDirFile extends ExternalGrantFile {
 }
 
 export type GrantsFileLoad =
-  | { readonly status: "loaded"; readonly file: ExternalGrantFile }
-  | { readonly status: "missing"; readonly path: string }
-  | { readonly status: "unreadable"; readonly path: string; cause: unknown };
+  | {
+    readonly status: "loaded";
+    readonly path: string;
+    readonly file: ExternalGrantFile;
+  }
+  | {
+    readonly status: "missing";
+    readonly path: string;
+    readonly cause: unknown;
+  }
+  | {
+    readonly status: "unreadable";
+    readonly path: string;
+    readonly cause: unknown;
+  };
 
 export type GrantsDirLoad =
   | {
@@ -64,8 +76,16 @@ export type GrantsDirLoad =
   }
   /** The configured directory is the repository grants/ directory. */
   | { readonly status: "same-as-repo"; readonly configured: string }
-  | { readonly status: "missing"; readonly path: string }
-  | { readonly status: "unreadable"; readonly path: string; cause: unknown };
+  | {
+    readonly status: "missing";
+    readonly path: string;
+    readonly cause: unknown;
+  }
+  | {
+    readonly status: "unreadable";
+    readonly path: string;
+    readonly cause: unknown;
+  };
 
 export interface ServeGrantFiles {
   /** The repository grants/ directory, by file name. */
@@ -94,7 +114,8 @@ function isGrantsDirFile(entry: Deno.DirEntry): boolean {
     !entry.name.startsWith(".");
 }
 
-async function readGrantsFile(
+/** Reads one `--grants-file`, at an already resolved path. */
+export async function readGrantsFileSource(
   path: string,
   options: ServeGrantFileOptions,
 ): Promise<GrantsFileLoad> {
@@ -103,11 +124,12 @@ async function readGrantsFile(
     content = await Deno.readTextFile(path);
   } catch (cause) {
     return cause instanceof Deno.errors.NotFound
-      ? { status: "missing", path }
+      ? { status: "missing", path, cause }
       : { status: "unreadable", path, cause };
   }
   return {
     status: "loaded",
+    path,
     file: {
       path,
       result: content.trim().length === 0 ? null : parseGrantFile(
@@ -120,7 +142,8 @@ async function readGrantsFile(
   };
 }
 
-async function readGrantsDir(
+/** Reads one `--grants-dir` and its grant files, at an already resolved path. */
+export async function readGrantsDirSource(
   path: string,
   options: ServeGrantFileOptions,
 ): Promise<GrantsDirLoad> {
@@ -129,7 +152,7 @@ async function readGrantsDir(
     for await (const entry of Deno.readDir(path)) entries.push(entry);
   } catch (cause) {
     return cause instanceof Deno.errors.NotFound
-      ? { status: "missing", path }
+      ? { status: "missing", path, cause }
       : { status: "unreadable", path, cause };
   }
   const files: GrantsDirFile[] = [];
@@ -184,7 +207,7 @@ export async function readServeGrantFiles(
     options.grantsFile,
   );
   const grantsFile = grantsFilePath
-    ? await readGrantsFile(grantsFilePath, options)
+    ? await readGrantsFileSource(grantsFilePath, options)
     : undefined;
   let grantsDir: GrantsDirLoad | undefined;
   if (options.grantsDir) {
@@ -193,7 +216,7 @@ export async function readServeGrantFiles(
       options.grantsDir,
     );
     grantsDir = grantsDirPath
-      ? await readGrantsDir(grantsDirPath, options)
+      ? await readGrantsDirSource(grantsDirPath, options)
       : { status: "same-as-repo", configured: options.grantsDir };
   }
   return {
@@ -225,6 +248,8 @@ export interface GrantFileCheckIssue {
 }
 
 export interface GrantFileCheck {
+  /** How many grant files were read, empty ones included. */
+  readonly filesChecked: number;
   /** What would stop serve starting. */
   readonly errors: readonly GrantFileCheckIssue[];
   /** Advisory: spellings that match no type, and sources absent here. */
@@ -239,8 +264,7 @@ function resultIssues(
 ): void {
   for (const e of result.errors) {
     errors.push({
-      // readGrantFiles records a file it could not read as this error.
-      reason: e.message.startsWith("Failed to read") ? "unreadable" : "invalid",
+      reason: e.unreadable ? "unreadable" : "invalid",
       file: locate(e.filename),
       ...(e.entryIndex !== undefined ? { entry: e.entryIndex + 1 } : {}),
       message: e.message,
@@ -269,7 +293,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
     errors.push({
       reason: "unreadable",
       file: files.repoUnreadable.path,
-      message: `Failed to read: ${files.repoUnreadable.cause}`,
+      message: `Failed to read grants directory: ${files.repoUnreadable.cause}`,
     });
   }
   // Repository grant files are parsed under their bare names; name the
@@ -289,7 +313,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
     errors.push({
       reason: "unreadable",
       file: grantsFile.path,
-      message: `Failed to read: ${grantsFile.cause}`,
+      message: `Failed to read grants file: ${grantsFile.cause}`,
     });
   } else if (grantsFile?.status === "loaded" && grantsFile.file.result) {
     resultIssues(grantsFile.file.result, errors, warnings);
@@ -306,7 +330,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
     errors.push({
       reason: "unreadable",
       file: grantsDir.path,
-      message: `Failed to read: ${grantsDir.cause}`,
+      message: `Failed to read grants directory: ${grantsDir.cause}`,
     });
   } else if (grantsDir?.status === "loaded") {
     for (const file of grantsDir.files) {
@@ -314,12 +338,17 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
         errors.push({
           reason: "unreadable",
           file: file.path,
-          message: `Failed to read: ${file.readError}`,
+          message: `Failed to read grants file: ${file.readError}`,
         });
       } else if (file.result) {
         resultIssues(file.result, errors, warnings);
       }
     }
   }
-  return { errors, warnings };
+  const filesChecked = files.repo.size +
+    (grantsFile?.status === "loaded" ? 1 : 0) +
+    (grantsDir?.status === "loaded"
+      ? grantsDir.files.filter((file) => file.readError === undefined).length
+      : 0);
+  return { filesChecked, errors, warnings };
 }

@@ -53,6 +53,8 @@ export interface ServeCheckConfigData {
    * at startup.
    */
   readonly grantErrors?: readonly GrantFileCheckIssue[];
+  /** How many grant files the check read; set whenever grants were checked. */
+  readonly grantFilesChecked?: number;
   /**
    * Advisory: grant type spellings that match no type as written
    * (swamp-club#3130), and grant sources absent where the check ran. They do
@@ -148,7 +150,17 @@ export function renderServeCheckConfig(
 
   const grantErrors = data.grantErrors ?? [];
   const grantWarnings = data.grantWarnings ?? [];
-  if (grantErrors.length > 0 || grantWarnings.length > 0) {
+  if (
+    grantErrors.length === 0 && grantWarnings.length === 0 &&
+    data.grantFilesChecked !== undefined
+  ) {
+    lines.push("");
+    lines.push(
+      `${cyan("Grant files:")} ${
+        dim(`${data.grantFilesChecked} file(s) checked, no problems`)
+      }`,
+    );
+  } else if (grantErrors.length > 0 || grantWarnings.length > 0) {
     lines.push("");
     lines.push(cyan("Grant files:"));
     for (const issue of grantErrors) {

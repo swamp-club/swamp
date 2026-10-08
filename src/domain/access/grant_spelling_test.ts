@@ -47,7 +47,7 @@ Deno.test("findGrantSpellingIssues: names the canonical spelling of a model sele
     });
     assertEquals(finding.part, "selector");
     assertEquals(finding.canonical, canonical);
-    assertStringIncludes(finding.message, "matches no model type");
+    assertStringIncludes(finding.message, "no model type");
   }
 });
 
@@ -168,19 +168,14 @@ Deno.test("findGrantSpellingIssues: literal messages fit exact, prefix and fragm
 });
 
 Deno.test("findGrantSpellingIssues: a deny that may name model names is not told to respell", () => {
-  const [finding] = findGrantSpellingIssues({
-    effect: "deny",
-    resource: { kind: "model", pattern: "Prod-*" },
-  });
-  assertStringIncludes(
-    finding.message,
-    "also covers model types spelled 'model:prod-*'",
-  );
-  assertStringIncludes(
-    finding.message,
-    "keep it as written if it is meant for those models",
-  );
-  assertEquals(finding.message.includes("write it that way"), false);
+  for (const pattern of ["Prod-*", "web.prod"]) {
+    const [finding] = findGrantSpellingIssues({
+      effect: "deny",
+      resource: { kind: "model", pattern },
+    });
+    assertStringIncludes(finding.message, "as a deny it also covers types");
+    assertEquals(finding.message.includes("write"), false);
+  }
 });
 
 Deno.test("findGrantSpellingIssues: an allow that may name model names offers both readings", () => {
@@ -188,11 +183,11 @@ Deno.test("findGrantSpellingIssues: an allow that may name model names offers bo
     effect: "allow",
     resource: { kind: "model", pattern: "Prod-DB" },
   });
-  assertStringIncludes(finding.message, "only a model named exactly 'Prod-DB'");
   assertStringIncludes(
     finding.message,
-    "keep it as written if it is meant for those models",
+    "matches a model named exactly 'Prod-DB' as written and no model type",
   );
+  assertStringIncludes(finding.message, "write 'model:prod-db'");
 });
 
 Deno.test("findGrantSpellingIssues: a type-path deny is told to respell", () => {

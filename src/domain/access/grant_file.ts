@@ -97,6 +97,8 @@ export interface GrantFileError {
   filename: string;
   entryIndex?: number;
   message: string;
+  /** Set when the file could not be read at all, rather than parsed. */
+  unreadable?: true;
 }
 
 /**
@@ -333,7 +335,11 @@ export async function readGrantFiles(
       logger.warn`Skipping grant file ${file.name}: ${error}`;
       results.set(file.name, {
         entries: [],
-        errors: [{ filename: file.name, message: `Failed to read: ${error}` }],
+        errors: [{
+          filename: file.name,
+          message: `Failed to read: ${error}`,
+          unreadable: true,
+        }],
         warnings: [],
       });
       continue;

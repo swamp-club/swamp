@@ -130,8 +130,8 @@ async function create(
   const literals = spelling.filter((finding) => finding.part === "condition");
   if (literals.length > 0) {
     throw new Error(
-      `Invalid grant condition: ${
-        literals.map((finding) => finding.message).join("; ")
+      `Invalid grant condition:${
+        literals.map((finding) => `\n  - ${finding.message}`).join("")
       }`,
     );
   }

@@ -33,6 +33,7 @@ import type { PrincipalContext } from "./principal_context.ts";
 import type { Subject } from "./subject.ts";
 import {
   canonicalTypePattern,
+  namesTypePath,
   type ResourceKind,
   resourceSelectorMatches,
   typePatternMatchesIgnoringAt,
@@ -110,8 +111,15 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
     (resource.kind === "model" || isControlPlaneRecordResource(resource))
   ) {
     const canonical = canonicalPatternOf(grant);
-    return canonical !== null &&
-      typePatternMatchesIgnoringAt(canonical, modelType);
+    if (canonical === null) return false;
+    // Only a pattern written as a type path ignores the `@`; one that may be
+    // written for model names folds case and separators only.
+    return namesTypePath(grant.resource.pattern)
+      ? typePatternMatchesIgnoringAt(canonical, modelType)
+      : resourceSelectorMatches(
+        { kind: resource.kind, pattern: canonical },
+        modelType,
+      );
   }
   return false;
 }

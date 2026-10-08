@@ -93,6 +93,17 @@ export function resourceSelectorMatches(
   return pattern === resourceName;
 }
 
+/**
+ * Whether a pattern is written as a type path: with a `/` or `::` once a
+ * leading `@` is set aside (`acme/*`, `@acme/deploy`, `AWS::EC2::*`). A
+ * pattern without one (`prod-*`, `web.prod`) may be written for model names,
+ * which match only as written (swamp-club#3130).
+ */
+export function namesTypePath(pattern: string): boolean {
+  const body = pattern.replace(/\*$/, "").replace(/^[@/]+/, "");
+  return body.includes("/") || body.includes("::");
+}
+
 /** A trailing separator that ModelType normalization would trim. */
 const TRAILING_TYPE_SEPARATOR = /(\/|\.|::|\s)$/;
 

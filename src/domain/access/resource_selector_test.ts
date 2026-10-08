@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   canonicalTypePattern,
+  namesTypePath,
   parseResourceSelector,
   resourceSelectorMatches,
   resourceSelectorToString,
@@ -188,4 +189,13 @@ Deno.test("typePatternMatchesIgnoringAt: an @-only prefix is matched as written"
   assertEquals(typePatternMatchesIgnoringAt("@*", "@acme/deploy"), true);
   assertEquals(typePatternMatchesIgnoringAt("@*", "command/shell"), false);
   assertEquals(typePatternMatchesIgnoringAt("*", "command/shell"), true);
+});
+
+Deno.test("namesTypePath: a / or :: makes a type path; dots alone do not", () => {
+  for (const p of ["acme/*", "@acme/deploy", "AWS::EC2::*", "@Acme::X"]) {
+    assertEquals(namesTypePath(p), true, p);
+  }
+  for (const p of ["prod-*", "web.prod", "@*", "*", "@acme*"]) {
+    assertEquals(namesTypePath(p), false, p);
+  }
 });

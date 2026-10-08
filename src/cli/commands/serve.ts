@@ -373,7 +373,6 @@ import {
 import {
   collectErrors,
   type GrantFileError,
-  resolveExternalGrantsFile,
 } from "../../domain/access/grant_file.ts";
 import {
   checkServeGrantFiles,
@@ -2087,12 +2086,9 @@ const checkConfigCommand = new Command()
     );
     const grantsLoad = grantCheck.errors.length === 0;
     const grantReport = {
-      ...(grantCheck.errors.length > 0
-        ? { grantErrors: grantCheck.errors }
-        : {}),
-      ...(grantCheck.warnings.length > 0
-        ? { grantWarnings: grantCheck.warnings }
-        : {}),
+      grantFilesChecked: grantCheck.filesChecked,
+      grantErrors: grantCheck.errors,
+      grantWarnings: grantCheck.warnings,
     };
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
@@ -3736,10 +3732,7 @@ export const serveCommand = new Command()
       validEntries.set(filename, result.entries);
     }
 
-    const externalGrantsFilePath = resolveExternalGrantsFile(
-      resolvedRepoDir,
-      merged.grantsFile,
-    );
+    const externalGrantsFilePath = grantFiles.grantsFile?.path;
     if (grantFiles.grantsFile) {
       const load = grantFiles.grantsFile;
       if (load.status === "missing") {

@@ -32,6 +32,7 @@ import { ModelType } from "../models/model_type.ts";
 import type { Effect } from "./effect.ts";
 import {
   canonicalTypePattern,
+  namesTypePath,
   type ResourceKind,
   type ResourceSelector,
   resourceSelectorToString,
@@ -122,35 +123,34 @@ function selectorFinding(grant: SpelledGrant): GrantSpellingFinding | null {
   const names = pattern.endsWith("*")
     ? `model names matching ${shown(pattern)}`
     : `a model named exactly ${shown(pattern)}`;
-  // A pattern without a type path (`Prod-*`) may be written for model names,
-  // which match only as written: respelling it would drop those models, so
-  // the finding says so rather than telling the admin to respell it.
-  const namesTypePath = stripAt(canonical.replace(/\*$/, "")).includes("/");
   let message: string;
-  if (kind === "access") {
+  if (kind === "access" || namesTypePath(pattern)) {
     message = grant.effect === "deny"
       ? `${shown(written)} is enforced as ${
         shown(canonicalSelector)
       } (a deny matches any spelling); write it that way`
-      : `${shown(written)} matches no control-plane record; write ${
+      : kind === "access"
+      ? `${shown(written)} matches no control-plane record; write ${
         shown(canonicalSelector)
-      } to grant on those records`;
-  } else if (grant.effect === "deny") {
-    message = namesTypePath
-      ? `${shown(written)} is enforced as ${
+      } to grant on those records`
+      : `${shown(written)} matches no model type; write ${
         shown(canonicalSelector)
-      } (a deny matches any spelling); write it that way`
-      : `${shown(written)} also covers model types spelled ${
-        shown(canonicalSelector)
-      } (a deny matches types in any spelling), and still matches only ${names}; keep it as written if it is meant for those models`;
+      } to grant on those types (as written it matches only ${names})`;
   } else {
-    message = namesTypePath
-      ? `${shown(written)} matches no model type; write ${
+    // A pattern that may be written for model names, which match only as
+    // written: respelling it would drop those models, so a deny is not told
+    // to respell, and an allow is given both readings.
+    message = grant.effect === "deny"
+      ? `${
+        shown(written)
+      } matches ${names} as written; as a deny it also covers types spelled ${
         shown(canonicalSelector)
-      } to grant on those types (as written it matches only ${names})`
-      : `${shown(written)} matches no model type and only ${names}; write ${
+      }`
+      : `${
+        shown(written)
+      } matches ${names} as written and no model type; to grant on types spelled that way, write ${
         shown(canonicalSelector)
-      } to grant on types spelled that way, or keep it as written if it is meant for those models`;
+      }`;
   }
   return { part: "selector", written, canonical: canonicalSelector, message };
 }

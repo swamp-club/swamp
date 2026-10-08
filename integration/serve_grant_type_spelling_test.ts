@@ -53,7 +53,7 @@ function selectorSpellings(repo: ServeRepo): string[] {
     `@${collective.toUpperCase()}/${name.toUpperCase()}`,
     bare,
     `@${collective}::${name}`,
-    `${collective.toUpperCase()}.${name}`,
+    `@${collective.toUpperCase()}.${name}`,
     `@${collective.toUpperCase()}/*`,
     `${collective}::*`,
   ];

@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../../../infrastructure/logging/logger.ts";
 import { type Grant, GRANT_MODEL_TYPE, grantModel } from "./grant_model.ts";
 import { createInMemoryAccessContext } from "./access_test_helpers.ts";
 import { GrantSourceSchema } from "../../access/grant_source.ts";
@@ -239,22 +241,24 @@ Deno.test("revoke: preserves methods field", async () => {
   assertEquals(revoked.state, "revoked");
 });
 
-/** A context whose logger records the warnings a method logs. */
-function createWarningContext() {
-  const { context, store } = createTestContext();
-  const warnings: string[] = [];
-  const logger = {
-    ...context.logger,
-    warn: (message: TemplateStringsArray | string, ...values: unknown[]) => {
-      warnings.push(
-        typeof message === "string"
-          ? message
-          : message.reduce((acc, part, i) =>
-            acc + part + (i < values.length ? String(values[i]) : ""), ""),
-      );
-    },
-  } as unknown as typeof context.logger;
-  return { context: { ...context, logger }, store, warnings };
+/** Runs `fn` with the test logger's warnings captured, as messages. */
+async function capturingWarnings(fn: () => Promise<void>): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      { category: ["test"], lowestLevel: "warning", sinks: ["capture"] },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
 }
 
 for (
@@ -326,16 +330,18 @@ for (
   ] as const
 ) {
   Deno.test(`create: stores a ${effect} on model:${pattern} and warns with ${canonical}`, async () => {
-    const { context, store, warnings } = createWarningContext();
-    await grantModel.methods.create.execute(
-      {
-        ...VALID_CREATE_ARGS,
-        effect,
-        resourceKind: "model",
-        resourcePattern: pattern,
-      },
-      context,
-    );
+    const { context, store } = createTestContext();
+    const warnings = await capturingWarnings(async () => {
+      await grantModel.methods.create.execute(
+        {
+          ...VALID_CREATE_ARGS,
+          effect,
+          resourceKind: "model",
+          resourcePattern: pattern,
+        },
+        context,
+      );
+    });
     const grant = store.get("grant-main") as unknown as Grant;
     assertEquals(grant.resource, { kind: "model", pattern });
     assertEquals(warnings.length, 1);
@@ -344,10 +350,38 @@ for (
 }
 
 Deno.test("create: does not warn for a canonical selector", async () => {
-  const { context, warnings } = createWarningContext();
-  await grantModel.methods.create.execute(
-    { ...VALID_CREATE_ARGS, resourceKind: "model", resourcePattern: "@acme/*" },
-    context,
-  );
+  const { context } = createTestContext();
+  const warnings = await capturingWarnings(async () => {
+    await grantModel.methods.create.execute(
+      {
+        ...VALID_CREATE_ARGS,
+        resourceKind: "model",
+        resourcePattern: "@acme/*",
+      },
+      context,
+    );
+  });
   assertEquals(warnings, []);
+});
+
+Deno.test("create: lists each refused condition literal on its own line", async () => {
+  const { context } = createTestContext();
+  const error = await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        {
+          ...VALID_CREATE_ARGS,
+          resourceKind: "model",
+          resourcePattern: "*",
+          condition: 'modelType == "AWS::EC2::VPC" || modelType == "Acme.X"',
+        },
+        context,
+      ),
+    Error,
+  );
+  assertEquals(
+    error.message.split("\n").filter((line) => line.startsWith("  - "))
+      .length,
+    2,
+  );
 });

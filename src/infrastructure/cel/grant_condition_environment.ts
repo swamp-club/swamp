@@ -386,20 +386,18 @@ function collectTypeLiterals(
       if (literal !== null) out.push({ literal, match });
     }
   }
-  if (Array.isArray(args)) {
-    for (const child of args) {
-      if (Array.isArray(child)) {
-        for (const nested of child) {
-          if (Array.isArray(nested)) {
-            for (const entry of nested) {
-              collectTypeLiterals(entry, variable, out);
-            }
-          } else collectTypeLiterals(nested, variable, out);
-        }
-      } else collectTypeLiterals(child, variable, out);
-    }
-  } else if (isASTNode(args)) {
-    collectTypeLiterals(args, variable, out);
+  visitChildren(args, (child) => collectTypeLiterals(child, variable, out));
+}
+
+/**
+ * Calls `visit` on every AST node within `value`, however deeply it is
+ * nested in arrays: call arguments, list elements and map entries.
+ */
+function visitChildren(value: unknown, visit: (node: ASTNode) => void): void {
+  if (isASTNode(value)) {
+    visit(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) visitChildren(item, visit);
   }
 }
 

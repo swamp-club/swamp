@@ -320,10 +320,12 @@ how it matches depends on the grant's effect (swamp-club#3130):
 
 - **A deny matches its type in any spelling.** `deny model:@Acme/*`,
   `deny model:acme/*` and `deny model:AWS::EC2::*` cover `@acme/...` and
-  `aws/ec2/...` types, and for a pattern that names a type path (it has a
-  `/`) a leading `@` is ignored on either side, as `restricted-model-types`
-  compares types. A pattern without one (`a*`, `prod-*`) keeps its `@` as
-  written, so a prefix written for model names never reaches `@` types. The same holds for an `access:`
+  `aws/ec2/...` types, and for a pattern written as a type path (with a `/`
+  or `::`) a leading `@` is ignored on either side, as
+  `restricted-model-types` compares types. A pattern without one (`a*`,
+  `prod-*`, `web.prod`) may be written for model names, so it keeps its `@`
+  as written and never reaches `@` types; it still folds case and
+  separators, so `deny model:web.prod` also covers the type `web/prod`. The same holds for an `access:`
   deny on a control-plane record (`access:@swamp/grant` covers `swamp/grant`).
   Only the type comparison folds: instance names still match as written,
   though a deny written for mixed-case legacy names (`deny model:Prod-*`)
@@ -333,7 +335,9 @@ how it matches depends on the grant's effect (swamp-club#3130):
 - **An allow matches only as written.** Folding it would widen what it
   grants, so a misspelled allow matches no type, as before.
 
-Every non-canonical spelling is reported with the canonical one: as a warning
+Every non-canonical spelling is reported with the canonical one, except that
+a finding never tells an admin to respell a pattern that may name model names
+(that would drop them); it says what the grant matches instead: as a warning
 when a grant is created (the selector may also name instance names, so it is
 never refused), once per grant when serve loads its policy, and by
 `swamp serve check-config` for grant files. A grant condition is not

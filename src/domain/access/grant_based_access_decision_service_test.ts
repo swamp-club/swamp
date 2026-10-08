@@ -2165,3 +2165,26 @@ Deno.test("decide: access deny folding ignores access resources that are not rec
   });
   assertEquals(result?.grantId, allow.id);
 });
+
+Deno.test("decide: a dotted deny that may name a model does not reach @ types", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "web.prod" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const decide = (modelType: string) =>
+    service.decide(makePrincipal("adam"), "run", {
+      kind: "model",
+      name: "other",
+      fields: { name: "other", modelType, tags: {} },
+    })?.grantId;
+  assertEquals(decide("web/prod"), deny.id);
+  assertEquals(decide("@web/prod"), allow.id);
+});
