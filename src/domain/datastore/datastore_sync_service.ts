@@ -274,7 +274,9 @@ export interface DatastoreSyncService {
    * Returns `true` if the file was downloaded successfully, `false` if the
    * file does not exist on the remote. Implementations MUST write the file
    * atomically (write to a temporary path, then rename) to avoid partial
-   * reads from concurrent consumers.
+   * reads from concurrent consumers. Core checks that the file exists after
+   * a `true` result and raises {@link HydrateContractViolationError} when it
+   * does not.
    *
    * `relPath` is forward-slash-normalized and cache-relative (same
    * convention as `DatastoreSyncOptions.relPath`). Extensions consuming
@@ -593,7 +595,9 @@ export type MarkDirtyHook = (relPath?: string) => Promise<void>;
  *
  * Returns `true` if the file was successfully downloaded, `false` if the
  * file does not exist on the remote. A caller that holds something others
- * wait on passes `signal` to bound the download.
+ * wait on passes `signal` to bound the download. The composition-root wrapper
+ * verifies a `true` result for paths inside the cache and rejects with
+ * {@link HydrateContractViolationError} when no file is there.
  */
 export type HydrateFileHook = (
   absPath: string,
@@ -650,5 +654,35 @@ export class SyncTimeoutError extends UserError {
     if (options?.cause !== undefined) {
       this.cause = options.cause;
     }
+  }
+}
+
+/**
+ * Thrown when a datastore's `hydrateFile` reports success but the file is not
+ * at the path core asked for.
+ *
+ * Core verifies the claim so a hydrate that wrote to the wrong place names
+ * the datastore and both paths, instead of surfacing as a bare "No such file
+ * or directory" from the retry read (swamp-club#2477).
+ *
+ * Extends `UserError` so the message renders clean at the CLI error boundary.
+ */
+export class HydrateContractViolationError extends UserError {
+  readonly datastoreType: string;
+  readonly relPath: string;
+  readonly absPath: string;
+
+  constructor(datastoreType: string, relPath: string, absPath: string) {
+    super(
+      `Datastore ${datastoreType} reported hydrateFile success for ` +
+        `${relPath} but no file exists at ${absPath}. This is a bug in the ` +
+        `datastore extension: hydrateFile must write the file at the ` +
+        `cache-relative path it was given.`,
+      "datastore_hydrate_contract_violation",
+    );
+    this.name = "HydrateContractViolationError";
+    this.datastoreType = datastoreType;
+    this.relPath = relPath;
+    this.absPath = absPath;
   }
 }

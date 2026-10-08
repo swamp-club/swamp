@@ -26,10 +26,12 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { ensureDir, exists, walk } from "@std/fs";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
 import {
   acquireModelLocks,
   assertManagedConfigWritable,
@@ -1400,6 +1402,224 @@ Deno.test(
     } finally {
       datastoreTypeRegistry.invalidateType(typeName);
     }
+  },
+);
+
+/**
+ * Runs `fn` against a repo on a lazy-capable extension datastore whose
+ * `hydrateFile` is `hydrate`, with one data item saved and its `raw` file
+ * removed, as lazy hydration leaves it.
+ */
+async function withUnhydratedContent(
+  hydrate: (cachePath: string, relPath: string) => boolean,
+  fn: (
+    repo: Awaited<ReturnType<typeof requireInitializedRepo>>,
+    typeName: string,
+    read: () => Promise<Uint8Array | null>,
+    contentPath: string,
+    repoDir: string,
+  ) => Promise<void>,
+): Promise<void> {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+  const { Data } = await import("../domain/data/data.ts");
+  const { ModelType } = await import("../domain/models/model_type.ts");
+
+  const typeName = `test-hydrate-contract-${crypto.randomUUID()}`;
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test hydrateFile contract",
+    description: "hydrateFile with a configurable outcome",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: (_repoDir: string, cachePath: string) => ({
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        hydrateFile: (relPath: string) =>
+          Promise.resolve(hydrate(cachePath, relPath)),
+        capabilities: () => ({ scopedSync: true, lazyHydration: true }),
+      }),
+    }),
+  });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+      const repo = await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      });
+      const dataRepo = repo.repoContext.unifiedDataRepo;
+      const testType = ModelType.create("test/hydrate");
+      await dataRepo.save(
+        testType,
+        "model-h",
+        Data.create({
+          name: "hydrate-probe",
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 100,
+          tags: { type: "test" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test-user" },
+        }),
+        new TextEncoder().encode("original"),
+      );
+      const contentPath = dataRepo.getContentPath(
+        testType,
+        "model-h",
+        "hydrate-probe",
+        1,
+      );
+      await Deno.remove(contentPath);
+      try {
+        await fn(
+          repo,
+          typeName,
+          () => dataRepo.getContent(testType, "model-h", "hydrate-probe", 1),
+          contentPath,
+          dir,
+        );
+      } finally {
+        await flushDatastoreSync();
+      }
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+}
+
+function writeHydrated(path: string): void {
+  Deno.mkdirSync(join(path, ".."), { recursive: true });
+  Deno.writeFileSync(path, new TextEncoder().encode("hydrated"));
+}
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook rejects a success that wrote no file",
+  async () => {
+    const relPaths: string[] = [];
+    await withUnhydratedContent(
+      (_cachePath, relPath) => {
+        relPaths.push(relPath);
+        return true;
+      },
+      async (_repo, typeName, read, contentPath) => {
+        const captured: LogRecord[] = [];
+        await configure({
+          sinks: { capture: (record: LogRecord) => captured.push(record) },
+          loggers: [
+            {
+              category: ["cli", "datastore"],
+              lowestLevel: "warning",
+              sinks: ["capture"],
+            },
+          ],
+          reset: true,
+        });
+        let error: HydrateContractViolationError;
+        try {
+          error = await assertRejects(read, HydrateContractViolationError);
+        } finally {
+          await initializeLogging({ _reset: true });
+        }
+        // Callers that swallow getContent errors leave this warning as the
+        // only trace of the violation.
+        const warnings = captured
+          .filter((r) => r.level === "warning")
+          .map((r) => r.message.map((p) => String(p)).join(""));
+        assertEquals(warnings.length, 1);
+        assertStringIncludes(warnings[0], "reported hydrateFile success");
+        assertStringIncludes(warnings[0], contentPath);
+        assertEquals(error.datastoreType, typeName);
+        assertEquals(error.relPath, relPaths[0]);
+        assertPathEquals(error.absPath, contentPath);
+        assertStringIncludes(error.message, typeName);
+        assertStringIncludes(error.message, relPaths[0]);
+        assertStringIncludes(error.message, contentPath);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook rejects a success that wrote to the wrong place",
+  async () => {
+    await withUnhydratedContent(
+      (cachePath, relPath) => {
+        // The swamp-club#2404 shape: the first segment is doubled.
+        const segments = relPath.split("/");
+        writeHydrated(join(cachePath, segments[0], ...segments));
+        return true;
+      },
+      async (_repo, _typeName, read) => {
+        await assertRejects(read, HydrateContractViolationError);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook returns the content a datastore wrote",
+  async () => {
+    await withUnhydratedContent(
+      (cachePath, relPath) => {
+        writeHydrated(join(cachePath, ...relPath.split("/")));
+        return true;
+      },
+      async (_repo, _typeName, read) => {
+        const content = await read();
+        assertExists(content);
+        assertEquals(new TextDecoder().decode(content), "hydrated");
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook passes a datastore's false through",
+  async () => {
+    await withUnhydratedContent(
+      () => false,
+      async (_repo, _typeName, read) => {
+        assertEquals(await read(), null);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook does not verify a path outside the cache",
+  async () => {
+    await withUnhydratedContent(
+      () => true,
+      async (repo, _typeName, _read, _contentPath, repoDir) => {
+        const hook = repo.repoContext.hydrateFile;
+        assertExists(hook);
+        const outside = join(repoDir, ".swamp", "data", "absent", "raw");
+        assertEquals(await hook(outside), true);
+      },
+    );
   },
 );
 
