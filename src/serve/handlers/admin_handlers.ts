@@ -2742,7 +2742,7 @@ export function redactServeOptions(
     authMode: opts.authMode,
     scheduling: {
       enabled: opts.schedule,
-      maxConcurrentRuns: opts.maxConcurrentScheduledRuns ?? null,
+      maxConcurrentScheduledRuns: opts.maxConcurrentScheduledRuns ?? null,
     },
     dashboard: { enabled: opts.dashboard },
     webhooks: (opts.webhookConfigs ?? []).map((wh) => ({

@@ -319,7 +319,7 @@ Deno.test("redactServeOptions: reports the scheduled-run limit under scheduling"
   };
   assertEquals(
     redactServeOptions(base as unknown as MergedServeOptions).scheduling,
-    { enabled: true, maxConcurrentRuns: null },
+    { enabled: true, maxConcurrentScheduledRuns: null },
   );
   assertEquals(
     redactServeOptions(
@@ -328,7 +328,7 @@ Deno.test("redactServeOptions: reports the scheduled-run limit under scheduling"
         maxConcurrentScheduledRuns: 3,
       } as unknown as MergedServeOptions,
     ).scheduling,
-    { enabled: true, maxConcurrentRuns: 3 },
+    { enabled: true, maxConcurrentScheduledRuns: 3 },
   );
 });
 

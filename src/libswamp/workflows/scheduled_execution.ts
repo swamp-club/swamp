@@ -562,6 +562,7 @@ export class ScheduledExecutionService {
       this.scheduler.unregister(workflowId);
       const name = this.workflowNames.get(workflowId) ?? workflowName;
       this.workflowNames.delete(workflowId);
+      this.lastQueueDelayMs.delete(name);
       this.emit({
         kind: "schedule_unregistered",
         workflowId,
@@ -818,7 +819,13 @@ export class ScheduledExecutionService {
       const settled: Promise<void> = this.runEntry(entry).finally(() => {
         for (const key of identity) this.claimed.delete(key);
         this.inFlight.delete(settled);
-        this.processQueue();
+        try {
+          this.processQueue();
+        } catch (error) {
+          logger.error("Scheduled run queue stalled: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       });
       this.inFlight.add(settled);
     }
@@ -926,7 +933,12 @@ export class ScheduledExecutionService {
                   this.now() -
                     (entry.fireTime?.getTime() ?? entry.enqueuedAt),
                 );
-                this.lastQueueDelayMs.set(workflowName, queueDelayMs);
+                // Keyed by the resolved name, which queueStatus looks up,
+                // even when a replayed entry carries the workflow's id.
+                this.lastQueueDelayMs.set(
+                  this.workflowNames.get(workflowId) ?? workflowName,
+                  queueDelayMs,
+                );
                 this.running.set(workflowId, { controller, runId });
                 this.deps.activeRunHook?.write(
                   runId,

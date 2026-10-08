@@ -44,7 +44,7 @@ export interface HealthSnapshotSchedule {
   readonly running: boolean;
   /** Fires waiting to start. */
   readonly queued: number;
-  /** ISO-8601 fire time of the oldest waiting fire. */
+  /** ISO-8601 fire (or, for a replayed run, enqueue) time of the oldest waiting fire. */
   readonly oldestQueuedAt: string | null;
   /** Fire-to-start delay of the last run that started. */
   readonly lastQueueDelayMs: number | null;

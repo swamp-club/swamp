@@ -1774,3 +1774,26 @@ Deno.test("ScheduledExecutionService.queueStatus: reports waiting fires and the 
     await service.stop();
   }
 });
+
+Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay that names the workflow by id", async () => {
+  const wf = createTestWorkflow("id-replay-wf", "0 0 1 1 *");
+  const executor = createPerRunExecutor();
+  let now = 1_000;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    now: () => now,
+  });
+  await service.start();
+  try {
+    replay(service, "blocker-wf", wf.id);
+    await waitFor(() => executor.runs.length === 1, "blocker run");
+    now = 3_500;
+    executor.runs[0].release();
+    await waitFor(() => executor.runs.length === 2, "replayed run");
+    assertEquals(service.queueStatus(wf.id).lastQueueDelayMs, 2_500);
+  } finally {
+    await service.stop();
+  }
+});

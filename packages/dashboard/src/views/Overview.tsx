@@ -61,6 +61,7 @@ export function Overview(
   { health, healthDenied, onOpenRun, onApprovalsChanged }: OverviewProps,
 ) {
   const healthState = healthViewState(health, healthDenied);
+  const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
   const { request } = useSwamp();
 
   const { data: runsData, refetch: refetchRuns } = useRequest(
@@ -320,12 +321,10 @@ export function Overview(
           <div className="panel-header">
             <div className="panel-title">
               Upcoming Schedules
-              {totalQueued(health?.scheduling?.schedules ?? []) > 0 && (
+              {queuedFires > 0 && (
                 <>
                   {" "}
-                  <span className="panel-count">
-                    {totalQueued(health?.scheduling?.schedules ?? [])} queued
-                  </span>
+                  <span className="panel-count">{queuedFires} queued</span>
                 </>
               )}
             </div>
