@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { inMemorySignalWaits } from "./signal_wait_store_test_helpers.ts";
+import {
+  acceptedOutcomeFor,
+  inMemorySignalWaits,
+} from "./signal_wait_store_test_helpers.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
@@ -50,6 +53,7 @@ import { NestedRunPendingError } from "./nested_run_link.ts";
 import {
   ContinuationHeldError,
   type HolderLiveness,
+  localHolder,
   RunRecordStaleError,
   serveHolder,
   suspensionKeyOf,
@@ -18830,6 +18834,84 @@ Deno.test("resume: a refusal before the claim leaves no claim behind", async () 
       "still awaiting approval",
     );
     assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a refusal on an open wait leaves no claim and the same suspension, which serve then continues (swamp-club#3183)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "waiter",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(600, { type: "object" }),
+            }),
+            Step.create({
+              name: "work",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [{
+                step: "review",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+    const claimStore = new InMemoryContinuationClaimStore();
+    service.continuationClaims = claimsFor(claimStore, localHolder());
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const stored = await runRepo.findById(workflow.id, suspended.id);
+    const suspensionKey = await suspensionKeyOf(stored!);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, suspended.id),
+      UserError,
+      "still waiting for a signal",
+    );
+    const refused = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(refused!.status, "suspended");
+    assertEquals(await suspensionKeyOf(refused!), suspensionKey);
+    assertEquals(claimStore.claims, []);
+
+    // Another holder, whose resume a claim the local command left behind
+    // would refuse.
+    const serve = serveHolder("a");
+    service.continuationClaims = claimsFor(claimStore, serve);
+    await waits.store.settle(
+      acceptedOutcomeFor(
+        refused!.getJob("main")!.getStep("review")!.signalWait!,
+        {},
+        { runId: suspended.id },
+      ),
+    );
+    const run = await drainResume(service, workflow.name, suspended.id, {
+      continuation: { kind: "automatic", takeover: false },
+    });
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(
+      claimStore.claims.map((c) => [c.holder, c.suspensionKey]),
+      [[serve, suspensionKey]],
+    );
   });
 });
 
