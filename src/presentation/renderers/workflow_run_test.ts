@@ -2260,8 +2260,8 @@ Deno.test("JsonWorkflowRunRenderer: a suspension with no nested wait carries no 
 // sent: redaction removed `nested`, and the leaf's wait is still named.
 const HIDDEN_CHILD_SUSPENSION: WorkflowRunEvent = {
   kind: "suspended",
-  run: makeRunView("succeeded"),
-  jobId: "main",
+  run: waitingRunView([{ name: "call-nested", status: "waiting_approval" }]),
+  jobId: "release",
   stepId: "call-nested",
   prompt: "",
   nestedSignalWaits: [{
@@ -2327,6 +2327,12 @@ Deno.test("ConsoleWorkflowRunRenderer: a step waiting on a signal wait that cann
     await consumeStream(
       toStream([
         {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "top",
+          jobs: [{ id: "release", stepCount: 1, dependsOn: [] }],
+        },
+        {
           kind: "suspended",
           run,
           jobId: run.jobs[0].name,
@@ -2337,7 +2343,9 @@ Deno.test("ConsoleWorkflowRunRenderer: a step waiting on a signal wait that cann
       renderer.handlers(),
     );
   });
-  assertEquals(lines.join("\n").includes("waits on a nested run"), false);
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Suspended");
+  assertEquals(output.includes("waits on a nested run"), false);
 });
 
 function threeLevelEvents(requested: boolean): WorkflowRunEvent[] {
@@ -2433,4 +2441,31 @@ Deno.test("JsonWorkflowRunRenderer: a wait named for another run does not displa
   const parsed = stdout[0] as Record<string, { runId: string } | undefined>;
   assertEquals(parsed.approvalRequired?.runId, "leaf-gate-1");
   assertEquals(parsed.signalRequired, undefined);
+});
+
+Deno.test("ConsoleWorkflowRunRenderer: a suspension whose step is not in the run view keeps the gate wording", async () => {
+  const renderer = createWorkflowRunRenderer("log", { workflowName: "top" });
+  const lines = await captureOutputAsync(async () => {
+    await consumeStream(
+      toStream([
+        {
+          kind: "started",
+          runId: "run-1",
+          workflowName: "top",
+          jobs: [{ id: "main", stepCount: 1, dependsOn: [] }],
+        },
+        {
+          kind: "suspended",
+          run: makeRunView("succeeded"),
+          jobId: "nowhere",
+          stepId: "gone",
+          prompt: "",
+        },
+      ]),
+      renderer.handlers(),
+    );
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("waits on a nested run"), false);
+  assertStringIncludes(output, "awaiting approval on step gone");
 });

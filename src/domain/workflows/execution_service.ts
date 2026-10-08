@@ -5491,7 +5491,9 @@ export class WorkflowExecutionService {
    * having seen each wait requested (swamp-club#3110). A nested run's own
    * suspension is read by its parent and never forwarded, so it is left as
    * it is. Reads only; a failed read leaves the event as it is, since the
-   * run has already suspended.
+   * run has already suspended. On a custom datastore the first read opens
+   * the wait store, which can pull the namespace: expected here, where the
+   * run holds its lock.
    */
   private async withNestedSignalWaits(
     event: WorkflowExecutionEvent,

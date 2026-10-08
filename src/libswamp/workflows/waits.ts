@@ -312,8 +312,16 @@ export async function* workflowWaits(
               }`;
             }
             // A run that has moved on no longer waits; its records go with
-            // the next sweep.
+            // the next sweep. Nor does a step a resume already gave the
+            // signal to: its registration stays until the run ends, so a
+            // run suspended again on a later wait still holds it.
             if (run && run.status !== "suspended") continue;
+            if (
+              run &&
+              !run.findSignalWaits().some((ref) =>
+                ref.wait?.id === registration.waitId
+              )
+            ) continue;
             signalled.push({
               waitId: registration.waitId,
               workflowId: registration.workflowId,

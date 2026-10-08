@@ -801,9 +801,12 @@ registered, and sweeps (see below), so it is not read-only.
 
 Asked with `includeSignalled` (an option of the `workflowWaits` use case and of
 serve's `workflow.waits` request; the CLI does not pass it), the listing also
-returns `signalled`: each wait a signal has settled whose run is still
-suspended, with the receipt, the resume command and `awaitingResume`, which is
-true when nothing else holds the run back. The dashboard asks for it.
+returns `signalled`: each wait a signal has settled whose step still waits for
+the resume that applies it, with the receipt, the resume command and
+`awaitingResume`, which is true when nothing else holds the run back. A wait a
+resume has applied is not listed, though its registration stays until the run
+ends. A run or sibling wait that cannot be read lists the wait as not ready to
+resume. The dashboard asks for it.
 
 Through serve, `workflow.waits` and `swamp workflow waits --server` run the same
 listing for a caller with `read` and show the waits of the workflows that caller

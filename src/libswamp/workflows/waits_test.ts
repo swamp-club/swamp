@@ -542,3 +542,49 @@ Deno.test("workflowWaits: a run record or sibling wait that cannot be read does 
     [["broken", false]],
   );
 });
+
+Deno.test("workflowWaits: a signal a resume already applied is not listed as signalled while the run waits on a later step", async () => {
+  // Two waits; the first was signalled and a resume applied it, which leaves
+  // its registration and outcome stored until the run ends.
+  const run = waitingRun(workflowNamed("release", ["first", "second"]), {
+    first: T0,
+    second: T0,
+  });
+  const first = run.getJob("main")!.getStep("first")!;
+  const second = run.getJob("main")!.getStep("second")!;
+  const waits = new InMemorySignalWaitStore();
+  for (const step of [first, second]) {
+    await waits.register(
+      registrationOf(
+        {
+          workflowId: run.workflowId,
+          workflowName: run.workflowName,
+          runId: run.id,
+          jobName: "main",
+          stepName: step.stepName,
+        },
+        step.signalWait!,
+        T0,
+      ),
+    );
+  }
+  const applied = acceptedOutcomeFor(first.signalWait!, { verdict: "ship" }, {
+    runId: run.id,
+  });
+  await waits.settle(applied);
+  assertEquals(first.applyWaitOutcome(applied), true);
+  assertEquals(first.status, "succeeded");
+
+  const before = await listAll(depsOf([run], T1, waits), true);
+  assertEquals(before.signalled, []);
+  assertEquals(before.waits.map((w) => w.stepName), ["second"]);
+
+  // Once the second wait is signalled, it alone is listed.
+  await waits.settle(
+    acceptedOutcomeFor(second.signalWait!, { verdict: "ship" }, {
+      runId: run.id,
+    }),
+  );
+  const after = await listAll(depsOf([run], T1, waits), true);
+  assertEquals(after.signalled?.map((w) => w.stepName), ["second"]);
+});

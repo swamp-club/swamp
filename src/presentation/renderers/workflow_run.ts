@@ -1086,7 +1086,9 @@ function waitsOnNestedRun(
   }
   const step = e.run.jobs.find((job) => job.name === e.jobId)?.steps
     .find((s) => s.name === e.stepId);
-  return step?.status !== "waiting";
+  // Without the step in the view there is nothing to go on: say it is a
+  // gate, as before.
+  return step !== undefined && step.status !== "waiting";
 }
 
 /** A signal wait as the run's stream requested it. */

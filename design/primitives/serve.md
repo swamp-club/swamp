@@ -574,10 +574,11 @@ are still authenticating, and should retry. Behind a proxy without
 workflows they may read. With the optional payload `{ includeSignalled: true }`
 the reply also carries `signalled`, the waits a signal has settled whose run has
 not been resumed, each with its receipt, under the same filter; without it the
-reply is as before, so a client that predates the option sees no change. A caller with no `read` grant on any workflow, such as
-one granted `signal` alone, is refused as unauthorized. It is the
-same use case as `swamp workflow waits` and, like it, not read-only: see
-"Listing" under Wait for Signal in [workflows](workflows.md).
+reply is as before, so a client that predates the option sees no change. A
+caller with no `read` grant on any workflow, such as one granted `signal` alone,
+is refused as unauthorized. It is the same use case as `swamp workflow waits`
+and, like it, not read-only: see "Listing" under Wait for Signal in
+[workflows](workflows.md).
 
 **Signal waits in a run stream.** `signal_wait_requested` is never sent to a
 client (`LOCAL_ONLY_EVENT_KINDS`, `src/serve/serializer.ts`): a released client
