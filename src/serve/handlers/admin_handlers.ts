@@ -2402,6 +2402,7 @@ export async function handleWorkerPrune(
           ctx.datastoreResolver,
           undefined,
           ctx.repoContext.markDirty,
+          ctx.repoContext.definitionRepo,
         );
 
         const pruneDeps: WorkerPruneDeps = {
