@@ -426,6 +426,13 @@ Deno.test({
         )).length,
         1,
       );
+      // The refused-create tests read this directory as empty; a run writes
+      // here, so their check is not vacuous.
+      assertEquals(
+        (await filesUnder(join(dir, ".swamp", "outputs", "swamp", "grant")))
+          .length > 0,
+        true,
+      );
       const grants = JSON.parse(
         await runGrant(["list", "--repo-dir", dir]),
       ) as { subject: unknown; condition?: string; methods?: string[] }[];

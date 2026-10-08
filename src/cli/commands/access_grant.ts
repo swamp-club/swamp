@@ -171,7 +171,8 @@ const accessGrantCreateCommand = new Command()
 
     // The grant model refuses these inputs only after the run has saved its
     // definition, so check them first and leave nothing behind for a refused
-    // grant (swamp-club#3182).
+    // grant (swamp-club#3182). The model still checks them itself, so through
+    // --server this only spares the server a request it would refuse.
     try {
       checkGrantCreateInputs({
         subject: options.subject as string,
