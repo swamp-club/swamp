@@ -33,6 +33,7 @@ import {
 } from "../reports/report_selection.ts";
 import { Cron } from "croner";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
+import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 
 const WORKFLOW_NAME_MAX_LENGTH = 64;
 const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -283,8 +284,21 @@ export class Workflow {
 
   /**
    * Reconstructs a Workflow from persisted data.
+   *
+   * @throws WorkflowSchemaError when the data fails the workflow schema.
    */
   static fromData(data: WorkflowInput): Workflow {
+    try {
+      return Workflow.reconstitute(data);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw WorkflowSchemaError.fromZodError(error);
+      }
+      throw error;
+    }
+  }
+
+  private static reconstitute(data: WorkflowInput): Workflow {
     const validated = WorkflowSchema.parse(data);
     const jobs = validated.jobs.map((j) => Job.fromData(j));
 
