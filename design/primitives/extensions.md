@@ -1209,7 +1209,18 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   acceptances travel to the registry in `contentMetadata.acceptances`
   (stored by swamp-club#3095), `reason` omitted when none was given, with
   files by their archive path (`models/x.ts`, `vaults/v.ts`), never a local
-  one.
+  one. The registry returns them as `latestVersionDetail.acceptances`
+  (`null` when the version declared none; at most 500 entries, with `total`
+  counting every entry sent), and `swamp extension info` shows them to the
+  installer: `parseRegistryAcceptances`
+  (`src/domain/extensions/registry_acceptances.ts`) turns the registry's
+  nulls into absent fields, drops malformed entries and keeps at most 500,
+  and log mode prints an `Accepted warnings:` block in push's line format
+  (archive paths, control characters escaped, `and N more` when `total`
+  exceeds the entries returned). The renderer reads them only through that
+  parser, so data relayed by a remote serve is checked too. In `--json` they
+  are `contentMetadata.acceptances`, absent when there are none, so a
+  registry that predates swamp-club#3095 changes nothing.
 
 ## Dependencies
 
