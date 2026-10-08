@@ -119,7 +119,7 @@ export async function authorizeChangedSteps(
     ) {
       return `Access denied: a workflow step changed here runs ${
         describe(target)
-      }`;
+      }, which needs admin`;
     }
   }
   return undefined;

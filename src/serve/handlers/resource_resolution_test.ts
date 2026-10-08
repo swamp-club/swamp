@@ -183,7 +183,12 @@ Deno.test("restrictedModelAuthorization: a restricted model needs admin on acces
       assertEquals(judged.resource, {
         kind: "access",
         name: "*",
-        fields: { name: "deploy", ns: "", tags: { env: "prod" } },
+        fields: {
+          name: "deploy",
+          ns: "",
+          tags: { env: "prod" },
+          modelType: "command/shell",
+        },
       });
       assertEquals(
         targetArgument(judged, "deploy"),

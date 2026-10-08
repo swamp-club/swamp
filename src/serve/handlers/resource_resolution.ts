@@ -233,10 +233,15 @@ export function restrictedModelAuthorization(
     action: "admin",
     resolution: {
       ...resolution,
+      // A data resource carries no modelType; the admin decision is on the
+      // model's type whichever kind the request named it as.
       resource: {
         kind: "access",
         name: "*",
-        fields: resolution.resource.fields,
+        fields: {
+          ...resolution.resource.fields,
+          modelType: resolution.modelType,
+        },
       },
     },
   };
