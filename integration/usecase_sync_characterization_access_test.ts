@@ -354,9 +354,6 @@ const ROWS: AnyRow[] = [
     // before its composition adopted the root.
     rootUnit: { cli: true, serve: true },
     syncOrder: { cli: ["push"], serve: ["push", "release"] },
-    // CLI bulk mark outside any use case, staged through the command's root
-    // unit (swamp-club#3033).
-    outsideUseCase: { cli: ["markDirty(bulk)"] },
     seed: staleWorker,
     cli: (repos) => ({
       args: [
@@ -805,19 +802,24 @@ const EXPECTED: Record<string, PinnedRow> = {
     },
   },
   "worker prune": {
-    // DIVERGENCE: the bare mark the CLI adds makes its push a walk that
-    // deletes nothing, so the pruned worker's state stays on the remote and
-    // peers still list it. Serve deletes the three files. Datastore refactor
-    // phase 2 is expected to change this.
+    // The deletions' own marks drive the push, so the CLI deletes the pruned
+    // worker's state from the remote, as serve does (swamp-club#2513).
     cli: {
       "ops": [
         "markDirty data/swamp/worker/<id>/state-main/1",
         "markDirty data/swamp/worker/<id>/state-main/latest",
         "markDirty definitions-evaluated/swamp/worker/<id>.yaml",
-        "markDirty(bulk)",
-        "push[0]",
+        "push[0 del 3]",
       ],
-      "remote": { "added": [], "removed": [], "changed": [] },
+      "remote": {
+        "added": [],
+        "removed": [
+          "data/swamp/worker/<id>/state-main/1/metadata.yaml",
+          "data/swamp/worker/<id>/state-main/1/raw",
+          "data/swamp/worker/<id>/state-main/latest",
+        ],
+        "changed": [],
+      },
     },
     serve: {
       "ops": [
