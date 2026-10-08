@@ -325,8 +325,9 @@ how it matches depends on the grant's effect (swamp-club#3130):
   `restricted-model-types` compares types. A pattern without one (`a*`,
   `prod-*`, `web.prod`) may be written for model names, so it keeps its `@`
   as written and never reaches `@` types; it still folds case and
-  separators, so `deny model:web.prod` also covers the type `web/prod`. The same holds for an `access:`
-  deny on a control-plane record (`access:@swamp/grant` covers `swamp/grant`).
+  separators, so `deny model:web.prod` also covers the type `web/prod`. The
+  same holds for an `access:` deny on a control-plane record
+  (`access:@swamp/grant` covers `swamp/grant`).
   Only the type comparison folds: instance names still match as written,
   though a deny written for mixed-case legacy names (`deny model:Prod-*`)
   now also covers types spelled `prod-...`. A pattern that is only `@` before
@@ -335,17 +336,20 @@ how it matches depends on the grant's effect (swamp-club#3130):
 - **An allow matches only as written.** Folding it would widen what it
   grants, so a misspelled allow matches no type, as before.
 
-Every non-canonical spelling is reported with the canonical one, except that
-a finding never tells an admin to respell a pattern that may name model names
+Every non-canonical spelling is reported with the canonical one, except that a
+finding never tells an admin to respell a pattern that may name model names
 (that would drop them); it says what the grant matches instead: as a warning
 when a grant is created (the selector may also name instance names, so it is
-never refused), once per grant when serve loads its policy, and by
-`swamp serve check-config` for grant files. A grant condition is not
-rewritten: comparing `modelType` (or an access resource's `name`) with a
-string literal no type is spelled as is refused when the grant is created,
-and reported as a warning for stored and file grants, which keep loading — a
-grant-file error stops serve starting. A bare literal (`exp/probe`) is a valid
-spelling of a bare type, so it is not reported, and does not match `@exp/probe`.
+never refused), once per grant when serve loads its policy, and by `swamp serve
+check-config` for grant files. A grant condition is not rewritten: comparing
+`modelType` (or an access resource's `name`) with a string literal no type is
+spelled as is refused when the grant is created, and reported as a warning for
+stored and file grants, which keep loading — a grant-file error stops serve
+starting. Literals tested with `startsWith`, `endsWith` or `contains` are folded
+the same way, so `modelType.contains(".")` or `modelType.endsWith("Probe")` is
+refused too: no stored type contains a `.` or an uppercase letter. A bare
+literal (`exp/probe`) is a valid spelling of a bare type, so it is not reported,
+and does not match `@exp/probe`.
 
 Implementation: `src/domain/access/resource_selector.ts`,
 `src/domain/access/grant_based_access_decision_service.ts`,

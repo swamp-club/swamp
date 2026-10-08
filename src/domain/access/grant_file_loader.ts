@@ -108,6 +108,11 @@ export interface ServeGrantFileOptions {
   readonly readTypeLiterals?: ConditionTypeLiteralReader;
 }
 
+/**
+ * A `--grants-dir` file. Dotfiles are skipped here and not in the repository
+ * grants/ directory (readGrantFiles): that difference predates this loader
+ * and the poller hashes each directory the same way, so change both together.
+ */
 function isGrantsDirFile(entry: Deno.DirEntry): boolean {
   return (entry.isFile || entry.isSymlink) &&
     (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml")) &&
