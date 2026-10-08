@@ -46,9 +46,13 @@ type AnyOptions = any;
 export const vaultListKeysCommand = withRemoteOptions(
   new Command()
     .name("list-keys")
-    .description("List all secret keys in a vault (without values)")
+    .description(
+      `List all secret keys in a vault (without values)
+
+The vault name is required. Omitting it fails with the available vaults.`,
+    )
     .example("List keys in a vault", "swamp vault list-keys my-vault")
-    .arguments("<vault_name:string>")
+    .arguments("[vault_name:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
@@ -57,12 +61,12 @@ export const vaultListKeysCommand = withRemoteOptions(
       "--pull",
       "Pull config from the remote datastore before reading (for managedConfig deployments)",
     ),
-).action(async function (options: AnyOptions, vaultName: string) {
+).action(async function (options: AnyOptions, vaultName?: string) {
   const cliCtx = createContext(options as GlobalOptions, [
     "vault",
     "list-keys",
   ]);
-  cliCtx.logger.debug`Listing secret keys in vault: ${vaultName}`;
+  cliCtx.logger.debug`Listing secret keys in vault: ${vaultName ?? "(none)"}`;
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -101,7 +105,7 @@ export const vaultListKeysCommand = withRemoteOptions(
 
   const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
   await consumeStream(
-    vaultListKeys(ctx, deps, { vaultName }),
+    vaultListKeys(ctx, deps, { vaultName: vaultName ?? "" }),
     renderer.handlers(),
   );
 

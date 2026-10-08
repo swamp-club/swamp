@@ -579,14 +579,6 @@ const PINNED: ReadonlyArray<
       "lines.push(...formatValidationLines(workflow.validations))",
     ],
   },
-  {
-    file: "src/serve/handlers/access_handlers.ts",
-    reason: "validation results or errors for one document",
-    calls: [
-      'allErrors.push(...externalResult.errors.map((e) => ({ ...e, filename: "external-grants-file", })))',
-      "allErrors.push(...result.errors)",
-    ],
-  },
 ];
 
 Deno.test("no unbounded array is spread into a call's arguments", async () => {

@@ -156,7 +156,10 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 lookup argument equals a `specName` tag shared by several data items under the
 same model. An exact data name that differs from the specName is unaffected,
 even if sibling items share the spec. Use `data.findBySpec()` to query by
-specName. The raw `data.query()` equivalent skips this check.
+specName. The raw `data.query()` equivalent skips this check. When the lookup
+found the record through the model's definition, rows a retyped model left
+under its old type (same id, another type — what `data prune` reclaims as
+orphaned) are not counted as peers.
 
 **Spec name passed as a data name:** `data.latest()` and `data.version()` match
 the data (instance) name, which a model may write under a different name than

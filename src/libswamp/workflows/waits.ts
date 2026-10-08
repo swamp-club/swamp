@@ -20,6 +20,7 @@ import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import type { SignalReceipt } from "../../domain/workflows/signal_wait.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { decideContinuation } from "../../domain/workflows/run_continuation.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -34,7 +35,6 @@ import type {
 } from "../../domain/workflows/signal_wait_store.ts";
 import {
   ensureRegistered,
-  isAwaitingResume,
   outcomeAt,
   sweepWaitRecords,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
@@ -304,7 +304,8 @@ export async function* workflowWaits(
                 createWorkflowId(registration.workflowId),
                 createWorkflowRunId(registration.runId),
               );
-              awaitingResume = await isAwaitingResume(store, run);
+              awaitingResume = run !== null &&
+                (await decideContinuation(run, store)).kind === "resumable";
             } catch (error) {
               ctx.logger
                 .warn`Could not tell whether run ${registration.runId} can resume: ${

@@ -18,12 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { normalizeModelTypeName } from "../models/control_plane_types.ts";
+import { ModelType } from "../models/model_type.ts";
 
 export const ResourceKindSchema = z.enum([
   "workflow",
   "model",
   "data",
   "access",
+  "vault",
 ]);
 
 export type ResourceKind = z.infer<typeof ResourceKindSchema>;
@@ -52,7 +55,7 @@ export function parseResourceSelector(value: string): ResourceSelector {
   const parsed = ResourceKindSchema.safeParse(kind);
   if (!parsed.success) {
     throw new Error(
-      `Invalid resource kind "${kind}": expected "workflow", "model", "data", or "access"`,
+      `Invalid resource kind "${kind}": expected "workflow", "model", "data", "access", or "vault"`,
     );
   }
   const starIndex = pattern.indexOf("*");
@@ -88,4 +91,69 @@ export function resourceSelectorMatches(
     return resourceName.startsWith(prefix);
   }
   return pattern === resourceName;
+}
+
+/**
+ * Whether a pattern is written as a type path: with a `/` or `::` once a
+ * leading `@` is set aside (`acme/*`, `@acme/deploy`, `AWS::EC2::*`). A
+ * pattern without one (`prod-*`, `web.prod`) may be written for model names,
+ * which match only as written (swamp-club#3130).
+ */
+export function namesTypePath(pattern: string): boolean {
+  const body = pattern.replace(/\*$/, "").replace(/^[@/]+/, "");
+  return body.includes("/") || body.includes("::");
+}
+
+/** A trailing separator that ModelType normalization would trim. */
+const TRAILING_TYPE_SEPARATOR = /(\/|\.|::|\s)$/;
+
+/**
+ * The pattern written in the normalized model type spelling: lowercase, with
+ * `::`, `.` and whitespace folded to `/` and a leading `@` kept, as
+ * `ModelType` stores a type. A trailing `*` stays, and so does a separator
+ * before it, so `AWS::*` gives `aws/*` and never the wider `aws*`. Null when
+ * the pattern names no type once normalized (`::*`).
+ */
+export function canonicalTypePattern(pattern: string): string | null {
+  if (pattern === "*") return "*";
+  const wildcard = pattern.endsWith("*");
+  const prefix = wildcard ? pattern.slice(0, -1) : pattern;
+  let normalized: string;
+  try {
+    normalized = ModelType.create(prefix).normalized;
+  } catch {
+    return null;
+  }
+  if (!wildcard) return normalized;
+  return TRAILING_TYPE_SEPARATOR.test(prefix)
+    ? `${normalized}/*`
+    : `${normalized}*`;
+}
+
+/**
+ * Whether a model type matches a canonical type pattern when every leading
+ * `@` and `/` is ignored on both sides, as `normalizeModelTypeName` compares
+ * types (swamp-club#3129): `acme/*` and `@acme/*` both cover `@acme/deploy`
+ * and `acme/deploy`. Only a pattern that names a type path — one with a `/`
+ * once stripped — ignores the `@`. Any other (`a*`, `prod-*`, `@*`) is
+ * matched as written, so a prefix written for model names never grows to
+ * cover extension types (swamp-club#3130).
+ */
+export function typePatternMatchesIgnoringAt(
+  canonicalPattern: string,
+  modelType: string,
+): boolean {
+  if (canonicalPattern === "*") return true;
+  const wildcard = canonicalPattern.endsWith("*");
+  const prefix = (wildcard ? canonicalPattern.slice(0, -1) : canonicalPattern)
+    .replace(/^[@/]+/, "");
+  if (!prefix.includes("/")) {
+    return resourceSelectorMatches(
+      { kind: "model", pattern: canonicalPattern },
+      modelType,
+    );
+  }
+  const type = normalizeModelTypeName(modelType);
+  if (type === null) return false;
+  return wildcard ? type.startsWith(prefix) : type === prefix;
 }

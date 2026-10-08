@@ -23,6 +23,7 @@ import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { coerceModelType } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 import type {
+  ContentAvailability,
   DeferredWriteReceipt,
   FindAllGlobalOptions,
   GarbageCollectionResult,
@@ -277,6 +278,62 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     );
     if (ephContent) return ephContent;
     return this.persistent.getContent(type, modelId, dataName, version);
+  }
+
+  ensureContentLocal(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version?: number,
+    knownSize?: number,
+  ): Promise<ContentAvailability> {
+    const repo = this.holdsEphemerally(
+        coerceModelType(type),
+        modelId,
+        dataName,
+        version,
+      )
+      ? this.ephemeral
+      : this.persistent;
+    return repo.ensureContentLocal(
+      type,
+      modelId,
+      dataName,
+      version,
+      knownSize,
+    );
+  }
+
+  isContentAcceptedSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    size: number,
+  ): boolean {
+    const repo = this.holdsEphemerally(type, modelId, dataName, version)
+      ? this.ephemeral
+      : this.persistent;
+    return repo.isContentAcceptedSync(type, modelId, dataName, version, size);
+  }
+
+  /**
+   * Whether the ephemeral store holds the version a content read would read
+   * from it, as {@link getContent} tries the ephemeral store for that exact
+   * version first. Without a version, its latest.
+   */
+  private holdsEphemerally(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number | undefined,
+  ): boolean {
+    if (version === undefined) {
+      return this.ephemeral.getLatestVersionSync(type, modelId, dataName) !==
+        null;
+    }
+    return this.ephemeral.listVersionsSync(type, modelId, dataName)
+      .includes(version);
   }
 
   async *stream(

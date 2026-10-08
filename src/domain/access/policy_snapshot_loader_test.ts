@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { readConditionTypeLiterals } from "../../infrastructure/cel/grant_condition_environment.ts";
 import { Data } from "../data/data.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { EventBus } from "../events/event_bus.ts";
@@ -34,6 +36,7 @@ import type { Group } from "../models/access/group_model.ts";
 import { GROUP_MODEL_TYPE } from "../models/access/group_model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import {
+  conditionReferencesField,
   createConditionEvaluator,
   PolicySnapshotLoader,
 } from "./policy_snapshot_loader.ts";
@@ -793,4 +796,214 @@ Deno.test("createConditionEvaluator: a name bound by a comprehension is not a fi
     ),
     true,
   );
+});
+
+/** Runs `fn` with the snapshot loader's warnings captured, as messages. */
+async function capturingLoaderWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "domain", "access", "policy-snapshot"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test("PolicySnapshotLoader.load: a vault grant with a name or key condition raises no unsupplied-field warning (swamp-club#2676)", async () => {
+  const byName = makeGrant({
+    resource: { kind: "vault", pattern: "prod-*" },
+    condition: 'name == "prod-db"',
+  });
+  const byKey = makeGrant({
+    effect: "deny",
+    resource: { kind: "vault", pattern: "*" },
+    condition: 'key.startsWith("root-")',
+  });
+  // A condition on an unsupplied field is still named, so the capture works.
+  const onOwner = makeGrant({
+    resource: { kind: "data", pattern: "*" },
+    condition: 'owner.kind == "user"',
+  });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: byName, modelId: "g1", dataName: "grant-main" },
+      { attrs: byKey, modelId: "g2", dataName: "grant-main" },
+      { attrs: onOwner, modelId: "g3", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(warnings.filter((w) => w.includes(onOwner.id)).length, 1);
+  assertEquals(
+    warnings.filter((w) => w.includes(byName.id) || w.includes(byKey.id)),
+    [],
+  );
+});
+
+Deno.test("createConditionEvaluator: a vault key condition sees an absent key as empty, not missing (swamp-club#2676)", () => {
+  const evaluate = createConditionEvaluator();
+  assertEquals(
+    evaluate('key == "api"', "vault", { name: "prod" }, PRINCIPAL),
+    false,
+  );
+  assertEquals(
+    evaluate('key == "api"', "vault", { name: "prod", key: "api" }, PRINCIPAL),
+    true,
+  );
+  assertEquals(
+    evaluate('name == "prod"', "vault", { name: "prod" }, PRINCIPAL),
+    true,
+  );
+});
+
+Deno.test("conditionReferencesField: finds a variable structurally; an unparsable condition counts as referencing it", () => {
+  assertEquals(
+    conditionReferencesField('key.startsWith("app-")', "vault", "key"),
+    true,
+  );
+  assertEquals(
+    conditionReferencesField('name == "erp" || key == ""', "vault", "key"),
+    true,
+  );
+  assertEquals(
+    conditionReferencesField('name == "erp"', "vault", "key"),
+    false,
+  );
+  assertEquals(
+    conditionReferencesField('"key" == principal.id', "vault", "key"),
+    false,
+  );
+  assertEquals(conditionReferencesField("key ==", "vault", "key"), true);
+});
+
+Deno.test("PolicySnapshotLoader.load: names each non-canonical type spelling once across reloads (swamp-club#3130)", async () => {
+  const deny = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+    source: "file:grants-dir/deny.yaml",
+  });
+  const allow = makeGrant({
+    resource: { kind: "model", pattern: "*" },
+    condition: 'modelType == "Acme.Tools.Probe"',
+  });
+  const canonical = makeGrant({
+    resource: { kind: "model", pattern: "@acme/*" },
+    condition: 'modelType == "exp/probe"',
+  });
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: deny, modelId: "g1", dataName: "grant-main" },
+      { attrs: allow, modelId: "g2", dataName: "grant-main" },
+      { attrs: canonical, modelId: "g3", dataName: "grant-main" },
+    ],
+    [],
+  );
+  const loader = new PolicySnapshotLoader(
+    dataRepo,
+    new EventBus(),
+    "auto",
+    {},
+    readConditionTypeLiterals,
+  );
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const forDeny = warnings.filter((w) => w.includes(deny.id));
+  assertEquals(forDeny.length, 1);
+  assertEquals(forDeny[0].includes("model:aws/ec2/*"), true);
+  assertEquals(forDeny[0].includes("file:grants-dir/deny.yaml"), true);
+  const forAllow = warnings.filter((w) => w.includes(allow.id));
+  assertEquals(forAllow.length, 1);
+  assertEquals(forAllow[0].includes("acme/tools/probe"), true);
+  assertEquals(warnings.filter((w) => w.includes(canonical.id)), []);
+});
+
+Deno.test("PolicySnapshotLoader.load: reports a spelling again once its grant returns after a revoke", async () => {
+  const deny = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+  });
+  const withGrant = createMockDataRepo(
+    [{ attrs: deny, modelId: "g1", dataName: "grant-main" }],
+    [],
+  );
+  const revoked = createMockDataRepo(
+    [{
+      attrs: { ...deny, state: "revoked" },
+      modelId: "g1",
+      dataName: "grant-main",
+    }],
+    [],
+  );
+  let current = withGrant;
+  const dataRepo = new Proxy({} as UnifiedDataRepository, {
+    get: (_, key) => current[key as keyof UnifiedDataRepository],
+  });
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    current = revoked;
+    await loader.load();
+    current = withGrant;
+    await loader.load();
+  });
+  await loader.dispose();
+
+  assertEquals(warnings.filter((w) => w.includes(deny.id)).length, 2);
+});
+
+Deno.test("PolicySnapshotLoader.load: checks a grant again when its selector changes under the same id", async () => {
+  const first = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+  });
+  const changed = {
+    ...first,
+    resource: { kind: "model" as const, pattern: "Acme::*" },
+  };
+  let current = createMockDataRepo(
+    [{ attrs: first, modelId: "g1", dataName: "grant-main" }],
+    [],
+  );
+  const dataRepo = new Proxy({} as UnifiedDataRepository, {
+    get: (_, key) => current[key as keyof UnifiedDataRepository],
+  });
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    await loader.load();
+    current = createMockDataRepo(
+      [{ attrs: changed, modelId: "g1", dataName: "grant-main" }],
+      [],
+    );
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const forGrant = warnings.filter((w) => w.includes(first.id));
+  assertEquals(forGrant.length, 2);
+  assertEquals(forGrant[1].includes("model:acme/*"), true);
 });

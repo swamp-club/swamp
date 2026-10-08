@@ -585,8 +585,13 @@ const ROWS: AnyRow[] = [
     name: "workflow resume",
     rootUnit: { cli: true, serve: true },
     // Recorded before the CLI (swamp-club#3033) and serve (swamp-club#3035)
-    // adopted a root unit.
-    syncOrder: { cli: ["release", "push"], serve: ["push", "release"] },
+    // adopted a root unit. The first release in each is the run's claim,
+    // let go once the resume has taken the run over; serve takes that claim
+    // too since swamp-club#3108, and still pushes before its gate exit.
+    syncOrder: {
+      cli: ["release", "push"],
+      serve: ["release", "push", "release"],
+    },
     // workflow_resume.ts drives WorkflowExecutionService directly, not
     // through a libswamp use case, so no use-case unit stages these marks.
     outsideUseCase: {

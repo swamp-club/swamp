@@ -85,6 +85,15 @@ import {
 } from "../infrastructure/persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import {
+  ControlPlaneContinuationClaimStore,
+  heartbeatLiveness,
+} from "../infrastructure/persistence/control_plane_continuation_claim_store.ts";
+import {
+  type ContinuationClaims,
+  localHolder,
+  type RunRecordCurrency,
+} from "../domain/workflows/continuation_claim.ts";
+import {
   type AtomicControlPlaneStore,
   ControlPlaneSignalWaitStore,
   isAtomicControlPlaneStore,
@@ -132,6 +141,7 @@ import {
   slowLockAdvice,
 } from "../domain/datastore/slow_lock_advice.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
 import type {
   DatastoreSyncService,
   HydrateFileHook,
@@ -167,16 +177,32 @@ function labeledPrefix(label: string): string {
   return dim(`${padded} │`);
 }
 
-function defaultLockWriter(message: string): void {
-  console.error(`${labeledPrefix("system")} ${message}`);
+// Lock and sync progress is commentary, so `-q` silences it. Set once per
+// invocation from the CLI's global action (swamp-club#2257).
+let lockProgressQuiet = false;
+
+/** Silence lock-wait and datastore sync progress for this invocation. */
+export function setLockProgressQuiet(quiet: boolean): void {
+  lockProgressQuiet = quiet;
 }
 
-export function createLockProgressWriter(label: string): LockProgressWriter {
+const writeStderrLine = (line: string): void => console.error(line);
+
+function defaultLockWriter(message: string): void {
+  createLockProgressWriter("system")(message);
+}
+
+export function createLockProgressWriter(
+  label: string,
+  writeStderr: (line: string) => void = writeStderrLine,
+): LockProgressWriter {
   return (message: string) => {
-    console.error(`${labeledPrefix(label)} ${message}`);
+    if (lockProgressQuiet) return;
+    writeStderr(`${labeledPrefix(label)} ${message}`);
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -318,17 +344,43 @@ function buildHydrateFileHook(
   syncService: DatastoreSyncService,
   cacheRoot: string,
   repoDir: string,
+  datastoreType: string,
 ): HydrateFileHook | undefined {
   if (!syncService.hydrateFile) return undefined;
   const repoSwampDir = swampPath(repoDir);
-  return (absPath: string) => {
+  return async (absPath: string, options?: { signal?: AbortSignal }) => {
     let rel = relative(cacheRoot, absPath);
-    if (escapesRoot(rel)) {
+    const insideCache = !escapesRoot(rel);
+    if (!insideCache) {
       rel = relative(repoSwampDir, absPath);
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
-    return syncService.hydrateFile!(relPath);
+    const hydrated =
+      await (options?.signal
+        ? syncService.hydrateFile!(relPath, { signal: options.signal })
+        : syncService.hydrateFile!(relPath));
+    // Outside the cache the datastore writes somewhere other than absPath,
+    // so only a path inside it can hold the datastore to its claim.
+    if (hydrated && insideCache && !(await fileExists(absPath))) {
+      getSwampLogger(["cli", "datastore"])
+        .warn`Datastore ${datastoreType} reported hydrateFile success for ${relPath} but no file exists at ${absPath}`;
+      throw markErrorPaths(
+        new HydrateContractViolationError(datastoreType, relPath, absPath),
+        [absPath],
+      );
+    }
+    return hydrated;
   };
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 /**
@@ -726,6 +778,10 @@ export async function resolveDatastoreForRepo(
     repoPath.value,
   );
 
+  // Before any caller locks, pulls, pushes or writes: refuse a datastore
+  // marked with a format this binary cannot read (swamp-club#3189).
+  await ensureSupportedDatastoreFormat(repoPath.value, datastoreConfig);
+
   return { repoDir: repoPath.value, datastoreConfig, marker };
 }
 
@@ -842,6 +898,7 @@ export async function requireInitializedRepoReadOnly(
           readOnlySyncService,
           datastoreConfig.cachePath,
           repoPath.value,
+          datastoreConfig.type,
         );
       }
     }
@@ -1202,6 +1259,7 @@ export function requireInitializedRepo(
           syncService,
           datastoreConfig.cachePath,
           repoPath.value,
+          datastoreConfig.type,
         )
         : undefined,
       namespace: datastoreConfig.namespace,
@@ -1214,6 +1272,11 @@ export function requireInitializedRepo(
       resolveSignalWaitSupport(datastoreConfig, syncService, {
         runsInDatastore: runsLiveInDatastore(datastoreResolver),
       }),
+    );
+    repoContext.continuationClaims = resolveContinuationClaims(
+      datastoreConfig,
+      repoPath.value,
+      syncService,
     );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
@@ -1380,6 +1443,7 @@ export async function requireInitializedRepoUnlocked(
         syncService,
         datastoreConfig.cachePath,
         repoPath.value,
+        datastoreConfig.type,
       )
       : undefined,
     namespace: datastoreConfig.namespace,
@@ -1392,6 +1456,11 @@ export async function requireInitializedRepoUnlocked(
     resolveSignalWaitSupport(datastoreConfig, syncService, {
       runsInDatastore: runsLiveInDatastore(datastoreResolver),
     }),
+  );
+  repoContext.continuationClaims = resolveContinuationClaims(
+    datastoreConfig,
+    repoPath.value,
+    syncService,
   );
 
   return {
@@ -1565,6 +1634,121 @@ export function resolveSignalWaitSupport(
     supported: true,
     store: new ControlPlaneSignalWaitStore(remote.store),
     ready: remote.open,
+  };
+}
+
+/**
+ * The continuation claims of a control-plane store, for one holder. What is
+ * known of another holder comes from the serve heartbeats in the same store.
+ */
+export function continuationClaimsOver(
+  store: AtomicControlPlaneStore,
+  holder: string,
+  options?: { staleMs?: number },
+): ContinuationClaims {
+  return {
+    store: new ControlPlaneContinuationClaimStore(store),
+    holder,
+    liveness: heartbeatLiveness(store, options),
+  };
+}
+
+/** How long one read of a run record from the remote datastore may take. */
+export const RUN_RECORD_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Compares this host's record of a run with the one its synced datastore
+ * holds, byte for byte (swamp-club#3108). Undefined on a filesystem
+ * datastore, where both are one file, and for a sync service that cannot
+ * read a remote file without replacing the cached one (`fetchContent`).
+ * Only for a repository whose run records are stored in the datastore
+ * ({@link runsLiveInDatastore}): one that keeps them to itself has no remote
+ * copy to compare with.
+ *
+ * A record with a change this host has not pushed yet also reads as
+ * different; the caller leaves the run for a later attempt.
+ */
+export function runRecordCurrencyOver(
+  config: DatastoreConfig,
+  syncService: DatastoreSyncService | undefined,
+  pathOf: (run: { workflowId: string; runId: string }) => string,
+): RunRecordCurrency | undefined {
+  if (!isCustomDatastoreConfig(config) || !config.cachePath) return undefined;
+  if (!syncService?.fetchContent) return undefined;
+  const cachePath = config.cachePath;
+  const namespace = config.namespace;
+  return async (run) => {
+    const absPath = pathOf(run);
+    const rel = relative(cachePath, absPath);
+    if (escapesRoot(rel)) {
+      throw markErrorPaths(
+        new Error(`Run record ${absPath} is outside the datastore cache`),
+        [absPath],
+      );
+    }
+    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    const remote = await syncService.fetchContent!(relPath, {
+      namespace,
+      signal: AbortSignal.timeout(RUN_RECORD_FETCH_TIMEOUT_MS),
+    });
+    if (remote === null) return false;
+    let local: Uint8Array;
+    try {
+      local = await Deno.readFile(absPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    if (local.length !== remote.length) return false;
+    for (let i = 0; i < local.length; i++) {
+      if (local[i] !== remote[i]) return false;
+    }
+    return true;
+  };
+}
+
+/**
+ * The continuation claims a local command takes when it resumes a run
+ * (swamp-club#3108), in the store `swamp serve` keeps its heartbeats in:
+ *
+ * - A filesystem datastore keeps them under the repository, as serve does
+ *   when its datastore has no control-plane store of its own.
+ * - A custom datastore keeps them in its extension's control-plane store.
+ *   Without one there are no claims, and a resume takes none.
+ */
+export function resolveContinuationClaims(
+  config: DatastoreConfig,
+  repoDir: string,
+  syncService?: DatastoreSyncService,
+): ContinuationClaims | undefined {
+  if (!isCustomDatastoreConfig(config)) {
+    return continuationClaimsOver(
+      new FileSystemControlPlaneStore(swampPath(repoDir)),
+      localHolder(),
+    );
+  }
+  if (
+    !syncService?.capabilities?.().controlPlane ||
+    !syncService.controlPlaneStore
+  ) {
+    return undefined;
+  }
+  const notAtomic =
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`;
+  const remote = lazyRemoteStore(syncService, config.namespace, notAtomic);
+  return {
+    ...continuationClaimsOver(remote.store, localHolder()),
+    usable: async () => {
+      try {
+        await remote.open();
+        return true;
+      } catch (error) {
+        if (error instanceof UserError && error.message === notAtomic) {
+          return false;
+        }
+        throw error;
+      }
+    },
   };
 }
 
@@ -2086,6 +2270,24 @@ export interface ReclaimModelLocksOptions {
   displayKey?: string;
   /** Test seam: whether a process on this host has exited. */
   isProcessDead?: (pid: number) => boolean;
+  /**
+   * The signal of the run whose locks these are. Once it aborts, a
+   * structural command known to be still at work is no longer waited on.
+   */
+  signal?: AbortSignal;
+}
+
+/** Waits `ms`, or until `signal` aborts. */
+function pollDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -2100,8 +2302,14 @@ export interface ReclaimModelLocksOptions {
  * nonce it finds re-keyed before it waits on that lock, so the two never
  * wait on each other.
  *
+ * Pass `options.signal` for a run whose hop was cancelled: it has nothing
+ * to write, so it does not wait. The locks are re-keyed as always, and the
+ * wait ends as soon as the signal aborts.
+ *
  * @throws {LockTimeoutError} when the structural command is still working
  * under a retired nonce at the timeout. The caller must then write nothing.
+ * @throws {DOMException} `AbortError` when it is still working and the
+ * signal has aborted. The caller must then write nothing.
  */
 export async function reclaimModelLocks(
   locks: readonly FileLock[],
@@ -2133,6 +2341,14 @@ export async function reclaimModelLocks(
     const unreadable = info.nonce === undefined && info.pid === 0;
     const skipping = lockSkipping(info);
     if (!unreadable && !retired.some((nonce) => skipping.has(nonce))) break;
+    // A lock file caught mid-write shows no command at work, so it is read
+    // again even after a cancel.
+    if (!unreadable && options.signal?.aborted) {
+      throw new DOMException(
+        `Cancelled while a structural command held by ${info.holder} (pid ${info.pid}) was still working under a lock this run handed down`,
+        "AbortError",
+      );
+    }
     if (!announced && !unreadable) {
       announced = true;
       write(
@@ -2149,7 +2365,7 @@ export async function reclaimModelLocks(
         elapsed,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 500));
+    await pollDelay(options.pollMs ?? 500, options.signal);
   }
   if (announced) {
     write(dim("Structural command finished, proceeding"));
@@ -2231,6 +2447,10 @@ export async function acquireModelLocks(
   const logger = getSwampLogger(["datastore", "lock"]);
   const wrapSync: SyncCallWrapper = options?.wrapSync ?? ((fn) => fn());
   let synced = false;
+
+  // Free when the config came through resolveDatastoreForRepo; checks a
+  // config resolved any other way before the first lock (swamp-club#3189).
+  await ensureSupportedDatastoreFormat(repoDir ?? ".", config);
 
   // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;
@@ -2544,8 +2764,9 @@ export async function acquireModelLocks(
   const globalLockOptions = datastoreGlobalLockOptions(config);
   const lentLocks: LentLocks = {
     lockIds,
-    reclaim: () =>
+    reclaim: (signal) =>
       reclaimModelLocks(fileLocks, globalLock, {
+        signal,
         progressWriter,
         displayKey: globalLockOptions?.namespace
           ? `${globalLockOptions.namespace}/.datastore.lock`

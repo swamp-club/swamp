@@ -25,6 +25,7 @@
 import "../src/domain/models/models.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { EXTENSION_2026_10_01_SEMANTICS } from "@swamp-club/swamp-testing";
 import type { Definition } from "../src/domain/definitions/definition.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { ManagedConfigUnpublishedError } from "../src/cli/managed_config_sync.ts";
@@ -114,8 +115,9 @@ Deno.test("datastore config migrate: a re-run after a failed push publishes the 
     );
     assertEquals(repos.remote.files().has(SENTINEL), false);
 
-    // Another machine moves the remote and A then pulls unscoped, which
-    // clears A's pending push under the fake's default semantics.
+    // Another machine moves the remote and A then pulls unscoped. Extensions
+    // up to 2026.09.24.1 drop A's pending push there; from 2026.10.01.1 it
+    // survives. Either way the re-run publishes the migration.
     const other = repos.remote.connect(cacheDir(repos.repoB), {
       instance: "B",
     });
@@ -134,7 +136,16 @@ Deno.test("datastore config migrate: a re-run after a failed push publishes the 
 });
 
 Deno.test("datastore config migrate: a re-run publishes a sentinel whose push failed", async () => {
-  await withRowRepos(REMOTE, async (repos) => {
+  // The remote's copy is removed by a peer below, standing in for a failed
+  // sentinel push. From 2026.10.06.1 A's next pull removes its own copy of a
+  // file a peer deleted (swamp-club#2999), which a real failed push never
+  // leaves synced, so the stand-in only holds with extensions that keep
+  // peer deletions locally.
+  const remote = {
+    ...REMOTE.remote,
+    semantics: EXTENSION_2026_10_01_SEMANTICS,
+  };
+  await withRowRepos({ remote }, async (repos) => {
     await saveModel(repos.serveRepo, "m1");
     await runCli({ args: migrate(repos.repoA) });
     assertEquals(repos.remote.files().has(SENTINEL), true);
@@ -206,8 +217,8 @@ Deno.test("datastore config migrate: a repo that migrated after a failed push st
 
     // A's re-run adopts B's sentinel. Its pending push from the failed run
     // still publishes m1: nothing unscoped pulled into A in between, which
-    // would drop that push under the fake's older-extension default
-    // (@swamp/s3-datastore 2026.10.01.1 and later keep it).
+    // would drop that push with extensions up to 2026.09.24.1
+    // (2026.10.01.1 and later keep it).
     const rerun = outputOf(await runCli({ args: migrate(repos.repoA) }));
     assertEquals(rerun.alreadyMigrated, true);
     assertStringIncludes(remoteModel(repos, "m1") ?? "", model.id);

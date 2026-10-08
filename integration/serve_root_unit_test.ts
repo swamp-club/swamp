@@ -285,9 +285,12 @@ Deno.test("serve root units: concurrent requests get separate roots, each pushin
     }
     const roots = units.filter((captured) => captured.role === "root");
     assertEquals(roots.length, 2, "expected one root per request");
+    // Staged paths are native, so match on forward slashes on Windows too.
     const stagedNames = roots.map(({ unit }) =>
       unit.staged().map((change) =>
-        change.kind === "bulk" ? "bulk" : normalisePath(repos, change.path)
+        change.kind === "bulk"
+          ? "bulk"
+          : normalisePath(repos, change.path).replaceAll("\\", "/")
       )
     );
     for (const [own, other] of [["first", "second"], ["second", "first"]]) {

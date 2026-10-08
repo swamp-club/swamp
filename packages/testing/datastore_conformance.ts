@@ -583,6 +583,17 @@ export interface SyncServiceRoundTripFixture {
    * error. Without it the failed-push case is skipped.
    */
   failNextPush?: () => void;
+  /**
+   * Makes the next `second.service.fetchContent()` fail with a transport
+   * error. Without it the `fetch-content-error` case is skipped.
+   */
+  failNextFetch?: () => void;
+  /**
+   * A namespace both services can sync. The `fetch-content-namespace` case
+   * passes it to every call it makes, the warm-up pulls included, and is
+   * skipped without it. No other case passes a namespace.
+   */
+  namespace?: string;
   /** Releases the backend and the cache directories. */
   cleanup: () => Promise<void>;
 }
@@ -639,6 +650,26 @@ function twoPhasePush(service: DatastoreSyncService): TwoPhasePush | undefined {
     commitPush: (manifest) => commit.call(service, manifest),
   };
 }
+
+type FetchContent = NonNullable<DatastoreSyncService["fetchContent"]>;
+
+/**
+ * `fetchContent`, which `DatastoreSyncService` leaves optional. Bytes come
+ * back as a plain `Uint8Array`, so a subclass such as Node's `Buffer`
+ * compares equal to the bytes pushed.
+ */
+function fetchContentOf(
+  service: DatastoreSyncService,
+): FetchContent | undefined {
+  const fetch = service.fetchContent;
+  if (typeof fetch !== "function") return undefined;
+  return async (relPath, options) => {
+    const bytes = await fetch.call(service, relPath, options);
+    return bytes instanceof Uint8Array ? new Uint8Array(bytes) : bytes;
+  };
+}
+
+const NO_FETCH_CONTENT = "second.service has no fetchContent";
 
 /** Content with a NUL and high bytes, unique to one run. */
 function sampleBytes(label: string): Uint8Array {
@@ -741,11 +772,22 @@ async function assertAbsent(
   assertEquals(actual, undefined, `${message}: ${relPath} still exists`);
 }
 
-/** Pulls on both instances so each starts from a synced cache. */
-async function warmUp(fixture: SyncServiceRoundTripFixture): Promise<void> {
-  assertCount(await fixture.first.service.pullChanged(), "first pullChanged()");
+/**
+ * Pulls on both instances so each starts from a synced cache. A service
+ * may take its namespace from its first pull and refuse another afterwards,
+ * so a case that syncs a namespace warms up with it.
+ */
+async function warmUp(
+  fixture: SyncServiceRoundTripFixture,
+  namespace: string | undefined,
+): Promise<void> {
+  const options = namespace === undefined ? undefined : { namespace };
   assertCount(
-    await fixture.second.service.pullChanged(),
+    await fixture.first.service.pullChanged(options),
+    "first pullChanged()",
+  );
+  assertCount(
+    await fixture.second.service.pullChanged(options),
     "second pullChanged()",
   );
 }
@@ -761,6 +803,8 @@ interface RoundTripCase {
   skipForOptions?: (options: SyncServiceRoundTripOptions) => string | undefined;
   /** Returns a skip reason that depends on the fixture. */
   skip?: (fixture: SyncServiceRoundTripFixture) => string | undefined;
+  /** Whether the case passes the fixture's namespace to every sync call. */
+  namespaced?: boolean;
   run: (fixture: SyncServiceRoundTripFixture) => Promise<void>;
 }
 
@@ -807,7 +851,7 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
     skipForOptions: (options) =>
       options.expectPullDeletes
         ? undefined
-        : "S3/GCS pulls never delete local files; set expectPullDeletes to run it",
+        : "S3/GCS pulls do not remove every local file the remote deleted; set expectPullDeletes to run it",
     run: async ({ first, second }) => {
       const rel = `${ROOT}/pull-deletes/raw`;
       const bytes = sampleBytes("pull-deletes");
@@ -1018,6 +1062,136 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
       );
     },
   },
+  {
+    name: "fetch-content",
+    skip: ({ second }) =>
+      fetchContentOf(second.service) ? undefined : NO_FETCH_CONTENT,
+    run: async ({ first, second }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      const rel = `${ROOT}/fetch-content/raw`;
+      const remoteBytes = sampleBytes("fetch-content-remote");
+      await markAndWrite(first, rel, remoteBytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+
+      assertEquals(
+        await fetchContent(rel),
+        remoteBytes,
+        "fetchContent() must return the bytes first pushed",
+      );
+      await assertAbsent(
+        second,
+        rel,
+        "fetchContent() must not write into the cache",
+      );
+      assertEquals(
+        await fetchContent(`${ROOT}/fetch-content/missing`),
+        null,
+        "fetchContent() of a file the remote lacks must return null",
+      );
+      await assertRejects(
+        () => fetchContent(`${ROOT}/fetch-content/../fetch-content/raw`),
+        Error,
+        undefined,
+        "fetchContent() must reject a relPath with a .. segment",
+      );
+      await assertRejects(
+        () => fetchContent(`/${rel}`),
+        Error,
+        undefined,
+        "fetchContent() must reject an absolute relPath",
+      );
+
+      // A local change not pushed yet: the remote's bytes come back, and the
+      // change stays local and stays pending.
+      const localBytes = sampleBytes("fetch-content-local");
+      await markAndWrite(second, rel, localBytes);
+      const mtime = new Date("2001-01-01T00:00:00Z");
+      await Deno.utime(localPath(second.cacheDir, rel), mtime, mtime);
+      assertEquals(
+        await fetchContent(rel),
+        remoteBytes,
+        "fetchContent() must return the remote's bytes, not a differing local file's",
+      );
+      const message = "fetchContent() must not touch a differing local file";
+      await assertHasBytes(second, rel, localBytes, message);
+      const info = await Deno.stat(localPath(second.cacheDir, rel));
+      assertEquals(
+        info.mtime?.getTime(),
+        mtime.getTime(),
+        `${message}: ${rel} was rewritten`,
+      );
+      // A current mtime again, so a push that compares mtimes still sees the
+      // change.
+      const now = new Date();
+      await Deno.utime(localPath(second.cacheDir, rel), now, now);
+      assertChanged(
+        await second.service.pushChanged(),
+        "second pushChanged() after fetchContent()",
+      );
+      assertEquals(
+        await fetchContent(rel),
+        localBytes,
+        "fetchContent() must not clear a pending push: second's change must reach the remote",
+      );
+    },
+  },
+  {
+    name: "fetch-content-error",
+    skip: ({ second, failNextFetch }) => {
+      if (!fetchContentOf(second.service)) return NO_FETCH_CONTENT;
+      return failNextFetch ? undefined : "the fixture has no failNextFetch";
+    },
+    run: async ({ first, second, failNextFetch }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      const rel = `${ROOT}/fetch-content-error/raw`;
+      const bytes = sampleBytes("fetch-content-error");
+      await markAndWrite(first, rel, bytes);
+      assertChanged(await first.service.pushChanged(), "first pushChanged()");
+
+      failNextFetch!();
+      await assertRejects(
+        () => fetchContent(rel),
+        Error,
+        undefined,
+        "fetchContent() must reject when the remote cannot be read; null means the file is gone",
+      );
+      assertEquals(
+        await fetchContent(rel),
+        bytes,
+        "fetchContent() after a failed one must return the remote's bytes",
+      );
+    },
+  },
+  {
+    name: "fetch-content-namespace",
+    namespaced: true,
+    skip: ({ second, namespace }) => {
+      if (!fetchContentOf(second.service)) return NO_FETCH_CONTENT;
+      return namespace ? undefined : "the fixture names no namespace";
+    },
+    run: async ({ first, second, namespace }) => {
+      const fetchContent = fetchContentOf(second.service)!;
+      // Cache-relative, so it starts with the namespace (fetchContent rule 3).
+      const rel = `${namespace}/${ROOT}/fetch-content-namespace/raw`;
+      const bytes = sampleBytes("fetch-content-namespace");
+      await first.service.markDirty({ relPath: rel, namespace });
+      await writeLocal(first.cacheDir, rel, bytes);
+      assertChanged(
+        await first.service.pushChanged({ namespace }),
+        "first pushChanged() with a namespace",
+      );
+      assertEquals(
+        await fetchContent(rel, { namespace }),
+        bytes,
+        "fetchContent() of a cache-relative path must not add the namespace a second time",
+      );
+      await assertAbsent(
+        second,
+        rel,
+        "fetchContent() must not write into the cache",
+      );
+    },
+  },
 ];
 
 /**
@@ -1043,6 +1217,22 @@ const ROUND_TRIP_CASES: readonly RoundTripCase[] = [
  * - `pull-nothing-new`: a pull with nothing new returns 0 or void and leaves
  *   local bytes and mtimes alone.
  * - `forward-slash-paths`: a forward-slash `relPath` lands at the native path.
+ * - `fetch-content`: `fetchContent` returns the remote's bytes and `null` for
+ *   a missing file, rejects a `..` or absolute path, writes nothing into the
+ *   cache, leaves
+ *   a differing local file alone and keeps its pending push. Skipped when
+ *   `second.service` has no `fetchContent`.
+ * - `fetch-content-error`: a `fetchContent` that cannot read the remote
+ *   rejects, never resolving to `null`. Skipped without `fetchContent`, and
+ *   when the fixture has no `failNextFetch`.
+ * - `fetch-content-namespace`: a cache-relative path that starts with the
+ *   namespace is read without the namespace being added again. This case
+ *   passes the fixture's `namespace` to every call, its warm-up pulls
+ *   included, since a service may bind the namespace of its first pull.
+ *   Skipped without `fetchContent`, and unless the fixture names a
+ *   `namespace`. It has only been run against `createInMemoryRemote`, which
+ *   binds a namespace as the S3 and GCS datastores do but stores a
+ *   namespaced path as a plain key.
  *
  * Counts may be void ("unknown") everywhere. A failing case rejects with an
  * error naming it; skipped cases are returned so callers can assert on them.
@@ -1132,7 +1322,10 @@ async function runRoundTripCase(
     if (reason !== undefined) {
       result.skipped.push({ name: testCase.name, reason });
     } else {
-      await warmUp(fixture);
+      await warmUp(
+        fixture,
+        testCase.namespaced ? fixture.namespace : undefined,
+      );
       await testCase.run(fixture);
       result.passed.push(testCase.name);
     }

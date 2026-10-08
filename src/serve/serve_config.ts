@@ -67,6 +67,8 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   hydrationTimeout: "SWAMP_HYDRATION_TIMEOUT",
   shutdownDrainTimeout: "SWAMP_SHUTDOWN_DRAIN_TIMEOUT",
   datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
+  continuationSweepInterval: "SWAMP_CONTINUATION_SWEEP_INTERVAL",
+  maxSignalWaitTimeout: "SWAMP_MAX_SIGNAL_WAIT_TIMEOUT",
   tokenGcInterval: "SWAMP_TOKEN_GC_INTERVAL",
   tokenGcGracePeriod: "SWAMP_TOKEN_GC_GRACE_PERIOD",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
@@ -148,6 +150,8 @@ export interface ServeConfigFile {
   "hydration-timeout"?: string;
   "shutdown-drain-timeout"?: string;
   "datastore-poll-interval"?: string;
+  "continuation-sweep-interval"?: string;
+  "max-signal-wait-timeout"?: string;
   "token-gc-interval"?: string;
   "token-gc-grace-period"?: string;
   "enable-internal-api"?: boolean;
@@ -271,6 +275,8 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "hydration-timeout",
   "shutdown-drain-timeout",
   "datastore-poll-interval",
+  "continuation-sweep-interval",
+  "max-signal-wait-timeout",
   "token-gc-interval",
   "token-gc-grace-period",
   "enable-internal-api",
@@ -540,6 +546,8 @@ function validateConfigValues(
     ["hydration-timeout", raw["hydration-timeout"]],
     ["shutdown-drain-timeout", raw["shutdown-drain-timeout"]],
     ["datastore-poll-interval", raw["datastore-poll-interval"]],
+    ["continuation-sweep-interval", raw["continuation-sweep-interval"]],
+    ["max-signal-wait-timeout", raw["max-signal-wait-timeout"]],
     ["token-gc-interval", raw["token-gc-interval"]],
     ["token-gc-grace-period", raw["token-gc-grace-period"]],
   ];
@@ -971,14 +979,17 @@ export interface MergedServeOptions {
   hydrationTimeout?: string;
   shutdownDrainTimeout?: string;
   datastorePollInterval?: string;
+  continuationSweepInterval?: string;
+  maxSignalWaitTimeout?: string;
   tokenGcInterval?: string;
   tokenGcGracePeriod?: string;
   enableInternalApi: boolean;
   remoteOnly: boolean;
   dashboard: boolean;
   /**
-   * Resume a run once every approval gate on it is decided, for workflows
-   * that declare no inputs and do not set `autoResume` themselves.
+   * Resume a run once every approval gate on it is decided and every wait
+   * for a signal is settled, for workflows that declare no inputs and do
+   * not set `autoResume` themselves.
    */
   autoResume: boolean;
 }
@@ -1351,6 +1362,20 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const continuationSweepInterval = resolveString(
+    "continuation-sweep-interval",
+    cliOptions.continuationSweepInterval as string | undefined,
+    config?.["continuation-sweep-interval"],
+    undefined,
+  );
+
+  const maxSignalWaitTimeout = resolveString(
+    "max-signal-wait-timeout",
+    cliOptions.maxSignalWaitTimeout as string | undefined,
+    config?.["max-signal-wait-timeout"],
+    undefined,
+  );
+
   const tokenGcInterval = resolveString(
     "token-gc-interval",
     cliOptions.tokenGcInterval as string | undefined,
@@ -1467,6 +1492,8 @@ export function mergeServeOptions(
     hydrationTimeout,
     shutdownDrainTimeout,
     datastorePollInterval,
+    continuationSweepInterval,
+    maxSignalWaitTimeout,
     tokenGcInterval,
     tokenGcGracePeriod,
     enableInternalApi,

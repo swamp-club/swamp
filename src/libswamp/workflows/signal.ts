@@ -30,6 +30,7 @@ import {
   type WaitOutcome,
   type WaitRegistration,
 } from "../../domain/workflows/signal_wait_records.ts";
+import { decideContinuation } from "../../domain/workflows/run_continuation.ts";
 import {
   settledBy,
   type SignalWaitStore,
@@ -37,7 +38,6 @@ import {
 } from "../../domain/workflows/signal_wait_store.ts";
 import {
   ensureRegistered,
-  isAwaitingResume,
   outcomeAt,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
 import {
@@ -640,7 +640,8 @@ async function deliver(
       jobName: registration.jobName,
       stepName: registration.stepName,
       signal: { ...stored.record.receipt },
-      awaitingResume: await isAwaitingResume(store, run),
+      awaitingResume: run !== null &&
+        (await decideContinuation(run, store)).kind === "resumable",
       runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(registration),
     },

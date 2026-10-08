@@ -568,6 +568,17 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         }
         parts.push(`Bundles: ${e.data.bundleCount}`);
         this.logger.info`${parts.join(", ")}`;
+        if (e.data.registryWarnings) {
+          const { messages, omitted } = e.data.registryWarnings;
+          this.logger.warn`Registry warnings:`;
+          for (const message of messages) {
+            this.textBlock("warn", message, "  ");
+          }
+          if (omitted > 0) {
+            const noun = omitted === 1 ? "warning" : "warnings";
+            this.logger.warn(`  ${omitted} more registry ${noun} omitted`);
+          }
+        }
         if (options?.accepted) {
           this.renderAcceptedWarnings(options.accepted);
         }
@@ -731,8 +742,19 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
     return {
       pushing: () => {},
       completed: (e) => {
+        // Registry warnings join the other families under `warnings`, one
+        // object per warning like theirs; the count of any the client left
+        // out stays beside the summary.
+        const { registryWarnings, ...data } = e.data;
+        this.warn(
+          "registry",
+          (registryWarnings?.messages ?? []).map((message) => ({ message })),
+        );
         this.emit("pushed", {
-          ...e.data,
+          ...data,
+          ...(registryWarnings && registryWarnings.omitted > 0
+            ? { registryWarningsOmitted: registryWarnings.omitted }
+            : {}),
           ...(options?.accepted
             ? { acceptedWarnings: options.accepted.warnings }
             : {}),

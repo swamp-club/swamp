@@ -55,7 +55,12 @@ import {
 } from "../../domain/expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
-import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  CelEvaluator,
+  prepareExpressionContext,
+  prepareExpressionsIn,
+} from "../../infrastructure/cel/cel_evaluator.ts";
+import type { HydrateFileHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -175,6 +180,12 @@ export function createWorkflowEvaluateDeps(
   workflowRepo: WorkflowRepository,
   datastoreResolver?: DatastorePathResolver,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  /**
+   * The repository context's hook, so expressions that read lazily hydrated
+   * content download it rather than evaluate against an empty cache entry
+   * that would be saved into the evaluated workflow (swamp-club#3179).
+   */
+  hydrateFile?: HydrateFileHook,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -186,7 +197,7 @@ export function createWorkflowEvaluateDeps(
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
     undefined,
-    undefined,
+    hydrateFile,
     namespaceFromResolver(datastoreResolver),
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
@@ -318,6 +329,9 @@ async function evaluateWorkflowInternal(
     }
 
     try {
+      // A synchronous evaluation: make what it reads local first
+      // (swamp-club#3179).
+      await prepareExpressionContext(expr.celExpression, context);
       const value = deps.evaluateCel(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
     } catch (error) {
@@ -366,6 +380,19 @@ async function evaluateWorkflowInternal(
       const items = await deps.evaluateCelAsync(inSpan.inner, context);
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
+      // Each item's step is resolved synchronously against a context that
+      // shares this one's model map and data namespace, so what they read is
+      // made local once, here (swamp-club#3179).
+      await prepareExpressionsIn(
+        {
+          name: stepData.name,
+          task: stepData.task,
+          target: stepData.target,
+          labels: stepData.labels,
+          platform: stepData.platform,
+        },
+        context,
+      );
 
       // Build one expanded step for a single forEach item: resolve every
       // available expression (self.* etc.) across the step name, task, AND

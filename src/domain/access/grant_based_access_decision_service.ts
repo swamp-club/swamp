@@ -32,8 +32,11 @@ import { isControlPlaneRecordResource } from "./control_plane_records.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { Subject } from "./subject.ts";
 import {
+  canonicalTypePattern,
+  namesTypePath,
   type ResourceKind,
   resourceSelectorMatches,
+  typePatternMatchesIgnoringAt,
 } from "./resource_selector.ts";
 
 export const MAX_AGGREGATE_CONDITIONS = 100;
@@ -66,6 +69,20 @@ function resolveSubjects(
   return subjects;
 }
 
+/**
+ * Each grant's selector in canonical type spelling, computed once. Keyed by
+ * the grant object, which is sound because snapshots hold grants that are
+ * never changed in place: a reload builds new grant objects.
+ */
+const canonicalPatterns = new WeakMap<Grant, string | null>();
+
+function canonicalPatternOf(grant: Grant): string | null {
+  if (!canonicalPatterns.has(grant)) {
+    canonicalPatterns.set(grant, canonicalTypePattern(grant.resource.pattern));
+  }
+  return canonicalPatterns.get(grant) ?? null;
+}
+
 function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
   if (grant.resource.kind !== resource.kind) {
     return false;
@@ -73,14 +90,36 @@ function grantMatchesResource(grant: Grant, resource: AccessResource): boolean {
   if (resourceSelectorMatches(grant.resource, resource.name)) {
     return true;
   }
+  const modelType = resource.fields.modelType;
+  if (typeof modelType !== "string") return false;
   // For model resources, also match against the extension type so that
   // namespace-scoped grants like model:@scope/* cover model instances
   // whose type falls under that namespace.
   if (
     resource.kind === "model" &&
-    typeof resource.fields.modelType === "string"
+    resourceSelectorMatches(grant.resource, modelType)
   ) {
-    return resourceSelectorMatches(grant.resource, resource.fields.modelType);
+    return true;
+  }
+  // A deny also matches the type in any spelling — case, `::` or `.`
+  // separators, with or without a leading `@` — so a deny an admin wrote
+  // never silently matches nothing. An allow matches only as written: folding
+  // it would widen what it grants (swamp-club#3130). Of access resources only
+  // control-plane records name a type.
+  if (
+    grant.effect === "deny" &&
+    (resource.kind === "model" || isControlPlaneRecordResource(resource))
+  ) {
+    const canonical = canonicalPatternOf(grant);
+    if (canonical === null) return false;
+    // Only a pattern written as a type path ignores the `@`; one that may be
+    // written for model names folds case and separators only.
+    return namesTypePath(grant.resource.pattern)
+      ? typePatternMatchesIgnoringAt(canonical, modelType)
+      : resourceSelectorMatches(
+        { kind: resource.kind, pattern: canonical },
+        modelType,
+      );
   }
   return false;
 }

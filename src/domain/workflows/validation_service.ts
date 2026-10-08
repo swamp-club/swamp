@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Workflow } from "./workflow.ts";
-import { WorkflowSchema } from "./workflow.ts";
+import { workflowDeclaresInputs, WorkflowSchema } from "./workflow.ts";
+import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { createWorkflowId } from "./workflow_id.ts";
@@ -33,6 +34,8 @@ import {
   extractInputReferences,
   extractWholeFieldInputRef,
 } from "../expressions/expression_parser.ts";
+import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
+import type { DataOutputOverride } from "../models/data_output_override.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -102,6 +105,21 @@ export interface ModelMethodResolver {
 }
 
 /**
+ * Port for predicting the vaults a model-method step's sensitive outputs land
+ * in, with the resolver the data writer stores with
+ * (`sensitive_output_vault.ts`). Returns `undefined` when the step cannot be
+ * resolved statically or its method stores no sensitive output.
+ */
+export interface SensitiveOutputVaultResolver {
+  targetVaults(step: {
+    modelIdOrName: string;
+    methodName: string;
+    modelType?: string;
+    dataOutputOverrides: ReadonlyArray<DataOutputOverride>;
+  }): Promise<string[] | undefined>;
+}
+
+/**
  * Domain service for workflow validation.
  *
  * Validates:
@@ -135,6 +153,7 @@ export class DefaultWorkflowValidationService
   constructor(
     private readonly methodResolver?: ModelMethodResolver,
     private readonly workflowRepo?: WorkflowRepository,
+    private readonly sensitiveOutputVaults?: SensitiveOutputVaultResolver,
   ) {}
 
   async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
@@ -181,6 +200,9 @@ export class DefaultWorkflowValidationService
     for (const result of this.validateWaitSchemaExpressions(workflow)) {
       results.push(result);
     }
+    for (const result of this.validateWaitAutoResumeDeclared(workflow)) {
+      results.push(result);
+    }
 
     // 12. affinity without placement is a no-op
     results.push(...this.validateAffinityPlacement(workflow));
@@ -191,6 +213,84 @@ export class DefaultWorkflowValidationService
     // 14. writes without placement is a no-op
     results.push(...this.validateWritesPlacement(workflow));
 
+    // 15. Vaults the workflow reads are in its vaults list
+    for (const result of await this.validateVaultsList(workflow)) {
+      results.push(result);
+    }
+
+    return results;
+  }
+
+  /**
+   * With a `vaults:` list, reports each vault the workflow statically uses
+   * but does not list: a quoted `vault.get` in its own steps or inputs, and
+   * each sensitive-output target vault of a mutating model-method step. The
+   * run-time check is the guarantee for dynamic names and for `vault.get`
+   * inside model definitions.
+   */
+  private async validateVaultsList(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    if (workflow.vaults === undefined) return [];
+    const listed = new Set(workflow.vaults);
+    const results: WorkflowValidationResult[] = [];
+    const data = workflow.toData();
+    const { staticRefs } = extractVaultReferences(
+      data.jobs,
+      data.inputs,
+      data.trigger,
+    );
+    const unlisted = [
+      ...new Set(
+        staticRefs.map((ref) => ref.vaultName).filter((name) =>
+          !listed.has(name)
+        ),
+      ),
+    ];
+    const checkName = "Vaults the workflow reads are in its vaults list";
+    if (unlisted.length > 0) {
+      results.push(WorkflowValidationResult.fail(
+        checkName,
+        `vault.get reads ${
+          unlisted.map((n) => `'${n}'`).join(", ")
+        }, not in the workflow's vaults list: add ${
+          unlisted.length === 1 ? "it" : "them"
+        } to vaults or read a listed vault`,
+      ));
+    } else {
+      results.push(WorkflowValidationResult.pass(checkName));
+    }
+
+    if (!this.sensitiveOutputVaults) return results;
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const taskData = step.task?.data;
+        if (taskData?.type !== "model_method") continue;
+        const modelRef = taskData.modelIdOrName ?? taskData.modelName;
+        if (!modelRef) continue;
+        if (
+          (taskData.modelType ?? modelRef).includes("${{") ||
+          taskData.methodName.includes("${{")
+        ) continue;
+        const targets = await this.sensitiveOutputVaults.targetVaults({
+          modelIdOrName: modelRef,
+          methodName: taskData.methodName,
+          modelType: taskData.modelType,
+          dataOutputOverrides: step.dataOutputOverrides,
+        });
+        if (!targets) continue;
+        const missing = targets.filter((name) => !listed.has(name));
+        if (missing.length === 0) continue;
+        results.push(WorkflowValidationResult.fail(
+          `Sensitive outputs of step '${step.name}' in job '${job.name}' land in its vaults list`,
+          `${modelRef}.${taskData.methodName} stores sensitive output in ${
+            missing.map((n) => `'${n}'`).join(", ")
+          }, not in the workflow's vaults list: add ${
+            missing.length === 1 ? "it" : "them"
+          } to vaults or point the output at a listed vault`,
+        ));
+      }
+    }
     return results;
   }
 
@@ -387,14 +487,42 @@ export class DefaultWorkflowValidationService
     return results;
   }
 
+  /**
+   * `swamp serve` continues a run once its waits are settled, when the
+   * workflow's auto-resume policy allows (swamp-club#3108). The server
+   * default never applies to a workflow that declares inputs, so one that
+   * waits for a signal and leaves `autoResume` unset would stay suspended
+   * after its signal with nothing saying why. It has to choose.
+   */
+  private validateWaitAutoResumeDeclared(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    if (workflow.autoResume !== undefined) return [];
+    if (!workflowDeclaresInputs(workflow.inputs)) return [];
+    const waits = workflow.jobs.some((job) =>
+      job.steps.some((step) => step.task?.data.type === "wait_for_signal")
+    );
+    if (!waits) return [];
+    return [
+      WorkflowValidationResult.fail(
+        "Auto-resume for signal waits",
+        `The workflow waits for a signal and declares inputs, so it must set ` +
+          `autoResume. Set autoResume: true for swamp serve to continue a run ` +
+          `once its waits are settled, with the inputs the run started with; ` +
+          `set autoResume: false to continue it with swamp workflow resume, ` +
+          `which can supply inputs`,
+      ),
+    ];
+  }
+
   private validateSchema(workflow: Workflow): WorkflowValidationResult {
-    try {
-      WorkflowSchema.parse(workflow.toData());
-      return WorkflowValidationResult.pass("Schema validation");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return WorkflowValidationResult.fail("Schema validation", message);
-    }
+    const result = WorkflowSchema.safeParse(workflow.toData());
+    return result.success
+      ? WorkflowValidationResult.pass("Schema validation")
+      : WorkflowValidationResult.fail(
+        "Schema validation",
+        WorkflowSchemaError.fromZodError(result.error).message,
+      );
   }
 
   private validateUniqueJobNames(workflow: Workflow): WorkflowValidationResult {

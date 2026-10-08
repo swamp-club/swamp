@@ -836,7 +836,7 @@ Nested workflows have a max depth of 10 and cycle detection is enforced.
 task:
   type: manual_approval
   prompt: "Verify SSH access before proceeding"
-  timeout: 3600 # Optional: seconds before approve is rejected
+  timeout: 3600 # Optional: seconds until the gate expires
 ```
 
 The workflow suspends to disk. Approve, reject, or resume from CLI (use
@@ -847,7 +847,7 @@ swamp workflow approve <workflow-name> <step-name> --run <run-id>
 swamp workflow reject  <workflow-name> <step-name> --run <run-id> --reason "Not ready"
 swamp workflow resume  <workflow-name> --run <run-id>
 swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc123
-swamp workflow approvals  # list all pending approvals with run IDs
+swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
@@ -859,8 +859,12 @@ added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
 started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
 also clears a serve-started run whose approval gate has timed out, and a run
-left `running` by a serve process that has died. If it answers that the run was
-not cancelled, the reply says what still holds it. See
+left `running` by a serve process that has died. A gate past its `timeout` can
+no longer be approved or rejected: `swamp workflow approvals` lists it in a
+separate expired section with the cancel command for its run (an `expired` array
+in `--json`), and the dashboard's Approvals view has a Cancel button for it. If
+it answers that the run was not cancelled, the reply says what still holds it.
+See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a
@@ -872,7 +876,7 @@ it. Use it when a step needs a value, not a yes or no:
   allowFailure: true # a timeout then does not fail the run
   task:
     type: wait_for_signal
-    timeout: 86400 # Required: seconds the wait stays open (max 31536000)
+    timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -893,7 +897,7 @@ it. Use it when a step needs a value, not a yes or no:
 swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
-swamp workflow resume release --run <run-id>
+swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
 - The schema may read `inputs.*` only. `self`, `steps`, `data`, `env` and
@@ -921,12 +925,18 @@ swamp workflow resume release --run <run-id>
   `__proto__`, `constructor` and `prototype` are refused at any depth.
 - `resume` refuses while a wait is open. Past the deadline, a signal is refused
   and the next `resume` fails the step with `wait_timeout`, so a `failed`
-  dependent runs. `workflow waits` flags such a wait as expired.
-- Resume is always manual, also under `swamp serve`: serve never auto-resumes a
-  run with a step waiting for a signal. `workflow signal` and `workflow waits`
-  take `--server`, and a server also accepts a signal over HTTP; see "Signals
-  Through Serve" in [the serve guide](../serve/guide.md) for the `signal` grant
-  and the route.
+  dependent runs. `workflow waits` flags such a wait as expired. Under serve
+  with auto-resume on, the timeout is applied and the run resumed without that
+  manual `resume`, within `--continuation-sweep-interval` of the deadline.
+- Without `swamp serve`, resume is manual. Under serve with auto-resume on (see
+  below), the run resumes by itself once every wait on it has an outcome,
+  whether the signal came through serve or from a local command.
+  `workflow signal` and `workflow waits` take `--server`, and a server also
+  accepts a signal over HTTP; see "Signals Through Serve" in
+  [the serve guide](../serve/guide.md) for the `signal` grant and the route.
+- A workflow that waits for a signal **and** declares `inputs` must set
+  `autoResume: true` or `autoResume: false`; `workflow validate` fails it
+  otherwise.
 - A new `workflow run` does not supersede a run that waits for a signal,
   signalled or not; it reports it as kept.
 - A signal is stored beside the run, not in it, and takes effect at the next
@@ -958,12 +968,15 @@ swamp workflow resume release --run <run-id>
 
 **Auto-resume (serve only):** set `autoResume: true` at the top level of the
 workflow to have `swamp serve` resume the run by itself once every gate is
-approved. The approval must go through serve: the dashboard, or
-`workflow approve --server`. `swamp serve --auto-resume` turns this on for
-workflows that declare **no** `inputs` and leave `autoResume` unset. A workflow
-with inputs must opt in itself, because it may rely on resume-time `--input`,
-and `autoResume: false` opts a workflow out. Do not enable auto-resume on a
-workflow that expects resume inputs: the automatic resume supplies none.
+approved and every `wait_for_signal` step has an outcome. The approval or signal
+through serve that settles the run resumes it at once; a local signal is picked
+up within `--continuation-sweep-interval` (default 30s), and so is a local
+approval on a filesystem datastore (on S3 or GCS, approve with `--server`).
+`swamp serve --auto-resume` turns this on for workflows that declare **no**
+`inputs` and leave `autoResume` unset. A workflow with inputs must opt in
+itself, because it may rely on resume-time `--input`, and `autoResume: false`
+opts a workflow out. Do not enable auto-resume on a workflow that expects resume
+inputs: the automatic resume supplies none.
 
 ```yaml
 name: deploy-prod
@@ -1303,6 +1316,26 @@ jobs:
           modelIdOrName: api-client # vault.get() resolved after refresh
           methodName: invoke
 ```
+
+### Vaults allow-list
+
+A top-level `vaults:` list caps which vaults any run of the workflow may read or
+write — `vault.get`, `context.vaultService` in method code, and sensitive
+outputs. It applies to local runs and serve runs (alongside the triggering
+principal's vault grants); nested workflows intersect with the parent's list.
+
+```yaml
+name: provision-room
+vaults: [roomcontrol, bot-outputs] # include the vault sensitive outputs land in
+jobs: ...
+```
+
+The list must include the vault each step's sensitive outputs are stored in (the
+default vault unless a spec `vaultName` or step `dataOutputOverrides` picks
+another), or the method is refused before it runs. `swamp workflow validate`
+reports unlisted static `vault.get` names and sensitive-output target vaults.
+Older swamp releases reject a workflow file that sets `vaults:`, so upgrade
+every machine and serve replica first.
 
 ## Workflow Example
 

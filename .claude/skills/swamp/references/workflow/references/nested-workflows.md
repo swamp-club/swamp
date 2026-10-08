@@ -276,7 +276,10 @@ swamp workflow resume  <parent> --run <parent-run-id>
   above it. The parent cannot read the child's payload through
   `steps.<nested>.outputs`.
 - Under `swamp serve`, the parent resumes on its own once the child finishes,
-  when the parent's auto-resume policy is on and the approver may approve it.
+  when the parent's auto-resume policy is on and the caller who approved or
+  signalled the child may also `approve` or `signal` the parent. Otherwise
+  resume the parent yourself: serve's periodic check never resumes a parent that
+  waits on a nested run.
 - In `--json` output, the suspended document's `approvalRequired` names the gate
   to decide (`workflowName`, `runId`, `stepId`), and `waitingOnNestedRun` names
   the child the parent waits on.

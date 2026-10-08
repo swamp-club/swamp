@@ -134,3 +134,35 @@ Deno.test("findBrokenWorkflow: matches by raw name and by raw id", async () => {
     assertEquals(miss, null);
   });
 });
+
+const BROKEN_TYPES_WORKFLOW = `
+id: 4ca56ef7-e5f4-4462-b110-289af8294d4f
+name: broken-types
+jobs:
+  - name: main
+    weight: heavy
+    steps:
+      - name: example
+        allowFailure: maybe
+        task:
+          type: model_method
+          modelIdOrName: example-model
+          methodName: run
+`;
+
+Deno.test("listBrokenWorkflows: reports a schema failure as one readable line", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      join(dir, "workflow-broken-types.yaml"),
+      BROKEN_TYPES_WORKFLOW,
+    );
+
+    const broken = await listBrokenWorkflows(dir);
+    assertEquals(broken.length, 1);
+    assertEquals(
+      broken[0].error,
+      "jobs[0].steps[0].allowFailure: Invalid input: expected boolean, received string; " +
+        "jobs[0].weight: Invalid input: expected number, received string",
+    );
+  });
+});

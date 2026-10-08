@@ -166,20 +166,37 @@ Deno.test("lock acquire and release", async () => {
 
 ## `createInMemoryRemote`
 
-> **Experimental.** The defaults track today's extension behaviour and will
-> change during the datastore rework.
+> **Experimental.** The defaults track the current extension releases and will
+> change with them and during the datastore rework.
 
 An in-memory remote datastore shared by several simulated machines. Each
 `connect(cacheDir)` returns a sync service bound to that cache directory, with
 two-phase push. By default it behaves like `@swamp/s3-datastore` and
-`@swamp/gcs-datastore` today, gaps included:
+`@swamp/gcs-datastore` 2026.10.06.1 through 2026.10.07.1, gaps included:
 
 - a bare `markDirty()` makes the next push a full walk that deletes nothing;
 - a write that was never marked is never pushed;
-- pulls never delete local files and overwrite locally dirty ones;
-- a pull of a remote that moved drops a pending push.
+- pulls overwrite locally dirty files, and keep a pending push for the next push
+  to send;
+- a pull, push or `preparePush` removes the local copy of a file a peer deleted,
+  unless it changed or is marked since the last sync, or no committed file is
+  left in scope; a pull leaves these removals out of its count;
+- a service keeps the namespace of its first pull or push, and rejects a later
+  one with a different namespace.
 
-The source header cites the extension code behind each behaviour.
+The source header cites the extension code behind each behaviour, checked at
+swamp-extensions 7c0b1eacf. Earlier releases are available as `semantics`
+values:
+
+| Constant                         | Models                    | Differs from the default                                 |
+| -------------------------------- | ------------------------- | -------------------------------------------------------- |
+| `EXTENSION_SEMANTICS`            | 2026.10.06.1–2026.10.07.1 | the default                                              |
+| `EXTENSION_2026_10_01_SEMANTICS` | 2026.10.01.1              | removes no peer deletes                                  |
+| `LEGACY_EXTENSION_SEMANTICS`     | 2026.09.24.1 and earlier  | also: a pull of a remote that moved drops a pending push |
+
+Each service also has `fetchContent(relPath)`, which returns the committed bytes
+of one file, or `null`, and touches neither the cache nor its dirty state. Pass
+`{ fetchContent: false }` to `connect` for a service without the method.
 
 ```typescript
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -198,28 +215,40 @@ Deno.test("a marked file reaches another machine", async () => {
 });
 ```
 
-| Option          | Default                      | Description                                                   |
-| --------------- | ---------------------------- | ------------------------------------------------------------- |
-| `semantics`     | `LEGACY_EXTENSION_SEMANTICS` | `pullDeletes`, `bulkDisablesDeletes`, `pullClearsPendingPush` |
-| `dirtyPathsCap` | `2000`                       | Marked paths kept before overflowing to bulk                  |
-| `capabilities`  | `{ twoPhaseSync: true }`     | What every connected service advertises                       |
+| Option          | Default                  | Description                                                                         |
+| --------------- | ------------------------ | ----------------------------------------------------------------------------------- |
+| `semantics`     | `EXTENSION_SEMANTICS`    | `pullDeletes`, `bulkDisablesDeletes`, `pullClearsPendingPush`, `removesPeerDeletes` |
+| `dirtyPathsCap` | `2000`                   | Marked paths kept before overflowing to bulk                                        |
+| `capabilities`  | `{ twoPhaseSync: true }` | What every connected service advertises                                             |
 
 The remote also offers:
 
 - `files()`: the committed content;
 - `failNext(op, error?, { afterUploads?, instance? })`;
 - `offline(boolean)`;
-- `ops()`: an ordered `{ instance, op, paths, deleted }` log;
+- `ops()`: an ordered `{ instance, op, paths, deleted, removed? }` log, where
+  `removed` lists the local copies a push or prepare removed because a peer
+  deleted them;
 - `resetSidecar(cacheDir)`;
 - `pendingPush(cacheDir)`: what the next push from that cache would send, as
   `{ uploads, deletes, marked, bulk }`, read with no side effects (no upload, no
   op recorded, no injected failure consumed, works offline). A clean cache
   reports no uploads or deletes; `bulk` shows the next push is a full walk that
   ignores `marked`.
+- `seedControlPlane(key, data, { namespace? })` and `controlPlaneRecords()`,
+  with `createInMemoryRemote({ controlPlane: true })`: plant a control-plane
+  record without recording an op, and read every record by its full remote key.
 
-Not modelled: namespaces, lazy hydration, the control plane, `previewPush`,
-Windows drive-letter joins, and the gap between `preparePush` deleting objects
-and `commitPush` publishing the index.
+With `controlPlane: true`, each service also has a `controlPlaneStore()` and
+advertises `controlPlane`. Records live under `_control/<key>`, or
+`<namespace>/_control/<key>` once the service has bound a namespace; a service
+that has not pulled or pushed binds none on its first control-plane call, as the
+S3 and GCS extensions do. Writes are logged as `controlPlane` ops.
+
+Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows
+drive-letter joins, the gap between `preparePush` deleting objects and
+`commitPush` publishing the index, and the extensions' cached or fallback index
+reads, which remove no peer deletes.
 
 ## `createRecordingSyncService`
 
@@ -275,18 +304,21 @@ store lacks it, or whose create is not atomic. Pass
 Holds a `DatastoreSyncService` to the `markDirty` contract, delete propagation
 and two-phase push. The factory returns two services bound to two different
 cache directories on **one** fresh backend, plus a cleanup. The suite calls it
-once per case (eight fixtures), pulls on both caches, then runs:
+once per case (eleven fixtures), pulls on both caches, then runs:
 
-| Case                  | Asserts                                                                            |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| `round-trip`          | A path-marked file pushed by `first` pulls on `second` with identical bytes        |
-| `push-deletes`        | A marked path that is absent on disk deletes the remote file                       |
-| `pull-deletes`        | A pull removes a local file the remote deleted                                     |
-| `bulk-mark`           | A bare `markDirty()` pushes every changed file                                     |
-| `failed-push-retry`   | A failed push leaves the path dirty, and the next push uploads it                  |
-| `two-phase`           | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears |
-| `pull-nothing-new`    | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone        |
-| `forward-slash-paths` | A forward-slash `relPath` lands at the native path                                 |
+| Case                      | Asserts                                                                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `round-trip`              | A path-marked file pushed by `first` pulls on `second` with identical bytes                                                         |
+| `push-deletes`            | A marked path that is absent on disk deletes the remote file                                                                        |
+| `pull-deletes`            | A pull removes a local file the remote deleted                                                                                      |
+| `bulk-mark`               | A bare `markDirty()` pushes every changed file                                                                                      |
+| `failed-push-retry`       | A failed push leaves the path dirty, and the next push uploads it                                                                   |
+| `two-phase`               | `preparePush` publishes nothing and keeps dirty; `commitPush` publishes and clears                                                  |
+| `pull-nothing-new`        | A pull with nothing new returns 0 or void and leaves bytes and mtimes alone                                                         |
+| `forward-slash-paths`     | A forward-slash `relPath` lands at the native path                                                                                  |
+| `fetch-content`           | `fetchContent` returns the remote's bytes or `null`, rejects a `..` or absolute path, and leaves the cache and a pending push alone |
+| `fetch-content-error`     | A `fetchContent` that cannot read the remote rejects, never resolving to `null`                                                     |
+| `fetch-content-namespace` | A cache-relative path that starts with the namespace is read without the namespace being added again                                |
 
 The suite marks before it writes or deletes, as swamp core does. Counts may
 resolve to `void` everywhere.
@@ -294,10 +326,19 @@ resolve to `void` everywhere.
 Some cases are skipped rather than failed, and returned in `result.skipped` with
 a reason:
 
-- `pull-deletes` unless `expectPullDeletes: true`, because S3 and GCS pulls
-  never delete local files;
+- `pull-deletes` unless `expectPullDeletes: true`, because S3 and GCS pulls do
+  not remove every local file the remote deleted;
 - `failed-push-retry` when the fixture has no `failNextPush`, a hook that makes
   the next `first.service.pushChanged()` fail with a transport error;
+- every `fetch-content` case when `second.service` has no `fetchContent`;
+- `fetch-content-error` when the fixture has no `failNextFetch`, a hook that
+  makes the next `second.service.fetchContent()` fail with a transport error;
+- `fetch-content-namespace` unless the fixture sets `namespace` to a namespace
+  both services can sync. That case passes the namespace to every call it makes,
+  its warm-up pulls included, because the S3 and GCS services keep the namespace
+  of their first pull. It has only been run against `createInMemoryRemote`,
+  which binds a namespace the same way but stores a namespaced path as a plain
+  key;
 - `two-phase` when the service has no `preparePush` and `commitPush`.
 
 A failing case rejects with an error that names it, such as

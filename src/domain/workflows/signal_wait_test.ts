@@ -516,3 +516,26 @@ Deno.test("SignalWait.validatePayload: additionalProperties false closes an obje
     false,
   );
 });
+
+Deno.test("SignalWait.open: refuses a timeout above the caller's maximum, and never raises the one-year ceiling", () => {
+  assertEquals(
+    SignalWait.open(VERDICT, 300, NOW, 300).deadline.toISOString(),
+    "2026-01-01T00:05:00.000Z",
+  );
+  assertThrows(
+    () => SignalWait.open(VERDICT, 301, NOW, 300),
+    Error,
+    "at most 300 seconds, got 301",
+  );
+  assertThrows(
+    () =>
+      SignalWait.open(
+        VERDICT,
+        SIGNAL_WAIT_MAX_TIMEOUT_SECONDS + 1,
+        NOW,
+        SIGNAL_WAIT_MAX_TIMEOUT_SECONDS * 2,
+      ),
+    Error,
+    `at most ${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} seconds`,
+  );
+});

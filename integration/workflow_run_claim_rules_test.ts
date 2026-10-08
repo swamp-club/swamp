@@ -100,9 +100,11 @@ async function filesMentioning(pattern: RegExp): Promise<string[]> {
  * The production files that name `unclaimedRuns`:
  *
  * - `run_claim.ts` declares it.
- * - `execution_service.ts` defaults to it: a resume through `swamp serve`
- *   holds serve's run reservation, and `workflow resume` replaces the default
- *   with lock-backed claims.
+ * - `execution_service.ts` defaults to it, for a service nothing resumes
+ *   with. `workflow resume` and a resume through `swamp serve` both replace
+ *   the default with lock-backed claims (swamp-club#3108): serve's run
+ *   reservation is local to one process, and two serve instances can share
+ *   a datastore.
  * - `workflow_handlers.ts` passes it to approve and reject after reserving
  *   the run in serve's active-run registry.
  */

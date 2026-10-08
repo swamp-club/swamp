@@ -152,6 +152,12 @@ Deno.test("doctorWorkflows: reports fail for invalid schema", async () => {
     >;
     assertEquals(checked.result.status, "fail");
     assertEquals(typeof checked.result.error, "string");
+    // One readable line naming each field, not the raw Zod issue dump.
+    const error = String(checked.result.error);
+    assertEquals(error.includes("\n"), false);
+    assertEquals(error.startsWith("["), false);
+    assertStringIncludes(error, "id: ");
+    assertStringIncludes(error, "name: ");
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }

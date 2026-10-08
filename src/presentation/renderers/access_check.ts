@@ -21,6 +21,22 @@ import type { AccessDecision } from "../../domain/access/access_decision_service
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
+/**
+ * The run-time decision a server reports for a concrete vault read or write
+ * (swamp-club#2676): what a serve run triggered by the principal may do.
+ */
+export interface RunVaultAccessReport {
+  vault: string;
+  action: string;
+  allowed: boolean;
+  restricted: boolean;
+  rule: string;
+  reason: string;
+  grantId?: string;
+  /** Set for a trigger principal, whose scope covers all its runs. */
+  triggerScope?: string;
+}
+
 export interface AccessCheckResult {
   subject: string;
   action: string;
@@ -37,6 +53,44 @@ export interface AccessCheckResult {
    * that predates the setting.
    */
   signalRequiresExplicitGrant?: boolean;
+  /** Undefined for a local check, or a server that predates it. */
+  runVaultAccess?: RunVaultAccessReport;
+}
+
+/**
+ * The log line's short tag for a run-time vault decision: the rule for a
+ * refusal that is not about scoping (an explicit vault deny, or a reserved
+ * vault), else whether the principal's runs are vault-scoped.
+ */
+function runVaultScopeTag(report: RunVaultAccessReport): string {
+  if (!report.allowed && !report.restricted) {
+    if (report.rule === "vault-deny") return "vault deny";
+    if (report.rule === "reserved") return "reserved vault";
+  }
+  return report.restricted ? "vault-scoped" : "not vault-scoped";
+}
+
+/**
+ * The lines explaining a run-time vault decision, or none without one. Run
+ * reads are allowed until a vault grant scopes the principal, unlike vault
+ * requests, which need an allow — so both are shown. The log line carries a
+ * short scope tag; the reason and rule are in the JSON output.
+ */
+export function runVaultAccessLines(
+  report: RunVaultAccessReport | undefined,
+): string[] {
+  if (!report) return [];
+  const verdict = report.allowed ? "ALLOW" : "DENY";
+  const scope = runVaultScopeTag(report);
+  const lines = [
+    `In serve runs: ${verdict} ${report.action} vault ${report.vault} (${scope})`,
+  ];
+  if (report.triggerScope) {
+    lines.push(
+      `This is a trigger principal: this applies to ${report.triggerScope}.`,
+    );
+  }
+  return lines;
 }
 
 interface ApprovalDecision {
@@ -187,6 +241,11 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
         `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${result.resource}`,
       );
       if (note) writeOutput(note);
+      const runLines = runVaultAccessLines(result.runVaultAccess);
+      if (runLines.length > 0) {
+        writeOutput("");
+        for (const line of runLines) writeOutput(line);
+      }
       return;
     }
 
@@ -216,6 +275,11 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
       writeOutput("");
       writeOutput(note);
     }
+    const runLines = runVaultAccessLines(result.runVaultAccess);
+    if (runLines.length > 0) {
+      writeOutput("");
+      for (const line of runLines) writeOutput(line);
+    }
   }
 }
 
@@ -242,6 +306,9 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
             ? {
               signalRequiresExplicitGrant: result.signalRequiresExplicitGrant,
             }
+            : {}),
+          ...(result.runVaultAccess
+            ? { runVaultAccess: result.runVaultAccess }
             : {}),
         },
         null,

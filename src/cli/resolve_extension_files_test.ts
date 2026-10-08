@@ -23,7 +23,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { dirname, join } from "@std/path";
+import { dirname, join, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -2176,9 +2176,8 @@ Deno.test("resolveExtensionFiles: without the flag a workflow present under both
     );
     assertStringIncludes(
       err.message,
-      `Workflow file ${
-        join("hello-wf", "workflow.yaml")
-      } exists under two roots`,
+      // The message echoes the manifest's own ref, forward slashes and all.
+      "Workflow file hello-wf/workflow.yaml exists under two roots",
     );
   });
 });
@@ -2283,8 +2282,10 @@ Deno.test("resolveExtensionFiles: without the flag a skill present under both th
 });
 
 Deno.test("projectConfigBoundary: the root or repo dir that contains the manifest, else the manifest dir", () => {
-  const repo = join("/", "repo");
-  const root = join("/", "elsewhere", "ext");
+  // resolve, not join: the boundary is absolute, so on Windows it carries the
+  // current drive letter.
+  const repo = resolve("/", "repo");
+  const root = resolve("/", "elsewhere", "ext");
   assertPathEquals(
     projectConfigBoundary(join(repo, "ext", "sub"), root, repo),
     repo,
@@ -2299,8 +2300,8 @@ Deno.test("projectConfigBoundary: the root or repo dir that contains the manifes
     repo,
   );
   assertPathEquals(
-    projectConfigBoundary(join("/", "nowhere", "m"), root, repo),
-    join("/", "nowhere", "m"),
+    projectConfigBoundary(resolve("/", "nowhere", "m"), root, repo),
+    resolve("/", "nowhere", "m"),
   );
 });
 

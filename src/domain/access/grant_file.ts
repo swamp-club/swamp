@@ -23,6 +23,10 @@ import { parse as parseYaml } from "@std/yaml";
 import { z } from "zod";
 import { type Action, ActionSchema } from "./action.ts";
 import { type Effect, EffectSchema } from "./effect.ts";
+import {
+  type ConditionTypeLiteralReader,
+  findGrantSpellingIssues,
+} from "./grant_spelling.ts";
 import type { Subject } from "./subject.ts";
 import { parseSubject } from "./subject.ts";
 import {
@@ -93,11 +97,26 @@ export interface GrantFileError {
   filename: string;
   entryIndex?: number;
   message: string;
+  /** Set when the file could not be read at all, rather than parsed. */
+  unreadable?: true;
+}
+
+/**
+ * A grant-file entry that loads but spells a type no type is stored in
+ * (swamp-club#3130). Never an error: a file with errors stops serve starting
+ * and is held back from auto-reload, which must not happen to a working
+ * grant over its spelling.
+ */
+export interface GrantFileWarning {
+  filename: string;
+  entryIndex: number;
+  message: string;
 }
 
 export interface GrantFileParseResult {
   entries: GrantFileEntry[];
   errors: GrantFileError[];
+  warnings: GrantFileWarning[];
 }
 
 export interface ConditionValidator {
@@ -119,16 +138,18 @@ export function parseGrantFile(
   filename: string,
   content: string,
   validateCondition?: ConditionValidator,
+  readTypeLiterals?: ConditionTypeLiteralReader,
 ): GrantFileParseResult {
   const entries: GrantFileEntry[] = [];
   const errors: GrantFileError[] = [];
+  const warnings: GrantFileWarning[] = [];
 
   let parsed: unknown;
   try {
     parsed = parseYaml(content);
   } catch {
     errors.push({ filename, message: "Invalid YAML syntax" });
-    return { entries, errors };
+    return { entries, errors, warnings };
   }
 
   const result = GrantFileRawSchema.safeParse(parsed);
@@ -140,7 +161,7 @@ export function parseGrantFile(
         message: `Schema error at ${path}: ${issue.message}`,
       });
     }
-    return { entries, errors };
+    return { entries, errors, warnings };
   }
 
   const seenKeys = new Map<string, number>();
@@ -232,6 +253,15 @@ export function parseGrantFile(
         }
       }
 
+      for (
+        const finding of findGrantSpellingIssues(
+          { effect: raw.effect, resource, condition: raw.condition },
+          readTypeLiterals,
+        )
+      ) {
+        warnings.push({ filename, entryIndex: i, message: finding.message });
+      }
+
       // The resource is parsed and its condition validated once, before the
       // subjects loop, so a bad resource reports one error however many
       // subjects the entry lists.
@@ -264,7 +294,7 @@ export function parseGrantFile(
     }
   }
 
-  return { entries, errors };
+  return { entries, errors, warnings };
 }
 
 function isGrantFileExtension(name: string): boolean {
@@ -274,6 +304,7 @@ function isGrantFileExtension(name: string): boolean {
 export async function readGrantFiles(
   grantsDir: string,
   validateCondition?: ConditionValidator,
+  readTypeLiterals?: ConditionTypeLiteralReader,
 ): Promise<Map<string, GrantFileParseResult>> {
   const results = new Map<string, GrantFileParseResult>();
 
@@ -304,13 +335,18 @@ export async function readGrantFiles(
       logger.warn`Skipping grant file ${file.name}: ${error}`;
       results.set(file.name, {
         entries: [],
-        errors: [{ filename: file.name, message: `Failed to read: ${error}` }],
+        errors: [{
+          filename: file.name,
+          message: `Failed to read: ${error}`,
+          unreadable: true,
+        }],
+        warnings: [],
       });
       continue;
     }
     results.set(
       file.name,
-      parseGrantFile(file.name, content, validateCondition),
+      parseGrantFile(file.name, content, validateCondition, readTypeLiterals),
     );
   }
 

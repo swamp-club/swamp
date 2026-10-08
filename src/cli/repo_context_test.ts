@@ -25,11 +25,13 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { ensureDir, walk } from "@std/fs";
+import { ensureDir, exists, walk } from "@std/fs";
+import { configure, type LogRecord } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
 import {
   acquireModelLocks,
   assertManagedConfigWritable,
@@ -53,12 +55,15 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  resolveContinuationClaims,
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
   resolveSignalWaitSupport,
+  runRecordCurrencyOver,
   runsLiveInDatastore,
   runUnderModelLocks,
+  setLockProgressQuiet,
   signalWaitsOf,
   waitForPerModelLocks,
 } from "./repo_context.ts";
@@ -1416,6 +1421,224 @@ Deno.test(
   },
 );
 
+/**
+ * Runs `fn` against a repo on a lazy-capable extension datastore whose
+ * `hydrateFile` is `hydrate`, with one data item saved and its `raw` file
+ * removed, as lazy hydration leaves it.
+ */
+async function withUnhydratedContent(
+  hydrate: (cachePath: string, relPath: string) => boolean,
+  fn: (
+    repo: Awaited<ReturnType<typeof requireInitializedRepo>>,
+    typeName: string,
+    read: () => Promise<Uint8Array | null>,
+    contentPath: string,
+    repoDir: string,
+  ) => Promise<void>,
+): Promise<void> {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+  const { Data } = await import("../domain/data/data.ts");
+  const { ModelType } = await import("../domain/models/model_type.ts");
+
+  const typeName = `test-hydrate-contract-${crypto.randomUUID()}`;
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test hydrateFile contract",
+    description: "hydrateFile with a configurable outcome",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: (_repoDir: string, cachePath: string) => ({
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        hydrateFile: (relPath: string) =>
+          Promise.resolve(hydrate(cachePath, relPath)),
+        capabilities: () => ({ scopedSync: true, lazyHydration: true }),
+      }),
+    }),
+  });
+
+  try {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+      const repo = await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      });
+      const dataRepo = repo.repoContext.unifiedDataRepo;
+      const testType = ModelType.create("test/hydrate");
+      await dataRepo.save(
+        testType,
+        "model-h",
+        Data.create({
+          name: "hydrate-probe",
+          contentType: "text/plain",
+          lifetime: "infinite",
+          garbageCollection: 100,
+          tags: { type: "test" },
+          ownerDefinition: { ownerType: "manual", ownerRef: "test-user" },
+        }),
+        new TextEncoder().encode("original"),
+      );
+      const contentPath = dataRepo.getContentPath(
+        testType,
+        "model-h",
+        "hydrate-probe",
+        1,
+      );
+      await Deno.remove(contentPath);
+      try {
+        await fn(
+          repo,
+          typeName,
+          () => dataRepo.getContent(testType, "model-h", "hydrate-probe", 1),
+          contentPath,
+          dir,
+        );
+      } finally {
+        await flushDatastoreSync();
+      }
+    });
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+}
+
+function writeHydrated(path: string): void {
+  Deno.mkdirSync(join(path, ".."), { recursive: true });
+  Deno.writeFileSync(path, new TextEncoder().encode("hydrated"));
+}
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook rejects a success that wrote no file",
+  async () => {
+    const relPaths: string[] = [];
+    await withUnhydratedContent(
+      (_cachePath, relPath) => {
+        relPaths.push(relPath);
+        return true;
+      },
+      async (_repo, typeName, read, contentPath) => {
+        const captured: LogRecord[] = [];
+        await configure({
+          sinks: { capture: (record: LogRecord) => captured.push(record) },
+          loggers: [
+            {
+              category: ["cli", "datastore"],
+              lowestLevel: "warning",
+              sinks: ["capture"],
+            },
+          ],
+          reset: true,
+        });
+        let error: HydrateContractViolationError;
+        try {
+          error = await assertRejects(read, HydrateContractViolationError);
+        } finally {
+          await initializeLogging({ _reset: true });
+        }
+        // Callers that swallow getContent errors leave this warning as the
+        // only trace of the violation.
+        const warnings = captured
+          .filter((r) => r.level === "warning")
+          .map((r) => r.message.map((p) => String(p)).join(""));
+        assertEquals(warnings.length, 1);
+        assertStringIncludes(warnings[0], "reported hydrateFile success");
+        assertStringIncludes(warnings[0], contentPath);
+        assertEquals(error.datastoreType, typeName);
+        assertEquals(error.relPath, relPaths[0]);
+        assertPathEquals(error.absPath, contentPath);
+        assertStringIncludes(error.message, typeName);
+        assertStringIncludes(error.message, relPaths[0]);
+        assertStringIncludes(error.message, contentPath);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook rejects a success that wrote to the wrong place",
+  async () => {
+    await withUnhydratedContent(
+      (cachePath, relPath) => {
+        // The swamp-club#2404 shape: the first segment is doubled.
+        const segments = relPath.split("/");
+        writeHydrated(join(cachePath, segments[0], ...segments));
+        return true;
+      },
+      async (_repo, _typeName, read) => {
+        await assertRejects(read, HydrateContractViolationError);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook returns the content a datastore wrote",
+  async () => {
+    await withUnhydratedContent(
+      (cachePath, relPath) => {
+        writeHydrated(join(cachePath, ...relPath.split("/")));
+        return true;
+      },
+      async (_repo, _typeName, read) => {
+        const content = await read();
+        assertExists(content);
+        assertEquals(new TextDecoder().decode(content), "hydrated");
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook passes a datastore's false through",
+  async () => {
+    await withUnhydratedContent(
+      () => false,
+      async (_repo, _typeName, read) => {
+        assertEquals(await read(), null);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook does not verify a path outside the cache",
+  async () => {
+    await withUnhydratedContent(
+      () => true,
+      async (repo, _typeName, _read, _contentPath, repoDir) => {
+        const hook = repo.repoContext.hydrateFile;
+        assertExists(hook);
+        const outside = join(repoDir, ".swamp", "data", "absent", "raw");
+        assertEquals(await hook(outside), true);
+      },
+    );
+  },
+);
+
 // ============================================================================
 // waitForPerModelLocks Tests
 // ============================================================================
@@ -1562,6 +1785,60 @@ Deno.test(
       assertStringIncludes(captured[0], "test message");
     } finally {
       console.error = originalError;
+    }
+  },
+);
+
+Deno.test(
+  "createLockProgressWriter - writes nothing while -q is set (swamp-club#2257)",
+  () => {
+    const captured: string[] = [];
+    const writer = createLockProgressWriter("my-model", (line) => {
+      captured.push(line);
+    });
+    try {
+      setLockProgressQuiet(true);
+      writer("quiet message");
+      assertEquals(captured, []);
+
+      setLockProgressQuiet(false);
+      writer("loud message");
+      assertEquals(captured.length, 1);
+      assertStringIncludes(captured[0], "loud message");
+    } finally {
+      setLockProgressQuiet(false);
+    }
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - default progress writer is silent while -q is set (swamp-club#2257)",
+  async () => {
+    const sequence = [1, 0];
+    let i = 0;
+    const scanner = (): Promise<PerModelLockScan> => {
+      const next = sequence[Math.min(i, sequence.length - 1)];
+      i++;
+      return Promise.resolve(heldCount(next));
+    };
+
+    const captured: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      captured.push(String(args[0]));
+    };
+    try {
+      setLockProgressQuiet(true);
+      await waitForPerModelLocks(
+        "/unused/datastore/path",
+        undefined,
+        { findModelLocks: scanner, pollIntervalMs: 1 },
+      );
+      assertEquals(i, 2);
+      assertEquals(captured, []);
+    } finally {
+      console.error = originalError;
+      setLockProgressQuiet(false);
     }
   },
 );
@@ -5573,6 +5850,102 @@ Deno.test("reclaimModelLocks: throws LockTimeoutError when the structural comman
   });
 });
 
+Deno.test("reclaimModelLocks: a cancelled run re-keys and does not wait on a structural command (swamp-club#3157)", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const retired = lock.heldNonce!;
+    const global = globalLockReturning([globalInfo([retired])]);
+    const lines: string[] = [];
+
+    const error = await assertRejects(
+      () =>
+        reclaimModelLocks([lock], global, {
+          signal: AbortSignal.abort(),
+          progressWriter: (line) => lines.push(line),
+        }),
+      DOMException,
+    );
+    assertEquals(error.name, "AbortError");
+    // One read of the global lock, and no notice of a wait that never began.
+    assertEquals(global.inspects(), 1);
+    assertEquals(lines, []);
+    // The lock is still re-keyed: nothing new can skip it.
+    assertNotEquals(lock.heldNonce, retired);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: a cancel during the wait ends it", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const controller = new AbortController();
+    const working = globalInfo([lock.heldNonce!]);
+    let inspects = 0;
+    const global = {
+      inspect: () => {
+        // Cancelled while the second poll is being read.
+        if (++inspects === 2) controller.abort();
+        return Promise.resolve(working);
+      },
+    };
+
+    const error = await assertRejects(
+      () =>
+        reclaimModelLocks([lock], global, {
+          pollMs: 1,
+          signal: controller.signal,
+          progressWriter: () => {},
+        }),
+      DOMException,
+    );
+    assertEquals(error.name, "AbortError");
+    assertEquals(inspects, 2);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: a cancelled run reads a global lock caught mid-write again instead of rejecting", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    // What FileLock.inspect reports for a fresh unreadable lock file.
+    const midWrite: LockInfo = {
+      holder: "unknown (lock file is being written)",
+      hostname: "unknown",
+      pid: 0,
+      acquiredAt: new Date().toISOString(),
+      ttlMs: 30_000,
+    };
+    // Once readable, it is a command that skipped none of these locks.
+    const global = globalLockReturning([midWrite, globalInfo(["other"])]);
+
+    await reclaimModelLocks([lock], global, {
+      pollMs: 1,
+      signal: AbortSignal.abort(),
+      progressWriter: () => {},
+    });
+    assertEquals(global.inspects(), 2);
+    await lock.release();
+  });
+});
+
+Deno.test("reclaimModelLocks: a cancelled run with no structural command at work takes its locks back", async () => {
+  await withTempDir(async (dir) => {
+    const lock = new FileLock(dir, { lockKey: "a.lock", ttlMs: 60_000 });
+    await lock.acquire();
+    const retired = lock.heldNonce!;
+
+    await reclaimModelLocks([lock], globalLockReturning([null]), {
+      signal: AbortSignal.abort(),
+      progressWriter: () => {},
+    });
+    assertNotEquals(lock.heldNonce, retired);
+    await lock.release();
+  });
+});
+
 Deno.test("waitForPerModelLocks: a skipped set that never settles ends at the lock timeout, not in a spin", async () => {
   let scans = 0;
   await assertRejects(
@@ -5656,5 +6029,237 @@ Deno.test("reclaimModelLocks: reads a global lock caught mid-write again instead
     // working under the retired nonce, and waited out.
     assertEquals(global.inspects(), 3);
     await lock.release();
+  });
+});
+
+const SUSPENSION = {
+  runId: "0b8a6a52-3a51-4b53-9a4e-0d5a1c8a7f10",
+  suspensionKey: "a".repeat(64),
+};
+
+Deno.test("resolveContinuationClaims: a filesystem datastore keeps claims in the repository's control-plane directory, one holder per process", async () => {
+  await withTempDir(async (repoDir) => {
+    const config: DatastoreConfig = { type: "filesystem", path: repoDir };
+    const one = resolveContinuationClaims(config, repoDir)!;
+    const two = resolveContinuationClaims(config, repoDir)!;
+    assert(one.holder.startsWith("local:"));
+    assert(one.holder !== two.holder);
+    assertEquals(one.usable, undefined);
+
+    const claim = {
+      ...SUSPENSION,
+      generation: 1,
+      holder: one.holder,
+      claimedAt: new Date().toISOString(),
+    };
+    assertEquals(await one.store.create(claim), true);
+
+    // Another process on the repository reads the same record.
+    assertEquals(
+      await two.store.find(claim.runId, claim.suspensionKey),
+      claim,
+    );
+    assertEquals(await two.store.create(claim), false);
+    // A local command writes no heartbeat, so nothing is known of it.
+    assertEquals(await two.liveness(one.holder), "unknown");
+  });
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore without a shared control-plane store has no claims", () => {
+  const { service: plain } = createRecordingSyncService();
+  assertEquals(resolveContinuationClaims(customConfig(), "/repo"), undefined);
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", plain),
+    undefined,
+  );
+  // Advertised without a store to hand out.
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", {
+      ...plain,
+      capabilities: () => ({ controlPlane: true }),
+    }),
+    undefined,
+  );
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore's claims go to its control-plane store, opened on first use after the namespace is bound", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const calls: string[] = [];
+  const remote = recordingControlPlane(calls);
+  const claims = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: (options?: { namespace?: string }) => {
+      calls.push(`pull:${options?.namespace}`);
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: () => remote,
+  })!;
+  assert(claims.holder.startsWith("local:"));
+  // Building a repository context opens nothing.
+  assertEquals(calls, []);
+
+  assertEquals(await claims.usable!(), true);
+  assertEquals(calls, ["pull:team-a"]);
+  const claim = {
+    ...SUSPENSION,
+    generation: 1,
+    holder: claims.holder,
+    claimedAt: new Date().toISOString(),
+  };
+  assertEquals(await claims.store.create(claim), true);
+  assertEquals(calls, [
+    "pull:team-a",
+    `putIfAbsent:continuations/${claim.runId}/${claim.suspensionKey}/1`,
+  ]);
+  // A serve instance with no heartbeat in that store is dead.
+  assertEquals(await claims.liveness("serve:gone"), "dead");
+});
+
+Deno.test("resolveContinuationClaims: a store that cannot create a record atomically is not usable, and any other failure to open it is not hidden", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
+  const notAtomic = resolveContinuationClaims(customConfig(), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => withoutCreate,
+  })!;
+  assertEquals(await notAtomic.usable!(), false);
+
+  let pulls = 0;
+  const flaky = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: () => {
+      pulls++;
+      return pulls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(0);
+    },
+    controlPlaneStore: () => recordingControlPlane([]),
+  })!;
+  await assertRejects(() => flaky.usable!(), Error, "network down");
+  // The failed open is not kept: the next call tries again.
+  assertEquals(await flaky.usable!(), true);
+  assertEquals(pulls, 2);
+});
+
+Deno.test("runRecordCurrencyOver: nothing to compare on a filesystem datastore or without fetchContent", () => {
+  const { service: plain } = createRecordingSyncService();
+  const pathOf = () => "/nonexistent/cache/run.yaml";
+  const fetching = { ...plain, fetchContent: () => Promise.resolve(null) };
+  assertEquals(
+    runRecordCurrencyOver(
+      { type: "filesystem", path: "/repo" },
+      fetching,
+      pathOf,
+    ),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), plain, pathOf),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), undefined, pathOf),
+    undefined,
+  );
+});
+
+Deno.test("runRecordCurrencyOver: compares the cached run record with the remote one, read by its cache-relative path", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "team-a", "workflow-runs", "w", "r.yaml");
+    await Deno.mkdir(join(cachePath, "team-a", "workflow-runs", "w"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const encoder = new TextEncoder();
+    let remote: Uint8Array | null = encoder.encode("status: suspended\n");
+    const fetched: { relPath: string; namespace?: string; bounded: boolean }[] =
+      [];
+    const current = runRecordCurrencyOver(
+      { ...customConfig("team-a"), cachePath },
+      {
+        ...plain,
+        fetchContent: (relPath, options) => {
+          fetched.push({
+            relPath,
+            namespace: options?.namespace,
+            bounded: options?.signal !== undefined,
+          });
+          return Promise.resolve(remote);
+        },
+      },
+      () => runPath,
+    )!;
+    const run = { workflowId: "w", runId: "r" };
+
+    assertEquals(await current(run), true);
+    assertEquals(fetched, [{
+      relPath: "team-a/workflow-runs/w/r.yaml",
+      namespace: "team-a",
+      bounded: true,
+    }]);
+
+    // A peer ended the run: same length, other bytes.
+    remote = encoder.encode("status: cancelled\n");
+    assertEquals(await current(run), false);
+    // A longer record.
+    remote = encoder.encode("status: suspended\nmore: 1\n");
+    assertEquals(await current(run), false);
+    // The remote has no such run.
+    remote = null;
+    assertEquals(await current(run), false);
+    // This host has no record to resume from.
+    remote = encoder.encode("status: suspended\n");
+    await Deno.remove(runPath);
+    assertEquals(await current(run), false);
+    // Nothing was written back to the cache.
+    assertEquals(await exists(runPath), false);
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a remote that cannot be read rejects", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "r.yaml");
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath },
+      { ...plain, fetchContent: () => Promise.reject(new Error("offline")) },
+      () => runPath,
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "offline",
+    );
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a run record outside the cache is never read from the remote", async () => {
+  await withTempDir(async (dir) => {
+    const { service: plain } = createRecordingSyncService();
+    let fetched = 0;
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath: join(dir, "cache") },
+      {
+        ...plain,
+        fetchContent: () => {
+          fetched++;
+          return Promise.resolve(null);
+        },
+      },
+      () => join(dir, "repo", ".swamp", "workflow-runs", "r.yaml"),
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "outside the datastore cache",
+    );
+    assertEquals(fetched, 0);
   });
 });

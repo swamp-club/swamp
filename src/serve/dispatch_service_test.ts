@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  currentVaultAccess,
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
@@ -131,6 +136,8 @@ function createHarness(options?: {
 
   const dispatches = new DispatchRegistry();
   const bundles = new BundleRegistry();
+  /** The vault scope each lease transition ran in. */
+  const transitionScopes: (RunVaultAccess | undefined)[] = [];
   const service = new DispatchService({
     repoDir: "/tmp/unused",
     repoContext: {} as RepositoryContext,
@@ -143,6 +150,7 @@ function createHarness(options?: {
         methodName: input.methodName,
         inputs: input.inputs,
       });
+      transitionScopes.push(currentVaultAccess());
       return Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
@@ -154,6 +162,7 @@ function createHarness(options?: {
     pool,
     dispatchCalls,
     transitions,
+    transitionScopes,
     bundles,
     dispatches,
     setBehavior: (b: DispatchBehavior) => {
@@ -627,14 +636,16 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
 function lockHandOffs(options: { failEnd?: Error } = {}) {
   let generation = 1;
   const log: string[] = [];
+  const endSignals: Array<AbortSignal | undefined> = [];
   const beginLockHandOff: NonNullable<RemoteStepRequest["beginLockHandOff"]> =
     () => {
       const nonce = `nonce-${generation}`;
       log.push(`begin ${nonce}`);
       return Promise.resolve({
         lent: { pid: 4242, hostname: "host-a", lockIds: [nonce] },
-        end: () => {
+        end: (signal) => {
           log.push(`end ${nonce}`);
+          endSignals.push(signal);
           generation++;
           return options.failEnd
             ? Promise.reject(options.failEnd)
@@ -642,7 +653,7 @@ function lockHandOffs(options: { failEnd?: Error } = {}) {
         },
       });
     };
-  return { beginLockHandOff, log };
+  return { beginLockHandOff, log, endSignals };
 }
 
 Deno.test("DispatchService: lends the step's locks to the attempt, and nothing when the step holds no lock", async () => {
@@ -700,7 +711,7 @@ Deno.test("DispatchService: a re-dispatch after a lost worker is a new hand-off 
 
 Deno.test("DispatchService: a cancelled dispatch ends its hand-off and stays cancelled when the locks cannot be taken back", async () => {
   const h = createHarness();
-  const { beginLockHandOff, log } = lockHandOffs({
+  const { beginLockHandOff, log, endSignals } = lockHandOffs({
     failEnd: new Error("structural command still working"),
   });
   const controller = new AbortController();
@@ -719,19 +730,25 @@ Deno.test("DispatchService: a cancelled dispatch ends its hand-off and stays can
     DOMException,
   );
   assertEquals(error.name, "AbortError");
+  // One attempt: a cancelled step is not dispatched again. Its end is given
+  // the step's signal, so the reclaim does not wait (swamp-club#3157).
   assertEquals(log, ["begin nonce-1", "end nonce-1"]);
+  assertEquals(h.dispatchCalls.length, 1);
+  assertEquals(endSignals, [controller.signal]);
 });
 
 Deno.test("DispatchService: an attempt that succeeded still fails when its locks cannot be taken back, even if the step was cancelled meanwhile", async () => {
   const h = createHarness();
   const controller = new AbortController();
   const failure = new Error("structural command still working");
+  const endSignals: Array<AbortSignal | undefined> = [];
   const beginLockHandOff: NonNullable<RemoteStepRequest["beginLockHandOff"]> =
     () =>
       Promise.resolve({
         lent: { pid: 4242, hostname: "host-a", lockIds: ["nonce-1"] },
         // The user cancels while the reclaim is waiting, and it times out.
-        end: () => {
+        end: (signal) => {
+          endSignals.push(signal);
           controller.abort();
           return Promise.reject(failure);
         },
@@ -743,6 +760,8 @@ Deno.test("DispatchService: an attempt that succeeded still fails when its locks
     )
   );
   assertEquals(error, failure);
+  // It has a result to write, so its reclaim is not cut short by a cancel.
+  assertEquals(endSignals, [undefined]);
 });
 
 Deno.test("DispatchService: an attempt whose locks cannot be taken back fails the step instead of returning", async () => {
@@ -777,6 +796,28 @@ Deno.test("DispatchService: records the dispatch's trace headers for the data pl
     } as Partial<RemoteStepRequest>),
   );
   assertEquals(recorded, { traceparent: "00-abc-def-01" });
+});
+
+Deno.test("DispatchService: a dispatch records the run's vault scope; lease transitions run outside it (swamp-club#2676)", async () => {
+  const h = createHarness();
+  const access = RunVaultAccess.create({ allowedVaults: ["roomcontrol"] });
+  let recorded: RunVaultAccess | undefined;
+  h.setBehavior(() => {
+    recorded = h.dispatches.forWorker("w1")[0]?.vaultAccess;
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  await runWithVaultAccess(
+    access,
+    () => h.service.executeRemote(stepRequest()),
+  );
+  assertEquals(recorded, access);
+  assertEquals(h.transitionScopes.length > 0, true);
+  assertEquals(h.transitionScopes.every((s) => s === undefined), true);
 });
 
 Deno.test("DispatchService: worker_draining re-queues instead of failing the run", async () => {

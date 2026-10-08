@@ -199,6 +199,21 @@ Deno.test("analyzeExpression: text that does not parse fails closed", () => {
   assertEquals(analyzeExpression("data.latest(").dataWide, true);
 });
 
+Deno.test("analyzeExpression: a keyword model name fails closed by dot and is a target by bracket", () => {
+  // CEL does not parse these words as a member name after `model.`.
+  for (const name of ["in", "true", "false", "null"]) {
+    const dot = analyzeExpression(`model.${name}.resource.spec.x`);
+    assertEquals(dot.unanalyzable, true);
+    assertEquals(dot.dataWide, true);
+    assertEquals(dot.dataTargets.size, 0);
+    assertEquals(targets(`model["${name}"].resource.spec.x`), {
+      data: [name],
+      model: [],
+      dataWide: false,
+    });
+  }
+});
+
 Deno.test("analyzeExpression: a constant reads nothing", () => {
   const r = analyzeExpression('literal("{{ model.x.resource }}")');
   assertEquals(r.dataWide, false);
@@ -352,4 +367,80 @@ Deno.test("analyzeExpression: model used other than as a direct receiver may run
   // Reading a model entry runs nothing.
   assertEquals(analyzeExpression("model.prod.resource.x").runsComputed, false);
   assertEquals(analyzeExpression('model["prod"].input').runsComputed, false);
+});
+
+// --- syncDataReads (swamp-club#3179) ---
+
+function syncReads(cel: string) {
+  const reads = analyzeExpression(cel).syncDataReads;
+  return Object.fromEntries(
+    [...reads].sort(([a], [b]) => a.localeCompare(b)).map((
+      [name, read],
+    ) => [name, {
+      resource: read.resource,
+      allFiles: read.allFiles,
+      fileSpecs: [...read.fileSpecs].sort(),
+    }]),
+  );
+}
+
+const RESOURCE_ONLY = { resource: true, allFiles: false, fileSpecs: [] };
+const FILES_ONLY = { resource: false, allFiles: true, fileSpecs: [] };
+const BOTH = { resource: true, allFiles: true, fileSpecs: [] };
+
+Deno.test("analyzeExpression: syncDataReads records model map resource and file reads", () => {
+  assertEquals(
+    syncReads("model.vpc.resource.state.main.attributes.vpcId"),
+    { vpc: RESOURCE_ONLY },
+  );
+  assertEquals(syncReads("model.vpc.file.log.main.path"), {
+    vpc: FILES_ONLY,
+  });
+  assertEquals(syncReads("model.vpc"), { vpc: BOTH });
+});
+
+Deno.test("analyzeExpression: syncDataReads sees bracket, hyphenated, id and aliased forms", () => {
+  assertEquals(
+    syncReads('model["vpc"].resource.state.main.attributes.vpcId'),
+    { vpc: RESOURCE_ONLY },
+  );
+  assertEquals(
+    syncReads("model.web-1a.resource.state.main.attributes.x"),
+    { "web-1a": RESOURCE_ONLY },
+  );
+  const id = "3f2c6a8e-9b1d-4c7e-8f0a-1b2c3d4e5f60";
+  assertEquals(syncReads(`model["${id}"].resource`), {
+    [id]: RESOURCE_ONLY,
+  });
+  assertEquals(
+    syncReads("cel.bind(v, model.vpc.resource, v.state.main.attributes)"),
+    { vpc: RESOURCE_ONLY },
+  );
+});
+
+Deno.test("analyzeExpression: syncDataReads records file.contents by spec", () => {
+  assertEquals(syncReads('file.contents("vpc", "log")'), {
+    vpc: { resource: false, allFiles: false, fileSpecs: ["log"] },
+  });
+  assertEquals(syncReads('file.contents("vpc", self.spec)'), {
+    vpc: FILES_ONLY,
+  });
+});
+
+Deno.test("analyzeExpression: syncDataReads leaves out execution, definitions and async accessors", () => {
+  assertEquals(syncReads("model.vpc.execution.status"), {});
+  assertEquals(syncReads("model.vpc.input.region"), {});
+  assertEquals(syncReads("model.vpc.definition.name"), {});
+  assertEquals(
+    syncReads('data.latest("vpc", "state").attributes.vpcId'),
+    {},
+  );
+});
+
+Deno.test("analyzeExpression: syncDataReads names nothing for a computed model key", () => {
+  const r = analyzeExpression("model[self.name].resource.state");
+  assertEquals(r.dataWide, true);
+  assertEquals(r.syncDataReads.size, 0);
+  const unparsable = analyzeExpression("model.vpc.resource ++");
+  assertEquals(unparsable.syncDataReads.size, 0);
 });

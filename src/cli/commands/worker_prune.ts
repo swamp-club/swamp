@@ -170,6 +170,7 @@ export const workerPruneCommand = withRemoteOptions(
     datastoreResolver,
     undefined,
     repoContext.markDirty,
+    repoContext.definitionRepo,
   );
 
   const pruneDeps: WorkerPruneDeps = {
@@ -275,19 +276,17 @@ export const workerPruneCommand = withRemoteOptions(
     }
   }
 
-  // The prune marks the whole cache and pushes it, only once it completed.
-  let marked = false;
+  // Each deletion marks its own path, so the push deletes those files from
+  // the remote (swamp-club#2513). It runs only once the prune completed.
   await runCommandInRootUnit(
     repoContext,
     {
       push: syncService
-        ? async () => {
-          if (marked) await pushNamespace(syncService, namespace);
-        }
+        ? () => pushNamespace(syncService, namespace)
         : undefined,
       pushWhen: "completed",
     },
-    async (root) => {
+    async () => {
       result = undefined;
       await consumeStream(
         workerPrune(libCtx, pruneDeps, { gracePeriodMs, dryRun: false }),
@@ -303,11 +302,6 @@ export const workerPruneCommand = withRemoteOptions(
 
       if (result) {
         renderWorkerPruneResult(result, cliCtx.outputMode);
-      }
-
-      if (!dryRun && syncService) {
-        await root.stage({ kind: "bulk", reason: "worker prune" });
-        marked = true;
       }
     },
   );

@@ -19,6 +19,7 @@
 
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { copy, exists } from "@std/fs";
+import { join } from "@std/path";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -77,6 +78,11 @@ async function removeRepo(
   }
 }
 
+/** `_catalog.db` and its `-wal`/`-shm` sidecars. */
+function isCatalogFile(name: string): boolean {
+  return name === "_catalog.db" || name.startsWith("_catalog.db-");
+}
+
 /**
  * Stands in for a remote datastore a peer replica has pushed to: a pull
  * copies the peer's files into this replica's cache, but only for the
@@ -95,9 +101,16 @@ function createPeerSyncService(
       for (const subdir of subdirs) {
         const source = swampPath(peerRepoDir, subdir);
         if (!await exists(source)) continue;
-        await copy(source, swampPath(localRepoDir, subdir), {
-          overwrite: true,
-        });
+        const target = swampPath(localRepoDir, subdir);
+        await Deno.mkdir(target, { recursive: true });
+        // The real remote never syncs the repo-local SQLite catalog, and
+        // Windows refuses to overwrite it while this replica has it mapped.
+        for await (const entry of Deno.readDir(source)) {
+          if (isCatalogFile(entry.name)) continue;
+          await copy(join(source, entry.name), join(target, entry.name), {
+            overwrite: true,
+          });
+        }
         copied++;
       }
       return copied;

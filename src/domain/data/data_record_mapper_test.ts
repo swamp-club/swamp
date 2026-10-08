@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { RunSensitiveValues } from "../secrets/mod.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   fromData,
   fromResourceHandle,
@@ -26,6 +26,11 @@ import {
   localContentPath,
 } from "./data_record_mapper.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+  VaultAccessDeniedError,
+} from "../vaults/run_vault_access.ts";
 import type { DataHandle } from "../models/model.ts";
 import type { DataId } from "./data_id.ts";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
@@ -750,4 +755,120 @@ Deno.test("fromRow: path is empty for a foreign-namespace row even when requeste
     true,
   );
   assertEquals(record.path, "");
+});
+
+Deno.test("fromData: a vault access refusal fails the read instead of leaving the ref unresolved", async () => {
+  const vaultService = new VaultService();
+  vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+  await vaultService.put("erp", "secret-key", "resolved-secret-value");
+  const vaultRef = "${{ vault.get('erp', 'secret-key') }}";
+  const data = Data.create({
+    name: "my-data",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: {
+      type: "resource",
+      modelName: "my-model",
+      "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+    },
+    ownerDefinition: owner,
+  });
+  const repo = stubRepo(
+    null,
+    encoder.encode(JSON.stringify({ apiKey: vaultRef })),
+  );
+
+  await runWithVaultAccess(
+    RunVaultAccess.create({ allowedVaults: ["roomcontrol"] }),
+    () =>
+      assertRejects(
+        () =>
+          fromData(data, ModelType.create("test/model"), "model-123", repo, {
+            vaultService,
+          }),
+        VaultAccessDeniedError,
+        "'erp'",
+      ),
+  );
+
+  // A failure that is not a refusal still leaves the reference unresolved.
+  const missing = await fromData(
+    data,
+    ModelType.create("test/model"),
+    "model-123",
+    stubRepo(
+      null,
+      encoder.encode(
+        JSON.stringify({ apiKey: "${{ vault.get('erp', 'absent') }}" }),
+      ),
+    ),
+    { vaultService },
+  );
+  assertEquals(
+    missing!.attributes.apiKey,
+    "${{ vault.get('erp', 'absent') }}",
+  );
+});
+
+// ============================================================================
+// fromRow — a local body shorter than its row (swamp-club#3178)
+// ============================================================================
+
+function shortBodyRepo(
+  bytes: Uint8Array,
+  accepted: boolean | undefined,
+): UnifiedDataRepository {
+  return {
+    namespace: "",
+    getContentSync: () => bytes,
+    ...(accepted === undefined
+      ? {}
+      : { isContentAcceptedSync: () => accepted }),
+  } as unknown as UnifiedDataRepository;
+}
+
+Deno.test("fromRow: reports a body shorter than its row as missing and does not parse it", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, false),
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 1);
+  assertEquals(record.attributes, {});
+});
+
+Deno.test("fromRow: parses a short body the repository accepts", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, true),
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 0);
+  assertEquals(record.attributes, { a: 1 });
+});
+
+Deno.test("fromRow: a repository without isContentAcceptedSync accepts a short body", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, undefined),
+    true,
+    false,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 0);
+  assertEquals(record.attributes, { a: 1 });
 });

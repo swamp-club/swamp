@@ -27,7 +27,10 @@ import {
   isEmptyLockfileDelta,
   mergeLockfileDeltas,
 } from "../../domain/extensions/lockfile_delta.ts";
-import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncService,
+  MarkDirtyHook,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
@@ -37,6 +40,7 @@ import {
   type PendingLockfilePublish,
   readLockfilePublishPending,
 } from "../../infrastructure/persistence/pending_lockfile_publish.ts";
+import { currentRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   readUpstreamExtensions,
   type UpstreamExtensionEntry,
@@ -97,6 +101,24 @@ export class ManagedLockfileUnpublishedError extends UserError {
   }
 }
 
+/**
+ * A lockfile publish ran outside a root unit of work over its datastore
+ * hook: a wiring mistake in the code that built the transaction, not a
+ * datastore failure (swamp-club#3192). It is thrown as itself, never
+ * wrapped as {@link ManagedLockfileUnpublishedError} or deferred to a
+ * warning, so it cannot read as a datastore problem. The change stays
+ * recorded as pending, as for any failed publish.
+ */
+export class LockfilePublishWiringError extends Error {
+  constructor() {
+    super(
+      "the extension lockfile was published outside a root unit of work " +
+        "over its datastore hook; open one around the transaction",
+    );
+    this.name = "LockfilePublishWiringError";
+  }
+}
+
 /** Serializes a checkout's writes to one managed lockfile. */
 export interface LockfileTransaction {
   readonly lockfilePath: string;
@@ -117,6 +139,13 @@ export interface ManagedLockfileTransactionOptions {
   lock: ManagedLockfileLock;
   sync: ManagedLockfileSyncPort;
   pending: PendingLockfileDeltaStore;
+  /**
+   * Runs the outermost `run` inside the root unit of work its publish
+   * stages into and pushes at the checkpoint of (swamp-club#3192), around
+   * the lock's acquire and release, so the checkpoint lands before the lock
+   * is released. A nested `run` joins the outer one, and its root.
+   */
+  inRoot: <T>(fn: () => Promise<T>) => Promise<T>;
   /**
    * `throw` (the default) rethrows a failed publish once the change is
    * recorded as pending. `defer` reports it to `onWarning` and completes
@@ -157,6 +186,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
   readonly #lock: ManagedLockfileLock;
   readonly #sync: ManagedLockfileSyncPort;
   readonly #pending: PendingLockfileDeltaStore;
+  readonly #inRoot: <T>(fn: () => Promise<T>) => Promise<T>;
   readonly #publishFailure: "throw" | "defer";
   readonly #onWarning: (message: string, error?: unknown) => void;
   readonly #leases = new AsyncLocalStorage<{ active: boolean }>();
@@ -166,20 +196,23 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     this.#lock = options.lock;
     this.#sync = options.sync;
     this.#pending = options.pending;
+    this.#inRoot = options.inRoot;
     this.#publishFailure = options.publishFailure ?? "throw";
     this.#onWarning = options.onWarning ?? (() => {});
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
     if (this.#leases.getStore()?.active) return await fn();
-    await this.#lock.acquire();
-    try {
-      return await this.#runLocked(fn);
-    } finally {
-      await this.#lock.release().catch((error) =>
-        this.#onWarning("Failed to release the datastore lock", error)
-      );
-    }
+    return await this.#inRoot(async () => {
+      await this.#lock.acquire();
+      try {
+        return await this.#runLocked(fn);
+      } finally {
+        await this.#lock.release().catch((error) =>
+          this.#onWarning("Failed to release the datastore lock", error)
+        );
+      }
+    });
   }
 
   async refresh(): Promise<void> {
@@ -232,6 +265,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     try {
       await this.#settle(fetched, current, prior, hadPending, true);
     } catch (error) {
+      if (error instanceof LockfilePublishWiringError) throw error;
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
     throw result.error;
@@ -279,6 +313,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
         earlierChangeOnly: isEmptyLockfileDelta(change),
       });
     } catch (error) {
+      if (error instanceof LockfilePublishWiringError) throw error;
       if (!tolerate) {
         throw error instanceof ManagedLockfileUnpublishedError
           ? error
@@ -356,20 +391,25 @@ export async function refreshManagedLockfile(
 }
 
 /**
- * A {@link ManagedLockfileSyncPort} over a datastore sync service. The fetch
- * is a pull scoped to the `config` tier; the publish marks exactly the
- * lockfile and pushes, and rejects a push that reports `0` files sent when
- * the lockfile had to be uploaded. Both are bounded by `timeoutMs`.
+ * A {@link ManagedLockfileSyncPort} whose publish is a unit-of-work commit
+ * (swamp-club#3192). The fetch is a pull scoped to the `config` tier. The
+ * publish stages one write of exactly the lockfile into the root unit of
+ * work open over `markDirty` (the transaction's `inRoot` opens it) and
+ * pushes at that root's checkpoint; it rejects a push that reports `0`
+ * files sent when the lockfile had to be uploaded. Both are bounded by
+ * `timeoutMs`. A publish with no such root throws
+ * {@link LockfilePublishWiringError} rather than mark and push by hand.
  */
-export function createDatastoreLockfileSync(options: {
-  syncService: Pick<DatastoreSyncService, "pullChanged" | "pushChanged">;
+export function createRootLockfileSync(options: {
+  syncService: Pick<DatastoreSyncService, "pullChanged">;
   namespace: string | undefined;
   timeoutMs: number;
   lockfilePath: string;
-  /** Marks a file changed, by absolute path, for the next push. */
-  markDirty: (absPath: string) => Promise<void>;
+  /** The exact hook the root is opened over. */
+  markDirty: MarkDirtyHook;
 }): ManagedLockfileSyncPort {
-  const { syncService, namespace, timeoutMs } = options;
+  const { syncService, namespace, timeoutMs, lockfilePath, markDirty } =
+    options;
   return {
     hydrate: async () => {
       await runBoundedSync(
@@ -381,12 +421,17 @@ export function createDatastoreLockfileSync(options: {
       );
     },
     publish: async ({ mustUpload }) => {
-      await options.markDirty(options.lockfilePath);
+      const root = currentRootUnitOfWork(markDirty);
+      if (root === undefined) throw new LockfilePublishWiringError();
+      // The legacy root forwards this as markDirty(lockfilePath), and the
+      // stage awaits it, as the direct mark did, outside the bound. The
+      // checkpoint's wait for marks in flight therefore finds none.
+      await root.stage({ kind: "write", path: lockfilePath });
       const pushed = await runBoundedSync(
         "managed config",
         "push",
         timeoutMs,
-        (signal) => syncService.pushChanged({ namespace, signal }),
+        (signal) => root.checkpoint({ signal }),
       );
       if (mustUpload && pushed === 0) {
         throw new UserError(

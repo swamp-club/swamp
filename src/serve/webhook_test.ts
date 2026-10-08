@@ -17,6 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import {
+  currentVaultAccess,
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../domain/vaults/run_vault_access.ts";
+import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -1387,4 +1393,40 @@ Deno.test("WebhookService: a delivery's traceparent still reaches the run", asyn
     (calls[0].input as { traceparent?: string }).traceparent,
     traceparent,
   );
+});
+
+Deno.test("WebhookService: each queued run gets its own vault scope and starts outside any other (swamp-club#2676)", async () => {
+  const scopes: ServeRunVaultScope[] = [];
+  const seen: { passed: unknown; ambient: unknown }[] = [];
+  const outer = RunVaultAccess.create({ allowedVaults: ["leaked"] });
+  const { service } = await triggerService({
+    createVaultAccess: () => {
+      const scope = { access: RunVaultAccess.create({}) };
+      scopes.push(scope);
+      return scope;
+    },
+    executeWorkflow: ((
+      ..._args: unknown[]
+    ) => {
+      const options = _args[8] as { vaultAccess?: unknown };
+      seen.push({
+        passed: options.vaultAccess,
+        ambient: currentVaultAccess(),
+      });
+      return Promise.resolve();
+    }) as unknown as NonNullable<
+      ConstructorParameters<typeof WebhookService>[0]["executeWorkflow"]
+    >,
+  });
+  // A delivery that arrives inside some scope must not hand it to the queue.
+  await runWithVaultAccess(outer, async () => {
+    await service.handleRequest(await signedDelivery("{}"));
+    await service.handleRequest(await signedDelivery("{}"));
+  });
+  await waitFor(() => seen.length === 2, "both runs executed");
+  await service.stop();
+  assertEquals(scopes.length, 2);
+  assertEquals(seen[0].passed, scopes[0]);
+  assertEquals(seen[1].passed, scopes[1]);
+  assertEquals(seen.map((s) => s.ambient), [undefined, undefined]);
 });

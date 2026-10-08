@@ -25,14 +25,21 @@ import {
 } from "../context.ts";
 import {
   attachSignalWaits,
+  continuationClaimsOver,
   libSwampContextForRepo,
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
   resolveSignalWaitSupport,
+  runRecordCurrencyOver,
   runsLiveInDatastore,
 } from "../repo_context.ts";
 import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "../../domain/workflows/signal_wait.ts";
 import {
   MAX_TIMER_DELAY_MS,
   parseTimeout,
@@ -53,6 +60,11 @@ import {
   type SuspendedRunCancelResult,
 } from "../../serve/suspended_run_cancel.ts";
 import { createTriggerAuthorizer } from "../../serve/trigger_authorizer.ts";
+import {
+  runVaultScopeContext,
+  serviceRunVaultScope,
+} from "../../serve/run_vault_access_policy.ts";
+import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import {
   auditScheduledEvent,
   auditWebhookEvent,
@@ -144,6 +156,12 @@ import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
+import { currentAuthGateSession } from "../auth_gate_session.ts";
+import {
+  createGatePassKeeper,
+  GATE_PASS_KEEPER_INTERVAL_MS,
+} from "../auth_gate.ts";
+import { formatOrchestratorGatePass } from "../../domain/auth/nested_gate_pass.ts";
 import { HttpTelemetrySender } from "../../infrastructure/telemetry/http_telemetry_sender.ts";
 import { USER_AGENT } from "../load_identity.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
@@ -203,6 +221,7 @@ import {
 } from "../../presentation/output/serve_check_config_output.ts";
 import type { TokenSecretsKeyRef } from "../../domain/vaults/token_secrets_key.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
 import {
   apiKeySourceName,
   CLUB_API_KEY_FILE_FLAG,
@@ -367,17 +386,18 @@ import {
 } from "../../domain/access/admin_materializer.ts";
 import {
   collectErrors,
-  parseGrantFile,
-  readGrantFiles,
-  resolveExternalGrantsDir,
-  resolveExternalGrantsFile,
+  type GrantFileError,
 } from "../../domain/access/grant_file.ts";
-import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
-import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
 import {
-  GRANTS_FILE_SOURCE_NAME,
-  grantsDirSourceName,
-} from "../../domain/access/grant_source.ts";
+  checkServeGrantFiles,
+  readServeGrantFiles,
+} from "../../domain/access/grant_file_loader.ts";
+import {
+  readConditionTypeLiterals,
+  validateGrantCondition,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
+import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
+import { GRANTS_FILE_SOURCE_NAME } from "../../domain/access/grant_source.ts";
 import {
   createGrantWriteCommit,
   createGrantWriteTracking,
@@ -444,6 +464,14 @@ import {
 } from "../../domain/workflows/orphaned_run_reaper.ts";
 import { requireAuthenticated, requireScope } from "../auth_context.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { serveHolder } from "../../domain/workflows/continuation_claim.ts";
+import { isAtomicControlPlaneStore } from "../../infrastructure/persistence/control_plane_signal_wait_store.ts";
+import {
+  ContinuationSweepService,
+  decideContinuationSweepStart,
+  DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
+  sweepContinuations,
+} from "../../serve/continuation_sweep_service.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
@@ -462,6 +490,20 @@ const DISPATCH_ENV_ALLOW_HELP =
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Runs every HTTP request, WebSocket upgrades included, outside any run's
+ * vault scope (swamp-club#2676). Deno can leave the async context of the
+ * last code that ran current when it calls a serve handler (a first-time
+ * dynamic `import()` inside a run does), so without this a request — and
+ * every message on a connection it upgrades — could inherit another run's
+ * scope, and token authentication would be refused the reserved vault.
+ */
+export function unscopedHttpHandler<A extends Deno.Addr>(
+  handler: Deno.ServeHandler<A>,
+): Deno.ServeHandler<A> {
+  return (req, info) => withoutVaultAccess(() => handler(req, info));
+}
 
 const logger = getSwampLogger(["serve"]);
 
@@ -781,8 +823,9 @@ export async function readCancelRequestReason(
 
 /**
  * The body of a successful single-run cancel response. A workflow run also
- * gets the `cancel_reason` serve applied; a method run records no reason, so
- * reporting one would claim a record that does not exist.
+ * gets the `cancel_reason` serve applied. A method run records the reason
+ * itself, once the abort stops it (`cancelCause`), so reporting one here would
+ * claim a record that may not exist yet.
  */
 export function cancelSuccessBody(
   result: CancelResult,
@@ -1140,6 +1183,18 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.datastorePollInterval as string,
     );
   }
+  if (options.continuationSweepInterval) {
+    args.push(
+      "--continuation-sweep-interval",
+      options.continuationSweepInterval as string,
+    );
+  }
+  if (options.maxSignalWaitTimeout) {
+    args.push(
+      "--max-signal-wait-timeout",
+      options.maxSignalWaitTimeout as string,
+    );
+  }
   if (options.tokenGcInterval) {
     args.push("--token-gc-interval", options.tokenGcInterval as string);
   }
@@ -1285,6 +1340,43 @@ export function parseDatastorePollInterval(
 }
 
 /**
+ * Parses `--continuation-sweep-interval` into milliseconds. Unset gives the
+ * default; `0` disables the sweep. Whole seconds or larger units, as
+ * `--datastore-poll-interval`.
+ */
+export function parseContinuationSweepInterval(
+  raw: string | undefined,
+): number {
+  if (raw === undefined) return DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS;
+  if (/^0+(s|m|h)?$/i.test(raw.trim())) return 0;
+  if (/^\d+ms$/i.test(raw.trim())) {
+    throw new UserError(
+      `--continuation-sweep-interval must be in whole seconds or larger units (minimum 1s, e.g. 1s, 30s, 1m), or 0 to disable; got ${raw}`,
+    );
+  }
+  return parseTimerDuration(raw, "--continuation-sweep-interval");
+}
+
+/**
+ * Parses `--max-signal-wait-timeout` into seconds: the longest timeout a
+ * `wait_for_signal` step may ask for on this server. Unset gives
+ * `undefined`, which leaves the task schema's one year as the only limit;
+ * a value above that is refused, since no wait could use it.
+ */
+export function parseMaxSignalWaitTimeout(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const seconds = parseTimeout(raw, "--max-signal-wait-timeout") / 1000;
+  if (seconds > SIGNAL_WAIT_MAX_TIMEOUT_SECONDS) {
+    throw new UserError(
+      `--max-signal-wait-timeout (${raw}) is more than the one year (${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS}s) any wait may ask for`,
+    );
+  }
+  return seconds;
+}
+
+/**
  * Whether to warn that `--group-refresh-interval` has no effect. Only an
  * interval the operator supplied (flag, env var or config key) warrants the
  * warning — the unset 4h default must stay silent outside OAuth mode.
@@ -1355,6 +1447,9 @@ export interface ServeStartupSettings {
   shutdownDrainTimeoutMs: number;
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
+  continuationSweepIntervalMs: number;
+  /** Unset when no maximum was configured. */
+  maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
   maxRunsPerPrincipal?: number;
@@ -1428,6 +1523,14 @@ export function resolveServeStartupSettings(
     merged.datastorePollInterval,
   );
 
+  const continuationSweepIntervalMs = parseContinuationSweepInterval(
+    merged.continuationSweepInterval,
+  );
+
+  const maxSignalWaitTimeoutSeconds = parseMaxSignalWaitTimeout(
+    merged.maxSignalWaitTimeout,
+  );
+
   const tokenGcSettings = parseTokenGcSettings(
     merged.tokenGcInterval,
     merged.tokenGcGracePeriod,
@@ -1489,6 +1592,8 @@ export function resolveServeStartupSettings(
     shutdownDrainTimeoutMs,
     hydrationTimeoutMs,
     datastorePollIntervalMs,
+    continuationSweepIntervalMs,
+    maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
     maxConcurrentRuns,
     maxRunsPerPrincipal,
@@ -1593,7 +1698,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -1665,6 +1770,14 @@ const daemonEnableCommand = new Command()
     "Datastore poll interval (default: 30s, minimum: 1s, env: SWAMP_DATASTORE_POLL_INTERVAL)",
   )
   .option(
+    "--continuation-sweep-interval <duration:string>",
+    "Continuation sweep interval (default: 30s, 0 disables, env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
+  )
+  .option(
+    "--max-signal-wait-timeout <duration:string>",
+    "Longest timeout a wait_for_signal step may ask for (default: 1y, env: SWAMP_MAX_SIGNAL_WAIT_TIMEOUT)",
+  )
+  .option(
     "--token-gc-interval <duration:string>",
     "Server token GC interval (default: 1h, 0 disables, env: SWAMP_TOKEN_GC_INTERVAL)",
   )
@@ -1717,7 +1830,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--auto-resume",
-    "Resume a suspended run once every approval gate on it is decided. " +
+    "Resume a suspended run once every approval gate on it is decided and every wait for a signal is settled. " +
       "Applies to workflows that declare no inputs; a workflow with inputs " +
       "must set autoResume: true itself, and autoResume: false opts out " +
       "(env: SWAMP_AUTO_RESUME)",
@@ -1950,6 +2063,16 @@ async function checkTokenSecretsKey(
   }
 }
 
+/** Grant-file errors as indented lines, one per error, for a refusal. */
+function formatGrantFileErrorLines(errors: readonly GrantFileError[]): string {
+  return errors.map((e) => {
+    const loc = e.entryIndex !== undefined
+      ? `${e.filename} entry ${e.entryIndex + 1}`
+      : e.filename;
+    return `  ${loc}: ${e.message}`;
+  }).join("\n");
+}
+
 const checkConfigCommand = new Command()
   .name("check-config")
   .description(
@@ -1962,7 +2085,11 @@ const checkConfigCommand = new Command()
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it. It reads only this repository's files and never contacts the " +
+      "printing it. It also reads the grant files serve reads (grants/, --grants-file " +
+      "and --grants-dir) and fails if serve would refuse them; grant type spellings " +
+      "that match no type as written are warnings, and stored grants are reported " +
+      "by serve at startup. Apart from a --grants-file or --grants-dir outside the " +
+      "repository, it reads only this repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +
@@ -2006,6 +2133,14 @@ const checkConfigCommand = new Command()
     "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
   )
   .option(
+    "--grants-file <path:string>",
+    "External grants YAML file to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_FILE)",
+  )
+  .option(
+    "--grants-dir <path:string>",
+    "Directory of grants YAML files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_DIR)",
+  )
+  .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
     "Path to a file containing the collective API key used to look up " +
       "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
@@ -2039,6 +2174,23 @@ const checkConfigCommand = new Command()
     const restrictionWarnings = restrictionFindings.filter((finding) =>
       finding.reason !== "no-type"
     );
+    // The grant files serve would read, judged as serve startup judges them
+    // (swamp-club#3130). Stored grants live in the datastore, which this
+    // command never contacts; serve reports their spellings at startup.
+    const grantCheck = checkServeGrantFiles(
+      await readServeGrantFiles(repoDir, {
+        grantsFile: merged.grantsFile,
+        grantsDir: merged.grantsDir,
+        validateCondition: validateGrantCondition,
+        readTypeLiterals: readConditionTypeLiterals,
+      }),
+    );
+    const grantsLoad = grantCheck.errors.length === 0;
+    const grantReport = {
+      grantFilesChecked: grantCheck.filesChecked,
+      grantErrors: grantCheck.errors,
+      grantWarnings: grantCheck.warnings,
+    };
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );
@@ -2056,6 +2208,7 @@ const checkConfigCommand = new Command()
         wouldStart: false,
         refusal: unnamedType.message,
         restrictionWarnings,
+        ...grantReport,
       }, ctx.outputMode);
       Deno.exitCode = 1;
       return;
@@ -2087,16 +2240,18 @@ const checkConfigCommand = new Command()
     const keyUsable = tokenSecretsKey?.status !== "failed";
 
     if (authConfig.mode !== "oauth") {
+      const starts = keyUsable && grantsLoad;
       renderServeCheckConfig({
-        passed: keyUsable,
+        passed: starts,
         authMode: authConfig.mode,
         entries: [],
         allowedCollectives: [],
-        wouldStart: keyUsable,
+        wouldStart: starts,
         restrictionWarnings,
+        ...grantReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
-      if (!keyUsable) Deno.exitCode = 1;
+      if (!starts) Deno.exitCode = 1;
       return;
     }
 
@@ -2131,7 +2286,8 @@ const checkConfigCommand = new Command()
       providerUrl,
     );
     const notFound = check.entries.filter((e) => e.status === "not-found");
-    const passed = check.wouldStart && notFound.length === 0 && keyUsable;
+    const passed = check.wouldStart && notFound.length === 0 && keyUsable &&
+      grantsLoad;
 
     renderServeCheckConfig({
       passed,
@@ -2139,9 +2295,10 @@ const checkConfigCommand = new Command()
       oauthProvider: providerUrl,
       entries: check.entries,
       allowedCollectives: authConfig.allowedCollectives,
-      wouldStart: check.wouldStart && keyUsable,
+      wouldStart: check.wouldStart && keyUsable && grantsLoad,
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
       restrictionWarnings,
+      ...grantReport,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
@@ -2279,7 +2436,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--restricted-model-types <types:string>",
-    "Comma-separated model types that require admin authority to create or run (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
+    "Comma-separated model types whose models only admins may create, run, edit or delete, along with their data and the workflow steps that run them (e.g. command/shell,@acme/deploy); a leading @ is ignored when matching, so @acme/deploy and acme/deploy are the same entry. Requires --auth-mode token or oauth",
   )
   .option(
     "--restricted-commands <cmds:string>",
@@ -2361,7 +2518,9 @@ export const serveCommand = new Command()
     "--hydration-timeout <duration:string>",
     "Maximum time to wait for initial datastore cache hydration at startup. " +
       "Accepts seconds (60), explicit units (60s, 5m). Default: 60s. " +
-      "Increase for large repos where the initial pull takes longer (env: SWAMP_HYDRATION_TIMEOUT)",
+      "Increase for large repos where the initial pull takes longer. " +
+      "With managedConfig it applies to each of 3 attempts, and startup fails if all of them fail " +
+      "(env: SWAMP_HYDRATION_TIMEOUT)",
   )
   .option(
     "--shutdown-drain-timeout <duration:string>",
@@ -2375,6 +2534,18 @@ export const serveCommand = new Command()
       "and to check the managedConfig extension lockfile for changes. " +
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. Minimum: 1s. " +
       "Only effective with a remote datastore or managedConfig (env: SWAMP_DATASTORE_POLL_INTERVAL)",
+  )
+  .option(
+    "--continuation-sweep-interval <duration:string>",
+    "How often to look for suspended runs that need no further decision and continue them, " +
+      "when their workflow's auto-resume policy allows. " +
+      "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. 0 disables (env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
+  )
+  .option(
+    "--max-signal-wait-timeout <duration:string>",
+    "The longest timeout a wait_for_signal step may ask for on this server. " +
+      "A step that asks for more fails when it would start waiting; a wait already open keeps its deadline. " +
+      "Accepts seconds (3600), explicit units (1h, 7d). Default and upper limit: 1y (env: SWAMP_MAX_SIGNAL_WAIT_TIMEOUT)",
   )
   .option(
     "--token-gc-interval <duration:string>",
@@ -2426,7 +2597,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--auto-resume",
-    "Resume a suspended run once every approval gate on it is decided. " +
+    "Resume a suspended run once every approval gate on it is decided and every wait for a signal is settled. " +
       "Applies to workflows that declare no inputs; a workflow with inputs " +
       "must set autoResume: true itself, and autoResume: false opts out " +
       "(env: SWAMP_AUTO_RESUME)",
@@ -2516,6 +2687,8 @@ export const serveCommand = new Command()
       shutdownDrainTimeoutMs,
       hydrationTimeoutMs,
       datastorePollIntervalMs,
+      continuationSweepIntervalMs,
+      maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
       maxConcurrentRuns,
       maxRunsPerPrincipal,
@@ -2687,6 +2860,20 @@ export const serveCommand = new Command()
       dispatchEnvAllow,
     });
     const verifyOnEnroll = merged.verifyOnEnroll;
+    // The pass a worker without a credential enrolls on, kept fresh for as
+    // long as this serve runs (design/surfaces/auth-gate.md, "Remote
+    // workers").
+    const gateSession = currentAuthGateSession();
+    const gatePassKeeper = gateSession
+      ? createGatePassKeeper(
+        gateSession.deps,
+        gateSession.outcome.kind === "pass"
+          ? gateSession.outcome.handoff
+          : undefined,
+      )
+      : undefined;
+    // Armed detached so the keeper's checks never join swamp.cli's trace.
+    runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
     const workerGateway = new WorkerGateway({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -2699,6 +2886,10 @@ export const serveCommand = new Command()
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
       verifyOnEnroll,
+      gatePass: () => {
+        const pass = gatePassKeeper?.current();
+        return pass ? formatOrchestratorGatePass(pass) : undefined;
+      },
       verifyWorker: verifyOnEnroll
         ? async (workerName) => {
           const probe = await dispatchFleetProbe(
@@ -2728,14 +2919,26 @@ export const serveCommand = new Command()
         "Remote-only mode enabled — all steps require explicit placement",
       );
     }
+    if (maxSignalWaitTimeoutSeconds !== undefined) {
+      logger.info(
+        "Longest wait_for_signal timeout: {seconds}s — a step that asks for more fails when it would start waiting",
+        { seconds: maxSignalWaitTimeoutSeconds },
+      );
+    }
     if (merged.autoResume) {
       logger.info(
-        "Auto-resume enabled — runs resume once every approval gate is decided, for workflows that declare no inputs (a workflow with inputs must set autoResume: true)",
+        "Auto-resume enabled — runs resume once every approval gate is decided and every wait for a signal is settled, for workflows that declare no inputs (a workflow with inputs must set autoResume: true)",
       );
     }
     const dataPlane = new DataPlane({
       repoDir: resolvedRepoDir,
       repoContext,
+      // The same default vault as run deps, so a worker's sensitive write
+      // lands in the vault the pre-run check approved (swamp-club#2676).
+      createVaultService: () =>
+        VaultService.fromRepository(resolvedRepoDir, {
+          defaultVaultName: repoMarker?.defaultVault,
+        }),
       sessions: workerGateway.sessions,
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
@@ -3001,6 +3204,10 @@ export const serveCommand = new Command()
     const serveNamespace = isCustomDatastoreConfig(datastoreConfig)
       ? datastoreConfig.namespace
       : undefined;
+    // Whether the run records this instance reads are current as it boots:
+    // always on a filesystem datastore, and on a synced one only when the
+    // boot hydration below pulled without failing (swamp-club#3108).
+    let runRecordsCurrentAtBoot = !isCustomDatastoreConfig(datastoreConfig);
     const MIGRATION_SENTINEL = "migration/root-import-complete";
     if (hasRemoteControlPlane && syncService) {
       // Migration: if a namespace is configured, read root control-plane
@@ -3052,12 +3259,19 @@ export const serveCommand = new Command()
         }
       }
 
-      await hydrateLocalCache({
+      // A managedConfig instance has no state but its datastore, so it
+      // retries a failed hydration and then refuses to start rather than
+      // serve from a partial cache (swamp-club#3180).
+      const hydrationSignal = () => AbortSignal.timeout(hydrationTimeoutMs);
+      const hydration = await hydrateLocalCache({
         syncService,
         catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        signal: AbortSignal.timeout(hydrationTimeoutMs),
         namespace: serveNamespace,
+        ...(repoMarker?.datastore?.managedConfig
+          ? { required: { attemptSignal: hydrationSignal } }
+          : { signal: hydrationSignal() }),
       });
+      runRecordsCurrentAtBoot = hydration.ok;
 
       if (serveNamespace && rootReadErrors.length > 0) {
         const namespacedStore = syncService.controlPlaneStore!();
@@ -3187,14 +3401,24 @@ export const serveCommand = new Command()
 
     // The namespace is bound by now, so wait records use the datastore's
     // store as it is instead of binding it again on first use.
-    attachSignalWaits(
-      repoContext,
-      resolveSignalWaitSupport(datastoreConfig, syncService, {
+    const signalWaitSupport = resolveSignalWaitSupport(
+      datastoreConfig,
+      syncService,
+      {
         namespaceBound: true,
         runsInDatastore: runsLiveInDatastore(
           new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
         ),
-      }),
+      },
+    );
+    attachSignalWaits(
+      repoContext,
+      signalWaitSupport.supported
+        ? {
+          ...signalWaitSupport,
+          maxTimeoutSeconds: maxSignalWaitTimeoutSeconds,
+        }
+        : signalWaitSupport,
     );
 
     // Initialize the encrypted control-plane vault provider for serve-internal
@@ -3637,22 +3861,27 @@ export const serveCommand = new Command()
     });
 
     const grantsDir = join(resolvedRepoDir, "grants");
-    const grantFileResults = await readGrantFiles(
-      grantsDir,
-      validateGrantCondition,
-    );
-    const grantFileErrors = collectErrors(grantFileResults);
+    // No literal reader: the policy snapshot loader reports each grant's
+    // type spellings once it is reconciled, so reading them here as well
+    // would warn twice (swamp-club#3130).
+    const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
+      grantsFile: merged.grantsFile,
+      grantsDir: merged.grantsDir,
+      validateCondition: validateGrantCondition,
+    });
+    if (grantFiles.repoUnreadable) throw grantFiles.repoUnreadable.cause;
+    const grantFileErrors = collectErrors(grantFiles.repo);
 
     if (grantFileErrors.length > 0) {
-      const errorMessages = grantFileErrors.map((e) => {
-        const loc = e.entryIndex !== undefined
-          ? `${e.filename} entry ${e.entryIndex + 1}`
-          : e.filename;
-        return `  ${loc}: ${e.message}`;
-      });
+      // Named as grants/<name>, as swamp serve check-config names them.
       throw new UserError(
         `Grant file validation failed — refusing to start:\n${
-          errorMessages.join("\n")
+          formatGrantFileErrorLines(
+            grantFileErrors.map((e) => ({
+              ...e,
+              filename: join("grants", e.filename),
+            })),
+          )
         }`,
       );
     }
@@ -3661,148 +3890,100 @@ export const serveCommand = new Command()
       string,
       import("../../domain/access/grant_file.ts").GrantFileEntry[]
     >();
-    for (const [filename, result] of grantFileResults) {
+    for (const [filename, result] of grantFiles.repo) {
       validEntries.set(filename, result.entries);
     }
 
-    const externalGrantsFilePath = resolveExternalGrantsFile(
-      resolvedRepoDir,
-      merged.grantsFile,
-    );
-    if (externalGrantsFilePath) {
-      let content: string;
-      try {
-        content = await Deno.readTextFile(externalGrantsFilePath);
-      } catch (cause) {
-        if (cause instanceof Deno.errors.NotFound) {
-          throw markErrorPaths(
-            new UserError(
-              `External grants file not found: ${externalGrantsFilePath}`,
-            ),
-            [externalGrantsFilePath],
-          );
-        }
+    const externalGrantsFilePath = grantFiles.grantsFile?.path;
+    if (grantFiles.grantsFile) {
+      const load = grantFiles.grantsFile;
+      if (load.status === "missing") {
         throw markErrorPaths(
-          new UserError(
-            `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
-          ),
-          [externalGrantsFilePath, ...errorPaths(cause)],
+          new UserError(`External grants file not found: ${load.path}`),
+          [load.path],
         );
       }
-
-      if (content.trim().length > 0) {
-        const externalResult = parseGrantFile(
-          externalGrantsFilePath,
-          content,
-          validateGrantCondition,
+      if (load.status === "unreadable") {
+        throw markErrorPaths(
+          new UserError(
+            `Failed to read external grants file ${load.path}: ${load.cause}`,
+          ),
+          [load.path, ...errorPaths(load.cause)],
         );
+      }
+      const externalResult = load.file.result;
+      if (externalResult !== null) {
         if (externalResult.errors.length > 0) {
-          const errorMessages = externalResult.errors.map((e) => {
-            const loc = e.entryIndex !== undefined
-              ? `${e.filename} entry ${e.entryIndex + 1}`
-              : e.filename;
-            return `  ${loc}: ${e.message}`;
-          });
           throw new UserError(
             `External grants file validation failed — refusing to start:\n${
-              errorMessages.join("\n")
+              formatGrantFileErrorLines(externalResult.errors)
             }`,
           );
         }
         validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
         logger
-          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${externalGrantsFilePath}`;
+          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${load.file.path}`;
       } else {
         logger
-          .info`External grants file ${externalGrantsFilePath} is empty — no external grants added`;
+          .info`External grants file ${load.file.path} is empty — no external grants added`;
       }
     }
 
-    const externalGrantsDirPath = await resolveExternalGrantsDir(
-      resolvedRepoDir,
-      merged.grantsDir,
-    );
-    if (merged.grantsDir && !externalGrantsDirPath) {
+    const grantsDirLoad = grantFiles.grantsDir;
+    const externalGrantsDirPath = grantsDirLoad &&
+        grantsDirLoad.status !== "same-as-repo"
+      ? grantsDirLoad.path
+      : undefined;
+    if (grantsDirLoad?.status === "same-as-repo") {
       logger
-        .info`Grants directory ${merged.grantsDir} is the repository grants directory — its files are read once, from there`;
+        .info`Grants directory ${grantsDirLoad.configured} is the repository grants directory — its files are read once, from there`;
     }
-    if (externalGrantsDirPath) {
-      let dirEntries: Deno.DirEntry[];
-      try {
-        dirEntries = [];
-        for await (const entry of Deno.readDir(externalGrantsDirPath)) {
-          dirEntries.push(entry);
-        }
-      } catch (cause) {
-        if (cause instanceof Deno.errors.NotFound) {
-          throw markErrorPaths(
-            new UserError(
-              `External grants directory not found: ${externalGrantsDirPath}`,
-            ),
-            [externalGrantsDirPath],
-          );
-        }
-        throw markErrorPaths(
-          new UserError(
-            `Failed to read external grants directory ${externalGrantsDirPath}: ${cause}`,
-          ),
-          [externalGrantsDirPath, ...errorPaths(cause)],
-        );
-      }
-
-      const yamlFiles = dirEntries
-        .filter((e) =>
-          (e.isFile || e.isSymlink) &&
-          (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
-          !e.name.startsWith(".")
-        )
-        .sort((a, b) => a.name.localeCompare(b.name));
-
+    if (grantsDirLoad?.status === "missing") {
+      throw markErrorPaths(
+        new UserError(
+          `External grants directory not found: ${grantsDirLoad.path}`,
+        ),
+        [grantsDirLoad.path],
+      );
+    }
+    if (grantsDirLoad?.status === "unreadable") {
+      throw markErrorPaths(
+        new UserError(
+          `Failed to read external grants directory ${grantsDirLoad.path}: ${grantsDirLoad.cause}`,
+        ),
+        [grantsDirLoad.path, ...errorPaths(grantsDirLoad.cause)],
+      );
+    }
+    if (grantsDirLoad?.status === "loaded") {
       let totalLoaded = 0;
-      for (const file of yamlFiles) {
-        const filePath = join(externalGrantsDirPath, file.name);
-        let content: string;
-        try {
-          content = await Deno.readTextFile(filePath);
-        } catch (cause) {
+      for (const file of grantsDirLoad.files) {
+        if (file.readError !== undefined) {
           throw markErrorPaths(
             new UserError(
-              `Failed to read grants file ${filePath}: ${cause}`,
+              `Failed to read grants file ${file.path}: ${file.readError}`,
             ),
-            [filePath, ...errorPaths(cause)],
+            [file.path, ...errorPaths(file.readError)],
           );
         }
-
-        if (content.trim().length === 0) continue;
-
-        const result = parseGrantFile(
-          filePath,
-          content,
-          validateGrantCondition,
-        );
-        if (result.errors.length > 0) {
-          const errorMessages = result.errors.map((e) => {
-            const loc = e.entryIndex !== undefined
-              ? `${e.filename} entry ${e.entryIndex + 1}`
-              : e.filename;
-            return `  ${loc}: ${e.message}`;
-          });
+        const parsed = file.result;
+        if (parsed === null) continue;
+        if (parsed.errors.length > 0) {
           throw new UserError(
             `Grants directory file validation failed — refusing to start:\n${
-              errorMessages.join("\n")
+              formatGrantFileErrorLines(parsed.errors)
             }`,
           );
         }
-        validEntries.set(grantsDirSourceName(file.name), result.entries);
-        totalLoaded += result.entries.length;
+        validEntries.set(file.sourceName, parsed.entries);
+        totalLoaded += parsed.entries.length;
       }
 
       if (totalLoaded > 0) {
         logger
-          .info`Loaded ${totalLoaded} grant(s) from ${yamlFiles.length} file(s) in external grants directory ${externalGrantsDirPath}`;
+          .info`Loaded ${totalLoaded} grant(s) from ${grantsDirLoad.files.length} file(s) in external grants directory ${grantsDirLoad.path}`;
       } else {
         logger
-          .info`External grants directory ${externalGrantsDirPath} contains no grants`;
+          .info`External grants directory ${grantsDirLoad.path} contains no grants`;
       }
     }
 
@@ -3852,6 +4033,7 @@ export const serveCommand = new Command()
         runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
       },
+      readConditionTypeLiterals,
     );
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
@@ -3918,6 +4100,38 @@ export const serveCommand = new Command()
     }
 
     const instanceId = crypto.randomUUID();
+    // A resume through this server takes its continuation claims as this
+    // instance, in the store its heartbeat is written to, so a peer can
+    // tell a claim of a live instance from one a dead instance left.
+    // A synced datastore with no shared control-plane store gets none: the
+    // fallback store is this host's own disk, where no peer would look.
+    repoContext.continuationClaims =
+      isAtomicControlPlaneStore(controlPlaneStore) &&
+        (hasRemoteControlPlane || !isCustomDatastoreConfig(datastoreConfig))
+        ? continuationClaimsOver(controlPlaneStore, serveHolder(instanceId), {
+          staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+        })
+        : undefined;
+    // On a synced datastore this instance resumes a run from its own copy
+    // of it. Where the remote can be read without replacing that copy, a
+    // run serve continues by itself is compared with the remote first.
+    // A repository that keeps its run records out of the datastore has one
+    // copy of each, and nothing to compare.
+    const runRecordsSynced = isCustomDatastoreConfig(datastoreConfig) &&
+      runsLiveInDatastore(
+        new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
+      );
+    repoContext.runRecordCurrency = runRecordsSynced
+      ? runRecordCurrencyOver(
+        datastoreConfig,
+        syncService,
+        (run) =>
+          repoContext.workflowRunRepo.getPath(
+            createWorkflowId(run.workflowId),
+            createWorkflowRunId(run.runId),
+          ),
+      )
+      : undefined;
     if (
       authConfig.mode === "oauth" &&
       authConfig.oauthClientId &&
@@ -3953,8 +4167,11 @@ export const serveCommand = new Command()
     // Migrate existing vault-backed token secrets to the encrypted
     // control-plane store. Runs before auth middleware accepts tokens.
     if (authConfig.mode === "oauth") {
-      const { createTokenMigrationLockDeps, migrateTokenSecrets } =
-        await import("../../serve/token_secret_migration.ts");
+      const {
+        createTokenMigrationLockDeps,
+        migrateTokenSecrets,
+        recoverOAuthAccessTokens,
+      } = await import("../../serve/token_secret_migration.ts");
       const { createResourceWriter } = await import(
         "../../domain/models/data_writer.ts"
       );
@@ -3962,6 +4179,14 @@ export const serveCommand = new Command()
         resolvedRepoDir,
         { defaultVaultName: repoMarker?.defaultVault },
       );
+      // The pollers are already running, so each token's pull, write and
+      // push runs under the sync gate as well as its name lock.
+      const migrationLockDeps = createTokenMigrationLockDeps({
+        datastoreConfig,
+        repoContext,
+        syncService,
+        syncGate,
+      });
       await migrateTokenSecrets({
         tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
         vaultService: migrationVaultService,
@@ -3997,14 +4222,18 @@ export const serveCommand = new Command()
             updated as Record<string, unknown>,
           );
         },
-        // The pollers are already running, so each token's pull, write and
-        // push runs under the sync gate as well as its name lock.
-        ...createTokenMigrationLockDeps({
-          datastoreConfig,
-          repoContext,
-          syncService,
-          syncGate,
-        }),
+        ...migrationLockDeps,
+      });
+
+      // Before the first collective refresh and token GC sweep, which read
+      // and delete these keys.
+      await recoverOAuthAccessTokens({
+        tokenSecretsVaultName: TOKEN_SECRETS_VAULT_NAME,
+        vaultService: migrationVaultService,
+        dataQueryService: repoContext.dataQueryService,
+        userVaultName: migrationVaultService.getDefaultVaultName() ??
+          migrationVaultService.getUserVaultNames()[0],
+        ...migrationLockDeps,
       });
 
       const { migrateOAuthSecrets } = await import(
@@ -4019,6 +4248,7 @@ export const serveCommand = new Command()
     let heartbeatService: InstanceHeartbeatService | undefined;
     let workerGcService: WorkerGcService | undefined;
     let serverTokenGcService: ServerTokenGcService | undefined;
+    let continuationSweepService: ContinuationSweepService | undefined;
 
     logger.info("Boot: reaping stale runs via tracker");
     // Reap stale runs via the SQLite tracker (heartbeat + PID liveness).
@@ -4205,6 +4435,15 @@ export const serveCommand = new Command()
             ".swamp",
             `audit-cache-${entry.target}`,
           );
+          // A dedicated audit datastore is a datastore too: refuse one marked
+          // with a format this binary cannot read before writing to it
+          // (swamp-club#3189).
+          await ensureSupportedDatastoreFormat(resolvedRepoDir, {
+            type: entry.type,
+            config: resolvedConfig,
+            datastorePath: provider.resolveDatastorePath(resolvedRepoDir),
+            cachePath: tmpCachePath,
+          }, { resolveProvider: () => Promise.resolve(provider) });
           const syncService = provider.createSyncService?.(
             resolvedRepoDir,
             tmpCachePath,
@@ -4734,6 +4973,12 @@ export const serveCommand = new Command()
               syncGate,
               triggerSource: "schedule",
               initiatedBy: input.initiatedBy,
+              // A fresh scope per run of the scheduler principal
+              // (swamp-club#2676).
+              vaultAccess: serviceRunVaultScope(
+                runVaultScopeContext(connectionCtx),
+                SCHEDULER_PRINCIPAL,
+              ),
             },
           ),
         pendingRunHook: {
@@ -5148,6 +5393,11 @@ export const serveCommand = new Command()
           triggerAuthorizer,
           connectionCtx,
         ),
+        createVaultAccess: () =>
+          serviceRunVaultScope(
+            runVaultScopeContext(connectionCtx),
+            WEBHOOK_PRINCIPAL,
+          ),
       });
 
       const webhookRejections = new WebhookRejectionCoalescer();
@@ -5463,7 +5713,7 @@ export const serveCommand = new Command()
           }
         },
       },
-      traceHttpRequests(async (req, info) => {
+      unscopedHttpHandler(traceHttpRequests(async (req, info) => {
         const clientAddress = () =>
           trustProxy
             ? (req.headers.get("x-forwarded-for")
@@ -6323,7 +6573,7 @@ export const serveCommand = new Command()
         }
 
         return new Response("Not found", { status: 404 });
-      }),
+      })),
     );
 
     // Hot-reload: PID file + SIGHUP handler
@@ -6517,6 +6767,11 @@ export const serveCommand = new Command()
       if (serverTokenGcService) {
         await serverTokenGcService.dispose();
       }
+      // Before the heartbeat stops: a claim taken by a pass in flight must
+      // still be a live instance's.
+      if (continuationSweepService) {
+        await continuationSweepService.dispose();
+      }
       if (heartbeatService) {
         await heartbeatService.stop();
       }
@@ -6551,6 +6806,7 @@ export const serveCommand = new Command()
       if (telemetryFlushService) {
         await telemetryFlushService.stop();
       }
+      await gatePassKeeper?.stop();
       if (connectionCtx.auditEmitter) {
         emitSystemAuditEvent(connectionCtx, "instance.stop");
         await connectionCtx.auditEmitter.flush();
@@ -6668,6 +6924,7 @@ export const serveCommand = new Command()
         {
           ...(heartbeatIntervalMs ? { intervalMs: heartbeatIntervalMs } : {}),
           address: serveAddress,
+          staleTtlMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         },
       );
       await heartbeatService.start();
@@ -6873,6 +7130,7 @@ export const serveCommand = new Command()
         datastoreResolver,
         undefined,
         repoContext.markDirty,
+        repoContext.definitionRepo,
       );
 
       const buildPruneDeps = (): WorkerPruneDeps => ({
@@ -7029,6 +7287,54 @@ export const serveCommand = new Command()
         }),
       );
       serverTokenGcService.start();
+    }
+
+    // Continuation sweep: continues suspended runs that need no further
+    // decision (swamp-club#3108). It starts last, once the heartbeat is
+    // written and boot reconciliation has settled the runs a dead instance
+    // left running.
+    const sweepStart = decideContinuationSweepStart({
+      intervalMs: continuationSweepIntervalMs,
+      syncedDatastore: isCustomDatastoreConfig(datastoreConfig),
+      sharedClaims: hasRemoteControlPlane &&
+        repoContext.continuationClaims !== undefined,
+      runRecordsCurrentAtBoot,
+    });
+    if (sweepStart === "disabled") {
+      logger.info(
+        "Continuation sweep disabled (continuation sweep interval is 0)",
+      );
+    } else if (sweepStart === "no_shared_claims") {
+      logger.info(
+        "Continuation sweep not started: this datastore has no shared control-plane store that can create a record atomically, so instances could not tell which of them resumed a run",
+      );
+    } else if (sweepStart === "records_not_current") {
+      logger.warn(
+        "Continuation sweep not started: the boot hydration did not complete, so this instance's run records may be out of date. Runs are still continued when a signal arrives here; restart to enable the sweep",
+      );
+    } else {
+      const synced = isCustomDatastoreConfig(datastoreConfig);
+      // After boot this instance's run records fall behind a synced
+      // datastore, and nothing in a record says so. Later passes run only
+      // where each run can be compared with the remote before it resumes.
+      const bootPassOnly = runRecordsSynced && !repoContext.runRecordCurrency;
+      if (bootPassOnly) {
+        logger.info(
+          "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
+        );
+      }
+      continuationSweepService = new ContinuationSweepService({
+        intervalMs: continuationSweepIntervalMs,
+        bootPassOnly,
+        sweep: ({ boot, isStopping }) =>
+          sweepContinuations(connectionCtx, {
+            // A dead holder's claim is replaced only while the run records
+            // are current: after boot they go stale on a synced datastore.
+            takeover: !synced || boot,
+            isStopping,
+          }),
+      });
+      continuationSweepService.start();
     }
 
     isReady = true;

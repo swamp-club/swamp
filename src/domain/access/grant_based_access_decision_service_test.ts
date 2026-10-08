@@ -1924,6 +1924,49 @@ Deno.test("hasAnyGrantForKind: run implies signal unless runImpliesSignal is fal
   );
 });
 
+Deno.test("decide: a vault grant matches vaults by name, never data of the same name (swamp-club#2676)", () => {
+  const grant = makeGrant({
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "prod-*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([grant], [], celEvaluator),
+  );
+  const vault = (name: string): AccessResource => ({
+    kind: "vault",
+    name,
+    fields: { name },
+  });
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", vault("prod-db"))?.grantId,
+    grant.id,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", vault("dev-db")),
+    null,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "write", vault("prod-db")),
+    null,
+  );
+  assertEquals(
+    service.decide(makePrincipal("adam"), "read", {
+      kind: "data",
+      name: "prod-db",
+      fields: { name: "prod-db", ns: "", tags: {} },
+    }),
+    null,
+  );
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "vault"),
+    true,
+  );
+  assertEquals(
+    service.hasAnyGrantForKind(makePrincipal("adam"), "read", "data"),
+    false,
+  );
+});
+
 Deno.test("decide: a service principal gets no signal from the trigger default", () => {
   const service = new GrantBasedAccessDecisionService(PolicySnapshot.empty());
   const principal = {
@@ -1936,4 +1979,249 @@ Deno.test("decide: a service principal gets no signal from the trigger default",
     "allow",
   );
   assertEquals(service.decide(principal, "signal", makeResource()), null);
+});
+
+Deno.test("decide: a vault deny with a key condition decides by the request's key, and an absent key is empty (swamp-club#2676)", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "*" },
+    condition: 'key == "root"',
+  });
+  const allow = makeGrant({
+    actions: ["read"],
+    resource: { kind: "vault", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const decide = (fields: Record<string, unknown>) =>
+    service.decide(makePrincipal("adam"), "read", {
+      kind: "vault",
+      name: "prod-db",
+      fields: { name: "prod-db", ...fields },
+    })?.effect;
+  assertEquals(decide({ key: "root" }), "deny");
+  assertEquals(decide({ key: "api" }), "allow");
+  assertEquals(decide({}), "allow");
+});
+
+// swamp-club#3130: a deny matches the type in any spelling; an allow only as
+// written.
+const SPELLINGS: ReadonlyArray<
+  { pattern: string; modelType: string; label: string }
+> = [
+  { label: "mixed case", pattern: "@Acme/*", modelType: "@acme/deploy" },
+  {
+    label: "AWS :: separators",
+    pattern: "AWS::EC2::*",
+    modelType: "aws/ec2/vpc",
+  },
+  {
+    label: "dot separators",
+    pattern: "Acme.Tools.*",
+    modelType: "acme/tools/x",
+  },
+  { label: "bare for an @ type", pattern: "acme/*", modelType: "@acme/deploy" },
+  { label: "@ for a bare type", pattern: "@acme/*", modelType: "acme/deploy" },
+  { label: "bare exact", pattern: "exp/probe", modelType: "@exp/probe" },
+];
+
+for (const { label, pattern, modelType } of SPELLINGS) {
+  const resource: AccessResource = {
+    kind: "model",
+    name: "my-model",
+    fields: { name: "my-model", modelType, tags: {} },
+  };
+
+  Deno.test(`decide: deny on model type spelled ${label} denies the type`, () => {
+    const deny = makeGrant({
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "model", pattern },
+    });
+    const allow = makeGrant({
+      actions: ["run"],
+      resource: { kind: "model", pattern: "*" },
+    });
+    const service = new GrantBasedAccessDecisionService(
+      new PolicySnapshot([deny, allow], [], celEvaluator),
+    );
+    const result = service.decide(makePrincipal("adam"), "run", resource);
+    assertEquals(result?.effect, "deny");
+    assertEquals(result?.grantId, deny.id);
+  });
+
+  Deno.test(`explain: deny on model type spelled ${label} is reported`, () => {
+    const deny = makeGrant({
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "model", pattern },
+    });
+    const service = new GrantBasedAccessDecisionService(
+      new PolicySnapshot([deny], [], celEvaluator),
+    );
+    const decisions = service.explain(makePrincipal("adam"), "run", resource);
+    assertEquals(decisions.map((d) => [d.effect, d.grantId]), [
+      ["deny", deny.id],
+    ]);
+  });
+
+  Deno.test(`decide: allow on model type spelled ${label} grants nothing more`, () => {
+    const allow = makeGrant({
+      actions: ["run"],
+      resource: { kind: "model", pattern },
+    });
+    const service = new GrantBasedAccessDecisionService(
+      new PolicySnapshot([allow], [], celEvaluator),
+    );
+    assertEquals(
+      service.decide(makePrincipal("adam"), "run", resource),
+      null,
+    );
+  });
+}
+
+Deno.test("decide: a deny prefix written for model names does not reach @ types", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "a*" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "web",
+    fields: { name: "web", modelType: "@acme/deploy", tags: {} },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: a deny spelled as a type path covers a type that is only an @", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@::" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "web",
+    fields: { name: "web", modelType: "@", tags: {} },
+  });
+  assertEquals(result?.effect, "deny");
+});
+
+Deno.test("decide: an allow spelled as a type path does not reach a type that is only an @", () => {
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@::" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "web",
+    fields: { name: "web", modelType: "@", tags: {} },
+  });
+  assertEquals(result, null);
+});
+
+Deno.test("decide: deny folding never reaches instance names", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "Prod-*" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "prod-db",
+    fields: { name: "prod-db", modelType: "command/shell", tags: {} },
+  });
+  assertEquals(result?.effect, "allow");
+});
+
+Deno.test("decide: deny on access:@swamp/grant covers grant records", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "@Swamp/Grant" },
+  });
+  const allow = makeGrant({
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "read", {
+    kind: "access",
+    name: "swamp/grant",
+    fields: { name: "g1", modelType: "swamp/grant", tags: {} },
+  });
+  assertEquals(result?.grantId, deny.id);
+});
+
+Deno.test("decide: access deny folding ignores access resources that are not records", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "@acme/*" },
+  });
+  const allow = makeGrant({
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "admin", {
+    kind: "access",
+    name: "*",
+    fields: { name: "m", modelType: "@acme/deploy", tags: {} },
+  });
+  assertEquals(result?.grantId, allow.id);
+});
+
+Deno.test("decide: a dotted deny that may name a model does not reach @ types", () => {
+  const deny = makeGrant({
+    effect: "deny",
+    actions: ["run"],
+    resource: { kind: "model", pattern: "web.prod" },
+  });
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "*" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([deny, allow], [], celEvaluator),
+  );
+  const decide = (modelType: string) =>
+    service.decide(makePrincipal("adam"), "run", {
+      kind: "model",
+      name: "other",
+      fields: { name: "other", modelType, tags: {} },
+    })?.grantId;
+  assertEquals(decide("web/prod"), deny.id);
+  assertEquals(decide("@web/prod"), allow.id);
 });

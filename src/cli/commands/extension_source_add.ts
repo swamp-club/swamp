@@ -33,14 +33,12 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveUniqueLocalSkillsDirs } from "../../domain/repo/skill_dirs.ts";
-import {
-  resolveDatastoresDir,
-  resolveModelsDir,
-  resolveReportsDir,
-  resolveVaultsDir,
-  resolveWebhooksDir,
-  resolveWorkflowsDir,
-} from "../mod.ts";
+import { resolveDatastoresDir } from "../resolve_datastores_dir.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveReportsDir } from "../resolve_reports_dir.ts";
+import { resolveVaultsDir } from "../resolve_vaults_dir.ts";
+import { resolveWebhooksDir } from "../resolve_webhooks_dir.ts";
+import { resolveWorkflowsDir } from "../resolve_workflows_dir.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

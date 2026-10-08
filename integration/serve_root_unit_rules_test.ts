@@ -242,10 +242,12 @@ function rootEntryPoints(sources: ServeSource[]): string[] {
 
 /**
  * A call to a serve push path: `pushChangedToRemote`, or the `pushNamespace`
- * push from `src/infrastructure/persistence/push_paths.ts` (swamp-club#3055).
+ * or `pushNamespaceCounted` push from
+ * `src/infrastructure/persistence/push_paths.ts` (swamp-club#3055,
+ * swamp-club#3192).
  */
 const PUSH_PATH_CALL =
-  /(?<!function )\b(?:pushChangedToRemote|pushNamespace)\(/g;
+  /(?<!function )\b(?:pushChangedToRemote|pushNamespace|pushNamespaceCounted)\(/g;
 
 /**
  * Push-path calls, with any argument, that are not a root's flush. Every
@@ -321,6 +323,11 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/admin_handlers.ts: handleRunDoctor",
   // model.validate: model checks receive the hooked repositories.
   "src/serve/handlers/model_handlers.ts: handleModelValidate",
+  // The extension handlers' managed lockfile transaction: one root with no
+  // push per outermost run, whose checkpoint publishes the lockfile under
+  // the global lock (swamp-club#3192). The four extension handlers call it
+  // outside any root.
+  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
   // The token secret migration, one root per token under that token's name
   // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
   // commands before or after their own root, never inside one.

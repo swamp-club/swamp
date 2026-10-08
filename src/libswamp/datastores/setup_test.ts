@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  assert,
   assertEquals,
   assertNotEquals,
   assertStringIncludes,
@@ -44,7 +45,16 @@ import {
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
-import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
+import type {
+  DatastoreConfig,
+  DatastoreConfigData,
+} from "../../domain/datastore/datastore_config.ts";
+import {
+  DATASTORE_FORMAT_MARKER_INVALID_CODE,
+  DATASTORE_FORMAT_UNSUPPORTED_CODE,
+  InvalidDatastoreFormatMarkerError,
+  UnsupportedDatastoreFormatError,
+} from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -68,8 +78,10 @@ function makeDeps(
     cleanupSourceDirs: () => Promise.resolve(),
     updateRepoConfig: () => Promise.resolve(),
     resolveInRepoConfigRole: () => Promise.resolve("unmanaged"),
+    listConfigTierConflicts: () => Promise.resolve([]),
     inspectManagedConfigTier: () => Promise.resolve({ managed: false }),
     collapseEnvVars: (path: string) => path,
+    assertDatastoreFormat: () => Promise.resolve(),
     ...overrides,
   };
 }
@@ -2440,4 +2452,671 @@ Deno.test("createDatastoreSetupDeps.inspectManagedConfigTier: reads the tier .sw
       { managed: true, tierPath: undefined, populated: false },
     );
   });
+});
+
+// ============================================================================
+// Joining a remote that already holds a config tier (swamp-club#2844)
+// ============================================================================
+
+interface RecordedSync {
+  op: "pull" | "push";
+  options?: DatastoreSyncOptions;
+}
+
+/**
+ * Like {@link registerTempDirRemoteType}, but scoped by namespace and
+ * `subdirs` the way the S3 and GCS sync services are, and recording every
+ * call. `failFirstPull` makes the first pull reject with that error.
+ */
+function registerRecordingRemoteType(
+  remoteDir: string,
+  cacheDir: string,
+  calls: RecordedSync[],
+  failFirstPull?: Error,
+): string {
+  const type = `test-ext-2844-${crypto.randomUUID()}`;
+  const roots = (options?: DatastoreSyncOptions) => {
+    const ns = options?.namespace ?? "";
+    const subdirs = options?.subdirs ?? [""];
+    return subdirs.map((sub) => ({
+      remote: join(remoteDir, ns, sub),
+      cache: join(cacheDir, ns, sub),
+    }));
+  };
+  datastoreTypeRegistry.register({
+    type,
+    name: `Test ${type}`,
+    description: "Recording temp-dir remote for swamp-club#2844",
+    isBuiltIn: false,
+    createProvider: () => ({
+      ...createStubProvider({ hasSyncService: false }),
+      resolveDatastorePath: () => remoteDir,
+      resolveCachePath: () => cacheDir,
+      createSyncService: () => ({
+        pushChanged: async (options?: DatastoreSyncOptions) => {
+          calls.push({ op: "push", options });
+          for (const { remote, cache } of roots(options)) {
+            await Deno.mkdir(cache, { recursive: true });
+            await copy(cache, remote, { overwrite: true });
+          }
+        },
+        pullChanged: async (options?: DatastoreSyncOptions) => {
+          calls.push({ op: "pull", options });
+          if (failFirstPull && calls.length === 1) throw failFirstPull;
+          for (const { remote, cache } of roots(options)) {
+            await Deno.mkdir(remote, { recursive: true });
+            await copy(remote, cache, { overwrite: true });
+          }
+        },
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
+  });
+  return type;
+}
+
+/** A repo whose filesystem datastore at .swamp holds its config tier. */
+async function writeInRepoTierRepo(repoDir: string): Promise<void> {
+  await writeMarker(repoDir, {
+    type: "filesystem",
+    path: join(repoDir, ".swamp"),
+    managedConfig: true,
+  });
+}
+
+function inRepoTierDeps(repoDir: string): DatastoreSetupDeps {
+  return createDatastoreSetupDeps(
+    repoDir,
+    () => Promise.resolve(join(repoDir, ".swamp", "config")),
+  );
+}
+
+function keptWarningsOf(events: DatastoreSetupEvent[]) {
+  return events.filter((e): e is WarningEvent =>
+    e.kind === "warning" && e.data.code === "remote_config_tier_kept"
+  );
+}
+
+Deno.test("datastoreSetupExtension: an in-repo tier joining a remote tier keeps the remote copy of every shared path", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(remoteDir, cacheDir, calls);
+    await writeInRepoTierRepo(repoDir);
+
+    const remoteConfig = join(remoteDir, "config");
+    const localConfig = join(repoDir, ".swamp", "config");
+    await writeTestFile(join(remoteConfig, "models", "m.yaml"), "team");
+    await writeTestFile(join(remoteConfig, "workflows", "w.yaml"), "same");
+    await writeTestFile(
+      join(remoteConfig, "managed-config-migrated.json"),
+      "team-sentinel",
+    );
+    await writeTestFile(join(localConfig, "models", "m.yaml"), "local");
+    await writeTestFile(join(localConfig, "workflows", "w.yaml"), "same");
+    await writeTestFile(
+      join(localConfig, "managed-config-migrated.json"),
+      "local-sentinel",
+    );
+    await writeTestFile(join(localConfig, "models", "only-local.yaml"), "x");
+    await writeTestFile(
+      join(localConfig, "pulled-extensions", "ext", "mod.ts"),
+      "x",
+    );
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        inRepoTierDeps(repoDir),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2844",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    // The remote config tier is pulled before anything is pushed.
+    assertEquals(calls[0].op, "pull");
+    assertEquals(calls[0].options?.subdirs, ["config"]);
+    assertEquals(calls[1].op, "push");
+    // The team's copies survive; local-only config and data migrate.
+    assertEquals(
+      await Deno.readTextFile(join(remoteConfig, "models", "m.yaml")),
+      "team",
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        join(remoteConfig, "managed-config-migrated.json"),
+      ),
+      "team-sentinel",
+    );
+    assertEquals(
+      await pathExists(join(remoteConfig, "models", "only-local.yaml")),
+      true,
+    );
+    assertEquals(await pathExists(join(remoteDir, "data", "a.json")), true);
+    assertEquals(
+      await pathExists(join(remoteConfig, "pulled-extensions")),
+      false,
+    );
+    // Only the differing local copy stays behind, with pulled extensions.
+    assertEquals(
+      await Deno.readTextFile(join(localConfig, "models", "m.yaml")),
+      "local",
+    );
+    assertEquals(
+      await pathExists(join(localConfig, "workflows", "w.yaml")),
+      false,
+    );
+    assertEquals(
+      await pathExists(join(localConfig, "managed-config-migrated.json")),
+      false,
+    );
+    assertEquals(
+      await pathExists(join(localConfig, "models", "only-local.yaml")),
+      false,
+    );
+    assertEquals(
+      await pathExists(join(localConfig, "pulled-extensions", "ext", "mod.ts")),
+      true,
+    );
+    const kept = keptWarningsOf(events);
+    assertEquals(kept.length, 1);
+    assert(kept[0].data.code === "remote_config_tier_kept");
+    assertEquals(kept[0].data.keptPaths, [join("models", "m.yaml")]);
+    assertPathEquals(kept[0].data.localConfigPath, localConfig);
+  });
+});
+
+Deno.test("datastoreSetupExtension: an in-repo tier joining an empty remote migrates all of it without a warning", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(remoteDir, cacheDir, calls);
+    await writeInRepoTierRepo(repoDir);
+    const localConfig = join(repoDir, ".swamp", "config");
+    await writeTestFile(join(localConfig, "models", "m.yaml"), "local");
+    await writeTestFile(
+      join(localConfig, "managed-config-migrated.json"),
+      "local-sentinel",
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        inRepoTierDeps(repoDir),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2844",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(keptWarningsOf(events), []);
+    assertEquals(
+      await Deno.readTextFile(join(remoteDir, "config", "models", "m.yaml")),
+      "local",
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        join(remoteDir, "config", "managed-config-migrated.json"),
+      ),
+      "local-sentinel",
+    );
+    assertEquals(await pathExists(join(localConfig, "models")), false);
+  });
+});
+
+for (
+  const [label, failure] of [
+    ["an error", new Error("remote unreachable")],
+    ["a timeout", new SyncTimeoutError("test", "pull", 1000)],
+  ] as const
+) {
+  Deno.test(`datastoreSetupExtension: ${label} pulling the remote config tier stops setup before anything moves`, async () => {
+    await withSetupTempDir(async (tmp) => {
+      const repoDir = join(tmp, "repo");
+      const remoteDir = join(tmp, "remote");
+      const cacheDir = join(tmp, "cache");
+      const calls: RecordedSync[] = [];
+      const type = registerRecordingRemoteType(
+        remoteDir,
+        cacheDir,
+        calls,
+        failure,
+      );
+      await writeInRepoTierRepo(repoDir);
+      const localModel = join(repoDir, ".swamp", "config", "models", "m.yaml");
+      await writeTestFile(localModel, "local");
+      await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupExtension(
+          createLibSwampContext(),
+          inRepoTierDeps(repoDir),
+          {
+            type,
+            config: {},
+            repoDir,
+            repoId: "repo-2844",
+            skipMigration: false,
+            namespace: "team",
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as Extract<
+        DatastoreSetupEvent,
+        { kind: "completed" }
+      >;
+      assertEquals(completed.kind, "completed");
+      assertEquals(completed.data.errors.length, 1);
+      assertNotEquals(completed.data.retryHint, undefined);
+      assertEquals(calls.map((c) => c.op), ["pull"]);
+      assertEquals(await Deno.readTextFile(localModel), "local");
+      assertEquals(
+        await pathExists(join(repoDir, ".swamp", "data", "a.json")),
+        true,
+      );
+      const block = await readDatastoreBlock(repoDir);
+      assertEquals(block?.type, "filesystem");
+      assertEquals(block?.namespace, undefined);
+    });
+  });
+}
+
+Deno.test("datastoreSetupExtension: no config tier pre-pull for an unmanaged or instance-local config dir, or with skipMigration", async () => {
+  const cases: {
+    role: "unmanaged" | "instance_local" | "tier";
+    skipMigration: boolean;
+  }[] = [
+    { role: "unmanaged", skipMigration: false },
+    { role: "instance_local", skipMigration: false },
+    { role: "tier", skipMigration: true },
+  ];
+  for (const { role, skipMigration } of cases) {
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(
+      "/nonexistent/remote",
+      "/nonexistent/cache",
+      calls,
+    );
+    const deps = makeDeps({
+      resolveInRepoConfigRole: () => Promise.resolve(role),
+      ensureDir: () => Promise.resolve(),
+      listConfigTierConflicts: () => {
+        throw new Error("must not list conflicts");
+      },
+    });
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(createLibSwampContext(), deps, {
+        type,
+        config: {},
+        repoDir: "/nonexistent/repo",
+        repoId: "repo-2844",
+        skipMigration,
+      }),
+    );
+    assertEquals(
+      calls.some((c) => c.op === "pull" && c.options?.subdirs),
+      false,
+      `${role} skipMigration=${skipMigration}`,
+    );
+  }
+});
+
+Deno.test("datastoreSetupExtension: the config tier pre-pull is namespaced and lazy when setup is", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(remoteDir, cacheDir, calls);
+    await writeInRepoTierRepo(repoDir);
+    await writeTestFile(
+      join(remoteDir, "team", "config", "models", "m.yaml"),
+      "team",
+    );
+    await writeTestFile(
+      join(repoDir, ".swamp", "config", "models", "m.yaml"),
+      "local",
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        inRepoTierDeps(repoDir),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2844",
+          skipMigration: false,
+          namespace: "team",
+          hydrationStrategy: "lazy",
+        },
+      ),
+    );
+
+    assertEquals(calls[0].op, "pull");
+    assertEquals(calls[0].options?.namespace, "team");
+    assertEquals(calls[0].options?.subdirs, ["config"]);
+    assertEquals(calls[0].options?.metadataOnly, true);
+    assertEquals(
+      await Deno.readTextFile(
+        join(remoteDir, "team", "config", "models", "m.yaml"),
+      ),
+      "team",
+    );
+    const kept = keptWarningsOf(events);
+    assertEquals(kept.length, 1);
+    assert(kept[0].data.code === "remote_config_tier_kept");
+    assertEquals(kept[0].data.keptPaths, [join("models", "m.yaml")]);
+  });
+});
+
+Deno.test("createDatastoreSetupDeps.listConfigTierConflicts: lists shared files, skips pulled extensions, follows only the root symlink", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const realLocal = join(tmp, "real-local");
+    const local = join(tmp, "local");
+    const dest = join(tmp, "dest");
+    await writeTestFile(join(realLocal, "models", "a.yaml"), "a");
+    await writeTestFile(join(realLocal, "models", "same.yaml"), "s");
+    await writeTestFile(join(realLocal, "only-local.json"), "x");
+    await writeTestFile(join(realLocal, "pulled-extensions", "e.ts"), "x");
+    await writeTestFile(join(tmp, "elsewhere", "inner.yaml"), "x");
+    await Deno.symlink(join(tmp, "elsewhere"), join(realLocal, "linked"), {
+      type: "dir",
+    });
+    await Deno.symlink(realLocal, local, { type: "dir" });
+    await writeTestFile(join(dest, "models", "a.yaml"), "A");
+    await writeTestFile(join(dest, "models", "same.yaml"), "s");
+    await writeTestFile(join(dest, "pulled-extensions", "e.ts"), "y");
+    await writeTestFile(join(dest, "linked", "inner.yaml"), "x");
+    await writeTestFile(join(realLocal, "dir-vs-file", "child.yaml"), "x");
+    await writeTestFile(join(dest, "dir-vs-file"), "x");
+
+    const deps = createDatastoreSetupDeps(tmp, noTier);
+    const conflicts = await deps.listConfigTierConflicts(local, dest);
+    conflicts.sort((a, b) => a.path.localeCompare(b.path));
+
+    assertEquals(conflicts, [
+      { path: "dir-vs-file", differs: true },
+      { path: "linked", differs: true },
+      { path: join("models", "a.yaml"), differs: true },
+      { path: join("models", "same.yaml"), differs: false },
+    ]);
+    assertEquals(
+      await deps.listConfigTierConflicts(join(tmp, "none"), dest),
+      [],
+    );
+  });
+});
+
+// ============================================================================
+// Setup onto the migration source (swamp-club#3162)
+// ============================================================================
+
+for (
+  const [label, pathOf] of [
+    ["the absolute .swamp path", (repo: string) => join(repo, ".swamp")],
+    [
+      "a .swamp path with a redundant segment",
+      (repo: string) => join(repo, ".swamp", "data", ".."),
+    ],
+  ] as const
+) {
+  Deno.test(`datastoreSetupFilesystem: ${label} as the destination writes the block without migrating`, async () => {
+    await withSetupTempDir(async (tmp) => {
+      const realRepo = join(tmp, "repo");
+      const linkedRepo = join(tmp, "linked-repo");
+      await writeMarker(realRepo, { type: "filesystem", path: ".swamp" });
+      await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
+      const dataFile = join(realRepo, ".swamp", "data", "a.json");
+      await writeTestFile(dataFile, "{}");
+
+      // The repo is reached through a symlink; the destination names the
+      // real path, so only a real-path comparison sees they are the same.
+      const calls: string[] = [];
+      const deps = createDatastoreSetupDeps(linkedRepo, noTier);
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          {
+            ...deps,
+            migrateData: (...args) => {
+              calls.push("migrate");
+              return deps.migrateData(...args);
+            },
+            verifyMigration: (...args) => {
+              calls.push("verify");
+              return deps.verifyMigration(...args);
+            },
+            cleanupSourceDirs: (...args) => {
+              calls.push("cleanup");
+              return deps.cleanupSourceDirs(...args);
+            },
+          },
+          {
+            datastorePath: pathOf(realRepo),
+            repoDir: linkedRepo,
+            skipMigration: false,
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as Extract<
+        DatastoreSetupEvent,
+        { kind: "completed" }
+      >;
+      assertEquals(completed.kind, "completed");
+      assertEquals(completed.data.errors, []);
+      assertEquals(completed.data.directoriesMigrated, []);
+      assertEquals(calls, []);
+      assertEquals(await Deno.readTextFile(dataFile), "{}");
+      const block = await readDatastoreBlock(realRepo);
+      assertEquals(block?.type, "filesystem");
+      assertPathEquals(block?.path ?? "", pathOf(realRepo));
+    });
+  });
+}
+
+Deno.test("datastoreSetupFilesystem: a destination other than .swamp still migrates", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const datastorePath = join(tmp, "datastore");
+    await writeMarker(repoDir, { type: "filesystem", path: ".swamp" });
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        { datastorePath, repoDir, skipMigration: false },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(await pathExists(join(datastorePath, "data", "a.json")), true);
+    assertEquals(await pathExists(join(repoDir, ".swamp", "data")), false);
+  });
+});
+
+Deno.test({
+  name:
+    "createDatastoreSetupDeps.listConfigTierConflicts: an unreadable file counts as differing",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withSetupTempDir(async (tmp) => {
+      const local = join(tmp, "local");
+      const dest = join(tmp, "dest");
+      await writeTestFile(join(local, "m.yaml"), "same");
+      await writeTestFile(join(dest, "m.yaml"), "same");
+      await Deno.chmod(join(local, "m.yaml"), 0o000);
+      try {
+        const deps = createDatastoreSetupDeps(tmp, noTier);
+        assertEquals(await deps.listConfigTierConflicts(local, dest), [
+          { path: "m.yaml", differs: true },
+        ]);
+      } finally {
+        await Deno.chmod(join(local, "m.yaml"), 0o644);
+      }
+    });
+  },
+});
+
+Deno.test("datastoreSetupExtension: a retry over a cache already holding every config file still pushes and cleans up", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const calls: RecordedSync[] = [];
+    const type = registerRecordingRemoteType(remoteDir, cacheDir, calls);
+    await writeInRepoTierRepo(repoDir);
+    // An earlier setup copied the tier into the cache, then its push failed.
+    const localModel = join(repoDir, ".swamp", "config", "models", "m.yaml");
+    await writeTestFile(localModel, "local");
+    await writeTestFile(join(cacheDir, "config", "models", "m.yaml"), "local");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        inRepoTierDeps(repoDir),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2844",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    assertEquals(completed.data.filesCopied, 0);
+    assertEquals(calls.map((c) => c.op), ["pull", "push", "pull"]);
+    assertEquals(
+      await Deno.readTextFile(join(remoteDir, "config", "models", "m.yaml")),
+      "local",
+    );
+    assertEquals(await pathExists(localModel), false);
+    assertEquals(keptWarningsOf(events), []);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: refuses a target with a newer format before writing to it", async () => {
+  const ensured: string[] = [];
+  const checked: DatastoreConfig[] = [];
+  const deps = makeDeps({
+    ensureDir: (path) => {
+      ensured.push(path);
+      return Promise.resolve();
+    },
+    assertDatastoreFormat: (_repoDir, config) => {
+      checked.push(config);
+      return Promise.reject(
+        new UnsupportedDatastoreFormatError({ format: 3 }, [2]),
+      );
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["validating", "error"]);
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.error.code, DATASTORE_FORMAT_UNSUPPORTED_CODE);
+  assertStringIncludes(error.error.message, "Nothing was changed.");
+  assertEquals(checked, [{ type: "filesystem", path: "/tmp/datastore" }]);
+  assertEquals(ensured, []);
+});
+
+Deno.test("datastoreSetupExtension: refuses a target with a newer format before verifying or syncing it", async () => {
+  ensureTestExtensionType("test-ext-setup-format");
+  const ensured: string[] = [];
+  const checked: Array<{ config: DatastoreConfig; provider: boolean }> = [];
+  const deps = makeDeps({
+    ensureDir: (path) => {
+      ensured.push(path);
+      return Promise.resolve();
+    },
+    assertDatastoreFormat: (_repoDir, config, provider) => {
+      checked.push({ config, provider: provider !== undefined });
+      return Promise.reject(
+        new InvalidDatastoreFormatMarkerError("_control/datastore-format", "x"),
+      );
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-setup-format", namespace: "infra" }),
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["validating", "error"]);
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.error.code, DATASTORE_FORMAT_MARKER_INVALID_CODE);
+  assertEquals(checked.length, 1);
+  assertEquals(checked[0].provider, true);
+  assertEquals(checked[0].config.type, "test-ext-setup-format");
+  assertEquals(checked[0].config.namespace, "infra");
+  assertEquals(ensured, []);
+});
+
+Deno.test("datastoreSetupExtension: a format check that passes leaves setup unchanged", async () => {
+  ensureTestExtensionType("test-ext-setup-format-ok");
+  let calls = 0;
+  const deps = makeDeps({
+    assertDatastoreFormat: () => {
+      calls++;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-setup-format-ok" }),
+    ),
+  );
+
+  assertEquals(calls, 1);
+  assertEquals(events.map((e) => e.kind), [
+    "validating",
+    "migrating",
+    "hydrating",
+    "completed",
+  ]);
 });

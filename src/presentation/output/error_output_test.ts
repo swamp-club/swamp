@@ -35,6 +35,10 @@ import {
 } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import {
+  InvalidDatastoreFormatMarkerError,
+  UnsupportedDatastoreFormatError,
+} from "../../domain/datastore/datastore_format.ts";
+import {
   flushAuthGateWarning,
   renderAuthGateWarning,
   takeAuthGateWarning,
@@ -905,5 +909,42 @@ Deno.test("exitCodeForError: temporary auth gate blocks exit 75, the rest 1", ()
     ]
   ) {
     assertEquals(exitCodeForError(new AuthGateBlockedError(reason, "x")), 1);
+  }
+});
+
+Deno.test("datastore format errors: --json carries the stable code and no stack, exit 1, log mode prints the message alone", () => {
+  for (
+    const [error, code] of [
+      [
+        new UnsupportedDatastoreFormatError({ format: 3, writtenBy: "9.9" }, [
+          2,
+        ]),
+        "datastore_format_unsupported",
+      ],
+      [
+        new InvalidDatastoreFormatMarkerError(
+          "_control/datastore-format",
+          "not valid JSON",
+        ),
+        "datastore_format_marker_invalid",
+      ],
+    ] as const
+  ) {
+    assertEquals(buildErrorJson(error), { error: error.message, code });
+    assertEquals(exitCodeForError(error), 1);
+
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => logs.push(args.join(" "));
+    try {
+      renderError(error, "log");
+      renderError(error, "json");
+    } finally {
+      console.error = originalError;
+    }
+    assertEquals(logs.length, 2);
+    assertStringIncludes(logs[0], error.message);
+    assertEquals(logs[0].includes("    at "), false);
+    assertEquals(JSON.parse(logs[1]), { error: error.message, code });
   }
 });

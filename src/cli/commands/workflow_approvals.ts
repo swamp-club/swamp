@@ -22,6 +22,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
   createWorkflowApprovalsDeps,
+  type ExpiredApproval,
   type PendingApproval,
   workflowApprovals,
   type WorkflowApprovalsEvent,
@@ -68,14 +69,81 @@ function formatInputsDigest(
   return digest.length > 80 ? digest.slice(0, 77) + "..." : digest;
 }
 
+/**
+ * The command that cancels a suspended run. A run a serve instance started
+ * is refused by a local cancel, so it gets the `--server` form, with a
+ * placeholder when no server was named.
+ */
+function cancelCommand(
+  run: { workflowName: string; runId: string; serveStarted: boolean },
+  target: string,
+): string {
+  if (target) return `swamp workflow cancel --run ${run.runId}${target}`;
+  if (run.serveStarted) {
+    return `swamp workflow cancel --run ${run.runId} --server <url>`;
+  }
+  return `swamp workflow cancel ${
+    quoteShellWord(run.workflowName)
+  } --run ${run.runId}`;
+}
+
+function renderExpired(
+  cliCtx: CommandContext,
+  expired: ExpiredApproval[],
+  target: string,
+): void {
+  if (expired.length === 0) return;
+  const quiet = cliCtx.verbosity === "quiet";
+  cliCtx.logger.info(
+    "Expired gates ({count}): past their timeout, so they can only be cancelled",
+    { count: expired.length },
+  );
+  for (const item of expired) {
+    cliCtx.logger.info(
+      "{workflowName} / {stepName} — expired",
+      { workflowName: item.workflowName, stepName: item.stepName },
+    );
+    cliCtx.logger.info("  Run:          {runId}", { runId: item.runId });
+    cliCtx.logger.info(
+      "  Suspended at: {suspendedAt}",
+      { suspendedAt: item.suspendedAt },
+    );
+    cliCtx.logger.info(
+      "  Expired at:   {expiredAt} (timeout {timeoutSeconds}s)",
+      { expiredAt: item.expiredAt, timeoutSeconds: item.timeoutSeconds },
+    );
+    if (!quiet) writeOutput(`  ${cancelCommand(item, target)}`);
+    if (item.parentRun) {
+      if (item.parentWaiting === false) {
+        cliCtx.logger.info(
+          "  Nested run of {parentWorkflow} ({parentRunId}): the parent no longer waits on it",
+          {
+            parentWorkflow: item.parentRun.workflowName,
+            parentRunId: item.parentRun.runId,
+          },
+        );
+      } else if (!quiet) {
+        writeOutput(
+          `  Nested run of ${
+            escapeControlCharacters(item.parentRun.workflowName)
+          }: the parent stays suspended after this cancel; cancel it with ${
+            cancelCommand(item.parentRun, target)
+          }`,
+        );
+      }
+    }
+  }
+}
+
 export function renderApprovals(
   cliCtx: CommandContext,
   pending: PendingApproval[],
+  expired: ExpiredApproval[] = [],
   server?: string,
 ): void {
   const target = formatCommandTarget({ server });
   if (cliCtx.outputMode === "json") {
-    console.log(JSON.stringify({ approvals: pending }, null, 2));
+    console.log(JSON.stringify({ approvals: pending, expired }, null, 2));
   } else {
     if (pending.length === 0) {
       cliCtx.logger.info("No workflows awaiting approval");
@@ -149,13 +217,16 @@ export function renderApprovals(
         }
       }
     }
+    renderExpired(cliCtx, expired, target);
   }
 }
 
 export const workflowApprovalsCommand = withRemoteOptions(
   new Command()
     .name("approvals")
-    .description("List all workflow runs awaiting manual approval")
+    .description(
+      "List all workflow runs awaiting manual approval, and gates that expired",
+    )
     .example("List pending approvals", "swamp workflow approvals")
     .example(
       "List via server",
@@ -184,10 +255,15 @@ export const workflowApprovalsCommand = withRemoteOptions(
         payload: {},
       },
     );
-    const data = response.data as { approvals?: PendingApproval[] };
+    // An older serve sends no expired list.
+    const data = response.data as {
+      approvals?: PendingApproval[];
+      expired?: ExpiredApproval[];
+    };
     renderApprovals(
       cliCtx,
       data.approvals ?? [],
+      data.expired ?? [],
       options.server as string | undefined,
     );
     return;
@@ -222,12 +298,14 @@ export const workflowApprovalsCommand = withRemoteOptions(
   );
 
   let pending: PendingApproval[] = [];
+  let expired: ExpiredApproval[] = [];
   await consumeStream<WorkflowApprovalsEvent>(
     workflowApprovals(ctx, deps),
     {
       resolving: () => {},
       completed: (e) => {
         pending = e.data.approvals;
+        expired = e.data.expired;
       },
       error: (e) => {
         throw userErrorFromSwampError(e.error);
@@ -235,7 +313,7 @@ export const workflowApprovalsCommand = withRemoteOptions(
     },
   );
 
-  renderApprovals(cliCtx, pending);
+  renderApprovals(cliCtx, pending, expired);
 
   if (pending.length === 0) {
     const unmigrated = await checkUnmigratedNamespaceData(datastoreConfig);

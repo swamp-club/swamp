@@ -33,6 +33,7 @@ export interface LockInfo {
   acquiredAt: string;
   ttlMs: number;
   nonce?: string;
+  holderUnknown?: true;
 }
 
 /** Configuration for lock behavior. */
@@ -131,11 +132,24 @@ export interface DatastoreSyncService {
   /**
    * Download a single file from the remote datastore by cache-relative path.
    * Used for transparent content hydration when `hydrationStrategy` is `"lazy"`.
+   * Return `true` only once the file is at `relPath` under the cache: swamp
+   * checks, and fails the read with a contract violation error if it is not.
    */
   hydrateFile?(
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<boolean>;
+  /**
+   * Read one file as the remote holds it, without touching the local cache.
+   * Resolves to its bytes, or `null` when the remote has no such file; any
+   * other failure rejects. `relPath` is cache-relative, as for `hydrateFile`,
+   * so with a namespace it already starts with `{namespace}/`. A `relPath`
+   * that is absolute or has a `..` segment is rejected.
+   */
+  fetchContent?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<Uint8Array | null>;
   /**
    * Return a store for small control-plane records, read and written in
    * the datastore directly. Required when `capabilities().controlPlane` is

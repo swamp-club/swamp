@@ -161,6 +161,17 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       "Replace each bare name with its import-map target from deno.json (an explicit npm: or jsr: specifier such as npm:zod@4) so the registry scorer can resolve imports. Swamp's lint never applies no-import-prefix, so deno.json needs no exclude for it.",
   },
+  // ── File-scoped (appended by push) ──────────────────────────────────
+  // Not acceptable: the registry cannot list the model however the author
+  // justifies it, and the fix is mechanical (swamp-club#2486).
+  {
+    id: "uncatalogued-model",
+    severity: "warning",
+    scope: "file",
+    acceptable: false,
+    remediation:
+      'Write type and version as string literals directly in an unannotated export const model = { ... } object, repeating both after a spread of a shared factory\'s result (e.g. { ...definition, type: "@acme/thing", version: "2026.09.25.1" }). Check the shape with satisfies after the object instead of a type annotation.',
+  },
   // ── Adversarial-review evidence: warnings, never acceptable here ────
   {
     id: "adversarial-review-report",

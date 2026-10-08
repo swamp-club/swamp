@@ -21,10 +21,13 @@ import { getLogger } from "@logtape/logtape";
 import { withPollCycleSpan } from "../../infrastructure/tracing/mod.ts";
 import { join } from "@std/path";
 import {
+  readGrantsDirSource,
+  readGrantsFileSource,
+} from "./grant_file_loader.ts";
+import {
   type ConditionValidator,
   type GrantFileEntry,
   type GrantFileError,
-  parseGrantFile,
   readGrantFiles,
 } from "./grant_file.ts";
 import {
@@ -33,7 +36,6 @@ import {
 } from "./grant_file_reconciler.ts";
 import {
   GRANTS_FILE_SOURCE_NAME,
-  grantsDirSourceName,
   isGrantsDirSourceName,
 } from "./grant_source.ts";
 import type { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
@@ -146,79 +148,54 @@ export class GrantsDirectoryPoller {
       }
 
       if (this.#externalGrantsFile) {
-        const filePath = this.#externalGrantsFile;
-        try {
-          const content = await Deno.readTextFile(filePath);
-          if (content.trim().length > 0) {
-            const result = parseGrantFile(
-              filePath,
-              content,
-              this.#validateCondition,
-            );
-            if (result.errors.length > 0) {
-              this.#logUnavailable(filePath, result.errors);
-              unavailable.add(GRANTS_FILE_SOURCE_NAME);
-            } else {
-              validEntries.set(GRANTS_FILE_SOURCE_NAME, result.entries);
-            }
-          }
-        } catch (error) {
-          this.#logUnavailable(filePath, [{
-            filename: filePath,
-            message: `Failed to read: ${error}`,
+        const load = await readGrantsFileSource(this.#externalGrantsFile, {
+          validateCondition: this.#validateCondition,
+        });
+        if (load.status !== "loaded") {
+          this.#logUnavailable(load.path, [{
+            filename: load.path,
+            message: `Failed to read: ${load.cause}`,
           }]);
           unavailable.add(GRANTS_FILE_SOURCE_NAME);
+        } else if (load.file.result !== null) {
+          if (load.file.result.errors.length > 0) {
+            this.#logUnavailable(load.path, load.file.result.errors);
+            unavailable.add(GRANTS_FILE_SOURCE_NAME);
+          } else {
+            validEntries.set(GRANTS_FILE_SOURCE_NAME, load.file.result.entries);
+          }
         }
       }
 
       if (this.#externalGrantsDir) {
-        const externalDir = this.#externalGrantsDir;
-        let yamlFiles: Deno.DirEntry[] | null = null;
-        try {
-          const dirEntries: Deno.DirEntry[] = [];
-          for await (const entry of Deno.readDir(externalDir)) {
-            dirEntries.push(entry);
-          }
-          yamlFiles = dirEntries
-            .filter((e) =>
-              (e.isFile || e.isSymlink) &&
-              (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
-              !e.name.startsWith(".")
-            )
-            .sort((a, b) => a.name.localeCompare(b.name));
-        } catch (error) {
+        const load = await readGrantsDirSource(this.#externalGrantsDir, {
+          validateCondition: this.#validateCondition,
+        });
+        if (load.status === "missing" || load.status === "unreadable") {
           // Startup refuses a missing or unreadable --grants-dir; an
           // unmounted volume must not revoke its grants.
           logger
-            .error`Failed to read grants directory ${externalDir} during auto-reload, keeping the stored grants of its files unchanged: ${error}`;
+            .error`Failed to read grants directory ${load.path} during auto-reload, keeping the stored grants of its files unchanged: ${load.cause}`;
           externalDirUnavailable = true;
-        }
-
-        for (const file of yamlFiles ?? []) {
-          const filePath = join(externalDir, file.name);
-          const sourceName = grantsDirSourceName(file.name);
-          try {
-            const content = await Deno.readTextFile(filePath);
-            if (content.trim().length === 0) continue;
-            const result = parseGrantFile(
-              filePath,
-              content,
-              this.#validateCondition,
-            );
-            if (result.errors.length > 0) {
-              this.#logUnavailable(filePath, result.errors);
-              unavailable.add(sourceName);
+        } else if (load.status === "loaded") {
+          for (const file of load.files) {
+            if (file.readError !== undefined) {
+              // Deleted since the directory was listed: revoke, as a delete.
+              if (file.readError instanceof Deno.errors.NotFound) continue;
+              this.#logUnavailable(file.path, [{
+                filename: file.path,
+                message: `Failed to read: ${file.readError}`,
+              }]);
+              unavailable.add(file.sourceName);
               continue;
             }
-            validEntries.set(sourceName, result.entries);
-          } catch (error) {
-            // Deleted since the directory was listed: revoke, as a delete.
-            if (error instanceof Deno.errors.NotFound) continue;
-            this.#logUnavailable(filePath, [{
-              filename: filePath,
-              message: `Failed to read: ${error}`,
-            }]);
-            unavailable.add(sourceName);
+            if (file.result === null) continue;
+            if (file.result.errors.length > 0) {
+              this.#logUnavailable(file.path, file.result.errors);
+              unavailable.add(file.sourceName);
+              continue;
+            }
+            validEntries.set(file.sourceName, file.result.entries);
           }
         }
       }

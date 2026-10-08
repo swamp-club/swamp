@@ -37,6 +37,7 @@ import {
   type TriggerEvaluationContext,
 } from "./trigger_condition.ts";
 import type { Workflow } from "./workflow.ts";
+import type { RunTriggeringPrincipal } from "../vaults/run_vault_access.ts";
 import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import { AssertSeveritySchema } from "./step_task.ts";
@@ -252,6 +253,25 @@ function isRunValuePath(path: DataPath): boolean {
 }
 
 /**
+ * The principal that triggered a serve run and the memberships captured at
+ * run start (swamp-club#2676).
+ */
+export const TriggeringPrincipalSchema = z.object({
+  kind: z.enum(["user", "worker", "service"]),
+  id: z.string().min(1),
+  tokenBinding: z.object({
+    name: z.string(),
+    createdAt: z.string(),
+    principalId: z.string(),
+  }).optional(),
+  membership: z.object({
+    localGroups: z.array(z.string()),
+    idpGroups: z.array(z.string()),
+    collectives: z.array(z.string()),
+  }),
+});
+
+/**
  * Zod schema for workflow run.
  */
 export const WorkflowRunSchema = z.object({
@@ -314,6 +334,9 @@ export const WorkflowRunSchema = z.object({
   // Derived on save: the run is suspended with every approval gate decided,
   // so it is waiting for a resume rather than an approval.
   awaitingResume: z.boolean().optional(),
+  // Suspended by a recovery and not resumed since: the steps it reset wait
+  // for someone to resume the run, so serve does not continue it.
+  recovered: z.boolean().optional(),
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
@@ -322,6 +345,15 @@ export const WorkflowRunSchema = z.object({
   // On a nested workflow's run: the parent step that started it
   // (swamp-club#2736). Validated in the domain, as nestedRun is.
   parentRun: z.unknown().optional(),
+  // The principal that triggered a serve run and its memberships at run
+  // start (swamp-club#2676). A resume is held to it, never to the resumer.
+  // Absent on local runs and on runs written before it existed.
+  triggeringPrincipal: TriggeringPrincipalSchema.optional(),
+  // The vaults the run's `vaults:` lists allowed at run start (their
+  // intersection, a parent's included). A resume is held to this list and
+  // the workflow's current one, so an edit can narrow a suspended run but
+  // never widen it. Absent when no list applied, and on older runs.
+  allowedVaults: z.array(z.string()).optional(),
 });
 
 /**
@@ -1327,6 +1359,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _writtenReferences: WrittenReference[] = [],
     private _sensitiveFormat: number | undefined = undefined,
     private _parentRun: RunLink<ParentRunRef> | undefined = undefined,
+    private _triggeringPrincipal: RunTriggeringPrincipal | undefined =
+      undefined,
+    private _allowedVaults: string[] | undefined = undefined,
+    private _recovered: boolean = false,
   ) {}
 
   /**
@@ -1453,6 +1489,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.writtenReferences ?? [],
       validated.sensitiveFormat,
       parseParentRunLink(validated.parentRun),
+      validated.triggeringPrincipal,
+      validated.allowedVaults,
+      validated.recovered ?? false,
     );
   }
 
@@ -1469,6 +1508,33 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get initiatedBy(): string | undefined {
     return this._initiatedBy;
+  }
+
+  /**
+   * The principal that triggered the run and its memberships at run start,
+   * when a serve run recorded them (swamp-club#2676).
+   */
+  get triggeringPrincipal(): RunTriggeringPrincipal | undefined {
+    return this._triggeringPrincipal;
+  }
+
+  /** Records who triggered the run; resumes are held to this principal. */
+  recordTriggeringPrincipal(principal: RunTriggeringPrincipal): void {
+    this._triggeringPrincipal = structuredClone(principal);
+  }
+
+  /**
+   * The vaults the run's `vaults:` lists allowed when it started, when a
+   * list applied. A resume is held to it as well as to the workflow's
+   * current list.
+   */
+  get allowedVaults(): readonly string[] | undefined {
+    return this._allowedVaults;
+  }
+
+  /** Records the vaults the run's `vaults:` lists allow at run start. */
+  recordAllowedVaults(vaults: Iterable<string>): void {
+    this._allowedVaults = [...vaults];
   }
 
   get startedAt(): Date | undefined {
@@ -1733,6 +1799,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     this._status = "suspended";
     this._completedAt = undefined;
+    this._recovered = true;
+  }
+
+  /**
+   * True while the run is suspended by a recovery and has not been resumed
+   * since. Its reset steps had an unknown outcome, so only a resume someone
+   * asks for runs them again: serve never continues such a run by itself.
+   */
+  get awaitsResumeAfterRecovery(): boolean {
+    return this._status === "suspended" && this._recovered;
   }
 
   /**
@@ -1836,6 +1912,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   resumeFromSuspended(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
+    this._recovered = false;
     this.takeOwnership(owner);
   }
 
@@ -2138,6 +2215,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
     if (this._triggerSource !== undefined) {
       data.triggerSource = this._triggerSource;
     }
+    if (this._triggeringPrincipal !== undefined) {
+      data.triggeringPrincipal = structuredClone(
+        this._triggeringPrincipal,
+      ) as WorkflowRunData["triggeringPrincipal"];
+    }
+    if (this._allowedVaults !== undefined) {
+      data.allowedVaults = [...this._allowedVaults];
+    }
     if (this._writtenReferences.length > 0) {
       data.writtenReferences = structuredClone(this._writtenReferences);
     }
@@ -2165,6 +2250,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this.isAwaitingResume()) {
       data.awaitingResume = true;
+    }
+    if (this.awaitsResumeAfterRecovery) {
+      data.recovered = true;
     }
     if (this._runPlan !== undefined) {
       data.runPlan = { ...this._runPlan };

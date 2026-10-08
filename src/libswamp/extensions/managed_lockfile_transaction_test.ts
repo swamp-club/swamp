@@ -28,8 +28,11 @@ import {
   readUpstreamExtensions,
   type UpstreamExtensionsMap,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
+  createRootLockfileSync,
   inManagedLockfileTransaction,
+  LockfilePublishWiringError,
   ManagedLockfileTransaction,
   ManagedLockfileUnpublishedError,
   refreshManagedLockfile,
@@ -37,6 +40,12 @@ import {
 } from "./managed_lockfile_transaction.ts";
 
 const PULLED_AT = "2026-09-30T00:00:00.000Z";
+
+/**
+ * Runs the transaction with no root unit of work: these tests drive a fake
+ * sync port, which publishes without one.
+ */
+const noRoot = <T>(fn: () => Promise<T>): Promise<T> => fn();
 const entry = (version: string) => ({ version, pulledAt: PULLED_AT });
 
 interface Harness {
@@ -70,6 +79,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     const transaction = (publishFailure?: "throw" | "defer") =>
       new ManagedLockfileTransaction({
         lockfilePath,
+        inRoot: noRoot,
         publishFailure,
         onWarning: (message) => warnings.push(message),
         lock: {
@@ -297,6 +307,7 @@ Deno.test("ManagedLockfileTransaction.run: a failed fetch changes nothing and re
   await withHarness(async (h) => {
     const transaction = new ManagedLockfileTransaction({
       lockfilePath: h.lockfilePath,
+      inRoot: noRoot,
       lock: {
         acquire: () => Promise.resolve(void h.events.push("acquire")),
         release: () => Promise.resolve(void h.events.push("release")),
@@ -389,6 +400,7 @@ Deno.test("ManagedLockfileTransaction.run: a pending change is published even wh
     const transaction = () =>
       new ManagedLockfileTransaction({
         lockfilePath: h.lockfilePath,
+        inRoot: noRoot,
         lock: {
           acquire: () => Promise.resolve(),
           release: () => Promise.resolve(),
@@ -451,6 +463,7 @@ Deno.test("ManagedLockfileTransaction.run: a second failed publish keeps the fir
     const transaction = () =>
       new ManagedLockfileTransaction({
         lockfilePath: h.lockfilePath,
+        inRoot: noRoot,
         lock: {
           acquire: () => Promise.resolve(),
           release: () => Promise.resolve(),
@@ -533,6 +546,7 @@ Deno.test("ManagedLockfileTransaction.run: a legacy record's local entries survi
     // A fetch that downloads the lockfile, then fails on a later file.
     const failingFetch = new ManagedLockfileTransaction({
       lockfilePath: h.lockfilePath,
+      inRoot: noRoot,
       lock: {
         acquire: () => Promise.resolve(),
         release: () => Promise.resolve(),
@@ -686,5 +700,231 @@ Deno.test("ManagedLockfileTransaction.run: a publish of only an earlier change s
       ManagedLockfileUnpublishedError,
     );
     assertEquals(h.earlierChangeOnly, [false, true]);
+  });
+});
+
+// --- The publish as a root unit-of-work commit (swamp-club#3192) ---------
+
+interface RootHarness {
+  lockfilePath: string;
+  /** acquire, pull, mark <path>, checkpoint, release, in order. */
+  events: string[];
+  pending: { value: PendingLockfilePublish };
+  /** How many roots the transaction opened. */
+  roots: { value: number };
+  /** What each checkpoint's push reports; undefined reports nothing. */
+  pushed: { value: number | undefined };
+  signals: (AbortSignal | undefined)[];
+  transaction: (
+    options?: { withRoot?: boolean; publishFailure?: "throw" | "defer" },
+  ) => ManagedLockfileTransaction;
+}
+
+async function withRootHarness(
+  fn: (h: RootHarness) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lockfile-root-" });
+  try {
+    const lockfilePath = join(dir, "config", "upstream_extensions.json");
+    const events: string[] = [];
+    const pending = { value: { kind: "none" } as PendingLockfilePublish };
+    const roots = { value: 0 };
+    const pushed = { value: 1 as number | undefined };
+    const signals: (AbortSignal | undefined)[] = [];
+    const markDirty = (path?: string) => {
+      events.push(`mark ${path === undefined ? "(bulk)" : "lockfile"}`);
+      return Promise.resolve();
+    };
+    const transaction = (
+      { withRoot = true, publishFailure }: {
+        withRoot?: boolean;
+        publishFailure?: "throw" | "defer";
+      } = {},
+    ) =>
+      new ManagedLockfileTransaction({
+        lockfilePath,
+        publishFailure,
+        inRoot: withRoot
+          ? (run) => {
+            roots.value++;
+            return runInRootUnitOfWork(
+              { markDirty },
+              {
+                flush: undefined,
+                checkpoint: ({ signal }) => {
+                  events.push("checkpoint");
+                  signals.push(signal);
+                  return Promise.resolve(pushed.value);
+                },
+              },
+              () => run(),
+            );
+          }
+          : noRoot,
+        lock: {
+          acquire: () => Promise.resolve(void events.push("acquire")),
+          release: () => Promise.resolve(void events.push("release")),
+        },
+        sync: createRootLockfileSync({
+          syncService: {
+            pullChanged: () => {
+              events.push("pull");
+              return Promise.resolve(0);
+            },
+          },
+          namespace: undefined,
+          timeoutMs: 10_000,
+          lockfilePath,
+          markDirty,
+        }),
+        pending: {
+          read: () => Promise.resolve(pending.value),
+          write: (delta: LockfileEntryDelta) => {
+            pending.value = { kind: "delta", delta };
+            return Promise.resolve();
+          },
+          clear: () => {
+            pending.value = { kind: "none" };
+            return Promise.resolve();
+          },
+        },
+      });
+    await fn({
+      lockfilePath,
+      events,
+      pending,
+      roots,
+      pushed,
+      signals,
+      transaction,
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+function addEntry(lockfilePath: string, name: string): Promise<void> {
+  return new LockfileRepository(lockfilePath).writeEntry(name, "1.0.0", []);
+}
+
+Deno.test("createRootLockfileSync: stages the lockfile, then pushes at the root's checkpoint, before the lock is released", async () => {
+  await withRootHarness(async (h) => {
+    await h.transaction().run(() => addEntry(h.lockfilePath, "@a/x"));
+    assertEquals(h.events, [
+      "acquire",
+      "pull",
+      "mark lockfile",
+      "checkpoint",
+      "release",
+    ]);
+    assertEquals(h.roots.value, 1);
+    assertEquals(h.pending.value.kind, "none");
+    // The push runs under runBoundedSync's bound, which aborts it on timeout.
+    assertEquals(h.signals[0] instanceof AbortSignal, true);
+  });
+});
+
+Deno.test("createRootLockfileSync: a push that sends nothing when the lockfile must upload fails and keeps the change pending", async () => {
+  await withRootHarness(async (h) => {
+    h.pushed.value = 0;
+    const error = await assertRejects(
+      () => h.transaction().run(() => addEntry(h.lockfilePath, "@a/x")),
+      ManagedLockfileUnpublishedError,
+      "the push uploaded nothing",
+    );
+    assertEquals(error.code, "managed_config_unpublished");
+    assertEquals(h.pending.value.kind, "delta");
+  });
+});
+
+Deno.test("createRootLockfileSync: a push that reports no count is not a failed upload", async () => {
+  await withRootHarness(async (h) => {
+    h.pushed.value = undefined;
+    await h.transaction().run(() => addEntry(h.lockfilePath, "@a/x"));
+    assertEquals(h.pending.value.kind, "none");
+  });
+});
+
+Deno.test("createRootLockfileSync: an empty change with an earlier pending record still stages and pushes at the checkpoint", async () => {
+  await withRootHarness(async (h) => {
+    h.pending.value = {
+      kind: "delta",
+      delta: { upserts: { "@a/earlier": entry("1.0.0") }, removals: [] },
+    };
+    await h.transaction().refresh();
+    assertEquals(h.events, [
+      "acquire",
+      "pull",
+      "mark lockfile",
+      "checkpoint",
+      "release",
+    ]);
+    assertEquals(h.pending.value.kind, "none");
+  });
+});
+
+Deno.test("createRootLockfileSync: a change that writes nothing opens a root but stages and pushes nothing", async () => {
+  await withRootHarness(async (h) => {
+    await h.transaction().run(() => Promise.resolve());
+    assertEquals(h.events, ["acquire", "pull", "release"]);
+    assertEquals(h.roots.value, 1);
+  });
+});
+
+Deno.test("ManagedLockfileTransaction.run: a nested run joins the outer run's root and publishes once", async () => {
+  await withRootHarness(async (h) => {
+    const transaction = h.transaction();
+    await transaction.run(async () => {
+      await addEntry(h.lockfilePath, "@a/x");
+      await transaction.run(() => addEntry(h.lockfilePath, "@a/y"));
+    });
+    assertEquals(h.roots.value, 1);
+    assertEquals(h.events.filter((event) => event === "checkpoint"), [
+      "checkpoint",
+    ]);
+  });
+});
+
+Deno.test("createRootLockfileSync: a publish outside a root unit of work fails as a wiring error instead of pushing by hand", async () => {
+  await withRootHarness(async (h) => {
+    await assertRejects(
+      () =>
+        h.transaction({ withRoot: false }).run(() =>
+          addEntry(h.lockfilePath, "@a/x")
+        ),
+      LockfilePublishWiringError,
+      "outside a root unit of work",
+    );
+    assertEquals(h.events, ["acquire", "pull", "release"]);
+    assertEquals(h.pending.value.kind, "delta");
+  });
+});
+
+Deno.test("createRootLockfileSync: serve's defer does not turn a missing root into a warning", async () => {
+  await withRootHarness(async (h) => {
+    await assertRejects(
+      () =>
+        h.transaction({ withRoot: false, publishFailure: "defer" }).run(() =>
+          addEntry(h.lockfilePath, "@a/x")
+        ),
+      LockfilePublishWiringError,
+    );
+  });
+});
+
+Deno.test("createRootLockfileSync: a missing root wins over a change that threw after writing", async () => {
+  await withRootHarness(async (h) => {
+    await assertRejects(
+      () =>
+        h.transaction({ withRoot: false }).run(async () => {
+          await addEntry(h.lockfilePath, "@a/x");
+          throw new Error("the change failed");
+        }),
+      LockfilePublishWiringError,
+    );
   });
 });

@@ -2265,6 +2265,111 @@ Deno.test("extensionPushPrepare: the bare-specifiers finding names each import-m
   });
 });
 
+const SPREAD_MODEL_SOURCE = 'import { make } from "./factory.ts";\n' +
+  'const definition = make({ type: "@testuser/thing", version: "2026.09.25.1" });\n' +
+  'export const model = {\n  ...definition,\n  type: "@testuser/thing",\n};\n';
+
+Deno.test("extensionPushPrepare: a model without a literal version is an uncatalogued-model warning naming the file", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": SPREAD_MODEL_SOURCE,
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    const findings = result.reviewRulesResult.warnings.filter((w) =>
+      w.ruleId === "uncatalogued-model"
+    );
+    assertEquals(findings.length, 1);
+    assertEquals(findings[0].file, paths["models/a.ts"]);
+    assertEquals(findings[0].severity, "medium");
+    assertEquals(findings[0].dimension, "Registry catalog");
+    assertEquals(findings[0].line, undefined);
+    assertEquals(
+      findings[0].message,
+      "Model export has no string-literal version in its export const model " +
+        "object, so the registry catalog will not list this model type. " +
+        "The extension still installs and the model still runs.",
+    );
+    assertStringIncludes(findings[0].remediation ?? "", "repeating both");
+    assertEquals(result.reviewRulesResult.errors, []);
+  });
+});
+
+Deno.test("extensionPushPrepare: the uncatalogued-model message names an annotation and a model missing both literals", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      'export const model: Definition = {\n  type: "@testuser/a",\n  version: "2026.09.25.1",\n};\n',
+    "models/b.ts": "export const model = {\n  ...definition,\n};\n",
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"], paths["models/b.ts"]]),
+    );
+    const messages = new Map(
+      result.reviewRulesResult.warnings
+        .filter((w) => w.ruleId === "uncatalogued-model")
+        .map((w) => [w.file, w.message]),
+    );
+    assertStringIncludes(
+      messages.get(paths["models/a.ts"]) ?? "",
+      "Model export has a type annotation, so it is not read as a plain",
+    );
+    assertStringIncludes(
+      messages.get(paths["models/b.ts"]) ?? "",
+      "Model export has neither a string-literal type nor a string-literal version",
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: a model with literal type and version is not an uncatalogued-model warning", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts": SPREAD_MODEL_SOURCE.replace(
+      '  type: "@testuser/thing",\n',
+      '  type: "@testuser/thing",\n  version: "2026.09.25.1",\n',
+    ),
+  }, async (dir, paths) => {
+    const result = await extensionPushPrepare(
+      ctx,
+      makePrepareDeps(),
+      acceptanceInput(dir, [paths["models/a.ts"]]),
+    );
+    assertEquals(
+      result.reviewRulesResult.warnings.filter((w) =>
+        w.ruleId === "uncatalogued-model"
+      ),
+      [],
+    );
+  });
+});
+
+Deno.test("extensionPushPrepare: an acceptance for uncatalogued-model is invalid and blocks the push", async () => {
+  await withAcceptanceFixture({
+    "models/a.ts":
+      "// swamp-quality-ignore uncatalogued-model: built by a factory\n" +
+      SPREAD_MODEL_SOURCE,
+  }, async (dir, paths) => {
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        acceptanceInput(dir, [paths["models/a.ts"]]),
+      )
+    ) as SwampError;
+    const details = error.details as { reviewRuleErrors: ReviewFinding[] };
+    assertEquals(
+      details.reviewRuleErrors.map((f) => f.ruleId),
+      ["invalid-acceptance"],
+    );
+    assertStringIncludes(
+      details.reviewRuleErrors[0].message,
+      '"uncatalogued-model" is not a rule that can be accepted',
+    );
+  });
+});
+
 Deno.test("extensionPushPrepare: an accepted finding in a typed directory beside the manifest is a ../ path in the summary and an archive path for the registry, never a local one", async () => {
   const dir = await Deno.makeTempDir({ prefix: "acceptances-" });
   try {
@@ -2596,3 +2701,56 @@ Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cach
     },
   );
 });
+
+Deno.test("extensionPush: carries the registry's warnings on the completed event", async () => {
+  const warnings = {
+    messages: ["contentMetadata was rejected (too many methods)"],
+    omitted: 2,
+  };
+  const events = await collect(extensionPush(
+    ctx,
+    makeExecuteDeps({
+      confirmPush: () =>
+        Promise.resolve({
+          name: "@testuser/test-ext",
+          version: "2026.03.22.1",
+          extensionId: "ext-123",
+          warnings,
+        }),
+    }),
+    makeExecuteInput(),
+  ));
+  const last = events.at(-1);
+  assertEquals(last?.kind, "completed");
+  if (last?.kind === "completed") {
+    assertEquals(last.data.registryWarnings, warnings);
+  }
+});
+
+for (const warnings of [undefined, { messages: [], omitted: 0 }]) {
+  Deno.test(
+    `extensionPush: completed event has no registryWarnings when the registry returns ${
+      warnings ? "none" : "no field"
+    }`,
+    async () => {
+      const events = await collect(extensionPush(
+        ctx,
+        makeExecuteDeps({
+          confirmPush: () =>
+            Promise.resolve({
+              name: "@testuser/test-ext",
+              version: "2026.03.22.1",
+              extensionId: "ext-123",
+              ...(warnings ? { warnings } : {}),
+            }),
+        }),
+        makeExecuteInput(),
+      ));
+      const last = events.at(-1);
+      assertEquals(last?.kind, "completed");
+      if (last?.kind === "completed") {
+        assertEquals("registryWarnings" in last.data, false);
+      }
+    },
+  );
+}

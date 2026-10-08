@@ -27,6 +27,10 @@ import {
   resolveExternalGrantsDir,
   resolveExternalGrantsFile,
 } from "./grant_file.ts";
+import {
+  readConditionTypeLiterals,
+  validateGrantCondition,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
 
 Deno.test("parseGrantFile: parses valid grant file", () => {
   const content = `
@@ -456,6 +460,7 @@ Deno.test("collectErrors: aggregates errors from all files", () => {
       {
         entries: [],
         errors: [{ filename: "a.yaml", message: "err1" }],
+        warnings: [],
       },
     ],
     [
@@ -470,6 +475,7 @@ Deno.test("collectErrors: aggregates errors from all files", () => {
           },
         ],
         errors: [],
+        warnings: [],
       },
     ],
     [
@@ -480,6 +486,7 @@ Deno.test("collectErrors: aggregates errors from all files", () => {
           { filename: "c.yaml", entryIndex: 0, message: "err2" },
           { filename: "c.yaml", entryIndex: 1, message: "err3" },
         ],
+        warnings: [],
       },
     ],
   ]);
@@ -1130,4 +1137,46 @@ grants:
   const result = parseGrantFile("callbacks.yaml", content);
   assertEquals(result.errors, []);
   assertEquals(result.entries[0].actions, ["signal"]);
+});
+
+Deno.test("parseGrantFile: a non-canonical type spelling is a warning, never an error (swamp-club#3130)", () => {
+  const content = `
+grants:
+  - subject: user:adam
+    effect: deny
+    actions: [run]
+    resource: "model:AWS::EC2::*"
+  - subject: user:adam
+    effect: allow
+    actions: [run]
+    resource: "model:*"
+    condition: 'modelType == "Acme.Tools.Probe"'
+  - subject: user:adam
+    effect: allow
+    actions: [run]
+    resource: "model:@acme/*"
+`;
+  const result = parseGrantFile(
+    "spelling.yaml",
+    content,
+    validateGrantCondition,
+    readConditionTypeLiterals,
+  );
+  assertEquals(result.errors, []);
+  assertEquals(result.entries.length, 3);
+  assertEquals(result.warnings.map((w) => w.entryIndex), [0, 1]);
+  assertEquals(result.warnings[0].message.includes("model:aws/ec2/*"), true);
+  assertEquals(result.warnings[1].message.includes("acme/tools/probe"), true);
+});
+
+Deno.test("parseGrantFile: without a literal reader only selectors are checked", () => {
+  const content = `
+grants:
+  - subject: user:adam
+    effect: allow
+    actions: [run]
+    resource: "model:*"
+    condition: 'modelType == "Acme.Tools.Probe"'
+`;
+  assertEquals(parseGrantFile("c.yaml", content).warnings, []);
 });

@@ -28,12 +28,25 @@ import {
   type AncestorCheck,
   type AuthGateOutcome,
   createAuthGateDeps,
+  createGatePassKeeper,
+  type GateHandoff,
+  type GatePassKeeper,
   runAuthGate,
 } from "../src/cli/auth_gate.ts";
 import {
+  beginAuthGateSession,
+  deferredWorkerAdmission,
+  endAuthGateSession,
+} from "../src/cli/auth_gate_session.ts";
+import {
   formatNestedGatePass,
+  formatOrchestratorGatePass,
   NESTED_GATE_PASS_ENV,
 } from "../src/domain/auth/nested_gate_pass.ts";
+import { AuthGateBlockedError } from "../src/domain/auth/auth_gate_blocked_error.ts";
+import { WorkerGateway } from "../src/serve/worker_gateway.ts";
+import { runWorker } from "../src/worker/connect.ts";
+import type { RepositoryContext } from "../src/infrastructure/persistence/repository_factory.ts";
 import { AuthVerificationRepository } from "../src/infrastructure/persistence/auth_verification_repository.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
@@ -568,5 +581,208 @@ Deno.test("auth gate integration: a logged-in run ignores an inherited pass and 
       proof: own.proof,
       signature: own.signature,
     });
+  });
+});
+
+// ── Remote workers (design/surfaces/auth-gate.md, "Remote workers") ──────
+
+/**
+ * A worker control socket wired straight to a WorkerGateway. Each frame is
+ * delivered on a later microtask, as a real socket delivers asynchronously;
+ * the receiving handlers are synchronous, so nothing is left unawaited.
+ */
+class GatewaySocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  readonly #attached: ReturnType<WorkerGateway["attachTransport"]>;
+  #closed = false;
+
+  constructor(gateway: WorkerGateway) {
+    this.#attached = gateway.attachTransport({
+      send: (data) =>
+        void Promise.resolve().then(() => this.onmessage?.({ data })),
+    }, () => this.close());
+    queueMicrotask(() => this.onopen?.());
+  }
+
+  send(data: string): void {
+    void Promise.resolve().then(() => this.#attached.feed(data));
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#attached.closed();
+    queueMicrotask(() => this.onclose?.());
+  }
+}
+
+interface Fleet {
+  readonly gateway: WorkerGateway;
+  /** Model methods the gateway ran: `redeem`, `enroll`, ... */
+  readonly transitions: string[];
+}
+
+function fleetGateway(gatePass: () => string | undefined): Fleet {
+  const transitions: string[] = [];
+  const gateway = new WorkerGateway({
+    // Never touched: every transition goes through runModelMethod below.
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    capabilityService: { registerHandlers: () => {} },
+    gatePass,
+    runModelMethod: (input) => {
+      transitions.push(input.methodName);
+      return Promise.resolve();
+    },
+    readTokenExpiresAt: () => Promise.resolve(null),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        name,
+        state: "enrolled",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        vaultName: "local",
+        secretKey: `worker-token-${name}`,
+        maxEnrollments: 1,
+        bindings: [],
+      }),
+  });
+  return { gateway, transitions };
+}
+
+/** The serve's gate outcome and a keeper over it, from a logged-in world. */
+async function serveKeeper(w: World): Promise<GatePassKeeper> {
+  await w.login();
+  const proof = await w.mint({ iat: now() - DAY, exp: now() + 13 * DAY });
+  await w.saveProof(proof);
+  const outcome = await w.gate();
+  assert(outcome.kind === "pass");
+  const deps = await withMockedEnv(
+    { SWAMP_CONFIG_DIR: w.configDir },
+    () =>
+      Promise.resolve(createAuthGateDeps({ liveChecks: true, canWrite: true })),
+  );
+  return createGatePassKeeper(deps, outcome.handoff);
+}
+
+/**
+ * Run a worker with no credential against `fleet`, the way `worker connect`
+ * does: its gate is deferred, and the orchestrator's pass is checked at
+ * enrollment. The worker's config dir caches `trusted`'s public key, as an
+ * earlier whoami would; the binary does not embed test keys.
+ */
+async function keylessWorker(
+  fleet: Fleet,
+  trusted: TestSigningKey,
+): Promise<{ published: GateHandoff[]; enrolled: boolean }> {
+  const workerDir = await Deno.makeTempDir({ prefix: "swamp-worker-it-" });
+  try {
+    const cached = await mintTestProof(trusted, "another_key", {
+      iat: now(),
+    });
+    await new AuthVerificationRepository({ configDir: workerDir }).save(
+      cached.proof,
+      cached.signature,
+      cached.publicKeys,
+    );
+    return await withMockedEnv({
+      SWAMP_CONFIG_DIR: workerDir,
+      SWAMP_HOME: undefined,
+      SWAMP_API_KEY: undefined,
+      SWAMP_API_KEY_FILE: undefined,
+      SWAMP_SIGNIN_TOKEN: undefined,
+      SWAMP_CLUB_URL: undefined,
+      [NESTED_GATE_PASS_ENV]: undefined,
+    }, async () => {
+      const deps = createAuthGateDeps({ liveChecks: true, canWrite: true });
+      const gateTime = deps.now();
+      const outcome = await runAuthGate(deps);
+      assertEquals(outcome, {
+        kind: "block",
+        reason: { kind: "no_credential" },
+      });
+      beginAuthGateSession({ deps, outcome, gateTime, deferred: true });
+      const published: GateHandoff[] = [];
+      let enrolled = false;
+      const controller = new AbortController();
+      try {
+        await runWorker({
+          url: "ws://orchestrator.test",
+          token: "pool.s3cret",
+          swampVersion: "test",
+          signal: controller.signal,
+          admitGatePass: deferredWorkerAdmission((h) => published.push(h)),
+          onStatus: (event) => {
+            if (event.kind === "enrolled") {
+              enrolled = true;
+              controller.abort();
+            }
+          },
+          createSocket: () =>
+            new GatewaySocket(fleet.gateway) as unknown as WebSocket,
+        });
+      } finally {
+        endAuthGateSession();
+      }
+      return { published, enrolled };
+    });
+  } finally {
+    await Deno.remove(workerDir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
+  }
+}
+
+Deno.test("auth gate integration: a worker with no credential enrolls on its serve's pass", async () => {
+  await withWorld(async (w) => {
+    const keeper = await serveKeeper(w);
+    const fleet = fleetGateway(() => {
+      const pass = keeper.current();
+      return pass ? formatOrchestratorGatePass(pass) : undefined;
+    });
+    const { published, enrolled } = await keylessWorker(fleet, w.key);
+    assertEquals(enrolled, true);
+    // Then `set_status` as the stopped worker disconnects.
+    assertEquals(fleet.transitions.slice(0, 2), ["redeem", "enroll"]);
+    // The worker hands the serve's proof down under its own pid.
+    assertEquals(published, [keeper.current()]);
+    assertEquals(published[0].issuerPid, undefined);
+    assertEquals(w.calls, 0);
+  });
+});
+
+Deno.test("auth gate integration: a serve with no pass refuses a keyless worker before redeeming", async () => {
+  await withWorld(async (w) => {
+    const fleet = fleetGateway(() => undefined);
+    await assertRejects(
+      () => keylessWorker(fleet, w.key),
+      AuthGateBlockedError,
+      "has no signed pass to give",
+    );
+    assertEquals(fleet.transitions, []);
+    assertEquals(fleet.gateway.workers().length, 0);
+  });
+});
+
+Deno.test("auth gate integration: a keyless worker does not trust a serve's pass signed by an unknown key", async () => {
+  await withWorld(async (w) => {
+    const keeper = await serveKeeper(w);
+    const fleet = fleetGateway(() => {
+      const pass = keeper.current();
+      return pass ? formatOrchestratorGatePass(pass) : undefined;
+    });
+    const untrusted = await generateTestSigningKey();
+    const error = await assertRejects(
+      () => keylessWorker(fleet, untrusted),
+      AuthGateBlockedError,
+    );
+    assertEquals(error.reason, { kind: "no_credential" });
+    // The serve enrolled it; the worker closed its socket before any work.
+    assertEquals(fleet.gateway.workers().some((wk) => wk.connected), false);
   });
 });

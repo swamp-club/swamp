@@ -22,7 +22,9 @@ import fc from "fast-check";
 import {
   admitsNestedRun,
   formatNestedGatePass,
+  formatOrchestratorGatePass,
   parseNestedGatePass,
+  parseOrchestratorGatePass,
 } from "./nested_gate_pass.ts";
 
 const passArb = fc.record({
@@ -45,6 +47,32 @@ Deno.test("nested gate pass: parse never throws on arbitrary input", () => {
       const parsed = parseNestedGatePass(value);
       if (parsed !== null) {
         assertEquals(parseNestedGatePass(formatNestedGatePass(parsed)), parsed);
+      }
+    }),
+  );
+});
+
+Deno.test("orchestrator gate pass: format then parse is the identity", () => {
+  fc.assert(
+    fc.property(passArb, ({ proof, signature }) => {
+      const pass = { proof, signature };
+      assertEquals(
+        parseOrchestratorGatePass(formatOrchestratorGatePass(pass)),
+        pass,
+      );
+    }),
+  );
+});
+
+Deno.test("orchestrator gate pass: parse never throws on arbitrary input", () => {
+  fc.assert(
+    fc.property(fc.string(), (value) => {
+      const parsed = parseOrchestratorGatePass(value);
+      if (parsed !== null) {
+        assertEquals(
+          parseOrchestratorGatePass(formatOrchestratorGatePass(parsed)),
+          parsed,
+        );
       }
     }),
   );

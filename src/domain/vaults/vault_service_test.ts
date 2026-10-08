@@ -34,6 +34,13 @@ import type {
   VaultAuditRepository,
 } from "./vault_audit_repository.ts";
 import { registerManagedConfig } from "../../infrastructure/persistence/paths.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+  VaultAccessDeniedError,
+} from "./run_vault_access.ts";
+import { VaultAnnotation } from "./vault_annotation.ts";
+import { RefreshHook } from "./refresh_hook.ts";
 
 Deno.test("VaultService - missing vault configuration error handling", async (t) => {
   await t.step(
@@ -1126,4 +1133,164 @@ Deno.test("VaultService - getDefaultVaultName", async (t) => {
       assertEquals(service.getDefaultVaultName(), undefined);
     },
   );
+});
+
+/**
+ * Registers a per-run spy vault type whose provider supports every optional
+ * capability and records each call, and returns a service with vault `name`.
+ */
+function serviceWithSpyVault(
+  name: string,
+): { service: VaultService; calls: string[]; type: string } {
+  const calls: string[] = [];
+  const type = `@test/spy-${crypto.randomUUID()}`;
+  // Resolves null, typed to fit every provider method it stands in for.
+  const record = (method: string) => (..._args: unknown[]): Promise<never> => {
+    calls.push(method);
+    return Promise.resolve(null as never);
+  };
+  vaultTypeRegistry.register({
+    type,
+    name: "Spy",
+    description: "Records provider calls",
+    isBuiltIn: false,
+    createProvider: () => ({
+      get: (key: string) => {
+        calls.push("get");
+        return Promise.resolve(`value-of-${key}`);
+      },
+      put: record("put"),
+      list: () => {
+        calls.push("list");
+        return Promise.resolve([]);
+      },
+      getName: () => "spy",
+      delete: record("delete"),
+      getAnnotation: record("getAnnotation"),
+      putAnnotation: record("putAnnotation"),
+      deleteAnnotation: record("deleteAnnotation"),
+      listAnnotations: record("listAnnotations"),
+      getRefreshHook: record("getRefreshHook"),
+      putRefreshHook: record("putRefreshHook"),
+      deleteRefreshHook: record("deleteRefreshHook"),
+    }),
+  });
+  const service = new VaultService();
+  service.registerVault({ name, type, config: {} });
+  return { service, calls, type };
+}
+
+const PER_VAULT_METHODS: {
+  method: string;
+  action: "read" | "write";
+  call: (s: VaultService, vault: string) => Promise<unknown>;
+}[] = [
+  { method: "get", action: "read", call: (s, v) => s.get(v, "k") },
+  { method: "list", action: "read", call: (s, v) => s.list(v) },
+  {
+    method: "getAnnotation",
+    action: "read",
+    call: (s, v) => s.getAnnotation(v, "k"),
+  },
+  {
+    method: "getRefreshHook",
+    action: "read",
+    call: (s, v) => s.getRefreshHook(v, "k"),
+  },
+  { method: "put", action: "write", call: (s, v) => s.put(v, "k", "secret") },
+  { method: "delete", action: "write", call: (s, v) => s.delete(v, "k") },
+  {
+    method: "putAnnotation",
+    action: "write",
+    call: (s, v) =>
+      s.putAnnotation(v, "k", VaultAnnotation.create({ notes: "n" })),
+  },
+  {
+    method: "deleteAnnotation",
+    action: "write",
+    call: (s, v) => s.deleteAnnotation(v, "k"),
+  },
+  {
+    method: "putRefreshHook",
+    action: "write",
+    call: (s, v) => s.putRefreshHook(v, "k", RefreshHook.create("echo", 1000)),
+  },
+  {
+    method: "deleteRefreshHook",
+    action: "write",
+    call: (s, v) => s.deleteRefreshHook(v, "k"),
+  },
+];
+
+Deno.test("VaultService: without a vault access scope every per-vault method reaches the provider", async () => {
+  const { service, calls, type } = serviceWithSpyVault("erp");
+  try {
+    for (const { call } of PER_VAULT_METHODS) await call(service, "erp");
+    assertEquals(calls, PER_VAULT_METHODS.map((m) => m.method));
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("VaultService: a refused scope stops every per-vault method before the provider", async () => {
+  const { service, calls, type } = serviceWithSpyVault("erp");
+  try {
+    for (const { method, action, call } of PER_VAULT_METHODS) {
+      const decided: string[] = [];
+      const access = RunVaultAccess.create({
+        policy: {
+          principal: "bot:reporter",
+          decide: (vaultName, a) => {
+            decided.push(`${vaultName}:${a}`);
+            return { allowed: false, reason: "no grant allows it" };
+          },
+        },
+      });
+      const error = await runWithVaultAccess(
+        access,
+        () => assertRejects(() => call(service, "erp"), VaultAccessDeniedError),
+      );
+      assertStringIncludes(error.message, "'erp'");
+      assertStringIncludes(error.message, "bot:reporter");
+      assertEquals(decided, [`erp:${action}`], method);
+    }
+    assertEquals(calls, []);
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("VaultService: an allowed scope reaches the provider", async () => {
+  const { service, calls, type } = serviceWithSpyVault("erp");
+  try {
+    const value = await runWithVaultAccess(
+      RunVaultAccess.create({ allowedVaults: ["erp"] }),
+      () => service.get("erp", "k"),
+    );
+    assertEquals(value, "value-of-k");
+    assertEquals(calls, ["get"]);
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("VaultService: a workflow vaults list refuses an unlisted vault", async () => {
+  const { service, calls, type } = serviceWithSpyVault("erp");
+  try {
+    await runWithVaultAccess(
+      RunVaultAccess.create({
+        allowedVaults: ["roomcontrol"],
+        allowListSource: "report",
+      }),
+      () =>
+        assertRejects(
+          () => service.put("erp", "k", "v"),
+          VaultAccessDeniedError,
+          "workflow 'report'",
+        ),
+    );
+    assertEquals(calls, []);
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+  }
 });

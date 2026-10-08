@@ -19,7 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { UserError } from "../errors.ts";
-import { SyncTimeoutError } from "./datastore_sync_service.ts";
+import {
+  HydrateContractViolationError,
+  SyncTimeoutError,
+} from "./datastore_sync_service.ts";
 
 Deno.test("SyncTimeoutError: message includes direction, label, and timeout", () => {
   const err = new SyncTimeoutError("@swamp/s3-datastore", "push", 300_000);
@@ -105,4 +108,31 @@ Deno.test("SyncTimeoutError: multi-line message round-trips through JSON", () =>
   assertEquals(roundTripped.error, err.message);
   // Newlines survive the round-trip as `\n` — not stripped, not collapsed.
   assertEquals(roundTripped.error.includes("\n"), true);
+});
+
+Deno.test("HydrateContractViolationError: message names the datastore, relPath and absPath", () => {
+  const err = new HydrateContractViolationError(
+    "@swamp/s3-datastore",
+    "ns/data/a/b/1/raw",
+    "/cache/ns/data/a/b/1/raw",
+  );
+  assertStringIncludes(err.message, "@swamp/s3-datastore");
+  assertStringIncludes(
+    err.message,
+    "hydrateFile success for ns/data/a/b/1/raw",
+  );
+  assertStringIncludes(
+    err.message,
+    "no file exists at /cache/ns/data/a/b/1/raw",
+  );
+  assertEquals(err.relPath, "ns/data/a/b/1/raw");
+  assertEquals(err.absPath, "/cache/ns/data/a/b/1/raw");
+  assertEquals(err.datastoreType, "@swamp/s3-datastore");
+});
+
+Deno.test("HydrateContractViolationError: is a UserError with its own name and code", () => {
+  const err = new HydrateContractViolationError("t", "r", "a");
+  assertEquals(err instanceof UserError, true);
+  assertEquals(err.name, "HydrateContractViolationError");
+  assertEquals(err.code, "datastore_hydrate_contract_violation");
 });

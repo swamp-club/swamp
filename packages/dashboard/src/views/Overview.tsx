@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
+import { type ApprovalInfo, pendingApprovals } from "../client/approvals";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { StatusDot } from "../components/StatusDot";
@@ -44,15 +45,6 @@ interface WorkflowRunSearchItem {
   failureReason?: string;
   awaitingResume?: boolean;
   workflowHasInputs?: boolean;
-}
-
-interface ApprovalInfo {
-  workflowName: string;
-  runId: string;
-  stepName: string;
-  suspendedAt?: string;
-  prompt?: string;
-  inputs?: Readonly<Record<string, unknown>>;
 }
 
 interface OverviewProps {
@@ -79,7 +71,7 @@ export function Overview(
   );
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
-  const approvals = extractArray<ApprovalInfo>(approvalsData);
+  const approvals = pendingApprovals(approvalsData);
 
   const totalRuns = runs.length;
   const succeededRuns = runs.filter((r) => r.status === "succeeded").length;

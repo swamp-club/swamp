@@ -101,6 +101,12 @@ import {
   createWorkflowRunDeps,
   executeWorkflowWithLocks,
 } from "../deps.ts";
+import {
+  requestRunVaultScope,
+  resumeRunVaultScope,
+  runVaultScopeContext,
+} from "../run_vault_access_policy.ts";
+import { runGeneratorWithVaultAccess } from "../../domain/vaults/run_vault_access.ts";
 import { withSharedSyncGate } from "../sync_gate.ts";
 import { isWireEvent, serializeEvent } from "../serializer.ts";
 import type {
@@ -240,6 +246,7 @@ import {
 import { expressionsAddedByEdit } from "../../domain/expressions/expression_references.ts";
 import {
   analyzeWorkflowExpressions,
+  changedStepTargets,
   isComputedStepTarget,
   readsSelfOrInputs,
   stepRetargetSourcesChanged,
@@ -248,9 +255,15 @@ import {
   workflowStepTargets,
 } from "../../domain/workflows/step_targets.ts";
 import { authorizeExpressionReferences } from "./expression_reference_authorization.ts";
-import { deliverSignalForCaller } from "../signal_delivery.ts";
+import {
+  continueAfterSignal,
+  deliverSignalForCaller,
+} from "../signal_delivery.ts";
 import { SIGNAL_WAITS_NOT_CONFIGURED } from "../../domain/workflows/signal_wait_store.ts";
-import { authorizeStepTargets } from "./workflow_step_authorization.ts";
+import {
+  authorizeChangedSteps,
+  authorizeStepTargets,
+} from "./workflow_step_authorization.ts";
 
 const logger = getSwampLogger(["serve", "connection"]);
 const DEFAULT_BUFFER_CAPACITY = 10_000;
@@ -339,24 +352,34 @@ async function authorizeWorkflowEdit(
       methodName: method,
     }))
   );
-  return await authorizeStepTargets(
+  const checked = workflowStepTargets(after).filter((target) =>
+    !stored.has(stepTargetKey(target)) ||
+    (retargetable && isComputedStepTarget(target) &&
+      readsSelfOrInputs(target))
+  );
+  const stepRefusal = await authorizeStepTargets(
     socket,
     requestId,
     principal,
     ctx,
-    [
-      ...workflowStepTargets(after).filter((target) =>
-        !stored.has(stepTargetKey(target)) ||
-        (retargetable && isComputedStepTarget(target) &&
-          readsSelfOrInputs(target))
-      ),
-      ...expressionRuns,
-    ],
+    [...checked, ...expressionRuns],
     ((computed) =>
       computed && {
         raw: computed.raw,
         unanalyzable: computed.references.unanalyzable,
       })(added.find(({ references }) => references.runsComputed)),
+  );
+  if (stepRefusal) return stepRefusal;
+  // A stored step whose inputs, method or conditions change keeps its
+  // target, so the check above passes it; what it runs with changed
+  // (swamp-club#3131).
+  const checkedAt = new Set(checked.map((t) => t.location));
+  return await authorizeChangedSteps(
+    socket,
+    requestId,
+    principal,
+    ctx,
+    changedStepTargets(before, after).filter((t) => !checkedAt.has(t.location)),
   );
 }
 
@@ -393,6 +416,9 @@ export async function handleWorkflowRun(
   const resourceId = target.status === "found" ? target.id : undefined;
 
   const initiatedBy = principal ? principalToString(principal) : "ghost";
+  // Captured now, while the socket's memberships are at hand: the run's
+  // vault operations are decided for this principal (swamp-club#2676).
+  const vaultAccess = requestRunVaultScope(ctx, socket, principal);
   const registry = ctx.activeRunRegistry;
   if (!registry) {
     let registeredRunId: string | undefined;
@@ -461,7 +487,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       await sending;
       send(socket, { type: "done", id: requestId });
@@ -596,7 +627,12 @@ export async function handleWorkflowRun(
         },
         ctx.syncService,
         ctx.runTracker,
-        { syncGate: ctx.syncGate, triggerSource: "api", initiatedBy },
+        {
+          syncGate: ctx.syncGate,
+          triggerSource: "api",
+          initiatedBy,
+          vaultAccess,
+        },
       );
       buffer.finish({ kind: "done" });
     } catch (error) {
@@ -738,6 +774,14 @@ export async function handleWorkflowSearch(
   }
 }
 
+/** The fields of an approvals row that its read filter and redaction use. */
+interface ApprovalsRow {
+  workflowId: string;
+  workflowName: string;
+  parentRun?: NamedWorkflow;
+  parentWaiting?: boolean;
+}
+
 export async function handleWorkflowApprovals(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -798,33 +842,36 @@ export async function handleWorkflowApprovals(
       return;
     }
 
-    const data = (result ?? {}) as {
-      approvals?: Array<
-        {
-          workflowId: string;
-          workflowName: string;
-          parentRun?: NamedWorkflow;
-          parentWaiting?: boolean;
-        }
-      >;
+    // The reply is built from the lists filtered here, never the generator's
+    // object as it came: a list the generator adds later is withheld until
+    // it is filtered too. `approvals` stays the first key, which dashboards
+    // older than the expired list read by position.
+    const listed = (result ?? {}) as {
+      approvals?: ApprovalsRow[];
+      expired?: ApprovalsRow[];
     };
-    if (data.approvals) {
-      const canonical = canonicalResources(ctx);
-      data.approvals = await filterByResources(
-        data.approvals,
+    const canonical = canonicalResources(ctx);
+    // A nested run's row names its parent only to a reader of the
+    // parent's workflow (swamp-club#2736).
+    const canRead = nestedRunReadDecider(ctx, socket, principal);
+    const readable = async (rows: ApprovalsRow[] | undefined) => {
+      const kept = await filterByResources(
+        rows ?? [],
         (item) => canonical.workflowOwners(item.workflowId, item.workflowName),
         socket,
         principal,
         "read",
         ctx,
       );
-      // A nested run's row names its parent only to a reader of the
-      // parent's workflow (swamp-club#2736).
-      const canRead = nestedRunReadDecider(ctx, socket, principal);
-      for (const item of data.approvals) {
+      for (const item of kept) {
         await redactParentRun(item, canRead);
       }
-    }
+      return kept;
+    };
+    const data = {
+      approvals: await readable(listed.approvals),
+      expired: await readable(listed.expired),
+    };
 
     send(socket, {
       type: "workflow.approvals",
@@ -1536,6 +1583,11 @@ export async function handleWorkflowSignal(
         id: requestId,
         payload: { data: result.data },
       });
+      await continueAfterSignal(
+        ctx,
+        result,
+        captureDecisionSubject(socket, principal),
+      );
       return;
     case "not_found":
       sendError(socket, requestId, "not_found", result.message);
@@ -2137,13 +2189,19 @@ export async function handleWorkflowResume(
           const resumeGenerator = async function* (): AsyncGenerator<
             WorkflowRunEvent
           > {
+            // Held to the principal that triggered the run, never the
+            // resumer (swamp-club#2676).
             for await (
-              const event of service.resume(workflowName, run.id, {
-                signal: controller.signal,
-                inputs: resumeInputs,
-                fromStep: payload.from,
-                instanceId: ctx.instanceId,
-              })
+              const event of runGeneratorWithVaultAccess(
+                resumeRunVaultScope(runVaultScopeContext(ctx), run)?.access,
+                () =>
+                  service.resume(workflowName, run.id, {
+                    signal: controller.signal,
+                    inputs: resumeInputs,
+                    fromStep: payload.from,
+                    instanceId: ctx.instanceId,
+                  }),
+              )
             ) {
               yield mapWorkflowExecutionEvent(event, runRepo);
             }
@@ -2365,6 +2423,7 @@ export async function handleWorkflowDelete(
           ctx.repoContext.markDirty,
           ctx.repoContext.workflowRepo,
           ctx.repoContext.signalWaits,
+          ctx.repoContext.continuationClaims?.store,
         );
 
         let result: Record<string, unknown> | undefined;
@@ -2680,6 +2739,7 @@ export async function handleWorkflowEvaluate(
       ctx.repoContext.workflowRepo,
       ctx.datastoreResolver,
       ctx.repoContext.definitionRepo,
+      ctx.repoContext.hydrateFile,
     );
 
     let result: Record<string, unknown> | undefined;

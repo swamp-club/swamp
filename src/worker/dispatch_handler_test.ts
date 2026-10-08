@@ -130,6 +130,77 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
   assertEquals(drainError?.code, "worker_draining");
 });
 
+Deno.test("registerDispatchHandler: a dispatch waiting on a failed admission is refused as draining, so it is re-queued", async () => {
+  const { worker, orchestrator } = channelPair();
+  let reject: (error: Error) => void = () => {};
+  const admitted = new Promise<void>((_, r) => reject = r);
+  // The worker handles the rejection itself; the handler only awaits it.
+  admitted.catch(() => {});
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    admitted,
+  });
+  const call = orchestrator.call(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: 1_000 },
+  );
+  reject(new Error("not vouched for"));
+  const error = await call.then(() => null, (e: unknown) => e as RpcError);
+  // The orchestrator re-queues worker_draining; any other code fails the step.
+  assertEquals(error?.code, "worker_draining");
+  assertEquals(error?.message.includes("not vouched for"), false);
+});
+
+Deno.test("registerDispatchHandler: a dispatch that waited for admission does not run once the connection closed", async () => {
+  const { worker, orchestrator } = channelPair();
+  let admit: () => void = () => {};
+  const admitted = new Promise<void>((resolve) => admit = resolve);
+  const started: string[] = [];
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    admitted,
+    onDispatch: (event) => started.push(event.kind),
+  });
+  const call = orchestrator.call(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: 1_000 },
+  ).catch(() => {});
+  // One macrotask turn delivers the dispatch, which then waits on admission.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  worker.close("socket dropped");
+  admit();
+  await call;
+  // One macrotask turn drains the handler's continuation.
+  // waitFor cannot express this: the assertion is that nothing happens.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assertEquals(started, []);
+});
+
+Deno.test("buildRunnerEnvironment: the worker's own nested pass reaches runners; a shipped one does not", () => {
+  const fromWorker = buildRunnerEnvironment(
+    { SWAMP_NESTED_GATE_PASS: "77.cHJvb2Y.c2ln" },
+    {},
+    undefined,
+  );
+  assertEquals(fromWorker["SWAMP_NESTED_GATE_PASS"], "77.cHJvb2Y.c2ln");
+  const shipped = buildRunnerEnvironment(
+    {},
+    { SWAMP_NESTED_GATE_PASS: "1.cHJvb2Y.c2ln" },
+    undefined,
+  );
+  assertEquals("SWAMP_NESTED_GATE_PASS" in shipped, false);
+});
+
 Deno.test("dispatch spawn env: worker credentials are stripped after overlay", () => {
   const base: Record<string, string> = {
     SWAMP_WORKER_TOKEN: "tok.secret",

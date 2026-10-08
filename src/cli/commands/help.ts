@@ -22,7 +22,8 @@ import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
 import { VERSION } from "./version.ts";
 
 /**
- * Walks down the command tree following the given path segments.
+ * Walks down the command tree following the given path segments, each of
+ * which may be a command's name or one of its aliases.
  * Returns the matched command or null if a segment doesn't match.
  */
 function resolveSubcommand(
@@ -31,9 +32,7 @@ function resolveSubcommand(
 ): AnyCommand | null {
   let current: AnyCommand = root;
   for (const segment of path) {
-    const child = current.getCommands(true).find((c) =>
-      c.getName() === segment
-    );
+    const child = current.getCommand(segment, true);
     if (!child) return null;
     current = child;
   }
@@ -48,13 +47,21 @@ function resolveSubcommand(
  *   swamp help              — full CLI schema
  *   swamp help model        — schema for the "model" subtree
  *   swamp help model method — schema for "model method" subtree
+ *   swamp help --include-hidden — also list hidden commands and options
  */
 export function createHelpCommand(rootCommand: AnyCommand): AnyCommand {
   return new Command()
     .hidden()
     .description("Output full CLI schema for AI agent consumption")
     .arguments("[...command:string]")
-    .action(function (_options: void, ...commandPath: string[]) {
+    .option(
+      "--include-hidden",
+      "Also list hidden commands and hidden options",
+    )
+    .action(function (
+      options: { includeHidden?: boolean },
+      ...commandPath: string[]
+    ) {
       const target = commandPath.length > 0
         ? resolveSubcommand(rootCommand, commandPath)
         : rootCommand;
@@ -69,6 +76,7 @@ export function createHelpCommand(rootCommand: AnyCommand): AnyCommand {
       const isSubtree = commandPath.length > 0;
       const schema = buildCliSchema(target, VERSION, {
         stripGlobalOptions: isSubtree,
+        includeHidden: options.includeHidden === true,
       });
       console.log(JSON.stringify(schema, null, 2));
     });

@@ -26,15 +26,27 @@ import {
   type ModelDefinition,
 } from "../model.ts";
 import { ActionSchema } from "../../access/action.ts";
-import { EffectSchema } from "../../access/effect.ts";
+import { type Effect, EffectSchema } from "../../access/effect.ts";
 import { GrantSourceSchema } from "../../access/grant_source.ts";
 import {
   parseResourceSelector,
+  type ResourceSelector,
   ResourceSelectorSchema,
 } from "../../access/resource_selector.ts";
-import { parseSubject, SubjectSchema } from "../../access/subject.ts";
+import {
+  parseSubject,
+  type Subject,
+  SubjectSchema,
+} from "../../access/subject.ts";
 import { parsePrincipal, PrincipalSchema } from "../../access/principal.ts";
-import { validateGrantCondition } from "../../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  readConditionTypeLiterals,
+  validateGrantCondition,
+} from "../../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  findGrantSpellingIssues,
+  type GrantSpellingFinding,
+} from "../../access/grant_spelling.ts";
 
 export const GRANT_MODEL_TYPE = ModelType.create("swamp/grant");
 
@@ -60,6 +72,61 @@ export type Grant = z.infer<typeof GrantSchema>;
 
 const GRANT_DATA_NAME = "grant-main";
 
+/** What {@link checkGrantCreateInputs} reads from a grant create request. */
+export interface GrantCreateInputs {
+  subject: string;
+  effect: Effect;
+  resourceKind: string;
+  resourcePattern: string;
+  condition?: string;
+}
+
+/**
+ * Checks the inputs of a grant create, throwing the error `create` refuses
+ * them with. Callers that save anything before `create` runs (the
+ * `access grant create` command saves its definition) call it first, so a
+ * refused grant leaves nothing behind (swamp-club#3182). Returns the parsed
+ * subject and selector, and the spelling findings that only warrant a warning.
+ */
+export function checkGrantCreateInputs(
+  inputs: GrantCreateInputs,
+): {
+  subject: Subject;
+  resource: ResourceSelector;
+  warnings: GrantSpellingFinding[];
+} {
+  const subject = parseSubject(inputs.subject);
+  const resource = parseResourceSelector(
+    `${inputs.resourceKind}:${inputs.resourcePattern}`,
+  );
+
+  if (inputs.condition) {
+    const validation = validateGrantCondition(inputs.condition, resource.kind);
+    if (!validation.valid) {
+      throw new Error(
+        `Invalid grant condition: ${validation.error}`,
+      );
+    }
+  }
+
+  // A condition literal no type is spelled as matches nothing, so a new grant
+  // with one is refused; a selector may also name instance names, so it is
+  // only warned about (swamp-club#3130).
+  const spelling = findGrantSpellingIssues(
+    { effect: inputs.effect, resource, condition: inputs.condition },
+    readConditionTypeLiterals,
+  );
+  const literals = spelling.filter((finding) => finding.part === "condition");
+  if (literals.length > 0) {
+    throw new Error(
+      `Invalid grant condition:${
+        literals.map((finding) => `\n  - ${finding.message}`).join("")
+      }`,
+    );
+  }
+  return { subject, resource, warnings: spelling };
+}
+
 async function readGrant(context: MethodContext): Promise<Grant | null> {
   const raw = await context.readResource!(GRANT_DATA_NAME);
   if (raw === null) return null;
@@ -73,7 +140,7 @@ const CreateArgsSchema = z.object({
   effect: EffectSchema,
   actions: z.array(ActionSchema).min(1),
   resourceKind: z.string().min(1).describe(
-    'Resource kind: "workflow", "model", "data", or "access"',
+    'Resource kind: "workflow", "model", "data", "access", or "vault"',
   ),
   resourcePattern: z.string().min(1).describe(
     'Resource pattern (e.g. "@acme/*", "@acme/deploy")',
@@ -101,19 +168,10 @@ async function create(
     );
   }
 
-  const subject = parseSubject(args.subject);
-  const resource = parseResourceSelector(
-    `${args.resourceKind}:${args.resourcePattern}`,
-  );
+  const { subject, resource, warnings } = checkGrantCreateInputs(args);
   const createdBy = parsePrincipal(args.createdBy);
-
-  if (args.condition) {
-    const validation = validateGrantCondition(args.condition, resource.kind);
-    if (!validation.valid) {
-      throw new Error(
-        `Invalid grant condition: ${validation.error}`,
-      );
-    }
+  for (const finding of warnings) {
+    context.logger.warn`${finding.message}`;
   }
 
   const grant: Grant = {

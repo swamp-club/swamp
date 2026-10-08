@@ -349,7 +349,12 @@ methods:
 It works for any data type (a resource's `.path` is its stored JSON file). It
 is `""` for ephemeral data, for records from another namespace in a shared
 datastore, and when the file cannot be made local. On a lazy-hydration
-datastore, `data.latest()` and `data.version()` download it first. The path is
+datastore, `data.latest()` and `data.version()` download it first, or again
+when the local copy is shorter than the record (another host appended to it;
+see `datastores.md`, "Content-ensuring step"). The model map's
+`model.<name>.resource` and `.file` and `file.contents()` read the cache
+synchronously; the context downloads what an expression reads through them
+before evaluating it ("Expression reads" in `datastores.md`). The path is
 on the host evaluating the expression, not a remote worker. A run replayed with
 `--last-evaluated` reuses the path as it was resolved. Select the `.path`
 field instead of passing a whole record into an input.

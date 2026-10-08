@@ -61,6 +61,12 @@ import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { VERSION } from "../src/cli/commands/version.ts";
+import { getLogger } from "@logtape/logtape";
+import type { MethodContext } from "../src/domain/models/model.ts";
+import {
+  SHELL_MODEL_TYPE,
+  shellModel,
+} from "../src/domain/models/command/shell/shell_model.ts";
 
 await initializeLogging({});
 
@@ -267,6 +273,82 @@ Deno.test("lock hand-off: the run fails instead of writing when the structural c
       }
     });
   });
+});
+
+/** A shell step's context that counts what the step writes. */
+function shellStepContext(signal: AbortSignal): {
+  context: MethodContext;
+  writes: () => number;
+} {
+  let writes = 0;
+  const unused = () => {
+    throw new Error("not used by this test");
+  };
+  const context = {
+    signal,
+    repoDir: Deno.cwd(),
+    modelType: SHELL_MODEL_TYPE,
+    modelId: crypto.randomUUID(),
+    globalArgs: {},
+    definition: { id: crypto.randomUUID(), name: "step", version: 1, tags: {} },
+    methodName: "execute",
+    logger: getLogger(["test"]),
+    writeResource: () => {
+      writes++;
+      return unused();
+    },
+    createFileWriter: () => {
+      writes++;
+      return unused();
+    },
+    extensionFile: unused,
+  } as unknown as MethodContext;
+  return { context, writes: () => writes };
+}
+
+Deno.test({
+  name:
+    "lock hand-off: a cancelled shell step does not wait on a structural command, and writes nothing (swamp-club#3157)",
+  // `sleep` and a POSIX shell.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    // The default lock timeout: the step must not wait it out.
+    await withHeldLock({}, async (fixture) => {
+      const lentNonce = heldNonce(fixture);
+      // A structural command, in a process the step's kill does not reach,
+      // working under the step's lock.
+      const global = fixture.globalLock();
+      await global.acquire();
+      await global.publishSkipping([lentNonce]);
+      const controller = new AbortController();
+      const { context, writes } = shellStepContext(controller.signal);
+      const started = join(fixture.datastore.path, "step-started");
+      try {
+        const run = runUnderModelLocks(
+          fixture.locks,
+          () =>
+            shellModel.methods.execute.execute({
+              run: `echo up > '${started}'; sleep 30`,
+            }, context),
+        );
+        await waitFor(
+          () => Deno.readTextFile(started).then(() => true, () => false),
+          "the step's command to start",
+        );
+        controller.abort();
+
+        const error = await assertRejects(() => run, DOMException);
+        assertEquals(error.name, "AbortError");
+        assertEquals(writes(), 0);
+        // Re-keyed, so the command left behind stops skipping the lock, and
+        // no wait on it was ever announced.
+        assertNotEquals(heldNonce(fixture), lentNonce);
+        assertEquals(fixture.reclaimLines, []);
+      } finally {
+        await global.release();
+      }
+    });
+  },
 });
 
 Deno.test("lock hand-off: a structural command that finds its skipped lock re-keyed withdraws it and waits, so neither waits on the other", async () => {

@@ -36,6 +36,7 @@ import {
   isCallerAuthorized,
   isRestrictedCommand,
   resolveDisplayPrincipal,
+  type TokenSessionBinding,
 } from "./handlers/shared.ts";
 import {
   checkIpBurst,
@@ -44,6 +45,7 @@ import {
   rateLimitKey,
 } from "./rate_limiter.ts";
 import {
+  continueAfterSignal,
   deliverSignalForCaller,
   type SignalDeliveryResult,
 } from "./signal_delivery.ts";
@@ -139,6 +141,7 @@ export async function handleSignalHttpRequest(
   deps: SignalHttpDeps,
 ): Promise<Response> {
   const { ctx } = deps;
+  let tokenBinding: TokenSessionBinding | undefined;
   let caller: AccessCaller = {
     principal: null,
     collectives: [],
@@ -161,6 +164,11 @@ export async function handleSignalHttpRequest(
       return new Response(`Unauthorized: ${auth.reason}`, { status: 401 });
     }
     clearRateLimit(key);
+    tokenBinding = {
+      name: auth.tokenName,
+      createdAt: auth.tokenCreatedAt,
+      principalId: auth.principalId,
+    };
     caller = {
       principal: parsePrincipal(auth.principalId),
       collectives: auth.collectives,
@@ -231,8 +239,15 @@ export async function handleSignalHttpRequest(
     payload: (body as { payload: unknown }).payload,
   });
   emitResponseAudit(ctx, caller, requestId, waitId, result);
+  await continueAfterSignal(ctx, result, {
+    principal: caller.principal,
+    ...(tokenBinding ? { token: tokenBinding } : {}),
+  });
 
-  const { status, ...rest } = result;
+  // The run is for the server alone; the caller is told it only in `data`.
+  const { status, run: _run, ...rest } = result as typeof result & {
+    run?: unknown;
+  };
   return Response.json({ status, ...rest }, { status: STATUS[status] });
 }
 

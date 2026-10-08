@@ -19,6 +19,7 @@
 
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
 import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
@@ -84,6 +85,56 @@ export interface ConfirmPushResult {
   name: string;
   version: string;
   visibility?: "public" | "private";
+  /**
+   * What the registry had to say about a push it accepted, such as client
+   * contentMetadata it discarded. Sanitised and bounded; absent when none.
+   */
+  warnings?: RegistryWarnings;
+}
+
+/** The registry's warnings about a push it accepted, safe to print. */
+export interface RegistryWarnings {
+  /** At most {@link MAX_REGISTRY_WARNINGS} messages, each one line. */
+  messages: string[];
+  /** How many further warnings the registry sent that are not in `messages`. */
+  omitted: number;
+}
+
+/** The most registry warnings a confirm response surfaces. */
+export const MAX_REGISTRY_WARNINGS = 20;
+/** The longest a registry warning prints, in code points. */
+export const MAX_REGISTRY_WARNING_LENGTH = 1000;
+
+// Control characters, format characters (bidirectional overrides, isolates
+// and marks, zero-width characters, the BOM) that reorder or hide terminal
+// text, and the line and paragraph separators. The zero-width joiner goes
+// with them, so a joined emoji prints as its parts.
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * Reduces the confirm response's `warnings` to text that is safe to print:
+ * strings only, each one printable line of bounded length, and a bounded
+ * number of them, with a count of the rest. Anything else the registry sent
+ * there is dropped.
+ */
+function registryWarnings(value: unknown): RegistryWarnings {
+  if (!Array.isArray(value)) return { messages: [], omitted: 0 };
+  const cleaned: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const text = entry.replace(UNPRINTABLE, " ").trim();
+    if (text === "") continue;
+    const points = Array.from(text);
+    cleaned.push(
+      points.length > MAX_REGISTRY_WARNING_LENGTH
+        ? `${points.slice(0, MAX_REGISTRY_WARNING_LENGTH).join("")}…`
+        : text,
+    );
+  }
+  return {
+    messages: cleaned.slice(0, MAX_REGISTRY_WARNINGS),
+    omitted: Math.max(0, cleaned.length - MAX_REGISTRY_WARNINGS),
+  };
 }
 
 /** Information about the latest published version. */
@@ -318,6 +369,7 @@ export class ExtensionApiClient {
     const detail = data.latestVersionDetail;
     if (!detail) return null;
 
+    const acceptances = parseRegistryAcceptances(detail.acceptances);
     return {
       version: detail.version,
       publishedAt: detail.publishedAt ?? "",
@@ -331,6 +383,7 @@ export class ExtensionApiClient {
         reports: detail.reports ?? [],
         webhooks: detail.webhooks ?? [],
         skills: detail.skills ?? [],
+        ...(acceptances ? { acceptances } : {}),
       },
     };
   }
@@ -418,11 +471,13 @@ export class ExtensionApiClient {
         "Registry returned invalid publication visibility. Publication may have completed; check the registry before retrying.",
       );
     }
+    const warnings = registryWarnings(data.warnings);
     return {
       extensionId: data.extensionId,
       name: data.name,
       version: data.version,
       ...(data.visibility !== undefined ? { visibility: data.visibility } : {}),
+      ...(warnings.messages.length > 0 ? { warnings } : {}),
     };
   }
 

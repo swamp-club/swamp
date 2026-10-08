@@ -30,7 +30,9 @@
  * without this coverage. Requests go through `handleMessage`, the real
  * dispatch path, against a real repository.
  *
- * Vault requests (vaultName, vaultNameOrId) are swamp-club#2676's.
+ * A vault named by name or id (vaultNameOrId) is authorized on the name it
+ * resolves to, as `data:<name>` and `vault:<name>` (swamp-club#2676). A
+ * `vaultName` field is only ever a name, so it is no alias for anything.
  */
 
 import {
@@ -59,6 +61,7 @@ import type { Grant } from "../src/domain/models/access/grant_model.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { RunEventBuffer } from "../src/serve/run_event_buffer.ts";
+import { VaultConfig } from "../src/domain/vaults/vault_config.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -82,7 +85,7 @@ await initializeLogging({});
 
 /** Payload fields that name a model, workflow, output or run. */
 const IDENTIFIER_FIELD =
-  /(IdOrName|IdOrModelName|IdOrWorkflow)$|^(outputIdArg|workflowName|definitionName)$/;
+  /(IdOrName|IdOrModelName|IdOrWorkflow)$|^(outputIdArg|workflowName|definitionName|vaultNameOrId)$/;
 
 /**
  * Request types this test does not cover, each with the issue that owns how
@@ -318,7 +321,92 @@ const prodWorkflowKept = async (f: Fixtures) => {
   );
 };
 
+/** The prod and dev vaults, saved on first use. */
+async function vaults(
+  f: Fixtures,
+): Promise<{ prod: VaultConfig; dev: VaultConfig }> {
+  const repo = f.repo.repoContext.vaultConfigRepo;
+  const ensure = async (name: string) => {
+    const found = await repo.findByName(name);
+    if (found) return found;
+    const vault = VaultConfig.create(
+      crypto.randomUUID(),
+      name,
+      "local_encryption",
+      {},
+    );
+    await repo.save(vault);
+    return vault;
+  };
+  return { prod: await ensure("prod-vault"), dev: await ensure("dev-vault") };
+}
+
+/**
+ * Allow everything on data, and deny prod-* on the vault kind or on data.
+ * Vaults carry no tags, so the tags deny of TAG_GRANTS has no vault to
+ * catch; vault cases send under these instead.
+ */
+const vaultGrants = (denied: "vault" | "data"): Grant[] => [
+  grant({ actions: ACTIONS, resource: { kind: "data", pattern: "*" } }),
+  grant({
+    effect: "deny",
+    actions: ACTIONS,
+    resource: { kind: denied, pattern: "prod-*" },
+  }),
+];
+
+/**
+ * A vault request by the UUID of the prod or dev vault, sent under a deny on
+ * `vault:prod-*` and then on `data:prod-*`: both must refuse the prod vault
+ * by its name and leave the dev vault alone (swamp-club#2676).
+ */
+function vaultById(
+  type: string,
+  payload: (vault: VaultConfig) => Record<string, unknown>,
+  unchanged?: (f: Fixtures) => Promise<void>,
+): Case {
+  return {
+    send: async (f, t) => {
+      const { prod, dev } = await vaults(f);
+      const vault = t === "prod" ? prod : dev;
+      const byVaultDeny = await sendRequest(
+        createServeCtx(f.repo, vaultGrants("vault")),
+        request(type, payload(vault)),
+      );
+      if (t === "prod") assertDenied(byVaultDeny, "vault:prod-vault");
+      else assertAllowed(byVaultDeny, type);
+      return await sendRequest(
+        createServeCtx(f.repo, vaultGrants("data")),
+        request(type, payload(vault)),
+      );
+    },
+    deniedAs: "data:prod-vault",
+    unchanged,
+  };
+}
+
 const CASES: Record<string, Case> = {
+  "vault.get": vaultById("vault.get", (v) => ({ vaultNameOrId: v.id })),
+  "vault.describe": vaultById(
+    "vault.describe",
+    (v) => ({ vaultNameOrId: v.id }),
+  ),
+  "vault.edit": vaultById(
+    "vault.edit",
+    (v) => ({
+      vaultNameOrId: v.id,
+      content: stringifyYaml({
+        ...v.toData(),
+        auditReads: true,
+      } as unknown as Record<string, unknown>),
+    }),
+    async (f) => {
+      const prod = await f.repo.repoContext.vaultConfigRepo.findByName(
+        "prod-vault",
+      );
+      assertEquals(prod?.auditReads, false);
+    },
+  ),
   "model.method.run": simple(
     "model.method.run",
     (f, t) => ({ modelIdOrName: model(f, t).id, methodName: "noop" }),

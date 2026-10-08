@@ -170,6 +170,11 @@ export interface ExtensionPushSuccessData {
   skillCount: number;
   channel: string;
   visibility: "public" | "private";
+  /**
+   * What the registry said about the push it accepted, such as client
+   * contentMetadata it discarded. Present only when it said something.
+   */
+  registryWarnings?: RegistryWarnings;
 }
 
 /** Data for compilation error output. */
@@ -506,6 +511,7 @@ export interface ExtensionPushExecuteDeps {
     version: string;
     extensionId: string;
     visibility?: "public" | "private";
+    warnings?: RegistryWarnings;
   }>;
   getExtensionVisibility: (
     serverUrl: string,
@@ -526,6 +532,7 @@ import {
   ExtensionApiClient,
   type LatestVersionDetail,
   REGISTRY_FORBIDDEN_CODE,
+  type RegistryWarnings,
 } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { findPublishedVersion } from "./published_version_lookup.ts";
@@ -540,6 +547,10 @@ import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extension
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import {
+  type ModelCatalogGap,
+  modelCatalogGap,
+} from "../../domain/extensions/model_catalog_gap.ts";
 import {
   type GeneratedDeclaration,
   parseQualitySidecar,
@@ -1502,10 +1513,32 @@ export function bareSpecifiersMessage(
 }
 
 /**
- * Runs the review rules, the bare-specifier check and the declared
- * acceptances over an extension. Push calls it from prepare; quality calls
- * it on every run, including a cache hit, so both report the same findings
- * and the same acceptances for the same source.
+ * The uncatalogued-model finding's message: what push could not read from
+ * the model export, and that the registry will not list the model although
+ * it still installs and runs.
+ */
+function uncataloguedModelMessage(gap: ModelCatalogGap): string {
+  const cause = gap.kind === "not-plain-object"
+    ? gap.annotated
+      ? "Model export has a type annotation, so it is not read as a plain " +
+        "export const model = { ... } object"
+      : "Model export is not a plain export const model = { ... } object " +
+        "literal"
+    : gap.missing.length === 2
+    ? "Model export has neither a string-literal type nor a string-literal " +
+      "version in its export const model object"
+    : `Model export has no string-literal ${
+      gap.missing[0]
+    } in its export const model object`;
+  return `${cause}, so the registry catalog will not list this model type. ` +
+    "The extension still installs and the model still runs.";
+}
+
+/**
+ * Runs the review rules, the bare-specifier check, the uncatalogued-model
+ * check and the declared acceptances over an extension. Push calls it from
+ * prepare; quality calls it on every run, including a cache hit, so both
+ * report the same findings and the same acceptances for the same source.
  */
 export async function runQualityFindings(
   ctx: LibSwampContext,
@@ -1567,6 +1600,29 @@ export async function runQualityFindings(
       message: bareSpecifiersMessage([...bareSpecifiers].sort(), imports),
       remediation: remediationFor("bare-specifiers"),
     });
+  }
+
+  // Uncatalogued models: an entry point whose type or version the push
+  // metadata cannot read is shipped in the archive but left out of the
+  // registry catalog, so say so per file (swamp-club#2486).
+  for (const file of input.modelEntryPoints) {
+    let src: string;
+    try {
+      src = await Deno.readTextFile(file);
+    } catch {
+      continue;
+    }
+    const gap = modelCatalogGap(src);
+    if (gap) {
+      reviewRulesResult.warnings.push({
+        ruleId: "uncatalogued-model",
+        dimension: "Registry catalog",
+        severity: "medium",
+        file,
+        message: uncataloguedModelMessage(gap),
+        remediation: remediationFor("uncatalogued-model"),
+      });
+    }
   }
 
   // Declared acceptances: inline directives from every packaged file with a
@@ -1901,6 +1957,7 @@ export async function* extensionPush(
         version: string;
         extensionId: string;
         visibility?: "public" | "private";
+        warnings?: RegistryWarnings;
       };
       try {
         confirmResult = await deps.confirmPush(
@@ -1962,6 +2019,10 @@ export async function* extensionPush(
           skillCount: input.counts.skills,
           channel: input.channel ?? "stable",
           visibility,
+          ...(confirmResult.warnings &&
+              confirmResult.warnings.messages.length > 0
+            ? { registryWarnings: confirmResult.warnings }
+            : {}),
         },
       };
     })(),

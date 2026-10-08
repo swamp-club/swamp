@@ -17,9 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { inMemorySignalWaits } from "./signal_wait_store_test_helpers.ts";
+import {
+  acceptedOutcomeFor,
+  inMemorySignalWaits,
+} from "./signal_wait_store_test_helpers.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { VaultService } from "../vaults/vault_service.ts";
+import { currentVaultAccess } from "../vaults/run_vault_access.ts";
 import {
   assert,
   assertEquals,
@@ -45,6 +50,19 @@ import {
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
+import {
+  ContinuationHeldError,
+  type HolderLiveness,
+  localHolder,
+  RunRecordStaleError,
+  serveHolder,
+  suspensionKeyOf,
+} from "./continuation_claim.ts";
+import { RunNotSuspendedError } from "./suspended_run_resolver.ts";
+import {
+  claimsFor,
+  InMemoryContinuationClaimStore,
+} from "./continuation_claim_test_helpers.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -82,6 +100,10 @@ import { assessRecoveryForRun } from "./recovery_assessment.ts";
 import { computeWorkflowFingerprint } from "./workflow_fingerprint.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
+import {
+  cleanupGraceSignal,
+  isCleanupGraceSignal,
+} from "../models/cancel_cause.ts";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import type { ExportResult } from "@opentelemetry/core";
 import { waitFor } from "@swamp-club/swamp-testing";
@@ -9402,7 +9424,7 @@ Deno.test("resume: suspendedOnly refuses a failed run", async () => {
     const error = await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, { suspendedOnly: true }),
-      Error,
+      RunNotSuspendedError,
       `Run ${failed.id} is not suspended (status: failed)`,
     );
     assertStringIncludes(
@@ -10205,6 +10227,62 @@ Deno.test("WorkflowExecutionService: passes the datastore resolver to step, guar
     for (const [stepName, seen] of resolvers) {
       assertEquals(seen === resolver, true, `${stepName} lost the resolver`);
     }
+  });
+});
+
+Deno.test("guard: a model.method() call in a run with no signal gets no fallback timer (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    let guardSignal: AbortSignal | undefined;
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        if (ctx.stepName.startsWith("__guard_")) guardSignal = ctx.signal;
+        return Promise.resolve(
+          ctx.stepName.startsWith("__guard_") ? null : { executed: true },
+        );
+      },
+    };
+    const workflow = Workflow.create({
+      name: "guarded-wf",
+      jobs: [Job.create({
+        name: "job1",
+        steps: [Step.create({
+          name: "guarded",
+          task: StepTask.modelMethod("some-model", "run"),
+          guard: '${{ model.method("infra", "exists") }}',
+        })],
+      })],
+    });
+    await workflowRepo.save(workflow);
+
+    // A timer-backed signal looks like any other until it fires, so count
+    // the timers the run asks for instead of waiting one out.
+    const timeouts: number[] = [];
+    const originalTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) => {
+      timeouts.push(ms);
+      return originalTimeout.call(AbortSignal, ms);
+    };
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const run = await new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      ).execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+    } finally {
+      AbortSignal.timeout = originalTimeout;
+      catalogStore.close();
+    }
+
+    assertExists(guardSignal);
+    assertEquals(guardSignal.aborted, false);
+    assertEquals(timeouts, []);
   });
 });
 
@@ -12093,6 +12171,16 @@ class AbortingStepExecutor extends CountingStepExecutor {
   }
 }
 
+/** An {@link AbortingStepExecutor} that keeps the signal each step ran under. */
+class SignalRecordingAbortingExecutor extends AbortingStepExecutor {
+  readonly signals = new Map<string, AbortSignal>();
+
+  override execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    this.signals.set(`${ctx.jobName}/${ctx.stepName}`, ctx.signal);
+    return super.execute(step, ctx);
+  }
+}
+
 async function finishedRun(
   stream: AsyncIterable<WorkflowExecutionEvent>,
 ): Promise<{ run: WorkflowRun; events: WorkflowExecutionEvent[] }> {
@@ -12430,6 +12518,69 @@ Deno.test("abort cleanup: an always-gated cleanup reached after the abort still 
     assertEquals(run.status, "cancelled");
     assertEquals(run.getJob("main")!.getStep("a")!.status, "succeeded");
     assertEquals(executor.count("main/cleanup"), 1);
+  });
+});
+
+Deno.test("abort cleanup: a cleanup step runs under the cleanup grace signal, not the run's (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "step-grace-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep("a"),
+            modelStep("cleanup", onStep("a", TriggerCondition.always())),
+          ],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("a");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await runUntilAborted(service, workflow, executor.controller.signal);
+
+    assertEquals(isCleanupGraceSignal(executor.signals.get("main/a")!), false);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("main/cleanup")!),
+      true,
+    );
+  });
+});
+
+Deno.test("abort cleanup: a cleanup job runs under the cleanup grace signal, not the run's (swamp-club#2922)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "job-grace-wf",
+      jobs: [
+        Job.create({ name: "j1", steps: [modelStep("s1")] }),
+        Job.create({
+          name: "cleanup",
+          dependsOn: [{ job: "j1", condition: TriggerCondition.always() }],
+          steps: [modelStep("c")],
+        }),
+      ],
+    });
+    const executor = new SignalRecordingAbortingExecutor("s1");
+    const { service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+
+    await runUntilAborted(service, workflow, executor.controller.signal);
+
+    assertEquals(isCleanupGraceSignal(executor.signals.get("j1/s1")!), false);
+    assertEquals(
+      isCleanupGraceSignal(executor.signals.get("cleanup/c")!),
+      true,
+    );
   });
 });
 
@@ -17314,11 +17465,11 @@ Deno.test("run: a cancel after a mid-walk failure settles the run against its ev
 
 /**
  * Runs one model_method step whose method body is `execute`, under the run
- * signal `controller` owns and, when given, as a step of `workflowRun`, and
+ * signal `controller` holds and, when given, as a step of `workflowRun`, and
  * reports the step's output and tracker rows.
  */
 async function runModelStep(
-  controller: AbortController,
+  controller: { signal: AbortSignal },
   execute: () => Promise<Record<string, never>>,
   workflowRun?: WorkflowRun,
 ): Promise<{
@@ -17410,6 +17561,58 @@ Deno.test("DefaultStepExecutor: a method the run's abort stops is recorded cance
     runId: outputs[0].id,
     status: "cancelled",
   }]);
+});
+
+Deno.test("DefaultStepExecutor: a plain abort records the method run as aborted and leaves the tracker row's reason unset (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort();
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "aborted");
+  assertEquals(tracker.completionReasons, [undefined]);
+});
+
+Deno.test("DefaultStepExecutor: a method the run's timeout stops is recorded cancelled as timed out (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort(new DOMException("Signal timed out.", "TimeoutError"));
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "timed out");
+  assertEquals(tracker.completions, [{
+    runId: outputs[0].id,
+    status: "cancelled",
+  }]);
+  assertEquals(tracker.completionReasons, ["timed out"]);
+});
+
+Deno.test("DefaultStepExecutor: a method cancelled with a reason records that reason (swamp-club#2922)", async () => {
+  const controller = new AbortController();
+  const { outputs, tracker } = await runModelStep(controller, () => {
+    controller.abort(new Error("No longer needed"));
+    return Promise.reject(new Error("process exited with signal SIGTERM"));
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "No longer needed");
+  assertEquals(tracker.completionReasons, ["No longer needed"]);
+});
+
+Deno.test("DefaultStepExecutor: a cleanup method the cleanup grace cuts off is recorded cancelled as cleanup grace expired (swamp-club#2922)", async () => {
+  const signal = cleanupGraceSignal(1);
+  const { outputs, tracker } = await runModelStep({ signal }, async () => {
+    await waitFor(() => signal.aborted, "the cleanup grace to run out");
+    throw new Error("process exited with signal SIGTERM");
+  });
+
+  assertEquals(outputs[0].status, "cancelled");
+  assertEquals(outputs[0].error?.message, "cleanup grace expired");
+  assertEquals(tracker.completionReasons, ["cleanup grace expired"]);
 });
 
 Deno.test("DefaultStepExecutor: a method that fails without an abort is still recorded failed", async () => {
@@ -18264,4 +18467,948 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
       true,
     );
   });
+});
+
+Deno.test("wait_for_signal: a timeout above the maximum of the wait support fails the step before a wait is opened", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-over-max-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "within",
+              task: StepTask.waitForSignal(300, { type: "object" }),
+            }),
+            Step.create({
+              name: "over",
+              task: StepTask.waitForSignal(301, { type: "object" }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    assert(waits.supported);
+    service.signalWaits = { ...waits, maxTimeoutSeconds: 300 };
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertEquals(failed.stepId, "over");
+    assertStringIncludes(
+      failed.error,
+      "is 301 seconds, more than the 300 seconds this server allows",
+    );
+    // The step at the maximum opened its wait; the one above it opened none.
+    assertEquals(
+      (await waits.store.listRegistrations()).map((r) => r.stepName),
+      ["within"],
+    );
+    const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
+    assertEquals(stored.getJob("job1")!.getStep("over")!.status, "failed");
+    assertEquals(
+      stored.getJob("job1")!.getStep("within")!.status,
+      "waiting_signal",
+    );
+  });
+});
+
+/** Records the vaults list each step runs under, and reads vault `erp`. */
+class VaultScopeRecordingExecutor implements StepExecutor {
+  seen = new Map<string, string[] | undefined>();
+  constructor(private readonly vaultService?: VaultService) {}
+
+  async execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const allowed = currentVaultAccess()?.allowedVaults;
+    this.seen.set(ctx.stepName, allowed ? [...allowed].sort() : undefined);
+    if (this.vaultService && ctx.stepName === "read-erp") {
+      return { value: await this.vaultService.get("erp", "k") };
+    }
+    return { executed: true };
+  }
+}
+
+function vaultsListWorkflows(): Workflow[] {
+  const child = Workflow.create({
+    name: "vaults-child",
+    vaults: ["b", "c"],
+    jobs: [
+      Job.create({
+        name: "child-job",
+        steps: [
+          Step.create({
+            name: "child-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const parent = Workflow.create({
+    name: "vaults-parent",
+    vaults: ["a", "b"],
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "parent-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+          Step.create({
+            name: "call-child",
+            task: StepTask.workflow("vaults-child"),
+          }),
+        ],
+      }),
+    ],
+  });
+  const unlisted = Workflow.create({
+    name: "vaults-unlisted",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "free-step",
+            task: StepTask.model("test-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+  return [parent, child, unlisted];
+}
+
+Deno.test("run(): a workflow's vaults list scopes its steps, and a nested workflow intersects it", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { service } = await setupNestedCancel(
+      tempDir,
+      vaultsListWorkflows(),
+      executor,
+    );
+
+    const run = await service.execute("vaults-parent");
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.seen.get("parent-step"), ["a", "b"]);
+    assertEquals(executor.seen.get("child-step"), ["b"]);
+
+    const free = await service.execute("vaults-unlisted");
+    assertEquals(free.status, "succeeded");
+    assertEquals(executor.seen.get("free-step"), undefined);
+    assertEquals(currentVaultAccess(), undefined);
+  });
+});
+
+Deno.test("run(): a vault outside the workflow's vaults list is refused to a local run", async () => {
+  await withTempDir(async (tempDir) => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+    await vaultService.put("erp", "k", "secret");
+    const executor = new VaultScopeRecordingExecutor(vaultService);
+    const workflow = Workflow.create({
+      name: "vaults-refused",
+      vaults: ["roomcontrol"],
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "read-erp",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    const { service } = await setupNestedCancel(tempDir, [workflow], executor);
+
+    const run = await service.execute(workflow.name);
+    assertEquals(run.status, "failed");
+    const step = run.getJob("main")!.getStep("read-erp")!;
+    assertStringIncludes(step.error ?? "", "vault 'erp'");
+    assertStringIncludes(step.error ?? "", "workflow 'vaults-refused'");
+    // Outside the run the vault reads as before.
+    assertEquals(await vaultService.get("erp", "k"), "secret");
+  });
+});
+
+/** A workflow repository whose first name lookup throws or finds nothing. */
+class FirstLookupFailsWorkflowRepository extends InMemoryWorkflowRepository {
+  lookups = 0;
+  constructor(private readonly firstLookup: "throws" | "null") {
+    super();
+  }
+
+  override findByName(name: string): Promise<Workflow | null> {
+    this.lookups++;
+    if (this.lookups === 1) {
+      return this.firstLookup === "throws"
+        ? Promise.reject(new Error("transient lookup failure"))
+        : Promise.resolve(null);
+    }
+    return super.findByName(name);
+  }
+
+  override findById(id: WorkflowId): Promise<Workflow | null> {
+    return this.lookups === 1 ? Promise.resolve(null) : super.findById(id);
+  }
+}
+
+for (const firstLookup of ["throws", "null"] as const) {
+  Deno.test(`run(): a first workflow lookup that ${firstLookup === "throws" ? "throws" : "finds nothing"} never runs the workflow outside its vaults list`, async () => {
+    await withTempDir(async (tempDir) => {
+      const [parent, child] = vaultsListWorkflows();
+      const workflowRepo = new FirstLookupFailsWorkflowRepository(firstLookup);
+      await workflowRepo.save(parent);
+      await workflowRepo.save(child);
+      const executor = new VaultScopeRecordingExecutor();
+      const service = serviceWithTracker(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+        new RecordingRunTracker(),
+      );
+
+      let failure: unknown;
+      try {
+        for await (const _event of service.run(parent.name)) {
+          // drain
+        }
+      } catch (error) {
+        failure = error;
+      }
+
+      // The run reuses its one lookup: it reports that lookup's outcome
+      // and no step runs, rather than looking the workflow up again and
+      // running it without its vaults list.
+      assertEquals(workflowRepo.lookups, 1);
+      assertEquals(executor.seen.get("parent-step"), undefined);
+      assertEquals(executor.seen.size, 0);
+      assertStringIncludes(
+        String(failure),
+        firstLookup === "throws"
+          ? "transient lookup failure"
+          : `Workflow not found: ${parent.name}`,
+      );
+    });
+  });
+}
+
+/** A gate, then step `after` (which reads vault `erp` when so named). */
+function gatedVaultsWorkflow(
+  vaults: string[] | undefined,
+  after = "after",
+): Workflow {
+  return Workflow.create({
+    name: "vaults-gated",
+    ...(vaults !== undefined ? { vaults } : {}),
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+          Step.create({
+            name: after,
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [
+              { step: "gate", condition: TriggerCondition.succeeded() },
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Suspends `workflow` at its gate, saves it edited to `resumeVaults`,
+ * approves the gate and resumes the run.
+ */
+async function resumeWithEditedVaults(
+  tempDir: string,
+  workflow: Workflow,
+  resumeVaults: string[] | undefined,
+  executor: StepExecutor,
+): Promise<{ suspended: WorkflowRun; resumed: WorkflowRun | undefined }> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  await workflowRepo.save(workflow);
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const service = serviceWithTracker(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+    new RecordingRunTracker(),
+  );
+  const suspended = await service.execute(workflow.name);
+  assertEquals(suspended.status, "suspended");
+
+  const { vaults: _vaults, ...rest } = workflow.toData();
+  await workflowRepo.save(
+    Workflow.fromData(
+      resumeVaults !== undefined ? { ...rest, vaults: resumeVaults } : rest,
+    ),
+  );
+  const toApprove = (await runRepo.findById(workflow.id, suspended.id))!;
+  toApprove.getJob("main")!.getStep("gate")!.succeed();
+  await runRepo.save(workflow.id, toApprove);
+
+  const resumed = await drainResume(service, workflow.name, suspended.id);
+  return { suspended, resumed };
+}
+
+Deno.test("resume(): a vaults list widened since the run started does not widen the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "erp", type: "mock", config: {} });
+    await vaultService.put("erp", "k", "secret");
+    const executor = new VaultScopeRecordingExecutor(vaultService);
+    const { suspended, resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(["roomcontrol"], "read-erp"),
+      ["roomcontrol", "erp"],
+      executor,
+    );
+    assertEquals(executor.seen.get("read-erp"), ["roomcontrol"]);
+    assertEquals(resumed?.status, "failed");
+    const step = resumed!.getJob("main")!.getStep("read-erp")!;
+    assertStringIncludes(step.error ?? "", "vault 'erp'");
+    assertEquals(suspended.allowedVaults, ["roomcontrol"]);
+  });
+});
+
+Deno.test("resume(): a vaults list narrowed since the run started narrows the run", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(["a", "b"]),
+      ["a"],
+      executor,
+    );
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.seen.get("after"), ["a"]);
+  });
+});
+
+Deno.test("resume(): a run that recorded no vaults list is held to the current list", async () => {
+  await withTempDir(async (tempDir) => {
+    const executor = new VaultScopeRecordingExecutor();
+    const { suspended, resumed } = await resumeWithEditedVaults(
+      tempDir,
+      gatedVaultsWorkflow(undefined),
+      ["a"],
+      executor,
+    );
+    assertEquals(suspended.allowedVaults, undefined);
+    assertEquals(resumed?.status, "succeeded");
+    assertEquals(executor.seen.get("after"), ["a"]);
+  });
+});
+
+Deno.test("run(): each run records the vaults list in force, a nested run its intersection with its parent's", async () => {
+  await withTempDir(async (tempDir) => {
+    const [parent, child, unlisted] = vaultsListWorkflows();
+    const { service, runRepo } = await setupNestedCancel(
+      tempDir,
+      [parent, child, unlisted],
+      new VaultScopeRecordingExecutor(),
+    );
+
+    const run = await service.execute(parent.name);
+    assertEquals(run.status, "succeeded");
+    const stored = await runRepo.findById(parent.id, run.id);
+    assertEquals(stored?.allowedVaults, ["a", "b"]);
+    const childRuns = await runRepo.findAllByWorkflowId(child.id);
+    assertEquals(childRuns.length, 1);
+    assertEquals(childRuns[0].allowedVaults, ["b"]);
+
+    const free = await service.execute(unlisted.name);
+    assertEquals(
+      (await runRepo.findById(unlisted.id, free.id))?.allowedVaults,
+      undefined,
+    );
+  });
+});
+
+/** A workflow repository that starts a span for every name lookup. */
+class SpannedLookupWorkflowRepository extends InMemoryWorkflowRepository {
+  lookups = 0;
+  override findByName(name: string): Promise<Workflow | null> {
+    this.lookups++;
+    const span = getTracer().startSpan("test.workflow.lookup");
+    try {
+      return super.findByName(name);
+    } finally {
+      span.end();
+    }
+  }
+}
+
+Deno.test("run(): the one workflow lookup nests under the run's span", async () => {
+  await withRecordedSpans(async (recorder) => {
+    await withTempDir(async (tempDir) => {
+      const workflow = Workflow.create({
+        name: "vaults-spanned",
+        vaults: ["a"],
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "only-step",
+                task: StepTask.model("test-model", "run"),
+              }),
+            ],
+          }),
+        ],
+      });
+      const workflowRepo = new SpannedLookupWorkflowRepository();
+      await workflowRepo.save(workflow);
+      const executor = new VaultScopeRecordingExecutor();
+      const service = serviceWithTracker(
+        workflowRepo,
+        new InMemoryWorkflowRunRepository(),
+        tempDir,
+        executor,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+        new RecordingRunTracker(),
+      );
+
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded");
+      assertEquals(executor.seen.get("only-step"), ["a"]);
+      assertEquals(workflowRepo.lookups, 1);
+      const [runSpan] = recorder.named("swamp.workflow.run");
+      const [lookup] = recorder.named("test.workflow.lookup");
+      assertEquals(lookup.parentSpanId, spanIdOf(runSpan));
+    });
+  });
+});
+
+/**
+ * A run suspended on one approved gate, with the service that suspended it
+ * holding continuation claims as `holder`.
+ */
+async function approvedGateRun(
+  tempDir: string,
+  claimStore: InMemoryContinuationClaimStore,
+  holder: string,
+  liveness: Record<string, HolderLiveness> = {},
+): Promise<{
+  service: WorkflowExecutionService;
+  workflow: Workflow;
+  runRepo: InMemoryWorkflowRunRepository;
+  executor: MockStepExecutor;
+  runId: WorkflowRunId;
+  suspensionKey: string;
+}> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new MockStepExecutor();
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [
+      Job.create({
+        name: "gate",
+        steps: [
+          Step.create({ name: "approval", task: StepTask.manualApproval("?") }),
+          Step.create({
+            name: "work",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [{
+              step: "approval",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+        ],
+      }),
+    ],
+  });
+  await workflowRepo.save(workflow);
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+  );
+  service.continuationClaims = claimsFor(claimStore, holder, liveness);
+
+  const suspended = await service.execute(workflow.name);
+  assertEquals(suspended.status, "suspended");
+  const toApprove = await runRepo.findById(workflow.id, suspended.id);
+  toApprove!.getJob("gate")!.getStep("approval")!.succeed();
+  await runRepo.save(workflow.id, toApprove!);
+  executor.executedSteps = [];
+  return {
+    service,
+    workflow,
+    runRepo,
+    executor,
+    runId: suspended.id,
+    suspensionKey: await suspensionKeyOf(toApprove!),
+  };
+}
+
+Deno.test("resume: takes the continuation claim of the suspension it consumes, and keeps it", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const holder = serveHolder("a");
+    const { service, workflow, runId, suspensionKey } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      holder,
+    );
+
+    const run = await drainResume(service, workflow.name, runId);
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+    assertEquals(claimStore.claims[0].holder, holder);
+    assertEquals(claimStore.claims[0].suspensionKey, suspensionKey);
+  });
+});
+
+Deno.test("resume: refuses a suspension whose claim a live holder has, and changes nothing", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const other = serveHolder("other");
+    const { service, workflow, runRepo, executor, runId, suspensionKey } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"), {
+        [other]: "alive",
+      });
+    await claimStore.create({
+      runId,
+      suspensionKey,
+      generation: 1,
+      holder: other,
+      claimedAt: new Date().toISOString(),
+    });
+
+    const error = await assertRejects(
+      () => drainResume(service, workflow.name, runId),
+      ContinuationHeldError,
+    );
+    assertStringIncludes(error.message, "swamp serve instance other");
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: an automatic resume leaves a dead holder's claim unless told its copy is current", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const dead = serveHolder("dead");
+    const { service, workflow, executor, runId, suspensionKey } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"), {
+        [dead]: "dead",
+      });
+    await claimStore.create({
+      runId,
+      suspensionKey,
+      generation: 1,
+      holder: dead,
+      claimedAt: new Date().toISOString(),
+    });
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          suspendedOnly: true,
+          continuation: { kind: "automatic", takeover: false },
+        }),
+      ContinuationHeldError,
+    );
+    assertEquals(executor.executedSteps, []);
+
+    const run = await drainResume(service, workflow.name, runId, {
+      suspendedOnly: true,
+      continuation: { kind: "automatic", takeover: true },
+    });
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.map((c) => c.generation), [1, 2]);
+  });
+});
+
+Deno.test("resume: a refusal before the claim leaves no claim behind", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    // The gate is undecided again, so the resume is refused.
+    const run = await runRepo.findById(workflow.id, runId);
+    run!.getJob("gate")!.getStep("approval")!.waitForApproval();
+    await runRepo.save(workflow.id, run!);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, runId),
+      UserError,
+      "still awaiting approval",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a refusal on an open wait leaves no claim and the same suspension, which serve then continues (swamp-club#3183)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "waiter",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(600, { type: "object" }),
+            }),
+            Step.create({
+              name: "work",
+              task: StepTask.model("test-model", "run"),
+              dependsOn: [{
+                step: "review",
+                condition: TriggerCondition.succeeded(),
+              }],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+    const claimStore = new InMemoryContinuationClaimStore();
+    service.continuationClaims = claimsFor(claimStore, localHolder());
+
+    const suspended = await service.execute(workflow.name);
+    assertEquals(suspended.status, "suspended");
+    const stored = await runRepo.findById(workflow.id, suspended.id);
+    const suspensionKey = await suspensionKeyOf(stored!);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, suspended.id),
+      UserError,
+      "still waiting for a signal",
+    );
+    const refused = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals(refused!.status, "suspended");
+    assertEquals(await suspensionKeyOf(refused!), suspensionKey);
+    assertEquals(claimStore.claims, []);
+
+    // Another holder, whose resume a claim the local command left behind
+    // would refuse.
+    const serve = serveHolder("a");
+    service.continuationClaims = claimsFor(claimStore, serve);
+    await waits.store.settle(
+      acceptedOutcomeFor(
+        refused!.getJob("main")!.getStep("review")!.signalWait!,
+        {},
+        { runId: suspended.id },
+      ),
+    );
+    const run = await drainResume(service, workflow.name, suspended.id, {
+      continuation: { kind: "automatic", takeover: false },
+    });
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(
+      claimStore.claims.map((c) => [c.holder, c.suspensionKey]),
+      [[serve, suspensionKey]],
+    );
+  });
+});
+
+Deno.test("resume: a store that cannot create a record atomically is not asked for a claim", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    service.continuationClaims = {
+      ...service.continuationClaims!,
+      usable: () => Promise.resolve(false),
+    };
+
+    const run = await drainResume(service, workflow.name, runId);
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume restored before anything ran gives its continuation claim back", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow);
+    const claimStore = new InMemoryContinuationClaimStore();
+    service.continuationClaims = claimsFor(claimStore, serveHolder("a"));
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    assertEquals(suspended.status, "suspended");
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    toApprove!.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    // The input cannot be evaluated, so the resume fails while it prepares.
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(
+      (await runRepo.findById(workflow.id, suspended.id))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+
+    // The suspension was not consumed: a resume with a usable input takes it.
+    const run = await drainResume(service, workflow.name, suspended.id, {
+      inputs: { n: 2 },
+    });
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: a resume that requires a current record refuses a copy that differs from the datastore's, and changes nothing", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, executor, runId } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"));
+    const asked: { workflowId: string; runId: string }[] = [];
+    service.runRecordCurrency = (run) => {
+      asked.push(run);
+      return Promise.resolve(false);
+    };
+
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          suspendedOnly: true,
+          continuation: { kind: "automatic", takeover: true },
+          requireCurrentRecord: true,
+        }),
+      RunRecordStaleError,
+    );
+
+    assertStringIncludes(error.message, runId);
+    assertEquals(asked, [{ workflowId: workflow.id, runId }]);
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume that requires a current record runs a copy that matches the datastore's", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    service.runRecordCurrency = () => Promise.resolve(true);
+
+    const run = await drainResume(service, workflow.name, runId, {
+      requireCurrentRecord: true,
+    });
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: a datastore that cannot be read refuses a resume that requires a current record", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, executor, runId } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"));
+    service.runRecordCurrency = () => Promise.reject(new Error("offline"));
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          requireCurrentRecord: true,
+        }),
+      Error,
+      "offline",
+    );
+
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume that does not require a current record never compares it", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    let asked = 0;
+    service.runRecordCurrency = () => {
+      asked++;
+      return Promise.resolve(false);
+    };
+
+    const run = await drainResume(service, workflow.name, runId);
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(asked, 0);
+  });
+});
+
+// swamp-club#3179: the synchronous available-expression pass reads the model
+// map, so the context's prepare runs first and can make that content local.
+Deno.test({
+  name:
+    "DefaultStepExecutor: prepares a step's expressions before resolving them synchronously (swamp-club#3179)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    const received: Record<string, unknown>[] = [];
+    const prepared: string[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-3179/capture-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({}),
+        resources: {},
+        methods: {
+          execute: {
+            description: "records its arguments",
+            arguments: z.object({ value: z.string() }),
+            execute: (args: { value: string }) => {
+              received.push(args);
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definition = Definition.create({
+          name: "consumer",
+          type: modelType.normalized,
+          inputs: { properties: { vpcId: { type: "string" } } },
+          methods: { execute: { arguments: { value: "${{ inputs.vpcId }}" } } },
+        });
+        await new YamlDefinitionRepository(tempDir).save(
+          modelType,
+          definition,
+        );
+        const cel = 'model["vpc"].resource.state.main.attributes.vpcId';
+        const raw = `\${{ ${cel} }}`;
+        const step = Step.create({
+          name: "step",
+          task: StepTask.model(definition.name, "execute", { vpcId: raw }),
+        });
+        const model: Record<string, unknown> = {};
+        await new DefaultStepExecutor().execute(step, {
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set([raw]),
+          expressionContext: {
+            model,
+            env: {},
+            inputs: {},
+            data: {
+              // Stands in for hydration: the content is only there once
+              // prepare has run.
+              prepare: (expression: string) => {
+                prepared.push(expression);
+                model["vpc"] = {
+                  resource: {
+                    state: { main: { attributes: { vpcId: "vpc-0abc123" } } },
+                  },
+                };
+                return Promise.resolve();
+              },
+            },
+          } as unknown as StepExecutionContext["expressionContext"],
+        });
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assert(prepared.includes(
+      'model["vpc"].resource.state.main.attributes.vpcId',
+    ));
+    assertEquals(received, [{ value: "vpc-0abc123" }]);
+  },
 });

@@ -36,6 +36,7 @@ import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
+import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -54,6 +55,18 @@ const logger = getLogger(["workflow-repo"]);
  */
 export function isPrimaryWorkflowFileName(name: string): boolean {
   return name.startsWith("workflow-") && name.endsWith(".yaml");
+}
+
+/**
+ * Names the file in a schema failure met while reading `path`; any other
+ * error is returned as it came. The message carries the file name only and
+ * the full path rides on the error, because `swamp serve` withholds messages
+ * that hold an absolute path from its clients (swamp-club#3062).
+ */
+function namingWorkflowFile(error: unknown, path: string): unknown {
+  return error instanceof WorkflowSchemaError
+    ? markErrorPaths(error.inFile(basename(path)), [path])
+    : error;
 }
 
 /**
@@ -109,7 +122,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
+        throw namingWorkflowFile(error, legacyPath);
       }
     }
 
@@ -125,7 +138,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+          throw namingWorkflowFile(error, cachedPath);
         }
       }
     }
@@ -153,7 +166,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
         }
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
-          throw error;
+          throw namingWorkflowFile(error, namePath);
         }
       }
     }

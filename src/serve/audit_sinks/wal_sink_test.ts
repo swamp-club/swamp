@@ -683,9 +683,13 @@ Deno.test(
     await wal.initialize();
     const downstream = createHangingSink();
     const walSink = new WalSink({ wal, downstream, deliveryWaitMs: 20 });
+    // A generous timeout: the WAL append is real disk I/O, which a slow
+    // Windows runner can take longer than a few milliseconds to finish
+    // (swamp-club#3167). A write that waited on the hung store would still
+    // never settle within it and leave the durable path stalled.
     const emitter = new AuditEmitter({
       sinks: [walSink],
-      sinkTimeoutMs: 20,
+      sinkTimeoutMs: 10_000,
       durableRetryMs: 1,
     });
 

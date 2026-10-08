@@ -1074,6 +1074,25 @@ export interface AccessGroupIdpEntry {
   lastSeenAt: string;
 }
 
+/**
+ * The run-time decision for a concrete `vault:<name>` (swamp-club#2676):
+ * whether a serve run triggered by the principal may read or write the
+ * vault, and whether its runs are vault-scoped.
+ */
+export interface RunVaultAccessReport {
+  vault: string;
+  action: "read" | "write";
+  allowed: boolean;
+  /** The principal's runs read only vaults a vault allow names. */
+  restricted: boolean;
+  /** The rule that decided, e.g. `vault-scoped` or `no-vault-grants`. */
+  rule: string;
+  reason: string;
+  grantId?: string;
+  /** Set for a trigger principal, whose scope covers all its runs. */
+  triggerScope?: string;
+}
+
 export interface AccessCheckResponse {
   subject: string;
   action: string;
@@ -1085,6 +1104,8 @@ export interface AccessCheckResponse {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** For a concrete vault and read or write; absent otherwise. */
+  runVaultAccess?: RunVaultAccessReport;
 }
 
 export interface AccessCanIDecision {
@@ -1106,6 +1127,8 @@ export interface AccessCanIResponse {
   approveRequiresExplicitGrant?: boolean;
   /** The server's signal policy; absent from servers that predate it. */
   signalRequiresExplicitGrant?: boolean;
+  /** For a concrete vault and read or write; absent otherwise. */
+  runVaultAccess?: RunVaultAccessReport;
 }
 
 export interface AccessReloadFileResult {

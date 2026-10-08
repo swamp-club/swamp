@@ -312,7 +312,8 @@ Vault commands live in `src/cli/commands/vault_*.ts`. `create`, `put`,
 `delete`, `annotate`, `inspect`, `migrate`, `audit-trail` and `read-secret`
 have their own sections. The group also has:
 
-- `swamp vault list-keys <vault>`: secret keys only, never values
+- `swamp vault list-keys <vault>`: secret keys only, never values. Omitting the
+  vault name fails with the names of the available vaults.
 - `swamp vault get <vault>` / `swamp vault describe <vault>`: show a vault's
   configuration
 - `swamp vault edit [vault]`: open the vault YAML in `$EDITOR` (interactive
@@ -621,7 +622,8 @@ The vault for a sensitive field is chosen in this order:
 
 1. Field-level `vaultName` from `.meta()`.
 2. Spec-level `vaultName` from `ResourceOutputSpec`. The extension author sets
-   it; definition YAML can override it with `resources.<specName>.vaultName`.
+   it; definition YAML can override it with `resources.<specName>.vaultName`,
+   and a workflow step with `dataOutputOverrides` `vaultName`.
 3. Repo-level `defaultVault` from `.swamp.yaml`.
 4. The first available vault from `VaultService`, skipping `_`-prefixed
    internal vaults (e.g. the control-plane vault). A `_` vault is never chosen
@@ -891,6 +893,47 @@ evaluation time.
 - Give secrets descriptive names that do not reveal their contents.
 - Grant least-privilege access to specific secrets.
 - Monitor vault access through provider audit logs.
+
+### Vault Access Scoping
+
+Two limits bound which vaults a run may read or write (swamp-club#2676):
+
+- **Vault grants**, over `swamp serve`: `vault:<name>` grants decide `vault.*`
+  requests and every vault operation in a serve run, judged against the
+  run's triggering principal. Reserved `_` vaults are refused to serve runs
+  except for access admins. See
+  [access-control § Vaults](../enablers/access-control.md#vaults).
+- **A workflow's `vaults:` list**, everywhere, local runs included. See
+  [workflows § Vaults Allow-List](./workflows.md#vaults-allow-list).
+
+Both are held as one `RunVaultAccess` scope on `AsyncLocalStorage`.
+`VaultService` checks it on every per-vault method before touching a
+provider — `get`, `list`, `getAnnotation` and `getRefreshHook` as `read`;
+`put`, `delete`, and the annotation and refresh-hook changes as `write` — so
+every vault service a run builds is covered. A refusal throws
+`VaultAccessDeniedError`, naming the vault and the principal or workflow,
+never a value. With no scope, vault operations behave as before. Control-plane
+work called from a run opts out with `withoutVaultAccess`. Serve's HTTP
+handler also runs every request under `withoutVaultAccess`
+(`unscopedHttpHandler`): Deno leaves an `AsyncLocalStorage` store set after a
+lazy dynamic `import()` inside a scope, and the next `Deno.serve` callback
+would otherwise inherit the run's scope (other ambient stores:
+swamp-club#3125).
+
+Sensitive outputs are ordinary vault operations under the scope: storing a
+field is a `write` and every read-back of its reference (later steps, later
+runs, resumes, data queries, cache replay) is a `read` on the vault the field
+landed in, chosen by the resolution order above. A scoped principal or a
+`vaults:` list must therefore allow `read` and `write` on that vault, and a
+mutating method whose targets are refused is refused before it runs. The
+data writer, the pre-run check and `workflow validate` share one resolver
+(`src/domain/models/sensitive_output_vault.ts`), so they cannot disagree.
+Keep author secrets out of the default vault: point sensitive outputs at a
+dedicated outputs vault, by making it `defaultVault` or with a spec
+`vaultName` or step `dataOutputOverrides`.
+
+Implementation: `src/domain/vaults/run_vault_access.ts`,
+`src/domain/vaults/vault_service.ts`.
 
 ### Expression Security
 

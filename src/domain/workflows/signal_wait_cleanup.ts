@@ -35,7 +35,7 @@ import {
   type WaitRef,
   type WaitRegistration,
 } from "./signal_wait_records.ts";
-import type { SignalWaitStore } from "./signal_wait_store.ts";
+import { settledBy, type SignalWaitStore } from "./signal_wait_store.ts";
 
 /**
  * How long after its deadline a record is kept when its run is confirmed
@@ -164,6 +164,39 @@ export async function findUnsettledWait(
     }
   }
   return undefined;
+}
+
+/**
+ * Settles as timed out each wait of `run` that is past its deadline, has no
+ * outcome and is still registered, and returns how many it settled
+ * (swamp-club#3109). For a caller nobody asked to look: the sweep of
+ * `swamp serve`. The run record is not changed; the resume that follows
+ * fails the steps.
+ *
+ * The deadline is read from the run record first, so a wait still open
+ * costs no read. A wait with no readable registration is left alone: a
+ * registration is removed when its run ends or is deleted, so a suspended
+ * copy of such a run is behind, and an outcome created for it would outlive
+ * the run.
+ */
+export async function settleExpiredWaits(
+  store: SignalWaitStore,
+  run: WorkflowRun,
+  now: Date,
+): Promise<number> {
+  let settled = 0;
+  for (const job of run.jobs) {
+    for (const step of job.steps) {
+      if (!step.isSignalWait) continue;
+      const ref = waitRefOf(run, step);
+      if (!ref || !isWaitExpired(ref, now)) continue;
+      if ((await store.findOutcome(ref.waitId)).kind !== "absent") continue;
+      if ((await store.findRegistration(ref.waitId)).kind !== "found") continue;
+      const outcome = timedOutOutcome(ref, now);
+      if (settledBy(await store.settle(outcome), outcome)) settled++;
+    }
+  }
+  return settled;
 }
 
 /**
@@ -425,25 +458,4 @@ export async function sweepWaitRecords(
     swept.outcomes++;
   }
   return swept;
-}
-
-/**
- * Whether the run can be resumed as far as its waits go: suspended,
- * with no gate undecided, no nested run waited on, and an outcome for every
- * other wait. Read from the run record as this host has it; false when the
- * record is not here.
- */
-export async function isAwaitingResume(
-  store: SignalWaitStore,
-  run: WorkflowRun | null,
-): Promise<boolean> {
-  if (!run || run.status !== "suspended") return false;
-  if (run.findWaitingApprovalStep() || run.findNestedWaits().length > 0) {
-    return false;
-  }
-  for (const ref of run.findSignalWaits()) {
-    if (!ref.wait) continue;
-    if ((await store.findOutcome(ref.wait.id)).kind === "absent") return false;
-  }
-  return true;
 }

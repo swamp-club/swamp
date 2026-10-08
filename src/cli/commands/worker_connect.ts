@@ -36,6 +36,8 @@ import { registerShutdownHandler } from "../../infrastructure/process/shutdown_h
 import { warnIfRunningAsInit } from "../../infrastructure/process/init_process.ts";
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
+import { deferredWorkerAdmission } from "../auth_gate_session.ts";
+import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
 import { getEnvCaCerts, readTokenFile } from "../remote_run.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
@@ -301,6 +303,7 @@ export const workerConnectCommand = new Command()
         onDrainAvailable: (drain) => {
           requestDrain = drain;
         },
+        admitGatePass: deferredWorkerAdmission(),
       });
 
       const policyComplete = result.reason !== "error";
@@ -308,6 +311,8 @@ export const workerConnectCommand = new Command()
         Deno.exit(1);
       }
     } catch (error) {
+      // The gate's own block keeps its code and reason for JSON output.
+      if (error instanceof AuthGateBlockedError) throw error;
       throw new UserError(
         error instanceof Error ? error.message : String(error),
       );

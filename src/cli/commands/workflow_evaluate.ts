@@ -136,6 +136,8 @@ export const workflowEvaluateCommand = withRemoteOptions(
           repoDir,
           repoContext.workflowRepo,
           datastoreResolver,
+          undefined,
+          repoContext.hydrateFile,
         );
         const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 
@@ -253,6 +255,8 @@ export const workflowEvaluateCommand = withRemoteOptions(
       repoDir,
       workflowRepo,
       datastoreResolver,
+      undefined,
+      unlocked.repoContext.hydrateFile,
     );
     const renderer = createWorkflowEvaluateRenderer(cliCtx.outputMode);
 

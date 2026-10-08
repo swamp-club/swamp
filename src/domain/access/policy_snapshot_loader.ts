@@ -20,6 +20,10 @@
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  type ConditionTypeLiteralReader,
+  findGrantSpellingIssues,
+} from "./grant_spelling.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { EventBus } from "../events/event_bus.ts";
 import type {
@@ -81,7 +85,13 @@ function buildCelEnvironment(kind: ResourceKind): Environment {
 export function createConditionEvaluator(): ConditionEvaluator {
   const environments = new Map<ResourceKind, Environment>();
   const references = new Map<string, string[]>();
-  const kinds: ResourceKind[] = ["workflow", "model", "data", "access"];
+  const kinds: ResourceKind[] = [
+    "workflow",
+    "model",
+    "data",
+    "access",
+    "vault",
+  ];
   for (const kind of kinds) {
     environments.set(kind, buildCelEnvironment(kind));
   }
@@ -116,6 +126,32 @@ export function createConditionEvaluator(): ConditionEvaluator {
     const result = env.evaluate(condition, context);
     return result === true;
   };
+}
+
+const referenceEnvironments = new Map<ResourceKind, Environment>();
+
+/**
+ * Whether grant `condition` on resource kind `kind` references condition
+ * variable `field` (structurally, on the parsed condition). A condition that
+ * does not parse counts as referencing it, so a caller that skips deciding
+ * on that variable never decides on a condition it cannot read.
+ */
+export function conditionReferencesField(
+  condition: string,
+  kind: ResourceKind,
+  field: string,
+): boolean {
+  let env = referenceEnvironments.get(kind);
+  if (!env) {
+    env = buildCelEnvironment(kind);
+    referenceEnvironments.set(kind, env);
+  }
+  try {
+    const parsed = env.parse(condition) as unknown as { ast: unknown };
+    return referencedConditionFields(parsed.ast, kind).includes(field);
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -157,14 +193,27 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
+  /**
+   * Each active grant already checked for spellings, by id, with the effect,
+   * selector and condition it was checked as, so a reload neither repeats
+   * its findings nor parses its condition again.
+   */
+  readonly #checkedSpellings = new Map<string, string>();
+  readonly #readTypeLiterals: ConditionTypeLiteralReader | undefined;
 
+  /**
+   * `readTypeLiterals` lets the loader report condition literals no type is
+   * spelled as; without it only selectors are checked.
+   */
   constructor(
     dataRepo: UnifiedDataRepository,
     eventBus: EventBus,
     mode: PolicyReloadMode = "auto",
     decisionOptions: GrantBasedAccessDecisionServiceOptions = {},
+    readTypeLiterals?: ConditionTypeLiteralReader,
   ) {
     this.#dataRepo = dataRepo;
+    this.#readTypeLiterals = readTypeLiterals;
     this.#decisionOptions = decisionOptions;
     this.#conditionEvaluator = createConditionEvaluator();
 
@@ -293,11 +342,45 @@ export class PolicySnapshotLoader {
       logger
         .warn`Grant ${grant.id} has a condition on collective or owner, which serve does not supply yet: as a deny it refuses every ${grant.resource.kind} request of its subject, and as an allow it never matches (${grant.condition})`;
     }
+    this.#reportSpellings(grants);
     return {
       snapshot: new PolicySnapshot(grants, groups, this.#conditionEvaluator),
       grantCount: grants.length,
       groupCount: groups.length,
     };
+  }
+
+  /**
+   * Names each active grant whose type spelling matches no type as written,
+   * once per grant and spelling (swamp-club#3130). The grant keeps working
+   * as it did: a deny matches its type in any spelling, an allow or a
+   * condition literal only as written.
+   */
+  #reportSpellings(grants: readonly Grant[]): void {
+    // Forget grants no longer active, so the map stays bounded by the
+    // policy, and a grant that comes back is reported again.
+    const active = new Set(grants.map((grant) => grant.id));
+    for (const id of this.#checkedSpellings.keys()) {
+      if (!active.has(id)) this.#checkedSpellings.delete(id);
+    }
+    for (const grant of grants) {
+      const checkedAs = JSON.stringify([
+        grant.effect,
+        grant.resource,
+        grant.condition ?? null,
+      ]);
+      if (this.#checkedSpellings.get(grant.id) === checkedAs) continue;
+      this.#checkedSpellings.set(grant.id, checkedAs);
+      for (
+        const finding of findGrantSpellingIssues(
+          grant,
+          this.#readTypeLiterals,
+        )
+      ) {
+        logger
+          .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${finding.message}`;
+      }
+    }
   }
 
   async #readAttributes(

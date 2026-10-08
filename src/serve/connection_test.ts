@@ -36,6 +36,7 @@ import {
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
+import { WorkflowSchemaError } from "../domain/workflows/workflow_schema_error.ts";
 import {
   LockTimeoutError,
   LockWaitCycleError,
@@ -3483,6 +3484,14 @@ Deno.test("sanitizeErrorForClient: redacts absolute Unix paths", () => {
     new Error("File not found: /opt/swamp/.swamp/data/foo"),
   );
   assertEquals(result, "An internal error occurred");
+});
+
+Deno.test("sanitizeErrorForClient: passes a workflow schema failure named by file through", () => {
+  const error = new WorkflowSchemaError([{
+    path: "jobs[0].weight",
+    message: "Invalid input: expected number, received string",
+  }]).inFile("workflow-deploy.yaml");
+  assertEquals(sanitizeErrorForClient(error), error.message);
 });
 
 Deno.test("sanitizeErrorForClient: redacts .swamp internal paths", () => {

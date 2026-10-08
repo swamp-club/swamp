@@ -67,7 +67,24 @@ export async function pushNamespace(
   syncService: Pick<DatastoreSyncService, "pushChanged">,
   namespace: string | undefined,
 ): Promise<void> {
-  await syncService.pushChanged({ namespace });
+  await pushNamespaceCounted(syncService, namespace);
+}
+
+/**
+ * {@link pushNamespace} for a checkpoint that needs the count of files
+ * pushed, as the sync service reports it, and a push it can abort: the
+ * managed extension lockfile publish (swamp-club#3192), which bounds the
+ * push with `signal` and fails a push that sent nothing when the lockfile
+ * had to upload.
+ */
+export function pushNamespaceCounted(
+  syncService: Pick<DatastoreSyncService, "pushChanged">,
+  namespace: string | undefined,
+  signal?: AbortSignal,
+): Promise<number | void> {
+  return syncService.pushChanged(
+    signal === undefined ? { namespace } : { namespace, signal },
+  );
 }
 
 /**

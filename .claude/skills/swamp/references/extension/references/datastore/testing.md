@@ -79,6 +79,8 @@ Deno.test("sync service round-trips", async () => {
       first: { service: syncFor(bucket, firstCache), cacheDir: firstCache },
       second: { service: syncFor(bucket, secondCache), cacheDir: secondCache },
       failNextPush: () => bucket.failNextPut(), // optional transport failure
+      failNextFetch: () => bucket.failNextGet(), // optional, for fetchContent
+      namespace: "conformance-ns", // optional, a namespace both can sync
       cleanup: async () => {
         await bucket.destroy();
         await Deno.remove(firstCache, { recursive: true });
@@ -96,14 +98,26 @@ Deno.test("sync service round-trips", async () => {
 ```
 
 Cases: `round-trip`, `push-deletes`, `pull-deletes`, `bulk-mark`,
-`failed-push-retry`, `two-phase`, `pull-nothing-new`, `forward-slash-paths`. A
-failing case rejects naming the case. Skips come back in `result.skipped` with a
-reason rather than failing:
+`failed-push-retry`, `two-phase`, `pull-nothing-new`, `forward-slash-paths`,
+`fetch-content`, `fetch-content-error`, `fetch-content-namespace`. A failing
+case rejects naming the case. Skips come back in `result.skipped` with a reason
+rather than failing:
 
 - `pull-deletes` unless `{ expectPullDeletes: true }` — S3/GCS pulls never
   delete local files;
 - `failed-push-retry` without `failNextPush`;
-- `two-phase` without `preparePush`/`commitPush`.
+- `two-phase` without `preparePush`/`commitPush`;
+- all three `fetch-content` cases when `second.service` has no `fetchContent`;
+- `fetch-content-error` without `failNextFetch`, which makes the next
+  `second.service.fetchContent()` fail with a transport error;
+- `fetch-content-namespace` without `namespace`.
+
+The `fetch-content` cases hold `fetchContent` to its contract: the remote's
+bytes or `null`, a `..` or absolute path rejected, nothing written to the cache,
+a pending push kept, and a rejection (never `null`) when the remote cannot be
+read. `fetch-content-namespace` passes `namespace` to every call it makes, its
+warm-up pulls included, and reads a cache-relative path that already starts with
+the namespace, so it fails an implementation that adds the namespace twice.
 
 Experimental: like `createInMemoryRemote`, its defaults (such as skipping
 `pull-deletes`) follow what the S3 and GCS datastore extensions do today and may
@@ -248,14 +262,19 @@ const { provider, isLockHeld } = createDatastoreTestContext();
 
 ### Shared remote across machines
 
-Experimental: the defaults track today's extension behaviour and will change
-during the datastore rework.
+Experimental: the defaults track the current S3/GCS extension releases and will
+change with them and during the datastore rework.
 
 `createInMemoryRemote()` holds remote content in memory; each
 `remote.connect(cacheDir)` is one simulated machine's sync service. Its defaults
-reproduce today's S3/GCS sync gaps (bare marks disable deletes, unmarked writes
-are never pushed, pulls never delete locally), so do not expect it to be
-friendlier than production. Switch a gap off through `semantics`.
+reproduce the current S3/GCS sync gaps (bare marks disable deletes, unmarked
+writes are never pushed, pulls overwrite dirty files, and a peer's deletion is
+removed locally only while the copy is unchanged and unmarked), so do not expect
+it to be friendlier than production. Switch a gap off through `semantics`; to
+model an older extension release, pass `EXTENSION_2026_10_01_SEMANTICS` or
+`LEGACY_EXTENSION_SEMANTICS` (2026.09.24.1 and earlier). A service keeps the
+namespace of its first pull or push and rejects a later one with a different
+namespace, so pass the same `namespace` to every call on it.
 
 ```typescript
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
@@ -266,9 +285,13 @@ const b = remote.connect(bCache, { instance: "b" });
 await a.markDirty({ relPath: "note" }); // after writing aCache/note
 await a.pushChanged();
 await b.pullChanged(); // bCache/note now exists
-remote.failNext("push"); // also "pull" | "prepare" | "commit"; remote.offline(true)
-remote.ops(); // ordered { instance, op, paths, deleted }
+await b.fetchContent("note"); // the remote's bytes or null; bCache untouched
+remote.failNext("push"); // also "pull" | "prepare" | "commit" | "fetch"; remote.offline(true)
+remote.ops(); // ordered { instance, op, paths, deleted, removed? }
 ```
+
+`remote.connect(cacheDir, { fetchContent: false })` gives a service without
+`fetchContent`, for code that must work with an extension that lacks it.
 
 To assert only which paths core marks, use `createRecordingSyncService()`, which
 returns `{ service, marks, events }` and does nothing else.

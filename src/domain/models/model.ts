@@ -343,6 +343,8 @@ export interface MethodContext {
     garbageCollection?: GarbageCollectionPolicy;
     tags?: Record<string, string>;
     resolvedVarySuffix?: string;
+    /** Vault for the spec's sensitive fields (from definition `resources`). */
+    vaultName?: string;
   }>;
 
   /** Check names to skip during pre-flight checks. */

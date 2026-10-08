@@ -830,14 +830,13 @@ Deno.test("pushManagedConfigChanges: definitions saved while the remote is offli
 //
 // `@swamp/s3-datastore` and `@swamp/gcs-datastore` up to 2026.09.24.1 mark
 // the cache clean on an unscoped pull of a moved remote, dropping a pending
-// push (S3SYNC:2742, 2759 in
-// datastore/s3/extensions/datastores/_lib/s3_cache_sync.ts at
-// swamp-extensions 5368cb002; GCS behaves the same). swamp-club#2888
-// (swamp-extensions 5e8630189, released in 2026.10.01.1) fixed it: a pull
-// never marks the cache clean, so the next push sends the failed push's
-// write. The fake models the old behaviour as `pullClearsPendingPush`, still
-// on by default; swamp-club#2906 will update the fake's defaults. Each test
-// below pins one version.
+// push (s3_cache_sync.ts:2742, 2759 in
+// datastore/s3/extensions/datastores/_lib/ at swamp-extensions 5368cb002;
+// GCS behaves the same). swamp-club#2888 (swamp-extensions 5e8630189,
+// released in 2026.10.01.1) fixed it: a pull never marks the cache clean, so
+// the next push sends the failed push's write. The fake models the old
+// behaviour as `LEGACY_EXTENSION_SEMANTICS`, and the fixed one by default
+// (swamp-club#2906). Each test below pins one version.
 
 /**
  * A's write fails to push, then B commits so the remote moves past what A
@@ -874,8 +873,9 @@ function retryPushPaths(repos: RowRepos, from: number): string[] | undefined {
 }
 
 Deno.test("acquireModelLocks: with extensions up to 2026.09.24.1, a pull after a peer's commit drops A's pending write from a failed push (pinned data loss)", async () => {
-  // The fake's default semantics model extensions <= 2026.09.24.1.
-  await withRepos(SINGLE_PHASE, async (repos) => {
+  await withRepos({
+    remote: { capabilities: {}, semantics: LEGACY_EXTENSION_SEMANTICS },
+  }, async (repos) => {
     const model = await saveModel(repos.serveRepo, "writer");
     const { written, retryFrom } = await failedPushThenPeerCommit(
       repos,
@@ -885,8 +885,7 @@ Deno.test("acquireModelLocks: with extensions up to 2026.09.24.1, a pull after a
     // KNOWN BUG in extensions <= 2026.09.24.1, fixed in 2026.10.01.1 by
     // swamp-club#2888: the retry's lock acquire pulled the moved remote and
     // marked A's cache clean. The write stays on disk but never reaches the
-    // remote. swamp-club#2906 will move the fake's defaults to the fixed
-    // behaviour, which flips these assertions.
+    // remote.
     assertEquals(await localFilesOf(repos, model), written);
     assertEquals(await dirtyOnA(repos), []);
     assertEquals(pushOpsSince(repos, retryFrom), ["push"]);
@@ -904,15 +903,9 @@ Deno.test("acquireModelLocks: with extensions up to 2026.09.24.1, a pull after a
 });
 
 Deno.test("acquireModelLocks: with extensions from 2026.10.01.1 (swamp-club#2888), a pull after a peer's commit keeps A's pending write and the retry publishes it", async () => {
-  await withRepos({
-    remote: {
-      capabilities: {},
-      semantics: {
-        ...LEGACY_EXTENSION_SEMANTICS,
-        pullClearsPendingPush: false,
-      },
-    },
-  }, async (repos) => {
+  // The fake's default semantics model extensions 2026.10.06.1 through
+  // 2026.10.07.1, which keep this behaviour.
+  await withRepos(SINGLE_PHASE, async (repos) => {
     const model = await saveModel(repos.serveRepo, "writer");
     const { written, retryFrom } = await failedPushThenPeerCommit(
       repos,
@@ -970,9 +963,10 @@ for (const path of FLUSH_PATHS.filter((p) => p.offlineOp === "push")) {
 
       // The uploads landed as objects but nothing was committed: the remote
       // still serves "gone" and not "kept". Each upload's bare mark set the
-      // bulk flag (S3SYNC:2822), and a bulk push deletes nothing
-      // (S3SYNC:3095-3165), so the recorded delete is already lost. Still
-      // true in extensions 2026.10.01.1; filed as swamp-club#2907.
+      // bulk flag (S3SYNC:2911), and a bulk push deletes nothing
+      // (S3SYNC:3206-3276, swamp-extensions 7c0b1eacf), so the recorded
+      // delete is already lost. Still true through extensions 2026.10.07.1;
+      // filed as swamp-club#2907.
       assertEquals(remoteKeysOf(repos, model), goneKeys);
       const after = await repos.remote.pendingPush(cacheDir(repos.repoA));
       assertEquals(after.bulk, true);

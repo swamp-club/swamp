@@ -274,7 +274,9 @@ export interface DatastoreSyncService {
    * Returns `true` if the file was downloaded successfully, `false` if the
    * file does not exist on the remote. Implementations MUST write the file
    * atomically (write to a temporary path, then rename) to avoid partial
-   * reads from concurrent consumers.
+   * reads from concurrent consumers. Core checks that the file exists after
+   * a `true` result and raises {@link HydrateContractViolationError} when it
+   * does not.
    *
    * `relPath` is forward-slash-normalized and cache-relative (same
    * convention as `DatastoreSyncOptions.relPath`). Extensions consuming
@@ -287,6 +289,47 @@ export interface DatastoreSyncService {
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<boolean>;
+
+  /**
+   * Read one file as the remote datastore holds it, without touching the
+   * local cache.
+   *
+   * Resolves to the file's bytes, or `null` when the remote has no such
+   * file. Used where core must compare its cached copy of a file with the
+   * remote one before acting on it: `pullChanged` and `hydrateFile` would
+   * replace the local copy, including one with a change not pushed yet.
+   *
+   * Contract:
+   *
+   * 1. **Nothing is written locally.** No file is created, replaced or
+   *    removed in the cache, and no dirty state or pull watermark changes.
+   * 2. **The remote's bytes, not the cache's.** A local file at `relPath`
+   *    that differs from the remote one is neither returned nor consulted.
+   * 3. **`relPath` is cache-relative** and forward-slash-normalized, as for
+   *    {@link hydrateFile}: it names the remote file that the cache file at
+   *    that path syncs with. With a namespace it starts with `{namespace}/`,
+   *    and the implementation must not add the namespace a second time.
+   * 4. **Namespace from `options`.** `options.namespace` is the namespace of
+   *    the calling repository, as on `pullChanged`. When it is unset or
+   *    empty the datastore has no namespace and `relPath` is read from its
+   *    root.
+   * 5. **A path that could leave the datastore is rejected.** Reject a
+   *    `relPath` that is absolute or has a `..` segment; never resolve it.
+   * 6. **Only a missing file is `null`.** Any other failure rejects, so a
+   *    caller never mistakes an unreachable remote for a deleted file.
+   *    Honor `options.signal` as the other methods do.
+   * 7. **No retained content.** The returned bytes MUST NOT be held in
+   *    instance state: in `swamp serve` the sync service lives as long as
+   *    the process. The whole file is returned in memory, so the method is
+   *    meant for small files such as run records.
+   *
+   * Optional — core treats the method's presence as the capability, and
+   * checks for it before calling.
+   */
+  fetchContent?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<Uint8Array | null>;
 
   /**
    * Export the local catalog for the given namespace as a flat JSON array
@@ -551,9 +594,15 @@ export type MarkDirtyHook = (relPath?: string) => Promise<void>;
  * {@link MarkDirtyHook}.
  *
  * Returns `true` if the file was successfully downloaded, `false` if the
- * file does not exist on the remote.
+ * file does not exist on the remote. A caller that holds something others
+ * wait on passes `signal` to bound the download. The composition-root wrapper
+ * verifies a `true` result for paths inside the cache and rejects with
+ * {@link HydrateContractViolationError} when no file is there.
  */
-export type HydrateFileHook = (absPath: string) => Promise<boolean>;
+export type HydrateFileHook = (
+  absPath: string,
+  options?: { signal?: AbortSignal },
+) => Promise<boolean>;
 
 /**
  * Thrown when a datastore sync operation exceeds the configured timeout.
@@ -605,5 +654,35 @@ export class SyncTimeoutError extends UserError {
     if (options?.cause !== undefined) {
       this.cause = options.cause;
     }
+  }
+}
+
+/**
+ * Thrown when a datastore's `hydrateFile` reports success but the file is not
+ * at the path core asked for.
+ *
+ * Core verifies the claim so a hydrate that wrote to the wrong place names
+ * the datastore and both paths, instead of surfacing as a bare "No such file
+ * or directory" from the retry read (swamp-club#2477).
+ *
+ * Extends `UserError` so the message renders clean at the CLI error boundary.
+ */
+export class HydrateContractViolationError extends UserError {
+  readonly datastoreType: string;
+  readonly relPath: string;
+  readonly absPath: string;
+
+  constructor(datastoreType: string, relPath: string, absPath: string) {
+    super(
+      `Datastore ${datastoreType} reported hydrateFile success for ` +
+        `${relPath} but no file exists at ${absPath}. This is a bug in the ` +
+        `datastore extension: hydrateFile must write the file at the ` +
+        `cache-relative path it was given.`,
+      "datastore_hydrate_contract_violation",
+    );
+    this.name = "HydrateContractViolationError";
+    this.datastoreType = datastoreType;
+    this.relPath = relPath;
+    this.absPath = absPath;
   }
 }

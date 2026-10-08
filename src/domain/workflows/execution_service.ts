@@ -43,6 +43,16 @@ import {
 } from "./workflow_run.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
+  acquireContinuation,
+  type ContinuationClaim,
+  type ContinuationClaims,
+  ContinuationHeldError,
+  type ContinuationMode,
+  type RunRecordCurrency,
+  RunRecordStaleError,
+  suspensionKeyOf,
+} from "./continuation_claim.ts";
+import {
   type OwnerLiveness,
   suspendedRunOwnerStillRuns,
 } from "./orphaned_run_reaper.ts";
@@ -94,7 +104,10 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
-import { nextActionForStatus } from "./suspended_run_resolver.ts";
+import {
+  nextActionForStatus,
+  RunNotSuspendedError,
+} from "./suspended_run_resolver.ts";
 import {
   type GraphNode,
   TopologicalSortService,
@@ -123,6 +136,7 @@ import {
 import type { OutputRepository } from "../models/repositories.ts";
 import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
+import { cancelCause, cleanupGraceSignal } from "../models/cancel_cause.ts";
 import { hostname } from "node:os";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
@@ -212,6 +226,7 @@ import {
 import {
   CelEvaluator,
   createExtensionCelEnvironment,
+  prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   collectWorkflowAuthoredExpressions,
@@ -255,6 +270,11 @@ import {
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 import { getRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
 import { minOf } from "../array_extrema.ts";
+import {
+  currentVaultAccess,
+  runGeneratorWithVaultAccess,
+  RunVaultAccess,
+} from "../vaults/run_vault_access.ts";
 
 /** Parent-scope roots a deferred expression may read; anything else is scope-free. */
 const SCOPED_REFERENCE = /\b(inputs|self|run|steps)\b/;
@@ -543,7 +563,51 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
-function mergeDataOutputOverrides(
+/** The outcome of the one workflow lookup a run makes. */
+type RunWorkflowLookup =
+  | { readonly workflow: Workflow | null }
+  | { readonly error: unknown };
+
+/**
+ * The vault access a workflow's `vaults:` list holds its runs to, or
+ * `undefined` when it declares none. Entered inside the scope a nested run
+ * starts from, so a child's list intersects with its parent's.
+ */
+function workflowVaultAccess(
+  workflow: Workflow | undefined,
+): RunVaultAccess | undefined {
+  if (workflow?.vaults === undefined) return undefined;
+  return RunVaultAccess.create({
+    allowedVaults: workflow.vaults,
+    allowListSource: workflow.name,
+  });
+}
+
+/**
+ * The vault access a resume of `run` is held to: the workflow's current
+ * `vaults:` list and the list the run recorded at run start, both. An edit
+ * to the workflow can narrow a suspended run but never widen it. A run that
+ * recorded no list (none applied, or it predates the record) is held to the
+ * current list alone.
+ */
+function resumeVaultAccess(
+  workflow: Workflow,
+  run: WorkflowRun,
+): RunVaultAccess | undefined {
+  const current = workflowVaultAccess(workflow);
+  if (run.allowedVaults === undefined) return current;
+  const recorded = RunVaultAccess.create({
+    allowedVaults: run.allowedVaults,
+    allowListSource: workflow.name,
+  });
+  return current ? current.narrowedBy(recorded) : recorded;
+}
+
+/**
+ * A step's data output overrides layered over its definition's `resources`
+ * overrides: a step override replaces the definition's for the same spec.
+ */
+export function mergeDataOutputOverrides(
   definitionResources: ResourceOverrides | undefined,
   stepOverrides: DataOutputOverride[] | undefined,
 ): DataOutputOverride[] | undefined {
@@ -1353,6 +1417,13 @@ export class DefaultStepExecutor implements StepExecutor {
       const celEvaluator = new CelEvaluator();
       const evaluate = (expr: string, context: Record<string, unknown>) =>
         celEvaluator.evaluate(expr, context);
+      // The pass below evaluates synchronously, so the content its
+      // expressions read through the model map must be local first
+      // (swamp-club#3179).
+      await prepareExpressionsIn(
+        [task, taskArgs.raw, resolvedPlacement],
+        ctx.expressionContext,
+      );
       task = resolveAvailableExpressions(
         task,
         ctx.expressionContext,
@@ -2035,8 +2106,15 @@ export class DefaultStepExecutor implements StepExecutor {
         // the run's abort stopped was cancelled, not failed.
         const aborted = ctx.signal.aborted ||
           (error instanceof DOMException && error.name === "AbortError");
+        // What stopped it: a plain abort names no cause, which leaves the
+        // tracker row's reason for `swamp model cancel` to fill in.
+        const cause = aborted ? cancelCause(ctx.signal) : undefined;
         if (runTracker) {
-          runTracker.complete(output.id, aborted ? "cancelled" : "failed");
+          runTracker.complete(
+            output.id,
+            aborted ? "cancelled" : "failed",
+            cause,
+          );
         }
 
         await this.handleMethodFailure({
@@ -2054,6 +2132,7 @@ export class DefaultStepExecutor implements StepExecutor {
           reportMethodArgs,
           error,
           aborted,
+          cancelCause: cause,
           output,
           savedArtifacts,
         });
@@ -2484,6 +2563,8 @@ export class DefaultStepExecutor implements StepExecutor {
     error: unknown;
     /** Whether the run's abort stopped the method; it is then cancelled. */
     aborted: boolean;
+    /** What aborted it, when the abort named a cause (see `cancelCause`). */
+    cancelCause?: string;
     output: ModelOutput;
     savedArtifacts: Array<{
       dataId: string;
@@ -2507,6 +2588,7 @@ export class DefaultStepExecutor implements StepExecutor {
       reportMethodArgs,
       error,
       aborted,
+      cancelCause: cause,
       output,
       savedArtifacts,
     } = args;
@@ -2531,7 +2613,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
     if (aborted) {
-      output.markCancelled("aborted");
+      output.markCancelled(cause ?? "aborted");
     } else {
       output.markFailed({ message: errorMessage, stack: errorStack });
     }
@@ -2736,6 +2818,21 @@ export class WorkflowExecutionService {
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
   /**
+   * The continuation claims a resume of a suspended run takes
+   * (swamp-club#3108). Unset where the datastore has no store every host
+   * reads directly; a resume there takes none.
+   */
+  continuationClaims?: ContinuationClaims;
+
+  /**
+   * Compares this host's record of a run with the datastore's, for a resume
+   * that asks for it with `requireCurrentRecord`. Unset where every host
+   * reads the same record, and where the datastore cannot be read without
+   * replacing the local copy; such a resume is then not checked.
+   */
+  runRecordCurrency?: RunRecordCurrency;
+
+  /**
    * The runs this service created. A step of one cannot have registered a
    * wait before, so opening its wait skips the search for one to take over.
    */
@@ -2902,10 +2999,44 @@ export class WorkflowExecutionService {
     const runSpan = getTracer().startSpan("swamp.workflow.run", {
       attributes: { "workflow.name": idOrName },
     });
+    // Looked up once, at the first step under the run's span, so the run
+    // is held to the vaults list of the workflow it executes. The run reuses
+    // this lookup and never looks the workflow up again: a failed or empty
+    // lookup is reported inside the run as before, so no workflow ever runs
+    // without its vaults list.
+    let lookup: RunWorkflowLookup = { workflow: null };
     yield* bindGeneratorToSpan(
       runSpan,
-      this.runInSpan(runSpan, idOrName, options),
+      runGeneratorWithVaultAccess(
+        async () => {
+          try {
+            lookup = {
+              workflow: await this.findRunWorkflow(idOrName, options),
+            };
+          } catch (error) {
+            lookup = { error };
+          }
+          return workflowVaultAccess(
+            "workflow" in lookup ? lookup.workflow ?? undefined : undefined,
+          );
+        },
+        () => this.runInSpan(runSpan, idOrName, lookup, options),
+      ),
     );
+  }
+
+  /** Finds the workflow {@link run} executes, by id or by name. */
+  private async findRunWorkflow(
+    idOrName: string,
+    options?: { byId?: boolean; expectedName?: string },
+  ): Promise<Workflow | null> {
+    return options?.byId
+      ? await findWorkflowById(
+        this.workflowRepo,
+        idOrName,
+        options.expectedName,
+      )
+      : await this.lookupWorkflow(idOrName);
   }
 
   /**
@@ -2915,6 +3046,7 @@ export class WorkflowExecutionService {
   private async *runInSpan(
     runSpan: Span,
     idOrName: string,
+    lookup: RunWorkflowLookup,
     options?: Parameters<WorkflowExecutionService["run"]>[1],
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const tracer = getTracer();
@@ -2946,14 +3078,10 @@ export class WorkflowExecutionService {
         new RunSensitiveValues(secretRedactor);
 
       try {
-        // Look up workflow
-        const found = options?.byId
-          ? await findWorkflowById(
-            this.workflowRepo,
-            idOrName,
-            options.expectedName,
-          )
-          : await this.lookupWorkflow(idOrName);
+        // The workflow run() looked up, whose vaults list this run is held
+        // to; a failed lookup is reported here, as part of the run.
+        if ("error" in lookup) throw lookup.error;
+        const found = lookup.workflow;
         if (!found) {
           throw new Error(`Workflow not found: ${idOrName}`);
         }
@@ -3095,6 +3223,18 @@ export class WorkflowExecutionService {
           options?.triggerSource,
         );
         this.startedRunIds.add(run.id);
+        // A serve run records who triggered it, so a resume is held to that
+        // principal's vault access, not the resumer's (swamp-club#2676).
+        const triggeringPrincipal = currentVaultAccess()?.triggeringPrincipal;
+        if (triggeringPrincipal) {
+          run.recordTriggeringPrincipal(triggeringPrincipal);
+        }
+        // The vaults list in force (a parent's included) is recorded, so a
+        // resume can be narrowed by an edit to the workflow but never widened.
+        const allowedVaults = currentVaultAccess()?.allowedVaults;
+        if (allowedVaults !== undefined) {
+          run.recordAllowedVaults(allowedVaults);
+        }
         run.attachSensitiveValues(sensitiveValues);
         if (options?.parentRun) {
           run.recordParentRun(options.parentRun);
@@ -3561,11 +3701,14 @@ export class WorkflowExecutionService {
       fromStep?: string;
       suspendedOnly?: boolean;
       instanceId?: string;
+      continuation?: ContinuationMode;
+      requireCurrentRecord?: boolean;
     },
   ): Promise<{
     existingRun: WorkflowRun;
     snapshot: WorkflowRunData;
     resumeInputs: Record<string, unknown>;
+    claim: ContinuationClaim | undefined;
   }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
@@ -3574,6 +3717,11 @@ export class WorkflowExecutionService {
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // Derived from the record as stored, before a signal is applied to it:
+    // every host holding this record derives the same key.
+    const suspensionKey = loadedRun.status === "suspended"
+      ? await suspensionKeyOf(loadedRun)
+      : undefined;
     // The stored run holds vault references where it held sensitive values;
     // only the entries swamp listed are restored, from stored state alone and
     // before any caller-supplied resume input is merged in.
@@ -3601,7 +3749,7 @@ export class WorkflowExecutionService {
       const accepted = options?.suspendedOnly
         ? "is not suspended"
         : "is not suspended or failed";
-      throw new UserError(
+      throw new RunNotSuspendedError(
         `Run ${runId} ${accepted} (status: ${existingRun.status}).` +
           nextActionForStatus(existingRun.status, workflow.name, runId),
       );
@@ -3659,41 +3807,122 @@ export class WorkflowExecutionService {
       options?.inputs ?? {},
     );
 
-    // Taken before any mutation. If anything throws after the save below and
-    // before execution starts, the run is restored to exactly this state
-    // rather than left running with nothing driving it. Taken from the run as
-    // stored, so a restore writes references back, never restored values.
-    const snapshot = loadedRun.toData();
+    // A copy of the run that is behind the datastore's shows a suspension a
+    // peer has already ended. Compared under the run's claim, so a peer that
+    // changes the run does so before this look or after the save below.
+    if (
+      options?.requireCurrentRecord && suspensionKey !== undefined &&
+      this.runRecordCurrency &&
+      !(await this.runRecordCurrency({
+        workflowId: workflow.id,
+        runId: loadedRun.id,
+      }))
+    ) {
+      throw new RunRecordStaleError(loadedRun.id);
+    }
 
-    // Work the run's abort left unfinished runs now, as it would have had the
-    // abort left it pending. Reopened per record before a failed run's reset
-    // set, which resets by name in every job.
-    existingRun.reopenAbortedWork();
-    // This process now drives the run. Recorded before the save below, so
-    // cancel sees the live process from the start.
-    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
-    if (reset) {
-      // A reset clears the wait a step held. Closed first, so a signal for
-      // the old attempt is answered closed and its wait is not listed.
-      if (this.signalWaits.supported) {
-        await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+    // The last refusal: this suspension is consumed once, by whoever holds
+    // its claim. Taken after every other check, so a refused resume leaves
+    // no claim behind. The suspension key depends on this order: a resume
+    // refused on an open wait changes no step, so the key stays the same,
+    // and a claim kept on it would hold off every later resume
+    // (swamp-club#3183).
+    const claim = suspensionKey === undefined
+      ? undefined
+      : await this.claimSuspension(
+        loadedRun.id,
+        suspensionKey,
+        options?.continuation ?? { kind: "manual" },
+      );
+
+    // Everything from the claim to the save: a throw anywhere in it leaves
+    // the stored run suspended and nothing consumed, so the claim goes back.
+    let snapshot: WorkflowRunData;
+    try {
+      // Taken before any mutation. If anything throws after the save below and
+      // before execution starts, the run is restored to exactly this state
+      // rather than left running with nothing driving it. Taken from the run as
+      // stored, so a restore writes references back, never restored values.
+      snapshot = loadedRun.toData();
+
+      // Work the run's abort left unfinished runs now, as it would have had the
+      // abort left it pending. Reopened per record before a failed run's reset
+      // set, which resets by name in every job.
+      existingRun.reopenAbortedWork();
+      // This process now drives the run. Recorded before the save below, so
+      // cancel sees the live process from the start.
+      const owner = { pid: Deno.pid, instanceId: options?.instanceId };
+      if (reset) {
+        // A reset clears the wait a step held. Closed first, so a signal for
+        // the old attempt is answered closed and its wait is not listed.
+        if (this.signalWaits.supported) {
+          await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+        }
+        existingRun.resetForResumeFrom(reset.steps, reset.tracked);
+        existingRun.resumeFromFailed(owner);
+      } else {
+        existingRun.resumeFromSuspended(owner);
       }
-      existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed(owner);
-    } else {
-      existingRun.resumeFromSuspended(owner);
-    }
 
-    // Record the key names of any resume-time inputs for audit (never the
-    // values — they may be secrets such as a freshly minted auth key). Done
-    // before the save below so the audit trail persists immediately.
-    if (Object.keys(resumeInputs).length > 0) {
-      existingRun.recordResumeInputs(Object.keys(resumeInputs));
+      // Record the key names of any resume-time inputs for audit (never the
+      // values — they may be secrets such as a freshly minted auth key). Done
+      // before the save below so the audit trail persists immediately.
+      if (Object.keys(resumeInputs).length > 0) {
+        existingRun.recordResumeInputs(Object.keys(resumeInputs));
+      }
+      // The running status saved here also stops a second resume of this run
+      // from starting while this one prepares.
+      await this.saveRun(workflow.id, existingRun);
+    } catch (error) {
+      await this.releaseSuspension(claim);
+      throw error;
     }
-    // The running status saved here also stops a second resume of this run
-    // from starting while this one prepares.
-    await this.saveRun(workflow.id, existingRun);
-    return { existingRun, snapshot, resumeInputs };
+    return { existingRun, snapshot, resumeInputs, claim };
+  }
+
+  /**
+   * Takes the continuation claim of a suspension, or refuses the resume
+   * when another holder has it. Undefined where there is no claim store.
+   */
+  private async claimSuspension(
+    runId: string,
+    suspensionKey: string,
+    mode: ContinuationMode,
+  ): Promise<ContinuationClaim | undefined> {
+    const claims = this.continuationClaims;
+    if (!claims || (claims.usable && !(await claims.usable()))) {
+      return undefined;
+    }
+    const acquired = await acquireContinuation(
+      claims,
+      { runId, suspensionKey },
+      mode,
+      new Date(),
+    );
+    if (acquired.kind === "acquired") return acquired.claim;
+    throw new ContinuationHeldError(
+      runId,
+      acquired.claim.holder,
+      acquired.liveness,
+    );
+  }
+
+  /** Gives back a claim whose resume ran nothing. Never throws. */
+  private async releaseSuspension(
+    claim: ContinuationClaim | undefined,
+  ): Promise<void> {
+    if (!claim || !this.continuationClaims) return;
+    try {
+      await this.continuationClaims.store.release(claim);
+    } catch (error) {
+      getSwampLogger(["workflow", "resume"]).warn(
+        "Could not release the continuation claim of run {runId}: {error}",
+        {
+          runId: claim.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
   }
 
   /**
@@ -3738,6 +3967,17 @@ export class WorkflowExecutionService {
        */
       instanceId?: string;
       /**
+       * Who asks for the suspension's continuation claim; a person, unless
+       * serve continues the run by itself (swamp-club#3108).
+       */
+      continuation?: ContinuationMode;
+      /**
+       * Refuse a suspended run whose record here differs from the
+       * datastore's, where that can be told. Set when serve continues a run
+       * by itself from a copy that may be behind (swamp-club#3108).
+       */
+      requireCurrentRecord?: boolean;
+      /**
        * How long after an abort the resume waits for its model methods to
        * stop before recording its cancellation; defaults to
        * {@link STEP_STOP_GRACE_MS}.
@@ -3750,7 +3990,6 @@ export class WorkflowExecutionService {
     if (!workflow) {
       throw new UserError(`Workflow not found: ${workflowIdOrName}`);
     }
-
     // Read once so a run that does not exist is refused before anything is
     // claimed, and the claim is taken on the stored run's own id.
     const located = await this.runRepo.findById(
@@ -3760,6 +3999,29 @@ export class WorkflowExecutionService {
     if (!located) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // A resume is held to the workflow's vaults list as a run is, and to the
+    // list the run recorded when it started.
+    yield* runGeneratorWithVaultAccess(
+      resumeVaultAccess(workflow, located),
+      () =>
+        this.resumeWorkflow(
+          workflow,
+          located,
+          workflowIdOrName,
+          runId,
+          options,
+        ),
+    );
+  }
+
+  /** Body of {@link resume}, once the workflow and run are found. */
+  private async *resumeWorkflow(
+    workflow: Workflow,
+    located: WorkflowRun,
+    workflowIdOrName: string,
+    runId: string,
+    options?: Parameters<WorkflowExecutionService["resume"]>[2],
+  ): AsyncGenerator<WorkflowExecutionEvent> {
     // A resume can reach a wait for the first time. The store is opened
     // before anything runs, as for a new run, so one that turns out
     // unusable refuses here and not after earlier steps have executed.
@@ -3772,7 +4034,7 @@ export class WorkflowExecutionService {
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
-    const { existingRun, snapshot, resumeInputs } = await this.runClaims
+    const { existingRun, snapshot, resumeInputs, claim } = await this.runClaims
       .withClaim(
         located.id,
         () =>
@@ -3799,6 +4061,7 @@ export class WorkflowExecutionService {
     const restore = {
       workflowId: workflow.id,
       snapshot,
+      claim,
       handBackTrackerRow: () => {
         if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
         handBackTrackerRow();
@@ -4344,7 +4607,7 @@ export class WorkflowExecutionService {
         const cleanupMode: boolean = (jobFailed || jobUndecided) &&
           (options.signal?.aborted ?? false);
         const levelSignal: AbortSignal | undefined = cleanupMode
-          ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+          ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
           : options.signal;
         const levelOptions = cleanupMode
           ? { ...options, signal: levelSignal, cleanupStepLevel: true }
@@ -4992,6 +5255,27 @@ export class WorkflowExecutionService {
           jobName: job.name,
           stepName,
         }, openedAt);
+        // A wait taken over keeps the deadline it was registered with.
+        const maxTimeout = this.signalWaits.supported
+          ? this.signalWaits.maxTimeoutSeconds
+          : undefined;
+        if (!earlier && maxTimeout !== undefined && task.timeout > maxTimeout) {
+          const error =
+            `The wait_for_signal timeout of step "${stepName}" is ${task.timeout} seconds, more than the ${maxTimeout} seconds this server allows (--max-signal-wait-timeout).`;
+          stepRun.fail(error);
+          if (step.allowFailure) stepRun.markAllowedFailure();
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            runId: run.id,
+            error,
+            allowedFailure: step.allowFailure || undefined,
+            forEachTemplate,
+            forEachIndex,
+          };
+          return;
+        }
         const wait = earlier
           ? SignalWait.fromData({
             kind: "signal",
@@ -4999,7 +5283,7 @@ export class WorkflowExecutionService {
             schema: earlier.schema,
             deadline: earlier.deadline,
           })
-          : SignalWait.open(task.schema, task.timeout, openedAt);
+          : SignalWait.open(task.schema, task.timeout, openedAt, maxTimeout);
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
         if (!earlier) {
@@ -5723,6 +6007,8 @@ export class WorkflowExecutionService {
     // the inputs evaluateData pass below still resolves the rest.
     if (expressionContext) {
       const celEvaluator = new CelEvaluator();
+      // Synchronous pass: make what it reads local first (swamp-club#3179).
+      await prepareExpressionsIn(task, expressionContext);
       task = resolveAvailableExpressions(
         task,
         expressionContext,
@@ -6113,7 +6399,7 @@ export class WorkflowExecutionService {
           jobName: job.name,
           stepName: syntheticName,
           repoDir: this.repoDir,
-          signal: options.signal ?? AbortSignal.timeout(30_000),
+          signal: options.signal ?? new AbortController().signal,
           expressionContext: stepExprContext,
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
@@ -6244,7 +6530,7 @@ export class WorkflowExecutionService {
   } {
     const cleanupMode = anyJobFailed && (signal?.aborted ?? false);
     const levelSignal = cleanupMode
-      ? AbortSignal.timeout(CLEANUP_GRACE_TIMEOUT_MS)
+      ? cleanupGraceSignal(CLEANUP_GRACE_TIMEOUT_MS)
       : signal;
     const levelStepOpts = cleanupMode
       ? { ...stepOpts, signal: levelSignal, cleanupJobLevel: true }
@@ -6653,10 +6939,11 @@ export class WorkflowExecutionService {
    * original error still wins.
    */
   private async restoreRunOnFailure<T>(
-    { workflowId, snapshot, handBackTrackerRow }: {
+    { workflowId, snapshot, handBackTrackerRow, claim }: {
       workflowId: WorkflowId;
       snapshot: WorkflowRunData;
       handBackTrackerRow: () => void;
+      claim?: ContinuationClaim;
     },
     prepare: () => Promise<T>,
   ): Promise<T> {
@@ -6674,6 +6961,9 @@ export class WorkflowExecutionService {
           );
           if (stored && stored.status !== "running") return;
           await this.saveRun(workflowId, WorkflowRun.fromData(snapshot));
+          // The run is suspended again as it was, so its suspension was
+          // not consumed and another resume may take it.
+          await this.releaseSuspension(claim);
         });
       } catch (restoreError) {
         getSwampLogger(["workflow", "resume"]).warn(

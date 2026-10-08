@@ -33,6 +33,7 @@ import {
 } from "../reports/report_selection.ts";
 import { Cron } from "croner";
 import { type PlacementFields, PlacementFieldsSchema } from "./placement.ts";
+import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 
 const WORKFLOW_NAME_MAX_LENGTH = 64;
 const WORKFLOW_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -120,6 +121,12 @@ export const WorkflowObjectSchema = z.object({
   affinity: z.boolean().optional(),
   writes: z.boolean().optional(),
   autoResume: z.boolean().optional(),
+  /**
+   * The most vaults any run of this workflow may read or write: a run is
+   * refused every vault operation on a vault not listed, whoever triggers
+   * it. Nested workflows intersect their list with their parent's.
+   */
+  vaults: z.array(z.string().min(1)).optional(),
   ...PlacementFieldsSchema.shape,
 });
 
@@ -182,6 +189,7 @@ export interface CreateWorkflowProps {
   platform?: string;
   queueTimeout?: number;
   autoResume?: boolean;
+  vaults?: string[];
 }
 
 /**
@@ -215,6 +223,8 @@ export class Workflow {
     readonly platform: string | undefined,
     readonly queueTimeout: number | undefined,
     readonly autoResume: boolean | undefined,
+    /** The workflow's `vaults:` allow-list, when it declares one. */
+    readonly vaults: readonly string[] | undefined,
   ) {}
 
   /**
@@ -245,6 +255,7 @@ export class Workflow {
       platform: props.platform,
       queueTimeout: props.queueTimeout,
       autoResume: props.autoResume,
+      vaults: props.vaults,
     };
 
     // Scoped @collective/name is validated by workflowNameBase (in the schema);
@@ -278,13 +289,27 @@ export class Workflow {
       data.platform,
       data.queueTimeout,
       data.autoResume,
+      data.vaults,
     );
   }
 
   /**
    * Reconstructs a Workflow from persisted data.
+   *
+   * @throws WorkflowSchemaError when the data fails the workflow schema.
    */
   static fromData(data: WorkflowInput): Workflow {
+    try {
+      return Workflow.reconstitute(data);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw WorkflowSchemaError.fromZodError(error);
+      }
+      throw error;
+    }
+  }
+
+  private static reconstitute(data: WorkflowInput): Workflow {
     const validated = WorkflowSchema.parse(data);
     const jobs = validated.jobs.map((j) => Job.fromData(j));
 
@@ -306,6 +331,7 @@ export class Workflow {
       validated.platform,
       validated.queueTimeout,
       validated.autoResume,
+      validated.vaults,
     );
   }
 
@@ -423,6 +449,7 @@ export class Workflow {
       platform: this.platform,
       queueTimeout: this.queueTimeout,
       autoResume: this.autoResume,
+      vaults: this.vaults !== undefined ? [...this.vaults] : undefined,
     };
   }
 }

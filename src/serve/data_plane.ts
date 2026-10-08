@@ -51,6 +51,7 @@ import {
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
+import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { isHiddenFromWorker } from "./worker_control_plane_visibility.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
@@ -247,10 +248,14 @@ export class DataPlane {
           return response;
         },
       );
-    if (!dispatch?.traceHeaders) return run();
+    // A dispatch's writes, sensitive fields included, are held to the
+    // dispatching run's vault scope (swamp-club#2676).
+    const scope = dispatch?.vaultAccess;
+    const scoped = scope ? () => runWithVaultAccess(scope, run) : run;
+    if (!dispatch?.traceHeaders) return scoped();
     return runWithParentTrace(
       extractTraceContext({ ...dispatch.traceHeaders }),
-      run,
+      scoped,
     );
   }
 

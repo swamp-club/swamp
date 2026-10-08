@@ -317,3 +317,59 @@ Deno.test("CompositeUnifiedDataRepository: findAllGlobal reports rename markers 
     );
   }
 });
+
+// --- Content-ensuring step routing (swamp-club#3178) ---
+
+/** A composite whose stores record which one ensureContentLocal reached. */
+async function compositeWithSameNameInBothStores() {
+  const { composite, persistent, ephemeral } = createCompositeRepo();
+  // Ephemeral holds version 1; persistent holds versions 1 and 2.
+  await ephemeral.save(
+    TEST_TYPE,
+    TEST_MODEL_ID,
+    createTestData(),
+    TEST_CONTENT,
+  );
+  for (let i = 0; i < 2; i++) {
+    await persistent.save(
+      TEST_TYPE,
+      TEST_MODEL_ID,
+      createTestData({ lifetime: "infinite" }),
+      TEST_CONTENT,
+    );
+  }
+  const reached: string[] = [];
+  for (
+    const [name, repo] of [["ephemeral", ephemeral], [
+      "persistent",
+      persistent,
+    ]] as const
+  ) {
+    const ensure = repo.ensureContentLocal.bind(repo);
+    repo.ensureContentLocal = (...args) => {
+      reached.push(name);
+      return ensure(...args);
+    };
+    const accepted = repo.isContentAcceptedSync.bind(repo);
+    repo.isContentAcceptedSync = (...args) => {
+      reached.push(name);
+      return accepted(...args);
+    };
+  }
+  return { composite, reached };
+}
+
+Deno.test("CompositeUnifiedDataRepository.ensureContentLocal: reaches the store that holds the requested version", async () => {
+  const { composite, reached } = await compositeWithSameNameInBothStores();
+  await composite.ensureContentLocal(TEST_TYPE, TEST_MODEL_ID, "test-data");
+  await composite.ensureContentLocal(TEST_TYPE, TEST_MODEL_ID, "test-data", 1);
+  await composite.ensureContentLocal(TEST_TYPE, TEST_MODEL_ID, "test-data", 2);
+  assertEquals(reached, ["ephemeral", "ephemeral", "persistent"]);
+});
+
+Deno.test("CompositeUnifiedDataRepository.isContentAcceptedSync: reaches the store that holds the requested version", async () => {
+  const { composite, reached } = await compositeWithSameNameInBothStores();
+  composite.isContentAcceptedSync(TEST_TYPE, TEST_MODEL_ID, "test-data", 1, 0);
+  composite.isContentAcceptedSync(TEST_TYPE, TEST_MODEL_ID, "test-data", 2, 0);
+  assertEquals(reached, ["ephemeral", "persistent"]);
+});

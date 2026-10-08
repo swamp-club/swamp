@@ -222,12 +222,17 @@ function createRemoteDataRepository(
     collectGarbage: () => unsupported("dataRepository.collectGarbage"),
     getPath: () => unsupported("dataRepository.getPath"),
     getContentPath: () => unsupported("dataRepository.getContentPath"),
+    // Serve makes content current before it streams an artifact to a
+    // worker, so the worker has no cache of its own to ensure.
+    ensureContentLocal: () => unsupported("dataRepository.ensureContentLocal"),
     // Synchronous members cannot make a network round-trip at all.
     getLatestVersionSync: () =>
       unsupported("dataRepository.getLatestVersionSync"),
     findByNameSync: () => unsupported("dataRepository.findByNameSync"),
     listVersionsSync: () => unsupported("dataRepository.listVersionsSync"),
     getContentSync: () => unsupported("dataRepository.getContentSync"),
+    isContentAcceptedSync: () =>
+      unsupported("dataRepository.isContentAcceptedSync"),
     findAllForModelSync: () =>
       unsupported("dataRepository.findAllForModelSync"),
     findAllGlobalSync: () => unsupported("dataRepository.findAllGlobalSync"),

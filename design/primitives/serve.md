@@ -73,7 +73,7 @@ it the default file is optional.
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
-| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A model type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
+| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted model type needs admin to create, run, edit or delete a model of it, delete or rename its data, or add or change a workflow step running it. A model type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
@@ -89,13 +89,15 @@ it the default file is optional.
 | `--hydration-timeout` | `SWAMP_HYDRATION_TIMEOUT` | 60 s | Startup pull of the remote datastore |
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
+| `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
+| `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
 | `--enable-internal-api` | `SWAMP_ENABLE_INTERNAL_API` | `false` | Exposes `/internal/runs` (`limit` default 100, clamped 1–10 000) |
 | `--remote-only` | `SWAMP_REMOTE_ONLY` | `false` | User steps run only on workers |
 | `--dashboard` | `SWAMP_DASHBOARD` | `false` | Serves `/dashboard/*` when the build embeds the SPA |
-| `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided |
+| `--auto-resume` | `SWAMP_AUTO_RESUME` | `false` | Resumes a run once every approval gate is decided and every wait for a signal is settled |
 | `--detach-runs` | — | `false` | Deprecated, no effect: runs are always detached |
 
 Table notes:
@@ -115,7 +117,8 @@ Table notes:
 - Durations that drive a timer (`--heartbeat-interval`,
   `--reconciliation-interval`, `--group-refresh-interval`,
   `--hydration-timeout`, `--shutdown-drain-timeout`,
-  `--datastore-poll-interval`, `--max-run-duration`)
+  `--datastore-poll-interval`, `--continuation-sweep-interval`,
+  `--max-run-duration`)
   are capped at 2 147 483 647 ms, about 24.8 days (`parseTimerDuration`,
   `src/cli/duration_parser.ts`). Deno fires a longer timer after 1 ms.
 - Without `--hot-reload`, SIGHUP is a shutdown signal
@@ -128,6 +131,21 @@ Table notes:
   read from the parent's workflow, decides whether serve resumes a parent
   once the nested run it waits on finishes ("Gates inside a nested workflow"
   in workflows.md).
+- `--continuation-sweep-interval` sets how often the continuation sweep runs
+  after its pass at boot (`ContinuationSweepService`,
+  `src/serve/continuation_sweep_service.ts`). The sweep continues a suspended
+  run whose gates are all decided and whose waits for a signal are all
+  settled, under the workflow's auto-resume policy, and is what retries a
+  launch that was lost. It also settles a wait past its deadline as timed
+  out, so the run's `failed` handlers run without a client (see "Timing out"
+  in workflows.md). On a synced datastore it does not start when the boot
+  hydration failed, and it runs only its boot pass when the sync service has
+  no `fetchContent` to compare a run record with the remote one. Two instances never resume the same run: see
+  "Continuation claims" in workflows.md.
+- `--max-signal-wait-timeout` is not a timer and is not capped at 24.8 days:
+  it is compared with a step's `timeout` when the step would open its wait
+  (`parseMaxSignalWaitTimeout`, `src/cli/commands/serve.ts`). Waits already
+  open keep their deadline.
 - Once shutdown begins the active-run registry refuses every new run
   (`ActiveRunRegistry.beginDraining`, called first by `runShutdownDrain`), so
   a resume chained after another cannot start on an instance that is going
@@ -231,7 +249,12 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   reports `restricted-commands` entries that are not server commands and
   `restricted-model-types` entries that name no type; it does not load the
   model registry, so a misspelled bare type is reported only by serve at
-  startup. See
+  startup. It also reads the grant files serve reads (`grants/`,
+  `--grants-file`, `--grants-dir`) through the loader startup uses: a file
+  startup would refuse fails the check, while a grant type spelling that
+  matches no type as written, or an external source absent where the check
+  runs, is a warning. Stored grants are in the datastore, which it never
+  reads; serve reports their spellings at startup. See
   "Username resolution" in
   [remote execution](../enablers/remote-execution.md).
 
@@ -347,6 +370,34 @@ lands either before the re-read or after the unit. The gap is in two places:
 
 Both fail closed: the token has to be minted again.
 
+**Server token secrets.** Serves before swamp-club#1511 stored each server
+token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
+vault (the default, else the first) and named that vault on the token record.
+On an OAuth-mode start, and from `access token mint` and `rotate`, each such
+token is migrated under its name lock (`src/serve/token_secret_migration.ts`):
+its secret is read, its vault is listed, and an access token the listing holds
+is read too. Both are written to `_token-secrets`, the record is repointed, and
+the user-vault copies are deleted when the vault supports deletes. A secret
+that cannot be read skips the token. A listing that fails, or a listed access
+token that fails to copy, fails the token before the record is repointed, and
+the next run retries. Only a key the listing lacks counts as absent: repointing
+a token whose access token stayed behind would hide it from the collective
+refresh, which reads only `_token-secrets` for such a record, so the token
+would never be refreshed or revoked on a userinfo 401 (swamp-club#3136).
+
+Earlier builds repointed in that case. So once per repo, serve lists the
+default user vault and copies the access token of each active record that
+names `_token-secrets` but lacks it there, under the token's name lock.
+`_token-secrets` is listed too, so a key there that fails to read is not
+overwritten. Token names come from the records, not from the vault's keys.
+When the listing succeeds and every key moves, serve records
+`oauth-access-tokens-recovered` in `_token-secrets` and never lists the vault
+for this again; otherwise the next start retries. A start with no such record
+records the marker without listing. The recovery trusts the user vault's value
+as the migration does, searches only the default user vault (else the first
+user vault), and does not repair a token an older binary sharing the datastore
+half-migrates after the marker exists.
+
 **OAuth bootstrap secrets.** Older serves stored `oauth-client-id`,
 `oauth-client-secret`, `oauth-bootstrap-access-token` and
 `oauth-resolved-admins` in the default user vault. On start, serve lists that
@@ -446,7 +497,9 @@ re-fetches each logged-in user's collectives from the provider every
 OAuth login stored an access token for it. The lookup reads `_token-secrets`,
 and reads a user vault only for a token whose record still names one, so a
 manually minted or worker server token costs no user-vault read
-(`src/serve/oauth_access_token_lookup.ts`). See
+(`src/serve/oauth_access_token_lookup.ts`). The token secret migration keeps
+a record naming `_token-secrets` only once its access token is there (see
+**Server token secrets** above). See
 [enablers/access-control.md](../enablers/access-control.md) for principals,
 grants, subjects and the `can-i` request.
 
@@ -714,7 +767,10 @@ as its instance id. The coordination records:
 (`src/serve/boot_reconciliation.ts`):
 
 1. Pulls the remote datastore into its local cache (`hydrateLocalCache`,
-   bounded by `--hydration-timeout`).
+   bounded by `--hydration-timeout`). A failed pull is logged and the instance
+   starts on what its cache holds, except under `managedConfig`: there it is
+   tried three times, each with the full timeout and resuming from the files
+   already downloaded, and a third failure stops startup.
 2. Migrates root-level control records into the configured namespace, once.
 3. Sweeps stale worker leases and dispatches.
 4. Reaps runs whose owning PID or heartbeat is gone

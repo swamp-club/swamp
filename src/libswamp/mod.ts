@@ -374,6 +374,7 @@ export {
 } from "./workflows/cancel_suspended.ts";
 export {
   createWorkflowApprovalsDeps,
+  type ExpiredApproval,
   type PendingApproval,
   workflowApprovals,
   type WorkflowApprovalsData,
@@ -1108,8 +1109,9 @@ export {
 // Managed lockfile transactions — writes to a datastore-shared lockfile
 // fetch it under the datastore global lock first (swamp-club#2838).
 export {
-  createDatastoreLockfileSync,
   createRepoPendingLockfileStore,
+  createRootLockfileSync,
+  LockfilePublishWiringError,
   type LockfileTransaction,
   type ManagedLockfileLock,
   type ManagedLockfileSyncPort,

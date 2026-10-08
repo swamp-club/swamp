@@ -274,6 +274,37 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// CLI composition root
+// ---------------------------------------------------------------------------
+
+// `src/cli/mod.ts` assembles the command tree, so it imports every command.
+// Only `main.ts` enters it. A file under src/ that imports it takes the whole
+// CLI into its module closure, and into the closure of every command that
+// reaches that file — `affectedCommands` in the verification attestation then
+// names those commands for almost any change (swamp-club#3195).
+const CLI_COMPOSITION_ROOT = "src/cli/mod.ts";
+
+Deno.test(
+  "collectImportEdges: nothing under src/ imports the CLI composition root",
+  async () => {
+    const edges = await collectImportEdges(
+      SRC_DIR,
+      (filePath, importPath) =>
+        resolveImport(filePath, importPath) === CLI_COMPOSITION_ROOT,
+    );
+
+    assertEquals(
+      edges.length,
+      0,
+      `Imports of ${CLI_COMPOSITION_ROOT} found:\n` +
+        `${edges.join("\n")}\n\n` +
+        `${CLI_COMPOSITION_ROOT} imports every command, so an importer depends on the whole CLI.\n` +
+        `Import the name from the file that defines it instead.`,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // libswamp public surface
 // ---------------------------------------------------------------------------
 

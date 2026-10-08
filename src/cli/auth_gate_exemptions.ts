@@ -33,14 +33,17 @@ import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
  *     start), `version` (as `--version` is) and `update` (a blocked user, or
  *     a CI host after a signing-key rotation, must be able to install the
  *     release that fixes it).
- * Everything else is gated.
+ * `worker connect` is `enrollment`: gated, except that a worker without a
+ * credential may instead pass on the serve that enrolls it
+ * (design/surfaces/auth-gate.md, "Remote workers"). Everything else is
+ * gated.
  *
  * The decision is made against the real command tree — the same declarations
  * Cliffy parses — never a guess from token positions. A guess once took
  * `swamp --log init` for bare `swamp`, because it did not know `--log` takes
  * no value, and let `init` run unauthenticated.
  */
-export type AuthGateTiming = "exempt" | "gated";
+export type AuthGateTiming = "exempt" | "gated" | "enrollment";
 
 const EXEMPT_AUTH_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "login",
@@ -82,6 +85,9 @@ export function authGateTiming(
     }
   }
   if (answersWithHelpOrVersion(tree, path, args)) return "exempt";
+  if (path.length === 2 && path[0] === "worker" && path[1] === "connect") {
+    return "enrollment";
+  }
   return "gated";
 }
 

@@ -91,12 +91,15 @@ export async function* vaultListKeys(
       yield { kind: "resolving" };
 
       if (!input.vaultName) {
+        const allVaults = await deps.findAllVaults();
         yield {
           kind: "error",
           error: validationFailed(
-            "Missing required argument: vault_name\n\n" +
-              "Usage: swamp vault list-keys <vault_name>\n\n" +
-              "Use 'swamp vault search' to see available vaults.",
+            "Missing argument(s): vault_name. " +
+              (allVaults.length > 0
+                ? `Available vaults: ${allVaults.map((v) => v.name).join(", ")}`
+                : "No vaults are configured. " +
+                  "Create a vault using: swamp vault create <type> <name>"),
           ),
         };
         return;

@@ -1207,6 +1207,16 @@ for (
   const [key, field, envVar] of [
     ["token-gc-interval", "tokenGcInterval", "SWAMP_TOKEN_GC_INTERVAL"],
     [
+      "continuation-sweep-interval",
+      "continuationSweepInterval",
+      "SWAMP_CONTINUATION_SWEEP_INTERVAL",
+    ],
+    [
+      "max-signal-wait-timeout",
+      "maxSignalWaitTimeout",
+      "SWAMP_MAX_SIGNAL_WAIT_TIMEOUT",
+    ],
+    [
       "token-gc-grace-period",
       "tokenGcGracePeriod",
       "SWAMP_TOKEN_GC_GRACE_PERIOD",

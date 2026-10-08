@@ -59,6 +59,10 @@ import { getLogger } from "@logtape/logtape";
 import { createModelOutputId, type ModelOutput } from "./model_output.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../vaults/run_vault_access.ts";
 
 /**
  * Test model that mimics the echo model's write method.
@@ -228,6 +232,8 @@ function createMockDataRepo(): UnifiedDataRepository {
     append: () => Promise.resolve(),
     stream: async function* () {},
     getContent: () => Promise.resolve(null),
+    ensureContentLocal: () => Promise.resolve("current" as const),
+    isContentAcceptedSync: () => true,
     delete: () => Promise.resolve(),
     removeLatestMarker: () => Promise.resolve(),
     nextId: () => generateDataId(),
@@ -611,6 +617,319 @@ Deno.test("executeWorkflow - fails fast for sensitive output when only a reserve
     "no vault is configured",
   );
   assertEquals(ran, false);
+});
+
+/** A model whose `create` writes a sensitive field kept in `fieldVault`. */
+function sensitiveOutputModel(
+  fieldVault: string | undefined,
+  onRun: () => void,
+): ModelDefinition {
+  return {
+    type: ModelType.create("test/sensitive-scope"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({}),
+    resources: {
+      "cred": {
+        description: "Credential",
+        schema: z.object({
+          secret: z.string().meta(
+            fieldVault
+              ? { sensitive: true, vaultName: fieldVault }
+              : { sensitive: true },
+          ),
+        }),
+        lifetime: "infinite",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      create: {
+        description: "Create a credential",
+        arguments: z.object({}),
+        execute: () => {
+          onRun();
+          return Promise.resolve({ dataHandles: [] });
+        },
+      },
+    },
+  };
+}
+
+function vaultsWith(...names: string[]): VaultService {
+  const vaultService = new VaultService();
+  for (const name of names) {
+    vaultService.registerVault({ name, type: "mock", config: {} });
+  }
+  return vaultService;
+}
+
+/** A policy allowing only the listed vault/action pairs. */
+function scopeAllowing(
+  allowed: string[],
+): RunVaultAccess {
+  return RunVaultAccess.create({
+    policy: {
+      principal: "bot:reporter",
+      decide: (vaultName, action) =>
+        allowed.includes(`${vaultName}:${action}`)
+          ? { allowed: true, reason: "granted" }
+          : { allowed: false, reason: "no grant allows it" },
+    },
+  });
+}
+
+Deno.test("executeWorkflow: refuses before running when the scope may not write a sensitive output's vault", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = sensitiveOutputModel("erp", () => ran = true);
+  const vaultService = vaultsWith("outputs", "erp");
+  const erpKeysBefore = await vaultService.list("erp");
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService,
+  });
+
+  const error = await runWithVaultAccess(
+    scopeAllowing(["erp:read", "outputs:read", "outputs:write"]),
+    () =>
+      assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({ name: "cred-maker", globalArguments: {} }),
+            model,
+            "create",
+            context,
+          ),
+        UserError,
+      ),
+  );
+  assertStringIncludes(error.message, "vault 'erp'");
+  assertStringIncludes(
+    error.message,
+    "no grant allows it. Change the principal's vault:erp grants",
+  );
+  assertStringIncludes(error.message, "bot:reporter");
+  assertEquals(ran, false);
+  assertEquals(await vaultService.list("erp"), erpKeysBefore);
+});
+
+Deno.test("executeWorkflow: refuses before running when the scope may not read back a sensitive output's vault", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = sensitiveOutputModel(undefined, () => ran = true);
+  const vaultService = vaultsWith("outputs");
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService,
+  });
+
+  await runWithVaultAccess(
+    scopeAllowing(["outputs:write"]),
+    () =>
+      assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({ name: "cred-maker", globalArguments: {} }),
+            model,
+            "create",
+            context,
+          ),
+        UserError,
+        "vault 'outputs'",
+      ),
+  );
+  assertEquals(ran, false);
+});
+
+Deno.test("executeWorkflow: a step data output override's vault is decided before running", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = sensitiveOutputModel(undefined, () => ran = true);
+  const vaultService = vaultsWith("outputs", "erp");
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService,
+    dataOutputOverrides: [{ specName: "cred", vaultName: "erp" }],
+  });
+
+  const error = await runWithVaultAccess(
+    RunVaultAccess.create({
+      allowedVaults: ["outputs"],
+      allowListSource: "wf",
+    }),
+    () =>
+      assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({ name: "cred-maker", globalArguments: {} }),
+            model,
+            "create",
+            context,
+          ),
+        UserError,
+        "vault 'erp'",
+      ),
+  );
+  // A workflow's vaults list refused: the fix is the list, not a grant.
+  assertStringIncludes(
+    error.message,
+    "not in the vaults list of workflow 'wf'. Add 'erp' to the vaults list " +
+      "of workflow 'wf', or point the output at a vault that list names.",
+  );
+  assertEquals(error.message.includes("rant"), false);
+  assertEquals(ran, false);
+});
+
+Deno.test("executeWorkflow: runs when the scope may read and write every sensitive output vault", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = sensitiveOutputModel("erp", () => ran = true);
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService: vaultsWith("erp"),
+  });
+
+  await runWithVaultAccess(
+    scopeAllowing(["erp:read", "erp:write"]),
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "cred-maker", globalArguments: {} }),
+        model,
+        "create",
+        context,
+      ),
+  );
+  assertEquals(ran, true);
+});
+
+/** A model whose `create` writes `secret`, kept under `vaultKey` if set. */
+function keyedOutputModel(
+  vaultKey: string | undefined,
+  onRun: () => void,
+): ModelDefinition {
+  const model = sensitiveOutputModel(undefined, onRun);
+  model.resources!.cred.schema = z.object({
+    secret: z.string().meta(
+      vaultKey ? { sensitive: true, vaultKey } : { sensitive: true },
+    ),
+  });
+  return model;
+}
+
+/** A policy refusing writes to keys starting `deny-`; key-dependent. */
+function keyConditionedScope(
+  decided: unknown[][],
+): RunVaultAccess {
+  return RunVaultAccess.create({
+    policy: {
+      principal: "user:bot",
+      decide: (vaultName, action, secretKey, options) => {
+        decided.push([vaultName, action, secretKey, options?.keyUnknown]);
+        if (options?.keyUnknown) {
+          return { allowed: false, undetermined: true, reason: "key" };
+        }
+        return secretKey?.startsWith("deny-")
+          ? { allowed: false, reason: "denied by grant g-key" }
+          : { allowed: true, reason: "granted" };
+      },
+    },
+  });
+}
+
+Deno.test("executeWorkflow: a field's own vaultKey is decided before running", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = keyedOutputModel("deny-token", () => ran = true);
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService: vaultsWith("outputs"),
+  });
+  const decided: unknown[][] = [];
+
+  const error = await runWithVaultAccess(
+    keyConditionedScope(decided),
+    () =>
+      assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({ name: "cred-maker", globalArguments: {} }),
+            model,
+            "create",
+            context,
+          ),
+        UserError,
+        "denied by grant g-key.",
+      ),
+  );
+  assertStringIncludes(error.message, "vault 'outputs'");
+  assertEquals(decided, [["outputs", "write", "deny-token", undefined]]);
+  assertEquals(ran, false);
+});
+
+Deno.test("executeWorkflow: a key-dependent outcome for a generated key is left to the put", async () => {
+  const service = new DefaultMethodExecutionService();
+  let ran = false;
+  const model = keyedOutputModel(undefined, () => ran = true);
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService: vaultsWith("outputs"),
+  });
+  const decided: unknown[][] = [];
+
+  await runWithVaultAccess(
+    keyConditionedScope(decided),
+    () =>
+      service.executeWorkflow(
+        Definition.create({ name: "cred-maker", globalArguments: {} }),
+        model,
+        "create",
+        context,
+      ),
+  );
+  assertEquals(decided, [
+    ["outputs", "write", undefined, true],
+    ["outputs", "read", undefined, true],
+  ]);
+  assertEquals(ran, true);
+});
+
+Deno.test("executeWorkflow: a refusal that already says which grant to add is not followed by more grant advice", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = sensitiveOutputModel(undefined, () => {});
+  const { context } = createTestContext({
+    modelType: model.type,
+    vaultService: vaultsWith("outputs"),
+  });
+
+  const error = await runWithVaultAccess(
+    RunVaultAccess.create({
+      policy: {
+        principal: "user:bot",
+        decide: () => ({
+          allowed: false,
+          reason:
+            "the principal holds vault grants and none allows write on vault:outputs; add a vault:outputs allow grant for write to this principal",
+        }),
+      },
+    }),
+    () =>
+      assertRejects(
+        () =>
+          service.executeWorkflow(
+            Definition.create({ name: "cred-maker", globalArguments: {} }),
+            model,
+            "create",
+            context,
+          ),
+        UserError,
+      ),
+  );
+  assertStringIncludes(
+    error.message,
+    "add a vault:outputs allow grant for write to this principal. Or point " +
+      "the output at a vault the principal holds.",
+  );
+  assertEquals(error.message.includes("Change the principal"), false);
 });
 
 Deno.test("executeWorkflow - throws error for unknown method", async () => {

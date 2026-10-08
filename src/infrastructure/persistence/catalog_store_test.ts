@@ -1028,6 +1028,30 @@ Deno.test("CatalogStore: store is usable after vacuum and close is idempotent", 
   store.close();
 });
 
+Deno.test({
+  name:
+    "CatalogStore: vacuum keeps the original catalog open when another connection blocks the swap (swamp-club#3167)",
+  // Only Windows refuses to rename or remove a file another handle holds open.
+  ignore: Deno.build.os !== "windows",
+  fn: () => {
+    const dbPath = makeTempDbPath();
+    const store = new CatalogStore(dbPath);
+    store.upsert(makeRow({ version: 1 }));
+    const other = new CatalogStore(dbPath);
+    try {
+      assertEquals(store.vacuum(), false);
+
+      assert(Deno.statSync(dbPath).isFile);
+      assertEquals(store.count(), 1);
+      store.upsert(makeRow({ version: 2 }));
+      assertEquals(store.count(), 2);
+    } finally {
+      other.close();
+    }
+    store.close();
+  },
+});
+
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

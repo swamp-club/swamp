@@ -72,6 +72,22 @@ const MODEL_DEFINITION_ACCESSORS: ReadonlySet<string> = new Set([
   "definition",
 ]);
 
+/**
+ * What an expression reads of one model's data through the synchronous
+ * readers: the `model.<name>.resource` and `model.<name>.file` maps and
+ * `file.contents`. Those read the local cache without downloading, so on a
+ * lazily hydrating datastore the content must be made local before the
+ * expression is evaluated (swamp-club#3179).
+ */
+export interface SyncDataRead {
+  /** The model's resources are read. */
+  readonly resource: boolean;
+  /** Every file spec of the model is read. */
+  readonly allFiles: boolean;
+  /** File specs read by name (`file.contents("<model>", "<spec>")`). */
+  readonly fileSpecs: ReadonlySet<string>;
+}
+
 /** What one expression reads beyond its own arguments. */
 export interface ExpressionReferences {
   /**
@@ -81,6 +97,15 @@ export interface ExpressionReferences {
   readonly dataTargets: ReadonlySet<string>;
   /** Models whose definition content (`model.X.input`) the expression reads. */
   readonly modelTargets: ReadonlySet<string>;
+  /**
+   * The {@link dataTargets} read through the synchronous readers, keyed as
+   * written (a name or a definition id), with what each reads. Models read
+   * only through the async `data.*` accessors, which download for
+   * themselves, and `model.<name>.execution`, which holds run outputs rather
+   * than data, are not here. A model named by a computed key is not here
+   * either; {@link dataWide} reports it.
+   */
+  readonly syncDataReads: ReadonlyMap<string, SyncDataRead>;
   /**
    * The expression reads data it does not name statically: a computed model
    * argument, a cross-model accessor, the `model` map with a computed key or
@@ -126,9 +151,16 @@ const GRAMMAR = new Environment({
   homogeneousAggregateLiterals: false,
 });
 
+interface MutableSyncDataRead {
+  resource: boolean;
+  allFiles: boolean;
+  fileSpecs: Set<string>;
+}
+
 interface Accumulator {
   dataTargets: Set<string>;
   modelTargets: Set<string>;
+  syncDataReads: Map<string, MutableSyncDataRead>;
   dataWide: boolean;
   usesEnv: boolean;
   readsSelfOrInputs: boolean;
@@ -142,6 +174,7 @@ export function analyzeExpression(celExpression: string): ExpressionReferences {
   const acc: Accumulator = {
     dataTargets: new Set(),
     modelTargets: new Set(),
+    syncDataReads: new Map(),
     dataWide: false,
     usesEnv: false,
     readsSelfOrInputs: false,
@@ -292,6 +325,30 @@ function addDataTarget(node: ASTNode | undefined, acc: Accumulator): void {
   acc.dataTargets.add(name);
 }
 
+/** The synchronous read entry for `name`, created empty when absent. */
+function syncReadOf(name: string, acc: Accumulator): MutableSyncDataRead {
+  let read = acc.syncDataReads.get(name);
+  if (!read) {
+    read = { resource: false, allFiles: false, fileSpecs: new Set() };
+    acc.syncDataReads.set(name, read);
+  }
+  return read;
+}
+
+/** Records `file.contents(<model>, <spec>)` as a synchronous read. */
+function addFileContentsRead(
+  modelNode: ASTNode | undefined,
+  specNode: ASTNode | undefined,
+  acc: Accumulator,
+): void {
+  const name = stringLiteral(modelNode);
+  if (name === undefined) return;
+  const spec = stringLiteral(specNode);
+  const read = syncReadOf(name, acc);
+  if (spec === undefined) read.allFiles = true;
+  else read.fileSpecs.add(spec);
+}
+
 /**
  * Records a `model[<name>]` or `model.<name>` entry, given the accessor read
  * from it (undefined when the entry is used whole).
@@ -315,6 +372,12 @@ function addModelEntry(
     acc.modelTargets.add(name);
   }
   acc.dataTargets.add(name);
+  // `execution` holds run outputs, which are not lazily hydrated; every
+  // other way in reads the resource or file maps synchronously.
+  if (accessor === "execution") return;
+  const read = syncReadOf(name, acc);
+  if (accessor !== "file") read.resource = true;
+  if (accessor !== "resource") read.allFiles = true;
 }
 
 /** The model entry `node` selects from the free `model` map, if it does. */
@@ -410,8 +473,10 @@ function visit(
         return;
       }
       if (isFree(receiver, "file", bound)) {
-        if (name === "contents") addDataTarget(args[0], acc);
-        else acc.dataWide = true;
+        if (name === "contents") {
+          addDataTarget(args[0], acc);
+          addFileContentsRead(args[0], args[1], acc);
+        } else acc.dataWide = true;
         for (const a of args) visit(a, bound, acc);
         return;
       }

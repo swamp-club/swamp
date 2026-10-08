@@ -30,6 +30,28 @@ import {
 const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
 
+/**
+ * What a failed create-new of the advisory lock file means for the caller:
+ * wait and `retry`, give up because the lock stayed `busy`, or `rethrow` an
+ * error that is not contention. Windows reports PermissionDenied rather than
+ * AlreadyExists while a lock file another writer just released is still
+ * pending deletion, so that is retried there too; one that outlasts every
+ * retry is a real permission problem and is rethrown (swamp-club#3167).
+ */
+export function lockAttemptOutcome(
+  error: unknown,
+  isLastAttempt: boolean,
+  os: typeof Deno.build.os = Deno.build.os,
+): "retry" | "busy" | "rethrow" {
+  if (error instanceof Deno.errors.AlreadyExists) {
+    return isLastAttempt ? "busy" : "retry";
+  }
+  if (os === "windows" && error instanceof Deno.errors.PermissionDenied) {
+    return isLastAttempt ? "rethrow" : "retry";
+  }
+  return "rethrow";
+}
+
 /** The advisory lock file a write holds, and where it lives. */
 interface HeldLock {
   file: Deno.FsFile;
@@ -278,11 +300,15 @@ export class LockfileRepository {
           }),
         };
       } catch (error) {
-        if (error instanceof Deno.errors.AlreadyExists) {
-          if (attempt < LOCK_RETRY_COUNT - 1) {
-            await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
-            continue;
-          }
+        const outcome = lockAttemptOutcome(
+          error,
+          attempt === LOCK_RETRY_COUNT - 1,
+        );
+        if (outcome === "retry") {
+          await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
+          continue;
+        }
+        if (outcome === "busy") {
           // UserError so the top-level handler renders the clean
           // message instead of a stack trace — matches the pre-W2-prequel
           // behavior in pull.ts (rm.ts threw plain Error; this

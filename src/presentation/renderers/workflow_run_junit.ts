@@ -58,13 +58,19 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
   private stepStartTimes = new Map<string, number>();
   private _failed = false;
   private totalDuration = 0;
+  private quiet: boolean;
+  private writeStderr: (line: string) => void;
 
   constructor(opts: {
     failOnSeverity?: AssertSeverity;
     outFile?: string;
+    quiet?: boolean;
+    writeStderr?: (line: string) => void;
   }) {
     this.failOnSeverity = opts.failOnSeverity ?? "low";
     this.outFile = opts.outFile;
+    this.quiet = opts.quiet ?? false;
+    this.writeStderr = opts.writeStderr ?? ((line) => console.error(line));
   }
 
   handlers(): EventHandlers<WorkflowRunEvent> {
@@ -74,8 +80,9 @@ export class JUnitWorkflowRunRenderer implements WorkflowRunRenderer {
       evaluating_workflow: () => {},
       started: (e) => {
         this.workflowName = e.workflowName;
-        if (!this.outFile) {
-          console.error(
+        // Commentary, so -q silences it (swamp-club#2257).
+        if (!this.outFile && !this.quiet) {
+          this.writeStderr(
             `JUnit XML will be written to stdout on completion.`,
           );
         }

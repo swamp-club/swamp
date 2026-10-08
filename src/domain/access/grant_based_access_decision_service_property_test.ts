@@ -30,7 +30,11 @@ import {
   GrantBasedAccessDecisionService,
   SERVICE_TRIGGER_DEFAULT_GRANT_ID,
 } from "./grant_based_access_decision_service.ts";
-import type { ResourceKind } from "./resource_selector.ts";
+import { ModelType } from "../models/model_type.ts";
+import {
+  type ResourceKind,
+  resourceSelectorMatches,
+} from "./resource_selector.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import { createConditionEvaluator } from "./policy_snapshot_loader.ts";
 
@@ -358,6 +362,96 @@ Deno.test("property: a tags deny refuses exactly the resources carrying the tag,
           ? "deny"
           : "allow";
         assertEquals(decision?.effect, expected);
+      },
+    ),
+  );
+});
+
+// swamp-club#3130: type spellings fold for denies only.
+const arbSpelling = fc.stringOf(
+  fc.constantFrom(..."abAB-@/.:".split("")),
+  { minLength: 1, maxLength: 10 },
+);
+const arbTypePattern = fc.oneof(
+  fc.constant("*"),
+  arbSpelling,
+  arbSpelling.map((p) => `${p}*`),
+);
+const arbModelType = arbSpelling.filter((t) => {
+  try {
+    return ModelType.create(t).normalized.length > 0;
+  } catch {
+    return false;
+  }
+}).map((t) => ModelType.create(t).normalized);
+
+function typeGrant(effect: "allow" | "deny", pattern: string): Grant {
+  return {
+    id: crypto.randomUUID(),
+    subject: { kind: "user", name: "adam" },
+    effect,
+    actions: ["run"],
+    resource: { kind: "model", pattern },
+    state: "active",
+    source: "method",
+    createdBy: { kind: "user", id: "admin" },
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+}
+
+Deno.test("decide: allow-only grants match model types only as written", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbTypePattern, { minLength: 1, maxLength: 4 }),
+      arbModelType,
+      (patterns, modelType) => {
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot(
+            patterns.map((p) => typeGrant("allow", p)),
+            [],
+            createConditionEvaluator(),
+          ),
+        );
+        const resource: AccessResource = {
+          kind: "model",
+          name: "instance",
+          fields: { name: "instance", modelType, tags: {} },
+        };
+        const expected = patterns.some((pattern) =>
+          resourceSelectorMatches({ kind: "model", pattern }, modelType) ||
+          resourceSelectorMatches({ kind: "model", pattern }, "instance")
+        );
+        const decision = service.decide(PRINCIPAL, "run", resource);
+        assertEquals(decision?.effect === "allow", expected);
+      },
+    ),
+  );
+});
+
+Deno.test("decide: a deny that matched as written still denies", () => {
+  fc.assert(
+    fc.property(
+      arbTypePattern,
+      arbTypePattern,
+      arbModelType,
+      (denyPattern, allowPattern, modelType) => {
+        fc.pre(resourceSelectorMatches(
+          { kind: "model", pattern: denyPattern },
+          modelType,
+        ));
+        const service = new GrantBasedAccessDecisionService(
+          new PolicySnapshot(
+            [typeGrant("deny", denyPattern), typeGrant("allow", allowPattern)],
+            [],
+            createConditionEvaluator(),
+          ),
+        );
+        const decision = service.decide(PRINCIPAL, "run", {
+          kind: "model",
+          name: "instance",
+          fields: { name: "instance", modelType, tags: {} },
+        });
+        assertEquals(decision?.effect, "deny");
       },
     ),
   );

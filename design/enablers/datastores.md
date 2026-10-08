@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator, extension-author
 enables: [data]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-08 @ 03ca42ca
 ---
 
 # Datastores
@@ -427,6 +427,103 @@ filesystem datastores reads see writes at once (same directory). On S3
 datastores reads see what a write command last synced to the local cache; run
 `swamp datastore sync --pull` to refresh.
 
+### Format Marker
+
+A datastore can carry a **format marker** naming the layout it is written in.
+Today's layout is format 2. A datastore without a marker is format 2, and
+nothing writes a marker yet: the v3 opt-in writes one when it creates a
+datastore, and the v3 migration writes one when it converts one
+(swamp-club#2865). This binary only reads it (swamp-club#3189).
+
+The marker is JSON. Unknown keys are ignored so later writers can add fields:
+
+```json
+{ "format": 3, "minReaderFormat": 3, "writtenBy": "2027.01.01.1" }
+```
+
+| Key               | Meaning                                                       |
+| ----------------- | ------------------------------------------------------------- |
+| `format`          | Positive integer: the layout the datastore is written in      |
+| `minReaderFormat` | Optional positive integer: the oldest format that can read it |
+| `writtenBy`       | Optional string: the swamp version that wrote the marker      |
+
+**Where it lives.** The marker belongs to the whole datastore, not to a
+namespace:
+
+- **Filesystem datastores:** `<path>/datastore-format.json`, at the datastore
+  root. A namespace is a subdirectory of `<path>`, so namespaced and
+  non-namespaced repos read the same file, and namespace migration never moves
+  it.
+- **Datastores whose sync service advertises `controlPlane`** (S3, GCS): the
+  control-plane record `datastore-format`, at `<prefix>/_control/datastore-format`.
+  Core reads it through a sync service built for that read alone. A sync
+  service that has not pulled or pushed has no namespace bound, so the S3 and
+  GCS extensions resolve the key to the root `_control/` even for a namespaced
+  repo. This holds for every released S3/GCS version: before extensions#242
+  (August 2026) control-plane keys were never namespaced, and since then the
+  namespace binds lazily on first use. Verified against
+  ministack and fake-gcs-server 1.56.1 with `@swamp/s3-datastore` 2026.08.27.3
+  and 2026.10.07.1 and `@swamp/gcs-datastore` 2026.10.07.1, solo and
+  namespaced. A provider whose `createSyncService`
+  returns the same instance twice is skipped, because the read would bind
+  that shared instance to no namespace and break the command's later
+  namespaced pull. An identity check cannot see shared state behind fresh
+  wrapper objects; extensions must not share namespace binding between the
+  instances they return.
+- **Other extensions** (no `controlPlane`, no sync service, no cache path): no
+  marker can be read, so the check is skipped and logged at debug. The v3
+  storage contract must give every v3-capable datastore an explicit
+  datastore-scoped marker read, rather than relying on lazy binding.
+
+**The check.** `assertSupportedDatastoreFormat`
+(`src/domain/datastore/datastore_format.ts`) decides; the infrastructure reader
+(`datastore_format_marker_reader.ts`) reads; `ensureSupportedDatastoreFormat`
+(`datastore_format_guard.ts`) runs both.
+
+| Marker read                                  | Outcome                                                     |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Not found                                    | Format 2, passes                                            |
+| `minReaderFormat` (or `format`) ≤ 2          | Passes                                                      |
+| `minReaderFormat` (or `format`) > 2          | Refused: `datastore_format_unsupported`                     |
+| Not a marker (bad JSON or shape, > 64 KiB, not a regular file) | Refused: `datastore_format_marker_invalid` |
+| Read failed (network, permissions, timeout)  | Passes, logged at debug                                     |
+| Datastore cannot carry a marker              | Passes, logged at debug                                     |
+
+A refusal is a `UserError` with that code in `--json` output and exit code 1,
+and says nothing was changed. A garbled marker is refused because treating it
+as format 2 is the unsafe direction. A failed read passes because blocking
+offline or degraded use would change behaviour for every v2 datastore, and the
+command meets the same outage itself. The remote read is bounded by
+`DATASTORE_FORMAT_READ_TIMEOUT_MS` (5 s), since the extensions retry inside
+`get`; a remote slower than that is treated as a failed read. The v3 opt-in
+should revisit that trade-off.
+
+**Where it runs.** Before anything locks, pulls, pushes or writes:
+
+- `resolveDatastoreForRepo`, right after the config is resolved. Every
+  `requireInitializedRepo*` helper starts there, as do `swamp serve` start-up
+  (before hydration and pollers) and the commands that open a datastore
+  themselves (namespace, lock, catalog pull, doctor).
+- `acquireModelLocks`, for a config resolved some other way.
+- `datastore setup filesystem` and `datastore setup extension`, against the
+  **target** datastore, before the first write to it.
+- Serve's dedicated audit datastores.
+
+A config that passed, or whose check was skipped, is remembered for the rest
+of the process, keyed on the config object, so one command pays one read (or
+one bounded wait on a degraded remote). A refusal is never remembered. Nothing is cached across
+processes: a datastore can be migrated between runs. `swamp worker` never
+opens a datastore; it reaches one only through serve.
+`integration/datastore_format_guard_rules_test.ts` pins every production call
+that builds a sync service or takes a datastore lock, each with the reason it
+is guarded.
+
+**For writers.** The S3 and GCS extensions move every root `_control/*` record
+into `<namespace>/_control/` on a namespaced push when a namespaced v2 index
+already exists (`migrateRootControlPlaneToNamespace`). A guarded binary
+refuses before it pushes, but a binary older than the guard does not, so a
+writer of the marker must leave no v2 namespaced index behind.
+
 ### Serve Runtime Data Refresh
 
 In a multi-instance `swamp serve` deployment on a shared remote datastore, an
@@ -451,6 +548,16 @@ Serve runs three background pollers to fix this:
   enrollment runs the enrollment token's definition. Without it a token minted
   on one instance was rejected by its peers until they restarted
   (swamp-club#2481).
+
+None of them pulls `workflow-runs/`. A pull overwrites a local file that
+differs from the remote index, and a run saves its record between its pushes
+with no gate held, so a pull landing there would undo a save the next push
+then never sends. An instance's copy of a run it does not drive therefore
+goes stale after boot. Serve's continuation of suspended runs is built for
+that: it never refreshes a run record, and a continuation claim in the
+control-plane store stops an instance with an old copy from resuming a run a
+peer already resumed (see "Continuation claims" in
+[workflows](../primitives/workflows.md)).
 
 All three run every 30 seconds by default (set with `swamp serve
 --datastore-poll-interval`, `SWAMP_DATASTORE_POLL_INTERVAL` or the `serve.yaml`
@@ -1184,7 +1291,13 @@ operation inside a unit of work:
   failing checkpoint rejects inside the work, as a direct push did.
   `checkpoint` lives on `RootUnitOfWork` and the legacy adapter, not on the
   domain `UnitOfWork` port: what a Phase 3 commit-log unit means by a partial
-  commit is a Phase 3 decision.
+  commit is a Phase 3 decision. `root.checkpoint({ signal })` passes the
+  signal to the option and resolves with what it resolved with, so a caller
+  that bounds the push can abort it and read the count of files pushed
+  (swamp-club#3192). `currentRootUnitOfWork(markDirty)` returns the root
+  opened around the current call over that exact hook (a nested call's
+  child sees the outer root), for code that publishes through its
+  operation's root without being handed it.
 - **CLI commands in root units (swamp-club#3033).** Every CLI write command
   runs its write section in `runCommandInRootUnit`
   (`src/cli/command_root_unit.ts`), whose flush is the push the command made
@@ -1273,13 +1386,14 @@ operation inside a unit of work:
     (push, then release): the step's lock owns its push and release, and Phase
     3 replaces model locks with leases.
   - The push functions live in `src/infrastructure/persistence/push_paths.ts`
-    (`pushNamespace`, `pushModelLockScope`, `pushGlobalLockAtEnd`); commands
+    (`pushNamespace`, `pushNamespaceCounted`, `pushModelLockScope`,
+    `pushGlobalLockAtEnd`); commands
     and handlers pass them as a flush or checkpoint and never call
     `pushChanged` themselves. `PINNED_DIRECT_PUSHES`
     (`integration/datastore_write_seams_rules_test.ts`) lists every production
     `pushChanged` call: the push paths, the coordinator, and the deliberate
-    exceptions (`datastore sync`, `datastore setup`'s migration push, the
-    lockfile publish, serve start-up and token GC, serve background GC). In
+    exceptions (`datastore sync`, `datastore setup`'s migration push, serve
+    start-up and token GC, serve background GC). In
     serve, a push-path call outside a root's flush is pinned in
     `integration/serve_root_unit_rules_test.ts`; `pushChangedToRemote`, the
     push path the handlers' flushes call, is the only one.
@@ -1352,9 +1466,6 @@ each site):
 - Namespace migration: `datastoreNamespaceMigrate`
   (`src/libswamp/datastores/namespace_migrate.ts`) and its CLI deps
   (`buildMigrateDeps` in `src/cli/commands/datastore_namespace.ts`).
-- Serve: the extension lockfile (`extensionLockfileTransaction` in
-  `src/serve/handlers/admin_handlers.ts`). Device auth, grant tracking and
-  access reload stage their marks through a root (swamp-club#3034).
 - The serve start-up definition migration, which marks each moved file by path
   (`serveCommand` in `src/cli/commands/serve.ts`).
 - The namespace catalog export, marked by path after it is written before a
@@ -1363,13 +1474,37 @@ each site):
 `buildMarkDirtyHook` in the same file is pinned too, but it is the hook itself,
 not a hand mark.
 
-The lockfile is deferred to Phase 2. `ManagedLockfileTransaction` publishes
-through the port `createDatastoreLockfileSync` builds
-(`src/libswamp/extensions/managed_lockfile_transaction.ts`), whose `publish`
-marks the lockfile path as a publish signal and pushes: with `mustUpload` a
-push that reports sending nothing rejects, and a failed publish is recorded as
-pending and published by the next transaction. swamp-club#2865 has the
-reasoning.
+Serve's device auth, grant tracking and access reload stage their marks
+through a root (swamp-club#3034).
+
+**The extension lockfile publishes through a root's checkpoint
+(swamp-club#3192).** `ManagedLockfileTransaction`
+(`src/libswamp/extensions/managed_lockfile_transaction.ts`) runs each
+outermost `run` inside a root unit of work, which its `inRoot` option opens
+around the lock's acquire and release. A nested `run` joins the outer one and
+its root. Its publish, `createRootLockfileSync`, stages one write of exactly
+the lockfile into that root (found with `currentRootUnitOfWork` by hook
+identity) and pushes at the root's checkpoint, bounded by the datastore's sync
+timeout, before the global lock is released. With `mustUpload`, a checkpoint
+that reports sending nothing rejects. A publish with no root throws
+`LockfilePublishWiringError` rather than push by hand. It is never wrapped as
+an unpublished change or deferred to a warning, so a wiring mistake cannot
+read as a datastore failure. The roots have no flush, so the checkpoint is the only
+push:
+
+- CLI (`buildManagedLockfileTransaction` in `src/cli/managed_config_sync.ts`):
+  a root over the transaction's own mark hook per outermost run, whose
+  checkpoint is `pushNamespaceCounted`. It is per run, not per command,
+  because the extension commands resolve the datastore only on their first
+  lockfile use. A CLI `extension rm` or `update` therefore opens two: the
+  refresh before it reads the lockfile, and the change.
+- Serve (`extensionLockfileTransaction` in
+  `src/serve/handlers/admin_handlers.ts`): a root over `repoContext.markDirty`
+  itself, inside the handler's exclusive sync gate, with the same checkpoint.
+
+The pending record, the replay of an earlier unpublished change, the CLI's
+`throw` and serve's `defer` on a failed publish, and the errors and codes are
+the transaction's own and did not change. swamp-club#2865 has the reasoning.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
 Mutations that go through repositories with per-path `markDirty` wired (model,
@@ -1416,8 +1551,10 @@ that no hooked repository covers. Each marks exactly those files, by path, after
 writing:
 
 - The extension handlers (`extension.install`, `pull`, `rm`, `update`) change
-  the config-tier lockfile inside a managed lockfile transaction, which marks
-  exactly the lockfile and pushes under the datastore global lock (see
+  the config-tier lockfile inside a managed lockfile transaction, which stages
+  exactly the lockfile into the root unit of work it opens for each run (the
+  handlers themselves run outside any root) and pushes at that root's
+  checkpoint under the datastore global lock (see
   [Extension commands and the chicken-and-egg](#extension-commands-and-the-chicken-and-egg)). Serve still
   writes extension sources to the repo-local pulled-extensions root
   (swamp-club#2612).
@@ -1442,8 +1579,9 @@ item's folder.
 The CLI extension commands follow the same rule. `extension pull`, `update`,
 `rm` and `install`, search install, `repo upgrade` and
 `doctor extensions --repair` run their lockfile change in a managed lockfile
-transaction, which marks the config-tier lockfile by path and pushes it,
-bounded by the datastore's sync timeout, instead of the bulk mark that
+transaction, which stages the config-tier lockfile by path into its root and
+pushes it at the root's checkpoint, bounded by the datastore's sync timeout,
+instead of the bulk mark that
 `runManagedConfigMutation` stages. It publishes only when the lockfile changed
 or an earlier publish is still pending. An extension that keeps its dirty set in
 memory still walks the whole cache on a fresh process (rule 4), so "exact
@@ -1590,6 +1728,46 @@ leave attributes empty.
 **CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
 foreign catalog metadata from those namespaces.
 
+### Reading one remote file (`fetchContent`)
+
+Every other read in the sync contract replaces the local copy: `pullChanged` and
+`hydrateFile` write into the cache and overwrite a local file that differs from
+the remote, including one with a change not pushed yet. `fetchForeignContent`
+writes nothing, but it always prefixes its key with a namespace and is for
+another namespace's data. `fetchContent` is the read that leaves the cache
+alone, for a caller that has to compare its cached copy of a file with the
+remote one before acting on it (swamp-club#3159):
+
+```typescript
+fetchContent?(relPath: string, options?: DatastoreSyncOptions): Promise<Uint8Array | null>;
+```
+
+- It resolves to the file's bytes, or `null` when the remote has no such file.
+  Any other failure rejects, so a caller never mistakes an unreachable remote
+  for a deleted file.
+- It writes nothing locally: no cache file is created, replaced or removed, and
+  no dirty state or pull watermark changes. A differing local file is neither
+  returned nor consulted, and its pending push stays pending.
+- `relPath` is cache-relative and forward-slash-normalized, as for `hydrateFile`.
+  The cache mirrors the remote layout (see
+  [Namespace prefixing](#namespace-prefixing-giga-swamp)), so with a namespace
+  the path already starts with `{namespace}/` and the implementation must not
+  add it again. `options.namespace` is the calling repository's namespace; when
+  it is unset the datastore has none and the path is read from its root.
+- A `relPath` that is absolute or has a `..` segment is rejected.
+- The returned bytes must not be kept in instance state, since the sync service
+  lives as long as a `swamp serve` process. The whole file is held in memory, so
+  the method is meant for small files such as run records.
+
+The method is optional and has no `SyncCapabilities` flag: core treats its
+presence as the capability. `swamp serve` calls it to compare its copy of a
+run record with the remote one before it resumes a suspended run by itself
+(`runRecordCurrencyOver` in `src/cli/repo_context.ts`, swamp-club#3108; see
+"Continuation claims" in `design/primitives/workflows.md`). `assertSyncServiceRoundTripConformance` checks an
+implementation with its `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases, and
+`createInMemoryRemote` implements the method for tests.
+
 ### Lazy Hydration
 
 With `hydrationStrategy: "lazy"` on a custom datastore, the initial pull fetches
@@ -1608,13 +1786,86 @@ content download waits until needed.
    definitions-evaluated) have no metadata/raw split and are downloaded fully.
 2. **Model runs / workflow runs**: `acquireModelLocks` does a scoped pull via
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
-   locally, and downloads it. The existing Phase 2 scoped sync handles this; no
-   new code is needed.
-3. **`data get` and `data query` (read-only, no sync)**:
-   `UnifiedDataRepository.getContent()` tries to read `raw`. If it is missing
-   and a `HydrateFileHook` is wired, it calls the hook to download that file,
-   then retries the read. `data query` reaches it through
-   `DataQueryService.query()` (see "`getContentSync` limitation" below).
+   locally, and downloads it. That pull covers only the step's own model, and
+   only a method that takes a lock (a read-only method run takes none), so it
+   is not what makes another model's data readable; see "Expression reads"
+   below.
+3. **`data get` and `data query` (read-only, no sync)**: every read of a
+   content file goes through the repository's content-ensuring step (below),
+   which downloads a missing `raw` through the `HydrateFileHook`. `data query`
+   reaches it through `DataQueryService.query()` (see "`getContentSync`
+   limitation" below).
+4. **Expression reads**: before a CEL expression is evaluated, its context
+   downloads the content the expression reads synchronously (see "Expression
+   reads" below).
+
+#### Content-ensuring step
+
+`UnifiedDataRepository.ensureContentLocal()` makes a version's `raw` local and
+current before it is read; `getContent()`, `stream()` and `append()` go through
+it (swamp-club#3178). With a `HydrateFileHook`:
+
+- A missing `raw` is downloaded.
+- A `raw` shorter than the size its `metadata.yaml` records (or the size the
+  caller passes, such as a catalog row's) is downloaded again, replacing the
+  local copy. `append()` rewrites the latest version's `raw` in place, and a
+  metadata-only pull brings the new `metadata.yaml` but skips the `raw`, so
+  the old bytes would otherwise be served as current. A local write never
+  leaves `raw` short: `append()` writes `raw` before `metadata.yaml`, and
+  `save()` writes `metadata.yaml` first while `raw` is still absent.
+- A copy still short after the download is the remote's own (another host's
+  push uploaded the metadata but not yet the content). It is accepted and used
+  for `ACCEPTED_SHORT_CONTENT_TTL_MS` (30 s) per repository instance, then
+  downloaded again on the next read. `isContentAcceptedSync()` tells
+  synchronous readers whether a short local copy is the accepted one.
+- `append()` refuses to append unless the content is current, so it never
+  writes after a missing or stale prefix.
+
+The result is `current`, `acceptedShort` or `missing`. Without a hook the step
+reports `current` without looking, and callers read the file as before. The
+locked repo contexts wire the hook for any custom datastore whose provider
+implements `hydrateFile`, whatever its `hydrationStrategy`, so the size check
+applies there too; it costs a stat (and a metadata read when the caller has no
+size), and a download only for a missing or short `raw`.
+
+Limits: a size check catches growth only, so a reused version number whose new
+content is the same size or larger is not detected. And if a metadata-only pull
+overwrote an unpushed local `metadata.yaml` for a version number that collided
+across hosts (model locks prevent this), the size check would replace the
+unpushed `raw` too.
+
+#### Expression reads
+
+The model map's `model.<name>.resource` and `model.<name>.file` and
+`file.contents()` read the cache synchronously, so they cannot download
+(swamp-club#3179). Before an expression is evaluated, the data namespace's
+`prepare(expression)` makes their content local:
+
+- `analyzeExpression()` reports, as `syncDataReads`, which models the
+  expression reads through those readers (by name or definition id, dot or
+  bracket, through `cel.bind` aliases) and which of `resource` and `file` it
+  reads. `model.<name>.execution` (run outputs) is not lazily hydrated and is
+  left out.
+- For each, the latest text resources (other content types are never read) or
+  the files of the specs read are ensured, each read once per context.
+- If the model's maps were already loaded empty by an earlier synchronous
+  read, the items whose content changed are updated in place. Records a step
+  merged in during the run were written locally, so they are never changed.
+- A download error fails the evaluation, as it fails `data get`.
+
+`CelEvaluator.evaluateAsync()` calls `prepare` before every expression. The
+synchronous passes call it first too: the available-expression pass at step
+execution (`execution_service.ts`) and `workflow evaluate`'s evaluation loop
+and forEach expansion (`libswamp/workflows/evaluate.ts`).
+`createWorkflowEvaluateDeps()` takes the repository context's hook, so `swamp
+workflow evaluate` and serve's evaluate handler never save an empty value into
+the evaluated workflow. `prepare` also resolves the definitions behind the
+model names an expression passes to the data accessors (swamp-club#3029); in a
+light context, which has no model map, that is all it does.
+
+Not covered: a model named by a computed key (`model[self.name]`), and data
+the model map finds by orphan recovery (`findAllGlobalSync`, data under other
+coordinates tagged with the model's name).
 
 #### `HydrateFileHook` contract
 
@@ -1632,8 +1883,20 @@ convert paths themselves.
   `RepositoryContext.hydrateFile` field, so workflow steps on serve can hydrate
   lazy content during `readResource` calls.
 - Returns `true` if the file was downloaded, `false` if it is not on the remote.
+- Core verifies a `true` result. If the path is inside the cache and no file
+  is there, the wrapper logs a warning and rejects with
+  `HydrateContractViolationError`, which names the datastore type, the
+  cache-relative path it was given and the absolute path core read
+  (swamp-club#2477). A datastore that hydrates to the wrong place therefore
+  fails as a contract violation, not as a bare "No such file or directory".
+  Paths outside the cache are not checked.
 - Implementations MUST write atomically (tmp + rename) so concurrent readers
   never see a partial file.
+- Implementations MUST replace a file that already exists at the path with
+  the remote's copy: core hydrates a local `raw` that is shorter than its
+  metadata records (see "Content-ensuring step"). One that skips existing
+  files leaves the stale copy, which core then uses as the remote's short copy
+  for `ACCEPTED_SHORT_CONTENT_TTL_MS`.
 
 #### `getContentSync` limitation
 
@@ -1641,9 +1904,18 @@ convert paths themselves.
 Its callers:
 
 - `data_record_mapper.ts` (`fromRow`): loads attributes/content for query
-  predicates, `select` projections and results.
-- `model_resolver.ts`: resolves CEL expressions during model runs.
+  predicates, `select` projections and results. A body shorter than the row's
+  size that the repository has not accepted is reported as missing and not
+  parsed, so the async query downloads it (swamp-club#3178).
+- `model_resolver.ts` (`dataToRecord`): runs after `prepare` (the model map)
+  or `ensureContentLocal()` (`data.latest()`).
+- `data_query_service.ts` (`projectedContent`): the `querySync()` projection
+  path, which cannot download.
 - The composite and in-memory repositories, which delegate to it.
+
+`integration/content_read_path_rules_test.ts` pins these callers and every
+function that opens a content file by its path, so a new reader that skips the
+content-ensuring step fails a test.
 
 The async `DataQueryService.query()`, which backs `data query`, serve's
 `data.query` and extension `queryData`, works around it. `fromRow` reports a
@@ -1677,20 +1949,22 @@ datastore, a catalog row whose body is gone locally (deleted, or a write
 that never finished; `filterStaleRows` is off) costs one remote lookup per
 query that needs its body, where before it matched as empty.
 
-`querySync()`, behind CEL `data.query()`, cannot download. The
-`model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
-→ scoped pull, which downloads `raw` files before CEL evaluation.
+`querySync()`, behind CEL `data.query()` in a synchronous context, cannot
+download. The `model_resolver.ts` path relies on `prepare` (see "Expression
+reads"), not on the scoped pull, which covers only the step's own model.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks
 that a catalog row still has content before trusting it while the catalog is
 unpopulated (every datastore sync invalidates it). The check uses the async
 `getContent()`, so on a lazy-hydration datastore it downloads the `raw` file
 instead of mistaking a metadata-only row for a stale one. A row whose content
-is also absent remotely is still stale (swamp-club#2288).
+is also absent remotely is still stale (swamp-club#2288). Before it maps the
+row it returns, on every branch, it ensures the row's content with the row's
+size, so its attributes are never read from a missing or stale body
+(swamp-club#3179).
 
-That scoped pull covers only the step's own model. `DataRecord.path` from
-`data.latest()` / `data.version()` must name a present file, so those lookups
-stat the path and, if missing, call the async `getContent()` to hydrate it. If
+`DataRecord.path` from `data.latest()` / `data.version()` must name a present,
+current file, so those lookups ensure the content with the record's size. If
 the file is still absent, or hydration throws, `path` is `""`. List lookups
 (`data.findBySpec()`, `data.findByTag()`, `data.query()` record results) only
 stat and clear missing paths. They never download, so a metadata query cannot
@@ -1817,10 +2091,14 @@ re-keying") leaves it briefly empty, so a reader can find a held lock's file
 empty or partial. A lockfile that exists but cannot be read therefore counts as held
 until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
 is the one definition of that rule: the acquire path backs off, `inspect()`
-returns a placeholder `LockInfo` with an unknown holder and no nonce, and the
-structural drain (`waitForPerModelLocks`) counts the lock as held. Reading
-such a file as no lock would let a writer and a structural command run at the
-same time (swamp-club#3148).
+returns a placeholder `LockInfo` with an unknown holder and no nonce, marked
+`holderUnknown`, and the structural drain (`waitForPerModelLocks`) counts the
+lock as held. `swamp datastore lock release` does not call `forceRelease` on a
+`holderUnknown` lock: it reports that the lock is being written and to retry.
+`swamp datastore lock status` shows a global lock in that state as locked
+without a PID or hostname; its per-model scan (`scanModelLocks`) still skips an
+unreadable per-model lock file. Reading such a file as no lock would let a
+writer and a structural command run at the same time (swamp-club#3148).
 
 With a `namespace` set, `datastoreGlobalLockOptions` returns
 `{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
@@ -2226,8 +2504,22 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    shell step's timeout kills its command's whole process tree, and the
    lock file a nested structural command leaves behind lasts until its ttl.
    At the timeout it throws `LockTimeoutError` and the run fails without
-   writing. A cancelled dispatch is the exception: it logs the timeout and
-   stays cancelled, because a cancelled step writes nothing to the model.
+   writing.
+
+A hop the cancel stopped does not wait in the reclaim (swamp-club#3157). The
+shell model, when its command was killed by the cancel, and the dispatcher, when
+its attempt failed, end the hand-off with the run's abort signal. The locks are
+re-keyed as always, and if a structural command is still working once the signal
+has aborted, the reclaim rejects with an `AbortError` instead of polling on to
+the timeout. The step then writes nothing to the model and stays cancelled: the
+shell model throws before its writes, and a cancelled dispatch logs the failed
+reclaim and keeps its cancellation. A hop that finished before the cancel has a
+result to write, so its hand-off ends with no signal and waits in full. A
+cancelled run with no structural command at work reclaims as usual, and a global
+lock file caught mid-write is read again rather than taken for a command at
+work. The signal reaches only the reclaim of the scope the hand-off was begun
+in. A scope around it is another run's, which may not be cancelled and may still
+write, so its reclaim waits in full.
 
 Two orderings make this sound. The drain publishes its list and then scans
 again, ending only on a scan that matches what is already published; the
@@ -2465,7 +2757,12 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
 
 1. Checks the target is accessible (writable directory or reachable S3 bucket).
 2. Migrates existing runtime data from `.swamp/` to the new location (skipped
-   with `--skip-migration`).
+   with `--skip-migration`). A filesystem destination whose real path is the
+   migration source (for example `--path .swamp`) has nothing to move: setup
+   skips the copy, the verification and the cleanup, and only writes the
+   datastore block (swamp-club#3162). Without that, the copy fails on files
+   such as `_catalog.db`, and a copy with no failures would let cleanup delete
+   the datastore itself.
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
@@ -2578,6 +2875,33 @@ startup uses):
   because pulled extension sources stay in the repo (swamp-club#2612). If
   `.swamp/config` is a symlink, cleanup leaves the link alone rather than
   deleting the files of its target.
+
+  On an extension setup, the remote may already hold a config tier, for example
+  when a second repo joins a shared datastore that was migrated already. Before
+  anything is copied, setup pulls the remote `config/` into the cache
+  (`subdirs: ["config"]`, the namespace, and `metadataOnly` under lazy
+  hydration) within the setup sync timeout (swamp-club#2844). If that pull
+  fails, timeout included, setup stops: nothing is copied, pushed or cleaned
+  up, and `.swamp.yaml` is not rewritten. This has to cover timeouts, because
+  committing the new datastore without migrating would make a retry classify
+  the tier as instance-local. `listConfigTierConflicts` then lists the local
+  tier files, other than pulled extensions, that already exist in the cache,
+  and `planConfigTierMerge` (`src/domain/datastore/datastore_config.ts`)
+  applies the rule that the remote copy wins:
+  - No clashing file is copied, so none is pushed.
+  - A clashing local copy that differs stays in `.swamp/config`.
+  - An identical copy is cleaned up as usual.
+  - The migration sentinel always differs, so it is never kept or reported.
+  - Local-only files migrate.
+
+  The differing paths are listed in a `remote_config_tier_kept` warning, which
+  appears in `warnings` in JSON output. An extension that ignores `subdirs`
+  pulls everything at this point. That is still correct, only slower.
+
+  The comparison is against the cache, so a retry after a push that failed
+  can find every config file already there and copy nothing. Setup still
+  pushes and cleans up in that case. Two more cases count as differing: a
+  local directory where the cache has a file, and a file that cannot be read.
 - **Instance-local** (the tier is elsewhere, or the current datastore cannot be
   resolved): `.swamp/config` holds only this instance's pulled extension
   sources and the transitional auto-resolve lockfile. Setup leaves it out of
@@ -2639,6 +2963,7 @@ exclude patterns.
 | `src/domain/datastore/datastore_migration_service.ts` | File copy + verification for migration |
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
+| `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
@@ -2652,6 +2977,8 @@ exclude patterns.
 | `src/infrastructure/persistence/filesystem_datastore_verifier.ts` | Filesystem health check |
 | `src/infrastructure/persistence/datastore_sync_coordinator.ts` | Global sync lifecycle (lock + pull/push) |
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
+| `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
+| `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
 
 ### Application Layer (libswamp)
 
@@ -2713,7 +3040,7 @@ lockfile:
 | Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
 | Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
-| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate; a failed publish is logged and left pending |
+| Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the checkpoint of the root it opens for each run; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
 | Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
 

@@ -1529,6 +1529,31 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: resets unknown steps to pen
   assertEquals(run.completedAt, undefined);
 });
 
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: marks the run recovered until it is next resumed", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  assertEquals(run.awaitsResumeAfterRecovery, false);
+  assertEquals(run.toData().recovered, undefined);
+
+  run.interrupt("server_crash");
+  run.resetUnknownStepsForRecovery();
+
+  assertEquals(run.awaitsResumeAfterRecovery, true);
+  assertEquals(run.toData().recovered, true);
+  const stored = WorkflowRun.fromData(run.toData());
+  assertEquals(stored.awaitsResumeAfterRecovery, true);
+
+  stored.resumeFromSuspended({ pid: 1 });
+  assertEquals(stored.awaitsResumeAfterRecovery, false);
+  assertEquals(stored.toData().recovered, undefined);
+  // Suspended again by something else: the recovery is not remembered.
+  stored.suspend();
+  assertEquals(stored.awaitsResumeAfterRecovery, false);
+  assertEquals(stored.toData().recovered, undefined);
+});
+
 Deno.test("WorkflowRun.resetUnknownStepsForRecovery: throws on non-interrupted run", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);
@@ -3171,4 +3196,42 @@ Deno.test("JobRun.settleNotResumed: a job with a step waiting for a signal is un
   job.settleNotResumed();
 
   assertEquals(job.status, "unknown");
+});
+
+Deno.test("WorkflowRun.recordTriggeringPrincipal: survives a save and load, and is absent unless recorded", () => {
+  const run = WorkflowRun.create(createTestWorkflow(), {}, "user:bot");
+  assertEquals(run.toData().triggeringPrincipal, undefined);
+  const principal = {
+    kind: "user" as const,
+    id: "bot",
+    tokenBinding: {
+      name: "ci",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      principalId: "user:bot",
+    },
+    membership: {
+      localGroups: ["bots"],
+      idpGroups: ["ci"],
+      collectives: ["acme"],
+    },
+  };
+  run.recordTriggeringPrincipal(principal);
+  const loaded = WorkflowRun.fromData(run.toData());
+  assertEquals(loaded.triggeringPrincipal, principal);
+  assertEquals(loaded.toData().triggeringPrincipal, principal);
+});
+
+Deno.test("WorkflowRun.recordAllowedVaults: survives a save and load, and is absent unless recorded", () => {
+  const run = WorkflowRun.create(createTestWorkflow(), {});
+  assertEquals(run.allowedVaults, undefined);
+  assertEquals(run.toData().allowedVaults, undefined);
+  assertEquals(WorkflowRun.fromData(run.toData()).allowedVaults, undefined);
+  run.recordAllowedVaults(new Set(["prod", "shared"]));
+  const loaded = WorkflowRun.fromData(run.toData());
+  assertEquals(loaded.allowedVaults, ["prod", "shared"]);
+  assertEquals(loaded.toData().allowedVaults, ["prod", "shared"]);
+  // An empty list is a list that allows nothing, not an absent one.
+  const none = WorkflowRun.create(createTestWorkflow(), {});
+  none.recordAllowedVaults([]);
+  assertEquals(WorkflowRun.fromData(none.toData()).allowedVaults, []);
 });

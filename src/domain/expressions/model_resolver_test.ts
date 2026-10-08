@@ -1695,6 +1695,72 @@ Deno.test("data.latest() passes when specName is unique", async () => {
   });
 });
 
+Deno.test("data.latest() returns the current type's record of a model retyped in place (swamp-club#2501)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
+    const oldType = ModelType.create("test/alpha");
+    const currentType = ModelType.create("test/beta");
+
+    // The definition file stays under the old type's directory with its
+    // type field changed, as an in-place edit leaves it. save() stamps the
+    // type it is given, so save under the current type and move the file.
+    const model = Definition.create({ name: "m1", globalArguments: {} });
+    await new YamlDefinitionRepository(repoDir).save(currentType, model);
+    const modelsDir = join(repoDir, "models");
+    await Deno.mkdir(join(modelsDir, oldType.toDirectoryPath()), {
+      recursive: true,
+    });
+    await Deno.rename(
+      join(modelsDir, currentType.toDirectoryPath(), "m1.yaml"),
+      join(modelsDir, oldType.toDirectoryPath(), "m1.yaml"),
+    );
+
+    for (
+      const [type, value] of [[oldType, "alpha"], [
+        currentType,
+        "beta",
+      ]] as const
+    ) {
+      await dataRepo.save(
+        type,
+        model.id,
+        Data.create({
+          name: "foo",
+          contentType: "application/json",
+          lifetime: "infinite",
+          garbageCollection: 10,
+          tags: { type: "resource", specName: "foo", modelName: "m1" },
+          ownerDefinition: owner,
+        }),
+        new TextEncoder().encode(JSON.stringify({ v: value })),
+      );
+    }
+
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+
+    assertExists(ctx.data);
+    const result = await ctx.data.latest("m1", "foo");
+    assertExists(result);
+    assertEquals(result.attributes.v, "beta");
+    catalog.close();
+  });
+});
+
 Deno.test("data.latest() with exact data name skips specName ambiguity check (swamp-club#1838)", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
@@ -2904,7 +2970,7 @@ for (const kind of ["full", "light"] as const) {
       await write("result", "result", "old-name");
       const ctx = await context(kind);
       assertExists(ctx.data);
-      await ctx.data.resolveModelNames?.(
+      await ctx.data.prepare?.(
         'data.listVersions("new-name", "result")',
       );
 
@@ -2926,7 +2992,7 @@ for (const kind of ["full", "light"] as const) {
       await write("result", "result", "new-name");
       const ctx = await context(kind);
       assertExists(ctx.data);
-      await ctx.data.resolveModelNames?.(
+      await ctx.data.prepare?.(
         'data.listVersions("new-name", "result")',
       );
 
@@ -2990,7 +3056,7 @@ for (const kind of ["full", "light"] as const) {
       await write("result", "result", "new-name");
       const ctx = await context(kind);
       assertExists(ctx.data);
-      await ctx.data.resolveModelNames?.(
+      await ctx.data.prepare?.(
         'data.listVersions("new-name", "result")',
       );
 
@@ -3010,7 +3076,7 @@ for (const kind of ["full", "light"] as const) {
       await write("result", "result", "tmp-name");
       const ctx = await context(kind);
       assertExists(ctx.data);
-      await ctx.data.resolveModelNames?.(
+      await ctx.data.prepare?.(
         'data.listVersions("new-name", "result")',
       );
 
@@ -3062,7 +3128,7 @@ for (const kind of ["full", "light"] as const) {
       const ctx = await context(kind);
       assertExists(ctx.data);
       const named = `${dataRepo.namespace}:new-name`;
-      await ctx.data.resolveModelNames?.(
+      await ctx.data.prepare?.(
         `data.listVersions("${named}", "result")`,
       );
 
@@ -3081,7 +3147,7 @@ Deno.test("ModelResolver.buildContext: data accessors make no definition lookup"
     assertExists(ctx.data);
     const before = defRepo.nameLookups;
 
-    await ctx.data.resolveModelNames?.(
+    await ctx.data.prepare?.(
       'data.listVersions("new-name", "result") + data.latest("ghost", "x")',
     );
     await ctx.data.findBySpec("new-name", "result");
@@ -3106,7 +3172,7 @@ Deno.test("ModelResolver.buildLightContext: data accessors look each name up onc
     await ctx.data.version("new-name", "result", 1);
     await ctx.data.findBySpec("ghost", "result");
     await ctx.data.latest("ghost", "result");
-    await ctx.data.resolveModelNames?.(
+    await ctx.data.prepare?.(
       'data.listVersions("new-name", "result") + data.listVersions("ghost", "x")',
     );
     assertEquals(defRepo.nameLookups, 2);
@@ -3239,5 +3305,246 @@ Deno.test("ModelResolver.buildLightContext: a failed definition lookup reads by 
     } finally {
       catalog.close();
     }
+  });
+});
+
+// ============================================================================
+// Synchronous readers on a lazily hydrating datastore (swamp-club#3179)
+// ============================================================================
+
+interface LazyItem {
+  name: string;
+  kind: "resource" | "file";
+  specName: string;
+  contentType: string;
+  body: string;
+}
+
+/**
+ * Saves `items` for model `vpc`, publishes their bytes as the remote's copy
+ * and evicts them from the cache, as a metadata-only pull leaves data
+ * another host wrote. The hook downloads from that remote copy.
+ */
+async function setupLazyFixture(repoDir: string, items: LazyItem[]) {
+  await setupRepoDir(repoDir);
+  const defRepo = new YamlDefinitionRepository(repoDir);
+  const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+  const remote = new Map<string, Uint8Array>();
+  const hydrated: string[] = [];
+  const names = new Map<string, string>();
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    repoDir,
+    undefined,
+    catalog,
+    undefined,
+    async (absPath: string) => {
+      hydrated.push(names.get(absPath) ?? absPath);
+      const bytes = remote.get(absPath);
+      if (!bytes) return false;
+      await Deno.writeFile(absPath, bytes);
+      return true;
+    },
+  );
+  const type = ModelType.create("test/model");
+  const model = Definition.create({ name: "vpc", globalArguments: {} });
+  await defRepo.save(type, model);
+  for (const item of items) {
+    const bytes = new TextEncoder().encode(item.body);
+    await dataRepo.save(
+      type,
+      model.id,
+      Data.create({
+        name: item.name,
+        contentType: item.contentType,
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: { type: item.kind, specName: item.specName, modelName: "vpc" },
+        ownerDefinition: owner,
+      }),
+      bytes,
+    );
+    const path = dataRepo.getContentPath(type, model.id, item.name, 1);
+    remote.set(path, bytes);
+    names.set(path, item.name);
+    await Deno.remove(path);
+  }
+  const dqs = new DataQueryService(catalog, dataRepo);
+  await dqs.query('name == ""');
+  const resolver = new ModelResolver(defRepo, {
+    repoDir,
+    dataRepo,
+    dataQueryService: dqs,
+  });
+  return { resolver, catalog, hydrated, model, type, dataRepo };
+}
+
+const STATE: LazyItem = {
+  name: "main",
+  kind: "resource",
+  specName: "state",
+  contentType: "application/json",
+  body: '{"vpcId":"vpc-0abc123"}',
+};
+const LOG: LazyItem = {
+  name: "log",
+  kind: "file",
+  specName: "log",
+  contentType: "text/plain",
+  body: "line1\n",
+};
+const BLOB: LazyItem = {
+  name: "blob",
+  kind: "resource",
+  specName: "blob",
+  contentType: "application/octet-stream",
+  body: "binary",
+};
+
+async function evaluateIn(ctx: ExpressionContext, cel: string) {
+  return await new CelEvaluator().evaluateAsync(
+    cel,
+    ctx as unknown as Record<string, unknown>,
+  );
+}
+
+Deno.test("prepare: model.<name>.resource reads data a metadata-only pull left out", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupLazyFixture(repoDir, [
+      STATE,
+      LOG,
+      BLOB,
+    ]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId"),
+      "vpc-0abc123",
+    );
+    // Only the text resources a resource read reads are downloaded.
+    assertEquals(hydrated, ["main"]);
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: the bracket form and a definition id read the same data", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, model } = await setupLazyFixture(repoDir, [
+      STATE,
+    ]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(
+        ctx,
+        'model["vpc"].resource.state.main.attributes.vpcId',
+      ),
+      "vpc-0abc123",
+    );
+    const ctx2 = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(
+        ctx2,
+        `model["${model.id}"].resource.state.main.attributes.vpcId`,
+      ),
+      "vpc-0abc123",
+    );
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: model.<name>.file and file.contents read a file a metadata-only pull left out", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupLazyFixture(repoDir, [
+      STATE,
+      LOG,
+    ]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(ctx, 'file.contents("vpc", "log")'),
+      "line1\n",
+    );
+    assertEquals(hydrated, ["log"]);
+    const ctx2 = await resolver.buildContext(new RunSensitiveValues());
+    assertEquals(
+      await evaluateIn(ctx2, "model.vpc.file.log.log.size"),
+      6,
+    );
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: each read is ensured once per context", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated, dataRepo, type, model } =
+      await setupLazyFixture(repoDir, [STATE]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    await evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId");
+    // Evicted again, the same read in the same context is not ensured a
+    // second time; a new context ensures it again.
+    await Deno.remove(dataRepo.getContentPath(type, model.id, "main", 1));
+    await evaluateIn(ctx, "model.vpc.resource.state.main.attributes");
+    assertEquals(hydrated, ["main"]);
+    const next = await resolver.buildContext(new RunSensitiveValues());
+    await evaluateIn(next, "model.vpc.resource.state.main.attributes");
+    assertEquals(hydrated, ["main", "main"]);
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: refreshes maps a synchronous read loaded before the content was local", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog } = await setupLazyFixture(repoDir, [STATE]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    // A synchronous pass fires the getter first and sees empty attributes.
+    assertEquals(
+      ctx.model["vpc"].resource?.["state"]?.["main"]?.attributes,
+      {},
+    );
+    // A record a step merged in after the getter fired is kept.
+    const merged = { ...ctx.model["vpc"].resource!["state"]["main"] };
+    ctx.model["vpc"].resource!["state"]["merged"] = merged;
+    assertEquals(
+      await evaluateIn(ctx, "model.vpc.resource.state.main.attributes.vpcId"),
+      "vpc-0abc123",
+    );
+    assertEquals(
+      Object.keys(ctx.model["vpc"].resource!["state"]).sort(),
+      ["main", "merged"],
+    );
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: a file left out of a loaded map is added once it is local", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog } = await setupLazyFixture(repoDir, [LOG]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    // The getter skips a file whose content is not on disk.
+    assertEquals(ctx.model["vpc"].file?.["log"]?.["log"], undefined);
+    assertEquals(await evaluateIn(ctx, "model.vpc.file.log.log.size"), 6);
+    catalog.close();
+  });
+});
+
+Deno.test("prepare: a light context only resolves identities", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog, hydrated } = await setupLazyFixture(repoDir, [
+      STATE,
+    ]);
+    const ctx = resolver.buildLightContext(new RunSensitiveValues());
+    await ctx.data!.prepare?.("model.vpc.resource.state.main.attributes");
+    assertEquals(hydrated, []);
+    catalog.close();
+  });
+});
+
+Deno.test("data.latest(): attributes come from content a metadata-only pull left out", async () => {
+  await withTempDir(async (repoDir) => {
+    const { resolver, catalog } = await setupLazyFixture(repoDir, [STATE]);
+    const ctx = await resolver.buildContext(new RunSensitiveValues());
+    const record = await ctx.data!.latest("vpc", "main");
+    assertEquals(record?.attributes, { vpcId: "vpc-0abc123" });
+    const light = resolver.buildLightContext(new RunSensitiveValues());
+    const viaCatalog = await light.data!.latest("vpc", "main");
+    assertEquals(viaCatalog?.attributes, { vpcId: "vpc-0abc123" });
+    catalog.close();
   });
 });

@@ -398,8 +398,10 @@ How to read it:
 - **It is derived from static imports.** Extension loading, registries,
   bundled assets and computed import paths are invisible to it, so an empty
   list is not proof that nothing is affected.
-- **`extension` is listed for almost every source change**, because its
-  closure reaches the whole CLI through `src/cli/mod.ts`.
+- **No command reaches `src/cli/mod.ts`.** It imports every command and only
+  `main.ts` imports it, so a change to it shows under `startupPath`, not in the
+  list. `integration/ddd_layer_rules_test.ts` fails if a file under `src/`
+  imports it, which would put the whole CLI in that file's closure.
 
 The rule table is `classifyOutsideGraph` in `scripts/affected_commands.ts`. A
 new top-level directory needs a rule there;

@@ -283,7 +283,9 @@ async function withFindingsExtension(
     await Deno.writeTextFile(
       model,
       [
-        "export const model = { name: 'thing' };",
+        // Literal type and version, so the registry catalog lists the model
+        // and the only findings are the ones this fixture plants.
+        `export const model = { type: "@test/thing", version: "2026.01.01.1" };`,
         // Two findings on one indented line: deno-command and base64-run.
         "export function run() {",
         `  return new Deno.Command("vendor", { args: ["${BLOB}"] }); // don't inline`,

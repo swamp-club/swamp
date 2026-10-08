@@ -242,3 +242,43 @@ Deno.test("extensionInfo: yields error event on API failure", async () => {
   assertEquals(errorEvent.error.code, "info_lookup_failed");
   assertStringIncludes(errorEvent.error.message, "Connection refused");
 });
+
+Deno.test("extensionInfo: carries the latest version's accepted warnings, and leaves them out when there are none", async () => {
+  const acceptances = {
+    accepted: [{
+      rule: "credentials-sensitive-field",
+      file: "models/volume.ts",
+      line: 12,
+      source: "inline" as const,
+    }],
+    total: 1,
+  };
+  for (const declared of [acceptances, undefined]) {
+    const base = makeVersionDetail();
+    const detail = {
+      ...base,
+      contentMetadata: base.contentMetadata && {
+        ...base.contentMetadata,
+        ...(declared ? { acceptances: declared } : {}),
+      },
+    };
+    const deps = makeDeps({
+      getExtension: () => Promise.resolve(makeFullExtensionInfo()),
+      getLatestVersionDetail: () => Promise.resolve(detail),
+    });
+    const events = await collect<ExtensionInfoEvent>(
+      extensionInfo(createLibSwampContext(), deps, {
+        extensionName: "@stack72/aws-ec2",
+      }),
+    );
+    const completed = events[1] as Extract<
+      ExtensionInfoEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.contentMetadata?.acceptances, declared);
+    assertEquals(
+      Object.hasOwn(completed.data.contentMetadata ?? {}, "acceptances"),
+      declared !== undefined,
+    );
+  }
+});

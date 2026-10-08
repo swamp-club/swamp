@@ -560,7 +560,6 @@ const PINNED_REPO_LOCAL_AUTO_DEFINITION_READERS: readonly string[] = [
   "src/libswamp/models/doctor_vaults.ts",
   "src/libswamp/models/edit.ts",
   "src/libswamp/models/evaluate.ts",
-  "src/libswamp/models/get.ts",
   "src/libswamp/models/method_describe.ts",
   "src/libswamp/models/method_history_logs.ts",
   "src/libswamp/models/output_data.ts",

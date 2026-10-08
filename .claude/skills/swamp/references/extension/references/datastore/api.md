@@ -195,6 +195,10 @@ interface DatastoreSyncService {
     namespace: string,
     relPath: string,
   ): Promise<Uint8Array | null>;
+  fetchContent?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<Uint8Array | null>;
 }
 
 interface SyncCapabilities {
@@ -282,3 +286,22 @@ cross-namespace content access when a CEL expression references another
 namespace's data attributes. Returns the file contents, or `null` if the file
 does not exist. Fetched content is NOT persisted locally — it is ephemeral,
 cached only for the duration of the current command.
+
+### `fetchContent(relPath, options?)?`
+
+Optional. Read one file as the remote holds it, without touching the local
+cache. Core treats the method's presence as the capability, and uses it to
+compare a cached file with the remote one before acting on it.
+
+- Return the file's bytes, or `null` when the remote has no such file. Reject on
+  any other failure, so an unreachable remote is never read as a deleted file.
+- Write nothing locally: no cache file, dirty state or pull watermark changes,
+  and a differing local file is left alone.
+- `relPath` is cache-relative and forward-slash-normalized. With a namespace it
+  already starts with `{namespace}/` — do not add the namespace again. With no
+  namespace in `options`, read from the datastore root.
+- Reject a `relPath` that is absolute or has a `..` segment.
+- Do not keep the returned bytes on the service instance.
+
+Check it with the `fetch-content`, `fetch-content-error` and
+`fetch-content-namespace` cases of `assertSyncServiceRoundTripConformance`.

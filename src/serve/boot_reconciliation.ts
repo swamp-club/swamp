@@ -23,6 +23,7 @@ import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.
 import { PENDING_DISPATCH_MODEL_TYPE } from "../domain/models/worker/pending_dispatch_model.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { UserError } from "../domain/errors.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 import { Data } from "../domain/data/data.ts";
 import type { FileSystemUnifiedDataRepository } from "../infrastructure/persistence/unified_data_repository.ts";
@@ -64,35 +65,88 @@ export interface HydrateLocalCacheDeps {
   catalogInvalidate: () => void;
   signal?: AbortSignal;
   namespace?: string;
+  /**
+   * Makes hydration a startup requirement: a failed pull is retried, and the
+   * last failure is thrown instead of logged. Unset, one failed pull is
+   * logged and serve starts on whatever the cache holds.
+   */
+  required?: RequiredHydration;
+}
+
+/** How many times a required boot hydration is tried before serve gives up. */
+export const REQUIRED_HYDRATION_ATTEMPTS = 3;
+
+export interface RequiredHydration {
+  /**
+   * A fresh signal for each attempt, so every attempt gets the whole
+   * hydration timeout. Replaces {@link HydrateLocalCacheDeps.signal}.
+   */
+  attemptSignal: () => AbortSignal;
+  /** Defaults to {@link REQUIRED_HYDRATION_ATTEMPTS}. */
+  attempts?: number;
+  /** Waits before the attempt after `failedAttempt`. Injected by tests. */
+  backoff?: (failedAttempt: number) => Promise<void>;
 }
 
 export interface HydrateResult {
   pulled: number;
+  /** False when the pull failed, so the local cache may be out of date. */
+  ok: boolean;
+}
+
+function hydrationBackoff(failedAttempt: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, failedAttempt * 1000));
 }
 
 export async function hydrateLocalCache(
   deps: HydrateLocalCacheDeps,
 ): Promise<HydrateResult> {
   logger.info("Hydrating local cache from remote datastore");
-  try {
-    const pulled = await deps.syncService.pullChanged({
-      signal: deps.signal,
-      ...(deps.namespace ? { namespace: deps.namespace } : {}),
-    });
-    const count = typeof pulled === "number" ? pulled : 0;
-    if (pulled !== 0) {
-      if (count > 0) {
-        logger.info`Pulled ${count} file(s) from remote datastore`;
+  const required = deps.required;
+  const requested = required?.attempts ?? REQUIRED_HYDRATION_ATTEMPTS;
+  const attempts = !required
+    ? 1
+    : Number.isFinite(requested) && requested >= 1
+    ? Math.floor(requested)
+    : REQUIRED_HYDRATION_ATTEMPTS;
+  for (let attempt = 1;; attempt++) {
+    try {
+      const pulled = await deps.syncService.pullChanged({
+        signal: required ? required.attemptSignal() : deps.signal,
+        ...(deps.namespace ? { namespace: deps.namespace } : {}),
+      });
+      const count = typeof pulled === "number" ? pulled : 0;
+      // A failed attempt keeps the files it downloaded, and this attempt's
+      // count leaves them out, so a retry invalidates even on zero.
+      if (pulled !== 0 || attempt > 1) {
+        if (count > 0) {
+          logger.info`Pulled ${count} file(s) from remote datastore`;
+        }
+        deps.catalogInvalidate();
       }
-      deps.catalogInvalidate();
+      return { pulled: count, ok: true };
+    } catch (err: unknown) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (!required) {
+        logger.warn("Startup cache hydration failed: {error}", { error });
+        return { pulled: 0, ok: false };
+      }
+      if (attempt >= attempts) {
+        throw new UserError(
+          `Startup cache hydration failed after ${attempts} attempt(s): ${
+            error.replace(/\.$/, "")
+          }. ` +
+            `swamp serve cannot start without its datastore cache. Check that ` +
+            `the datastore is reachable; if it is large, raise --hydration-timeout ` +
+            `(env: SWAMP_HYDRATION_TIMEOUT).`,
+        );
+      }
+      logger.warn(
+        "Startup cache hydration attempt {attempt} of {attempts} failed, retrying: {error}",
+        { attempt, attempts, error },
+      );
+      await (required.backoff ?? hydrationBackoff)(attempt);
     }
-    return { pulled: count };
-  } catch (err: unknown) {
-    logger.warn(
-      "Startup cache hydration failed: {error}",
-      { error: err instanceof Error ? err.message : String(err) },
-    );
-    return { pulled: 0 };
   }
 }
 

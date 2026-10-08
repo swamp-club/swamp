@@ -20,11 +20,14 @@
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
 import {
+  continueAfterSignal,
   deliverSignalForCaller,
   SIGNAL_WAIT_NOT_FOUND_MESSAGE,
   type SignalDeliveryResult,
 } from "./signal_delivery.ts";
 import type { AccessCaller, ConnectionContext } from "./handlers/shared.ts";
+import { ActiveRunRegistry } from "./active_run_registry.ts";
+import type { MergedServeOptions } from "./serve_config.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
 import { type Action, ActionSchema } from "../domain/access/action.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -438,4 +441,139 @@ Deno.test("deliverSignalForCaller: a caller who may not signal the workflow gets
     ),
     { numRuns: 60 },
   );
+});
+
+// --- Continuing the run after a delivery (swamp-club#3108) --------------------
+
+const SUBJECT = { principal: { kind: "user" as const, id: CALLER_ID } };
+
+/** `ctx` as a server that can launch resumes, with auto-resume on. */
+function launching(
+  ctx: ConnectionContext,
+): { ctx: ConnectionContext; registry: ActiveRunRegistry } {
+  const registry = new ActiveRunRegistry();
+  return {
+    registry,
+    ctx: {
+      ...ctx,
+      repoDir: "/nonexistent-swamp-repo",
+      activeRunRegistry: registry,
+      serveOptions: { autoResume: true } as MergedServeOptions,
+    } as ConnectionContext,
+  };
+}
+
+Deno.test("deliverSignalForCaller: names the run for the server, whatever the caller may read", async () => {
+  const f = await fixture();
+  const result = await deliver(f.ctxWith([grantOf(["signal"])]), f.waitId);
+
+  assert(result.status === "delivered");
+  assertEquals(result.data.runId, undefined);
+  assertEquals(result.run, {
+    workflowId: f.workflow.id,
+    runId: f.run.id,
+    recordAvailable: true,
+  });
+});
+
+Deno.test("continueAfterSignal: launches the run once its last wait is settled, charged to the signaller", async () => {
+  const f = await fixture();
+  const { ctx, registry } = launching(f.ctxWith([grantOf(["signal"])]));
+  const result = await deliver(ctx, f.waitId);
+
+  await continueAfterSignal(ctx, result, SUBJECT);
+
+  const active = registry.get(f.run.id);
+  assertEquals(active?.principalId, "user:caller");
+  await active?.completion;
+});
+
+Deno.test("continueAfterSignal: does nothing for a signal that was not delivered", async () => {
+  const f = await fixture();
+  const { ctx, registry } = launching(f.ctxWith([]));
+  const result = await deliver(ctx, f.waitId);
+  assertEquals(result, NOT_FOUND);
+
+  await continueAfterSignal(ctx, result, SUBJECT);
+  assertEquals(registry.get(f.run.id), undefined);
+});
+
+Deno.test("continueAfterSignal: fetches a run record this instance does not have, and never one it has", async () => {
+  const f = await fixture();
+  const { ctx, registry } = launching(f.ctxWith([grantOf(["signal"])]));
+  const hydrated: string[] = [];
+  const repoContext = ctx.repoContext as unknown as {
+    hydrateFile: (
+      path: string,
+      options?: { signal?: AbortSignal },
+    ) => Promise<boolean>;
+    workflowRunRepo: { getPath: (w: string, r: string) => string };
+  };
+  repoContext.workflowRunRepo.getPath = (workflowId, runId) =>
+    `${workflowId}/${runId}`;
+  repoContext.hydrateFile = (path, options) => {
+    // Made under the sync gate, so the download is always bounded.
+    assert(options?.signal instanceof AbortSignal);
+    hydrated.push(path);
+    f.runs.set(f.run.id, f.run);
+    return Promise.resolve(true);
+  };
+
+  // The record is here: nothing is fetched over it.
+  const other = await fixture("other");
+  f.runs.set(other.run.id, other.run);
+  f.workflows.set(other.workflow.name, other.workflow);
+  await f.waits.register(
+    (await other.waits.listRegistrations())[0],
+  );
+  await continueAfterSignal(ctx, await deliver(ctx, other.waitId), SUBJECT);
+  assertEquals(hydrated, []);
+  await registry.get(other.run.id)?.completion;
+
+  // The record is missing: it is fetched, and the run continued.
+  f.runs.delete(f.run.id);
+  const result = await deliver(ctx, f.waitId);
+  assert(result.status === "delivered");
+  assertEquals(result.run.recordAvailable, false);
+  await continueAfterSignal(ctx, result, SUBJECT);
+  assertEquals(hydrated, [`${f.workflow.id}/${f.run.id}`]);
+  const active = registry.get(f.run.id);
+  assert(active !== undefined);
+  await active.completion;
+});
+
+Deno.test("continueAfterSignal: a download that is aborted leaves the run for the sweep", async () => {
+  const f = await fixture();
+  const { ctx, registry } = launching(f.ctxWith([grantOf(["signal"])]));
+  const repoContext = ctx.repoContext as unknown as {
+    hydrateFile: (
+      path: string,
+      options?: { signal?: AbortSignal },
+    ) => Promise<boolean>;
+    workflowRunRepo: { getPath: (w: string, r: string) => string };
+  };
+  repoContext.workflowRunRepo.getPath = (workflowId, runId) =>
+    `${workflowId}/${runId}`;
+  let downloads = 0;
+  repoContext.hydrateFile = () => {
+    downloads++;
+    return Promise.reject(new DOMException("timed out", "TimeoutError"));
+  };
+  f.runs.delete(f.run.id);
+  const result = await deliver(ctx, f.waitId);
+  assert(result.status === "delivered");
+
+  await continueAfterSignal(ctx, result, SUBJECT);
+  assertEquals(downloads, 1);
+  assertEquals(registry.get(f.run.id), undefined);
+});
+
+Deno.test("continueAfterSignal: a failure to continue never reaches the caller", async () => {
+  const f = await fixture();
+  const { ctx } = launching(f.ctxWith([grantOf(["signal"])]));
+  const result = await deliver(ctx, f.waitId);
+  (ctx.repoContext as unknown as { workflowRunRepo: { findById: unknown } })
+    .workflowRunRepo.findById = () => Promise.reject(new Error("disk gone"));
+
+  await continueAfterSignal(ctx, result, SUBJECT);
 });

@@ -170,7 +170,16 @@ renderer records each part as the run produces it and writes the document
 when the run ends: `status` (`dry_run`, `pushed`, `failed`, `blocked` or
 `cancelled`), `resolved` (file paths absolute), `warnings` grouped by family
 (`safety`, `review`, `dependencyTrust`, `versionDrift`,
-`versionBumpUpgrade`), and the run summary at the top level. A blocked
+`versionBumpUpgrade`, and on a completed push `registry`), and the run
+summary at the top level. The `registry` family is what the registry said
+about a push it accepted, such as client `contentMetadata` it discarded in
+favour of its own extraction (swamp-club#2900): one `{ "message": ... }`
+object per warning. Log mode prints it as a `Registry warnings:` block after
+the summary. The API client reduces that text to at most 20 printable single
+lines before anything prints it; the number it left out is
+`registryWarningsOmitted` beside the summary, present only when above zero,
+and a closing line of the log block. The family appears only when the confirm
+response was received, and it never gates the push. A blocked
 prepare carries `errors` keyed by the gate that blocked it instead. The
 review-report skeleton is a nested object on its finding. Errors still go to
 stderr as `{"error": ...}`. Log mode prints a path relative to the current
@@ -1169,12 +1178,25 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
 - **One pass, shared** (`runQualityFindings` in
   `src/libswamp/extensions/push.ts`): push runs it at stage 10b and
   `swamp extension quality` on every run including a cache hit. The review
-  rules, the bare-specifier check and `applyAcceptances` (pure,
-  property-tested: accepted plus remaining is exactly the input) produce the
+  rules, the bare-specifier check, the `uncatalogued-model` check and
+  `applyAcceptances` (pure, property-tested: accepted plus remaining is
+  exactly the input) produce the
   unaccepted findings the warnings gate counts, the `stale-acceptance`
   warning for each directive that matches nothing, and the acceptances with
   their reasons. `testing-completeness` is accepted per file first, then
   the remaining findings collapse to one per extension carrying the files.
+- **Uncatalogued models** (`modelCatalogGap` in
+  `src/domain/extensions/model_catalog_gap.ts`): the push content metadata
+  reads a model's `type` and `version` as string literals from a plain
+  `export const model = { ... }` object and silently leaves out any entry
+  point where either is unreadable, so the registry ships the bundle but lists
+  no model type. `modelCatalogGap` says why, built on the same extractors and
+  property-tested to agree with them, and `runQualityFindings` reports one
+  file-scoped `uncatalogued-model` warning per such entry point. It is not
+  acceptable. Like any unaccepted warning it prompts an interactive push, but
+  it changes no extractor and no error gate: the extractors stay as they are,
+  since the version-drift and upgrade-chain checks read the same version
+  (swamp-club#2486).
 - **Reporting.** The dry-run, completed and quality summaries close with
   `Accepted warnings:` and `Unresolved warnings:` (each warning neither fixed
   nor accepted, with its remediation and one line saying how to accept it).
@@ -1209,7 +1231,18 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   acceptances travel to the registry in `contentMetadata.acceptances`
   (stored by swamp-club#3095), `reason` omitted when none was given, with
   files by their archive path (`models/x.ts`, `vaults/v.ts`), never a local
-  one.
+  one. The registry returns them as `latestVersionDetail.acceptances`
+  (`null` when the version declared none; at most 500 entries, with `total`
+  counting every entry sent), and `swamp extension info` shows them to the
+  installer: `parseRegistryAcceptances`
+  (`src/domain/extensions/registry_acceptances.ts`) turns the registry's
+  nulls into absent fields, drops malformed entries and keeps at most 500,
+  and log mode prints an `Accepted warnings:` block in push's line format
+  (archive paths, control characters escaped, `and N more` when `total`
+  exceeds the entries returned). The renderer reads them only through that
+  parser, so data relayed by a remote serve is checked too. In `--json` they
+  are `contentMetadata.acceptances`, absent when there are none, so a
+  registry that predates swamp-club#3095 changes nothing.
 
 ## Dependencies
 
@@ -1444,7 +1477,19 @@ acceptable on its own (see Declared acceptances):
 
 - `long-line`: a line with more than 500 non-whitespace characters
 - `base64-run`: a run of 100+ consecutive base64 characters
-- `deno-command`: `Deno.Command(` on the line (subprocess spawning)
+- `deno-command`: a use of `Deno.Command` (subprocess spawning), read from the
+  syntax tree, so comments and strings never count. It flags `Command` read off
+  `Deno` in any spelling (`Deno.Command`, `Deno["Command"]`, through casts or a
+  global object, `import C = Deno.Command`) and `Deno` itself used as a value,
+  since an alias reaches `Command` (`const d = Deno`, destructuring from `Deno`,
+  passing it, `Deno[key]` with a non-literal key). A member named `Command` on
+  any other object is not flagged, but `Command` read off a member named `Deno`
+  on any receiver is (`g.Deno.Command`, `this.Deno.Command`). Not caught: other
+  uses of an alias of the global object (`const d = g.Deno; new d.Command()`, or
+  a parameter pattern given it, `(({ Deno: d }) => ...)(globalThis)`) and names
+  assembled at runtime. A file that does not parse falls back to the old text check
+  (`Deno.Command(` on the line). Other process APIs (`node:child_process`) are
+  not covered by this rule (swamp-club#3169).
 - `ipv4-address-literals`: IPv4 address literals in `.md` and `.txt` files
   outside the RFC 5737 documentation, loopback and link-local ranges (found by
   the extensible content rule framework)

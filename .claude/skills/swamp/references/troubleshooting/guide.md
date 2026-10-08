@@ -51,19 +51,20 @@ found), see [references/version-check.md](references/version-check.md).
 
 ## Symptom → tier index
 
-| Symptom                                           | Start at                                                         |
-| ------------------------------------------------- | ---------------------------------------------------------------- |
-| Extension or binary misbehaves unexpectedly       | Before you start → version-drift check                           |
-| "This used to work" / suspected regression        | Before you start → version-drift check                           |
-| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`                               |
-| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
-| "Is anything running right now?"                  | Tier 1 → `swamp run history --active`                            |
-| Every command fails with `auth_gate_blocked`      | Account required → see below                                     |
-| Command errored — message is clear                | Tier 2 → read it, fix the named issue                            |
-| Command errored — message is vague                | Tier 2 → re-run with `--json`                                    |
-| Model method or workflow run failed               | Tier 2 → inspect generated reports                               |
-| Workflow / method / sync is slow                  | Tier 3 → enable tracing                                          |
-| Need to understand internal behavior              | Tier 4 → fetch source                                            |
+| Symptom                                            | Start at                                                         |
+| -------------------------------------------------- | ---------------------------------------------------------------- |
+| Extension or binary misbehaves unexpectedly        | Before you start → version-drift check                           |
+| "This used to work" / suspected regression         | Before you start → version-drift check                           |
+| Extension not loaded / `swamp-warning:` on stderr  | Tier 1 → `swamp doctor extensions`                               |
+| Run stuck in "running" / orphaned after crash      | Tier 1 → `swamp run doctor --fix`, then `swamp workflow recover` |
+| "Is anything running right now?"                   | Tier 1 → `swamp run history --active`                            |
+| Every command fails with `auth_gate_blocked`       | Account required → see below                                     |
+| `datastore_format_unsupported` / `_marker_invalid` | Datastore format → see below                                     |
+| Command errored — message is clear                 | Tier 2 → read it, fix the named issue                            |
+| Command errored — message is vague                 | Tier 2 → re-run with `--json`                                    |
+| Model method or workflow run failed                | Tier 2 → inspect generated reports                               |
+| Workflow / method / sync is slow                   | Tier 3 → enable tracing                                          |
+| Need to understand internal behavior               | Tier 4 → fetch source                                            |
 
 ### Account required (`auth_gate_blocked`)
 
@@ -86,7 +87,26 @@ swamp-club.com account. The message names the cause:
   outer command instead. On Windows, from a different swamp binary than the
   parent, or when the outer run passed offline on its signin token alone, the
   nested call needs its own login.
+- **`worker connect` with no credential**: it passes on the pass of the serve
+  that enrolls it, so worker pods need no key. If the message says the
+  orchestrator did not vouch for it, upgrade swamp on the serve, check that the
+  serve passed the gate on its own key, or give the worker a key
+  (`SWAMP_API_KEY_FILE`).
 
 Do not work around the block; there is no flag to skip it.
+
+### Datastore format (`datastore_format_unsupported`, `datastore_format_marker_invalid`)
+
+swamp refused the datastore before writing anything to it. A newer swamp marked
+the datastore with a format this version cannot read: a `datastore-format.json`
+file at a filesystem datastore's root, or the `_control/datastore-format` record
+on S3/GCS.
+
+- **`datastore_format_unsupported`**: upgrade swamp (`swamp update`) on this
+  machine, CI and any pinned version. Never delete the marker to get past it:
+  this version would read the newer layout as empty and corrupt it.
+- **`datastore_format_marker_invalid`**: the marker exists but is not valid JSON
+  with a positive integer `format`. Find out who wrote it before changing it;
+  report it with `swamp issue bug` if swamp did.
 
 For detailed walkthroughs of each tier, see [reference.md](reference.md).

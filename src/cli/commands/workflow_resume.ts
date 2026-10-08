@@ -475,6 +475,7 @@ export const workflowResumeCommand = withRemoteOptions(
     );
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);
+    service.continuationClaims = repoContext.continuationClaims;
     service.signalWaits = signalWaits;
     service.ownerLiveness = liveness;
 

@@ -34,17 +34,18 @@ import type {
   AccessTokenMintPayload,
   AccessTokenRevokePayload,
   AccessTokenRotatePayload,
+  RunVaultAccessReport,
 } from "../protocol.ts";
 import {
   collectErrors,
   type GrantFileError,
-  parseGrantFile,
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import {
-  GRANTS_FILE_SOURCE_NAME,
-  grantsDirSourceName,
-} from "../../domain/access/grant_source.ts";
+  readGrantsDirSource,
+  readGrantsFileSource,
+} from "../../domain/access/grant_file_loader.ts";
+import { GRANTS_FILE_SOURCE_NAME } from "../../domain/access/grant_source.ts";
 import {
   createFileGrantStore,
   type FileGrantStore,
@@ -71,12 +72,19 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { ACTION_LIST, ActionSchema } from "../../domain/access/action.ts";
+import {
+  type Action,
+  ACTION_LIST,
+  ActionSchema,
+} from "../../domain/access/action.ts";
+import type { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
+import { decideRunVaultAccess } from "../run_vault_access_policy.ts";
 import {
   parseResourceSelector,
   type ResourceKind,
 } from "../../domain/access/resource_selector.ts";
 import {
+  type AccessPrincipal,
   type AccessResource,
   kindResource,
 } from "../../domain/access/access_decision_service.ts";
@@ -105,12 +113,14 @@ import {
   terminateTokenSessions,
   TOKEN_REVOKED_REASON,
   TOKEN_ROTATED_REASON,
+  vaultKindResource,
   wouldAuthorize,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
+import { findVaultByNameOrId } from "../../libswamp/vaults/edit.ts";
 import {
   createServerTokenCreateDeps,
   serverTokenCreate,
@@ -135,6 +145,7 @@ import {
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 
 const rotateLogger = getSwampLogger(["serve", "access", "rotate"]);
+const runVaultLogger = getSwampLogger(["serve", "access", "run-vault"]);
 
 export async function handleAccessGrantList(
   socket: WebSocket,
@@ -439,13 +450,43 @@ export async function handleAccessCheck(
     const isSelfCheck = principal !== null &&
       principal.kind === targetPrincipal.kind &&
       principal.id === targetPrincipal.id;
-    const collectives = isSelfCheck ? getConnectionCollectives(socket) : [];
-    const groups = isSelfCheck ? getConnectionGroups(socket) : [];
+    // The caller's own memberships come from its session; for another
+    // subject the server knows none, so only memberships the request
+    // simulates are used.
+    const simulatedCollectives = stringList(payload.collectives);
+    const simulatedGroups = stringList(payload.groups);
+    const collectives = isSelfCheck
+      ? getConnectionCollectives(socket)
+      : simulatedCollectives ?? [];
+    const groups = isSelfCheck
+      ? getConnectionGroups(socket)
+      : simulatedGroups ?? [];
+    const idpGroupsOmitted = !isSelfCheck && simulatedGroups === undefined &&
+      targetPrincipal.kind !== "service";
     const service = ctx.policySnapshotLoader.decisionService;
+    const explained = await explainedResource(
+      ctx,
+      resource.kind,
+      resource.pattern,
+      {},
+    );
+    const targetAccessPrincipal = {
+      principal: targetPrincipal,
+      collectives,
+      groups,
+    };
     const decisions = service.explain(
-      { principal: targetPrincipal, collectives, groups },
+      targetAccessPrincipal,
       actionResult.data,
-      await explainedResource(ctx, resource.kind, resource.pattern, {}),
+      explained,
+    );
+    const runVaultAccess = runVaultAccessReport(
+      service,
+      targetAccessPrincipal,
+      actionResult.data,
+      resource.pattern,
+      explained,
+      idpGroupsOmitted,
     );
 
     send(socket, {
@@ -460,6 +501,7 @@ export async function handleAccessCheck(
         decisions: decisions as unknown as Record<string, unknown>[],
         approveRequiresExplicitGrant: !service.runImpliesApprove,
         signalRequiresExplicitGrant: !service.runImpliesSignal,
+        ...(runVaultAccess ? { runVaultAccess } : {}),
       },
     });
     return;
@@ -522,10 +564,23 @@ export async function handleAccessCanI(
         fields.methodName = payload.method;
       }
       const service = ctx.policySnapshotLoader.decisionService;
+      const explained = await explainedResource(
+        ctx,
+        resource.kind,
+        resource.pattern,
+        fields,
+      );
       const decisions = service.explain(
         accessPrincipal,
         actionResult.data,
-        await explainedResource(ctx, resource.kind, resource.pattern, fields),
+        explained,
+      );
+      const runVaultAccess = runVaultAccessReport(
+        service,
+        accessPrincipal,
+        actionResult.data,
+        resource.pattern,
+        explained,
       );
 
       send(socket, {
@@ -545,6 +600,7 @@ export async function handleAccessCanI(
           })),
           approveRequiresExplicitGrant: !service.runImpliesApprove,
           signalRequiresExplicitGrant: !service.runImpliesSignal,
+          ...(runVaultAccess ? { runVaultAccess } : {}),
         },
       });
     } else {
@@ -656,30 +712,24 @@ export async function handleAccessReload(
     }
 
     if (ctx.grantsFile) {
-      try {
-        const content = await Deno.readTextFile(ctx.grantsFile);
-        if (content.trim().length > 0) {
-          const externalResult = parseGrantFile(
-            ctx.grantsFile,
-            content,
-            validateGrantCondition,
-          );
-          if (externalResult.errors.length > 0) {
-            allErrors.push(...externalResult.errors.map((e) => ({
-              ...e,
-              filename: "external-grants-file",
-            })));
-          } else {
-            validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
-          }
-        }
-      } catch (error) {
+      const load = await readGrantsFileSource(ctx.grantsFile, {
+        validateCondition: validateGrantCondition,
+      });
+      if (load.status !== "loaded") {
         logger
-          .error`Failed to read external grants file ${ctx.grantsFile}: ${error}`;
+          .error`Failed to read external grants file ${ctx.grantsFile}: ${load.cause}`;
         allErrors.push({
           filename: "external-grants-file",
           message: "Failed to read external grants file",
         });
+      } else if (load.file.result !== null) {
+        if (load.file.result.errors.length > 0) {
+          for (const e of load.file.result.errors) {
+            allErrors.push({ ...e, filename: "external-grants-file" });
+          }
+        } else {
+          validEntries.set(GRANTS_FILE_SOURCE_NAME, load.file.result.entries);
+        }
       }
 
       if (allErrors.length > 0) {
@@ -698,50 +748,33 @@ export async function handleAccessReload(
     }
 
     if (ctx.grantsDir) {
-      try {
-        const dirEntries: Deno.DirEntry[] = [];
-        for await (const entry of Deno.readDir(ctx.grantsDir)) {
-          dirEntries.push(entry);
-        }
-        const yamlFiles = dirEntries
-          .filter((e) =>
-            (e.isFile || e.isSymlink) &&
-            (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
-            !e.name.startsWith(".")
-          )
-          .sort((a, b) => a.name.localeCompare(b.name));
-
-        for (const file of yamlFiles) {
-          const filePath = join(ctx.grantsDir, file.name);
-          try {
-            const content = await Deno.readTextFile(filePath);
-            if (content.trim().length === 0) continue;
-            const result = parseGrantFile(
-              filePath,
-              content,
-              validateGrantCondition,
-            );
-            if (result.errors.length > 0) {
-              allErrors.push(...result.errors);
-            } else {
-              validEntries.set(grantsDirSourceName(file.name), result.entries);
-            }
-          } catch (error) {
-            logger
-              .error`Failed to read external grants dir file ${filePath}: ${error}`;
-            allErrors.push({
-              filename: filePath,
-              message: `Failed to read: ${error}`,
-            });
-          }
-        }
-      } catch (error) {
+      const load = await readGrantsDirSource(ctx.grantsDir, {
+        validateCondition: validateGrantCondition,
+      });
+      if (load.status === "missing" || load.status === "unreadable") {
         logger
-          .error`Failed to read external grants directory ${ctx.grantsDir}: ${error}`;
+          .error`Failed to read external grants directory ${ctx.grantsDir}: ${load.cause}`;
         allErrors.push({
           filename: "external-grants-dir",
           message: "Failed to read external grants directory",
         });
+      } else if (load.status === "loaded") {
+        for (const file of load.files) {
+          if (file.readError !== undefined) {
+            logger
+              .error`Failed to read external grants dir file ${file.path}: ${file.readError}`;
+            allErrors.push({
+              filename: file.path,
+              message: `Failed to read: ${file.readError}`,
+            });
+          } else if (file.result !== null) {
+            if (file.result.errors.length > 0) {
+              for (const e of file.result.errors) allErrors.push(e);
+            } else {
+              validEntries.set(file.sourceName, file.result.entries);
+            }
+          }
+        }
       }
 
       if (allErrors.length > 0) {
@@ -1248,6 +1281,86 @@ export async function handleAccessTokenMint(
 }
 
 /**
+ * The vault resource an access check explains for a concrete
+ * `vault:<name-or-id>` (swamp-club#2676): the vault it resolves to through
+ * the vault config repository, by its name, as a vault request authorizes
+ * it. A name that resolves to nothing is explained by that name. This is
+ * the one place a vault is explained, so a later run-time decision for the
+ * same vault can be reported alongside it.
+ */
+async function explainedVaultResource(
+  ctx: ConnectionContext,
+  nameOrId: string,
+): Promise<AccessResource> {
+  let name = nameOrId;
+  try {
+    const resolved = await findVaultByNameOrId(
+      ctx.repoContext.vaultConfigRepo,
+      nameOrId,
+    );
+    if (resolved) name = resolved.name;
+  } catch {
+    // A vault that cannot be loaded is explained by the requested name.
+  }
+  return vaultKindResource(name);
+}
+
+/** The strings of a payload list, or `undefined` when it is not a list. */
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+/**
+ * The run-time decision of a concrete `vault:<name>` read or write for
+ * `principal` (swamp-club#2676), reported beside the request decision so one
+ * check answers both. A wildcard, another kind or another action has none.
+ * `idpGroupsOmitted` marks a decision made without the principal's IdP
+ * groups (another subject, with none simulated), and the reason says so.
+ */
+function runVaultAccessReport(
+  service: GrantBasedAccessDecisionService,
+  principal: AccessPrincipal,
+  action: Action,
+  pattern: string,
+  explained: AccessResource,
+  idpGroupsOmitted = false,
+): RunVaultAccessReport | undefined {
+  if (explained.kind !== "vault" || pattern.includes("*")) return undefined;
+  if (action !== "read" && action !== "write") return undefined;
+  let decision;
+  try {
+    decision = decideRunVaultAccess(
+      service,
+      principal,
+      explained.name,
+      action,
+    );
+  } catch (error) {
+    // The run-time line is extra; failing to compute it must not cost the
+    // caller the request decision.
+    runVaultLogger.warn("Could not decide the run-time vault access: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+  return {
+    vault: explained.name,
+    action,
+    allowed: decision.allowed,
+    restricted: decision.restricted,
+    rule: decision.rule,
+    reason: idpGroupsOmitted
+      ? `${decision.reason} (IdP-group memberships are not included: the server knows them only for the caller's own session)`
+      : decision.reason,
+    ...(decision.grantId !== undefined ? { grantId: decision.grantId } : {}),
+    ...(principal.principal.kind === "service"
+      ? { triggerScope: "every scheduled or webhook run" }
+      : {}),
+  };
+}
+
+/**
  * The resource an access check explains, judged as a request would judge it
  * (swamp-club#2675). A concrete model, data or workflow name is resolved to
  * the resource it names, with all of its fields, so a condition on its tags
@@ -1267,6 +1380,9 @@ async function explainedResource(
   });
   if (kind === "access" || pattern.includes("*")) {
     return withExtra({ ...kindResource(kind), name: pattern });
+  }
+  if (kind === "vault") {
+    return withExtra(await explainedVaultResource(ctx, pattern));
   }
   const resolution = kind === "workflow"
     ? await resolveWorkflowTarget(ctx.repoContext.workflowRepo, pattern)

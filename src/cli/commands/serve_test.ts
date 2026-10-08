@@ -34,7 +34,9 @@ import {
   cancelSuccessBody,
   collectServeExtraArgs,
   MAX_CANCEL_BODY_BYTES,
+  parseContinuationSweepInterval,
   parseDatastorePollInterval,
+  parseMaxSignalWaitTimeout,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
   readCancelRequestReason,
@@ -236,6 +238,46 @@ Deno.test("parseShutdownDrainTimeout: rejects malformed and oversized values", (
     () => parseShutdownDrainTimeout("1mo"),
     UserError,
     "--shutdown-drain-timeout (1mo) exceeds the maximum safe timer duration",
+  );
+});
+
+Deno.test("parseContinuationSweepInterval: unset gives the default, and 0 disables", () => {
+  assertEquals(parseContinuationSweepInterval(undefined), 30_000);
+  for (const raw of ["0", "0s", "00", "0m"]) {
+    assertEquals(parseContinuationSweepInterval(raw), 0, raw);
+  }
+});
+
+Deno.test("parseContinuationSweepInterval: accepts seconds and larger units, and rejects milliseconds", () => {
+  assertEquals(parseContinuationSweepInterval("5s"), 5_000);
+  assertEquals(parseContinuationSweepInterval("5"), 5_000);
+  assertEquals(parseContinuationSweepInterval("2m"), 120_000);
+  assertThrows(
+    () => parseContinuationSweepInterval("500ms"),
+    UserError,
+    "--continuation-sweep-interval must be in whole seconds or larger units",
+  );
+});
+
+Deno.test("parseMaxSignalWaitTimeout: unset is no maximum, and a value is read as seconds", () => {
+  assertEquals(parseMaxSignalWaitTimeout(undefined), undefined);
+  assertEquals(parseMaxSignalWaitTimeout("3600"), 3600);
+  assertEquals(parseMaxSignalWaitTimeout("90s"), 90);
+  assertEquals(parseMaxSignalWaitTimeout("1h"), 3600);
+  assertEquals(parseMaxSignalWaitTimeout("7d"), 7 * 24 * 60 * 60);
+  assertEquals(parseMaxSignalWaitTimeout("1y"), 365 * 24 * 60 * 60);
+});
+
+Deno.test("parseMaxSignalWaitTimeout: refuses zero and anything above one year", () => {
+  assertThrows(
+    () => parseMaxSignalWaitTimeout("0"),
+    UserError,
+    "--max-signal-wait-timeout",
+  );
+  assertThrows(
+    () => parseMaxSignalWaitTimeout("2y"),
+    UserError,
+    "--max-signal-wait-timeout (2y) is more than the one year",
   );
 });
 
@@ -749,6 +791,13 @@ Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {
   assertEquals(collectServeExtraArgs({ dispatchEnvAllow: "DEPLOY_ENV,A" }), [
     "--dispatch-env-allow",
     "DEPLOY_ENV,A",
+  ]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --max-signal-wait-timeout", () => {
+  assertEquals(collectServeExtraArgs({ maxSignalWaitTimeout: "7d" }), [
+    "--max-signal-wait-timeout",
+    "7d",
   ]);
 });
 
