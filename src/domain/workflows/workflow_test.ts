@@ -27,11 +27,22 @@ import {
   workflowNameViolation,
   WorkflowObjectSchema,
 } from "./workflow.ts";
+import { WorkflowSchemaError } from "./workflow_schema_error.ts";
+import { UserError } from "../errors.ts";
 import { Job, JobObjectSchema } from "./job.ts";
 import { Step, StepObjectSchema } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 import type { InputsSchema } from "../definitions/definition.ts";
+
+/** Valid persisted workflow data for tests to break one field at a time. */
+function createTestWorkflowData() {
+  return {
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "test-workflow",
+    jobs: [createTestJob("job1").toData()],
+  };
+}
 
 function createTestJob(name: string): Job {
   return Job.create({
@@ -1324,6 +1335,83 @@ Deno.test("workflowNameViolation: returns the rule a name breaks", () => {
   for (const name of ["WfUpper", "snake_case", "a".repeat(65), "..", ""]) {
     assertThrows(() => Workflow.create({ name }));
   }
+});
+
+Deno.test("Workflow.fromData: reports a schema failure as a readable WorkflowSchemaError", () => {
+  const data = createTestWorkflowData();
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        ...data,
+        jobs: [{
+          ...data.jobs[0],
+          weight: "heavy",
+          steps: [{ ...data.jobs[0].steps[0], allowFailure: "maybe" }],
+        }],
+      } as unknown as WorkflowInput),
+    WorkflowSchemaError,
+  );
+  assertEquals(error instanceof UserError, true);
+  assertEquals(
+    error.message,
+    "jobs[0].steps[0].allowFailure: Invalid input: expected boolean, received string; " +
+      "jobs[0].weight: Invalid input: expected number, received string",
+  );
+});
+
+Deno.test("Workflow.fromData: reports a top-level schema failure with its path", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        ...createTestWorkflowData(),
+        id: "not-a-uuid",
+      } as unknown as WorkflowInput),
+    WorkflowSchemaError,
+  );
+  assertEquals(error.issues.map((issue) => issue.path), ["id"]);
+});
+
+Deno.test("Workflow.fromData: keeps the step name rule and escapes the offending name's path", () => {
+  const data = createTestWorkflowData();
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        ...data,
+        jobs: [{
+          ...data.jobs[0],
+          steps: [{ ...data.jobs[0].steps[0], name: "gate\u001b]0;x\u0007" }],
+        }],
+      } as unknown as WorkflowInput),
+    WorkflowSchemaError,
+  );
+  assertEquals(
+    error.message,
+    "jobs[0].steps[0].name: Step name must not contain control characters, " +
+      "tab or newline; space is the only whitespace allowed",
+  );
+});
+
+Deno.test("Workflow.fromData: passes a non-schema error through unchanged", () => {
+  const data = createTestWorkflowData();
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        ...data,
+        jobs: [{
+          ...data.jobs[0],
+          steps: [{
+            ...data.jobs[0].steps[0],
+            task: { type: "shell" },
+          }],
+        }],
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertEquals(error instanceof WorkflowSchemaError, false);
+  assertStringIncludes(
+    error.message,
+    'Step task type "shell" is no longer supported',
+  );
 });
 
 Deno.test("Workflow vaults: round-trips through create, toData and fromData", () => {

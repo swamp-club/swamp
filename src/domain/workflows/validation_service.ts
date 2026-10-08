@@ -19,6 +19,7 @@
 
 import type { Workflow } from "./workflow.ts";
 import { WorkflowSchema } from "./workflow.ts";
+import { WorkflowSchemaError } from "./workflow_schema_error.ts";
 import type { WorkflowRepository } from "./repositories.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { createWorkflowId } from "./workflow_id.ts";
@@ -484,13 +485,13 @@ export class DefaultWorkflowValidationService
   }
 
   private validateSchema(workflow: Workflow): WorkflowValidationResult {
-    try {
-      WorkflowSchema.parse(workflow.toData());
-      return WorkflowValidationResult.pass("Schema validation");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return WorkflowValidationResult.fail("Schema validation", message);
-    }
+    const result = WorkflowSchema.safeParse(workflow.toData());
+    return result.success
+      ? WorkflowValidationResult.pass("Schema validation")
+      : WorkflowValidationResult.fail(
+        "Schema validation",
+        WorkflowSchemaError.fromZodError(result.error).message,
+      );
   }
 
   private validateUniqueJobNames(workflow: Workflow): WorkflowValidationResult {

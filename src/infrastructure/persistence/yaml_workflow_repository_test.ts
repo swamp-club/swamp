@@ -20,6 +20,7 @@
 import {
   assertEquals,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
@@ -40,6 +41,8 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import { WorkflowSchemaError } from "../../domain/workflows/workflow_schema_error.ts";
+import { errorPaths, UserError } from "../../domain/errors.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -725,5 +728,85 @@ Deno.test("YamlWorkflowRepository.delete: stages a write when the file holds ano
     assertEquals(uow.staged(), [{ kind: "write", path }]);
     assertEquals(marks, [path]);
     assertEquals(await pathExists(path), true);
+  });
+});
+
+/** Writes a workflow file whose job weight breaks the schema. */
+async function writeSchemaBrokenWorkflow(
+  dir: string,
+  fileName: string,
+  workflow: Workflow,
+): Promise<string> {
+  const data = workflow.toData();
+  const workflowsDir = join(dir, "workflows");
+  await Deno.mkdir(workflowsDir, { recursive: true });
+  const path = join(workflowsDir, fileName);
+  await Deno.writeTextFile(
+    path,
+    stringifyYaml(
+      JSON.parse(JSON.stringify({
+        ...data,
+        jobs: [{ ...data.jobs[0], weight: "heavy" }],
+      })),
+    ),
+  );
+  return path;
+}
+
+Deno.test("YamlWorkflowRepository.findByName: a schema-broken file at the name path fails naming the file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const path = await writeSchemaBrokenWorkflow(
+      dir,
+      "workflow-deploy.yaml",
+      createTestWorkflow("deploy"),
+    );
+
+    const error = await assertRejects(
+      () => repo.findByName("deploy"),
+      WorkflowSchemaError,
+    );
+    assertEquals(error instanceof UserError, true);
+    assertEquals(
+      error.message,
+      "workflow-deploy.yaml: jobs[0].weight: Invalid input: expected number, received string",
+    );
+    // The directory stays out of the message and rides on the error instead.
+    assertEquals(error.message.includes(dir), false);
+    assertEquals(errorPaths(error), [path]);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findById: a schema-broken file at the id path fails naming the file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("deploy");
+    const fileName = `workflow-${workflow.id}.yaml`;
+    const path = await writeSchemaBrokenWorkflow(dir, fileName, workflow);
+
+    const error = await assertRejects(
+      () => repo.findById(createWorkflowId(workflow.id)),
+      WorkflowSchemaError,
+    );
+    assertEquals(
+      error.message,
+      `${fileName}: jobs[0].weight: Invalid input: expected number, received string`,
+    );
+    assertEquals(errorPaths(error), [path]);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findAll: still skips a schema-broken file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    await repo.save(createTestWorkflow("good-workflow"));
+    await writeSchemaBrokenWorkflow(
+      dir,
+      "workflow-deploy.yaml",
+      createTestWorkflow("deploy"),
+    );
+
+    const results = await repo.findAll();
+    assertEquals(results.map((w) => w.name), ["good-workflow"]);
   });
 });
