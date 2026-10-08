@@ -2124,6 +2124,22 @@ Deno.test("decide: a deny spelled as a type path covers a type that is only an @
   assertEquals(result?.effect, "deny");
 });
 
+Deno.test("decide: an allow spelled as a type path does not reach a type that is only an @", () => {
+  const allow = makeGrant({
+    actions: ["run"],
+    resource: { kind: "model", pattern: "@::" },
+  });
+  const service = new GrantBasedAccessDecisionService(
+    new PolicySnapshot([allow], [], celEvaluator),
+  );
+  const result = service.decide(makePrincipal("adam"), "run", {
+    kind: "model",
+    name: "web",
+    fields: { name: "web", modelType: "@", tags: {} },
+  });
+  assertEquals(result, null);
+});
+
 Deno.test("decide: deny folding never reaches instance names", () => {
   const deny = makeGrant({
     effect: "deny",
