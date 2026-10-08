@@ -269,11 +269,16 @@ export const auditRecordCommand = new Command()
  *
  * View a merged timeline of swamp operations vs direct CLI commands.
  * Also serves as the parent command for `swamp audit record`.
+ *
+ * Hidden from help. `hidden()` must stay ahead of the subcommand chain: Cliffy
+ * applies it to the command the chain last selected, so calling it after
+ * `.command(...)` hides that subcommand instead of `audit`.
  */
 export const auditCommand = withRemoteOptions(
   new Command()
     .name("audit")
     .description("View audit timeline of swamp vs direct CLI commands")
+    .hidden()
     .example("View audit timeline", "swamp audit")
     .example("Last 4 hours", "swamp audit --hours 4")
     .example("Include all commands", "swamp audit --all")
