@@ -101,6 +101,24 @@ export class ManagedLockfileUnpublishedError extends UserError {
   }
 }
 
+/**
+ * A lockfile publish ran outside a root unit of work over its datastore
+ * hook: a wiring mistake in the code that built the transaction, not a
+ * datastore failure (swamp-club#3192). It is thrown as itself, never
+ * wrapped as {@link ManagedLockfileUnpublishedError} or deferred to a
+ * warning, so it cannot read as a datastore problem. The change stays
+ * recorded as pending, as for any failed publish.
+ */
+export class LockfilePublishWiringError extends Error {
+  constructor() {
+    super(
+      "the extension lockfile was published outside a root unit of work " +
+        "over its datastore hook; open one around the transaction",
+    );
+    this.name = "LockfilePublishWiringError";
+  }
+}
+
 /** Serializes a checkout's writes to one managed lockfile. */
 export interface LockfileTransaction {
   readonly lockfilePath: string;
@@ -247,6 +265,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
     try {
       await this.#settle(fetched, current, prior, hadPending, true);
     } catch (error) {
+      if (error instanceof LockfilePublishWiringError) throw error;
       this.#onWarning("Failed to publish the extension lockfile", error);
     }
     throw result.error;
@@ -294,6 +313,7 @@ export class ManagedLockfileTransaction implements LockfileTransaction {
         earlierChangeOnly: isEmptyLockfileDelta(change),
       });
     } catch (error) {
+      if (error instanceof LockfilePublishWiringError) throw error;
       if (!tolerate) {
         throw error instanceof ManagedLockfileUnpublishedError
           ? error
@@ -377,8 +397,8 @@ export async function refreshManagedLockfile(
  * work open over `markDirty` (the transaction's `inRoot` opens it) and
  * pushes at that root's checkpoint; it rejects a push that reports `0`
  * files sent when the lockfile had to be uploaded. Both are bounded by
- * `timeoutMs`. A publish with no such root throws rather than mark and
- * push by hand.
+ * `timeoutMs`. A publish with no such root throws
+ * {@link LockfilePublishWiringError} rather than mark and push by hand.
  */
 export function createRootLockfileSync(options: {
   syncService: Pick<DatastoreSyncService, "pullChanged">;
@@ -402,12 +422,7 @@ export function createRootLockfileSync(options: {
     },
     publish: async ({ mustUpload }) => {
       const root = currentRootUnitOfWork(markDirty);
-      if (root === undefined) {
-        throw new Error(
-          "the extension lockfile was published outside a root unit of " +
-            "work over its datastore hook; open one around the transaction",
-        );
-      }
+      if (root === undefined) throw new LockfilePublishWiringError();
       // The legacy root forwards this as markDirty(lockfilePath), and the
       // stage awaits it, as the direct mark did, outside the bound. The
       // checkpoint's wait for marks in flight therefore finds none.

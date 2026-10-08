@@ -41,6 +41,7 @@ import {
 import {
   createRepoPendingLockfileStore,
   createRootLockfileSync,
+  LockfilePublishWiringError,
   type LockfileTransaction,
   type ManagedLockfileLock,
   ManagedLockfileTransaction,
@@ -333,6 +334,8 @@ export function buildManagedLockfileTransaction(
         try {
           await sync.publish(options);
         } catch (error) {
+          // A wiring mistake, not an unpublished change: no retry advice.
+          if (error instanceof LockfilePublishWiringError) throw error;
           // Only an earlier command's change was being published: this
           // command changed nothing, and must not read as if it had.
           throw options.earlierChangeOnly

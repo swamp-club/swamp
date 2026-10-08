@@ -1108,6 +1108,7 @@ export {
 export {
   createRepoPendingLockfileStore,
   createRootLockfileSync,
+  LockfilePublishWiringError,
   type LockfileTransaction,
   type ManagedLockfileLock,
   type ManagedLockfileSyncPort,

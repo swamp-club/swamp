@@ -302,11 +302,11 @@ function extensionLockfileTransaction(
     : undefined;
   return new ManagedLockfileTransaction({
     lockfilePath,
-    // The hook itself, not a wrapper: the publish finds the root by hook
-    // identity.
+    // The hook itself, captured once, for both the root and the publish:
+    // the publish finds the root by hook identity.
     inRoot: (fn) =>
       runInRootUnitOfWork(
-        ctx.repoContext,
+        { markDirty },
         {
           flush: undefined,
           checkpoint: ({ signal }) =>

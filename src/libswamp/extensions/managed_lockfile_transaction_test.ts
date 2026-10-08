@@ -32,6 +32,7 @@ import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_
 import {
   createRootLockfileSync,
   inManagedLockfileTransaction,
+  LockfilePublishWiringError,
   ManagedLockfileTransaction,
   ManagedLockfileUnpublishedError,
   refreshManagedLockfile,
@@ -714,7 +715,9 @@ interface RootHarness {
   /** What each checkpoint's push reports; undefined reports nothing. */
   pushed: { value: number | undefined };
   signals: (AbortSignal | undefined)[];
-  transaction: (options?: { withRoot?: boolean }) => ManagedLockfileTransaction;
+  transaction: (
+    options?: { withRoot?: boolean; publishFailure?: "throw" | "defer" },
+  ) => ManagedLockfileTransaction;
 }
 
 async function withRootHarness(
@@ -732,9 +735,15 @@ async function withRootHarness(
       events.push(`mark ${path === undefined ? "(bulk)" : "lockfile"}`);
       return Promise.resolve();
     };
-    const transaction = ({ withRoot = true } = {}) =>
+    const transaction = (
+      { withRoot = true, publishFailure }: {
+        withRoot?: boolean;
+        publishFailure?: "throw" | "defer";
+      } = {},
+    ) =>
       new ManagedLockfileTransaction({
         lockfilePath,
+        publishFailure,
         inRoot: withRoot
           ? (run) => {
             roots.value++;
@@ -880,17 +889,42 @@ Deno.test("ManagedLockfileTransaction.run: a nested run joins the outer run's ro
   });
 });
 
-Deno.test("createRootLockfileSync: a publish outside a root unit of work fails instead of pushing by hand", async () => {
+Deno.test("createRootLockfileSync: a publish outside a root unit of work fails as a wiring error instead of pushing by hand", async () => {
   await withRootHarness(async (h) => {
     await assertRejects(
       () =>
         h.transaction({ withRoot: false }).run(() =>
           addEntry(h.lockfilePath, "@a/x")
         ),
-      ManagedLockfileUnpublishedError,
+      LockfilePublishWiringError,
       "outside a root unit of work",
     );
     assertEquals(h.events, ["acquire", "pull", "release"]);
     assertEquals(h.pending.value.kind, "delta");
+  });
+});
+
+Deno.test("createRootLockfileSync: serve's defer does not turn a missing root into a warning", async () => {
+  await withRootHarness(async (h) => {
+    await assertRejects(
+      () =>
+        h.transaction({ withRoot: false, publishFailure: "defer" }).run(() =>
+          addEntry(h.lockfilePath, "@a/x")
+        ),
+      LockfilePublishWiringError,
+    );
+  });
+});
+
+Deno.test("createRootLockfileSync: a missing root wins over a change that threw after writing", async () => {
+  await withRootHarness(async (h) => {
+    await assertRejects(
+      () =>
+        h.transaction({ withRoot: false }).run(async () => {
+          await addEntry(h.lockfilePath, "@a/x");
+          throw new Error("the change failed");
+        }),
+      LockfilePublishWiringError,
+    );
   });
 });

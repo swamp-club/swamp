@@ -1486,8 +1486,10 @@ its root. Its publish, `createRootLockfileSync`, stages one write of exactly
 the lockfile into that root (found with `currentRootUnitOfWork` by hook
 identity) and pushes at the root's checkpoint, bounded by the datastore's sync
 timeout, before the global lock is released. With `mustUpload`, a checkpoint
-that reports sending nothing rejects. A publish with no root throws rather
-than push by hand. The roots have no flush, so the checkpoint is the only
+that reports sending nothing rejects. A publish with no root throws
+`LockfilePublishWiringError` rather than push by hand. It is never wrapped as
+an unpublished change or deferred to a warning, so a wiring mistake cannot
+read as a datastore failure. The roots have no flush, so the checkpoint is the only
 push:
 
 - CLI (`buildManagedLockfileTransaction` in `src/cli/managed_config_sync.ts`):
