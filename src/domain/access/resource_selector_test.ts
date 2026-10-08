@@ -19,9 +19,11 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  canonicalTypePattern,
   parseResourceSelector,
   resourceSelectorMatches,
   resourceSelectorToString,
+  typePatternMatchesIgnoringAt,
 } from "./resource_selector.ts";
 
 Deno.test("parseResourceSelector: parses workflow selector", () => {
@@ -140,4 +142,42 @@ Deno.test("parseResourceSelector: allows trailing wildcard", () => {
 Deno.test("parseResourceSelector: allows lone wildcard", () => {
   const s = parseResourceSelector("model:*");
   assertEquals(s, { kind: "model", pattern: "*" });
+});
+
+Deno.test("canonicalTypePattern: folds case, separators and keeps a leading @", () => {
+  assertEquals(canonicalTypePattern("@Acme/*"), "@acme/*");
+  assertEquals(canonicalTypePattern("AWS::EC2::VPC"), "aws/ec2/vpc");
+  assertEquals(
+    canonicalTypePattern("Microsoft.Resources/*"),
+    "microsoft/resources/*",
+  );
+  assertEquals(canonicalTypePattern("acme/deploy"), "acme/deploy");
+  assertEquals(canonicalTypePattern("*"), "*");
+});
+
+Deno.test("canonicalTypePattern: keeps the separator before a trailing wildcard", () => {
+  assertEquals(canonicalTypePattern("AWS::*"), "aws/*");
+  assertEquals(canonicalTypePattern("AWS::EC2.*"), "aws/ec2/*");
+  assertEquals(canonicalTypePattern("acme/*"), "acme/*");
+  assertEquals(canonicalTypePattern("AWS*"), "aws*");
+});
+
+Deno.test("canonicalTypePattern: returns null for a pattern that names no type", () => {
+  assertEquals(canonicalTypePattern("::*"), null);
+  assertEquals(canonicalTypePattern("/"), null);
+});
+
+Deno.test("typePatternMatchesIgnoringAt: ignores a leading @ on either side", () => {
+  assertEquals(typePatternMatchesIgnoringAt("acme/*", "@acme/deploy"), true);
+  assertEquals(typePatternMatchesIgnoringAt("@acme/*", "acme/deploy"), true);
+  assertEquals(typePatternMatchesIgnoringAt("exp/probe", "@exp/probe"), true);
+  assertEquals(typePatternMatchesIgnoringAt("@exp/probe", "exp/probe"), true);
+  assertEquals(typePatternMatchesIgnoringAt("exp/probe", "@exp/probe2"), false);
+  assertEquals(typePatternMatchesIgnoringAt("acme/*", "@acmecorp/x"), false);
+});
+
+Deno.test("typePatternMatchesIgnoringAt: an @-only prefix is matched as written", () => {
+  assertEquals(typePatternMatchesIgnoringAt("@*", "@acme/deploy"), true);
+  assertEquals(typePatternMatchesIgnoringAt("@*", "command/shell"), false);
+  assertEquals(typePatternMatchesIgnoringAt("*", "command/shell"), true);
 });

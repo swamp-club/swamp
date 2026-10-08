@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { normalizeModelTypeName } from "../models/control_plane_types.ts";
+import { ModelType } from "../models/model_type.ts";
 
 export const ResourceKindSchema = z.enum([
   "workflow",
@@ -89,4 +91,56 @@ export function resourceSelectorMatches(
     return resourceName.startsWith(prefix);
   }
   return pattern === resourceName;
+}
+
+/** A trailing separator that ModelType normalization would trim. */
+const TRAILING_TYPE_SEPARATOR = /(\/|\.|::|\s)$/;
+
+/**
+ * The pattern written in the normalized model type spelling: lowercase, with
+ * `::`, `.` and whitespace folded to `/` and a leading `@` kept, as
+ * `ModelType` stores a type. A trailing `*` stays, and so does a separator
+ * before it, so `AWS::*` gives `aws/*` and never the wider `aws*`. Null when
+ * the pattern names no type once normalized (`::*`).
+ */
+export function canonicalTypePattern(pattern: string): string | null {
+  if (pattern === "*") return "*";
+  const wildcard = pattern.endsWith("*");
+  const prefix = wildcard ? pattern.slice(0, -1) : pattern;
+  let normalized: string;
+  try {
+    normalized = ModelType.create(prefix).normalized;
+  } catch {
+    return null;
+  }
+  if (!wildcard) return normalized;
+  return TRAILING_TYPE_SEPARATOR.test(prefix)
+    ? `${normalized}/*`
+    : `${normalized}*`;
+}
+
+/**
+ * Whether a model type matches a canonical type pattern when every leading
+ * `@` and `/` is ignored on both sides, as `normalizeModelTypeName` compares
+ * types (swamp-club#3129): `acme/*` and `@acme/*` both cover `@acme/deploy`
+ * and `acme/deploy`. A pattern that is empty once stripped (`@*`) is matched
+ * as written, so it never grows to cover every type.
+ */
+export function typePatternMatchesIgnoringAt(
+  canonicalPattern: string,
+  modelType: string,
+): boolean {
+  if (canonicalPattern === "*") return true;
+  const type = normalizeModelTypeName(modelType);
+  if (type === null) return false;
+  const wildcard = canonicalPattern.endsWith("*");
+  const prefix = (wildcard ? canonicalPattern.slice(0, -1) : canonicalPattern)
+    .replace(/^[@/]+/, "");
+  if (prefix.length === 0) {
+    return resourceSelectorMatches(
+      { kind: "model", pattern: canonicalPattern },
+      modelType,
+    );
+  }
+  return wildcard ? type.startsWith(prefix) : type === prefix;
 }
