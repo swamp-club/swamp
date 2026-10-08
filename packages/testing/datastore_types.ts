@@ -132,6 +132,8 @@ export interface DatastoreSyncService {
   /**
    * Download a single file from the remote datastore by cache-relative path.
    * Used for transparent content hydration when `hydrationStrategy` is `"lazy"`.
+   * Return `true` only once the file is at `relPath` under the cache: swamp
+   * checks, and fails the read with a contract violation error if it is not.
    */
   hydrateFile?(
     relPath: string,

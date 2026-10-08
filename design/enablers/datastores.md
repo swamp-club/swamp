@@ -1682,6 +1682,13 @@ convert paths themselves.
   `RepositoryContext.hydrateFile` field, so workflow steps on serve can hydrate
   lazy content during `readResource` calls.
 - Returns `true` if the file was downloaded, `false` if it is not on the remote.
+- Core verifies a `true` result. If the path is inside the cache and no file
+  is there, the wrapper logs a warning and rejects with
+  `HydrateContractViolationError`, which names the datastore type, the
+  cache-relative path it was given and the absolute path core read
+  (swamp-club#2477). A datastore that hydrates to the wrong place therefore
+  fails as a contract violation, not as a bare "No such file or directory".
+  Paths outside the cache are not checked.
 - Implementations MUST write atomically (tmp + rename) so concurrent readers
   never see a partial file.
 

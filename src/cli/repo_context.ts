@@ -141,6 +141,7 @@ import {
   slowLockAdvice,
 } from "../domain/datastore/slow_lock_advice.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
 import type {
   DatastoreSyncService,
   HydrateFileHook,
@@ -327,19 +328,43 @@ function buildHydrateFileHook(
   syncService: DatastoreSyncService,
   cacheRoot: string,
   repoDir: string,
+  datastoreType: string,
 ): HydrateFileHook | undefined {
   if (!syncService.hydrateFile) return undefined;
   const repoSwampDir = swampPath(repoDir);
-  return (absPath: string, options?: { signal?: AbortSignal }) => {
+  return async (absPath: string, options?: { signal?: AbortSignal }) => {
     let rel = relative(cacheRoot, absPath);
-    if (escapesRoot(rel)) {
+    const insideCache = !escapesRoot(rel);
+    if (!insideCache) {
       rel = relative(repoSwampDir, absPath);
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
-    return options?.signal
-      ? syncService.hydrateFile!(relPath, { signal: options.signal })
-      : syncService.hydrateFile!(relPath);
+    const hydrated =
+      await (options?.signal
+        ? syncService.hydrateFile!(relPath, { signal: options.signal })
+        : syncService.hydrateFile!(relPath));
+    // Outside the cache the datastore writes somewhere other than absPath,
+    // so only a path inside it can hold the datastore to its claim.
+    if (hydrated && insideCache && !(await fileExists(absPath))) {
+      getSwampLogger(["cli", "datastore"])
+        .warn`Datastore ${datastoreType} reported hydrateFile success for ${relPath} but no file exists at ${absPath}`;
+      throw markErrorPaths(
+        new HydrateContractViolationError(datastoreType, relPath, absPath),
+        [absPath],
+      );
+    }
+    return hydrated;
   };
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 /**
@@ -849,6 +874,7 @@ export async function requireInitializedRepoReadOnly(
           readOnlySyncService,
           datastoreConfig.cachePath,
           repoPath.value,
+          datastoreConfig.type,
         );
       }
     }
@@ -1199,6 +1225,7 @@ export function requireInitializedRepo(
           syncService,
           datastoreConfig.cachePath,
           repoPath.value,
+          datastoreConfig.type,
         )
         : undefined,
       namespace: datastoreConfig.namespace,
@@ -1382,6 +1409,7 @@ export async function requireInitializedRepoUnlocked(
         syncService,
         datastoreConfig.cachePath,
         repoPath.value,
+        datastoreConfig.type,
       )
       : undefined,
     namespace: datastoreConfig.namespace,
