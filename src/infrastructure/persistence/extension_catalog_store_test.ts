@@ -1608,6 +1608,118 @@ Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clea
   store2.close();
 });
 
+// --- Data-migration lock handling (swamp-club#2671) ---
+//
+// Concurrent first runs raced the data-migration transaction: a lock
+// error inside it was treated as a failed migration, logged as a
+// warning and answered with a cold-start rebuild that wipes the
+// catalog. Lock errors must instead roll back and propagate so
+// initializeWithRetry retries; only real migration failures rebuild.
+
+type MigrationInternals = {
+  db: DatabaseSync;
+  migrateSchema: () => void;
+  isDataMigrationApplied: () => boolean;
+  backfillExtensionIdentity: () => void;
+};
+
+/**
+ * Opens a store holding one pulled-extension row and the populated:model
+ * flag, then clears the v3 migration marker so the next migrateSchema
+ * call runs the data-migration transaction again.
+ */
+function openStoreWithPendingMigration(): {
+  store: ExtensionCatalogStore;
+  internals: MigrationInternals;
+} {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  const repoRoot = dirname(dirname(dbPath));
+  store.upsert(makeRow({
+    source_path: join(
+      repoRoot,
+      ".swamp",
+      "pulled-extensions",
+      "@scope",
+      "foo",
+      "models",
+      "x.ts",
+    ),
+    type_normalized: "@scope/foo/x",
+  }));
+  store.markPopulated("model");
+  const internals = store as unknown as MigrationInternals;
+  internals.db.prepare("DELETE FROM bundle_meta WHERE key = ?").run(
+    "migration_applied:per-extension-aggregate-v3",
+  );
+  return { store, internals };
+}
+
+Deno.test("ExtensionCatalogStore: data migration rethrows a lock error without a cold-start rebuild", () => {
+  const { store, internals } = openStoreWithPendingMigration();
+  try {
+    internals.backfillExtensionIdentity = () => {
+      throw new Error("database is locked");
+    };
+
+    assertThrows(
+      () => internals.migrateSchema(),
+      Error,
+      "database is locked",
+    );
+
+    // Rolled back, not rebuilt: the row and populated flag survive and
+    // the marker stays unset so the retry runs the migration again.
+    assertEquals(store.count(), 1);
+    assertEquals(store.isPopulated("model"), true);
+    assertEquals(internals.isDataMigrationApplied(), false);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: data migration falls back to cold-start rebuild on a non-lock error", () => {
+  const { store, internals } = openStoreWithPendingMigration();
+  try {
+    internals.backfillExtensionIdentity = () => {
+      throw new Error("backfill heuristic gap");
+    };
+
+    internals.migrateSchema();
+
+    assertEquals(store.count(), 0);
+    assertEquals(store.isPopulated("model"), false);
+    assertEquals(internals.isDataMigrationApplied(), true);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: data migration skips work another process applied while it waited for the lock", () => {
+  const { store, internals } = openStoreWithPendingMigration();
+  try {
+    // The outer fast-path check sees no marker; the re-check under the
+    // write lock sees the marker another process committed meanwhile.
+    let checks = 0;
+    internals.isDataMigrationApplied = () => ++checks > 1;
+    let backfills = 0;
+    internals.backfillExtensionIdentity = () => {
+      backfills++;
+    };
+
+    internals.migrateSchema();
+
+    assertEquals(checks, 2);
+    assertEquals(backfills, 0);
+    assertEquals(store.count(), 1);
+    // The early return ended the transaction: a new one can begin.
+    store.runInTransaction(() => store.markPopulated("vault"));
+    assertEquals(store.isPopulated("vault"), true);
+  } finally {
+    store.close();
+  }
+});
+
 // --- ON CONFLICT preservation canary (resolves ADV-V3-1) ---
 //
 // The load-bearing test the architect called out: after the W1a

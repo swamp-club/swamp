@@ -669,10 +669,22 @@ export class ExtensionCatalogStore {
    * of defense against a bad backfill heuristic; we deliberately do
    * not propagate the throw because the loaders will repopulate the
    * catalog from disk on the next access.
+   *
+   * Lock errors are the exception: they mean another process holds the
+   * catalog, not that the data is bad, so they roll back and propagate
+   * to {@link initializeWithRetry} for a retry with backoff. BEGIN
+   * IMMEDIATE takes the write lock before the first read, so a writer
+   * that commits while we wait cannot leave us on a stale WAL snapshot,
+   * and the marker is re-checked under the lock in case that writer
+   * already applied the migration (swamp-club#2671).
    */
   private runDataMigrationTransaction(): void {
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
+      if (this.isDataMigrationApplied()) {
+        this.db.exec("ROLLBACK");
+        return;
+      }
       this.canonicalizeAllSourcePaths();
       // The validation_failed → state backfill only runs against
       // catalogs that still have the column. Fresh W1b catalogs
@@ -692,7 +704,14 @@ export class ExtensionCatalogStore {
       this.markDataMigrationApplied();
       this.db.exec("COMMIT");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Best-effort: a failed ROLLBACK shouldn't shadow the original error.
+      }
+      const isLock = error instanceof Error &&
+        /database is (locked|busy)/i.test(error.message);
+      if (isLock) throw error;
       logger
         .warn`Catalog migration to per-extension-aggregate-v3 failed (${error}); falling back to cold-start rebuild`;
       this.runColdStartRebuild();
