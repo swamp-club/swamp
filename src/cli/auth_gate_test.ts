@@ -996,13 +996,20 @@ Deno.test("admitOrchestratorPass: a forged signature, no exp, or an exp at or be
       iat: NOW - 14 * DAY,
       exp: NOW,
     });
-    for (const minted of [forged, noExp, expiredAtGate]) {
+    for (
+      const [minted, cause] of [
+        [forged, "rejected_pass"],
+        [noExp, "expired_pass"],
+        [expiredAtGate, "expired_pass"],
+      ] as const
+    ) {
       const admission = await admitOrchestratorPass(
         h.repo,
         orchestratorPass(minted),
         NOW,
       );
-      assertEquals(admission.kind, "block");
+      assert(admission.kind === "block");
+      assertEquals(admission.cause, cause);
     }
   });
 });
@@ -1019,13 +1026,33 @@ Deno.test("orchestratorBlockedError: reports no_credential with the orchestrator
   assertStringIncludes(error.message, "SWAMP_API_KEY_FILE");
 });
 
+Deno.test("admitOrchestratorPass: a serve that refused for want of a proof blocks as such", async () => {
+  await withHarness(async (h) => {
+    const admission = await admitOrchestratorPass(h.repo, undefined, NOW, true);
+    assert(admission.kind === "block");
+    assertEquals(admission.cause, "serve_without_proof");
+    assertStringIncludes(admission.detail, "no signed pass to give");
+  });
+});
+
 Deno.test("orchestratorBlockedError: names the fix for each cause", () => {
-  const noPass = orchestratorBlockedError("no_pass", "x").message;
-  assertStringIncludes(noPass, "predate worker gate passes");
-  assertStringIncludes(noPass, "its own");
-  const rejected = orchestratorBlockedError("rejected_pass", "x").message;
-  assertStringIncludes(rejected, "swamp update");
-  assertEquals(rejected.includes("predate"), false);
+  const fixes = {
+    no_pass: "predate worker gate passes",
+    serve_without_proof: "restart it online on its own",
+    expired_pass: "could not refresh its pass",
+    rejected_pass: "swamp update",
+  } as const;
+  for (const [cause, fix] of Object.entries(fixes)) {
+    const message = orchestratorBlockedError(
+      cause as keyof typeof fixes,
+      "x",
+    ).message;
+    assertStringIncludes(message, fix);
+    assertStringIncludes(message, "SWAMP_API_KEY_FILE");
+    for (const [other, otherFix] of Object.entries(fixes)) {
+      if (other !== cause) assertEquals(message.includes(otherFix), false);
+    }
+  }
 });
 
 Deno.test("runProofRefresh: returns what it heard and the fresh proof", async () => {

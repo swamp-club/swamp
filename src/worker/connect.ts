@@ -132,11 +132,15 @@ export interface RunWorkerOptions {
    * Set for a worker without a swamp-club credential, which passes the auth
    * gate on its orchestrator's pass (design/surfaces/auth-gate.md, "Remote
    * workers"). Called with the pass from the first successful enrollment, or
-   * with undefined when the orchestrator has none; it throws the gate's
-   * block error to stop the worker. Admission happens once per process: a
-   * reconnect does not repeat it.
+   * with undefined when the orchestrator sent none (`serveRefused` when it
+   * refused with `gate_pass_unavailable`); it throws the gate's block error
+   * to stop the worker. Admission happens once per process: a reconnect does
+   * not repeat it.
    */
-  admitGatePass?: (gatePass: string | undefined) => Promise<void>;
+  admitGatePass?: (
+    gatePass: string | undefined,
+    serveRefused?: boolean,
+  ) => Promise<void>;
 }
 
 interface SessionState {
@@ -541,7 +545,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           error.code === GATE_PASS_UNAVAILABLE
         ) {
           try {
-            await options.admitGatePass(undefined);
+            await options.admitGatePass(undefined, true);
           } catch (blocked) {
             failure = blocked;
           }

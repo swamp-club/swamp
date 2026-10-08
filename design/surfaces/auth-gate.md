@@ -244,12 +244,15 @@ The serve admitting the worker, which redeemed its enrollment token and, on an
 authenticated serve, checked its server token, takes the place of the nested
 pass's ancestry check. A worker that fails either check exits with
 `auth_gate_blocked` and reason `no_credential`. The message says why and
-names the fix: for no pass, upgrade the serve or run it online on its own key;
-for a pass that fails its check, `swamp update` both sides. It takes no
-dispatch. A dispatch that arrives between enrollment and the check
-waits for it. A worker that passes is recorded as `verified`. It publishes
-`SWAMP_NESTED_GATE_PASS` under its own pid, so the `worker exec-dispatch`
-runners it starts, and any `swamp` their shell steps run, pass as nested runs.
+names the fix for the cause: an older serve that sent no pass (upgrade it), a
+serve that has no signed proof (restart it online on its own key), a pass that
+had expired (the serve could not refresh it: check it reaches swamp-club), or
+a pass that fails its signature check (`swamp update` both sides). It takes no
+dispatch. A dispatch that arrives between enrollment and the check waits for it,
+and does not run if the connection closed meanwhile. A worker that passes is
+recorded as `verified`. It publishes `SWAMP_NESTED_GATE_PASS` under its own pid,
+so the `worker exec-dispatch` runners it starts, and any `swamp` their shell
+steps run, pass as nested runs.
 The check runs once per process: a reconnect does not repeat it (one that
 enrolls while the check runs waits for it), just as a serve and a worker are
 not re-gated while they run.
@@ -380,8 +383,8 @@ Emergency rotation (the old key is compromised):
 - **Re-checking long-running processes.** `serve` and `worker` pass the gate
   when they start (a worker without a credential at its first enrollment) and
   are checked again when they restart. The serve's hourly pass check keeps
-  the pass it hands workers fresh. It never re-gates the serve. A revoked collective
-  key still fails their own swamp-club calls, such as heartbeat and
+  the pass it hands workers fresh. It never re-gates the serve. A revoked
+  collective key still fails their own swamp-club calls, such as heartbeat and
   registration.
 
 ## Why

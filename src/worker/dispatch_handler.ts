@@ -49,6 +49,7 @@ import {
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
+  ChannelClosedError,
   RpcChannel,
   RpcError,
   type RpcHandlerContext,
@@ -140,6 +141,14 @@ export function registerDispatchHandler(
     activeRunners++;
     try {
       await options.admitted;
+      // The connection closed while this dispatch waited for admission:
+      // nothing could report its result, so the step must not run here. The
+      // orchestrator handles it as it does any dispatch on a dropped worker.
+      if (options.channel.closed) {
+        throw new ChannelClosedError(
+          "connection closed before the worker was admitted",
+        );
+      }
       return await handleDispatch(rawParams, ctx, options);
     } finally {
       activeRunners--;

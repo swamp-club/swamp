@@ -557,15 +557,15 @@ Deno.test("runWorker: a worker the gate blocks at enrollment stops with the gate
 });
 
 Deno.test("runWorker: an orchestrator with no pass to give stops the worker with the gate's error", async () => {
-  const admitted: (string | undefined)[] = [];
+  const admitted: [string | undefined, boolean | undefined][] = [];
   await assertRejects(
     () =>
       runWorker({
         url: "ws://test:1",
         token: "ci.s",
         swampVersion: "1.2.3",
-        admitGatePass: (pass) => {
-          admitted.push(pass);
+        admitGatePass: (pass, serveRefused) => {
+          admitted.push([pass, serveRefused]);
           return Promise.reject(
             new AuthGateBlockedError({ kind: "no_credential" }, "no pass"),
           );
@@ -581,7 +581,7 @@ Deno.test("runWorker: an orchestrator with no pass to give stops the worker with
     AuthGateBlockedError,
     "no pass",
   );
-  assertEquals(admitted, [undefined]);
+  assertEquals(admitted, [[undefined, true]]);
 });
 
 Deno.test("runWorker: admission that settles after the socket closed does not report enrollment", async () => {

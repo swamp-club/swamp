@@ -93,15 +93,16 @@ export function publishNestedGatePass(handoff: GateHandoff | undefined): void {
 export function deferredWorkerAdmission(
   publish: (handoff: GateHandoff) => void = publishNestedGatePass,
 ):
-  | ((passValue: string | undefined) => Promise<void>)
+  | ((passValue: string | undefined, serveRefused?: boolean) => Promise<void>)
   | undefined {
   const current = session;
   if (!current?.deferred) return undefined;
-  return async (passValue) => {
+  return async (passValue, serveRefused) => {
     const admission = await admitOrchestratorPass(
       current.deps.verificationRepo,
       passValue,
       current.gateTime,
+      serveRefused,
     );
     if (admission.kind === "block") {
       throw orchestratorBlockedError(admission.cause, admission.detail);

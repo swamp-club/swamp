@@ -586,7 +586,11 @@ Deno.test("auth gate integration: a logged-in run ignores an inherited pass and 
 
 // ── Remote workers (design/surfaces/auth-gate.md, "Remote workers") ──────
 
-/** A worker control socket wired straight to a WorkerGateway. */
+/**
+ * A worker control socket wired straight to a WorkerGateway. Each frame is
+ * delivered on a later microtask, as a real socket delivers asynchronously;
+ * the receiving handlers are synchronous, so nothing is left unawaited.
+ */
 class GatewaySocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
@@ -624,6 +628,7 @@ interface Fleet {
 function fleetGateway(gatePass: () => string | undefined): Fleet {
   const transitions: string[] = [];
   const gateway = new WorkerGateway({
+    // Never touched: every transition goes through runModelMethod below.
     repoDir: "/tmp/unused",
     repoContext: {} as RepositoryContext,
     capabilityService: { registerHandlers: () => {} },
@@ -757,7 +762,7 @@ Deno.test("auth gate integration: a serve with no pass refuses a keyless worker 
     await assertRejects(
       () => keylessWorker(fleet, w.key),
       AuthGateBlockedError,
-      "sent no pass",
+      "has no signed pass to give",
     );
     assertEquals(fleet.transitions, []);
     assertEquals(fleet.gateway.workers().length, 0);
