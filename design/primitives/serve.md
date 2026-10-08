@@ -79,6 +79,7 @@ it the default file is optional.
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
 | `--grants-file`, `--grants-dir`, `--grant-reload` | `SWAMP_GRANTS_FILE`, `_DIR` | unset, unset, `manual` | Relative paths resolve against the repository, from any source; `auto` starts a `GrantsDirectoryPoller` (30 s); a source startup would refuse (invalid, unreadable or missing) keeps its stored grants |
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
+| `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely |
 | `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
@@ -196,7 +197,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/auth/dashboard/session` | same-origin browser session | Dashboard session status, manual-token exchange and logout. It sets or clears the host-only `HttpOnly`, `SameSite=Strict`, `Path=/` cookie, which holds an opaque control-plane session id; TLS deployments also set `Secure`. |
 | HTTP POST | `/auth/dashboard/device`, `/auth/dashboard/device/token` | same-origin browser session (IP burst limit) | Browser OAuth device grant. Completion sets the dashboard session cookie and returns no server token; the CLI device-auth JSON contract remains unchanged. |
 | HTTP GET | `/auth/info` | none | `{ mode, verificationBaseUri? }` so clients pick a login flow |
-| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules and webhook endpoints |
+| HTTP GET | `/ready`, `/` and `/health` | none | `/ready` is 503 until startup completes and again (`shutting_down`) once shutdown begins; `/health` lists schedules (with their queue state, see Cron below) and webhook endpoints |
 | HTTP GET | `/dashboard`, `/dashboard/*` | none for assets (the SPA logs in itself) | Static files from `packages/dashboard/dist`, SPA fallback to `index.html`; without the dist, 404 "Dashboard assets not available in this build" |
 
 Every WebSocket upgrade, even in mode `none`, has its origin checked against the
@@ -705,6 +706,23 @@ run never starts); see
 skips are audited as `workflow.schedule.fire` and `workflow.schedule.skipped`
 ([serve-audit](../enablers/serve-audit.md#trigger-events)).
 
+Fires that are not skipped join one queue. Up to
+`--max-concurrent-scheduled-runs` entries run at once (default 1: one at a
+time, in fire order). The service starts the first queued entry whose workflow
+is not already in flight, so different workflows run together and a workflow
+never overlaps itself. A fired entry is keyed by workflow id and a replayed one
+by name; both resolve to the same workflow. A fire that arrives while the same
+workflow is still queued (not yet running) is queued too. Two workflows that
+touch the same model still exclude each other through the per-model lock.
+
+Each schedule in the health snapshot, `/health` and the dashboard reports its
+queue state (`queueStatus`): `queued` (fires waiting to start),
+`oldestQueuedAt` (the oldest waiting fire's time, so a growing wait is
+visible) and `lastQueueDelayMs` (fire-to-start delay of the last run that
+started). `schedule_started` carries the same delay as `queueDelayMs`. Queue
+state is per schedule, so the per-token health view filters it with its
+schedule.
+
 If the control-plane store supports `putIfAbsent`, each fire first races to
 create `fire-records/<workflowId>/<fireTime>` (ISO time truncated to the
 second, `normalizeFireTime`). The loser records a `dedupSkip` and does nothing.
@@ -854,7 +872,8 @@ instance, followed by `swamp serve reload` or a restart (see Known limits).
 **Rolling restart.** On SIGTERM an instance stops accepting triggers: `/ready`
 returns 503 `shutting_down`, webhook deliveries get 503 with `Retry-After: 5`,
 and the scheduler stops. Queued webhook and cron runs stay in the run tracker
-for the next boot to replay. In-flight webhook, cron and API runs then drain
+for the next boot to replay. In-flight webhook, cron (every in-flight
+scheduled run, up to `--max-concurrent-scheduled-runs`) and API runs then drain
 together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
 aborted and gets 5 s more. It marks aborted API workflow runs

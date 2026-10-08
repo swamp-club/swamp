@@ -964,6 +964,47 @@ Deno.test("mergeServeOptions: max-concurrent-runs defaults to undefined", () => 
   assertEquals(merged.maxConcurrentRuns, undefined);
 });
 
+Deno.test("mergeServeOptions: max-concurrent-scheduled-runs from CLI flag", () => {
+  const merged = mergeServeOptions(
+    null,
+    { maxConcurrentScheduledRuns: 4 },
+    new Set(["max-concurrent-scheduled-runs"]),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentScheduledRuns, 4);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-scheduled-runs from env var", () => {
+  const merged = mergeServeOptions(
+    null,
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS" ? "3" : undefined,
+  );
+  assertEquals(merged.maxConcurrentScheduledRuns, 3);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-scheduled-runs from config file", () => {
+  const config: ServeConfigFile = { "max-concurrent-scheduled-runs": 2 };
+  const merged = mergeServeOptions(
+    config,
+    {},
+    new Set<string>(),
+    () => undefined,
+  );
+  assertEquals(merged.maxConcurrentScheduledRuns, 2);
+});
+
+Deno.test("mergeServeOptions: max-concurrent-scheduled-runs is independent of max-concurrent-runs", () => {
+  const merged = mergeServeOptions(
+    { "max-concurrent-runs": 50 },
+    {},
+    new Set<string>(),
+    (name) => name === "SWAMP_MAX_CONCURRENT_RUNS" ? "25" : undefined,
+  );
+  assertEquals(merged.maxConcurrentScheduledRuns, undefined);
+});
+
 Deno.test("mergeServeOptions: max-runs-per-principal from CLI flag", () => {
   const cliOptions = { maxRunsPerPrincipal: 5 };
   const explicitFlags = new Set(["max-runs-per-principal"]);

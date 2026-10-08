@@ -1213,6 +1213,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       String(options.maxConcurrentRuns),
     );
   }
+  if (options.maxConcurrentScheduledRuns !== undefined) {
+    args.push(
+      "--max-concurrent-scheduled-runs",
+      String(options.maxConcurrentScheduledRuns),
+    );
+  }
   if (options.maxRunsPerPrincipal !== undefined) {
     args.push(
       "--max-runs-per-principal",
@@ -1452,6 +1458,7 @@ export interface ServeStartupSettings {
   maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
+  maxConcurrentScheduledRuns?: number;
   maxRunsPerPrincipal?: number;
   maxRunDurationMs?: number;
   grantReloadMode: "manual" | "auto";
@@ -1545,6 +1552,16 @@ export function resolveServeStartupSettings(
       `--max-concurrent-runs must be a positive integer, got ${maxConcurrentRuns}`,
     );
   }
+  const maxConcurrentScheduledRuns = merged.maxConcurrentScheduledRuns;
+  if (
+    maxConcurrentScheduledRuns !== undefined &&
+    (!Number.isInteger(maxConcurrentScheduledRuns) ||
+      maxConcurrentScheduledRuns < 1)
+  ) {
+    throw new UserError(
+      `--max-concurrent-scheduled-runs must be a positive integer, got ${maxConcurrentScheduledRuns}`,
+    );
+  }
   const maxRunsPerPrincipal = merged.maxRunsPerPrincipal;
   if (
     maxRunsPerPrincipal !== undefined &&
@@ -1596,6 +1613,7 @@ export function resolveServeStartupSettings(
     maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
     maxConcurrentRuns,
+    maxConcurrentScheduledRuns,
     maxRunsPerPrincipal,
     maxRunDurationMs,
     grantReloadMode,
@@ -1802,6 +1820,11 @@ const daemonEnableCommand = new Command()
     "--max-concurrent-runs <count:integer>",
     "Maximum concurrent detached runs across all principals. Default: 100 " +
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
+  )
+  .option(
+    "--max-concurrent-scheduled-runs <count:integer>",
+    "Maximum scheduled workflow runs in flight at once; a workflow never " +
+      "overlaps itself. Default: 1 (env: SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS)",
   )
   .option(
     "--max-runs-per-principal <count:integer>",
@@ -2563,6 +2586,13 @@ export const serveCommand = new Command()
       "(env: SWAMP_MAX_CONCURRENT_RUNS)",
   )
   .option(
+    "--max-concurrent-scheduled-runs <count:integer>",
+    "Maximum number of scheduled workflow runs in flight at once. Different " +
+      "workflows run together up to this limit; a workflow never overlaps " +
+      "itself. Separate from --max-concurrent-runs. Default: 1. " +
+      "(env: SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS)",
+  )
+  .option(
     "--max-runs-per-principal <count:integer>",
     "Maximum number of concurrent detached runs per authenticated principal. " +
       "Unset by default (no per-principal limit). (env: SWAMP_MAX_RUNS_PER_PRINCIPAL)",
@@ -2691,6 +2721,7 @@ export const serveCommand = new Command()
       maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
       maxConcurrentRuns,
+      maxConcurrentScheduledRuns,
       maxRunsPerPrincipal,
       maxRunDurationMs,
       grantReloadMode,
@@ -4954,6 +4985,7 @@ export const serveCommand = new Command()
         workflowRepo: repoContext.workflowRepo,
         repoDir: resolvedRepoDir,
         triggerOverrides,
+        maxConcurrentRuns: maxConcurrentScheduledRuns,
         initiatedBy: principalToString(SCHEDULER_PRINCIPAL),
         authorizeRun: createScheduledRunAuthorizer(
           triggerAuthorizer,
@@ -6525,6 +6557,7 @@ export const serveCommand = new Command()
               cronExpression: s.cronExpression,
               nextRun: s.nextRun?.toISOString() ?? null,
               running: scheduledExecution!.isRunning(s.workflowId),
+              ...scheduledExecution!.queueStatus(s.workflowId),
             })) ?? [];
 
             const webhooks = webhookService

@@ -20,12 +20,14 @@
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { HealthUnavailable } from "../components/HealthUnavailable";
+import { scheduleQueueLabel } from "./schedule_queue.ts";
 
 export function Schedules(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
 ) {
   const state = healthViewState(health, denied);
   const schedules = health?.scheduling?.schedules ?? [];
+  const now = Date.now();
 
   return (
     <>
@@ -64,46 +66,64 @@ export function Schedules(
                   </tr>
                 </thead>
                 <tbody>
-                  {schedules.map((s) => (
-                    <tr key={s.workflowId}>
-                      <td style={{ fontWeight: 500 }}>
-                        {s.workflowName ?? s.workflowId}
-                      </td>
-                      <td>
-                        <span className="cron-badge">{s.cronExpression}</span>
-                      </td>
-                      <td
-                        style={{ fontSize: "0.82rem", color: "var(--text-3)" }}
-                      >
-                        {s.nextRun ? formatRelativeTime(s.nextRun) : "—"}
-                      </td>
-                      <td>
-                        {s.running
-                          ? (
+                  {schedules.map((s) => {
+                    const queueLabel = scheduleQueueLabel(s, now);
+                    return (
+                      <tr key={s.workflowId}>
+                        <td style={{ fontWeight: 500 }}>
+                          {s.workflowName ?? s.workflowId}
+                        </td>
+                        <td>
+                          <span className="cron-badge">{s.cronExpression}</span>
+                        </td>
+                        <td
+                          style={{
+                            fontSize: "0.82rem",
+                            color: "var(--text-3)",
+                          }}
+                        >
+                          {s.nextRun ? formatRelativeTime(s.nextRun) : "—"}
+                        </td>
+                        <td>
+                          {s.running
+                            ? (
+                              <span
+                                className="mono"
+                                style={{
+                                  fontSize: "0.75rem",
+                                  color: "var(--running)",
+                                }}
+                              >
+                                running
+                              </span>
+                            )
+                            : (
+                              <span
+                                className="mono"
+                                style={{
+                                  fontSize: "0.75rem",
+                                  color: "var(--success)",
+                                }}
+                              >
+                                idle
+                              </span>
+                            )}
+                          {queueLabel && (
                             <span
                               className="mono"
                               style={{
                                 fontSize: "0.75rem",
-                                color: "var(--running)",
+                                color: "var(--text-3)",
+                                marginLeft: 8,
                               }}
                             >
-                              running
-                            </span>
-                          )
-                          : (
-                            <span
-                              className="mono"
-                              style={{
-                                fontSize: "0.75rem",
-                                color: "var(--success)",
-                              }}
-                            >
-                              idle
+                              {queueLabel}
                             </span>
                           )}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

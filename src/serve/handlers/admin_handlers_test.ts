@@ -303,6 +303,35 @@ Deno.test("redactServeOptions: verifies webhook secrets are not exposed", () => 
   assertEquals(Object.hasOwn(webhooks[0], "secret"), false);
 });
 
+Deno.test("redactServeOptions: reports the scheduled-run limit under scheduling", () => {
+  const base = {
+    port: 9090,
+    host: "127.0.0.1",
+    schedule: true,
+    authMode: "none",
+    grantReload: "manual",
+    trustProxy: false,
+    verifyOnEnroll: false,
+    detachRuns: false,
+    hotReload: false,
+    enableInternalApi: false,
+    remoteOnly: false,
+  };
+  assertEquals(
+    redactServeOptions(base as unknown as MergedServeOptions).scheduling,
+    { enabled: true, maxConcurrentScheduledRuns: null },
+  );
+  assertEquals(
+    redactServeOptions(
+      {
+        ...base,
+        maxConcurrentScheduledRuns: 3,
+      } as unknown as MergedServeOptions,
+    ).scheduling,
+    { enabled: true, maxConcurrentScheduledRuns: 3 },
+  );
+});
+
 Deno.test("redactServeOptions: omits TLS key file", () => {
   const opts = {
     port: 443,

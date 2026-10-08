@@ -867,6 +867,15 @@ Deno.test("collectServeExtraArgs: forwards --max-concurrent-runs", () => {
   assertEquals(args, ["--max-concurrent-runs", "50"]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --max-concurrent-scheduled-runs", () => {
+  const args = collectServeExtraArgs({ maxConcurrentScheduledRuns: 3 });
+  assertEquals(args, ["--max-concurrent-scheduled-runs", "3"]);
+});
+
+Deno.test("collectServeExtraArgs: leaves out --max-concurrent-scheduled-runs when unset", () => {
+  assertEquals(collectServeExtraArgs({}), []);
+});
+
 Deno.test("collectServeExtraArgs: forwards --max-runs-per-principal", () => {
   const args = collectServeExtraArgs({ maxRunsPerPrincipal: 10 });
   assertEquals(args, ["--max-runs-per-principal", "10"]);
@@ -1527,6 +1536,33 @@ Deno.test("resolveServeStartupSettings: applies the startup defaults", () => {
   assertEquals(settings.wsIdleTimeoutSeconds, undefined);
   assertEquals(settings.queueTimeoutMs, undefined);
   assertEquals(settings.grantReloadMode, "manual");
+});
+
+Deno.test("resolveServeStartupSettings: max-concurrent-scheduled-runs is unset by default and kept when set", () => {
+  assertEquals(
+    resolveServeStartupSettings(mergedServeOptions())
+      .maxConcurrentScheduledRuns,
+    undefined,
+  );
+  assertEquals(
+    resolveServeStartupSettings(
+      mergedServeOptions({ maxConcurrentScheduledRuns: 4 }),
+    ).maxConcurrentScheduledRuns,
+    4,
+  );
+});
+
+Deno.test("resolveServeStartupSettings: rejects a max-concurrent-scheduled-runs below 1 or not an integer", () => {
+  for (const value of [0, -1, 1.5]) {
+    assertThrows(
+      () =>
+        resolveServeStartupSettings(
+          mergedServeOptions({ maxConcurrentScheduledRuns: value }),
+        ),
+      UserError,
+      `--max-concurrent-scheduled-runs must be a positive integer, got ${value}`,
+    );
+  }
 });
 
 Deno.test("resolveServeStartupSettings: 0 disables the ws idle and queue timeouts", () => {

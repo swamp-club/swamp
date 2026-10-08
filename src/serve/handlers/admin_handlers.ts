@@ -2760,7 +2760,10 @@ export function redactServeOptions(
       certFile: opts.certFile ?? null,
     },
     authMode: opts.authMode,
-    scheduling: { enabled: opts.schedule },
+    scheduling: {
+      enabled: opts.schedule,
+      maxConcurrentScheduledRuns: opts.maxConcurrentScheduledRuns ?? null,
+    },
     dashboard: { enabled: opts.dashboard },
     webhooks: (opts.webhookConfigs ?? []).map((wh) => ({
       route: wh.route,

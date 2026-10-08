@@ -28,6 +28,7 @@ import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { ResumeAction } from "../components/ResumeAction";
+import { totalQueued } from "./schedule_queue.ts";
 import { activeRunIds } from "../client/resume_state";
 import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import { HealthUnavailable } from "../components/HealthUnavailable";
@@ -60,6 +61,7 @@ export function Overview(
   { health, healthDenied, onOpenRun, onApprovalsChanged }: OverviewProps,
 ) {
   const healthState = healthViewState(health, healthDenied);
+  const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
   const { request } = useSwamp();
 
   const { data: runsData, refetch: refetchRuns } = useRequest(
@@ -317,7 +319,15 @@ export function Overview(
       <div className="panels-grid" style={{ marginTop: 14 }}>
         <div className="panel">
           <div className="panel-header">
-            <div className="panel-title">Upcoming Schedules</div>
+            <div className="panel-title">
+              Upcoming Schedules
+              {queuedFires > 0 && (
+                <>
+                  {" "}
+                  <span className="panel-count">{queuedFires} queued</span>
+                </>
+              )}
+            </div>
           </div>
           <div>
             {healthState !== "ready" && (

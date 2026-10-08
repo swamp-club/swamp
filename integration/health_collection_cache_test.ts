@@ -126,6 +126,11 @@ Deno.test("health collection cache: readers in one window share one collection a
           nextRun: null,
         }],
         isRunning: () => false,
+        queueStatus: () => ({
+          queued: 0,
+          oldestQueuedAt: null,
+          lastQueueDelayMs: null,
+        }),
       },
       scheduleEnabled: true,
       webhookProvider: null,

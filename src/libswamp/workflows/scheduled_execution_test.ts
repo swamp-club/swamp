@@ -1425,3 +1425,375 @@ Deno.test("ScheduledExecutionService: each fire is the root of its own trace", a
     for (const active of dedupActiveSpans) assertEquals(active, undefined);
   });
 });
+
+// ── Concurrent scheduled runs (swamp-club#3046) ─────────────────────
+
+interface HeldRun {
+  workflow: string;
+  signal: AbortSignal;
+  release: () => void;
+}
+
+/**
+ * An executor whose runs each stay in flight until released one by one or
+ * aborted. Records how many runs it saw in flight at once, in all and for
+ * one workflow, and how many have finished.
+ */
+function createPerRunExecutor() {
+  const runs: HeldRun[] = [];
+  const inFlight = new Map<string, number>();
+  let active = 0;
+  let maxActive = 0;
+  let maxSameWorkflow = 0;
+  let finished = 0;
+  const executeWorkflow: WorkflowExecutor = (input, signal, onEvent) => {
+    const workflow = input.workflowIdOrName;
+    const count = (inFlight.get(workflow) ?? 0) + 1;
+    inFlight.set(workflow, count);
+    maxSameWorkflow = Math.max(maxSameWorkflow, count);
+    active++;
+    maxActive = Math.max(maxActive, active);
+    const done = Promise.withResolvers<void>();
+    runs.push({ workflow, signal, release: () => done.resolve() });
+    signal.addEventListener("abort", () => done.resolve(), { once: true });
+    onEvent({
+      kind: "started",
+      runId: `run-${runs.length}`,
+      workflowName: workflow,
+      jobs: [],
+    });
+    return done.promise.then(() => {
+      inFlight.set(workflow, (inFlight.get(workflow) ?? 1) - 1);
+      active--;
+      finished++;
+    });
+  };
+  return {
+    executeWorkflow,
+    runs,
+    maxActive: () => maxActive,
+    maxSameWorkflow: () => maxSameWorkflow,
+    finished: () => finished,
+  };
+}
+
+function replay(service: ScheduledExecutionService, ...names: string[]) {
+  for (const name of names) {
+    service.enqueueForReplay({
+      pendingRunId: crypto.randomUUID(),
+      workflowIdOrName: name,
+    });
+  }
+}
+
+Deno.test("ScheduledExecutionService: by default runs one at a time in queue order", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  try {
+    replay(service, "wf-a", "wf-b", "wf-c");
+    for (const expected of [1, 2, 3]) {
+      await waitFor(() => executor.runs.length === expected, "next run");
+      executor.runs[expected - 1].release();
+    }
+    await waitFor(() => executor.finished() === 3, "all runs finished");
+    assertEquals(executor.runs.map((run) => run.workflow), [
+      "wf-a",
+      "wf-b",
+      "wf-c",
+    ]);
+    assertEquals(executor.maxActive(), 1);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: by default a queued run of another workflow waits for the in-flight one", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+  });
+  await service.start();
+  try {
+    replay(service, "wf-a", "wf-b");
+    await waitFor(() => executor.runs.length === 1, "first run");
+    assertEquals(service.queueStatus("wf-b" as WorkflowId).queued, 1);
+    executor.runs[0].release();
+    await waitFor(() => executor.runs.length === 2, "second run");
+    assertEquals(executor.runs[1].workflow, "wf-b");
+    assertEquals(executor.maxActive(), 1);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: maxConcurrentRuns starts different workflows together", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 2,
+  });
+  await service.start();
+  try {
+    replay(service, "wf-a", "wf-b", "wf-c");
+    await waitFor(() => executor.runs.length === 2, "two runs in flight");
+    assertEquals(executor.runs.map((run) => run.workflow), ["wf-a", "wf-b"]);
+    assertEquals(service.queueStatus("wf-c" as WorkflowId).queued, 1);
+    executor.runs[1].release();
+    await waitFor(() => executor.runs.length === 3, "third run");
+    assertEquals(executor.runs[2].workflow, "wf-c");
+    assertEquals(executor.maxActive(), 2);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a workflow never overlaps itself while others start", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 3,
+  });
+  await service.start();
+  try {
+    replay(service, "wf-a", "wf-a", "wf-b");
+    // wf-b passes the queued second wf-a.
+    await waitFor(() => executor.runs.length === 2, "two runs in flight");
+    assertEquals(executor.runs.map((run) => run.workflow), ["wf-a", "wf-b"]);
+    executor.runs[0].release();
+    await waitFor(() => executor.runs.length === 3, "second wf-a");
+    assertEquals(executor.runs[2].workflow, "wf-a");
+    assertEquals(executor.maxSameWorkflow(), 1);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a replayed run waits for a fired run of the same workflow", async () => {
+  const wf = createTestWorkflow("fired-wf", "* * * * * *");
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 3,
+  });
+  await service.start();
+  try {
+    // A cron fire (keyed by the workflow's id) is in flight.
+    await waitFor(() => executor.runs.length === 1, "fired run");
+    // The replay is keyed by name; another workflow queued after it runs.
+    replay(service, "fired-wf", "other-wf");
+    await waitFor(
+      () => executor.runs.some((run) => run.workflow === "other-wf"),
+      "other workflow run",
+    );
+    assertEquals(
+      executor.runs.filter((run) => run.workflow === "fired-wf").length,
+      1,
+    );
+    executor.runs[0].release();
+    await waitFor(
+      () =>
+        executor.runs.filter((run) => run.workflow === "fired-wf").length >= 2,
+      "replayed run",
+    );
+    assertEquals(executor.maxSameWorkflow(), 1);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a failed pending-run delete is logged and the queue keeps going", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    pendingRunHook: {
+      enqueue: () => Promise.resolve(),
+      delete: (id) =>
+        id === "p-bad"
+          ? Promise.reject(new Error("store down"))
+          : Promise.resolve(),
+    },
+  });
+  await service.start();
+  try {
+    service.enqueueForReplay({ pendingRunId: "p-bad", workflowIdOrName: "wf" });
+    service.enqueueForReplay({ pendingRunId: "p-ok", workflowIdOrName: "wf" });
+    // The failed entry never starts; the next one for the same workflow does.
+    await waitFor(() => executor.runs.length === 1, "next run");
+    assertEquals(executor.runs[0].workflow, "wf");
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a rejected pending-run write is logged and the queue keeps going", async () => {
+  const wf = createTestWorkflow("enqueue-fail-wf", "* * * * * *");
+  let enqueueCalls = 0;
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    pendingRunHook: {
+      enqueue: () =>
+        ++enqueueCalls === 1
+          ? Promise.reject(new Error("store down"))
+          : Promise.resolve(),
+      delete: () => Promise.resolve(),
+    },
+  });
+  await service.start();
+  try {
+    await waitFor(() => executor.runs.length === 1, "a later fire runs");
+    assertGreater(enqueueCalls, 1);
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService: a run that throws frees its workflow for the next run", async () => {
+  let calls = 0;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve();
+    },
+    maxConcurrentRuns: 2,
+  });
+  await service.start();
+  try {
+    replay(service, "wf", "wf");
+    await waitFor(() => calls === 2, "second run");
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService.drain: waits for every in-flight run", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 2,
+  });
+  await service.start();
+  replay(service, "wf-a", "wf-b");
+  await waitFor(() => executor.runs.length === 2, "two runs in flight");
+
+  let drained = false;
+  const drain = service.drain(60_000).then(() => drained = true);
+  executor.runs[0].release();
+  await waitFor(() => executor.finished() === 1, "first run finished");
+  assertEquals(drained, false);
+  executor.runs[1].release();
+  await drain;
+  assertEquals(executor.runs.some((run) => run.signal.aborted), false);
+  await service.stop();
+});
+
+Deno.test("ScheduledExecutionService.stop: aborts every in-flight run", async () => {
+  const executor = createPerRunExecutor();
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    maxConcurrentRuns: 2,
+  });
+  await service.start();
+  replay(service, "wf-a", "wf-b", "wf-c");
+  await waitFor(() => executor.runs.length === 2, "two runs in flight");
+  await service.stop();
+  assertEquals(executor.runs.length, 2);
+  assertEquals(executor.runs.every((run) => run.signal.aborted), true);
+});
+
+Deno.test("ScheduledExecutionService.queueStatus: reports waiting fires and the last start delay", async () => {
+  const wf = createTestWorkflow("status-wf", "0 0 1 1 *");
+  const executor = createPerRunExecutor();
+  const events: ScheduledExecutionEvent[] = [];
+  let now = 1_000;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    now: () => now,
+  });
+  await service.start((e) => events.push(e));
+  try {
+    assertEquals(service.queueStatus(wf.id), {
+      queued: 0,
+      oldestQueuedAt: null,
+      lastQueueDelayMs: null,
+    });
+    replay(service, "blocker-wf");
+    await waitFor(() => executor.runs.length === 1, "blocker run");
+    replay(service, "status-wf");
+    now = 2_000;
+    replay(service, "status-wf");
+    assertEquals(service.queueStatus(wf.id), {
+      queued: 2,
+      oldestQueuedAt: new Date(1_000).toISOString(),
+      lastQueueDelayMs: null,
+    });
+
+    now = 5_000;
+    executor.runs[0].release();
+    await waitFor(() => executor.runs.length === 2, "status-wf run");
+    assertEquals(service.queueStatus(wf.id), {
+      queued: 1,
+      oldestQueuedAt: new Date(2_000).toISOString(),
+      lastQueueDelayMs: 4_000,
+    });
+    const started = events.filter((e) =>
+      e.kind === "schedule_started" && e.workflowName === "status-wf"
+    );
+    assertEquals(
+      started[0]?.kind === "schedule_started" && started[0].queueDelayMs,
+      4_000,
+    );
+  } finally {
+    await service.stop();
+  }
+});
+
+Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay that names the workflow by id", async () => {
+  const wf = createTestWorkflow("id-replay-wf", "0 0 1 1 *");
+  const executor = createPerRunExecutor();
+  let now = 1_000;
+  const service = new ScheduledExecutionService({
+    workflowRepo: createMockWorkflowRepo([wf]),
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: executor.executeWorkflow,
+    now: () => now,
+  });
+  await service.start();
+  try {
+    replay(service, "blocker-wf", wf.id);
+    await waitFor(() => executor.runs.length === 1, "blocker run");
+    now = 3_500;
+    executor.runs[0].release();
+    await waitFor(() => executor.runs.length === 2, "replayed run");
+    assertEquals(service.queueStatus(wf.id).lastQueueDelayMs, 2_500);
+  } finally {
+    await service.stop();
+  }
+});
