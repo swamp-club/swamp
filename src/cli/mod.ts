@@ -1967,7 +1967,7 @@ export function registerCommands(cli: AnyCommand): void {
     .command("vault", vaultCommand)
     .command("data", dataCommand)
     .command("telemetry", telemetryCommand)
-    .command("audit", auditCommand.hidden())
+    .command("audit", auditCommand)
     .command("update", updateCommand)
     .command("config", configCommand)
     .command("source", sourceCommand)
