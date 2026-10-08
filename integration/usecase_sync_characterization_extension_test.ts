@@ -25,11 +25,15 @@
  */
 
 import "../src/domain/models/models.ts";
+import { assertEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { resolveManagedLockfileForWrite } from "../src/cli/repo_context.ts";
 import { RepoPath } from "../src/domain/repo/repo_path.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
-import { markLockfilePublishPending } from "../src/infrastructure/persistence/pending_lockfile_publish.ts";
+import {
+  markLockfilePublishPending,
+  readLockfilePublishPending,
+} from "../src/infrastructure/persistence/pending_lockfile_publish.ts";
 import { RepoMarkerRepository } from "../src/infrastructure/persistence/repo_marker_repository.ts";
 import {
   type AnyRow,
@@ -83,6 +87,11 @@ async function installedExtension(
   }
 }
 
+/** The publish succeeded, so no lockfile change is left pending. */
+async function assertNothingPending(repos: RowRepos): Promise<void> {
+  assertEquals((await readLockfilePublishPending(repos.repoA)).kind, "none");
+}
+
 const ROWS: AnyRow[] = [
   row({
     name: "extension install (publish pending)",
@@ -94,6 +103,14 @@ const ROWS: AnyRow[] = [
       serve: ["markDirty config/upstream_extensions.json"],
     },
     options: { managedConfig: true },
+    // Recorded before the lockfile publish moved to a root's checkpoint
+    // (swamp-club#3192): the fetch, then the publish, then the lock release
+    // (and, in serve, the gate exit).
+    syncOrder: {
+      cli: ["pull", "push", "release"],
+      serve: ["pull", "push", "release"],
+    },
+    verify: (repos) => assertNothingPending(repos),
     // The seed is the unpublished lockfile change install publishes, so it
     // must not be settled onto the remote first.
     noSettle: true,
@@ -117,6 +134,15 @@ const ROWS: AnyRow[] = [
       serve: ["markDirty config/upstream_extensions.json"],
     },
     options: { managedConfig: true },
+    // Recorded before the lockfile publish moved to a root's checkpoint
+    // (swamp-club#3192). The CLI's rm preview refreshes in its own
+    // transaction (fetch, release), then the removal fetches, publishes and
+    // releases.
+    syncOrder: {
+      cli: ["pull", "release", "pull", "push", "release"],
+      serve: ["pull", "push", "release"],
+    },
+    verify: (repos) => assertNothingPending(repos),
     seed: (repos) => installedExtension(repos, false),
     cli: (repos) => ({
       args: ["extension", "rm", EXTENSION, "--force", ...json(repos)],
