@@ -19,7 +19,10 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { isLockContended, LockfileRepository } from "./lockfile_repository.ts";
+import {
+  lockAttemptOutcome,
+  LockfileRepository,
+} from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -530,44 +533,51 @@ Deno.test("lockfileAdvisoryLockPath: a lockfile outside every managed config bas
   assertEquals(lockfileAdvisoryLockPath(path), `${path}.lock`);
 });
 
-Deno.test("isLockContended: AlreadyExists means another writer holds the lock on every OS", () => {
+Deno.test("lockAttemptOutcome: AlreadyExists is retried, then busy, on every OS", () => {
   const error = new Deno.errors.AlreadyExists("exists");
-  assertEquals(isLockContended(error, "windows"), true);
-  assertEquals(isLockContended(error, "linux"), true);
-  assertEquals(isLockContended(error, "darwin"), true);
+  for (const os of ["windows", "linux", "darwin"] as const) {
+    assertEquals(lockAttemptOutcome(error, false, os), "retry");
+    assertEquals(lockAttemptOutcome(error, true, os), "busy");
+  }
 });
 
-Deno.test("isLockContended: PermissionDenied is a lock pending deletion only on Windows (swamp-club#3167)", () => {
+Deno.test("lockAttemptOutcome: Windows retries PermissionDenied as a lock pending deletion, then rethrows it (swamp-club#3167)", () => {
   const error = new Deno.errors.PermissionDenied("denied");
-  assertEquals(isLockContended(error, "windows"), true);
-  assertEquals(isLockContended(error, "linux"), false);
-  assertEquals(isLockContended(error, "darwin"), false);
+  assertEquals(lockAttemptOutcome(error, false, "windows"), "retry");
+  assertEquals(lockAttemptOutcome(error, true, "windows"), "rethrow");
 });
 
-Deno.test("isLockContended: other errors are not contention", () => {
-  assertEquals(
-    isLockContended(new Deno.errors.NotFound("gone"), "windows"),
-    false,
-  );
-  assertEquals(isLockContended(new Error("boom"), "windows"), false);
+Deno.test("lockAttemptOutcome: PermissionDenied is rethrown at once outside Windows", () => {
+  const error = new Deno.errors.PermissionDenied("denied");
+  for (const os of ["linux", "darwin"] as const) {
+    assertEquals(lockAttemptOutcome(error, false, os), "rethrow");
+    assertEquals(lockAttemptOutcome(error, true, os), "rethrow");
+  }
 });
 
-Deno.test("LockfileRepository.writeEntry: a lock path that can never be created reports why after the retries (swamp-club#3167)", async () => {
-  await withTempDir(async (dir) => {
-    const path = join(dir, "upstream_extensions.json");
-    // A directory where the lock file goes: POSIX reports it as an existing
-    // lock, Windows as PermissionDenied on every attempt.
-    await Deno.mkdir(lockfileAdvisoryLockPath(path), { recursive: true });
-    const repo = await LockfileRepository.create(path);
-    const write = () => repo.writeEntry("@test/blocked", "1.0.0", ["f.ts"], {});
-    if (Deno.build.os === "windows") {
-      await assertRejects(write, Deno.errors.PermissionDenied);
-    } else {
+Deno.test("lockAttemptOutcome: other errors are rethrown at once", () => {
+  for (const error of [new Deno.errors.NotFound("gone"), new Error("boom")]) {
+    assertEquals(lockAttemptOutcome(error, false, "windows"), "rethrow");
+    assertEquals(lockAttemptOutcome(error, false, "linux"), "rethrow");
+  }
+});
+
+Deno.test({
+  name:
+    "LockfileRepository.writeEntry: a lock path held by a directory reports a busy lock after the retries",
+  // Which error Windows gives for create-new over a directory depends on how
+  // Deno opens the file; the lockAttemptOutcome tests cover Windows anywhere.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "upstream_extensions.json");
+      await Deno.mkdir(lockfileAdvisoryLockPath(path), { recursive: true });
+      const repo = await LockfileRepository.create(path);
       await assertRejects(
-        write,
+        () => repo.writeEntry("@test/blocked", "1.0.0", ["f.ts"], {}),
         UserError,
         "Another operation may be in progress",
       );
-    }
-  });
+    });
+  },
 });
