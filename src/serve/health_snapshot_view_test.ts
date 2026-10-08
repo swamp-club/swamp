@@ -77,6 +77,9 @@ function snapshot(): HealthSnapshot {
           cronExpression: "0 3 * * *",
           nextRun: null,
           running: false,
+          queued: 0,
+          oldestQueuedAt: null,
+          lastQueueDelayMs: null,
         },
         {
           workflowId: "2",
@@ -84,6 +87,9 @@ function snapshot(): HealthSnapshot {
           cronExpression: "0 4 * * *",
           nextRun: null,
           running: false,
+          queued: 0,
+          oldestQueuedAt: null,
+          lastQueueDelayMs: null,
         },
       ],
     },
@@ -185,6 +191,33 @@ Deno.test("healthSnapshotFor: keeps what the reader may read, without run princi
     ["nightly"],
   );
   assertEquals(view.webhooks.map((w) => w.route), ["/hooks/nightly"]);
+});
+
+Deno.test("healthSnapshotFor: queue data goes with its schedule, and nothing service-wide is added", async () => {
+  const full = snapshot();
+  const queued = {
+    ...full,
+    scheduling: {
+      ...full.scheduling,
+      schedules: full.scheduling.schedules.map((s) => ({
+        ...s,
+        queued: 2,
+        oldestQueuedAt: "2026-01-01T00:00:00.000Z",
+        lastQueueDelayMs: 1_500,
+      })),
+    },
+  };
+  const r = reader(
+    false,
+    (resource) => resource.kind === "workflow" && resource.name === "nightly",
+  );
+  const view = await healthSnapshotFor(queued, r, RESOLVER);
+
+  assertEquals(view.scheduling.schedules.length, 1);
+  assertEquals(view.scheduling.schedules[0].workflowName, "nightly");
+  assertEquals(view.scheduling.schedules[0].queued, 2);
+  assertEquals(view.scheduling.schedules[0].lastQueueDelayMs, 1_500);
+  assertEquals(Object.keys(view.scheduling).sort(), ["enabled", "schedules"]);
 });
 
 Deno.test("healthSnapshotFor: decides on resolved fields, so model-type and tag grants apply", async () => {

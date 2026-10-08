@@ -42,6 +42,12 @@ export interface HealthSnapshotSchedule {
   readonly cronExpression: string;
   readonly nextRun: string | null;
   readonly running: boolean;
+  /** Fires waiting to start. */
+  readonly queued: number;
+  /** ISO-8601 fire time of the oldest waiting fire. */
+  readonly oldestQueuedAt: string | null;
+  /** Fire-to-start delay of the last run that started. */
+  readonly lastQueueDelayMs: number | null;
 }
 
 export interface HealthSnapshotWebhook {
@@ -75,6 +81,11 @@ export interface ScheduleProvider {
     readonly nextRun: Date | null;
   }>;
   isRunning(workflowId: string): boolean;
+  queueStatus(workflowId: string): {
+    readonly queued: number;
+    readonly oldestQueuedAt: string | null;
+    readonly lastQueueDelayMs: number | null;
+  };
 }
 
 export interface WebhookProvider {
@@ -195,6 +206,7 @@ export class HealthCollector {
         cronExpression: s.cronExpression,
         nextRun: s.nextRun?.toISOString() ?? null,
         running: this.#deps.scheduleProvider!.isRunning(String(s.workflowId)),
+        ...this.#deps.scheduleProvider!.queueStatus(String(s.workflowId)),
       }))
       : [];
 

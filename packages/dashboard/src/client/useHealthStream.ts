@@ -57,6 +57,10 @@ interface ScheduleEntry {
   cronExpression: string;
   nextRun: string | null;
   running: boolean;
+  /** Unset on servers that predate queue reporting (swamp-club#3046). */
+  queued?: number;
+  oldestQueuedAt?: string | null;
+  lastQueueDelayMs?: number | null;
 }
 
 interface ComponentHealth {

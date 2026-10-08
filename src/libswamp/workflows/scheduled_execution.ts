@@ -111,6 +111,11 @@ export type ScheduledExecutionEvent =
     /** ISO-8601 cron fire time; unset for a run replayed after a restart. */
     fireTime?: string;
     replayed: boolean;
+    /**
+     * How long the run waited between its fire (or, for a replayed run, its
+     * enqueue) and its start.
+     */
+    queueDelayMs?: number;
   }
   | {
     /** Authorization refused the run; it never started. */
@@ -227,6 +232,35 @@ export interface ScheduledExecutionDeps {
   /** Recorded on every run as `initiatedBy` (the scheduler's principal). */
   initiatedBy?: string;
   authorizeRun?: ScheduledRunAuthorizer;
+  /**
+   * How many scheduled runs may be in flight at once. Different workflows run
+   * together up to this limit; a workflow never overlaps itself. Defaults to
+   * 1: one scheduled run at a time, in fire order.
+   */
+  maxConcurrentRuns?: number;
+  /** Clock for queue-delay reporting, in epoch ms. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/** A scheduled workflow's queue state, as reported in health. */
+export interface ScheduleQueueStatus {
+  /** Fires waiting to start. */
+  readonly queued: number;
+  /** ISO-8601 fire (or enqueue) time of the oldest waiting fire. */
+  readonly oldestQueuedAt: string | null;
+  /** Fire-to-start delay of the last run that started. */
+  readonly lastQueueDelayMs: number | null;
+}
+
+interface QueuedRun {
+  pendingRunId?: string;
+  enqueuePromise?: Promise<void>;
+  workflowId: WorkflowId;
+  workflowName: string;
+  fireTime?: Date;
+  /** Epoch ms the entry joined the queue. */
+  enqueuedAt: number;
+  replayed: boolean;
 }
 
 export class ScheduledExecutionService {
@@ -237,16 +271,15 @@ export class ScheduledExecutionService {
     { controller: AbortController; runId: string }
   >();
   private readonly workflowNames = new Map<WorkflowId, string>();
-  private readonly runQueue: Array<{
-    pendingRunId?: string;
-    enqueuePromise?: Promise<void>;
-    workflowId: WorkflowId;
-    workflowName: string;
-    fireTime?: Date;
-    replayed: boolean;
-  }> = [];
-  private processing = false;
-  private processingPromise: Promise<void> = Promise.resolve();
+  private readonly runQueue: QueuedRun[] = [];
+  private readonly maxConcurrentRuns: number;
+  private readonly now: () => number;
+  /** Queue entries taken off the queue and not yet settled. */
+  private readonly inFlight = new Set<Promise<void>>();
+  /** Workflow ids and names of the in-flight entries. */
+  private readonly claimed = new Set<string>();
+  /** Last fire-to-start delay, by workflow name. */
+  private readonly lastQueueDelayMs = new Map<string, number>();
   private draining = false;
   private stopped = false;
   /** Fires still in handleFire, e.g. waiting on the cron dedup claim. */
@@ -256,6 +289,8 @@ export class ScheduledExecutionService {
 
   constructor(private readonly deps: ScheduledExecutionDeps) {
     this.triggerOverrides = deps.triggerOverrides ?? new Map();
+    this.maxConcurrentRuns = Math.max(1, deps.maxConcurrentRuns ?? 1);
+    this.now = deps.now ?? Date.now;
     this.scheduler = new WorkflowScheduler();
     this.watcher = new WorkflowWatcher(
       workflowsDirFor(deps.repoDir),
@@ -305,7 +340,7 @@ export class ScheduledExecutionService {
   /**
    * Begin shutdown: stop the watcher and scheduler, drop queued runs (their
    * pending-run entries stay for the next boot to replay), and wait up to
-   * `timeoutMs` for the in-flight run to finish. A timeout of 0 returns at
+   * `timeoutMs` for the in-flight runs to finish. A timeout of 0 returns at
    * once. Call {@link stop} afterwards to abort what is left.
    */
   async drain(timeoutMs: number): Promise<void> {
@@ -335,7 +370,7 @@ export class ScheduledExecutionService {
         FIRE_SETTLE_TIMEOUT_MS,
       ),
       timeoutMs > 0
-        ? settleWithin(this.processingPromise, timeoutMs)
+        ? settleWithin(Promise.allSettled([...this.inFlight]), timeoutMs)
         : Promise.resolve(),
     ]);
   }
@@ -360,8 +395,10 @@ export class ScheduledExecutionService {
       entry.controller.abort();
     }
 
-    // Drain the processing promise — runs exit quickly after abort
-    await this.processingPromise;
+    // Wait for the in-flight entries — runs exit quickly after abort
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight]);
+    }
 
     this.running.clear();
     this.workflowNames.clear();
@@ -402,6 +439,28 @@ export class ScheduledExecutionService {
    */
   isRunning(workflowId: WorkflowId): boolean {
     return this.running.has(workflowId);
+  }
+
+  /**
+   * Returns a scheduled workflow's queue state: its fires waiting to start,
+   * the oldest one's fire time, and the last run's fire-to-start delay.
+   */
+  queueStatus(workflowId: WorkflowId): ScheduleQueueStatus {
+    const name = this.workflowNames.get(workflowId) ?? workflowId;
+    const waiting = this.runQueue.filter((entry) =>
+      entry.workflowId === workflowId || entry.workflowName === name
+    );
+    const oldest = waiting.reduce<number | undefined>((min, entry) => {
+      const at = entry.fireTime?.getTime() ?? entry.enqueuedAt;
+      return min === undefined || at < min ? at : min;
+    }, undefined);
+    return {
+      queued: waiting.length,
+      oldestQueuedAt: oldest === undefined
+        ? null
+        : new Date(oldest).toISOString(),
+      lastQueueDelayMs: this.lastQueueDelayMs.get(name) ?? null,
+    };
   }
 
   /**
@@ -459,11 +518,10 @@ export class ScheduledExecutionService {
       pendingRunId: entry.pendingRunId,
       workflowId: entry.workflowIdOrName as WorkflowId,
       workflowName: entry.workflowIdOrName,
+      enqueuedAt: this.now(),
       replayed: true,
     });
-    if (!this.processing) {
-      this.processingPromise = this.processQueue();
-    }
+    this.processQueue();
   }
 
   private resolveSchedule(
@@ -694,9 +752,10 @@ export class ScheduledExecutionService {
       name: workflowName,
     });
 
-    // Queue the run — workflows execute one at a time to avoid lock
-    // contention. Before scheduling, each workflow ran as a separate
-    // process via systemd timers; serializing preserves that behavior.
+    // Queue the run. Up to maxConcurrentRuns entries run at once (default
+    // 1, one at a time as before); a workflow never overlaps itself. Two
+    // workflows that touch the same model still exclude each other through
+    // the per-model lock.
     let pendingRunId: string | undefined;
     let enqueuePromise: Promise<void> | undefined;
     if (this.deps.pendingRunHook) {
@@ -714,11 +773,10 @@ export class ScheduledExecutionService {
       workflowId,
       workflowName,
       fireTime,
+      enqueuedAt: this.now(),
       replayed: false,
     });
-    if (!this.processing) {
-      this.processingPromise = this.processQueue();
-    }
+    this.processQueue();
   }
 
   private async recordForReplay(workflowName: string): Promise<void> {
@@ -742,37 +800,71 @@ export class ScheduledExecutionService {
     }
   }
 
-  private async processQueue(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
-
-    try {
-      while (this.runQueue.length > 0) {
-        const entry = this.runQueue.shift()!;
-        const { pendingRunId, enqueuePromise } = entry;
-        if (enqueuePromise) await enqueuePromise;
-        // A drain that began while this entry was dequeued leaves it pending
-        // for the next boot to replay rather than starting it now.
-        if (this.draining) break;
-        if (pendingRunId && this.deps.pendingRunHook) {
-          await this.deps.pendingRunHook.delete(pendingRunId);
-        }
-        // Each entry starts outside any vault scope: the run enters its own
-        // principal's scope, and the queue's inherited context never carries
-        // another entry's (swamp-club#2676).
-        await withoutVaultAccess(() => this.executeWorkflow(entry));
-      }
-    } finally {
-      this.processing = false;
+  /**
+   * Starts queued entries while fewer than maxConcurrentRuns are in flight:
+   * each time, the first entry whose workflow is not already in flight. With
+   * one slot nothing is in flight when it picks, so entries start in queue
+   * order. Each settled entry frees its slot and starts the next.
+   */
+  private processQueue(): void {
+    while (this.inFlight.size < this.maxConcurrentRuns) {
+      const index = this.runQueue.findIndex((entry) =>
+        !this.identityOf(entry).some((key) => this.claimed.has(key))
+      );
+      if (index === -1) return;
+      const [entry] = this.runQueue.splice(index, 1);
+      const identity = this.identityOf(entry);
+      for (const key of identity) this.claimed.add(key);
+      const settled: Promise<void> = this.runEntry(entry).finally(() => {
+        for (const key of identity) this.claimed.delete(key);
+        this.inFlight.delete(settled);
+        this.processQueue();
+      });
+      this.inFlight.add(settled);
     }
   }
 
-  private async executeWorkflow(entry: {
-    workflowId: WorkflowId;
-    workflowName: string;
-    fireTime?: Date;
-    replayed: boolean;
-  }): Promise<void> {
+  /**
+   * The keys a queue entry's workflow is known by. A fired entry carries the
+   * workflow's id, a replayed one its name; both resolve to the same set so
+   * the two never overlap.
+   */
+  private identityOf(entry: QueuedRun): string[] {
+    const keys = new Set<string>([entry.workflowId, entry.workflowName]);
+    const name = this.workflowNames.get(entry.workflowId);
+    if (name) keys.add(name);
+    const id = this.findWorkflowIdByName(entry.workflowName);
+    if (id) keys.add(id);
+    return [...keys];
+  }
+
+  /** Never rejects: a failure is logged and the queue keeps going. */
+  private async runEntry(entry: QueuedRun): Promise<void> {
+    try {
+      const { pendingRunId, enqueuePromise } = entry;
+      if (enqueuePromise) await enqueuePromise;
+      // A drain that began while this entry was dequeued leaves it pending
+      // for the next boot to replay rather than starting it now.
+      if (this.draining) return;
+      if (pendingRunId && this.deps.pendingRunHook) {
+        await this.deps.pendingRunHook.delete(pendingRunId);
+      }
+      // Each entry starts outside any vault scope: the run enters its own
+      // principal's scope, and the queue's inherited context never carries
+      // another entry's (swamp-club#2676).
+      await withoutVaultAccess(() => this.executeWorkflow(entry));
+    } catch (error) {
+      logger.error(
+        "Scheduled run for workflow {name} did not start: {error}",
+        {
+          name: entry.workflowName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  private async executeWorkflow(entry: QueuedRun): Promise<void> {
     const { workflowId, workflowName, replayed } = entry;
     const fireTime = entry.fireTime?.toISOString();
     const authorization = await this.authorize(entry);
@@ -829,6 +921,12 @@ export class ScheduledExecutionService {
               // id; this schedule's run is the one without a parent.
               if (event.kind === "started" && event.parentRunId === undefined) {
                 runId = event.runId;
+                const queueDelayMs = Math.max(
+                  0,
+                  this.now() -
+                    (entry.fireTime?.getTime() ?? entry.enqueuedAt),
+                );
+                this.lastQueueDelayMs.set(workflowName, queueDelayMs);
                 this.running.set(workflowId, { controller, runId });
                 this.deps.activeRunHook?.write(
                   runId,
@@ -843,6 +941,7 @@ export class ScheduledExecutionService {
                   runId,
                   fireTime,
                   replayed,
+                  queueDelayMs,
                 });
               }
               if (event.kind === "completed") {

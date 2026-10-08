@@ -28,6 +28,7 @@ import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { ResumeAction } from "../components/ResumeAction";
+import { totalQueued } from "./schedule_queue.ts";
 import { activeRunIds } from "../client/resume_state";
 import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import { HealthUnavailable } from "../components/HealthUnavailable";
@@ -317,7 +318,17 @@ export function Overview(
       <div className="panels-grid" style={{ marginTop: 14 }}>
         <div className="panel">
           <div className="panel-header">
-            <div className="panel-title">Upcoming Schedules</div>
+            <div className="panel-title">
+              Upcoming Schedules
+              {totalQueued(health?.scheduling?.schedules ?? []) > 0 && (
+                <>
+                  {" "}
+                  <span className="panel-count">
+                    {totalQueued(health?.scheduling?.schedules ?? [])} queued
+                  </span>
+                </>
+              )}
+            </div>
           </div>
           <div>
             {healthState !== "ready" && (

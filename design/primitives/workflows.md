@@ -1794,6 +1794,13 @@ jobs:
   `cronFireDedup` hook. A workflow fires single-flight per instance.
 - **Overlap prevention:** if a workflow is still running from the previous
   scheduled trigger, the next trigger is skipped with a warning.
+- **Concurrency:** fires that are not skipped join one queue. Up to
+  `--max-concurrent-scheduled-runs` (serve setting, default 1) run at once:
+  different workflows run together, and a workflow never overlaps itself — a
+  fire that arrives while the same workflow is still queued waits behind it.
+  At the default, scheduled runs go one at a time in fire order. Each
+  schedule's queue state (`queued`, `oldestQueuedAt`, `lastQueueDelayMs`) is
+  reported in health and on `/health`.
 - **No catch-up:** serve does not fire schedules it missed while it was down.
   On startup it waits for the next natural cron tick.
 - `--no-schedule` on `swamp serve` turns off scheduled execution.

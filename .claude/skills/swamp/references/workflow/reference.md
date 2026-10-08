@@ -88,9 +88,14 @@ modifying, or removing a schedule takes effect without restart.
 **Key behaviors:**
 
 - Overlap prevention: if still running from previous trigger, next trigger skips
+- Concurrency: one scheduled run at a time by default; raise it with
+  `--max-concurrent-scheduled-runs <n>` (or `max-concurrent-scheduled-runs` in
+  serve.yaml) so different workflows run together. A workflow never overlaps
+  itself. Separate from `--max-concurrent-runs`, which limits API runs
 - No catch-up: missed schedules while serve was down are not fired on startup
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
-- Health endpoint (`/health`) reports scheduled workflows and next fire times
+- Health endpoint (`/health`) reports scheduled workflows, next fire times and
+  queue state per schedule: `queued`, `oldestQueuedAt`, `lastQueueDelayMs`
 
 ### Trigger inputs
 

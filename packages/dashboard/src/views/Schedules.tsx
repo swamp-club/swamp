@@ -20,6 +20,7 @@
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { HealthUnavailable } from "../components/HealthUnavailable";
+import { scheduleQueueLabel } from "./schedule_queue.ts";
 
 export function Schedules(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
@@ -101,6 +102,18 @@ export function Schedules(
                               idle
                             </span>
                           )}
+                        {scheduleQueueLabel(s, Date.now()) && (
+                          <span
+                            className="mono"
+                            style={{
+                              fontSize: "0.75rem",
+                              color: "var(--text-3)",
+                              marginLeft: 8,
+                            }}
+                          >
+                            {scheduleQueueLabel(s, Date.now())}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}

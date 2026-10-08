@@ -117,6 +117,11 @@ Deno.test("HealthCollector: includes schedule entries", async () => {
         nextRun: new Date("2026-01-01T00:05:00Z"),
       }],
       isRunning: () => false,
+      queueStatus: () => ({
+        queued: 0,
+        oldestQueuedAt: null,
+        lastQueueDelayMs: null,
+      }),
     },
   });
 
@@ -132,6 +137,60 @@ Deno.test("HealthCollector: includes schedule entries", async () => {
   );
   assertEquals(snapshot.scheduling.schedules[0].cronExpression, "*/5 * * * *");
   assertEquals(snapshot.scheduling.schedules[0].running, false);
+});
+
+Deno.test("HealthCollector: reports each schedule's queue state", async () => {
+  const deps = makeDeps({
+    scheduleEnabled: true,
+    scheduleProvider: {
+      listSchedules: () => [{
+        workflowId: "wf-1",
+        workflowName: "busy",
+        cronExpression: "* * * * *",
+        nextRun: null,
+      }, {
+        workflowId: "wf-2",
+        workflowName: "idle",
+        cronExpression: "0 * * * *",
+        nextRun: null,
+      }],
+      isRunning: (id) => id === "wf-1",
+      queueStatus: (id) =>
+        id === "wf-1"
+          ? {
+            queued: 3,
+            oldestQueuedAt: "2026-01-01T00:00:00.000Z",
+            lastQueueDelayMs: 49 * 60_000,
+          }
+          : { queued: 0, oldestQueuedAt: null, lastQueueDelayMs: null },
+    },
+  });
+
+  const snapshot = await new HealthCollector(deps).collect();
+
+  assertEquals(snapshot.scheduling.schedules, [{
+    workflowId: "wf-1",
+    workflowName: "busy",
+    cronExpression: "* * * * *",
+    nextRun: null,
+    running: true,
+    queued: 3,
+    oldestQueuedAt: "2026-01-01T00:00:00.000Z",
+    lastQueueDelayMs: 49 * 60_000,
+  }, {
+    workflowId: "wf-2",
+    workflowName: "idle",
+    cronExpression: "0 * * * *",
+    nextRun: null,
+    running: false,
+    queued: 0,
+    oldestQueuedAt: null,
+    lastQueueDelayMs: null,
+  }]);
+  assertEquals(Object.keys(snapshot.scheduling).sort(), [
+    "enabled",
+    "schedules",
+  ]);
 });
 
 Deno.test("HealthCollector: includes webhook endpoints", async () => {
