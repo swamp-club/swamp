@@ -17,10 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { initializeLogging } from "../../../infrastructure/logging/logger.ts";
-import { type Grant, GRANT_MODEL_TYPE, grantModel } from "./grant_model.ts";
+import {
+  checkGrantCreateInputs,
+  type Grant,
+  GRANT_MODEL_TYPE,
+  grantModel,
+} from "./grant_model.ts";
 import { createInMemoryAccessContext } from "./access_test_helpers.ts";
 import { GrantSourceSchema } from "../../access/grant_source.ts";
 
@@ -384,4 +394,59 @@ Deno.test("create: lists each refused condition literal on its own line", async 
       .length,
     2,
   );
+});
+
+for (
+  const [label, refused, expected] of [
+    [
+      "a subject with no kind",
+      { subject: "adam" },
+      'Invalid subject "adam": expected',
+    ],
+    [
+      "a CEL syntax error",
+      { condition: "tags.env ==" },
+      "Invalid grant condition: CEL syntax error",
+    ],
+    [
+      "an unknown CEL variable",
+      { condition: 'bogusvar == "x"' },
+      "Invalid grant condition: CEL type error: Unknown variable: bogusvar",
+    ],
+    [
+      "a modelType literal not spelled as stored",
+      {
+        resourceKind: "model",
+        resourcePattern: "*",
+        condition: 'modelType == "ACME::Deploy"',
+      },
+      "Invalid grant condition:\n  - modelType is compared with 'ACME::Deploy'",
+    ],
+  ] as const
+) {
+  Deno.test(`checkGrantCreateInputs: refuses ${label} with the message create refuses it with`, async () => {
+    const args = { ...VALID_CREATE_ARGS, ...refused };
+    const checked = assertThrows(() => checkGrantCreateInputs(args), Error);
+    const { context, store } = createTestContext();
+    const created = await assertRejects(
+      () => grantModel.methods.create.execute(args, context),
+      Error,
+    );
+    assertStringIncludes(checked.message, expected);
+    assertEquals(checked.message, created.message);
+    assertEquals(store.has("grant-main"), false);
+  });
+}
+
+Deno.test("checkGrantCreateInputs: returns the parsed inputs and selector warnings without throwing", () => {
+  const checked = checkGrantCreateInputs({
+    ...VALID_CREATE_ARGS,
+    resourceKind: "model",
+    resourcePattern: "@Acme/*",
+    condition: 'tags.env == "prod"',
+  });
+  assertEquals(checked.subject, { kind: "user", name: "adam" });
+  assertEquals(checked.resource, { kind: "model", pattern: "@Acme/*" });
+  assertEquals(checked.warnings.length, 1);
+  assertEquals(checked.warnings[0].message.includes("model:@acme/*"), true);
 });
