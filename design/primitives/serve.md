@@ -730,7 +730,10 @@ as its instance id. The coordination records:
 (`src/serve/boot_reconciliation.ts`):
 
 1. Pulls the remote datastore into its local cache (`hydrateLocalCache`,
-   bounded by `--hydration-timeout`).
+   bounded by `--hydration-timeout`). A failed pull is logged and the instance
+   starts on what its cache holds, except under `managedConfig`: there it is
+   tried three times, each with the full timeout and resuming from the files
+   already downloaded, and a third failure stops startup.
 2. Migrates root-level control records into the configured namespace, once.
 3. Sweeps stale worker leases and dispatches.
 4. Reaps runs whose owning PID or heartbeat is gone
