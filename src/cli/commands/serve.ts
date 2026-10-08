@@ -1996,7 +1996,8 @@ const checkConfigCommand = new Command()
       "printing it. It also reads the grant files serve reads (grants/, grants-file " +
       "and grants-dir) and fails if serve would refuse them; grant type spellings " +
       "that match no type as written are warnings, and stored grants are reported " +
-      "by serve at startup. It reads only this repository's files and never contacts the " +
+      "by serve at startup. Apart from a grants-file or grants-dir outside the " +
+      "repository, it reads only this repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +

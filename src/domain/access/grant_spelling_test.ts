@@ -166,3 +166,39 @@ Deno.test("findGrantSpellingIssues: literal messages fit exact, prefix and fragm
   assertStringIncludes(messages[2], "checked for 'My Probe'");
   assertStringIncludes(messages[2], "write 'my/probe'");
 });
+
+Deno.test("findGrantSpellingIssues: a deny that may name model names is not told to respell", () => {
+  const [finding] = findGrantSpellingIssues({
+    effect: "deny",
+    resource: { kind: "model", pattern: "Prod-*" },
+  });
+  assertStringIncludes(
+    finding.message,
+    "also covers model types spelled 'model:prod-*'",
+  );
+  assertStringIncludes(
+    finding.message,
+    "keep it as written if it is meant for those models",
+  );
+  assertEquals(finding.message.includes("write it that way"), false);
+});
+
+Deno.test("findGrantSpellingIssues: an allow that may name model names offers both readings", () => {
+  const [finding] = findGrantSpellingIssues({
+    effect: "allow",
+    resource: { kind: "model", pattern: "Prod-DB" },
+  });
+  assertStringIncludes(finding.message, "only a model named exactly 'Prod-DB'");
+  assertStringIncludes(
+    finding.message,
+    "keep it as written if it is meant for those models",
+  );
+});
+
+Deno.test("findGrantSpellingIssues: a type-path deny is told to respell", () => {
+  const [finding] = findGrantSpellingIssues({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+  });
+  assertStringIncludes(finding.message, "write it that way");
+});
