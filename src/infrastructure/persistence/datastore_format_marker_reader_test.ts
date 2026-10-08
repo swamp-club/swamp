@@ -59,6 +59,7 @@ function customConfig(
 
 function provider(
   createSyncService?: DatastoreProvider["createSyncService"],
+  datastoreControlPlaneStore?: DatastoreProvider["datastoreControlPlaneStore"],
 ): () => Promise<DatastoreProvider> {
   const p: DatastoreProvider = {
     createLock: () => {
@@ -69,6 +70,7 @@ function provider(
     },
     resolveDatastorePath: () => "/repo/.swamp",
     ...(createSyncService ? { createSyncService } : {}),
+    ...(datastoreControlPlaneStore ? { datastoreControlPlaneStore } : {}),
   };
   return () => Promise.resolve(p);
 }
@@ -206,6 +208,52 @@ Deno.test("readDatastoreFormatMarker: one read builds two sync services and make
   assertEquals(remote.controlPlaneReads().map((read) => read.key), [
     "_control/datastore-format",
   ]);
+});
+
+Deno.test("readDatastoreFormatMarker: a provider's datastore-wide store is read with one get and no sync service", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  remote.seedControlPlane(DATASTORE_FORMAT_MARKER_KEY, encode('{"format":3}'));
+  remote.seedControlPlane(DATASTORE_FORMAT_MARKER_KEY, encode("ns"), {
+    namespace: "infra",
+  });
+  const read = await readDatastoreFormatMarker(
+    "/repo",
+    customConfig({ namespace: "infra" }),
+    {
+      resolveProvider: provider(
+        () => {
+          throw new Error("the reader must not build a sync service");
+        },
+        () => remote.datastoreControlPlaneStore(),
+      ),
+    },
+  );
+  assertEquals(read.kind, "present");
+  if (read.kind !== "present") return;
+  assertEquals(read.source, "_control/datastore-format on @test/store");
+  assertEquals(new TextDecoder().decode(read.bytes), '{"format":3}');
+  assertEquals(remote.connections(), 0);
+  assertEquals(remote.controlPlaneReads(), [
+    { instance: "datastore", key: "_control/datastore-format" },
+  ]);
+  assertEquals(remote.ops(), []);
+});
+
+Deno.test("readDatastoreFormatMarker: a failed datastore-wide read is unreadable, with no fallback to a sync service", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  remote.failNext("controlPlane", new Error("AccessDenied"));
+  const read = await readDatastoreFormatMarker("/repo", customConfig(), {
+    resolveProvider: provider(
+      (_repo, cache) =>
+        remote.connect(cache) as unknown as DatastoreSyncService,
+      () => remote.datastoreControlPlaneStore(),
+    ),
+  });
+  assertEquals(read.kind, "unreadable");
+  if (read.kind !== "unreadable") return;
+  assertInstanceOf(read.error, Error);
+  assertEquals(read.error.message, "AccessDenied");
+  assertEquals(remote.connections(), 0);
 });
 
 Deno.test("readDatastoreFormatMarker: a missing control-plane record reads absent", async () => {

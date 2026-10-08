@@ -136,7 +136,9 @@ export type {
 } from "./datastore_test_context.ts";
 
 export type {
+  ControlPlaneReadOptions,
   ControlPlaneStore,
+  DatastoreControlPlaneStore,
   DatastoreHealthResult,
   DatastoreProvider,
   DatastoreSyncOptions,
@@ -171,11 +173,13 @@ export type {
 
 export {
   assertControlPlaneStoreConformance,
+  assertDatastoreControlPlaneStoreConformance,
   createInMemoryControlPlaneStore,
 } from "./control_plane_conformance.ts";
 
 export type {
   ControlPlaneStoreConformanceOptions,
+  DatastoreControlPlaneStoreConformanceOptions,
 } from "./control_plane_conformance.ts";
 
 export {

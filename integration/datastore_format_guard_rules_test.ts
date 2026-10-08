@@ -36,9 +36,12 @@ import {
 const ROOT = join(fromFileUrl(import.meta.url), "..", "..");
 const SRC_DIR = join(ROOT, "src");
 
-/** A call that opens a datastore: a sync service or one of its locks. */
+/**
+ * A call that opens a datastore: a sync service, one of its locks, or the
+ * provider's datastore-wide control-plane store.
+ */
 const DATASTORE_OPEN =
-  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(/;
+  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(|\.datastoreControlPlaneStore(\?\.)?\s*\(/;
 
 /** A function declaration, which names the call without making it. */
 const DECLARATION = /^\s*(export\s+)?(async\s+)?function\b/;
@@ -60,6 +63,10 @@ Deno.test("opens: matches calls, not comments or declarations", () => {
   assertEquals(opens("    .createSyncService(repoDir, cachePath)"), true);
   assertEquals(
     opens("  const lock = await createDatastoreLock(config);"),
+    true,
+  );
+  assertEquals(
+    opens("    store = provider.datastoreControlPlaneStore();"),
     true,
   );
   assertEquals(opens("  // provider.createLock(path)"), false);
@@ -103,8 +110,11 @@ async function openingOwners(): Promise<string[]> {
  * datastoreSetupExtension checks the target datastore through its
  * assertDatastoreFormat dep before building anything that writes.
  *
- * readDatastoreFormatMarker is the guard's own read; wrapExtensionProvider
- * only wraps a provider's createLock.
+ * readDatastoreFormatMarker is the guard's own read, and the only caller of
+ * datastoreControlPlaneStore: once through that store, or twice through
+ * createSyncService on the fallback (a fresh service, then the
+ * shared-instance check). wrapExtensionProvider only wraps a provider's
+ * createLock.
  */
 const GUARDED_PINNED = [
   "src/cli/commands/datastore_catalog_pull.ts:datastoreCatalogPullCommand",
@@ -125,7 +135,7 @@ const GUARDED_PINNED = [
   "src/cli/repo_context.ts:requireInitializedRepoReadOnly (x2)",
   "src/cli/repo_context.ts:requireInitializedRepoUnlocked (x2)",
   "src/domain/extensions/datastore_kind_adapter.ts:wrapExtensionProvider",
-  "src/infrastructure/persistence/datastore_format_marker_reader.ts:readDatastoreFormatMarker (x2)",
+  "src/infrastructure/persistence/datastore_format_marker_reader.ts:readDatastoreFormatMarker (x3)",
   "src/infrastructure/persistence/datastore_global_lock.ts:createDatastoreLock (x2)",
   "src/infrastructure/persistence/datastore_global_lock.ts:datastoreGlobalLock",
   "src/infrastructure/persistence/server_token_lock.ts:createServerTokenLock (x2)",

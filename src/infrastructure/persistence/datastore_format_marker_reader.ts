@@ -29,7 +29,7 @@ import {
   DATASTORE_FORMAT_MARKER_MAX_BYTES,
   type DatastoreFormatMarkerRead,
 } from "../../domain/datastore/datastore_format.ts";
-import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
+import type { DatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 
@@ -58,13 +58,15 @@ export interface ReadDatastoreFormatMarkerOptions {
  * Filesystem datastores keep the marker at the datastore root,
  * `<path>/datastore-format.json`, outside every namespace subdirectory.
  *
- * Other datastores keep it as the control-plane record `datastore-format`.
- * The read goes through a sync service built for this read alone: one that
- * has never pulled or pushed has no namespace bound, so the S3 and GCS
- * extensions resolve the key to the datastore-wide `_control/` root from a
- * namespaced repo too. A provider that hands out one shared sync service
- * would have its namespace bound by this read, breaking the command's later
- * namespaced pull, so such a provider is skipped.
+ * Other datastores keep it as the control-plane record `datastore-format`
+ * at the datastore-wide `_control/` root. A provider that offers
+ * `datastoreControlPlaneStore` is read through it: one request, no sync
+ * service. Otherwise the read goes through a sync service built for this
+ * read alone: one that has never pulled or pushed has no namespace bound,
+ * so the S3 and GCS extensions resolve the key to the datastore-wide root
+ * from a namespaced repo too. A provider that hands out one shared sync
+ * service would have its namespace bound by that read, breaking the
+ * command's later namespaced pull, so such a provider is skipped.
  */
 export async function readDatastoreFormatMarker(
   repoDir: string,
@@ -83,31 +85,36 @@ export async function readDatastoreFormatMarker(
   // Names the datastore type too, so a user with several datastores (a
   // serve audit datastore, say) can tell which one was refused.
   const source = `_control/${DATASTORE_FORMAT_MARKER_KEY} on ${config.type}`;
-  let store: ControlPlaneStore;
+  let store: DatastoreControlPlaneStore;
   try {
     const provider = await (options.resolveProvider ?? resolveCustomProvider)(
       config,
     );
-    if (!provider.createSyncService) {
+    if (provider.datastoreControlPlaneStore) {
+      store = provider.datastoreControlPlaneStore();
+    } else if (!provider.createSyncService) {
       return {
         kind: "unsupported",
         reason: `${config.type} provides no sync service`,
       };
+    } else {
+      const service = provider.createSyncService(repoDir, config.cachePath);
+      if (
+        !service.capabilities?.().controlPlane || !service.controlPlaneStore
+      ) {
+        return {
+          kind: "unsupported",
+          reason: `${config.type} does not advertise controlPlane`,
+        };
+      }
+      if (service === provider.createSyncService(repoDir, config.cachePath)) {
+        return {
+          kind: "unsupported",
+          reason: `${config.type} shares one sync service instance`,
+        };
+      }
+      store = service.controlPlaneStore();
     }
-    const service = provider.createSyncService(repoDir, config.cachePath);
-    if (!service.capabilities?.().controlPlane || !service.controlPlaneStore) {
-      return {
-        kind: "unsupported",
-        reason: `${config.type} does not advertise controlPlane`,
-      };
-    }
-    if (service === provider.createSyncService(repoDir, config.cachePath)) {
-      return {
-        kind: "unsupported",
-        reason: `${config.type} shares one sync service instance`,
-      };
-    }
-    store = service.controlPlaneStore();
   } catch (error) {
     // The command resolves the provider again and reports the failure itself.
     return { kind: "unreadable", source, error };

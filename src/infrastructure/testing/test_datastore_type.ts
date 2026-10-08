@@ -55,10 +55,13 @@ export interface TestDatastoreTypeOptions {
  * Registers a per-run `@test/remote-<uuid>` datastore type whose sync
  * service is `remote.connect(cachePath)`. The cache lives at
  * `<repoDir>/.test-cache`. Point a repo at it with
- * {@link configureTestDatastore}.
+ * {@link configureTestDatastore}. When `remote` has a
+ * `datastoreControlPlaneStore`, the provider offers it too.
  */
 export function registerTestDatastoreType(
-  remote: Pick<InMemoryRemote, "connect">,
+  remote:
+    & Pick<InMemoryRemote, "connect">
+    & Partial<Pick<InMemoryRemote, "datastoreControlPlaneStore">>,
   options: TestDatastoreTypeOptions = {},
 ): TestDatastoreType {
   const released = (): void => options.onLockRelease?.();
@@ -100,6 +103,11 @@ export function registerTestDatastoreType(
       // PushManifest; core only hands it back to the same commitPush.
       createSyncService: (_repoDir: string, cachePath: string) =>
         remote.connect(cachePath) as unknown as DatastoreSyncService,
+      ...(remote.datastoreControlPlaneStore
+        ? {
+          datastoreControlPlaneStore: remote.datastoreControlPlaneStore,
+        }
+        : {}),
     }),
   });
   return {

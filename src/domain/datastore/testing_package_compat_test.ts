@@ -26,6 +26,10 @@
  */
 
 import type { DatastoreProvider as CanonicalDatastoreProvider } from "./datastore_provider.ts";
+import type {
+  ControlPlaneStore as CanonicalControlPlaneStore,
+  DatastoreControlPlaneStore as CanonicalDatastoreControlPlaneStore,
+} from "./control_plane_store.ts";
 import type { DistributedLock as CanonicalDistributedLock } from "./distributed_lock.ts";
 import type { DatastoreVerifier as CanonicalDatastoreVerifier } from "./datastore_health.ts";
 import type {
@@ -34,6 +38,8 @@ import type {
 } from "./datastore_sync_service.ts";
 
 import type {
+  ControlPlaneStore as TestingControlPlaneStore,
+  DatastoreControlPlaneStore as TestingDatastoreControlPlaneStore,
   DatastoreProvider as TestingDatastoreProvider,
   DatastoreSyncService as TestingDatastoreSyncService,
   DatastoreVerifier as TestingDatastoreVerifier,
@@ -127,8 +133,32 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
     provider.createSyncService;
   const _resolveCachePath: CanonicalDatastoreProvider["resolveCachePath"] =
     provider.resolveCachePath;
+  const _datastoreControlPlane: CanonicalDatastoreProvider[
+    "datastoreControlPlaneStore"
+  ] = provider.datastoreControlPlaneStore;
 
-  void [_lock, _verifier, _path, _createSync, _resolveCachePath];
+  void [
+    _lock,
+    _verifier,
+    _path,
+    _createSync,
+    _resolveCachePath,
+    _datastoreControlPlane,
+  ];
+}
+
+// Control-plane stores: a store written against the testing types is one
+// core can use, read options included.
+function _checkControlPlaneStores(
+  store: TestingControlPlaneStore,
+  datastoreStore: TestingDatastoreControlPlaneStore,
+) {
+  const _store: CanonicalControlPlaneStore = store;
+  const _datastoreStore: CanonicalDatastoreControlPlaneStore = datastoreStore;
+  const _read: ReturnType<CanonicalControlPlaneStore["get"]> = store.get("k", {
+    signal: AbortSignal.abort(),
+  });
+  void [_store, _datastoreStore, _read];
 }
 
 // LockInfo: verify field types match.
@@ -159,6 +189,7 @@ Deno.test("testing package datastore types: compile-time compatibility check", (
     _checkDatastoreSyncServiceFields,
     _checkSyncCapabilitiesFields,
     _checkDatastoreProviderFields,
+    _checkControlPlaneStores,
     _checkLockInfoFields,
   ];
 });

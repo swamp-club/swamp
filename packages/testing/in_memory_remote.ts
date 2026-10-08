@@ -116,6 +116,9 @@
  * binds no namespace on its first control-plane call, as the S3 and GCS
  * extensions do (swamp-club#3189). Its writes are recorded as `controlPlane`
  * ops; its reads are not, and are listed by `controlPlaneReads` instead.
+ * `datastoreControlPlaneStore` stands in for a provider's datastore-wide
+ * store. A control-plane `get` given an already aborted signal rejects with
+ * its reason; nothing else in the control plane can be in flight.
  *
  * Not modelled: namespace prefixes (a namespaced path is a plain key and a
  * push is never limited to one), lazy hydration (`hydrateFile`),
@@ -138,6 +141,7 @@
 import { dirname, join, normalize } from "@std/path";
 import type {
   ControlPlaneStore,
+  DatastoreControlPlaneStore,
   DatastoreSyncOptions,
   DatastoreSyncService,
   SyncCapabilities,
@@ -337,6 +341,12 @@ export interface InMemoryRemote {
   controlPlaneRecords(): ReadonlyMap<string, Uint8Array>;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
+  /**
+   * A provider's datastore-wide store: `get` reads `_control/<key>`
+   * whatever namespace any service has bound, binds nothing, and is listed
+   * as instance `"datastore"` by `controlPlaneReads`. Needs `controlPlane`.
+   */
+  datastoreControlPlaneStore(): DatastoreControlPlaneStore;
   /** How many sync services `connect` has built. */
   connections(): number;
   /**
@@ -1212,10 +1222,11 @@ export function createInMemoryRemote(
           deleted: [],
         });
       return {
-        get(key) {
+        get(key, readOptions) {
           try {
             if (!namespaceBound) bindNamespace(undefined);
             reads.push({ instance, key: controlKey(namespace, key) });
+            readOptions?.signal?.throwIfAborted();
             reach();
             const bytes = controlRecords.get(controlKey(namespace, key));
             return Promise.resolve(bytes ? bytes.slice() : null);
@@ -1313,6 +1324,27 @@ export function createInMemoryRemote(
     },
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
+    datastoreControlPlaneStore() {
+      if (!controlPlane) {
+        throw new Error(
+          "datastoreControlPlaneStore needs the controlPlane option",
+        );
+      }
+      return {
+        get(key, readOptions) {
+          try {
+            const fullKey = controlKey(undefined, key);
+            reads.push({ instance: "datastore", key: fullKey });
+            readOptions?.signal?.throwIfAborted();
+            checkReachable("controlPlane", "datastore");
+            const bytes = controlRecords.get(fullKey);
+            return Promise.resolve(bytes ? bytes.slice() : null);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+      };
+    },
     connections: () => instanceCount,
     controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>

@@ -20,6 +20,7 @@
 import type { DistributedLock, LockOptions } from "./distributed_lock.ts";
 import type { DatastoreVerifier } from "./datastore_health.ts";
 import type { DatastoreSyncService } from "./datastore_sync_service.ts";
+import type { DatastoreControlPlaneStore } from "./control_plane_store.ts";
 
 /**
  * Factory interface for user-defined datastores.
@@ -51,6 +52,21 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+
+  /**
+   * Return a read-only {@link DatastoreControlPlaneStore} for the
+   * datastore-wide control plane (`_control/` at the datastore root).
+   *
+   * Core reads the datastore format marker through it before a command
+   * opens the datastore, so building it must be cheap: no sync service, no
+   * namespace binding and no request until `get`. A `get` should be one
+   * request, with no separate credentials preflight.
+   *
+   * Optional — when omitted, core reads the marker through a fresh sync
+   * service's `controlPlaneStore()` instead, which costs a sync service and
+   * relies on that service not having bound a namespace yet.
+   */
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
 
   /**
    * Register a namespace in the datastore.

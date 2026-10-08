@@ -108,6 +108,11 @@ export interface RowRepoOptions {
   managedConfig?: boolean;
   /** Options for the row's in-memory remote. */
   remote?: InMemoryRemoteOptions;
+  /**
+   * Give both repos' providers the remote's `datastoreControlPlaneStore`.
+   * Needs `remote.controlPlane`.
+   */
+  datastoreControlPlane?: boolean;
 }
 
 /** One row's remote, its two repos, and A's open repo context. */
@@ -186,11 +191,16 @@ export async function withRowRepos(
   );
   const remote = createInMemoryRemote(options.remote);
   const releases: number[] = [];
+  const datastoreControlPlane = options.datastoreControlPlane
+    ? { datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore() }
+    : {};
   const typeA = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "A" }),
+    ...datastoreControlPlane,
   }, { onLockRelease: () => releases.push(remote.ops().length) });
   const typeB = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "B" }),
+    ...datastoreControlPlane,
   });
   const modelType = ModelType.create(
     `test/usecase-${crypto.randomUUID().slice(0, 8)}`,
