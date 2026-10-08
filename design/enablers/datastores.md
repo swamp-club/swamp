@@ -456,7 +456,13 @@ namespace:
   it.
 - **Datastores whose sync service advertises `controlPlane`** (S3, GCS): the
   control-plane record `datastore-format`, at `<prefix>/_control/datastore-format`.
-  Core reads it through a sync service built for that read alone. A sync
+  A provider that implements the optional `datastoreControlPlaneStore()` is
+  read through it: a read-only store keyed at the datastore-wide `_control/`
+  root that binds no namespace and builds no sync service, so the read is one
+  `get` (swamp-club#3191). Only a missing record reads as null; access denied
+  and every other failure reject, so the read counts as failed, not absent.
+  For a provider without it, core reads the record through a sync service
+  built for that read alone. A sync
   service that has not pulled or pushed has no namespace bound, so the S3 and
   GCS extensions resolve the key to the root `_control/` even for a namespaced
   repo. This holds for every released S3/GCS version: before extensions#242
@@ -472,8 +478,13 @@ namespace:
   instances they return.
 - **Other extensions** (no `controlPlane`, no sync service, no cache path): no
   marker can be read, so the check is skipped and logged at debug. The v3
-  storage contract must give every v3-capable datastore an explicit
-  datastore-scoped marker read, rather than relying on lazy binding.
+  storage contract must require `datastoreControlPlaneStore()` of every
+  v3-capable datastore, rather than relying on lazy binding.
+  `assertDatastoreControlPlaneStoreConformance` in `@swamp-club/swamp-testing`
+  checks an implementation.
+- **Namespace-scoped credentials.** A namespaced repo whose credentials reach
+  only its own `<prefix>/<namespace>/` cannot read the root record. The read
+  fails, and the check is skipped, the same through either path.
 
 **The check.** `assertSupportedDatastoreFormat`
 (`src/domain/datastore/datastore_format.ts`) decides; the infrastructure reader
@@ -494,9 +505,34 @@ and says nothing was changed. A garbled marker is refused because treating it
 as format 2 is the unsafe direction. A failed read passes because blocking
 offline or degraded use would change behaviour for every v2 datastore, and the
 command meets the same outage itself. The remote read is bounded by
-`DATASTORE_FORMAT_READ_TIMEOUT_MS` (5 s), since the extensions retry inside
-`get`; a remote slower than that is treated as a failed read. The v3 opt-in
-should revisit that trade-off.
+`DATASTORE_FORMAT_READ_TIMEOUT_MS` (3 s) through a provider's datastore-wide
+store, and by `DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS` (4 s) on the
+fresh-sync-service fallback, which pays one more round trip. The `get` is
+handed an `AbortSignal` that aborts at that deadline, so an extension that honours it stops its
+request and retry backoff then; until then it may retry, so one transient
+error does not skip the check. A remote slower than the deadline is treated as
+a failed read.
+
+**Cost** (swamp-club#3191, measured with
+`scripts/bench_datastore_format_guard.ts` against local ministack and
+fake-gcs-server, 20 interleaved runs per cell). With the current S3 and GCS
+extensions, which have no `datastoreControlPlaneStore()` yet, each guarded
+command builds two sync services and makes one control-plane `get`: on S3 that
+is a `HeadBucket` credentials preflight plus the `GetObject`, two requests; on
+GCS one request. Against a local emulator this adds no time distinguishable
+from noise. A stalled read used to add the whole 5 s; it now adds the cap of
+its path. Through `datastoreControlPlaneStore()` the check builds no sync
+service and, as the extensions implement it, makes one request.
+
+The caps were set from emulator runs with injected round trips and a slow AWS
+container-credentials source, since a real bucket's first request pays
+connection setup and credential resolution. A read that misses its deadline
+skips the check silently, so the caps keep headroom: at 300 ms round trips and
+a 1 s credentials fetch the S3 read took about 1.95 s through the
+datastore-wide store, and more than 2 s on the fallback, where a 2 s cap let
+a newer-format datastore through in 5 of 5 runs. With the 3 s and 4 s caps a
+planted newer-format marker was refused in every run, up to a 1.5 s
+credentials fetch.
 
 **Where it runs.** Before anything locks, pulls, pushes or writes:
 

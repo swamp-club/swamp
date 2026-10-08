@@ -21,6 +21,7 @@ interface DatastoreProvider {
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
   resolveCachePath?(repoDir: string): string | undefined;
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
 
   registerNamespace?(
     datastorePath: string,
@@ -86,6 +87,23 @@ Returns a local cache path for remote datastores, or `undefined` to accept
 core's `~/.swamp/repos/<repoId>` default. Convention details above. When a
 concrete path is returned, swamp uses it for local caching and syncs to/from the
 remote backend via the sync service.
+
+### `datastoreControlPlaneStore()?`
+
+Optional. Returns a read-only store, `{ get(key, { signal }?) }`, for records at
+the datastore-wide `_control/<key>`, whatever namespace a repo uses. Swamp reads
+the datastore format marker (`datastore-format`) through it before every command
+that opens the datastore, so keep it cheap:
+
+- build no sync service, bind no namespace, make no request until `get`;
+- make `get` one request, with no credentials preflight;
+- return `null` only when the record is missing; reject on access denied and
+  every other failure;
+- honour `signal`: stop the request and any retry backoff when it aborts.
+
+Without it, swamp reads the marker through a fresh sync service's
+`controlPlaneStore()`. Check an implementation with
+`assertDatastoreControlPlaneStoreConformance` (see testing.md).
 
 ## DistributedLock
 
