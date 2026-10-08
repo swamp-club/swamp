@@ -30,6 +30,20 @@ import {
 const LOCK_RETRY_COUNT = 10;
 const LOCK_RETRY_DELAY_MS = 100;
 
+/**
+ * Whether a failed create-new of the advisory lock file means another writer
+ * holds the lock, so the caller should wait and retry. Windows reports
+ * PermissionDenied rather than AlreadyExists while a lock file another writer
+ * just released is still pending deletion (swamp-club#3167).
+ */
+export function isLockContended(
+  error: unknown,
+  os: typeof Deno.build.os = Deno.build.os,
+): boolean {
+  if (error instanceof Deno.errors.AlreadyExists) return true;
+  return os === "windows" && error instanceof Deno.errors.PermissionDenied;
+}
+
 /** The advisory lock file a write holds, and where it lives. */
 interface HeldLock {
   file: Deno.FsFile;
@@ -278,7 +292,7 @@ export class LockfileRepository {
           }),
         };
       } catch (error) {
-        if (error instanceof Deno.errors.AlreadyExists) {
+        if (isLockContended(error)) {
           if (attempt < LOCK_RETRY_COUNT - 1) {
             await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
             continue;

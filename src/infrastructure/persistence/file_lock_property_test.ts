@@ -64,6 +64,11 @@ Deno.test("FileLock.inspect: any content that is not a lock record reads as held
         fc.string().filter((content) => !isLockRecord(content)),
         async (content) => {
           await Deno.writeTextFile(lockPath, content);
+          // Set the mtime outright: rewriting an empty file with empty
+          // content leaves it untouched on Windows, so the previous run's
+          // stale mtime would survive (swamp-club#3167).
+          const now = new Date();
+          await Deno.utime(lockPath, now, now);
           const fresh = await lock.inspect();
           assert(fresh !== null, "fresh must read as held");
           assertEquals(fresh.holderUnknown, true);

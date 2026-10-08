@@ -32,10 +32,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { runInCoordinatorRoot } from "../coordinator_root.ts";
-import {
-  catalogDbPath,
-  createCatalogStore,
-} from "../../infrastructure/persistence/repository_factory.ts";
+import { catalogDbPath } from "../../infrastructure/persistence/repository_factory.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -72,14 +69,16 @@ export const datastoreCompactCommand = new Command()
     // Pushes and releases the global lock when the command ends, as the
     // teardown flush did (swamp-club#3055).
     await runInCoordinatorRoot(repoContext, async () => {
-      const catalogStore = createCatalogStore(repoDir, datastoreResolver);
       // Use the centralized catalog-path helper — the catalog is repo-local and
       // its location must match createCatalogStore exactly, never be recomputed.
       const dbPath = catalogDbPath(repoDir, datastoreResolver);
 
+      // Compact through the repo context's own store: vacuum renames the
+      // catalog file into place, which Windows refuses while a second
+      // connection in this process holds it open (swamp-club#3167).
       const deps: DatastoreCompactDeps = {
-        checkpoint: () => catalogStore.checkpoint(),
-        vacuum: () => catalogStore.vacuum(),
+        checkpoint: () => repoContext.catalogStore.checkpoint(),
+        vacuum: () => repoContext.catalogStore.vacuum(),
         catalogDbSize: async () => {
           try {
             const stat = await Deno.stat(dbPath);
@@ -92,10 +91,6 @@ export const datastoreCompactCommand = new Command()
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const renderer = createDatastoreCompactRenderer(cliCtx.outputMode);
-      try {
-        await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
-      } finally {
-        catalogStore.close();
-      }
+      await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
     });
   });

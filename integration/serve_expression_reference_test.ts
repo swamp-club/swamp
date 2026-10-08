@@ -425,51 +425,63 @@ async function withEchoType(
 }
 
 Deno.test("serve expressions: run inputs are authorized against the caller", async () => {
-  await withEchoType(async (echoType) => {
-    await withFixtures(async (f) => {
-      const echo = Definition.create({ name: "echo-x", globalArguments: {} });
-      await f.repo.repoContext.definitionRepo.save(echoType, echo);
-      const runOnly = createServeCtx(f.repo, [
-        grant({
-          actions: ["read", "run"],
-          resource: { kind: "model", pattern: "*" },
-        }),
-        ...GRANTS.slice(2),
-      ]);
-      const run = (ctx: ConnectionContext, note: string) =>
-        sendRequest(
-          ctx,
-          request("model.method.run", {
-            modelIdOrName: "echo-x",
-            methodName: "echo",
-            inputs: { note },
-          }),
-        );
+  // A mocked variable rather than HOME, which Windows runners do not set.
+  await withMockedEnv(
+    { SWAMP_EXPR_SENTINEL_RUN: "sentinel-3167" },
+    async () => {
+      await withEchoType(async (echoType) => {
+        await withFixtures(async (f) => {
+          const echo = Definition.create({
+            name: "echo-x",
+            globalArguments: {},
+          });
+          await f.repo.repoContext.definitionRepo.save(echoType, echo);
+          const runOnly = createServeCtx(f.repo, [
+            grant({
+              actions: ["read", "run"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+            ...GRANTS.slice(2),
+          ]);
+          const run = (ctx: ConnectionContext, note: string) =>
+            sendRequest(
+              ctx,
+              request("model.method.run", {
+                modelIdOrName: "echo-x",
+                methodName: "echo",
+                inputs: { note },
+              }),
+            );
 
-      const envFrames = await run(runOnly, "${{ env.AWS_SECRET_ACCESS_KEY }}");
-      assertRefused(envFrames, "env from a run-only caller");
-      assertStringIncludes(
-        errorFrame(envFrames)!.error!.message,
-        "reference it in the model definition",
-      );
-      assertRefused(
-        await run(
-          runOnly,
-          '${{ env.HOME + data.latest("prod-db", "state").attributes.value }}',
-        ),
-        "env and data",
-      );
-      assertRefused(
-        await run(f.ctx, REFUSED_REFERENCES[0]),
-        "unreadable data, even with write",
-      );
-      assertAllowed(await run(runOnly, "plain value"), "plain input");
-      assertAllowed(
-        await run(f.ctx, "${{ env.HOME }}"),
-        "env with write on the model",
-      );
-    });
-  });
+          const envFrames = await run(
+            runOnly,
+            "${{ env.AWS_SECRET_ACCESS_KEY }}",
+          );
+          assertRefused(envFrames, "env from a run-only caller");
+          assertStringIncludes(
+            errorFrame(envFrames)!.error!.message,
+            "reference it in the model definition",
+          );
+          assertRefused(
+            await run(
+              runOnly,
+              '${{ env.SWAMP_EXPR_SENTINEL_RUN + data.latest("prod-db", "state").attributes.value }}',
+            ),
+            "env and data",
+          );
+          assertRefused(
+            await run(f.ctx, REFUSED_REFERENCES[0]),
+            "unreadable data, even with write",
+          );
+          assertAllowed(await run(runOnly, "plain value"), "plain input");
+          assertAllowed(
+            await run(f.ctx, "${{ env.SWAMP_EXPR_SENTINEL_RUN }}"),
+            "env with write on the model",
+          );
+        });
+      });
+    },
+  );
 });
 
 Deno.test("serve expressions: evaluate and validate never resolve env", async () => {

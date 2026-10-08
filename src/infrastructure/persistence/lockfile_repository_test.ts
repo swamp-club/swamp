@@ -19,7 +19,7 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import { LockfileRepository } from "./lockfile_repository.ts";
+import { isLockContended, LockfileRepository } from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -528,4 +528,26 @@ Deno.test("lockfileAdvisoryLockPath: a lockfile outside every managed config bas
     "upstream_extensions.json",
   );
   assertEquals(lockfileAdvisoryLockPath(path), `${path}.lock`);
+});
+
+Deno.test("isLockContended: AlreadyExists means another writer holds the lock on every OS", () => {
+  const error = new Deno.errors.AlreadyExists("exists");
+  assertEquals(isLockContended(error, "windows"), true);
+  assertEquals(isLockContended(error, "linux"), true);
+  assertEquals(isLockContended(error, "darwin"), true);
+});
+
+Deno.test("isLockContended: PermissionDenied is a lock pending deletion only on Windows (swamp-club#3167)", () => {
+  const error = new Deno.errors.PermissionDenied("denied");
+  assertEquals(isLockContended(error, "windows"), true);
+  assertEquals(isLockContended(error, "linux"), false);
+  assertEquals(isLockContended(error, "darwin"), false);
+});
+
+Deno.test("isLockContended: other errors are not contention", () => {
+  assertEquals(
+    isLockContended(new Deno.errors.NotFound("gone"), "windows"),
+    false,
+  );
+  assertEquals(isLockContended(new Error("boom"), "windows"), false);
 });
