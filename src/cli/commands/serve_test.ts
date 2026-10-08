@@ -794,6 +794,13 @@ Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {
   ]);
 });
 
+Deno.test("collectServeExtraArgs: forwards --max-signal-wait-timeout", () => {
+  assertEquals(collectServeExtraArgs({ maxSignalWaitTimeout: "7d" }), [
+    "--max-signal-wait-timeout",
+    "7d",
+  ]);
+});
+
 Deno.test("collectServeExtraArgs: never forwards an empty --dispatch-env-allow", () => {
   // The flag needs a value; an empty one would stop the daemon starting.
   assertEquals(collectServeExtraArgs({ dispatchEnvAllow: "" }), []);
