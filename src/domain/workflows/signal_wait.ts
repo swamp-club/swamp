@@ -326,18 +326,20 @@ export class SignalWait {
   /**
    * Opens a wait that expires `timeoutSeconds` after `now`. Throws for a
    * timeout the task schema would refuse, so no wait holds a deadline that
-   * cannot be stored.
+   * cannot be stored, and for one above `maxTimeoutSeconds`, the lower
+   * maximum of whoever runs the workflow (swamp-club#3109). A maximum above
+   * {@link SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} counts as that.
    */
   static open(
     schema: InputsSchema,
     timeoutSeconds: number,
     now: Date,
+    maxTimeoutSeconds: number = SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
   ): SignalWait {
-    if (
-      !(timeoutSeconds > 0) || timeoutSeconds > SIGNAL_WAIT_MAX_TIMEOUT_SECONDS
-    ) {
+    const max = Math.min(maxTimeoutSeconds, SIGNAL_WAIT_MAX_TIMEOUT_SECONDS);
+    if (!(timeoutSeconds > 0) || !(timeoutSeconds <= max)) {
       throw new Error(
-        `A wait timeout must be more than 0 and at most ${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} seconds, got ${timeoutSeconds}.`,
+        `A wait timeout must be more than 0 and at most ${max} seconds, got ${timeoutSeconds}.`,
       );
     }
     return new SignalWait(

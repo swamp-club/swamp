@@ -24,6 +24,7 @@ import {
   persistedWait,
   RESERVED_PAYLOAD_KEYS,
   SIGNAL_PAYLOAD_MAX_BYTES,
+  SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
   SignalWait,
 } from "./signal_wait.ts";
 
@@ -200,6 +201,29 @@ Deno.test("SignalWait.validatePayload: size is bounded whatever the content (pro
           open.validatePayload(payload).valid,
           bytes <= SIGNAL_PAYLOAD_MAX_BYTES,
         );
+      },
+    ),
+  );
+});
+
+Deno.test("SignalWait.open: opens exactly the timeouts within the lower of the caller's maximum and one year (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.integer({ min: 1, max: SIGNAL_WAIT_MAX_TIMEOUT_SECONDS * 2 }),
+      fc.integer({ min: 1, max: SIGNAL_WAIT_MAX_TIMEOUT_SECONDS * 2 }),
+      (timeout, max) => {
+        const allowed = timeout <= max &&
+          timeout <= SIGNAL_WAIT_MAX_TIMEOUT_SECONDS;
+        let deadline: Date | undefined;
+        try {
+          deadline = SignalWait.open(VERDICT, timeout, NOW, max).deadline;
+        } catch {
+          deadline = undefined;
+        }
+        assertEquals(deadline !== undefined, allowed);
+        if (deadline) {
+          assertEquals(deadline.getTime() - NOW.getTime(), timeout * 1000);
+        }
       },
     ),
   );

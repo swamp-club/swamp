@@ -5220,6 +5220,27 @@ export class WorkflowExecutionService {
           jobName: job.name,
           stepName,
         }, openedAt);
+        // A wait taken over keeps the deadline it was registered with.
+        const maxTimeout = this.signalWaits.supported
+          ? this.signalWaits.maxTimeoutSeconds
+          : undefined;
+        if (!earlier && maxTimeout !== undefined && task.timeout > maxTimeout) {
+          const error =
+            `The wait_for_signal timeout of step "${stepName}" is ${task.timeout} seconds, more than the ${maxTimeout} seconds this server allows (--max-signal-wait-timeout).`;
+          stepRun.fail(error);
+          if (step.allowFailure) stepRun.markAllowedFailure();
+          yield {
+            kind: "step_failed",
+            jobId: job.name,
+            stepId: stepName,
+            runId: run.id,
+            error,
+            allowedFailure: step.allowFailure || undefined,
+            forEachTemplate,
+            forEachIndex,
+          };
+          return;
+        }
         const wait = earlier
           ? SignalWait.fromData({
             kind: "signal",
@@ -5227,7 +5248,7 @@ export class WorkflowExecutionService {
             schema: earlier.schema,
             deadline: earlier.deadline,
           })
-          : SignalWait.open(task.schema, task.timeout, openedAt);
+          : SignalWait.open(task.schema, task.timeout, openedAt, maxTimeout);
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
         if (!earlier) {

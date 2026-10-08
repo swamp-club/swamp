@@ -68,6 +68,7 @@ export const SERVE_ENV_MAP: Readonly<Record<string, string>> = {
   shutdownDrainTimeout: "SWAMP_SHUTDOWN_DRAIN_TIMEOUT",
   datastorePollInterval: "SWAMP_DATASTORE_POLL_INTERVAL",
   continuationSweepInterval: "SWAMP_CONTINUATION_SWEEP_INTERVAL",
+  maxSignalWaitTimeout: "SWAMP_MAX_SIGNAL_WAIT_TIMEOUT",
   tokenGcInterval: "SWAMP_TOKEN_GC_INTERVAL",
   tokenGcGracePeriod: "SWAMP_TOKEN_GC_GRACE_PERIOD",
   groupRefreshInterval: "SWAMP_GROUP_REFRESH_INTERVAL",
@@ -150,6 +151,7 @@ export interface ServeConfigFile {
   "shutdown-drain-timeout"?: string;
   "datastore-poll-interval"?: string;
   "continuation-sweep-interval"?: string;
+  "max-signal-wait-timeout"?: string;
   "token-gc-interval"?: string;
   "token-gc-grace-period"?: string;
   "enable-internal-api"?: boolean;
@@ -274,6 +276,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "shutdown-drain-timeout",
   "datastore-poll-interval",
   "continuation-sweep-interval",
+  "max-signal-wait-timeout",
   "token-gc-interval",
   "token-gc-grace-period",
   "enable-internal-api",
@@ -544,6 +547,7 @@ function validateConfigValues(
     ["shutdown-drain-timeout", raw["shutdown-drain-timeout"]],
     ["datastore-poll-interval", raw["datastore-poll-interval"]],
     ["continuation-sweep-interval", raw["continuation-sweep-interval"]],
+    ["max-signal-wait-timeout", raw["max-signal-wait-timeout"]],
     ["token-gc-interval", raw["token-gc-interval"]],
     ["token-gc-grace-period", raw["token-gc-grace-period"]],
   ];
@@ -976,6 +980,7 @@ export interface MergedServeOptions {
   shutdownDrainTimeout?: string;
   datastorePollInterval?: string;
   continuationSweepInterval?: string;
+  maxSignalWaitTimeout?: string;
   tokenGcInterval?: string;
   tokenGcGracePeriod?: string;
   enableInternalApi: boolean;
@@ -1364,6 +1369,13 @@ export function mergeServeOptions(
     undefined,
   );
 
+  const maxSignalWaitTimeout = resolveString(
+    "max-signal-wait-timeout",
+    cliOptions.maxSignalWaitTimeout as string | undefined,
+    config?.["max-signal-wait-timeout"],
+    undefined,
+  );
+
   const tokenGcInterval = resolveString(
     "token-gc-interval",
     cliOptions.tokenGcInterval as string | undefined,
@@ -1481,6 +1493,7 @@ export function mergeServeOptions(
     shutdownDrainTimeout,
     datastorePollInterval,
     continuationSweepInterval,
+    maxSignalWaitTimeout,
     tokenGcInterval,
     tokenGcGracePeriod,
     enableInternalApi,

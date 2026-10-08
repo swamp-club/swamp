@@ -77,6 +77,14 @@ export type SignalWaitSupport =
      */
     readonly localRunAbsenceIsAuthoritative?: boolean;
     /**
+     * The longest timeout, in seconds, a wait opened here may ask for, when
+     * that is less than the task schema allows: the maximum `swamp serve`
+     * was configured with (swamp-club#3109). A step that asks for more
+     * fails when it would open its wait. A wait already open keeps its
+     * deadline.
+     */
+    readonly maxTimeoutSeconds?: number;
+    /**
      * Opens the store, and rejects with the reason when it turns out not to
      * be usable. Asked before a workflow with a wait starts, so that is
      * refused up front instead of failing at its first wait. Absent for a

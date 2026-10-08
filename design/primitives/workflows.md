@@ -248,7 +248,11 @@ for a signal has an outcome of any kind. `continueSettledRun`
   hold its readiness on that. The sweep is
   what retries a launch lost to a full registry, a shutdown or a crash, and
   what continues a run signalled, or on a filesystem datastore approved, by a
-  local command. On its first
+  local command. It is also what notices a deadline under serve
+  (swamp-club#3109, see "Timing out" under Wait for Signal): a run held back
+  only by a wait past its deadline has that wait settled as `timed_out` and
+  continues, so the step fails with `wait_timeout` and its `failed` handlers
+  run with nobody asking. On its first
   boot after an upgrade it therefore launches every run that was already
   settled and left suspended, when the workflow's policy allows.
 
@@ -636,7 +640,8 @@ swamp workflow resume release           # continues the run
 **Task fields** (`src/domain/workflows/step_task.ts`):
 
 - `timeout` (required): seconds the wait stays open, at most 31536000 (one
-  year). A wait never stays open forever.
+  year). A wait never stays open forever. `swamp serve` can lower the maximum
+  for the waits it opens (`--max-signal-wait-timeout`, see "Timing out").
 - `schema` (required): the payload schema, checked by the same
   `InputValidationService` as workflow `inputs`
   (`src/domain/inputs/input_validation_service.ts`). It must declare
@@ -971,7 +976,52 @@ The create decides between that and a signal arriving at the same moment, so
 every reader agrees whatever its clock says, and a signal accepted before the
 deadline still holds after it. The next resume fails the step with error
 `wait_timeout`, so `failed` handlers run. `allowFailure` decides whether that
-fails the job and the run. A step that holds a wait re-enters the walk as a
+fails the job and the run.
+
+Under `swamp serve` the continuation sweep is one more reader that looks
+(swamp-club#3109). When `continueSettledRun` finds a run held back only by
+its waits (`wait_unsettled`: no step running, no gate undecided, no nested
+wait), `settleExpiredWaits` (`src/domain/workflows/signal_wait_cleanup.ts`)
+settles each wait that is past its deadline, has no outcome and is still
+registered, and the run then continues as a signalled one does: same
+auto-resume policy, claim, record comparison and backoff. The resume fails
+the step. The deadline is absolute; how soon after it the handlers run
+depends on serve being up and on the sweep interval, and a wait that expired
+while no instance ran is settled by the first pass after boot. The
+`workflow.auto_resume` audit event carries `waitsTimedOut=<n>` when the pass
+that launched the resume settled waits. What the sweep does not do:
+
+- It follows the auto-resume policy. A workflow serve may not resume keeps
+  its expired wait unsettled and its run suspended, as it keeps a signalled
+  run suspended.
+- It settles only a wait whose registration can be read. A registration is
+  removed when its run ends or is deleted, so a suspended copy of such a run
+  is behind, and an outcome created for it would outlive the run. A wait
+  with no registration (see the limits below) is still settled by a resume.
+- Where the sweep does not start, or runs only its boot pass (see
+  "Continuation claims"), a deadline that passes after boot is noticed as
+  before: by the next signal, listing or resume.
+- A nested run whose wait timed out fails, and its parent stays suspended
+  until a manual resume, as after any child the sweep continued.
+- An approval gate past its timeout is not failed by the sweep. It stays
+  suspended until an approve, a reject or a listing looks.
+- Every instance reads the deadline against its own clock and the first
+  create wins. An instance whose clock runs ahead closes a wait early for
+  every reader, so serve hosts need synchronised clocks. There is no
+  allowance for skew.
+
+**Maximum timeout.** The task schema allows a `timeout` of up to one year.
+`swamp serve --max-signal-wait-timeout <duration>` (env
+`SWAMP_MAX_SIGNAL_WAIT_TIMEOUT`, at most one year) lowers that for the waits
+this server opens. It is carried on the wait support serve gives its
+executors (`SignalWaitSupport.maxTimeoutSeconds`) and enforced when a step
+would open its wait, not when the workflow is validated: validation runs in
+the local command, which has no server configuration. A step that asks for
+more fails with a message naming both values, so `allowFailure` and `failed`
+handlers apply. A wait already open, or taken over from an earlier
+registration, keeps its deadline whatever the maximum is now.
+
+A step that holds a wait re-enters the walk as a
 nested wait does: its `dependsOn`, its `guard` and its start are not evaluated
 again, because a guard that reads resume-time inputs could otherwise turn the
 timeout into a skip, and starting the step again would open a second wait. A
@@ -1086,8 +1136,9 @@ to start while any of them is still open.
 - Through serve, a wait with no readable registration (a run suspended by the
   swamp-club#3068 build, or a damaged registration file) is answered as unknown
   until a waits listing registers it.
-- Deadlines are noticed only when something looks. An expired wait stays
-  suspended until the next resume.
+- Without `swamp serve`, deadlines are noticed only when something looks,
+  and an expired wait stays suspended until the next resume. Under serve the
+  continuation sweep looks, within the limits listed under "Timing out".
 - A signal does not show in the run record until the run is resumed, so
   `workflow history` and the dashboard cannot tell a signalled wait from an open
   one. `workflow waits` can.

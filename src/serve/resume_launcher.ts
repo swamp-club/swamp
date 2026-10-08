@@ -74,6 +74,7 @@ import {
   suspensionKeyOf,
 } from "../domain/workflows/continuation_claim.ts";
 import { decideContinuation } from "../domain/workflows/run_continuation.ts";
+import { settleExpiredWaits } from "../domain/workflows/signal_wait_cleanup.ts";
 import type { SignalWaitStore } from "../domain/workflows/signal_wait_store.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -890,11 +891,12 @@ export async function noteParkedParent(
  * Continues a suspended run that needs no further decision, when its
  * workflow's auto-resume policy allows (swamp-club#3108): every gate is
  * decided, no step waits on a nested run, and every wait for a signal has an
- * outcome. Returns whether a resume was launched.
+ * outcome. A wait past its deadline with no outcome is given one first,
+ * `timed_out` (swamp-club#3109). Returns whether a resume was launched.
  *
  * Nothing is authorized here. The stored outcome is the authorization, as
  * an approval is for its own auto-resume: whoever settled the run's last
- * wait was allowed to. A run another holder has claimed or resumed is left
+ * wait was allowed to, and a deadline needs nobody's leave. A run another holder has claimed or resumed is left
  * alone without a word, since that is the ordinary state of a copy of the
  * run that is behind, as is a run whose record here differs from the one
  * the datastore holds; the one exception is a claim a local command left on
@@ -970,11 +972,34 @@ export async function continueSettledRun(
   // A recovered run waits for the resume `workflow recover` asked for: no
   // signal or approval released the steps it reset.
   if (run.awaitsResumeAfterRecovery) return false;
-  const verdict = await decideContinuation(run, outcomesOf(ctx));
+  let verdict = await decideContinuation(run, outcomesOf(ctx));
+  // Nothing else looks at a deadline under serve (swamp-club#3109): a run
+  // held back only by its waits has the overdue ones settled as timed out
+  // here, and the resume fails their steps as a manual one would.
+  let waitsTimedOut = 0;
+  const waits = ctx.repoContext.signalWaits;
+  if (
+    verdict.kind === "blocked" && verdict.reason === "wait_unsettled" &&
+    waits?.supported
+  ) {
+    waitsTimedOut = await settleExpiredWaits(
+      waits.store,
+      run,
+      new Date(now()),
+    );
+    if (waitsTimedOut > 0) {
+      logger.info(
+        "Run {runId} of workflow {workflow}: {count} wait(s) for a signal passed their deadline and were settled as timed out",
+        { runId: run.id, workflow: run.workflowName, count: waitsTimedOut },
+      );
+      verdict = await decideContinuation(run, outcomesOf(ctx));
+    }
+  }
   if (verdict.kind !== "resumable") return false;
 
   const detail =
-    `workflow=${run.workflowName} run=${run.id} cause=${cause.kind}`;
+    `workflow=${run.workflowName} run=${run.id} cause=${cause.kind}` +
+    (waitsTimedOut > 0 ? ` waitsTimedOut=${waitsTimedOut}` : "");
   const memo = skipMemo(registry);
   const skip = (event: "skipped" | "failed", reason: string): false => {
     const seen = `${suspensionKey}:${reason}`;
