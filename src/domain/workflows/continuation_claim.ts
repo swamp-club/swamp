@@ -325,6 +325,32 @@ export async function acquireContinuation(
 }
 
 /**
+ * Whether this host's stored record of a run is the one the datastore
+ * holds. On a synced datastore each host resumes from its own copy of a run,
+ * and a copy can be behind without anything in it saying so: a peer cancelled
+ * the run after its last wait was signalled, or ended a run that had only
+ * decided gates. Rejects when the datastore cannot be read, so a caller never
+ * takes an unreachable datastore for agreement.
+ */
+export type RunRecordCurrency = (
+  run: { workflowId: string; runId: string },
+) => Promise<boolean>;
+
+/**
+ * A resume serve started by itself, refused because this host's record of
+ * the run is not the one the datastore holds.
+ */
+export class RunRecordStaleError extends UserError {
+  constructor(readonly runId: string) {
+    super(
+      `This copy of run ${runId} differs from the one in the datastore, so it was not resumed from here. ` +
+        `Check the run before trying again (swamp workflow history get ${runId}).`,
+    );
+    this.name = "RunRecordStaleError";
+  }
+}
+
+/**
  * A resume refused because another holder has the suspension's claim: that
  * holder is resuming the run, or already has.
  */

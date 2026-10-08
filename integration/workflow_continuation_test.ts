@@ -30,7 +30,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
-import { waitFor } from "@swamp-club/swamp-testing";
+import { createRecordingSyncService, waitFor } from "@swamp-club/swamp-testing";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -39,7 +39,10 @@ import type { AuditEmitter } from "../src/domain/serve_audit/audit_emitter.ts";
 import type { AuditEvent } from "../src/domain/serve_audit/audit_event.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { sweepContinuations } from "../src/serve/continuation_sweep_service.ts";
-import { continuationClaimsOver } from "../src/cli/repo_context.ts";
+import {
+  continuationClaimsOver,
+  runRecordCurrencyOver,
+} from "../src/cli/repo_context.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
@@ -577,6 +580,175 @@ Deno.test({
         "succeeded",
       );
       assertEquals(f.executions(), 1);
+    });
+  },
+});
+
+/**
+ * Gives `target` a synced datastore's view of its run records: each is
+ * compared with what `remote` answers for its cache-relative path, through
+ * the same wiring serve uses over a sync service with `fetchContent`.
+ */
+function withRemoteRunRecords(
+  f: Fixture,
+  target: Instance,
+  remote: (relPath: string) => Uint8Array | null,
+): { fetched: string[] } {
+  const fetched: string[] = [];
+  const runRepo = f.repo.repoContext.workflowRunRepo;
+  target.ctx.repoContext.runRecordCurrency = runRecordCurrencyOver(
+    {
+      type: "@test/remote",
+      config: {},
+      datastorePath: "remote://test",
+      cachePath: swampPath(f.repo.repoDir),
+    },
+    {
+      ...createRecordingSyncService().service,
+      fetchContent: (relPath) => {
+        fetched.push(relPath);
+        return Promise.resolve(remote(relPath));
+      },
+    },
+    (run) =>
+      runRepo.getPath(
+        createWorkflowId(run.workflowId),
+        createWorkflowRunId(run.runId),
+      ),
+  );
+  return { fetched };
+}
+
+/** The run's record as this host stores it. */
+function storedRecord(f: Fixture, run: WorkflowRun): Promise<Uint8Array> {
+  return Deno.readFile(
+    f.repo.repoContext.workflowRunRepo.getPath(
+      createWorkflowId(run.workflowId),
+      createWorkflowRunId(run.id),
+    ),
+  );
+}
+
+/** The record a peer left in the datastore when it cancelled the run. */
+function cancelledByPeer(record: Uint8Array): Uint8Array {
+  const text = new TextDecoder().decode(record);
+  assertStringIncludes(text, "status: suspended");
+  return new TextEncoder().encode(
+    text.replace("status: suspended", "status: cancelled"),
+  );
+}
+
+Deno.test({
+  name:
+    "continuation: a settled run a peer cancelled is not continued from this instance's suspended copy of it",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      // The signal was accepted and its launch lost; a peer then cancelled
+      // the run. Outcomes are written once, so the wait still reads as
+      // accepted and this instance's copy still reads as settled.
+      const workflow = await f.saveWaiting();
+      const { run } = await suspend(f, workflow);
+      await settleLocally(f, run);
+      const local = await storedRecord(f, run);
+      const remote = cancelledByPeer(local);
+      const a = instance(f, "a");
+      const { fetched } = withRemoteRunRecords(f, a, () => remote);
+
+      // A pass after boot, when this instance's records may be behind.
+      assertEquals(
+        await sweepContinuations(a.ctx, { takeover: false }),
+        { examined: 1, launched: 0 },
+      );
+      await idle(a);
+
+      assertEquals(fetched.length, 1);
+      assertStringIncludes(fetched[0], run.id);
+      assertEquals(f.executions(), 0);
+      assertEquals(
+        (await loadRun(f, workflow, run.id)).status,
+        "suspended",
+      );
+      // The comparison left this host's record as it was.
+      assertEquals(await storedRecord(f, run), local);
+      assertEquals(actions(a), []);
+
+      // The next pass does not read the datastore for it again.
+      assertEquals(
+        (await sweepContinuations(a.ctx, { takeover: false })).launched,
+        0,
+      );
+      assertEquals(fetched.length, 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a settled run whose record matches the datastore's is continued by a pass after boot",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting();
+      const { run } = await suspend(f, workflow);
+      await settleLocally(f, run);
+      const local = await storedRecord(f, run);
+      const a = instance(f, "a");
+      const { fetched } = withRemoteRunRecords(f, a, () => local);
+
+      assertEquals(
+        await sweepContinuations(a.ctx, { takeover: false }),
+        { examined: 1, launched: 1 },
+      );
+      await idle(a);
+
+      assertEquals(f.executions(), 1);
+      assertEquals(
+        (await loadRun(f, workflow, run.id)).status,
+        "succeeded",
+      );
+      // Once before the launch, and once under the run's claim.
+      assertEquals(fetched.length, 2);
+      assertEquals(fetched[0], fetched[1]);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a peer's cancel that lands between the look and the resume is caught under the run's claim",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting();
+      const { run } = await suspend(f, workflow);
+      await settleLocally(f, run);
+      const local = await storedRecord(f, run);
+      const cancelled = cancelledByPeer(local);
+      const a = instance(f, "a");
+      let reads = 0;
+      withRemoteRunRecords(f, a, () => ++reads === 1 ? local : cancelled);
+
+      assertEquals(
+        (await sweepContinuations(a.ctx, { takeover: false })).launched,
+        1,
+      );
+      await idle(a);
+
+      assertEquals(reads, 2);
+      assertEquals(f.executions(), 0);
+      const after = await loadRun(f, workflow, run.id);
+      assertEquals(after.status, "suspended");
+      // Refused before the claim: none is left for a later resume to trip on.
+      assertEquals(
+        await a.ctx.repoContext.continuationClaims!.store.find(
+          run.id,
+          await suspensionKeyOf(after),
+        ),
+        undefined,
+      );
+      // A lost race, not a failure.
+      assertEquals(actions(a), ["workflow.auto_resume"]);
     });
   },
 });

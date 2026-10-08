@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import {
   ContinuationSweepService,
   decideContinuationSweepStart,
@@ -182,6 +183,35 @@ Deno.test("ContinuationSweepService: the first pass is the boot pass, and later 
     assertEquals(passes, [true, false]);
   } finally {
     await service.dispose();
+  }
+});
+
+Deno.test("ContinuationSweepService: a boot-pass-only sweep schedules no later pass", async () => {
+  const counting = (bootPassOnly: boolean) => {
+    const state = { passes: 0 };
+    const service = new ContinuationSweepService({
+      intervalMs: 1,
+      bootPassOnly,
+      sweep: () => {
+        state.passes++;
+        return Promise.resolve({ examined: 0, launched: 0 });
+      },
+    });
+    return { state, service };
+  };
+  const once = counting(true);
+  const repeating = counting(false);
+  try {
+    once.service.start();
+    await waitFor(() => once.state.passes === 1, "the boot pass");
+    // Started second with the same interval: by the time it has run three
+    // passes, a second pass of the first sweep would have been due.
+    repeating.service.start();
+    await waitFor(() => repeating.state.passes >= 3, "the repeating sweep");
+    assertEquals(once.state.passes, 1);
+  } finally {
+    await once.service.dispose();
+    await repeating.service.dispose();
   }
 });
 

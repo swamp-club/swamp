@@ -1515,3 +1515,84 @@ Deno.test("continueSettledRun: a suspension found held by another is not read ag
   assertEquals(registry.registered.length, 0);
   assertEquals(audit, []);
 });
+
+/** Gives the harness a datastore whose copy of every run reads as `answer`. */
+function withRunRecordCurrency(
+  ctx: ConnectionContext,
+  answer: () => Promise<boolean>,
+): { asked: () => number } {
+  let asked = 0;
+  (ctx.repoContext as { runRecordCurrency?: unknown }).runRecordCurrency =
+    () => {
+      asked++;
+      return answer();
+    };
+  return { asked: () => asked };
+}
+
+Deno.test("continueSettledRun: a copy of a run that differs from the datastore's is left alone without a word, and not compared on every pass", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry, audit } = continuationHarness([workflow], [run]);
+  const remote = withRunRecordCurrency(ctx, () => Promise.resolve(false));
+  const target = { workflowId: workflow.id, runId: run.id };
+  let clock = 0;
+  const pass = (takeover: boolean) =>
+    continueSettledRun(ctx, target, { ...SWEEP, takeover }, () => clock);
+
+  assertEquals(await pass(false), false);
+  assertEquals(remote.asked(), 1);
+  clock = HELD_ELSEWHERE_RECHECK_MS - 1;
+  assertEquals(await pass(false), false);
+  assertEquals(remote.asked(), 1);
+  clock = HELD_ELSEWHERE_RECHECK_MS;
+  assertEquals(await pass(false), false);
+  assertEquals(remote.asked(), 2);
+  // The boot pass always compares.
+  assertEquals(await pass(true), false);
+  assertEquals(remote.asked(), 3);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+});
+
+Deno.test("continueSettledRun: a datastore that cannot be read leaves the run suspended and is audited once", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry, audit } = continuationHarness([workflow], [run]);
+  const remote = withRunRecordCurrency(
+    ctx,
+    () => Promise.reject(new Error("offline")),
+  );
+  const target = { workflowId: workflow.id, runId: run.id };
+
+  for (let pass = 0; pass < 3; pass++) {
+    assertEquals(
+      await continueSettledRun(ctx, target, { ...SWEEP, takeover: false }),
+      false,
+    );
+  }
+  // Tried again on every pass: the datastore may be back.
+  assertEquals(remote.asked(), 3);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit.map((a) => a.action), ["workflow.auto_resume_failed"]);
+  assertStringIncludes(audit[0].detail ?? "", "code=run_record_unreadable");
+});
+
+Deno.test("continueSettledRun: a copy of a run that matches the datastore's is launched", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  const run = makeApprovedRun(workflow);
+  const { ctx, registry } = continuationHarness([workflow], [run]);
+  const remote = withRunRecordCurrency(ctx, () => Promise.resolve(true));
+
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      { workflowId: workflow.id, runId: run.id },
+      { ...SWEEP, takeover: false },
+    ),
+    true,
+  );
+  assertEquals(remote.asked(), 1);
+  assertEquals(registry.registered.length, 1);
+  await registry.registered[0].completion;
+});

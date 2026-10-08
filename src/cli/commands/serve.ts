@@ -30,9 +30,14 @@ import {
   refreshExtensionWorkflowDirs,
   requireInitializedRepoUnlocked,
   resolveSignalWaitSupport,
+  runRecordCurrencyOver,
   runsLiveInDatastore,
 } from "../repo_context.ts";
 import { pullManagedConfigAtBoot } from "../managed_config_sync.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 import {
   MAX_TIMER_DELAY_MS,
@@ -4021,6 +4026,26 @@ export const serveCommand = new Command()
           staleMs: staleTtlMs ?? DEFAULT_STALE_TTL_MS,
         })
         : undefined;
+    // On a synced datastore this instance resumes a run from its own copy
+    // of it. Where the remote can be read without replacing that copy, a
+    // run serve continues by itself is compared with the remote first.
+    // A repository that keeps its run records out of the datastore has one
+    // copy of each, and nothing to compare.
+    const runRecordsSynced = isCustomDatastoreConfig(datastoreConfig) &&
+      runsLiveInDatastore(
+        new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
+      );
+    repoContext.runRecordCurrency = runRecordsSynced
+      ? runRecordCurrencyOver(
+        datastoreConfig,
+        syncService,
+        (run) =>
+          repoContext.workflowRunRepo.getPath(
+            createWorkflowId(run.workflowId),
+            createWorkflowRunId(run.runId),
+          ),
+      )
+      : undefined;
     if (
       authConfig.mode === "oauth" &&
       authConfig.oauthClientId &&
@@ -7193,8 +7218,18 @@ export const serveCommand = new Command()
       );
     } else {
       const synced = isCustomDatastoreConfig(datastoreConfig);
+      // After boot this instance's run records fall behind a synced
+      // datastore, and nothing in a record says so. Later passes run only
+      // where each run can be compared with the remote before it resumes.
+      const bootPassOnly = runRecordsSynced && !repoContext.runRecordCurrency;
+      if (bootPassOnly) {
+        logger.info(
+          "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
+        );
+      }
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
+        bootPassOnly,
         sweep: ({ boot, isStopping }) =>
           sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records

@@ -525,6 +525,13 @@ runs signalled by a local command. Things to know:
 - Several serve instances on one datastore resume a run once. On S3 or GCS,
   upgrade every host before relying on the sweep, and expect a run whose
   instance died to wait until an instance restarts.
+- On a synced datastore serve resumes a run by itself only if its copy of the
+  run record matches the remote one, so a run a peer cancelled is not resumed
+  from an old copy. A datastore extension without `fetchContent`
+  (`@swamp/s3-datastore` and `@swamp/gcs-datastore` before `2026.10.07.1`)
+  cannot be compared: the sweep then runs once at boot (serve logs this), and a
+  lost launch or a locally signalled run waits for a restart or a manual resume.
+  `run_record_unreadable` in the audit log means the remote could not be read.
 - `swamp workflow resume` is refused while a live serve instance is resuming the
   same run. Treat that as already handled. On a filesystem datastore the refusal
   is `is not suspended` instead.

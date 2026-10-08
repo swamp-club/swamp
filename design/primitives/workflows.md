@@ -334,6 +334,36 @@ that holder ran and never pushed run again, as they do when a person resumes
 a run after a crash. A datastore whose control-plane store cannot create a
 record atomically has no claims, and a resume there takes none.
 
+A claim does not cover every copy that is behind. A peer that cancels a run
+after its last wait was signalled, or ends a run that had only decided gates,
+takes no claim, and wait outcomes are written once, so this instance's copy
+still reads as suspended and settled. Before serve continues a run by itself
+on a synced datastore it therefore compares its record of the run with the
+remote one, byte for byte (`RunRecordCurrency`, built by
+`runRecordCurrencyOver` over the sync service's `fetchContent`, which reads
+the remote file without replacing the cached one). `continueSettledRun` looks
+once before it registers the run, and the resume looks again under the run's
+lock-backed claim (`requireCurrentRecord`), which is what decides. A record
+that differs is left alone without an event, like a claimed one, and looked
+at again after ten minutes; that includes a record with a change this
+instance has not pushed yet. A remote that cannot be read leaves the run
+suspended with one `workflow.auto_resume_failed` event
+(`run_record_unreadable`). The comparison covers the continuation of a
+settled run, by a signal or by the sweep. The auto-resume after an approval
+is not compared, since the approval it follows is a change this instance has
+not pushed yet, and neither is the auto-resume of a parent. A peer's
+change that is saved and not yet pushed is not seen.
+
+A repository that keeps its run records out of the datastore
+(`runsLiveInDatastore`) has one copy of each and is not compared. A sync
+service without `fetchContent` gives serve nothing to compare with
+(`@swamp/s3-datastore` and `@swamp/gcs-datastore` have it from
+`2026.10.07.1`).
+There the sweep runs its boot pass, which follows the boot hydration, and no
+later one (`bootPassOnly`): a lost launch, or a run signalled by a local
+command, then waits for a restart or a manual resume. A signal that arrives
+at the instance is still continued at once.
+
 On a synced datastore every copy of a run a peer resumed stays `suspended`
 on this instance until it restarts, and their number only grows. Serve
 remembers a suspension it found held by another and looks at it again every

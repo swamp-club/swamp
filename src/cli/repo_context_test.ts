@@ -25,7 +25,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { ensureDir, walk } from "@std/fs";
+import { ensureDir, exists, walk } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
@@ -58,6 +58,7 @@ import {
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
   resolveSignalWaitSupport,
+  runRecordCurrencyOver,
   runsLiveInDatastore,
   runUnderModelLocks,
   signalWaitsOf,
@@ -5851,4 +5852,124 @@ Deno.test("resolveContinuationClaims: a store that cannot create a record atomic
   // The failed open is not kept: the next call tries again.
   assertEquals(await flaky.usable!(), true);
   assertEquals(pulls, 2);
+});
+
+Deno.test("runRecordCurrencyOver: nothing to compare on a filesystem datastore or without fetchContent", () => {
+  const { service: plain } = createRecordingSyncService();
+  const pathOf = () => "/nonexistent/cache/run.yaml";
+  const fetching = { ...plain, fetchContent: () => Promise.resolve(null) };
+  assertEquals(
+    runRecordCurrencyOver(
+      { type: "filesystem", path: "/repo" },
+      fetching,
+      pathOf,
+    ),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), plain, pathOf),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), undefined, pathOf),
+    undefined,
+  );
+});
+
+Deno.test("runRecordCurrencyOver: compares the cached run record with the remote one, read by its cache-relative path", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "team-a", "workflow-runs", "w", "r.yaml");
+    await Deno.mkdir(join(cachePath, "team-a", "workflow-runs", "w"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const encoder = new TextEncoder();
+    let remote: Uint8Array | null = encoder.encode("status: suspended\n");
+    const fetched: { relPath: string; namespace?: string; bounded: boolean }[] =
+      [];
+    const current = runRecordCurrencyOver(
+      { ...customConfig("team-a"), cachePath },
+      {
+        ...plain,
+        fetchContent: (relPath, options) => {
+          fetched.push({
+            relPath,
+            namespace: options?.namespace,
+            bounded: options?.signal !== undefined,
+          });
+          return Promise.resolve(remote);
+        },
+      },
+      () => runPath,
+    )!;
+    const run = { workflowId: "w", runId: "r" };
+
+    assertEquals(await current(run), true);
+    assertEquals(fetched, [{
+      relPath: "team-a/workflow-runs/w/r.yaml",
+      namespace: "team-a",
+      bounded: true,
+    }]);
+
+    // A peer ended the run: same length, other bytes.
+    remote = encoder.encode("status: cancelled\n");
+    assertEquals(await current(run), false);
+    // A longer record.
+    remote = encoder.encode("status: suspended\nmore: 1\n");
+    assertEquals(await current(run), false);
+    // The remote has no such run.
+    remote = null;
+    assertEquals(await current(run), false);
+    // This host has no record to resume from.
+    remote = encoder.encode("status: suspended\n");
+    await Deno.remove(runPath);
+    assertEquals(await current(run), false);
+    // Nothing was written back to the cache.
+    assertEquals(await exists(runPath), false);
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a remote that cannot be read rejects", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "r.yaml");
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath },
+      { ...plain, fetchContent: () => Promise.reject(new Error("offline")) },
+      () => runPath,
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "offline",
+    );
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a run record outside the cache is never read from the remote", async () => {
+  await withTempDir(async (dir) => {
+    const { service: plain } = createRecordingSyncService();
+    let fetched = 0;
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath: join(dir, "cache") },
+      {
+        ...plain,
+        fetchContent: () => {
+          fetched++;
+          return Promise.resolve(null);
+        },
+      },
+      () => join(dir, "repo", ".swamp", "workflow-runs", "r.yaml"),
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "outside the datastore cache",
+    );
+    assertEquals(fetched, 0);
+  });
 });

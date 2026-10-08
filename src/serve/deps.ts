@@ -232,6 +232,7 @@ export async function createWorkflowRunDeps(
       // (swamp-club#3108).
       service.runClaims = createWorkflowRunClaims(datastoreConfig);
       service.continuationClaims = repoContext.continuationClaims;
+      service.runRecordCurrency = repoContext.runRecordCurrency;
       return service;
     },
     catalogStore: repoContext.catalogStore,

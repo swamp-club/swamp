@@ -69,6 +69,7 @@ import type { Action } from "../domain/access/action.ts";
 import {
   ContinuationHeldError,
   type ContinuationMode,
+  RunRecordStaleError,
   serveInstanceOf,
   suspensionKeyOf,
 } from "../domain/workflows/continuation_claim.ts";
@@ -95,6 +96,12 @@ export const CONTINUATION_HELD_CODE = "continuation_held";
  * `workflow_resume_failed` for the same refusal.
  */
 export const RUN_NOT_SUSPENDED_CODE = "run_not_suspended";
+
+/**
+ * Terminal code of a continuation refused because this instance's record of
+ * the run is not the one the datastore holds.
+ */
+export const RUN_RECORD_STALE_CODE = "run_record_stale";
 
 export interface DetachedResumeRequest {
   /** Workflow id or name, resolved the same way as `workflow resume`. */
@@ -144,6 +151,11 @@ export interface DetachedResumeRequest {
    * person asked for.
    */
   continuation?: ContinuationMode;
+  /**
+   * Refuse a run whose record here differs from the datastore's, where that
+   * can be told. Set by the continuation of a settled run.
+   */
+  requireCurrentRecord?: boolean;
   /**
    * Whether the requester may read a workflow. A refusal naming nested runs
    * names them only when every one is readable; otherwise it is generic.
@@ -340,6 +352,7 @@ export async function startDetachedResume(
                       suspendedOnly: request.suspendedOnly,
                       instanceId: ctx.instanceId,
                       continuation: request.continuation,
+                      requireCurrentRecord: request.requireCurrentRecord,
                     }),
                 )
               ) {
@@ -383,6 +396,12 @@ export async function startDetachedResume(
               terminal = {
                 kind: "error",
                 code: CONTINUATION_HELD_CODE,
+                message: error.message,
+              };
+            } else if (error instanceof RunRecordStaleError) {
+              terminal = {
+                kind: "error",
+                code: RUN_RECORD_STALE_CODE,
                 message: error.message,
               };
             } else if (error instanceof NestedRunPendingError) {
@@ -826,6 +845,7 @@ const LOCAL_CLAIM_GRACE_MS = 60_000;
 const BENIGN_REFUSALS: ReadonlySet<string> = new Set([
   CONTINUATION_HELD_CODE,
   RUN_NOT_SUSPENDED_CODE,
+  RUN_RECORD_STALE_CODE,
   "already_registered",
   "reserved",
   // A pass in flight when shutdown began.
@@ -874,7 +894,8 @@ export async function noteParkedParent(
  * an approval is for its own auto-resume: whoever settled the run's last
  * wait was allowed to. A run another holder has claimed or resumed is left
  * alone without a word, since that is the ordinary state of a copy of the
- * run that is behind; the one exception is a claim a local command left on
+ * run that is behind, as is a run whose record here differs from the one
+ * the datastore holds; the one exception is a claim a local command left on
  * a run this instance knows is still suspended, which only a manual resume
  * clears. Any other skip or refusal leaves the run suspended and is
  * logged and audited once per suspension and reason; the next pass of the
@@ -1013,6 +1034,29 @@ export async function continueSettledRun(
     return skip("failed", "claim_store_unavailable");
   }
 
+  // The same for a copy of the run that is behind the datastore's. The
+  // resume compares again under the run's claim, which is what decides.
+  const recordCurrency = ctx.repoContext.runRecordCurrency;
+  if (recordCurrency) {
+    let current: boolean;
+    try {
+      current = await recordCurrency({
+        workflowId: resolution.id,
+        runId: run.id,
+      });
+    } catch (error) {
+      logger.debug(
+        "Run {runId} could not be read from the datastore: {error}",
+        {
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return skip("failed", "run_record_unreadable");
+    }
+    if (!current) return rememberHeld();
+  }
+
   const launched = await startDetachedResume(ctx, registry, {
     workflowIdOrName: resolution.id,
     byId: true,
@@ -1023,6 +1067,7 @@ export async function continueSettledRun(
     subject: cause.subject,
     parentGrant: "signal",
     continuation: { kind: "automatic", takeover: cause.takeover },
+    requireCurrentRecord: true,
     lostRaceIsOrdinary: true,
     onTerminal: async (terminal) => {
       if (terminal.kind !== "error") {
@@ -1031,7 +1076,12 @@ export async function continueSettledRun(
         if (cause.subject === undefined) await noteParkedParent(ctx, run);
         return;
       }
-      if (terminal.code === CONTINUATION_HELD_CODE) rememberHeld();
+      if (
+        terminal.code === CONTINUATION_HELD_CODE ||
+        terminal.code === RUN_RECORD_STALE_CODE
+      ) {
+        rememberHeld();
+      }
       if (BENIGN_REFUSALS.has(terminal.code)) return;
       if (failed.size >= AUDITED_SKIPS_MAX) failed.clear();
       failed.set(run.id, {

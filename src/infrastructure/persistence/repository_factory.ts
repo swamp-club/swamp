@@ -50,7 +50,10 @@
  * ```
  */
 
-import type { ContinuationClaims } from "../../domain/workflows/continuation_claim.ts";
+import type {
+  ContinuationClaims,
+  RunRecordCurrency,
+} from "../../domain/workflows/continuation_claim.ts";
 import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store.ts";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
@@ -429,6 +432,12 @@ export interface RepositoryContext {
    * reads directly; a resume there takes none.
    */
   continuationClaims?: ContinuationClaims;
+  /**
+   * Compares this host's record of a run with the datastore's
+   * (swamp-club#3108). Absent on a filesystem datastore, where they are the
+   * same file, and where the sync service has no `fetchContent`.
+   */
+  runRecordCurrency?: RunRecordCurrency;
 }
 
 /**

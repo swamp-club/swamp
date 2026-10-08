@@ -48,6 +48,8 @@ import {
   type ContinuationClaims,
   ContinuationHeldError,
   type ContinuationMode,
+  type RunRecordCurrency,
+  RunRecordStaleError,
   suspensionKeyOf,
 } from "./continuation_claim.ts";
 import {
@@ -2803,6 +2805,14 @@ export class WorkflowExecutionService {
   continuationClaims?: ContinuationClaims;
 
   /**
+   * Compares this host's record of a run with the datastore's, for a resume
+   * that asks for it with `requireCurrentRecord`. Unset where every host
+   * reads the same record, and where the datastore cannot be read without
+   * replacing the local copy; such a resume is then not checked.
+   */
+  runRecordCurrency?: RunRecordCurrency;
+
+  /**
    * The runs this service created. A step of one cannot have registered a
    * wait before, so opening its wait skips the search for one to take over.
    */
@@ -3662,6 +3672,7 @@ export class WorkflowExecutionService {
       suspendedOnly?: boolean;
       instanceId?: string;
       continuation?: ContinuationMode;
+      requireCurrentRecord?: boolean;
     },
   ): Promise<{
     existingRun: WorkflowRun;
@@ -3765,6 +3776,20 @@ export class WorkflowExecutionService {
       existingRun,
       options?.inputs ?? {},
     );
+
+    // A copy of the run that is behind the datastore's shows a suspension a
+    // peer has already ended. Compared under the run's claim, so a peer that
+    // changes the run does so before this look or after the save below.
+    if (
+      options?.requireCurrentRecord && suspensionKey !== undefined &&
+      this.runRecordCurrency &&
+      !(await this.runRecordCurrency({
+        workflowId: workflow.id,
+        runId: loadedRun.id,
+      }))
+    ) {
+      throw new RunRecordStaleError(loadedRun.id);
+    }
 
     // The last refusal: this suspension is consumed once, by whoever holds
     // its claim. Taken after every other check, so a refused resume leaves
@@ -3913,6 +3938,12 @@ export class WorkflowExecutionService {
        * serve continues the run by itself (swamp-club#3108).
        */
       continuation?: ContinuationMode;
+      /**
+       * Refuse a suspended run whose record here differs from the
+       * datastore's, where that can be told. Set when serve continues a run
+       * by itself from a copy that may be behind (swamp-club#3108).
+       */
+      requireCurrentRecord?: boolean;
       /**
        * How long after an abort the resume waits for its model methods to
        * stop before recording its cancellation; defaults to

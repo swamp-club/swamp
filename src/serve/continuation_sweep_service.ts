@@ -55,7 +55,8 @@ export interface ContinuationSweepResult {
  * `takeover` lets the pass replace the claim of a holder known to be dead.
  * It is right only while this instance's run records are current: always on
  * a filesystem datastore, and on a synced one only straight after the boot
- * hydration.
+ * hydration. On a synced datastore a run is also compared with the remote
+ * before it resumes, where the sync service can read it (`fetchContent`).
  */
 export async function sweepContinuations(
   ctx: ConnectionContext,
@@ -105,6 +106,12 @@ export async function sweepContinuations(
 
 export interface ContinuationSweepDeps {
   readonly intervalMs: number;
+  /**
+   * Run the boot pass and no other. Set on a synced datastore whose run
+   * records cannot be compared with the remote: after boot a copy of a run
+   * can be behind, and a pass would resume it.
+   */
+  readonly bootPassOnly?: boolean;
   /** One pass; `boot` is true for the first pass after the server started. */
   sweep(
     pass: { boot: boolean; isStopping: () => boolean },
@@ -159,10 +166,14 @@ export class ContinuationSweepService {
    */
   start(): void {
     if (this.#disposed) return;
-    logger.info(
-      "Starting continuation sweep (interval: {interval}s)",
-      { interval: this.#deps.intervalMs / 1000 },
-    );
+    if (this.#deps.bootPassOnly) {
+      logger.info("Starting continuation sweep (boot pass only)");
+    } else {
+      logger.info(
+        "Starting continuation sweep (interval: {interval}s)",
+        { interval: this.#deps.intervalMs / 1000 },
+      );
+    }
     void this.#passThenSchedule();
   }
 
@@ -213,7 +224,7 @@ export class ContinuationSweepService {
   }
 
   #scheduleNext(): void {
-    if (this.#disposed) return;
+    if (this.#disposed || this.#deps.bootPassOnly) return;
     this.#timer = runDetached(() =>
       setTimeout(() => {
         void this.#passThenSchedule();

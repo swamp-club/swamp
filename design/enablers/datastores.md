@@ -1632,9 +1632,10 @@ fetchContent?(relPath: string, options?: DatastoreSyncOptions): Promise<Uint8Arr
   the method is meant for small files such as run records.
 
 The method is optional and has no `SyncCapabilities` flag: core treats its
-presence as the capability. Core does not call it yet; `swamp serve` will, to
-check a run record before it resumes a suspended run by itself
-(swamp-club#3108). `assertSyncServiceRoundTripConformance` checks an
+presence as the capability. `swamp serve` calls it to compare its copy of a
+run record with the remote one before it resumes a suspended run by itself
+(`runRecordCurrencyOver` in `src/cli/repo_context.ts`, swamp-club#3108; see
+"Continuation claims" in `design/primitives/workflows.md`). `assertSyncServiceRoundTripConformance` checks an
 implementation with its `fetch-content`, `fetch-content-error` and
 `fetch-content-namespace` cases, and
 `createInMemoryRemote` implements the method for tests.

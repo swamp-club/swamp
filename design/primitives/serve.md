@@ -136,7 +136,8 @@ Table notes:
   run whose gates are all decided and whose waits for a signal are all
   settled, under the workflow's auto-resume policy, and is what retries a
   launch that was lost. On a synced datastore it does not start when the boot
-  hydration failed. Two instances never resume the same run: see
+  hydration failed, and it runs only its boot pass when the sync service has
+  no `fetchContent` to compare a run record with the remote one. Two instances never resume the same run: see
   "Continuation claims" in workflows.md.
 - Once shutdown begins the active-run registry refuses every new run
   (`ActiveRunRegistry.beginDraining`, called first by `runShutdownDrain`), so

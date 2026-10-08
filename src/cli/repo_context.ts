@@ -91,6 +91,7 @@ import {
 import {
   type ContinuationClaims,
   localHolder,
+  type RunRecordCurrency,
 } from "../domain/workflows/continuation_claim.ts";
 import {
   type AtomicControlPlaneStore,
@@ -1585,6 +1586,60 @@ export function continuationClaimsOver(
     store: new ControlPlaneContinuationClaimStore(store),
     holder,
     liveness: heartbeatLiveness(store, options),
+  };
+}
+
+/** How long one read of a run record from the remote datastore may take. */
+export const RUN_RECORD_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Compares this host's record of a run with the one its synced datastore
+ * holds, byte for byte (swamp-club#3108). Undefined on a filesystem
+ * datastore, where both are one file, and for a sync service that cannot
+ * read a remote file without replacing the cached one (`fetchContent`).
+ * Only for a repository whose run records are stored in the datastore
+ * ({@link runsLiveInDatastore}): one that keeps them to itself has no remote
+ * copy to compare with.
+ *
+ * A record with a change this host has not pushed yet also reads as
+ * different; the caller leaves the run for a later attempt.
+ */
+export function runRecordCurrencyOver(
+  config: DatastoreConfig,
+  syncService: DatastoreSyncService | undefined,
+  pathOf: (run: { workflowId: string; runId: string }) => string,
+): RunRecordCurrency | undefined {
+  if (!isCustomDatastoreConfig(config) || !config.cachePath) return undefined;
+  if (!syncService?.fetchContent) return undefined;
+  const cachePath = config.cachePath;
+  const namespace = config.namespace;
+  return async (run) => {
+    const absPath = pathOf(run);
+    const rel = relative(cachePath, absPath);
+    if (escapesRoot(rel)) {
+      throw markErrorPaths(
+        new Error(`Run record ${absPath} is outside the datastore cache`),
+        [absPath],
+      );
+    }
+    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    const remote = await syncService.fetchContent!(relPath, {
+      namespace,
+      signal: AbortSignal.timeout(RUN_RECORD_FETCH_TIMEOUT_MS),
+    });
+    if (remote === null) return false;
+    let local: Uint8Array;
+    try {
+      local = await Deno.readFile(absPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    if (local.length !== remote.length) return false;
+    for (let i = 0; i < local.length; i++) {
+      if (local[i] !== remote[i]) return false;
+    }
+    return true;
   };
 }
 
