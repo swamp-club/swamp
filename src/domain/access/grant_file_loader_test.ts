@@ -208,7 +208,7 @@ Deno.test({
         assertEquals(files.repo.size, 0);
         const check = checkServeGrantFiles(files);
         assertEquals(check.errors.map((e) => [e.reason, e.file]), [
-          ["unreadable", grantsDir],
+          ["unreadable", "grants"],
         ]);
       } finally {
         await Deno.chmod(grantsDir, 0o755);

@@ -292,7 +292,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   if (files.repoUnreadable) {
     errors.push({
       reason: "unreadable",
-      file: files.repoUnreadable.path,
+      file: "grants",
       message: `Failed to read grants directory: ${files.repoUnreadable.cause}`,
     });
   }
@@ -345,7 +345,13 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
       }
     }
   }
-  const filesChecked = files.repo.size +
+  // Files that loaded, whatever they hold; a file that could not be read is
+  // an error, not a checked file, from every source alike.
+  const repoChecked =
+    [...files.repo.values()].filter((result) =>
+      !result.errors.some((e) => e.unreadable)
+    ).length;
+  const filesChecked = repoChecked +
     (grantsFile?.status === "loaded" ? 1 : 0) +
     (grantsDir?.status === "loaded"
       ? grantsDir.files.filter((file) => file.readError === undefined).length

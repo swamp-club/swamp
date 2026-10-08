@@ -193,8 +193,12 @@ export class PolicySnapshotLoader {
   #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
   readonly #decisionOptions: GrantBasedAccessDecisionServiceOptions;
-  /** Spelling findings already reported, so a reload does not repeat them. */
-  readonly #reportedSpellings = new Set<string>();
+  /**
+   * Each active grant already checked for spellings, by id, with the effect,
+   * selector and condition it was checked as, so a reload neither repeats
+   * its findings nor parses its condition again.
+   */
+  readonly #checkedSpellings = new Map<string, string>();
   readonly #readTypeLiterals: ConditionTypeLiteralReader | undefined;
 
   /**
@@ -353,24 +357,26 @@ export class PolicySnapshotLoader {
    * condition literal only as written.
    */
   #reportSpellings(grants: readonly Grant[]): void {
-    // Forget grants no longer active, so the set stays bounded by the
+    // Forget grants no longer active, so the map stays bounded by the
     // policy, and a grant that comes back is reported again.
     const active = new Set(grants.map((grant) => grant.id));
-    for (const key of this.#reportedSpellings) {
-      if (!active.has(key.slice(0, key.indexOf("|")))) {
-        this.#reportedSpellings.delete(key);
-      }
+    for (const id of this.#checkedSpellings.keys()) {
+      if (!active.has(id)) this.#checkedSpellings.delete(id);
     }
     for (const grant of grants) {
+      const checkedAs = JSON.stringify([
+        grant.effect,
+        grant.resource,
+        grant.condition ?? null,
+      ]);
+      if (this.#checkedSpellings.get(grant.id) === checkedAs) continue;
+      this.#checkedSpellings.set(grant.id, checkedAs);
       for (
         const finding of findGrantSpellingIssues(
           grant,
           this.#readTypeLiterals,
         )
       ) {
-        const key = `${grant.id}|${finding.part}|${finding.written}`;
-        if (this.#reportedSpellings.has(key)) continue;
-        this.#reportedSpellings.add(key);
         logger
           .warn`Grant ${grant.id} (${grant.effect}, source ${grant.source}): ${finding.message}`;
       }

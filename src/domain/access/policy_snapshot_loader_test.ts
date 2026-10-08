@@ -974,3 +974,36 @@ Deno.test("PolicySnapshotLoader.load: reports a spelling again once its grant re
 
   assertEquals(warnings.filter((w) => w.includes(deny.id)).length, 2);
 });
+
+Deno.test("PolicySnapshotLoader.load: checks a grant again when its selector changes under the same id", async () => {
+  const first = makeGrant({
+    effect: "deny",
+    resource: { kind: "model", pattern: "AWS::EC2::*" },
+  });
+  const changed = {
+    ...first,
+    resource: { kind: "model" as const, pattern: "Acme::*" },
+  };
+  let current = createMockDataRepo(
+    [{ attrs: first, modelId: "g1", dataName: "grant-main" }],
+    [],
+  );
+  const dataRepo = new Proxy({} as UnifiedDataRepository, {
+    get: (_, key) => current[key as keyof UnifiedDataRepository],
+  });
+  const loader = new PolicySnapshotLoader(dataRepo, new EventBus());
+  const warnings = await capturingLoaderWarnings(async () => {
+    await loader.load();
+    await loader.load();
+    current = createMockDataRepo(
+      [{ attrs: changed, modelId: "g1", dataName: "grant-main" }],
+      [],
+    );
+    await loader.load();
+  });
+  await loader.dispose();
+
+  const forGrant = warnings.filter((w) => w.includes(first.id));
+  assertEquals(forGrant.length, 2);
+  assertEquals(forGrant[1].includes("model:acme/*"), true);
+});
