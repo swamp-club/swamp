@@ -95,8 +95,6 @@ swamp-club.com account. The message names the cause:
 
 Do not work around the block; there is no flag to skip it.
 
-For detailed walkthroughs of each tier, see [reference.md](reference.md).
-
 ### Datastore format (`datastore_format_unsupported`, `datastore_format_marker_invalid`)
 
 swamp refused the datastore before writing anything to it. A newer swamp marked
@@ -110,3 +108,5 @@ on S3/GCS.
 - **`datastore_format_marker_invalid`**: the marker exists but is not valid JSON
   with a positive integer `format`. Find out who wrote it before changing it;
   report it with `swamp issue bug` if swamp did.
+
+For detailed walkthroughs of each tier, see [reference.md](reference.md).
