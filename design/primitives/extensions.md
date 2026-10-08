@@ -1169,12 +1169,25 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
 - **One pass, shared** (`runQualityFindings` in
   `src/libswamp/extensions/push.ts`): push runs it at stage 10b and
   `swamp extension quality` on every run including a cache hit. The review
-  rules, the bare-specifier check and `applyAcceptances` (pure,
-  property-tested: accepted plus remaining is exactly the input) produce the
+  rules, the bare-specifier check, the `uncatalogued-model` check and
+  `applyAcceptances` (pure, property-tested: accepted plus remaining is
+  exactly the input) produce the
   unaccepted findings the warnings gate counts, the `stale-acceptance`
   warning for each directive that matches nothing, and the acceptances with
   their reasons. `testing-completeness` is accepted per file first, then
   the remaining findings collapse to one per extension carrying the files.
+- **Uncatalogued models** (`modelCatalogGap` in
+  `src/domain/extensions/model_catalog_gap.ts`): the push content metadata
+  reads a model's `type` and `version` as string literals from a plain
+  `export const model = { ... }` object and silently leaves out any entry
+  point where either is unreadable, so the registry ships the bundle but lists
+  no model type. `modelCatalogGap` says why, built on the same extractors and
+  property-tested to agree with them, and `runQualityFindings` reports one
+  file-scoped `uncatalogued-model` warning per such entry point. It is not
+  acceptable. Like any unaccepted warning it prompts an interactive push, but
+  it changes no extractor and no error gate: the extractors stay as they are,
+  since the version-drift and upgrade-chain checks read the same version
+  (swamp-club#2486).
 - **Reporting.** The dry-run, completed and quality summaries close with
   `Accepted warnings:` and `Unresolved warnings:` (each warning neither fixed
   nor accepted, with its remediation and one line saying how to accept it).

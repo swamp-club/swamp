@@ -4,6 +4,7 @@
 
 - [Common Errors](#common-errors)
   - [Treating X as a helper module / model type missing](#treating-x-as-a-helper-module--model-type-missing)
+  - [Model missing from the registry catalog (uncatalogued-model)](#model-missing-from-the-registry-catalog-uncatalogued-model)
   - [Unknown resource spec / Unknown file spec](#unknown-resource-spec-or-unknown-file-spec)
   - [Model type already registered](#model-type-already-registered)
   - [Uses a reserved collective](#uses-a-reserved-collective)
@@ -40,6 +41,30 @@ export const model = { ... };
 // Correct — extend existing type
 export const extension = { ... };
 ```
+
+### Model missing from the registry catalog (`uncatalogued-model`)
+
+The registry catalog reads a model's `type` and `version` as string literals
+from a plain `export const model = { ... }` object. A model that installs and
+runs but is missing from `swamp extension search --content-type models`, or a
+push warning `uncatalogued-model`, means one of them could not be read:
+
+```typescript
+// Wrong — version comes only from the factory
+export const model = { ...definition, type: "@acme/thing" };
+
+// Wrong — the annotation hides the object from the catalog
+export const model: ModelDefinition = { type: "@acme/thing", version: "..." };
+
+// Correct — repeat both literals; check the shape with satisfies
+export const model = {
+  ...definition,
+  type: "@acme/thing",
+  version: "2026.09.25.1",
+} satisfies ModelDefinition;
+```
+
+Republish after the fix; the new version is catalogued.
 
 ### "Unknown resource spec" or "Unknown file spec"
 

@@ -281,7 +281,7 @@ function extractBalancedBrackets(
  * object body to avoid false positives from string literals elsewhere in
  * the file (e.g. embedded LLM prompts containing `type: "anime"`).
  */
-function extractModelType(content: string): string | null {
+export function extractModelType(content: string): string | null {
   // Match ModelType.create("type-name") or ModelType.create('type-name')
   const modelTypeMatch = content.match(
     /ModelType\.create\(\s*["']([^"']+)["']\s*\)/,
@@ -290,11 +290,7 @@ function extractModelType(content: string): string | null {
 
   // Scope the type: search to the model export object body to avoid matching
   // type: patterns inside string literals elsewhere in the file.
-  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
-  if (!modelExportMatch || modelExportMatch.index === undefined) return null;
-
-  const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
-  const body = extractBalancedBraces(content, bodyStart);
+  const body = extractModelExportBody(content);
   if (!body) return null;
 
   const typeLiteralMatch = body.match(/type:\s*["']([^"']+)["']/);
@@ -304,14 +300,24 @@ function extractModelType(content: string): string | null {
 }
 
 /**
- * Extracts the model version string from the `export const model` body.
+ * The text inside the braces of the `export const model = { ... }` object,
+ * or null when the export is not written as a plain object literal (a type
+ * annotation, or an initializer that is not an object) or its braces do not
+ * balance. Every field the catalog reads from a model comes from this body.
  */
-export function extractModelVersion(content: string): string | null {
+export function extractModelExportBody(content: string): string | null {
   const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
   if (!modelExportMatch || modelExportMatch.index === undefined) return null;
 
   const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
-  const body = extractBalancedBraces(content, bodyStart);
+  return extractBalancedBraces(content, bodyStart);
+}
+
+/**
+ * Extracts the model version string from the `export const model` body.
+ */
+export function extractModelVersion(content: string): string | null {
+  const body = extractModelExportBody(content);
   if (!body) return null;
 
   const match = body.match(/version:\s*["']([^"']+)["']/);

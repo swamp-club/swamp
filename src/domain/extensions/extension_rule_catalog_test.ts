@@ -127,3 +127,10 @@ Deno.test("RULE_CATALOG: agrees with the safety analyzer's rule ids and severiti
     assertEquals(entry.severity, rule.severity, rule.id);
   }
 });
+
+Deno.test("isAcceptableRule: uncatalogued-model is a known file-scoped warning that is never acceptable", () => {
+  const entry = findRule("uncatalogued-model");
+  assertEquals(entry?.severity, "warning");
+  assertEquals(entry?.scope, "file");
+  assertEquals(isAcceptableRule("uncatalogued-model"), false);
+});

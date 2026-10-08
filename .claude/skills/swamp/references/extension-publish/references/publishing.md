@@ -334,6 +334,15 @@ for import style examples and helper script details.
 - `datastores` paths resolve relative to `extensions/datastores/`
 - Only list entry-point files — local imports are auto-resolved and included
 - Each entry-point is bundled into a standalone JS file for the registry
+- The registry catalog lists a model only when its entry point exports a plain
+  `export const model = { ... }` object with string-literal `type` and
+  `version`. A model built by a shared factory must repeat both literals after
+  the spread
+  (`{ ...definition, type: "@acme/thing", version: "2026.09.25.1" }`), and the
+  export takes no type annotation (put `satisfies ModelDefinition` after the
+  object instead). A model that misses this still installs and runs, but
+  `extension search --content-type models` and `extension info` do not list it;
+  push and `extension quality` report it as `uncatalogued-model`.
 
 ## Examples
 
@@ -571,7 +580,9 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    (e.g. `from "zod"` instead of `from "npm:zod@4"`). The server-side scorer
    cannot resolve bare specifiers, so a warning naming each import-map
    replacement is added to the review warnings, prompting the user to confirm
-   before push. It cannot be accepted.
+   before push. It cannot be accepted. An `uncatalogued-model` warning is added
+   the same way for each model entry point the registry catalog would leave out
+   (see "How Content Maps to Manifest").
 9. **Bundle TypeScript** — compiles each entry point (models, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
@@ -664,13 +675,17 @@ One finding per offending line, so each can be accepted on its own.
 | `ipv4-address-literals` | An IPv4 literal in `.md` or `.txt` outside the documentation ranges |
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
-`testing-completeness`) and the extension-scoped `bare-specifiers` finding are
-warnings too. `bare-specifiers` cannot be accepted: the registry cannot score
-the extension however it is justified, and the fix is to write each import's
-`npm:`/`jsr:` target. `testing-completeness` reports once per extension when
-more than one entry point has no sibling `_test.ts`, naming the files. The
-`adversarial-review-report` family is evidence, not a lint, and has no
-acceptance form.
+`testing-completeness`), the extension-scoped `bare-specifiers` finding and the
+file-scoped `uncatalogued-model` finding are warnings too. `bare-specifiers`
+cannot be accepted: the registry cannot score the extension however it is
+justified, and the fix is to write each import's `npm:`/`jsr:` target.
+`uncatalogued-model` cannot be accepted either: it names a model entry point the
+registry catalog would not list (a type-annotated or non-object export, or no
+string-literal `type` or `version` in it), and the fix is to write those
+literals in a plain `export const model = { ... }` object.
+`testing-completeness` reports once per extension when more than one entry point
+has no sibling `_test.ts`, naming the files. The `adversarial-review-report`
+family is evidence, not a lint, and has no acceptance form.
 
 Error-level rule ids (`dynamic-code`, `hidden-file`, `file-type`, `symlink`,
 `file-size`, `total-size`, `file-count`, `unreadable-file`, `fmt`, `lint`,
