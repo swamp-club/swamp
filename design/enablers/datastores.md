@@ -1,7 +1,7 @@
 ---
 audience: maintainer, operator, extension-author
 enables: [data]
-last-verified: 2026-08-28 @ 3d5955a9
+last-verified: 2026-10-08 @ 03ca42ca
 ---
 
 # Datastores
@@ -426,6 +426,103 @@ Read-only commands skip lock and sync, so they can run alongside writes. On
 filesystem datastores reads see writes at once (same directory). On S3
 datastores reads see what a write command last synced to the local cache; run
 `swamp datastore sync --pull` to refresh.
+
+### Format Marker
+
+A datastore can carry a **format marker** naming the layout it is written in.
+Today's layout is format 2. A datastore without a marker is format 2, and
+nothing writes a marker yet: the v3 opt-in writes one when it creates a
+datastore, and the v3 migration writes one when it converts one
+(swamp-club#2865). This binary only reads it (swamp-club#3189).
+
+The marker is JSON. Unknown keys are ignored so later writers can add fields:
+
+```json
+{ "format": 3, "minReaderFormat": 3, "writtenBy": "2027.01.01.1" }
+```
+
+| Key               | Meaning                                                       |
+| ----------------- | ------------------------------------------------------------- |
+| `format`          | Positive integer: the layout the datastore is written in      |
+| `minReaderFormat` | Optional positive integer: the oldest format that can read it |
+| `writtenBy`       | Optional string: the swamp version that wrote the marker      |
+
+**Where it lives.** The marker belongs to the whole datastore, not to a
+namespace:
+
+- **Filesystem datastores:** `<path>/datastore-format.json`, at the datastore
+  root. A namespace is a subdirectory of `<path>`, so namespaced and
+  non-namespaced repos read the same file, and namespace migration never moves
+  it.
+- **Datastores whose sync service advertises `controlPlane`** (S3, GCS): the
+  control-plane record `datastore-format`, at `<prefix>/_control/datastore-format`.
+  Core reads it through a sync service built for that read alone. A sync
+  service that has not pulled or pushed has no namespace bound, so the S3 and
+  GCS extensions resolve the key to the root `_control/` even for a namespaced
+  repo. This holds for every released S3/GCS version: before extensions#242
+  (August 2026) control-plane keys were never namespaced, and since then the
+  namespace binds lazily on first use. Verified against
+  ministack and fake-gcs-server 1.56.1 with `@swamp/s3-datastore` 2026.08.27.3
+  and 2026.10.07.1 and `@swamp/gcs-datastore` 2026.10.07.1, solo and
+  namespaced. A provider whose `createSyncService`
+  returns the same instance twice is skipped, because the read would bind
+  that shared instance to no namespace and break the command's later
+  namespaced pull. An identity check cannot see shared state behind fresh
+  wrapper objects; extensions must not share namespace binding between the
+  instances they return.
+- **Other extensions** (no `controlPlane`, no sync service, no cache path): no
+  marker can be read, so the check is skipped and logged at debug. The v3
+  storage contract must give every v3-capable datastore an explicit
+  datastore-scoped marker read, rather than relying on lazy binding.
+
+**The check.** `assertSupportedDatastoreFormat`
+(`src/domain/datastore/datastore_format.ts`) decides; the infrastructure reader
+(`datastore_format_marker_reader.ts`) reads; `ensureSupportedDatastoreFormat`
+(`datastore_format_guard.ts`) runs both.
+
+| Marker read                                  | Outcome                                                     |
+| -------------------------------------------- | ----------------------------------------------------------- |
+| Not found                                    | Format 2, passes                                            |
+| `minReaderFormat` (or `format`) ≤ 2          | Passes                                                      |
+| `minReaderFormat` (or `format`) > 2          | Refused: `datastore_format_unsupported`                     |
+| Not a marker (bad JSON or shape, > 64 KiB, not a regular file) | Refused: `datastore_format_marker_invalid` |
+| Read failed (network, permissions, timeout)  | Passes, logged at debug                                     |
+| Datastore cannot carry a marker              | Passes, logged at debug                                     |
+
+A refusal is a `UserError` with that code in `--json` output and exit code 1,
+and says nothing was changed. A garbled marker is refused because treating it
+as format 2 is the unsafe direction. A failed read passes because blocking
+offline or degraded use would change behaviour for every v2 datastore, and the
+command meets the same outage itself. The remote read is bounded by
+`DATASTORE_FORMAT_READ_TIMEOUT_MS` (5 s), since the extensions retry inside
+`get`; a remote slower than that is treated as a failed read. The v3 opt-in
+should revisit that trade-off.
+
+**Where it runs.** Before anything locks, pulls, pushes or writes:
+
+- `resolveDatastoreForRepo`, right after the config is resolved. Every
+  `requireInitializedRepo*` helper starts there, as do `swamp serve` start-up
+  (before hydration and pollers) and the commands that open a datastore
+  themselves (namespace, lock, catalog pull, doctor).
+- `acquireModelLocks`, for a config resolved some other way.
+- `datastore setup filesystem` and `datastore setup extension`, against the
+  **target** datastore, before the first write to it.
+- Serve's dedicated audit datastores.
+
+A config that passed, or whose check was skipped, is remembered for the rest
+of the process, keyed on the config object, so one command pays one read (or
+one bounded wait on a degraded remote). A refusal is never remembered. Nothing is cached across
+processes: a datastore can be migrated between runs. `swamp worker` never
+opens a datastore; it reaches one only through serve.
+`integration/datastore_format_guard_rules_test.ts` pins every production call
+that builds a sync service or takes a datastore lock, each with the reason it
+is guarded.
+
+**For writers.** The S3 and GCS extensions move every root `_control/*` record
+into `<namespace>/_control/` on a namespaced push when a namespaced v2 index
+already exists (`migrateRootControlPlaneToNamespace`). A guarded binary
+refuses before it pushes, but a binary older than the guard does not, so a
+writer of the marker must leave no v2 namespaced index behind.
 
 ### Serve Runtime Data Refresh
 
@@ -2746,6 +2843,7 @@ exclude patterns.
 | `src/domain/datastore/datastore_migration_service.ts` | File copy + verification for migration |
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
+| `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
@@ -2759,6 +2857,8 @@ exclude patterns.
 | `src/infrastructure/persistence/filesystem_datastore_verifier.ts` | Filesystem health check |
 | `src/infrastructure/persistence/datastore_sync_coordinator.ts` | Global sync lifecycle (lock + pull/push) |
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
+| `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
+| `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
 
 ### Application Layer (libswamp)
 

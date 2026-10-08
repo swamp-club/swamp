@@ -45,7 +45,16 @@ import {
 } from "../../domain/datastore/datastore_sync_service.ts";
 import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
-import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
+import type {
+  DatastoreConfig,
+  DatastoreConfigData,
+} from "../../domain/datastore/datastore_config.ts";
+import {
+  DATASTORE_FORMAT_MARKER_INVALID_CODE,
+  DATASTORE_FORMAT_UNSUPPORTED_CODE,
+  InvalidDatastoreFormatMarkerError,
+  UnsupportedDatastoreFormatError,
+} from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -72,6 +81,7 @@ function makeDeps(
     listConfigTierConflicts: () => Promise.resolve([]),
     inspectManagedConfigTier: () => Promise.resolve({ managed: false }),
     collapseEnvVars: (path: string) => path,
+    assertDatastoreFormat: () => Promise.resolve(),
     ...overrides,
   };
 }
@@ -3015,4 +3025,98 @@ Deno.test("datastoreSetupExtension: a retry over a cache already holding every c
     assertEquals(await pathExists(localModel), false);
     assertEquals(keptWarningsOf(events), []);
   });
+});
+
+Deno.test("datastoreSetupFilesystem: refuses a target with a newer format before writing to it", async () => {
+  const ensured: string[] = [];
+  const checked: DatastoreConfig[] = [];
+  const deps = makeDeps({
+    ensureDir: (path) => {
+      ensured.push(path);
+      return Promise.resolve();
+    },
+    assertDatastoreFormat: (_repoDir, config) => {
+      checked.push(config);
+      return Promise.reject(
+        new UnsupportedDatastoreFormatError({ format: 3 }, [2]),
+      );
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["validating", "error"]);
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.error.code, DATASTORE_FORMAT_UNSUPPORTED_CODE);
+  assertStringIncludes(error.error.message, "Nothing was changed.");
+  assertEquals(checked, [{ type: "filesystem", path: "/tmp/datastore" }]);
+  assertEquals(ensured, []);
+});
+
+Deno.test("datastoreSetupExtension: refuses a target with a newer format before verifying or syncing it", async () => {
+  ensureTestExtensionType("test-ext-setup-format");
+  const ensured: string[] = [];
+  const checked: Array<{ config: DatastoreConfig; provider: boolean }> = [];
+  const deps = makeDeps({
+    ensureDir: (path) => {
+      ensured.push(path);
+      return Promise.resolve();
+    },
+    assertDatastoreFormat: (_repoDir, config, provider) => {
+      checked.push({ config, provider: provider !== undefined });
+      return Promise.reject(
+        new InvalidDatastoreFormatMarkerError("_control/datastore-format", "x"),
+      );
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-setup-format", namespace: "infra" }),
+    ),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["validating", "error"]);
+  const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
+  assertEquals(error.error.code, DATASTORE_FORMAT_MARKER_INVALID_CODE);
+  assertEquals(checked.length, 1);
+  assertEquals(checked[0].provider, true);
+  assertEquals(checked[0].config.type, "test-ext-setup-format");
+  assertEquals(checked[0].config.namespace, "infra");
+  assertEquals(ensured, []);
+});
+
+Deno.test("datastoreSetupExtension: a format check that passes leaves setup unchanged", async () => {
+  ensureTestExtensionType("test-ext-setup-format-ok");
+  let calls = 0;
+  const deps = makeDeps({
+    assertDatastoreFormat: () => {
+      calls++;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput({ type: "test-ext-setup-format-ok" }),
+    ),
+  );
+
+  assertEquals(calls, 1);
+  assertEquals(events.map((e) => e.kind), [
+    "validating",
+    "migrating",
+    "hydrating",
+    "completed",
+  ]);
 });

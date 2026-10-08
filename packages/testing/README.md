@@ -235,9 +235,18 @@ The remote also offers:
   op recorded, no injected failure consumed, works offline). A clean cache
   reports no uploads or deletes; `bulk` shows the next push is a full walk that
   ignores `marked`.
+- `seedControlPlane(key, data, { namespace? })` and `controlPlaneRecords()`,
+  with `createInMemoryRemote({ controlPlane: true })`: plant a control-plane
+  record without recording an op, and read every record by its full remote key.
 
-Not modelled: namespaces, lazy hydration, the control plane, `previewPush`,
-Windows drive-letter joins, the gap between `preparePush` deleting objects and
+With `controlPlane: true`, each service also has a `controlPlaneStore()` and
+advertises `controlPlane`. Records live under `_control/<key>`, or
+`<namespace>/_control/<key>` once the service has bound a namespace; a service
+that has not pulled or pushed binds none on its first control-plane call, as the
+S3 and GCS extensions do. Writes are logged as `controlPlane` ops.
+
+Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows
+drive-letter joins, the gap between `preparePush` deleting objects and
 `commitPush` publishing the index, and the extensions' cached or fallback index
 reads, which remove no peer deletes.
 

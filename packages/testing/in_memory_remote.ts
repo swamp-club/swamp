@@ -110,9 +110,16 @@
  * No method looks at `options.signal`, so a test of cancellation needs a
  * service of its own.
  *
+ * The control plane is modelled only when `controlPlane` is set: records
+ * live under `_control/<key>`, or `<namespace>/_control/<key>` once the
+ * service has bound a namespace, and a service that has not pulled or pushed
+ * binds no namespace on its first control-plane call, as the S3 and GCS
+ * extensions do (swamp-club#3189). Its writes are recorded as `controlPlane`
+ * ops; its reads are not.
+ *
  * Not modelled: namespace prefixes (a namespaced path is a plain key and a
- * push is never limited to one), lazy hydration (`hydrateFile`), the control
- * plane, `previewPush`, model-scoped pulls through `context`, and Windows
+ * push is never limited to one), lazy hydration (`hydrateFile`),
+ * `previewPush`, model-scoped pulls through `context`, and Windows
  * drive-letter joins. Nor is the window between `preparePush` and
  * `commitPush` in which the extensions have already deleted objects but not
  * yet the index entries, so a peer pulling then drops those entries without
@@ -130,6 +137,7 @@
 
 import { dirname, join, normalize } from "@std/path";
 import type {
+  ControlPlaneStore,
   DatastoreSyncOptions,
   DatastoreSyncService,
   SyncCapabilities,
@@ -212,6 +220,11 @@ export interface InMemoryRemoteOptions {
   dirtyPathsCap?: number;
   /** What every connected service advertises. Default `{ twoPhaseSync: true }`. */
   capabilities?: SyncCapabilities;
+  /**
+   * Gives every connected service a `controlPlaneStore()` and adds
+   * `controlPlane: true` to its capabilities. Default false.
+   */
+  controlPlane?: boolean;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -220,7 +233,8 @@ export type InMemoryRemoteFailure =
   | "pull"
   | "prepare"
   | "commit"
-  | "fetch";
+  | "fetch"
+  | "controlPlane";
 
 /** Options for {@link InMemoryRemote.failNext}. */
 export interface FailNextOptions {
@@ -237,7 +251,14 @@ export interface FailNextOptions {
 export interface InMemoryRemoteOpRecord {
   /** The instance name given to `connect`. */
   instance: string;
-  op: "markDirty" | "push" | "pull" | "prepare" | "commit" | "fetch";
+  op:
+    | "markDirty"
+    | "push"
+    | "pull"
+    | "prepare"
+    | "commit"
+    | "fetch"
+    | "controlPlane";
   /** Paths marked, uploaded, downloaded or fetched, sorted. */
   paths: string[];
   /** Paths deleted remotely (push) or locally (pull), sorted. */
@@ -289,8 +310,23 @@ export interface InMemoryRemote {
     error?: Error,
     options?: FailNextOptions,
   ): void;
-  /** While offline, every push, pull, prepare, commit and fetch throws. */
+  /**
+   * While offline, every push, pull, prepare, commit, fetch and
+   * control-plane call throws.
+   */
   offline(isOffline: boolean): void;
+  /**
+   * Writes a control-plane record straight into the remote, as another
+   * machine or a later swamp would, without recording an op. The record is
+   * datastore-wide unless `namespace` is given. Needs `controlPlane`.
+   */
+  seedControlPlane(
+    key: string,
+    data: Uint8Array,
+    options?: { namespace?: string },
+  ): void;
+  /** Every control-plane record, keyed by its full remote key. */
+  controlPlaneRecords(): ReadonlyMap<string, Uint8Array>;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
   /** Drops a cache's persisted dirty state, like a lost sidecar file. */
@@ -563,8 +599,16 @@ export function createInMemoryRemote(
     ...options?.semantics,
   };
   const dirtyPathsCap = options?.dirtyPathsCap ?? 2000;
-  const capabilities: SyncCapabilities = options?.capabilities ??
-    { twoPhaseSync: true };
+  const controlPlane = options?.controlPlane ?? false;
+  const capabilities: SyncCapabilities = {
+    ...(options?.capabilities ?? { twoPhaseSync: true }),
+    ...(controlPlane ? { controlPlane: true } : {}),
+  };
+  // Control-plane records, keyed `_control/<key>` or
+  // `<namespace>/_control/<key>` as the extensions store them.
+  const controlRecords = new Map<string, Uint8Array>();
+  const controlKey = (namespace: string | undefined, key: string) =>
+    namespace ? `${namespace}/_control/${key}` : `_control/${key}`;
 
   // Stored objects, written at once by prepare and push.
   const objects = new Map<string, Uint8Array>();
@@ -1135,6 +1179,88 @@ export function createInMemoryRemote(
       }
     }
 
+    /**
+     * The extensions' store: a service that has not bound a namespace binds
+     * none on its first call, so its keys are datastore-wide from then on.
+     */
+    function controlPlaneStore(): ControlPlaneStore {
+      const reach = (): void => {
+        if (!namespaceBound) bindNamespace(undefined);
+        checkReachable("controlPlane", instance);
+      };
+      const written = (fullKey: string): void =>
+        record({
+          instance,
+          op: "controlPlane",
+          paths: [fullKey],
+          deleted: [],
+        });
+      return {
+        get(key) {
+          try {
+            reach();
+            const bytes = controlRecords.get(controlKey(namespace, key));
+            return Promise.resolve(bytes ? bytes.slice() : null);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+        put(key, data) {
+          try {
+            reach();
+            const fullKey = controlKey(namespace, key);
+            controlRecords.set(fullKey, data.slice());
+            written(fullKey);
+            return Promise.resolve();
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+        putIfAbsent(key, data) {
+          try {
+            reach();
+            const fullKey = controlKey(namespace, key);
+            if (controlRecords.has(fullKey)) return Promise.resolve(false);
+            controlRecords.set(fullKey, data.slice());
+            written(fullKey);
+            return Promise.resolve(true);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+        delete(key) {
+          try {
+            reach();
+            const fullKey = controlKey(namespace, key);
+            controlRecords.delete(fullKey);
+            record({
+              instance,
+              op: "controlPlane",
+              paths: [],
+              deleted: [fullKey],
+            });
+            return Promise.resolve();
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+        list(prefix) {
+          try {
+            reach();
+            const base = controlKey(namespace, "");
+            return Promise.resolve(
+              [...controlRecords.keys()]
+                .filter((k) => k.startsWith(base + prefix))
+                .map((k) => k.slice(base.length))
+                .sort(),
+            );
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        },
+      };
+    }
+
     return {
       pullChanged,
       pushChanged,
@@ -1143,6 +1269,7 @@ export function createInMemoryRemote(
       commitPush,
       capabilities: () => ({ ...capabilities }),
       ...(connectOptions?.fetchContent === false ? {} : { fetchContent }),
+      ...(controlPlane ? { controlPlaneStore } : {}),
     };
   }
 
@@ -1160,6 +1287,14 @@ export function createInMemoryRemote(
     offline(value) {
       isOffline = value;
     },
+    seedControlPlane(key, data, seedOptions) {
+      if (!controlPlane) {
+        throw new Error("seedControlPlane needs the controlPlane option");
+      }
+      controlRecords.set(controlKey(seedOptions?.namespace, key), data.slice());
+    },
+    controlPlaneRecords: () =>
+      new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
     ops: () =>
       log.map((entry) => ({
         ...entry,

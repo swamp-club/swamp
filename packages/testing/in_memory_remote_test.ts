@@ -24,7 +24,7 @@
 // including the gaps, so a change to the fake's semantics fails here on
 // purpose.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { dirname, join } from "@std/path";
 import {
   createInMemoryRemote,
@@ -32,6 +32,7 @@ import {
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 import { assertSyncServiceConformance } from "./datastore_conformance.ts";
+import { assertControlPlaneStoreConformance } from "./control_plane_conformance.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-in-memory-remote-" });
@@ -1268,4 +1269,101 @@ Deno.test("createInMemoryRemote: a push after a lost sidecar still removes peer 
     assertEquals(remote.files().has("f"), false);
     assertEquals(await read(bCache, "f"), undefined);
   });
+});
+
+const bytes = (text: string) => new TextEncoder().encode(text);
+const text = (data: Uint8Array | null) =>
+  data === null ? null : new TextDecoder().decode(data);
+
+Deno.test("createInMemoryRemote: without controlPlane, services have no control-plane store and unchanged capabilities", () => {
+  const service = createInMemoryRemote().connect("/cache/a");
+  assertEquals(service.controlPlaneStore, undefined);
+  assertEquals(service.capabilities?.(), { twoPhaseSync: true });
+});
+
+Deno.test("createInMemoryRemote: the control-plane store passes the conformance suite", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  assertEquals(remote.connect("/c").capabilities?.(), {
+    twoPhaseSync: true,
+    controlPlane: true,
+  });
+  await assertControlPlaneStoreConformance(() =>
+    remote.connect("/cache/conformance").controlPlaneStore!()
+  );
+});
+
+Deno.test("createInMemoryRemote: a service that has not pulled reads datastore-wide control records", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    remote.seedControlPlane("datastore-format", bytes("root"));
+    remote.seedControlPlane("datastore-format", bytes("ns"), {
+      namespace: "infra",
+    });
+
+    const fresh = remote.connect(join(dir, "fresh"));
+    assertEquals(
+      text(await fresh.controlPlaneStore!().get("datastore-format")),
+      "root",
+    );
+    // The first control-plane call bound no namespace, so a namespaced
+    // pull on the same service is refused, as in the extensions.
+    await assertRejects(
+      () => fresh.pullChanged({ namespace: "infra" }),
+      Error,
+      "Namespace mismatch",
+    );
+
+    const bound = remote.connect(join(dir, "bound"));
+    await bound.pullChanged({ namespace: "infra" });
+    assertEquals(
+      text(await bound.controlPlaneStore!().get("datastore-format")),
+      "ns",
+    );
+  });
+});
+
+Deno.test("createInMemoryRemote: control-plane writes are recorded and listed by full key; reads are not", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  const store = remote.connect("/cache/a", { instance: "a" })
+    .controlPlaneStore!();
+  await store.get("missing");
+  assertEquals(remote.ops(), []);
+
+  await store.put("heartbeats/1", bytes("x"));
+  assertEquals(await store.putIfAbsent!("heartbeats/1", bytes("y")), false);
+  await store.delete("heartbeats/1");
+  assertEquals(remote.ops(), [
+    {
+      instance: "a",
+      op: "controlPlane",
+      paths: ["_control/heartbeats/1"],
+      deleted: [],
+    },
+    {
+      instance: "a",
+      op: "controlPlane",
+      paths: [],
+      deleted: ["_control/heartbeats/1"],
+    },
+  ]);
+  assertEquals([...remote.controlPlaneRecords().keys()], []);
+});
+
+Deno.test("createInMemoryRemote: control-plane calls fail while offline and on an injected failure", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  const store = remote.connect("/cache/a").controlPlaneStore!();
+  remote.failNext("controlPlane", new Error("boom"));
+  await assertRejects(() => store.get("k"), Error, "boom");
+  remote.offline(true);
+  await assertRejects(() => store.get("k"), Error, "offline");
+  remote.offline(false);
+  assertEquals(await store.get("k"), null);
+});
+
+Deno.test("createInMemoryRemote: seedControlPlane needs the controlPlane option", () => {
+  assertThrows(
+    () => createInMemoryRemote().seedControlPlane("k", bytes("x")),
+    Error,
+    "controlPlane option",
+  );
 });

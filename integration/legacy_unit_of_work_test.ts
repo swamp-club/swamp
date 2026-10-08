@@ -142,12 +142,18 @@ async function observe(
       const hook = ctx.repoContext.markDirty;
       assert(hook !== undefined, "expected the composition-built mark hook");
       assert(ctx.syncService !== undefined, "expected a sync service");
-      assertEquals(services.length, 1, "expected one connected sync service");
+      // The datastore format check (swamp-club#3189) connects one service
+      // of its own first, to read the marker; it writes nothing.
+      assertEquals(
+        services.length,
+        2,
+        "expected the format check's sync service and the command's",
+      );
       assert(
-        (ctx.syncService as unknown) === services[0],
+        (ctx.syncService as unknown) === services[1],
         "expected the hook and the pushes to share one sync service",
       );
-      const push = pushFor(services[0], twoPhaseSync);
+      const push = pushFor(services[1], twoPhaseSync);
       const cacheDir = join(repoDir, ".test-cache");
 
       let mark: Mark;
