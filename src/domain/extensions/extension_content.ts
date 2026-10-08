@@ -175,4 +175,9 @@ export interface ExtensionAcceptances {
   accepted: ExtensionAcceptance[];
   /** The generated declaration from the quality sidecar, when present. */
   generated?: { by: string; source: string; commit: string };
+  /**
+   * How many entries the push sent. Set only when read back from the
+   * registry, which keeps the first 500 of them; push never sends it.
+   */
+  total?: number;
 }

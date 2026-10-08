@@ -19,6 +19,7 @@
 
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
 import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
@@ -318,6 +319,7 @@ export class ExtensionApiClient {
     const detail = data.latestVersionDetail;
     if (!detail) return null;
 
+    const acceptances = parseRegistryAcceptances(detail.acceptances);
     return {
       version: detail.version,
       publishedAt: detail.publishedAt ?? "",
@@ -331,6 +333,7 @@ export class ExtensionApiClient {
         reports: detail.reports ?? [],
         webhooks: detail.webhooks ?? [],
         skills: detail.skills ?? [],
+        ...(acceptances ? { acceptances } : {}),
       },
     };
   }
