@@ -658,7 +658,7 @@ One finding per offending line, so each can be accepted on its own.
 
 | Rule id                 | Detail                                                              |
 | ----------------------- | ------------------------------------------------------------------- |
-| `deno-command`          | `Deno.Command(` on the line (subprocess spawning)                   |
+| `deno-command`          | A `Deno.Command` use in code, including aliases of `Deno`           |
 | `long-line`             | A line with 500+ non-whitespace characters                          |
 | `base64-run`            | A line with a run of 100+ base64 characters                         |
 | `ipv4-address-literals` | An IPv4 literal in `.md` or `.txt` outside the documentation ranges |
@@ -742,8 +742,9 @@ Rules, enforced by construction:
   rule id with no colon, or more than 50 per file, is a blocking
   `invalid-acceptance` error naming the comment. A reason, when given, is capped
   at 200 characters, and in source files may not contain a quote character,
-  `Deno.Command(` or a base64 run: the safety checks scan every line as written,
-  so a directive can never trigger or hide a finding. An empty `reason:` in
+  `Deno.Command(` or a base64 run: the long-line and base64 checks scan every
+  line as written, and `deno-command` does too in a file that does not parse, so
+  a directive can never trigger or hide a finding. An empty `reason:` in
   `quality.yaml` is a schema error; omit the key instead.
 - An acceptance whose rule no longer fires there is a `stale-acceptance` warning
   at the comment, so acceptances do not accumulate.
