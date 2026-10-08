@@ -1039,6 +1039,36 @@ Deno.test("continueSettledRun: launches an approved run whose auto-resume launch
   await registry.registered[0].completion;
 });
 
+Deno.test("continueSettledRun: a recovered run is left for the resume its recovery asked for", async () => {
+  const workflow = makeWorkflow({ autoResume: true });
+  // Approved and resumed, then interrupted in the step after the gate and
+  // recovered: the gate's decision is still on the record.
+  const run = makeApprovedRun(workflow);
+  run.resumeFromSuspended({ pid: 1 });
+  run.getJob("main")!.getStep("deploy")!.start();
+  run.interrupt("server_crash");
+  run.resetUnknownStepsForRecovery();
+  const { ctx, registry, audit } = continuationHarness([workflow], [run]);
+  const target = { workflowId: workflow.id, runId: run.id };
+
+  for (const takeover of [true, false]) {
+    assertEquals(
+      await continueSettledRun(ctx, target, { ...SWEEP, takeover }),
+      false,
+    );
+  }
+  assertEquals(
+    await continueSettledRun(
+      ctx,
+      target,
+      { kind: "signal", principalId: "user:ada", takeover: false },
+    ),
+    false,
+  );
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
+});
+
 Deno.test("continueSettledRun: a run whose policy is off is left alone without a word", async () => {
   const workflow = waitingWorkflow(false);
   const { run, wait } = makeWaitingRun(workflow);

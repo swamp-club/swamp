@@ -515,6 +515,9 @@ runs signalled by a local command. Things to know:
   child was continued by a caller who may `signal` (or `approve`) the parent. A
   parent whose child the sweep continued stays suspended; serve logs the
   `swamp workflow resume` command for it.
+- A run reset by `swamp workflow recover` is never resumed by serve, with no
+  event: run `swamp workflow resume` as recover says. A run recovered before the
+  upgrade is not protected this way.
 - A run that cannot be resumed stays suspended; the audit log has one
   `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
   reason (`global_cap`, ...). A run whose auto-resume policy is off is left

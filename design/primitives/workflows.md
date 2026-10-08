@@ -364,6 +364,15 @@ later one (`bootPassOnly`): a lost launch, or a run signalled by a local
 command, then waits for a restart or a manual resume. A signal that arrives
 at the instance is still continued at once.
 
+A run suspended by `swamp workflow recover` is never continued. Recovery
+marks the run record (`recovered: true`, `WorkflowRun.awaitsResumeAfterRecovery`)
+and `continueSettledRun` leaves a marked run alone without a word: the steps
+recovery reset had an unknown outcome, and no signal or approval released
+them, whatever gate was decided earlier in the run. Any resume clears the
+mark, so a later suspension of the same run is continued as usual. A run
+recovered by a build without the mark has none. The auto-resume after an
+approval and of a parent do not read the mark.
+
 On a synced datastore every copy of a run a peer resumed stays `suspended`
 on this instance until it restarts, and their number only grows. Serve
 remembers a suspension it found held by another and looks at it again every

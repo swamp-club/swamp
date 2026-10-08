@@ -965,6 +965,9 @@ export async function continueSettledRun(
     return false;
   };
 
+  // A recovered run waits for the resume `workflow recover` asked for: no
+  // signal or approval released the steps it reset.
+  if (run.awaitsResumeAfterRecovery) return false;
   const verdict = await decideContinuation(run, outcomesOf(ctx));
   if (verdict.kind !== "resumable") return false;
 
