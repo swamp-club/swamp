@@ -46,7 +46,7 @@ skill.
 | Resume workflow    | `swamp workflow resume <workflow> [--run <id>] [--input k=v]`            |
 | Retry failed steps | `swamp workflow resume <wf> --run <id>` (run is failed)                  |
 | Resume from step   | `swamp workflow resume <wf> --from <step>`                               |
-| List approvals     | `swamp workflow approvals`                                               |
+| List approvals     | `swamp workflow approvals` (pending gates, and expired ones to cancel)   |
 | List signal waits  | `swamp workflow waits`                                                   |
 | Signal a wait      | `swamp workflow signal <wait_id> --payload '<json>'`                     |
 | Cancel a run       | `swamp workflow cancel <workflow> [--run <id>]`                          |

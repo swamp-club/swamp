@@ -22,7 +22,7 @@ import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
-import { extractArray } from "./client/extract";
+import { pendingApprovals } from "./client/approvals";
 import { Logo } from "./components/Logo";
 import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
 import {
@@ -94,7 +94,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const { data: approvalsData, refetch: refetchApprovals } = useRequest(
     "workflow.approvals",
   );
-  const approvalCount = extractArray(approvalsData).length;
+  // Only gates that can still be decided: expired ones are not pending.
+  const approvalCount = pendingApprovals(approvalsData).length;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(readCollapsed);

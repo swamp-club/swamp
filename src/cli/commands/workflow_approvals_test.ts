@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { PendingApproval } from "../../libswamp/workflows/approvals.ts";
+import type {
+  ExpiredApproval,
+  PendingApproval,
+} from "../../libswamp/workflows/approvals.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import { renderApprovals } from "./workflow_approvals.ts";
 
@@ -36,6 +39,22 @@ function pending(
     suspendedAt: "2026-10-02T18:18:40.459Z",
     prompt: "Wipe it?",
     inputs: {},
+    ...overrides,
+  };
+}
+
+function expired(
+  overrides: Partial<ExpiredApproval> = {},
+): ExpiredApproval {
+  return {
+    workflowId: "wf-id",
+    workflowName: "wipe-drive",
+    runId: RUN_ID,
+    stepName: "gate",
+    suspendedAt: "2026-10-02T18:18:40.459Z",
+    timeoutSeconds: 3600,
+    expiredAt: "2026-10-02T19:18:40.459Z",
+    serveStarted: false,
     ...overrides,
   };
 }
@@ -88,12 +107,108 @@ Deno.test("renderApprovals: --quiet prints no commands", () => {
   assertEquals(lines, []);
 });
 
-Deno.test("renderApprovals: JSON mode prints only the approvals list", () => {
+Deno.test("renderApprovals: JSON mode prints the approvals and expired lists", () => {
   const approvals = [pending()];
+  const gates = [expired()];
   const lines = captureStdout(() =>
-    renderApprovals(hintTestContext({ outputMode: "json" }), approvals)
+    renderApprovals(hintTestContext({ outputMode: "json" }), approvals, gates)
   );
-  assertEquals(JSON.parse(lines.join("\n")), { approvals });
+  assertEquals(JSON.parse(lines.join("\n")), { approvals, expired: gates });
+});
+
+Deno.test("renderApprovals: JSON mode prints an empty expired list when none expired", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext({ outputMode: "json" }), [])
+  );
+  assertEquals(JSON.parse(lines.join("\n")), { approvals: [], expired: [] });
+});
+
+Deno.test("renderApprovals: prints the local cancel command for an expired gate", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [], [expired()])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+Deno.test("renderApprovals: an expired gate on a run serve started gets the --server cancel form", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [], [expired({ serveStarted: true })])
+  );
+  assertEquals(lines, [
+    `  swamp workflow cancel --run ${RUN_ID} --server <url>`,
+  ]);
+});
+
+Deno.test("renderApprovals: carries an explicit --server into an expired gate's cancel command", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(
+      hintTestContext(),
+      [],
+      [expired()],
+      "ws://localhost:9090",
+    )
+  );
+  assertEquals(lines, [
+    `  swamp workflow cancel --run ${RUN_ID} --server ws://localhost:9090`,
+  ]);
+});
+
+Deno.test("renderApprovals: an expired gate on a nested run names the parent's cancel command", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [], [
+      expired({
+        parentRun: {
+          workflowId: "parent-id",
+          workflowName: "parent-wf",
+          runId: PARENT_RUN_ID,
+          stepName: "child",
+          serveStarted: true,
+        },
+        parentWaiting: true,
+      }),
+    ])
+  );
+  assertEquals(lines, [
+    `  swamp workflow cancel wipe-drive --run ${RUN_ID}`,
+    `  Nested run of parent-wf: the parent stays suspended after this cancel; cancel it with swamp workflow cancel --run ${PARENT_RUN_ID} --server <url>`,
+  ]);
+});
+
+Deno.test("renderApprovals: an expired gate whose parent no longer waits prints no parent command", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [], [
+      expired({
+        parentRun: {
+          workflowId: "parent-id",
+          workflowName: "parent-wf",
+          runId: PARENT_RUN_ID,
+          stepName: "child",
+          serveStarted: false,
+        },
+        parentWaiting: false,
+      }),
+    ])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+Deno.test("renderApprovals: --quiet prints no cancel command for an expired gate", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext({ verbosity: "quiet" }), [], [expired()])
+  );
+  assertEquals(lines, []);
+});
+
+Deno.test("renderApprovals: an expired gate's workflow name never reaches stdout raw", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [], [
+      expired({ workflowName: "wipe drive\u001b]0;pwned\u0007" }),
+    ])
+  );
+  assertEquals(lines, [
+    `  swamp workflow cancel $'wipe drive\\x1b]0;pwned\\x07' --run ${RUN_ID}`,
+  ]);
+  assertEquals(lines.join("\n").includes("\u001b"), false);
 });
 
 Deno.test("renderApprovals: shell-quotes a step name with spaces or shell syntax", () => {
@@ -124,6 +239,7 @@ Deno.test("renderApprovals: carries an explicit --server into every command", ()
           parentWaiting: true,
         }),
       ],
+      [],
       "ws://localhost:9090",
     )
   );

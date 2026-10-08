@@ -836,7 +836,7 @@ Nested workflows have a max depth of 10 and cycle detection is enforced.
 task:
   type: manual_approval
   prompt: "Verify SSH access before proceeding"
-  timeout: 3600 # Optional: seconds before approve is rejected
+  timeout: 3600 # Optional: seconds until the gate expires
 ```
 
 The workflow suspends to disk. Approve, reject, or resume from CLI (use
@@ -847,7 +847,7 @@ swamp workflow approve <workflow-name> <step-name> --run <run-id>
 swamp workflow reject  <workflow-name> <step-name> --run <run-id> --reason "Not ready"
 swamp workflow resume  <workflow-name> --run <run-id>
 swamp workflow resume  <workflow-name> --run <run-id> --input authKey=tskey-abc123
-swamp workflow approvals  # list all pending approvals with run IDs
+swamp workflow approvals  # list pending approvals and expired gates with run IDs
 ```
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
@@ -859,8 +859,12 @@ added or moved, or a job added, renamed or removed); the run stays suspended
 until `swamp workflow cancel <wf> --run <id>`, or, for a run `swamp serve`
 started, `swamp workflow cancel --run <id> --server <url>`. The serve cancel
 also clears a serve-started run whose approval gate has timed out, and a run
-left `running` by a serve process that has died. If it answers that the run was
-not cancelled, the reply says what still holds it. See
+left `running` by a serve process that has died. A gate past its `timeout` can
+no longer be approved or rejected: `swamp workflow approvals` lists it in a
+separate expired section with the cancel command for its run (an `expired` array
+in `--json`), and the dashboard's Approvals view has a Cancel button for it. If
+it answers that the run was not cancelled, the reply says what still holds it.
+See
 [execution-semantics.md](references/execution-semantics.md#suspension-and-resume).
 
 **`wait_for_signal`** - Suspend the workflow until a JSON message arrives or a

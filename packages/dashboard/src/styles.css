@@ -775,6 +775,15 @@ body {
   color: var(--danger);
 }
 
+/* Cancel control for expired and awaiting-resume runs */
+.cancel-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 /* System view */
 .sys-grid {
   display: grid;

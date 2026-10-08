@@ -22,7 +22,11 @@ import type {
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
-import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+} from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -56,8 +60,38 @@ export interface PendingApproval {
   parentWaiting?: boolean;
 }
 
+/**
+ * An expired gate: a `manual_approval` step past its timeout on a run that
+ * is still suspended. It can no longer be approved or rejected, only
+ * cancelled.
+ */
+export interface ExpiredApproval {
+  workflowId: string;
+  workflowName: string;
+  runId: string;
+  stepName: string;
+  suspendedAt: string;
+  timeoutSeconds: number;
+  /** When the gate expired: `suspendedAt` plus the timeout. */
+  expiredAt: string;
+  /** A serve instance started the run, so only a serve cancel clears it. */
+  serveStarted: boolean;
+  /** On a nested workflow's run, the parent step that started it. */
+  parentRun?: {
+    workflowId: string;
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    /** A serve instance started the parent run. */
+    serveStarted: boolean;
+  };
+  /** With `parentRun`: whether the parent still waits on this run. */
+  parentWaiting?: boolean;
+}
+
 export interface WorkflowApprovalsData {
   approvals: PendingApproval[];
+  expired: ExpiredApproval[];
 }
 
 export type WorkflowApprovalsEvent =
@@ -102,21 +136,24 @@ export async function* workflowApprovals(
       const logger = getLogger(["swamp", "workflow", "approvals"]);
       const workflows = await deps.workflowRepo.findAll();
       const pending: PendingApproval[] = [];
+      const expired: ExpiredApproval[] = [];
       // Many nested runs can share one parent: load each parent once.
       const parents = new Map<string, Promise<WorkflowRun | null>>();
+      const findParent: WorkflowRunRepository["findById"] = (
+        workflowId,
+        runId,
+      ) => {
+        const key = `${workflowId}/${runId}`.toLowerCase();
+        let found = parents.get(key);
+        if (!found) {
+          found = deps.runRepo.findById(workflowId, runId);
+          parents.set(key, found);
+        }
+        return found;
+      };
       const nestedLink = new NestedRunLink({
         workflowRepo: deps.workflowRepo,
-        runRepo: {
-          findById: (workflowId, runId) => {
-            const key = `${workflowId}/${runId}`.toLowerCase();
-            let found = parents.get(key);
-            if (!found) {
-              found = deps.runRepo.findById(workflowId, runId);
-              parents.set(key, found);
-            }
-            return found;
-          },
-        },
+        runRepo: { findById: findParent },
       });
 
       for (const workflow of workflows) {
@@ -142,7 +179,49 @@ export async function* workflowApprovals(
             taskData,
             new Date(),
           );
-          if (timeout?.expired) continue;
+          const parentRun = run.parentRun?.kind === "valid"
+            ? {
+              workflowId: run.parentRun.ref.workflowId,
+              workflowName: run.parentRun.ref.workflowName,
+              runId: run.parentRun.ref.runId,
+              stepName: run.parentRun.ref.stepName,
+            }
+            : undefined;
+          // One unreadable parent must not fail the whole listing.
+          const parentWaiting = parentRun
+            ? await nestedLink.isAwaitedByParent(run).catch(() => false)
+            : undefined;
+
+          if (timeout?.expired && step?.startedAt) {
+            const parent = run.parentRun?.kind === "valid"
+              ? await findParent(
+                createWorkflowId(run.parentRun.ref.workflowId),
+                createWorkflowRunId(run.parentRun.ref.runId),
+              ).catch(() => null)
+              : null;
+            expired.push({
+              workflowId: workflow.id,
+              workflowName: workflow.name,
+              runId: run.id,
+              stepName: waiting.stepName,
+              suspendedAt: step.startedAt.toISOString(),
+              timeoutSeconds: timeout.timeoutSeconds,
+              expiredAt: new Date(
+                step.startedAt.getTime() + timeout.timeoutSeconds * 1000,
+              ).toISOString(),
+              serveStarted: run.instanceId !== undefined,
+              ...(parentRun
+                ? {
+                  parentRun: {
+                    ...parentRun,
+                    serveStarted: parent?.instanceId !== undefined,
+                  },
+                  parentWaiting,
+                }
+                : {}),
+            });
+            continue;
+          }
 
           if (evaluatedWorkflow === undefined && deps.findEvaluatedWorkflow) {
             try {
@@ -171,14 +250,6 @@ export async function* workflowApprovals(
               : undefined;
           }
 
-          const parentRun = run.parentRun?.kind === "valid"
-            ? {
-              workflowId: run.parentRun.ref.workflowId,
-              workflowName: run.parentRun.ref.workflowName,
-              runId: run.parentRun.ref.runId,
-              stepName: run.parentRun.ref.stepName,
-            }
-            : undefined;
           pending.push({
             workflowId: workflow.id,
             workflowName: workflow.name,
@@ -187,20 +258,12 @@ export async function* workflowApprovals(
             suspendedAt: step?.startedAt?.toISOString(),
             prompt,
             inputs: run.inputs,
-            ...(parentRun
-              ? {
-                parentRun,
-                // One unreadable parent must not fail the whole listing.
-                parentWaiting: await nestedLink.isAwaitedByParent(run).catch(
-                  () => false,
-                ),
-              }
-              : {}),
+            ...(parentRun ? { parentRun, parentWaiting } : {}),
           });
         }
       }
 
-      yield { kind: "completed", data: { approvals: pending } };
+      yield { kind: "completed", data: { approvals: pending, expired } };
     })(),
   );
 }

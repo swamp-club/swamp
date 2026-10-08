@@ -22,6 +22,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   workflowApprovals,
+  type WorkflowApprovalsData,
   type WorkflowApprovalsDeps,
   type WorkflowApprovalsEvent,
 } from "./approvals.ts";
@@ -30,6 +31,10 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 
 const WF_ID = "550e8400-e29b-41d4-a716-446655440000" as unknown as WorkflowId;
+const PARENT_WF_ID =
+  "660e8400-e29b-41d4-a716-446655440000" as unknown as WorkflowId;
+const PARENT_RUN_ID = "770e8400-e29b-41d4-a716-446655440000";
+const CHILD_RUN_ID = "880e8400-e29b-41d4-a716-446655440000";
 
 function makeWorkflow(overrides?: {
   id?: WorkflowId;
@@ -75,6 +80,8 @@ function makeRun(overrides?: {
   startedAt?: Date;
   inputs?: Record<string, unknown>;
   approvalPrompt?: string;
+  instanceId?: string;
+  parentRun?: Record<string, unknown>;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
@@ -84,6 +91,10 @@ function makeRun(overrides?: {
     id: overrides?.id ?? "run-1",
     status: overrides?.status ?? "suspended",
     inputs,
+    instanceId: overrides?.instanceId,
+    parentRun: overrides?.parentRun
+      ? { kind: "valid", ref: overrides.parentRun }
+      : undefined,
     findWaitingApprovalStep: () =>
       stepStatus === "waiting_approval"
         ? { jobName: "main", stepName: "gate" }
@@ -121,6 +132,19 @@ function makeDeps(
 }
 
 const ctx = createLibSwampContext();
+
+async function completedData(
+  deps: WorkflowApprovalsDeps,
+): Promise<WorkflowApprovalsData> {
+  const events = await collect<WorkflowApprovalsEvent>(
+    workflowApprovals(ctx, deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") {
+    throw new Error(`no completed event: ${JSON.stringify(events)}`);
+  }
+  return completed.data;
+}
 
 Deno.test("workflowApprovals: returns empty list when no workflows exist", async () => {
   const deps = makeDeps([], new Map());
@@ -211,18 +235,106 @@ Deno.test("workflowApprovals: returns empty inputs when run has no inputs", asyn
   }
 });
 
-Deno.test("workflowApprovals: filters out expired approval timeouts", async () => {
+Deno.test("workflowApprovals: lists a gate past its timeout as expired, not pending", async () => {
   const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
-  const twoMinutesAgo = new Date(Date.now() - 120_000);
-  const run = makeRun({ startedAt: twoMinutesAgo });
+  const suspendedAt = new Date(Date.now() - 120_000);
+  const run = makeRun({ startedAt: suspendedAt });
   const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
-  const events = await collect<WorkflowApprovalsEvent>(
-    workflowApprovals(ctx, deps),
-  );
-  const completed = events.find((e) => e.kind === "completed");
-  if (completed?.kind === "completed") {
-    assertEquals(completed.data.approvals.length, 0);
-  }
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals, []);
+  assertEquals(data.expired, [{
+    workflowId: WF_ID as string,
+    workflowName: "test-workflow",
+    runId: "run-1",
+    stepName: "gate",
+    suspendedAt: suspendedAt.toISOString(),
+    timeoutSeconds: 60,
+    expiredAt: new Date(suspendedAt.getTime() + 60_000).toISOString(),
+    serveStarted: false,
+  }]);
+});
+
+Deno.test("workflowApprovals: a gate inside its timeout stays pending", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 3600 });
+  const run = makeRun({ startedAt: new Date(Date.now() - 120_000) });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals.map((a) => a.runId), ["run-1"]);
+  assertEquals(data.expired, []);
+});
+
+Deno.test("workflowApprovals: a gate with no timeout never expires", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval" });
+  const run = makeRun({ startedAt: new Date(0) });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals.map((a) => a.runId), ["run-1"]);
+  assertEquals(data.expired, []);
+});
+
+Deno.test("workflowApprovals: an expired gate on a run serve started is marked serveStarted", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
+  const run = makeRun({
+    startedAt: new Date(Date.now() - 120_000),
+    instanceId: "serve-1",
+  });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.expired.map((e) => e.serveStarted), [true]);
+});
+
+Deno.test("workflowApprovals: an expired gate on a nested run names its parent and whether it still waits", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
+  const parentRef = {
+    workflowId: PARENT_WF_ID as string,
+    workflowName: "parent",
+    runId: PARENT_RUN_ID,
+    jobName: "main",
+    stepName: "call-child",
+    ancestorWorkflowNames: [],
+  };
+  const child = makeRun({
+    id: CHILD_RUN_ID,
+    startedAt: new Date(Date.now() - 120_000),
+    parentRun: parentRef,
+  });
+  const parent = {
+    id: PARENT_RUN_ID,
+    status: "suspended",
+    instanceId: "serve-1",
+    getJob: () => ({
+      getStep: () => ({
+        isNestedWait: true,
+        nestedRun: { kind: "valid", ref: { runId: CHILD_RUN_ID } },
+      }),
+    }),
+  } as unknown as WorkflowRun;
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [child]]]));
+  deps.runRepo = {
+    ...deps.runRepo,
+    findById: (_workflowId: WorkflowId, runId: string) =>
+      Promise.resolve(runId === PARENT_RUN_ID ? parent : null),
+  } as WorkflowApprovalsDeps["runRepo"];
+
+  const data = await completedData(deps);
+
+  assertEquals(data.expired.length, 1);
+  assertEquals(data.expired[0].parentRun, {
+    workflowId: PARENT_WF_ID as string,
+    workflowName: "parent",
+    runId: PARENT_RUN_ID,
+    stepName: "call-child",
+    serveStarted: true,
+  });
+  assertEquals(data.expired[0].parentWaiting, true);
 });
 
 Deno.test("workflowApprovals: returns evaluated prompt when evaluated workflow exists", async () => {

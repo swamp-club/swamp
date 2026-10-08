@@ -373,6 +373,7 @@ export {
 } from "./workflows/cancel_suspended.ts";
 export {
   createWorkflowApprovalsDeps,
+  type ExpiredApproval,
   type PendingApproval,
   workflowApprovals,
   type WorkflowApprovalsData,
