@@ -20,6 +20,10 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
+  applyAcceptances,
+  parseAcceptanceDirectives,
+} from "./extension_acceptances.ts";
+import {
   analyzeExtensionSafety,
   type ContentRule,
 } from "./extension_safety_analyzer.ts";
@@ -191,6 +195,126 @@ Deno.test("analyzeExtensionSafety: one Deno.Command() warning per offending line
       );
     },
   );
+});
+
+Deno.test("analyzeExtensionSafety: Deno.Command( in comments and strings does not warn", async () => {
+  await withTempFiles(
+    {
+      "cmd.ts": [
+        "/** Every spawn goes through `Deno.Command(bin, { args })`. */",
+        '// new Deno.Command("ls")',
+        'const s = "new Deno.Command(ls)";',
+        'const t = `new Deno.Command("ls")`;',
+        'const c = new Deno.Command("ls");',
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.map((w) => [w.ruleId, w.line, w.message]),
+        [[
+          "deno-command",
+          5,
+          "Line 5 uses Deno.Command() to spawn subprocesses.",
+        ]],
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: aliased Deno.Command forms warn on their lines", async () => {
+  await withTempFiles(
+    {
+      "cmd.ts": [
+        "const { Command } = Deno;",
+        'const a = new Command("ls");',
+        'const b = new Deno["Command"]("ls");',
+        "const d = Deno;",
+        'const e = new d.Command("ls");',
+        "const f = Deno[name];",
+        "",
+      ].join("\n"),
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.map((w) => [w.ruleId, w.line, w.message]),
+        [
+          [
+            "deno-command",
+            1,
+            "Line 1 uses Deno as a value, which can reach Deno.Command() to spawn subprocesses.",
+          ],
+          [
+            "deno-command",
+            3,
+            "Line 3 uses Deno.Command() to spawn subprocesses.",
+          ],
+          [
+            "deno-command",
+            4,
+            "Line 4 uses Deno as a value, which can reach Deno.Command() to spawn subprocesses.",
+          ],
+          [
+            "deno-command",
+            6,
+            "Line 6 reads a computed key from Deno, which can reach Deno.Command() to spawn subprocesses.",
+          ],
+        ],
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: several Deno.Command uses on one line give one warning", async () => {
+  await withTempFiles(
+    {
+      "cmd.ts": 'const d = Deno; new Deno.Command("ls"); use(Deno.Command);\n',
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.map((w) => w.message),
+        ["Line 1 uses Deno.Command() to spawn subprocesses."],
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a file that does not parse falls back to the text checks for both code rules", async () => {
+  await withTempFiles(
+    { "cmd.ts": '// new Deno.Command("ls")\neval(x);\n{{{\n' },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors.map((e) => [e.ruleId, e.line]), [[
+        "dynamic-code",
+        2,
+      ]]);
+      assertEquals(result.warnings.map((w) => [w.ruleId, w.line]), [[
+        "deno-command",
+        1,
+      ]]);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a deno-command acceptance still matches a real call and goes stale over a comment-only mention", async () => {
+  const content = [
+    "// swamp-quality-ignore deno-command",
+    'const c = new Deno.Command("ls");',
+    "// swamp-quality-ignore deno-command",
+    '// a note about Deno.Command("ls")',
+    "",
+  ].join("\n");
+  await withTempFiles({ "cmd.ts": content }, async (_dir, paths) => {
+    const result = await analyzeExtensionSafety(paths);
+    const parsed = parseAcceptanceDirectives(content, paths[0]);
+    const applied = applyAcceptances(result.warnings, parsed.directives);
+    assertEquals(applied.remaining, []);
+    assertEquals(applied.accepted.map((a) => a.finding.line), [2]);
+    assertEquals(applied.stale.map((d) => d.declaredAt.line), [3]);
+  });
 });
 
 Deno.test("analyzeExtensionSafety: one long-line warning per offending line, with its rule id", async () => {

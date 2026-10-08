@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse } from "@babel/parser";
-import { BABEL_PLUGINS } from "./dynamic_code_detector.ts";
+import { BABEL_PLUGINS } from "./extension_source_ast.ts";
 import { extname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
@@ -55,11 +55,12 @@ import type { ReviewFinding } from "./extension_review_rules.ts";
  * (`invalid-acceptance`).
  *
  * The parser reads raw lines. The review rules strip comments before
- * matching, and the safety checks scan every line as written; a directive's
- * reason, when given, may not contain a quote, `Deno.Command(` or a base64
- * run, so a
- * directive cannot trigger the rule it accepts and nothing can hide behind
- * one. Only the long-line count discounts the directive's own text.
+ * matching, and the long-line and base64 safety checks scan every line as
+ * written; `deno-command` reads the syntax tree, but scans lines as written
+ * in a file that does not parse. A directive's reason, when given, may not
+ * contain a quote, `Deno.Command(` or a base64 run, so a directive cannot
+ * trigger the rule it accepts and nothing can hide behind one. Only the
+ * long-line count discounts the directive's own text.
  */
 
 /** The directive keyword, in the spirit of `deno-lint-ignore`. */
@@ -330,9 +331,10 @@ const BASE64_RUN = /[A-Za-z0-9+/=]{100,}/;
 
 /**
  * Why a reason may not appear in a source comment. The safety analyzer
- * scans source lines as written, so the reason must not carry anything the
- * line checks would match, and must not carry a quote, which could make a
- * string's text read as a comment.
+ * scans source lines as written for long lines and base64 runs, and for
+ * `Deno.Command(` in a file that does not parse, so the reason must not
+ * carry anything those line checks would match, and must not carry a
+ * quote, which could make a string's text read as a comment.
  */
 function reasonProblemInSource(reason: string): string | undefined {
   if (/["'`]/.test(reason)) {

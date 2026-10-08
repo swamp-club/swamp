@@ -19,9 +19,14 @@
 
 import { basename, extname } from "@std/path";
 import {
+  type DenoCommandFinding,
+  findDenoCommandUse,
+} from "./deno_command_detector.ts";
+import {
   type DynamicCodeFinding,
   findDynamicCodeExecution,
 } from "./dynamic_code_detector.ts";
+import { parseExtensionSource } from "./extension_source_ast.ts";
 import { remediationFor } from "./extension_rule_catalog.ts";
 import { withoutDirective } from "./extension_acceptances.ts";
 
@@ -211,6 +216,26 @@ const DYNAMIC_CODE_LABELS: Record<DynamicCodeFinding["kind"], string> = {
     "eval( or new Function( text in a file that does not parse",
 };
 
+/**
+ * The `deno-command` message for a line, from the findings on it. A direct
+ * `Deno.Command` reference names the line over an alias of `Deno`.
+ */
+function describeDenoCommand(
+  line: number,
+  findings: DenoCommandFinding[],
+): string {
+  const kinds = new Set(findings.map((f) => f.kind));
+  if (kinds.has("command-reference") || kinds.has("unparsed-text")) {
+    return `Line ${line} uses Deno.Command() to spawn subprocesses.`;
+  }
+  if (kinds.has("deno-computed-access")) {
+    return `Line ${line} reads a computed key from Deno, which can reach ` +
+      "Deno.Command() to spawn subprocesses.";
+  }
+  return `Line ${line} uses Deno as a value, which can reach ` +
+    "Deno.Command() to spawn subprocesses.";
+}
+
 function describeDynamicCode(findings: DynamicCodeFinding[]): string {
   const shown = findings.slice(0, MAX_REPORTED_LOCATIONS).map((f) =>
     `line ${f.line}:${f.column} ${DYNAMIC_CODE_LABELS[f.kind]}`
@@ -316,8 +341,12 @@ export async function analyzeExtensionSafety(
         continue;
       }
 
+      // Both code rules read one parse; a file that does not parse falls
+      // back to each rule's text check.
+      const program = parseExtensionSource(content);
+
       // Hard errors: dangerous patterns
-      const dynamicCode = findDynamicCodeExecution(content);
+      const dynamicCode = findDynamicCodeExecution(content, program);
       if (dynamicCode.length > 0) {
         errors.push(issue(
           "dynamic-code",
@@ -332,12 +361,21 @@ export async function analyzeExtensionSafety(
       // Warnings: suspicious patterns. One finding per offending line, so a
       // declared acceptance can name the line and a new hit elsewhere still
       // warns.
+      const denoCommandByLine = new Map<number, DenoCommandFinding[]>();
+      for (const finding of findDenoCommandUse(content, program)) {
+        const onLine = denoCommandByLine.get(finding.line) ?? [];
+        onLine.push(finding);
+        denoCommandByLine.set(finding.line, onLine);
+      }
       const lines = content.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        // Every check scans the line as written, so nothing can hide behind
-        // a directive (a directive's reason may not carry a quote,
-        // Deno.Command( or a base64 run, so it cannot trigger these rules).
-        // Only the long-line count discounts the directive's own text.
+        // The long-line and base64 checks scan the line as written, so
+        // nothing can hide behind a directive (a directive's reason may not
+        // carry a quote, Deno.Command( or a base64 run, so it cannot trigger
+        // these rules). Only the long-line count discounts the directive's
+        // own text. deno-command reads the syntax tree, where a directive is
+        // a comment; only its text fallback, for a file that does not
+        // parse, scans the line as written.
         const line = lines[i];
         const stripped = withoutDirective(line, file).replace(/\s/g, "");
         if (stripped.length > LONG_LINE_THRESHOLD) {
@@ -359,11 +397,12 @@ export async function analyzeExtensionSafety(
             i + 1,
           ));
         }
-        if (line.includes("Deno.Command(")) {
+        const denoCommand = denoCommandByLine.get(i + 1);
+        if (denoCommand) {
           warnings.push(issue(
             "deno-command",
             file,
-            `Line ${i + 1} uses Deno.Command() to spawn subprocesses.`,
+            describeDenoCommand(i + 1, denoCommand),
             i + 1,
           ));
         }
