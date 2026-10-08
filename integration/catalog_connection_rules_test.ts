@@ -63,6 +63,8 @@ Deno.test("catalog connection: datastore compact checkpoints and vacuums through
     /repoContext\.catalogStore\.checkpoint\(\)/.test(code) &&
       /repoContext\.catalogStore\.vacuum\(\)/.test(code),
     "datastore_compact.ts must call checkpoint() and vacuum() on " +
-      "repoContext.catalogStore.",
+      "repoContext.catalogStore. The rule matches that exact call shape: if " +
+      "the command still compacts through the repo context's store under " +
+      "another spelling, update this pattern rather than the command.",
   );
 });

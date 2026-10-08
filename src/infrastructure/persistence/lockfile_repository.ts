@@ -297,6 +297,9 @@ export class LockfileRepository {
             await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
             continue;
           }
+          // A Windows PermissionDenied that outlasts every retry is a real
+          // permission problem, not a lock pending deletion: report it.
+          if (error instanceof Deno.errors.PermissionDenied) throw error;
           // UserError so the top-level handler renders the clean
           // message instead of a stack trace — matches the pre-W2-prequel
           // behavior in pull.ts (rm.ts threw plain Error; this

@@ -551,3 +551,23 @@ Deno.test("isLockContended: other errors are not contention", () => {
   );
   assertEquals(isLockContended(new Error("boom"), "windows"), false);
 });
+
+Deno.test("LockfileRepository.writeEntry: a lock path that can never be created reports why after the retries (swamp-club#3167)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    // A directory where the lock file goes: POSIX reports it as an existing
+    // lock, Windows as PermissionDenied on every attempt.
+    await Deno.mkdir(lockfileAdvisoryLockPath(path), { recursive: true });
+    const repo = await LockfileRepository.create(path);
+    const write = () => repo.writeEntry("@test/blocked", "1.0.0", ["f.ts"], {});
+    if (Deno.build.os === "windows") {
+      await assertRejects(write, Deno.errors.PermissionDenied);
+    } else {
+      await assertRejects(
+        write,
+        UserError,
+        "Another operation may be in progress",
+      );
+    }
+  });
+});
