@@ -19314,3 +19314,101 @@ Deno.test("resume: a resume that does not require a current record never compare
     assertEquals(asked, 0);
   });
 });
+
+// swamp-club#3179: the synchronous available-expression pass reads the model
+// map, so the context's prepare runs first and can make that content local.
+Deno.test({
+  name:
+    "DefaultStepExecutor: prepares a step's expressions before resolving them synchronously (swamp-club#3179)",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    await initializeLogging({});
+
+    const received: Record<string, unknown>[] = [];
+    const prepared: string[] = [];
+    await withTempDir(async (tempDir) => {
+      const modelType = ModelType.create(
+        `@test-3179/capture-${crypto.randomUUID().slice(0, 8)}`,
+      );
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({}),
+        resources: {},
+        methods: {
+          execute: {
+            description: "records its arguments",
+            arguments: z.object({ value: z.string() }),
+            execute: (args: { value: string }) => {
+              received.push(args);
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definition = Definition.create({
+          name: "consumer",
+          type: modelType.normalized,
+          inputs: { properties: { vpcId: { type: "string" } } },
+          methods: { execute: { arguments: { value: "${{ inputs.vpcId }}" } } },
+        });
+        await new YamlDefinitionRepository(tempDir).save(
+          modelType,
+          definition,
+        );
+        const cel = 'model["vpc"].resource.state.main.attributes.vpcId';
+        const raw = `\${{ ${cel} }}`;
+        const step = Step.create({
+          name: "step",
+          task: StepTask.model(definition.name, "execute", { vpcId: raw }),
+        });
+        const model: Record<string, unknown> = {};
+        await new DefaultStepExecutor().execute(step, {
+          sensitiveValues: new RunSensitiveValues(),
+          workflowId: createWorkflowId(crypto.randomUUID()),
+          workflowRunId: crypto.randomUUID(),
+          workflowName: "wf",
+          jobName: "job",
+          stepName: "step",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          catalogStore,
+          authoredExpressions: new Set([raw]),
+          expressionContext: {
+            model,
+            env: {},
+            inputs: {},
+            data: {
+              // Stands in for hydration: the content is only there once
+              // prepare has run.
+              prepare: (expression: string) => {
+                prepared.push(expression);
+                model["vpc"] = {
+                  resource: {
+                    state: { main: { attributes: { vpcId: "vpc-0abc123" } } },
+                  },
+                };
+                return Promise.resolve();
+              },
+            },
+          } as unknown as StepExecutionContext["expressionContext"],
+        });
+      } finally {
+        catalogStore.close();
+      }
+    });
+    assert(prepared.includes(
+      'model["vpc"].resource.state.main.attributes.vpcId',
+    ));
+    assertEquals(received, [{ value: "vpc-0abc123" }]);
+  },
+});

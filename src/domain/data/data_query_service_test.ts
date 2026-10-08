@@ -1250,7 +1250,7 @@ Deno.test("getLatestRecord: hydrates a lazily-synced row instead of treating it 
   );
   const remoteBytes = Deno.readFileSync(rawPath);
   Deno.removeSync(rawPath);
-  catalog.upsertNewVersion(makeRow());
+  catalog.upsertNewVersion(makeRow({ size: remoteBytes.length }));
 
   const hydrated: string[] = [];
   const dataRepo = new FileSystemUnifiedDataRepository(
@@ -3575,6 +3575,13 @@ interface RemoteBody {
   local?: boolean;
   /** The remote does not have the body either. */
   remoteMissing?: boolean;
+  /**
+   * Bytes left in the cache instead of the body: what a metadata-only pull
+   * leaves after another host appended to the version (swamp-club#3178).
+   */
+  staleLocal?: Uint8Array;
+  /** The remote's bytes, when they differ from the recorded body. */
+  remoteBytes?: Uint8Array;
   namespace?: string;
 }
 
@@ -3613,10 +3620,11 @@ function setupHydrationTest(bodies: RemoteBody[]): {
     names.set(path, entry.name);
     const bytes = entry.bytes ??
       new TextEncoder().encode(JSON.stringify(entry.body));
-    if (!entry.remoteMissing) remote.set(path, bytes);
+    if (!entry.remoteMissing) remote.set(path, entry.remoteBytes ?? bytes);
     // A lazy pull creates the version directory but skips raw.
     ensureDirSync(dirname(path));
     if (entry.local) Deno.writeFileSync(path, bytes);
+    if (entry.staleLocal) Deno.writeFileSync(path, entry.staleLocal);
     catalog.upsert(
       makeRow({
         data_name: entry.name,
@@ -3624,6 +3632,8 @@ function setupHydrationTest(bodies: RemoteBody[]): {
         spec_name: entry.specName ?? "result",
         namespace: entry.namespace ?? "",
         content_type: entry.contentType ?? "application/json",
+        // A row records the size of the body it describes.
+        size: bytes.length,
       }),
     );
   }
@@ -4970,4 +4980,105 @@ Deno.test("DataQueryService: does not push modelId down from an OR branch", () =
   assertEquals(filters.length, 1);
   assertEquals(filters[0].includes("model_id = ?"), false);
   catalog.close();
+});
+
+// ============================================================================
+// Stale bodies after a metadata-only pull (swamp-club#3178, swamp-club#3179)
+// ============================================================================
+
+const staleBody = new TextEncoder().encode('{"value":1}');
+
+Deno.test("DataQueryService.query: a local body shorter than its row is downloaded again", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1, appended: true }, staleLocal: staleBody },
+  ]);
+  try {
+    const results = await service.query(
+      "attributes.appended == true",
+    ) as DataRecord[];
+    assertEquals(results.map((r) => r.name), ["a"]);
+    assertEquals(results[0].attributes, { value: 1, appended: true });
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("DataQueryService.query: a body the remote also holds short reads as data get reads it", async () => {
+  const short = new TextEncoder().encode("line1\n");
+  const { service, dataRepo, hydrated, cleanup } = setupHydrationTest([
+    {
+      name: "log",
+      body: null,
+      bytes: new TextEncoder().encode("line1\nline2\n"),
+      contentType: "text/plain",
+      staleLocal: short,
+      remoteBytes: short,
+    },
+  ]);
+  try {
+    const results = await service.query('name == "log"', {
+      select: "content",
+    });
+    const viaGet = await dataRepo.getContent(
+      ModelType.create("test-model"),
+      "model-001",
+      "log",
+      1,
+    );
+    assertEquals(results, ["line1\n"]);
+    assertEquals(new TextDecoder().decode(viaGet!), "line1\n");
+    assertEquals(hydrated, ["log"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("getLatestRecord: a populated catalog's row reads current attributes, not a stale local body", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 1, appended: true }, staleLocal: staleBody },
+  ]);
+  try {
+    const record = await service.getLatestRecord("ingest", "a");
+    assertEquals(record?.attributes, { value: 1, appended: true });
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("getLatestRecord: a populated catalog's row downloads a body that is not local", async () => {
+  const { service, hydrated, cleanup } = setupHydrationTest([
+    { name: "a", body: { value: 7 } },
+  ]);
+  try {
+    const record = await service.getLatestRecord("ingest", "a");
+    assertEquals(record?.attributes, { value: 7 });
+    assertEquals(hydrated, ["a"]);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("getLatestRecord: a failed download still returns the record", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-latest-hydrate-throw-" });
+  const catalog = new CatalogStore(join(dir, ".swamp", "data", "_catalog.db"));
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    () => Promise.reject(new Error("remote unreachable")),
+  );
+  catalog.upsert(makeRow({ data_name: "a", spec_name: "result" }));
+  try {
+    const record = await new DataQueryService(catalog, dataRepo)
+      .getLatestRecord("ingest", "a");
+    assertEquals(record?.name, "a");
+    assertEquals(record?.attributes, {});
+  } finally {
+    catalog.close();
+    Deno.removeSync(dir, { recursive: true });
+  }
 });

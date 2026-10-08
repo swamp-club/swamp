@@ -48,6 +48,8 @@ function createMockRepo(): UnifiedDataRepository {
     append: () => Promise.resolve(),
     stream: async function* () {},
     getContent: () => Promise.resolve(null),
+    ensureContentLocal: () => Promise.resolve("current" as const),
+    isContentAcceptedSync: () => true,
     delete: () => Promise.resolve(),
     removeLatestMarker: () => Promise.resolve(),
     nextId: () => generateDataId(),

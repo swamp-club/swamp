@@ -1755,13 +1755,86 @@ content download waits until needed.
    definitions-evaluated) have no metadata/raw split and are downloaded fully.
 2. **Model runs / workflow runs**: `acquireModelLocks` does a scoped pull via
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
-   locally, and downloads it. The existing Phase 2 scoped sync handles this; no
-   new code is needed.
-3. **`data get` and `data query` (read-only, no sync)**:
-   `UnifiedDataRepository.getContent()` tries to read `raw`. If it is missing
-   and a `HydrateFileHook` is wired, it calls the hook to download that file,
-   then retries the read. `data query` reaches it through
-   `DataQueryService.query()` (see "`getContentSync` limitation" below).
+   locally, and downloads it. That pull covers only the step's own model, and
+   only a method that takes a lock (a read-only method run takes none), so it
+   is not what makes another model's data readable; see "Expression reads"
+   below.
+3. **`data get` and `data query` (read-only, no sync)**: every read of a
+   content file goes through the repository's content-ensuring step (below),
+   which downloads a missing `raw` through the `HydrateFileHook`. `data query`
+   reaches it through `DataQueryService.query()` (see "`getContentSync`
+   limitation" below).
+4. **Expression reads**: before a CEL expression is evaluated, its context
+   downloads the content the expression reads synchronously (see "Expression
+   reads" below).
+
+#### Content-ensuring step
+
+`UnifiedDataRepository.ensureContentLocal()` makes a version's `raw` local and
+current before it is read; `getContent()`, `stream()` and `append()` go through
+it (swamp-club#3178). With a `HydrateFileHook`:
+
+- A missing `raw` is downloaded.
+- A `raw` shorter than the size its `metadata.yaml` records (or the size the
+  caller passes, such as a catalog row's) is downloaded again, replacing the
+  local copy. `append()` rewrites the latest version's `raw` in place, and a
+  metadata-only pull brings the new `metadata.yaml` but skips the `raw`, so
+  the old bytes would otherwise be served as current. A local write never
+  leaves `raw` short: `append()` writes `raw` before `metadata.yaml`, and
+  `save()` writes `metadata.yaml` first while `raw` is still absent.
+- A copy still short after the download is the remote's own (another host's
+  push uploaded the metadata but not yet the content). It is accepted and used
+  for `ACCEPTED_SHORT_CONTENT_TTL_MS` (30 s) per repository instance, then
+  downloaded again on the next read. `isContentAcceptedSync()` tells
+  synchronous readers whether a short local copy is the accepted one.
+- `append()` refuses to append unless the content is current, so it never
+  writes after a missing or stale prefix.
+
+The result is `current`, `acceptedShort` or `missing`. Without a hook the step
+reports `current` without looking, and callers read the file as before. The
+locked repo contexts wire the hook for any custom datastore whose provider
+implements `hydrateFile`, whatever its `hydrationStrategy`, so the size check
+applies there too; it costs a stat (and a metadata read when the caller has no
+size), and a download only for a missing or short `raw`.
+
+Limits: a size check catches growth only, so a reused version number whose new
+content is the same size or larger is not detected. And if a metadata-only pull
+overwrote an unpushed local `metadata.yaml` for a version number that collided
+across hosts (model locks prevent this), the size check would replace the
+unpushed `raw` too.
+
+#### Expression reads
+
+The model map's `model.<name>.resource` and `model.<name>.file` and
+`file.contents()` read the cache synchronously, so they cannot download
+(swamp-club#3179). Before an expression is evaluated, the data namespace's
+`prepare(expression)` makes their content local:
+
+- `analyzeExpression()` reports, as `syncDataReads`, which models the
+  expression reads through those readers (by name or definition id, dot or
+  bracket, through `cel.bind` aliases) and which of `resource` and `file` it
+  reads. `model.<name>.execution` (run outputs) is not lazily hydrated and is
+  left out.
+- For each, the latest text resources (other content types are never read) or
+  the files of the specs read are ensured, each read once per context.
+- If the model's maps were already loaded empty by an earlier synchronous
+  read, the items whose content changed are updated in place. Records a step
+  merged in during the run were written locally, so they are never changed.
+- A download error fails the evaluation, as it fails `data get`.
+
+`CelEvaluator.evaluateAsync()` calls `prepare` before every expression. The
+synchronous passes call it first too: the available-expression pass at step
+execution (`execution_service.ts`) and `workflow evaluate`'s evaluation loop
+and forEach expansion (`libswamp/workflows/evaluate.ts`).
+`createWorkflowEvaluateDeps()` takes the repository context's hook, so `swamp
+workflow evaluate` and serve's evaluate handler never save an empty value into
+the evaluated workflow. `prepare` also resolves the definitions behind the
+model names an expression passes to the data accessors (swamp-club#3029); in a
+light context, which has no model map, that is all it does.
+
+Not covered: a model named by a computed key (`model[self.name]`), and data
+the model map finds by orphan recovery (`findAllGlobalSync`, data under other
+coordinates tagged with the model's name).
 
 #### `HydrateFileHook` contract
 
@@ -1788,6 +1861,11 @@ convert paths themselves.
   Paths outside the cache are not checked.
 - Implementations MUST write atomically (tmp + rename) so concurrent readers
   never see a partial file.
+- Implementations MUST replace a file that already exists at the path with
+  the remote's copy: core hydrates a local `raw` that is shorter than its
+  metadata records (see "Content-ensuring step"). One that skips existing
+  files leaves the stale copy, which core then uses as the remote's short copy
+  for `ACCEPTED_SHORT_CONTENT_TTL_MS`.
 
 #### `getContentSync` limitation
 
@@ -1795,9 +1873,18 @@ convert paths themselves.
 Its callers:
 
 - `data_record_mapper.ts` (`fromRow`): loads attributes/content for query
-  predicates, `select` projections and results.
-- `model_resolver.ts`: resolves CEL expressions during model runs.
+  predicates, `select` projections and results. A body shorter than the row's
+  size that the repository has not accepted is reported as missing and not
+  parsed, so the async query downloads it (swamp-club#3178).
+- `model_resolver.ts` (`dataToRecord`): runs after `prepare` (the model map)
+  or `ensureContentLocal()` (`data.latest()`).
+- `data_query_service.ts` (`projectedContent`): the `querySync()` projection
+  path, which cannot download.
 - The composite and in-memory repositories, which delegate to it.
+
+`integration/content_read_path_rules_test.ts` pins these callers and every
+function that opens a content file by its path, so a new reader that skips the
+content-ensuring step fails a test.
 
 The async `DataQueryService.query()`, which backs `data query`, serve's
 `data.query` and extension `queryData`, works around it. `fromRow` reports a
@@ -1831,20 +1918,22 @@ datastore, a catalog row whose body is gone locally (deleted, or a write
 that never finished; `filterStaleRows` is off) costs one remote lookup per
 query that needs its body, where before it matched as empty.
 
-`querySync()`, behind CEL `data.query()`, cannot download. The
-`model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
-→ scoped pull, which downloads `raw` files before CEL evaluation.
+`querySync()`, behind CEL `data.query()` in a synchronous context, cannot
+download. The `model_resolver.ts` path relies on `prepare` (see "Expression
+reads"), not on the scoped pull, which covers only the step's own model.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks
 that a catalog row still has content before trusting it while the catalog is
 unpopulated (every datastore sync invalidates it). The check uses the async
 `getContent()`, so on a lazy-hydration datastore it downloads the `raw` file
 instead of mistaking a metadata-only row for a stale one. A row whose content
-is also absent remotely is still stale (swamp-club#2288).
+is also absent remotely is still stale (swamp-club#2288). Before it maps the
+row it returns, on every branch, it ensures the row's content with the row's
+size, so its attributes are never read from a missing or stale body
+(swamp-club#3179).
 
-That scoped pull covers only the step's own model. `DataRecord.path` from
-`data.latest()` / `data.version()` must name a present file, so those lookups
-stat the path and, if missing, call the async `getContent()` to hydrate it. If
+`DataRecord.path` from `data.latest()` / `data.version()` must name a present,
+current file, so those lookups ensure the content with the record's size. If
 the file is still absent, or hydration throws, `path` is `""`. List lookups
 (`data.findBySpec()`, `data.findByTag()`, `data.query()` record results) only
 stat and clear missing paths. They never download, so a metadata query cannot

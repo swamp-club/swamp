@@ -130,6 +130,25 @@ async function resolveVaultRefs(
 }
 
 /**
+ * Whether the repository accepts a row's local body that is shorter than
+ * the row's size. A repository without `isContentAcceptedSync` (a test
+ * double) accepts it, as every repository did before swamp-club#3178.
+ */
+function isAcceptedShortContent(
+  dataRepo: UnifiedDataRepository,
+  row: CatalogRow,
+): boolean {
+  if (typeof dataRepo.isContentAcceptedSync !== "function") return true;
+  return dataRepo.isContentAcceptedSync(
+    ModelType.create(row.type_normalized),
+    row.model_id,
+    row.data_name,
+    row.version,
+    row.size,
+  );
+}
+
+/**
  * Converts a CatalogRow to a DataRecord synchronously. This is the primary
  * runtime path since most data access functions delegate to
  * DataQueryService.query().
@@ -145,7 +164,10 @@ async function resolveVaultRefs(
  *
  * The read is synchronous and cannot hydrate lazily-synced content.
  * `onMissingContent` is called when the body was needed but is not on local
- * disk, so an async caller can hydrate it and map the row again.
+ * disk, or is shorter than the row's size and the repository does not
+ * accept it as the remote's copy (a metadata-only pull left the old bytes of
+ * a version another host appended to, swamp-club#3178), so an async caller
+ * can hydrate it and map the row again. Such stale bytes are not parsed.
  */
 export function fromRow(
   row: CatalogRow,
@@ -167,7 +189,15 @@ export function fromRow(
       row.data_name,
       row.version,
     );
-    if (rawBytes === null) onMissingContent?.();
+    if (rawBytes === null) {
+      onMissingContent?.();
+    } else if (
+      rawBytes.length < row.size &&
+      !isAcceptedShortContent(dataRepo, row)
+    ) {
+      rawBytes = null;
+      onMissingContent?.();
+    }
   }
 
   const { attributes, textContent } = parseContent(

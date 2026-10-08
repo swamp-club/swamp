@@ -226,6 +226,7 @@ import {
 import {
   CelEvaluator,
   createExtensionCelEnvironment,
+  prepareExpressionsIn,
 } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   collectWorkflowAuthoredExpressions,
@@ -1416,6 +1417,13 @@ export class DefaultStepExecutor implements StepExecutor {
       const celEvaluator = new CelEvaluator();
       const evaluate = (expr: string, context: Record<string, unknown>) =>
         celEvaluator.evaluate(expr, context);
+      // The pass below evaluates synchronously, so the content its
+      // expressions read through the model map must be local first
+      // (swamp-club#3179).
+      await prepareExpressionsIn(
+        [task, taskArgs.raw, resolvedPlacement],
+        ctx.expressionContext,
+      );
       task = resolveAvailableExpressions(
         task,
         ctx.expressionContext,
@@ -5931,6 +5939,8 @@ export class WorkflowExecutionService {
     // the inputs evaluateData pass below still resolves the rest.
     if (expressionContext) {
       const celEvaluator = new CelEvaluator();
+      // Synchronous pass: make what it reads local first (swamp-club#3179).
+      await prepareExpressionsIn(task, expressionContext);
       task = resolveAvailableExpressions(
         task,
         expressionContext,

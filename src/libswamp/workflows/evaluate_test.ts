@@ -1124,3 +1124,87 @@ Deno.test("forEach: a control character in an item value is escaped in the evalu
   const steps = data.jobs![0].steps;
   assertEquals(steps.map((s) => s.name), ["deploy-a\\x0ab", "deploy-ok"]);
 });
+
+// --- prepare before synchronous evaluation (swamp-club#3179) ---
+
+type EvaluateContext = ReturnType<
+  WorkflowEvaluateDeps["buildExpressionContext"]
+> extends Promise<infer T> ? T : never;
+
+function preparingContext(log: string[], extra?: Record<string, unknown>) {
+  return {
+    model: {},
+    env: {},
+    ...extra,
+    data: {
+      prepare: (expression: string) => {
+        log.push(`prepare:${expression}`);
+        return Promise.resolve();
+      },
+    },
+  } as unknown as EvaluateContext;
+}
+
+Deno.test("workflowEvaluate: prepares each expression before evaluating it synchronously", async () => {
+  const cel = 'model["vpc"].resource.state.main.attributes.vpcId';
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000003",
+    name: "reads-vpc",
+    inputs: {},
+    jobs: [{
+      name: "default",
+      steps: [{
+        name: "step-1",
+        task: {
+          type: "model_method",
+          modelIdOrName: "consumer",
+          methodName: "run",
+          inputs: { vpcId: `\${{ ${cel} }}` },
+        },
+      }],
+    }],
+  });
+  const log: string[] = [];
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(workflow),
+    buildExpressionContext: () => Promise.resolve(preparingContext(log)),
+    evaluateCel: (expr: string) => {
+      log.push(`eval:${expr}`);
+      return "vpc-0abc123";
+    },
+  });
+  await collect<WorkflowEvaluateEvent>(
+    workflowEvaluate(createLibSwampContext(), deps, {
+      workflowIdOrName: "reads-vpc",
+      inputs: {},
+    }),
+  );
+  assertEquals(log, [`prepare:${cel}`, `eval:${cel}`]);
+});
+
+Deno.test("forEach: prepares each of the step's expressions once before resolving the items", async () => {
+  const workflow = makeForEachWorkflow({
+    modelIdOrName: "${{ self.env }}",
+    methodName: "run",
+    forEachIn: '${{ ["a", "b"] }}',
+    forEachItem: "env",
+    stepName: "deploy-${{ self.env }}",
+  });
+  const log: string[] = [];
+  await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(preparingContext(log, { self: {} })),
+    evaluateCelAsync: () => Promise.resolve(["a", "b"]),
+    evaluateCel: (expr: string, ctx?: unknown) => {
+      log.push(`eval:${expr}`);
+      return contextAwareEvaluateCel(expr, ctx);
+    },
+  });
+  // Once for the expression the step's name and target share, before
+  // either item is resolved — not once per item or per occurrence.
+  assertEquals(log, [
+    "prepare:self.env",
+    "eval:self.env",
+    "eval:self.env",
+  ]);
+});

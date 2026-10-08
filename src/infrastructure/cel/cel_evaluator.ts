@@ -20,7 +20,10 @@
 import { Environment, Optional } from "cel-js";
 import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
-import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
+import {
+  extractExpressions,
+  transformHyphenatedModelRefs,
+} from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
 import {
   literal,
@@ -478,6 +481,42 @@ export function createExtensionCelEnvironment(): Environment {
 }
 
 /**
+ * Awaits the context's data-namespace `prepare` for one expression, when the
+ * context has one. Async evaluation calls it before every expression; a
+ * synchronous evaluation pass calls it for each expression it is about to
+ * evaluate, since it cannot wait on what the expression reads
+ * (swamp-club#3179).
+ */
+export async function prepareExpressionContext(
+  expression: string,
+  context: Record<string, unknown>,
+): Promise<void> {
+  const data = context.data;
+  if (
+    typeof data === "object" && data !== null &&
+    "prepare" in data && typeof data.prepare === "function"
+  ) {
+    await data.prepare(expression);
+  }
+}
+
+/**
+ * {@link prepareExpressionContext} for every `${{ }}` expression in
+ * `content`, before a synchronous pass evaluates them.
+ */
+export async function prepareExpressionsIn(
+  content: unknown,
+  context: Record<string, unknown>,
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const expr of extractExpressions(content)) {
+    if (seen.has(expr.celExpression)) continue;
+    seen.add(expr.celExpression);
+    await prepareExpressionContext(expr.celExpression, context);
+  }
+}
+
+/**
  * CEL evaluator that wraps the cel-js library.
  *
  * Uses the cel-js Environment class with registered types and receiver methods
@@ -704,17 +743,11 @@ export class CelEvaluator {
   ): Promise<unknown> {
     const wrappedContext = this.wrapNamespaces(context);
     try {
-      // Resolve the definitions behind the model names the expression reads
-      // first, so the synchronous data.listVersions() can read by definition
-      // identity too (swamp-club#3029).
-      const data = context.data;
-      if (
-        typeof data === "object" && data !== null &&
-        "resolveModelNames" in data &&
-        typeof data.resolveModelNames === "function"
-      ) {
-        await data.resolveModelNames(expression);
-      }
+      // Prepare what the expression reads synchronously first: the
+      // definitions behind the model names it passes to data accessors
+      // (swamp-club#3029), and the content it reads through the model map
+      // and file.contents (swamp-club#3179).
+      await prepareExpressionContext(expression, context);
       const transformedExpr = transformHyphenatedModelRefs(expression);
       this.warnDeprecatedPatterns(transformedExpr);
       const rawResult = await this.env.evaluate(

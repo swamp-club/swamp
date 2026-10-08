@@ -50,6 +50,7 @@ import type {
 import type { CatalogStore } from "./catalog_store.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type ContentAvailability,
   type DeferredWriteReceipt,
   type FindAllGlobalOptions,
   type GarbageCollectionResult,
@@ -138,6 +139,35 @@ function listSubdirectoriesSync(dir: string): string[] {
   return sortedSubdirectoryNames(Deno.readDirSync(dir));
 }
 
+/**
+ * How long a content file found short against its metadata, even after
+ * downloading it again, is used as it is before the next read downloads it
+ * again. The remote's copy is short too while another host's push has
+ * uploaded the metadata but not yet the content; once that lands, a read
+ * after this window picks it up.
+ */
+export const ACCEPTED_SHORT_CONTENT_TTL_MS = 30_000;
+
+/** The size of the file at `path`, or null when there is none. */
+async function fileSize(path: string): Promise<number | null> {
+  try {
+    return (await Deno.stat(path)).size;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
+/** Sync twin of {@link fileSize}. */
+function fileSizeSync(path: string): number | null {
+  try {
+    return Deno.statSync(path).size;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
 function hasVersionMetadataSync(versionDir: string): boolean {
   try {
     return Deno.statSync(join(versionDir, "metadata.yaml")).isFile;
@@ -183,9 +213,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
      */
     public readonly namespace: Namespace = SOLO_NAMESPACE,
     private readonly enableWriteGc: boolean = false,
+    /** Clock for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}; tests inject one. */
+    private readonly now: () => number = Date.now,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
+
+  /**
+   * Content files still short against their metadata after a fresh
+   * download, keyed by content path and recorded size, with the time until
+   * which that copy is used without downloading it again.
+   */
+  private readonly acceptedShort = new Map<string, number>();
 
   /**
    * Stages a typed change for the configured sync service: the cache has
@@ -913,6 +952,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       throw new Error(`Data "${dataName}" is not configured for streaming`);
     }
 
+    // Appending to a missing or stale content file would write new bytes
+    // after a truncated prefix, record that size, and push the corrupt file
+    // (swamp-club#3178).
+    const availability = await this.ensureContentFile(
+      type,
+      modelId,
+      dataName,
+      latestVersion,
+      data.size,
+    );
+    if (availability !== "current") {
+      throw new Error(
+        availability === "missing"
+          ? `Cannot append to "${dataName}" version ${latestVersion}: its ` +
+            `content could not be downloaded from the datastore`
+          : `Cannot append to "${dataName}" version ${latestVersion}: the ` +
+            `datastore holds less content than its metadata records, so ` +
+            `another host's push may not have finished; retry once it has`,
+      );
+    }
+
     const contentPath = this.getContentPath(
       type,
       modelId,
@@ -967,6 +1027,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       versionToRead,
     );
+    // Without this a file that was never pulled streamed as empty, and one
+    // left stale by a metadata-only pull streamed its old bytes
+    // (swamp-club#3178).
+    await this.ensureContentFile(type, modelId, dataName, versionToRead);
 
     try {
       const file = await Deno.open(contentPath, { read: true });
@@ -1009,20 +1073,151 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       dataName,
       versionToRead,
     );
+    await this.ensureContentFile(type, modelId, dataName, versionToRead);
     try {
       return await Deno.readFile(contentPath);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) {
-        if (this.hydrateFile) {
-          const hydrated = await this.hydrateFile(contentPath);
-          if (hydrated) {
-            return await Deno.readFile(contentPath);
-          }
-        }
-        return null;
-      }
+      if (error instanceof Deno.errors.NotFound) return null;
       throw error;
     }
+  }
+
+  async ensureContentLocal(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version?: number,
+    knownSize?: number,
+  ): Promise<ContentAvailability> {
+    if (!this.hydrateFile) return "current";
+    const modelType = coerceModelType(type);
+    const versionToRead = version ??
+      await this.getLatestVersion(modelType, modelId, dataName);
+    if (versionToRead === null) return "missing";
+    return await this.ensureContentFile(
+      modelType,
+      modelId,
+      dataName,
+      versionToRead,
+      knownSize,
+    );
+  }
+
+  isContentAcceptedSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    size: number,
+  ): boolean {
+    if (!this.hydrateFile) return true;
+    const contentPath = this.getContentPath(type, modelId, dataName, version);
+    const localSize = fileSizeSync(contentPath);
+    if (localSize === null) return false;
+    if (localSize >= size) return true;
+    return this.isAcceptedShort(contentPath, size);
+  }
+
+  /**
+   * The content-ensuring step every read of a content file goes through
+   * (swamp-club#3178). With a hydrate hook, a missing file is downloaded,
+   * and so is one shorter than the size its metadata records: a
+   * metadata-only pull brings the new size of a version another host
+   * appended to but leaves the old bytes. A local write never leaves a file
+   * short: append writes the content before the metadata, and save writes
+   * the metadata first while the content file is still absent. A file
+   * still short after the download is the remote's copy; it is used as it
+   * is for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}.
+   *
+   * Without a hydrate hook nothing could replace the file, so it is
+   * `current` without being looked at, and callers read it as before.
+   */
+  private async ensureContentFile(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    knownSize?: number,
+  ): Promise<ContentAvailability> {
+    const hydrate = this.hydrateFile;
+    if (!hydrate) return "current";
+    const contentPath = this.getContentPath(type, modelId, dataName, version);
+    // The recorded size is read before the file is: a local append writes
+    // raw before metadata.yaml, so a size read first can never exceed the
+    // file's. Read after, it could be the size of an append that landed in
+    // between, and the current file would look stale and be replaced.
+    const recordedSize = knownSize ??
+      await this.readRecordedSize(type, modelId, dataName, version);
+    let localSize = await fileSize(contentPath);
+    let refreshed = false;
+    if (localSize === null) {
+      if (!(await hydrate(contentPath))) return "missing";
+      localSize = await fileSize(contentPath);
+      if (localSize === null) return "missing";
+      refreshed = true;
+    }
+    if (recordedSize === undefined || localSize >= recordedSize) {
+      return "current";
+    }
+    if (!refreshed) {
+      if (this.isAcceptedShort(contentPath, recordedSize)) {
+        return "acceptedShort";
+      }
+      await hydrate(contentPath);
+      localSize = await fileSize(contentPath);
+      if (localSize === null) return "missing";
+      if (localSize >= recordedSize) return "current";
+    }
+    logger
+      .debug`Content of ${dataName} v${version} is ${localSize} bytes, short of the ${recordedSize} its metadata records, after downloading it; using it as it is`;
+    this.acceptedShort.set(
+      `${contentPath}\0${recordedSize}`,
+      this.now() + ACCEPTED_SHORT_CONTENT_TTL_MS,
+    );
+    return "acceptedShort";
+  }
+
+  /**
+   * Whether a refresh within {@link ACCEPTED_SHORT_CONTENT_TTL_MS} found
+   * the content at `contentPath` short of `recordedSize`. An expired entry
+   * is deleted, so a long-lived repository does not accumulate them.
+   */
+  private isAcceptedShort(contentPath: string, recordedSize: number): boolean {
+    const key = `${contentPath}\0${recordedSize}`;
+    const until = this.acceptedShort.get(key);
+    if (until === undefined) return false;
+    if (this.now() < until) return true;
+    this.acceptedShort.delete(key);
+    return false;
+  }
+
+  /** The size a version's metadata records, if it records one. */
+  private async readRecordedSize(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<number | undefined> {
+    const metadataPath = join(
+      this.getPath(type, modelId, dataName, version),
+      "metadata.yaml",
+    );
+    let text: string;
+    try {
+      text = await Deno.readTextFile(metadataPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    }
+    // A metadata file that does not parse records no size; the read goes
+    // ahead as it did before the size check.
+    let metadata: { size?: unknown } | null;
+    try {
+      metadata = parseYaml(text) as { size?: unknown } | null;
+    } catch {
+      return undefined;
+    }
+    return typeof metadata?.size === "number" ? metadata.size : undefined;
   }
 
   async delete(
