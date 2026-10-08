@@ -43,6 +43,16 @@ import {
 } from "./workflow_run.ts";
 import { unclaimedRuns, type WorkflowRunClaims } from "./run_claim.ts";
 import {
+  acquireContinuation,
+  type ContinuationClaim,
+  type ContinuationClaims,
+  ContinuationHeldError,
+  type ContinuationMode,
+  type RunRecordCurrency,
+  RunRecordStaleError,
+  suspensionKeyOf,
+} from "./continuation_claim.ts";
+import {
   type OwnerLiveness,
   suspendedRunOwnerStillRuns,
 } from "./orphaned_run_reaper.ts";
@@ -94,7 +104,10 @@ import {
   planFailedRunResume,
   type ResumeReset,
 } from "./resume_reset.ts";
-import { nextActionForStatus } from "./suspended_run_resolver.ts";
+import {
+  nextActionForStatus,
+  RunNotSuspendedError,
+} from "./suspended_run_resolver.ts";
 import {
   type GraphNode,
   TopologicalSortService,
@@ -2785,6 +2798,21 @@ export class WorkflowExecutionService {
   signalWaits: SignalWaitSupport = SIGNAL_WAITS_NOT_CONFIGURED;
 
   /**
+   * The continuation claims a resume of a suspended run takes
+   * (swamp-club#3108). Unset where the datastore has no store every host
+   * reads directly; a resume there takes none.
+   */
+  continuationClaims?: ContinuationClaims;
+
+  /**
+   * Compares this host's record of a run with the datastore's, for a resume
+   * that asks for it with `requireCurrentRecord`. Unset where every host
+   * reads the same record, and where the datastore cannot be read without
+   * replacing the local copy; such a resume is then not checked.
+   */
+  runRecordCurrency?: RunRecordCurrency;
+
+  /**
    * The runs this service created. A step of one cannot have registered a
    * wait before, so opening its wait skips the search for one to take over.
    */
@@ -3643,11 +3671,14 @@ export class WorkflowExecutionService {
       fromStep?: string;
       suspendedOnly?: boolean;
       instanceId?: string;
+      continuation?: ContinuationMode;
+      requireCurrentRecord?: boolean;
     },
   ): Promise<{
     existingRun: WorkflowRun;
     snapshot: WorkflowRunData;
     resumeInputs: Record<string, unknown>;
+    claim: ContinuationClaim | undefined;
   }> {
     const loadedRun = await this.runRepo.findById(
       workflow.id,
@@ -3656,6 +3687,11 @@ export class WorkflowExecutionService {
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // Derived from the record as stored, before a signal is applied to it:
+    // every host holding this record derives the same key.
+    const suspensionKey = loadedRun.status === "suspended"
+      ? await suspensionKeyOf(loadedRun)
+      : undefined;
     // The stored run holds vault references where it held sensitive values;
     // only the entries swamp listed are restored, from stored state alone and
     // before any caller-supplied resume input is merged in.
@@ -3683,7 +3719,7 @@ export class WorkflowExecutionService {
       const accepted = options?.suspendedOnly
         ? "is not suspended"
         : "is not suspended or failed";
-      throw new UserError(
+      throw new RunNotSuspendedError(
         `Run ${runId} ${accepted} (status: ${existingRun.status}).` +
           nextActionForStatus(existingRun.status, workflow.name, runId),
       );
@@ -3741,41 +3777,119 @@ export class WorkflowExecutionService {
       options?.inputs ?? {},
     );
 
-    // Taken before any mutation. If anything throws after the save below and
-    // before execution starts, the run is restored to exactly this state
-    // rather than left running with nothing driving it. Taken from the run as
-    // stored, so a restore writes references back, never restored values.
-    const snapshot = loadedRun.toData();
+    // A copy of the run that is behind the datastore's shows a suspension a
+    // peer has already ended. Compared under the run's claim, so a peer that
+    // changes the run does so before this look or after the save below.
+    if (
+      options?.requireCurrentRecord && suspensionKey !== undefined &&
+      this.runRecordCurrency &&
+      !(await this.runRecordCurrency({
+        workflowId: workflow.id,
+        runId: loadedRun.id,
+      }))
+    ) {
+      throw new RunRecordStaleError(loadedRun.id);
+    }
 
-    // Work the run's abort left unfinished runs now, as it would have had the
-    // abort left it pending. Reopened per record before a failed run's reset
-    // set, which resets by name in every job.
-    existingRun.reopenAbortedWork();
-    // This process now drives the run. Recorded before the save below, so
-    // cancel sees the live process from the start.
-    const owner = { pid: Deno.pid, instanceId: options?.instanceId };
-    if (reset) {
-      // A reset clears the wait a step held. Closed first, so a signal for
-      // the old attempt is answered closed and its wait is not listed.
-      if (this.signalWaits.supported) {
-        await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+    // The last refusal: this suspension is consumed once, by whoever holds
+    // its claim. Taken after every other check, so a refused resume leaves
+    // no claim behind.
+    const claim = suspensionKey === undefined
+      ? undefined
+      : await this.claimSuspension(
+        loadedRun.id,
+        suspensionKey,
+        options?.continuation ?? { kind: "manual" },
+      );
+
+    // Everything from the claim to the save: a throw anywhere in it leaves
+    // the stored run suspended and nothing consumed, so the claim goes back.
+    let snapshot: WorkflowRunData;
+    try {
+      // Taken before any mutation. If anything throws after the save below and
+      // before execution starts, the run is restored to exactly this state
+      // rather than left running with nothing driving it. Taken from the run as
+      // stored, so a restore writes references back, never restored values.
+      snapshot = loadedRun.toData();
+
+      // Work the run's abort left unfinished runs now, as it would have had the
+      // abort left it pending. Reopened per record before a failed run's reset
+      // set, which resets by name in every job.
+      existingRun.reopenAbortedWork();
+      // This process now drives the run. Recorded before the save below, so
+      // cancel sees the live process from the start.
+      const owner = { pid: Deno.pid, instanceId: options?.instanceId };
+      if (reset) {
+        // A reset clears the wait a step held. Closed first, so a signal for
+        // the old attempt is answered closed and its wait is not listed.
+        if (this.signalWaits.supported) {
+          await closeRunWaits(this.signalWaits.store, existingRun, new Date());
+        }
+        existingRun.resetForResumeFrom(reset.steps, reset.tracked);
+        existingRun.resumeFromFailed(owner);
+      } else {
+        existingRun.resumeFromSuspended(owner);
       }
-      existingRun.resetForResumeFrom(reset.steps, reset.tracked);
-      existingRun.resumeFromFailed(owner);
-    } else {
-      existingRun.resumeFromSuspended(owner);
-    }
 
-    // Record the key names of any resume-time inputs for audit (never the
-    // values — they may be secrets such as a freshly minted auth key). Done
-    // before the save below so the audit trail persists immediately.
-    if (Object.keys(resumeInputs).length > 0) {
-      existingRun.recordResumeInputs(Object.keys(resumeInputs));
+      // Record the key names of any resume-time inputs for audit (never the
+      // values — they may be secrets such as a freshly minted auth key). Done
+      // before the save below so the audit trail persists immediately.
+      if (Object.keys(resumeInputs).length > 0) {
+        existingRun.recordResumeInputs(Object.keys(resumeInputs));
+      }
+      // The running status saved here also stops a second resume of this run
+      // from starting while this one prepares.
+      await this.saveRun(workflow.id, existingRun);
+    } catch (error) {
+      await this.releaseSuspension(claim);
+      throw error;
     }
-    // The running status saved here also stops a second resume of this run
-    // from starting while this one prepares.
-    await this.saveRun(workflow.id, existingRun);
-    return { existingRun, snapshot, resumeInputs };
+    return { existingRun, snapshot, resumeInputs, claim };
+  }
+
+  /**
+   * Takes the continuation claim of a suspension, or refuses the resume
+   * when another holder has it. Undefined where there is no claim store.
+   */
+  private async claimSuspension(
+    runId: string,
+    suspensionKey: string,
+    mode: ContinuationMode,
+  ): Promise<ContinuationClaim | undefined> {
+    const claims = this.continuationClaims;
+    if (!claims || (claims.usable && !(await claims.usable()))) {
+      return undefined;
+    }
+    const acquired = await acquireContinuation(
+      claims,
+      { runId, suspensionKey },
+      mode,
+      new Date(),
+    );
+    if (acquired.kind === "acquired") return acquired.claim;
+    throw new ContinuationHeldError(
+      runId,
+      acquired.claim.holder,
+      acquired.liveness,
+    );
+  }
+
+  /** Gives back a claim whose resume ran nothing. Never throws. */
+  private async releaseSuspension(
+    claim: ContinuationClaim | undefined,
+  ): Promise<void> {
+    if (!claim || !this.continuationClaims) return;
+    try {
+      await this.continuationClaims.store.release(claim);
+    } catch (error) {
+      getSwampLogger(["workflow", "resume"]).warn(
+        "Could not release the continuation claim of run {runId}: {error}",
+        {
+          runId: claim.runId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
   }
 
   /**
@@ -3819,6 +3933,17 @@ export class WorkflowExecutionService {
        * which clears any instance id the run carried.
        */
       instanceId?: string;
+      /**
+       * Who asks for the suspension's continuation claim; a person, unless
+       * serve continues the run by itself (swamp-club#3108).
+       */
+      continuation?: ContinuationMode;
+      /**
+       * Refuse a suspended run whose record here differs from the
+       * datastore's, where that can be told. Set when serve continues a run
+       * by itself from a copy that may be behind (swamp-club#3108).
+       */
+      requireCurrentRecord?: boolean;
       /**
        * How long after an abort the resume waits for its model methods to
        * stop before recording its cancellation; defaults to
@@ -3876,7 +4001,7 @@ export class WorkflowExecutionService {
     // Taken over under the run's claim, which is released before anything
     // executes: a cancel either lands first and is seen here, or finds the
     // run running under this process (swamp-club#2919).
-    const { existingRun, snapshot, resumeInputs } = await this.runClaims
+    const { existingRun, snapshot, resumeInputs, claim } = await this.runClaims
       .withClaim(
         located.id,
         () =>
@@ -3903,6 +4028,7 @@ export class WorkflowExecutionService {
     const restore = {
       workflowId: workflow.id,
       snapshot,
+      claim,
       handBackTrackerRow: () => {
         if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
         handBackTrackerRow();
@@ -6699,10 +6825,11 @@ export class WorkflowExecutionService {
    * original error still wins.
    */
   private async restoreRunOnFailure<T>(
-    { workflowId, snapshot, handBackTrackerRow }: {
+    { workflowId, snapshot, handBackTrackerRow, claim }: {
       workflowId: WorkflowId;
       snapshot: WorkflowRunData;
       handBackTrackerRow: () => void;
+      claim?: ContinuationClaim;
     },
     prepare: () => Promise<T>,
   ): Promise<T> {
@@ -6720,6 +6847,9 @@ export class WorkflowExecutionService {
           );
           if (stored && stored.status !== "running") return;
           await this.saveRun(workflowId, WorkflowRun.fromData(snapshot));
+          // The run is suspended again as it was, so its suspension was
+          // not consumed and another resume may take it.
+          await this.releaseSuspension(claim);
         });
       } catch (restoreError) {
         getSwampLogger(["workflow", "resume"]).warn(

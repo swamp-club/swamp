@@ -30,6 +30,7 @@ import {
   type WaitOutcome,
   type WaitRegistration,
 } from "../../domain/workflows/signal_wait_records.ts";
+import { decideContinuation } from "../../domain/workflows/run_continuation.ts";
 import {
   settledBy,
   type SignalWaitStore,
@@ -374,27 +375,6 @@ function stepLeftWait(
 }
 
 /**
- * Whether the run can be resumed now that this wait is settled: suspended,
- * with no gate undecided, no nested run waited on, and an outcome for every
- * other wait. Read from the run record as this host has it; false when the
- * record is not here.
- */
-async function isAwaitingResume(
-  store: SignalWaitStore,
-  run: WorkflowRun | null,
-): Promise<boolean> {
-  if (!run || run.status !== "suspended") return false;
-  if (run.findWaitingApprovalStep() || run.findNestedWaits().length > 0) {
-    return false;
-  }
-  for (const ref of run.findSignalWaits()) {
-    if (!ref.wait) continue;
-    if ((await store.findOutcome(ref.wait.id)).kind === "absent") return false;
-  }
-  return true;
-}
-
-/**
  * The registration of a wait, or the answer for a wait that has none: its
  * stored outcome, what the run record says of it, or that nothing ever
  * issued the id. A wait a run suspended on before waits were registered is
@@ -660,7 +640,8 @@ async function deliver(
       jobName: registration.jobName,
       stepName: registration.stepName,
       signal: { ...stored.record.receipt },
-      awaitingResume: await isAwaitingResume(store, run),
+      awaitingResume: run !== null &&
+        (await decideContinuation(run, store)).kind === "resumable",
       runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(registration),
     },

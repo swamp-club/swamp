@@ -49,6 +49,7 @@ import {
   type AccessCaller,
   callerResourceDecider,
   type ConnectionContext,
+  type DecisionSubject,
   handlerLibSwampContext,
   isCallerAuthorized,
   resolveDisplayPrincipal,
@@ -59,8 +60,20 @@ import {
   resolveWorkflowTargetById,
 } from "./handlers/resource_resolution.ts";
 import type { WorkflowSignalResponseData } from "./protocol.ts";
+import { continueSettledRun } from "./resume_launcher.ts";
+import { withSyncGate } from "./sync_gate.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../domain/workflows/workflow_id.ts";
 
 const logger = getSwampLogger(["serve", "signal"]);
+
+/**
+ * How long the download of a missing run record may take. It is made under
+ * the sync gate, so it must not outlast a stalled connection.
+ */
+export const RUN_RECORD_HYDRATE_TIMEOUT_MS = 30_000;
 
 /** A signal as a caller sent it. Both fields are untrusted. */
 export interface SignalDeliveryRequest {
@@ -80,7 +93,21 @@ export type SignalRefusalStatus =
 
 /** How a signal was answered. Everything in it may be sent to the caller. */
 export type SignalDeliveryResult =
-  | { readonly status: "delivered"; readonly data: WorkflowSignalResponseData }
+  | {
+    readonly status: "delivered";
+    readonly data: WorkflowSignalResponseData;
+    /**
+     * The run the wait belongs to, for the server's own use: it is never
+     * sent to the caller, who is told the run only in `data` and only when
+     * they may read the workflow. `recordAvailable` is false when this
+     * instance has no record of the run.
+     */
+    readonly run: {
+      readonly workflowId: string;
+      readonly runId: string;
+      readonly recordAvailable: boolean;
+    };
+  }
   /** An unknown wait ID, or a wait the caller may not signal. */
   | { readonly status: "not_found"; readonly message: string }
   | {
@@ -157,7 +184,8 @@ async function ownersOf(
  * caller who may also `read` those workflows.
  *
  * Nothing is written but the wait's outcome record: no run is saved, no
- * claim or reservation is taken and nothing is pushed.
+ * claim or reservation is taken and nothing is pushed. Continuing the run
+ * is the caller's next step (see {@link continueAfterSignal}).
  */
 export async function deliverSignalForCaller(
   ctx: ConnectionContext,
@@ -299,6 +327,11 @@ export async function deliverSignalForCaller(
   emitDelivered(ctx, caller, request.requestId, delivered);
   return {
     status: "delivered",
+    run: {
+      workflowId: delivered.workflowId,
+      runId: delivered.runId,
+      recordAvailable: delivered.runRecordAvailable,
+    },
     data: {
       waitId: delivered.waitId,
       signal: { ...delivered.signal },
@@ -351,4 +384,66 @@ function emitDelivered(
     detail:
       `wait=${delivered.waitId} receipt=${delivered.signal.id} run=${delivered.runId}`,
   }));
+}
+
+/**
+ * Tries to continue the run a delivered signal belongs to, now that one
+ * more of its waits is settled (swamp-club#3108). The WebSocket handler
+ * calls it after sending its reply; the HTTP route before building its own,
+ * which waits only for the launch, not for the run. Never throws: the
+ * signal is stored, and the continuation sweep retries whatever is not
+ * launched here.
+ */
+export async function continueAfterSignal(
+  ctx: ConnectionContext,
+  result: SignalDeliveryResult,
+  subject: DecisionSubject,
+): Promise<void> {
+  if (result.status !== "delivered") return;
+  try {
+    if (!result.run.recordAvailable) await hydrateMissingRun(ctx, result.run);
+    await continueSettledRun(ctx, result.run, {
+      kind: "signal",
+      principalId: subject.principal
+        ? principalToString(subject.principal)
+        : null,
+      subject,
+      // This instance's copy of the run is not known to be current, so a
+      // dead holder's claim is left to the sweep.
+      takeover: false,
+    });
+  } catch (error) {
+    logger.warn(
+      "Could not continue run {runId} after its signal: {error}",
+      {
+        runId: result.run.runId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
+}
+
+/**
+ * Fetches the record of a run this instance does not have, from a datastore
+ * whose run records are synced. Only a record that is missing is fetched:
+ * one that is here may hold a change not pushed yet, which a download would
+ * overwrite. Taken under the sync gate, so no handler's delete of the run
+ * is between its removal and its push, and bounded, so a stalled download
+ * does not hold the gate: the sweep continues a run this gives up on.
+ */
+async function hydrateMissingRun(
+  ctx: ConnectionContext,
+  run: { workflowId: string; runId: string },
+): Promise<void> {
+  const hydrate = ctx.repoContext.hydrateFile;
+  if (!hydrate) return;
+  const runRepo = ctx.repoContext.workflowRunRepo;
+  const workflowId = createWorkflowId(run.workflowId);
+  const runId = createWorkflowRunId(run.runId);
+  await withSyncGate(ctx.syncGate, async () => {
+    if (await runRepo.findById(workflowId, runId)) return;
+    await hydrate(runRepo.getPath(workflowId, runId), {
+      signal: AbortSignal.timeout(RUN_RECORD_HYDRATE_TIMEOUT_MS),
+    });
+  });
 }

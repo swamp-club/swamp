@@ -592,9 +592,13 @@ export type MarkDirtyHook = (relPath?: string) => Promise<void>;
  * {@link MarkDirtyHook}.
  *
  * Returns `true` if the file was successfully downloaded, `false` if the
- * file does not exist on the remote.
+ * file does not exist on the remote. A caller that holds something others
+ * wait on passes `signal` to bound the download.
  */
-export type HydrateFileHook = (absPath: string) => Promise<boolean>;
+export type HydrateFileHook = (
+  absPath: string,
+  options?: { signal?: AbortSignal },
+) => Promise<boolean>;
 
 /**
  * Thrown when a datastore sync operation exceeds the configured timeout.

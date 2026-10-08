@@ -25,7 +25,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { ensureDir, walk } from "@std/fs";
+import { ensureDir, exists, walk } from "@std/fs";
 import { join, resolve } from "@std/path";
 import { hostname } from "node:os";
 import { createRecordingSyncService } from "@swamp-club/swamp-testing";
@@ -53,10 +53,12 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
+  resolveContinuationClaims,
   resolveDatastoreForRepo,
   resolveManagedConfigPaths,
   resolveManagedLockfileForWrite,
   resolveSignalWaitSupport,
+  runRecordCurrencyOver,
   runsLiveInDatastore,
   runUnderModelLocks,
   signalWaitsOf,
@@ -5737,5 +5739,237 @@ Deno.test("reclaimModelLocks: reads a global lock caught mid-write again instead
     // working under the retired nonce, and waited out.
     assertEquals(global.inspects(), 3);
     await lock.release();
+  });
+});
+
+const SUSPENSION = {
+  runId: "0b8a6a52-3a51-4b53-9a4e-0d5a1c8a7f10",
+  suspensionKey: "a".repeat(64),
+};
+
+Deno.test("resolveContinuationClaims: a filesystem datastore keeps claims in the repository's control-plane directory, one holder per process", async () => {
+  await withTempDir(async (repoDir) => {
+    const config: DatastoreConfig = { type: "filesystem", path: repoDir };
+    const one = resolveContinuationClaims(config, repoDir)!;
+    const two = resolveContinuationClaims(config, repoDir)!;
+    assert(one.holder.startsWith("local:"));
+    assert(one.holder !== two.holder);
+    assertEquals(one.usable, undefined);
+
+    const claim = {
+      ...SUSPENSION,
+      generation: 1,
+      holder: one.holder,
+      claimedAt: new Date().toISOString(),
+    };
+    assertEquals(await one.store.create(claim), true);
+
+    // Another process on the repository reads the same record.
+    assertEquals(
+      await two.store.find(claim.runId, claim.suspensionKey),
+      claim,
+    );
+    assertEquals(await two.store.create(claim), false);
+    // A local command writes no heartbeat, so nothing is known of it.
+    assertEquals(await two.liveness(one.holder), "unknown");
+  });
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore without a shared control-plane store has no claims", () => {
+  const { service: plain } = createRecordingSyncService();
+  assertEquals(resolveContinuationClaims(customConfig(), "/repo"), undefined);
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", plain),
+    undefined,
+  );
+  // Advertised without a store to hand out.
+  assertEquals(
+    resolveContinuationClaims(customConfig(), "/repo", {
+      ...plain,
+      capabilities: () => ({ controlPlane: true }),
+    }),
+    undefined,
+  );
+});
+
+Deno.test("resolveContinuationClaims: a custom datastore's claims go to its control-plane store, opened on first use after the namespace is bound", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const calls: string[] = [];
+  const remote = recordingControlPlane(calls);
+  const claims = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: (options?: { namespace?: string }) => {
+      calls.push(`pull:${options?.namespace}`);
+      return Promise.resolve(0);
+    },
+    controlPlaneStore: () => remote,
+  })!;
+  assert(claims.holder.startsWith("local:"));
+  // Building a repository context opens nothing.
+  assertEquals(calls, []);
+
+  assertEquals(await claims.usable!(), true);
+  assertEquals(calls, ["pull:team-a"]);
+  const claim = {
+    ...SUSPENSION,
+    generation: 1,
+    holder: claims.holder,
+    claimedAt: new Date().toISOString(),
+  };
+  assertEquals(await claims.store.create(claim), true);
+  assertEquals(calls, [
+    "pull:team-a",
+    `putIfAbsent:continuations/${claim.runId}/${claim.suspensionKey}/1`,
+  ]);
+  // A serve instance with no heartbeat in that store is dead.
+  assertEquals(await claims.liveness("serve:gone"), "dead");
+});
+
+Deno.test("resolveContinuationClaims: a store that cannot create a record atomically is not usable, and any other failure to open it is not hidden", async () => {
+  const { service: plain } = createRecordingSyncService();
+  const { putIfAbsent: _dropped, ...withoutCreate } = recordingControlPlane([]);
+  const notAtomic = resolveContinuationClaims(customConfig(), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => withoutCreate,
+  })!;
+  assertEquals(await notAtomic.usable!(), false);
+
+  let pulls = 0;
+  const flaky = resolveContinuationClaims(customConfig("team-a"), "/repo", {
+    ...plain,
+    capabilities: () => ({ controlPlane: true }),
+    pullChanged: () => {
+      pulls++;
+      return pulls === 1
+        ? Promise.reject(new Error("network down"))
+        : Promise.resolve(0);
+    },
+    controlPlaneStore: () => recordingControlPlane([]),
+  })!;
+  await assertRejects(() => flaky.usable!(), Error, "network down");
+  // The failed open is not kept: the next call tries again.
+  assertEquals(await flaky.usable!(), true);
+  assertEquals(pulls, 2);
+});
+
+Deno.test("runRecordCurrencyOver: nothing to compare on a filesystem datastore or without fetchContent", () => {
+  const { service: plain } = createRecordingSyncService();
+  const pathOf = () => "/nonexistent/cache/run.yaml";
+  const fetching = { ...plain, fetchContent: () => Promise.resolve(null) };
+  assertEquals(
+    runRecordCurrencyOver(
+      { type: "filesystem", path: "/repo" },
+      fetching,
+      pathOf,
+    ),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), plain, pathOf),
+    undefined,
+  );
+  assertEquals(
+    runRecordCurrencyOver(customConfig(), undefined, pathOf),
+    undefined,
+  );
+});
+
+Deno.test("runRecordCurrencyOver: compares the cached run record with the remote one, read by its cache-relative path", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "team-a", "workflow-runs", "w", "r.yaml");
+    await Deno.mkdir(join(cachePath, "team-a", "workflow-runs", "w"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const encoder = new TextEncoder();
+    let remote: Uint8Array | null = encoder.encode("status: suspended\n");
+    const fetched: { relPath: string; namespace?: string; bounded: boolean }[] =
+      [];
+    const current = runRecordCurrencyOver(
+      { ...customConfig("team-a"), cachePath },
+      {
+        ...plain,
+        fetchContent: (relPath, options) => {
+          fetched.push({
+            relPath,
+            namespace: options?.namespace,
+            bounded: options?.signal !== undefined,
+          });
+          return Promise.resolve(remote);
+        },
+      },
+      () => runPath,
+    )!;
+    const run = { workflowId: "w", runId: "r" };
+
+    assertEquals(await current(run), true);
+    assertEquals(fetched, [{
+      relPath: "team-a/workflow-runs/w/r.yaml",
+      namespace: "team-a",
+      bounded: true,
+    }]);
+
+    // A peer ended the run: same length, other bytes.
+    remote = encoder.encode("status: cancelled\n");
+    assertEquals(await current(run), false);
+    // A longer record.
+    remote = encoder.encode("status: suspended\nmore: 1\n");
+    assertEquals(await current(run), false);
+    // The remote has no such run.
+    remote = null;
+    assertEquals(await current(run), false);
+    // This host has no record to resume from.
+    remote = encoder.encode("status: suspended\n");
+    await Deno.remove(runPath);
+    assertEquals(await current(run), false);
+    // Nothing was written back to the cache.
+    assertEquals(await exists(runPath), false);
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a remote that cannot be read rejects", async () => {
+  await withTempDir(async (cachePath) => {
+    const { service: plain } = createRecordingSyncService();
+    const runPath = join(cachePath, "r.yaml");
+    await Deno.writeTextFile(runPath, "status: suspended\n");
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath },
+      { ...plain, fetchContent: () => Promise.reject(new Error("offline")) },
+      () => runPath,
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "offline",
+    );
+  });
+});
+
+Deno.test("runRecordCurrencyOver: a run record outside the cache is never read from the remote", async () => {
+  await withTempDir(async (dir) => {
+    const { service: plain } = createRecordingSyncService();
+    let fetched = 0;
+    const current = runRecordCurrencyOver(
+      { ...customConfig(), cachePath: join(dir, "cache") },
+      {
+        ...plain,
+        fetchContent: () => {
+          fetched++;
+          return Promise.resolve(null);
+        },
+      },
+      () => join(dir, "repo", ".swamp", "workflow-runs", "r.yaml"),
+    )!;
+
+    await assertRejects(
+      () => current({ workflowId: "w", runId: "r" }),
+      Error,
+      "outside the datastore cache",
+    );
+    assertEquals(fetched, 0);
   });
 });

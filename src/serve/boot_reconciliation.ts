@@ -90,6 +90,8 @@ export interface RequiredHydration {
 
 export interface HydrateResult {
   pulled: number;
+  /** False when the pull failed, so the local cache may be out of date. */
+  ok: boolean;
 }
 
 function hydrationBackoff(failedAttempt: number): Promise<void> {
@@ -122,12 +124,12 @@ export async function hydrateLocalCache(
         }
         deps.catalogInvalidate();
       }
-      return { pulled: count };
+      return { pulled: count, ok: true };
     } catch (err: unknown) {
       const error = err instanceof Error ? err.message : String(err);
       if (!required) {
         logger.warn("Startup cache hydration failed: {error}", { error });
-        return { pulled: 0 };
+        return { pulled: 0, ok: false };
       }
       if (attempt >= attempts) {
         throw new UserError(

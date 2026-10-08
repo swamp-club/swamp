@@ -30,6 +30,8 @@ import type { ControlPlaneStore } from "../domain/datastore/control_plane_store.
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import { withCapturedSpans } from "../infrastructure/tracing/span_test_helpers.ts";
+import { heartbeatLiveness } from "../infrastructure/persistence/control_plane_continuation_claim_store.ts";
+import { serveHolder } from "../domain/workflows/continuation_claim.ts";
 
 await initializeLogging({});
 
@@ -115,6 +117,37 @@ Deno.test("InstanceHeartbeatService: heartbeat record contains expected fields",
   assertEquals(typeof record.heartbeatAt, "string");
 
   await service.stop();
+});
+
+Deno.test("InstanceHeartbeatService: publishes its stale TTL when given one, and a reader of claims judges it by that", async () => {
+  const store = createInMemoryStore();
+  const plain = new InstanceHeartbeatService(store, "plain", {
+    intervalMs: 60_000,
+  });
+  const slow = new InstanceHeartbeatService(store, "slow", {
+    intervalMs: 60_000,
+    staleTtlMs: 600_000,
+  });
+  await plain.start();
+  await slow.start();
+  const read = (id: string) =>
+    JSON.parse(
+      new TextDecoder().decode(store.entries.get(`heartbeats/${id}`)),
+    ) as HeartbeatRecord;
+
+  assertEquals("staleTtlMs" in read("plain"), false);
+  assertEquals(read("slow").staleTtlMs, 600_000);
+
+  // Five minutes on, a reader whose own default is 90 s still counts the
+  // slow instance alive, and the one that published nothing dead.
+  const liveness = heartbeatLiveness(store, {
+    now: () => new Date(Date.now() + 300_000),
+  });
+  assertEquals(await liveness(serveHolder("slow")), "alive");
+  assertEquals(await liveness(serveHolder("plain")), "dead");
+
+  await plain.stop();
+  await slow.stop();
 });
 
 Deno.test("InstanceHeartbeatService.isStale: returns false for fresh heartbeat", () => {

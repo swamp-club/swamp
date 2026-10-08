@@ -47,6 +47,18 @@ import {
 } from "./execution_service.ts";
 import { computeStepsToReset } from "./resume_reset.ts";
 import { NestedRunPendingError } from "./nested_run_link.ts";
+import {
+  ContinuationHeldError,
+  type HolderLiveness,
+  RunRecordStaleError,
+  serveHolder,
+  suspensionKeyOf,
+} from "./continuation_claim.ts";
+import { RunNotSuspendedError } from "./suspended_run_resolver.ts";
+import {
+  claimsFor,
+  InMemoryContinuationClaimStore,
+} from "./continuation_claim_test_helpers.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -9404,7 +9416,7 @@ Deno.test("resume: suspendedOnly refuses a failed run", async () => {
     const error = await assertRejects(
       () =>
         drainResume(service, workflow.name, failed.id, { suspendedOnly: true }),
-      Error,
+      RunNotSuspendedError,
       `Run ${failed.id} is not suspended (status: failed)`,
     );
     assertStringIncludes(
@@ -18646,5 +18658,332 @@ Deno.test("run(): the one workflow lookup nests under the run's span", async () 
       const [lookup] = recorder.named("test.workflow.lookup");
       assertEquals(lookup.parentSpanId, spanIdOf(runSpan));
     });
+  });
+});
+
+/**
+ * A run suspended on one approved gate, with the service that suspended it
+ * holding continuation claims as `holder`.
+ */
+async function approvedGateRun(
+  tempDir: string,
+  claimStore: InMemoryContinuationClaimStore,
+  holder: string,
+  liveness: Record<string, HolderLiveness> = {},
+): Promise<{
+  service: WorkflowExecutionService;
+  workflow: Workflow;
+  runRepo: InMemoryWorkflowRunRepository;
+  executor: MockStepExecutor;
+  runId: WorkflowRunId;
+  suspensionKey: string;
+}> {
+  const workflowRepo = new InMemoryWorkflowRepository();
+  const runRepo = new InMemoryWorkflowRunRepository();
+  const executor = new MockStepExecutor();
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [
+      Job.create({
+        name: "gate",
+        steps: [
+          Step.create({ name: "approval", task: StepTask.manualApproval("?") }),
+          Step.create({
+            name: "work",
+            task: StepTask.model("test-model", "run"),
+            dependsOn: [{
+              step: "approval",
+              condition: TriggerCondition.succeeded(),
+            }],
+          }),
+        ],
+      }),
+    ],
+  });
+  await workflowRepo.save(workflow);
+  const service = new WorkflowExecutionService(
+    workflowRepo,
+    runRepo,
+    tempDir,
+    executor,
+    undefined,
+    new CatalogStore(join(tempDir, "_catalog.db")),
+  );
+  service.continuationClaims = claimsFor(claimStore, holder, liveness);
+
+  const suspended = await service.execute(workflow.name);
+  assertEquals(suspended.status, "suspended");
+  const toApprove = await runRepo.findById(workflow.id, suspended.id);
+  toApprove!.getJob("gate")!.getStep("approval")!.succeed();
+  await runRepo.save(workflow.id, toApprove!);
+  executor.executedSteps = [];
+  return {
+    service,
+    workflow,
+    runRepo,
+    executor,
+    runId: suspended.id,
+    suspensionKey: await suspensionKeyOf(toApprove!),
+  };
+}
+
+Deno.test("resume: takes the continuation claim of the suspension it consumes, and keeps it", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const holder = serveHolder("a");
+    const { service, workflow, runId, suspensionKey } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      holder,
+    );
+
+    const run = await drainResume(service, workflow.name, runId);
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+    assertEquals(claimStore.claims[0].holder, holder);
+    assertEquals(claimStore.claims[0].suspensionKey, suspensionKey);
+  });
+});
+
+Deno.test("resume: refuses a suspension whose claim a live holder has, and changes nothing", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const other = serveHolder("other");
+    const { service, workflow, runRepo, executor, runId, suspensionKey } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"), {
+        [other]: "alive",
+      });
+    await claimStore.create({
+      runId,
+      suspensionKey,
+      generation: 1,
+      holder: other,
+      claimedAt: new Date().toISOString(),
+    });
+
+    const error = await assertRejects(
+      () => drainResume(service, workflow.name, runId),
+      ContinuationHeldError,
+    );
+    assertStringIncludes(error.message, "swamp serve instance other");
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: an automatic resume leaves a dead holder's claim unless told its copy is current", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const dead = serveHolder("dead");
+    const { service, workflow, executor, runId, suspensionKey } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"), {
+        [dead]: "dead",
+      });
+    await claimStore.create({
+      runId,
+      suspensionKey,
+      generation: 1,
+      holder: dead,
+      claimedAt: new Date().toISOString(),
+    });
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          suspendedOnly: true,
+          continuation: { kind: "automatic", takeover: false },
+        }),
+      ContinuationHeldError,
+    );
+    assertEquals(executor.executedSteps, []);
+
+    const run = await drainResume(service, workflow.name, runId, {
+      suspendedOnly: true,
+      continuation: { kind: "automatic", takeover: true },
+    });
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.map((c) => c.generation), [1, 2]);
+  });
+});
+
+Deno.test("resume: a refusal before the claim leaves no claim behind", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    // The gate is undecided again, so the resume is refused.
+    const run = await runRepo.findById(workflow.id, runId);
+    run!.getJob("gate")!.getStep("approval")!.waitForApproval();
+    await runRepo.save(workflow.id, run!);
+
+    await assertRejects(
+      () => drainResume(service, workflow.name, runId),
+      UserError,
+      "still awaiting approval",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a store that cannot create a record atomically is not asked for a claim", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    service.continuationClaims = {
+      ...service.continuationClaims!,
+      usable: () => Promise.resolve(false),
+    };
+
+    const run = await drainResume(service, workflow.name, runId);
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume restored before anything ran gives its continuation claim back", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = createArithmeticWorkflow(true);
+    const { runRepo, service } = await setupRetry(tempDir, workflow);
+    const claimStore = new InMemoryContinuationClaimStore();
+    service.continuationClaims = claimsFor(claimStore, serveHolder("a"));
+    const suspended = await service.execute(workflow.name, {
+      inputs: { n: 1 },
+    });
+    assertEquals(suspended.status, "suspended");
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    toApprove!.getJob("main")!.getStep("gate")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    // The input cannot be evaluated, so the resume fails while it prepares.
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, suspended.id, {
+          inputs: { n: "x" },
+        }),
+      Error,
+      "no such overload",
+    );
+
+    assertEquals(
+      (await runRepo.findById(workflow.id, suspended.id))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+
+    // The suspension was not consumed: a resume with a usable input takes it.
+    const run = await drainResume(service, workflow.name, suspended.id, {
+      inputs: { n: 2 },
+    });
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: a resume that requires a current record refuses a copy that differs from the datastore's, and changes nothing", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, executor, runId } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"));
+    const asked: { workflowId: string; runId: string }[] = [];
+    service.runRecordCurrency = (run) => {
+      asked.push(run);
+      return Promise.resolve(false);
+    };
+
+    const error = await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          suspendedOnly: true,
+          continuation: { kind: "automatic", takeover: true },
+          requireCurrentRecord: true,
+        }),
+      RunRecordStaleError,
+    );
+
+    assertStringIncludes(error.message, runId);
+    assertEquals(asked, [{ workflowId: workflow.id, runId }]);
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume that requires a current record runs a copy that matches the datastore's", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    service.runRecordCurrency = () => Promise.resolve(true);
+
+    const run = await drainResume(service, workflow.name, runId, {
+      requireCurrentRecord: true,
+    });
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(claimStore.claims.length, 1);
+  });
+});
+
+Deno.test("resume: a datastore that cannot be read refuses a resume that requires a current record", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runRepo, executor, runId } =
+      await approvedGateRun(tempDir, claimStore, serveHolder("a"));
+    service.runRecordCurrency = () => Promise.reject(new Error("offline"));
+
+    await assertRejects(
+      () =>
+        drainResume(service, workflow.name, runId, {
+          requireCurrentRecord: true,
+        }),
+      Error,
+      "offline",
+    );
+
+    assertEquals(executor.executedSteps, []);
+    assertEquals(
+      (await runRepo.findById(workflow.id, runId))?.status,
+      "suspended",
+    );
+    assertEquals(claimStore.claims, []);
+  });
+});
+
+Deno.test("resume: a resume that does not require a current record never compares it", async () => {
+  await withTempDir(async (tempDir) => {
+    const claimStore = new InMemoryContinuationClaimStore();
+    const { service, workflow, runId } = await approvedGateRun(
+      tempDir,
+      claimStore,
+      serveHolder("a"),
+    );
+    let asked = 0;
+    service.runRecordCurrency = () => {
+      asked++;
+      return Promise.resolve(false);
+    };
+
+    const run = await drainResume(service, workflow.name, runId);
+
+    assertEquals(run?.status, "succeeded");
+    assertEquals(asked, 0);
   });
 });

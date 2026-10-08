@@ -34,6 +34,18 @@ import {
   planFailedRunResume,
 } from "./resume_reset.ts";
 
+/**
+ * A resume refused because the run it names is no longer suspended. For a
+ * resume serve launched by itself this is a lost race, not a failure: a peer
+ * or a person resumed the run first.
+ */
+export class RunNotSuspendedError extends UserError {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunNotSuspendedError";
+  }
+}
+
 export interface SuspendedRunInfo {
   workflowName: string;
   workflowId: string;
@@ -99,7 +111,7 @@ export async function resolveSuspendedRun(
       throw new UserError(`Workflow run not found: ${runId}`);
     }
     if (run.status !== "suspended") {
-      throw new UserError(
+      throw new RunNotSuspendedError(
         `Run ${runId} is not suspended (status: ${run.status}).` +
           nextActionForStatus(run.status, workflow.name, run.id, {
             rejectedStep: rejectedGateOf(run),

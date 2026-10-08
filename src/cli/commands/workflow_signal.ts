@@ -95,7 +95,7 @@ export function renderSignalResult(
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
-      ? `After the signal: ${data.resumeCommand}`
+      ? `swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
       : !data.runRecordAvailable
       ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
         `Check with "swamp workflow waits", then resume where the run is: ${data.resumeCommand}`

@@ -334,6 +334,9 @@ export const WorkflowRunSchema = z.object({
   // Derived on save: the run is suspended with every approval gate decided,
   // so it is waiting for a resume rather than an approval.
   awaitingResume: z.boolean().optional(),
+  // Suspended by a recovery and not resumed since: the steps it reset wait
+  // for someone to resume the run, so serve does not continue it.
+  recovered: z.boolean().optional(),
   runPlan: z.object({
     fingerprint: z.string(),
     evaluatedWorkflowId: z.string().optional(),
@@ -1359,6 +1362,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _triggeringPrincipal: RunTriggeringPrincipal | undefined =
       undefined,
     private _allowedVaults: string[] | undefined = undefined,
+    private _recovered: boolean = false,
   ) {}
 
   /**
@@ -1487,6 +1491,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       parseParentRunLink(validated.parentRun),
       validated.triggeringPrincipal,
       validated.allowedVaults,
+      validated.recovered ?? false,
     );
   }
 
@@ -1794,6 +1799,16 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     this._status = "suspended";
     this._completedAt = undefined;
+    this._recovered = true;
+  }
+
+  /**
+   * True while the run is suspended by a recovery and has not been resumed
+   * since. Its reset steps had an unknown outcome, so only a resume someone
+   * asks for runs them again: serve never continues such a run by itself.
+   */
+  get awaitsResumeAfterRecovery(): boolean {
+    return this._status === "suspended" && this._recovered;
   }
 
   /**
@@ -1897,6 +1912,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
   resumeFromSuspended(owner: RunOwner): void {
     this._status = "running";
     this._completedAt = undefined;
+    this._recovered = false;
     this.takeOwnership(owner);
   }
 
@@ -2234,6 +2250,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this.isAwaitingResume()) {
       data.awaitingResume = true;
+    }
+    if (this.awaitsResumeAfterRecovery) {
+      data.recovered = true;
     }
     if (this._runPlan !== undefined) {
       data.runPlan = { ...this._runPlan };

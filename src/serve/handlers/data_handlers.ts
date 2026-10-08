@@ -1297,6 +1297,7 @@ export async function handleRunGc(
           ctx.datastoreResolver,
           ctx.repoContext.markDirty,
           ctx.repoContext.signalWaits,
+          ctx.repoContext.continuationClaims?.store,
         );
 
         const marker = await new RepoMarkerRepository().read(

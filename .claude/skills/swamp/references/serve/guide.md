@@ -95,11 +95,12 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
 | 501 / 500   | Datastore cannot hold waits / stored record unreadable      |
 
 The reply names the workflow, run and step only for a caller who may also `read`
-the workflow. The receipt's `submittedBy` is the token's principal. A signal
-does not resume the run: resume it afterwards (`swamp workflow resume`). A 200
-means the wait took the signal, not that the run will use it: a cancel at the
-same moment still ends the run. Many signals at once on one token can be
-answered 429; retry.
+the workflow. The receipt's `submittedBy` is the token's principal. Once a run's
+last wait is settled, serve resumes it by itself when the workflow's auto-resume
+policy allows (see "Auto-Resume"); otherwise resume it with
+`swamp workflow resume`. A 200 means the wait took the signal, not that the run
+will use it: a cancel at the same moment still ends the run. Many signals at
+once on one token can be answered 429; retry.
 
 Upgrade every host on the datastore before creating a grant that names `signal`:
 an older build drops such a grant whole, including a deny.
@@ -479,15 +480,16 @@ Also settable as `remote-only: true` in the serve config YAML. See the
 [remote-execution guide](../workflow/references/remote-execution.md#remote-only-mode)
 for the error message, the fix, and the control-plane exemption.
 
-## Auto-Resume After Approval
+## Auto-Resume
 
-Resume a suspended run automatically once every approval gate on it is decided
-through serve (dashboard or `swamp workflow approve --server`).
+Serve resumes a suspended run by itself once every approval gate on it is
+decided and every `wait_for_signal` step on it has an outcome.
 
-| Flag / env var      | Default | Description                                          |
-| ------------------- | ------- | ---------------------------------------------------- |
-| `--auto-resume`     | `false` | Auto-resume workflows that declare no inputs         |
-| `SWAMP_AUTO_RESUME` | `false` | Env var equivalent (serve.yaml: `auto-resume: true`) |
+| Flag / env var                  | Default | Description                                          |
+| ------------------------------- | ------- | ---------------------------------------------------- |
+| `--auto-resume`                 | `false` | Auto-resume workflows that declare no inputs         |
+| `SWAMP_AUTO_RESUME`             | `false` | Env var equivalent (serve.yaml: `auto-resume: true`) |
+| `--continuation-sweep-interval` | `30s`   | How often serve looks for runs to resume; `0` = off  |
 
 A workflow's own `autoResume: true | false` always wins. A workflow that
 declares inputs is never covered by the server flag and must set
@@ -496,9 +498,48 @@ response reports `autoResumed: true` when serve resumed the run. When a nested
 workflow's run finishes through serve, serve also resumes the parent waiting on
 it, under the parent's own policy, if the approver may approve the parent.
 
-A run with a `wait_for_signal` step still waiting is never auto-resumed, whether
-the wait is open, signalled or past its deadline. After a signal, delivered
-locally or through serve (see "Signals Through Serve"), resume the run by hand.
+The instance that takes the approval or signal that settles a run resumes it at
+once. A sweep at boot and every `--continuation-sweep-interval` (env
+`SWAMP_CONTINUATION_SWEEP_INTERVAL`) retries a launch that was lost and picks up
+runs signalled by a local command. Things to know:
+
+- A local `workflow approve` is picked up by the sweep on a filesystem
+  datastore. On S3 or GCS serve does not see it until it restarts: approve with
+  `--server`, or resume manually.
+- A run with both gates and signal waits is resumed by the sweep, not at once,
+  when an approval is what settles it.
+- A `signal` or `approve` grant releases the rest of the run. Nothing else is
+  authorized at the resume, and no inputs can be supplied.
+- A run with a wait still open, or past its deadline and not yet settled, is not
+  resumed. Neither is a parent waiting on a nested run, except right after its
+  child was continued by a caller who may `signal` (or `approve`) the parent. A
+  parent whose child the sweep continued stays suspended; serve logs the
+  `swamp workflow resume` command for it.
+- A run reset by `swamp workflow recover` is never resumed by serve, with no
+  event: run `swamp workflow resume` as recover says. A run recovered before the
+  upgrade is not protected this way.
+- A run that cannot be resumed stays suspended; the audit log has one
+  `workflow.auto_resume_skipped` or `workflow.auto_resume_failed` event with the
+  reason (`global_cap`, ...). A run whose auto-resume policy is off is left
+  alone with no event. A resume that starts and fails is retried with a backoff
+  from 30s up to 15m; fix the cause and run `swamp workflow resume` to skip the
+  wait. `held_by_local_command` means a local `workflow resume` died before it
+  started the run: resume it manually.
+- Several serve instances on one datastore resume a run once. On S3 or GCS,
+  upgrade every host before relying on the sweep, and expect a run whose
+  instance died to wait until an instance restarts.
+- On a synced datastore serve resumes a run by itself only if its copy of the
+  run record matches the remote one, so a run a peer cancelled is not resumed
+  from an old copy. A datastore extension without `fetchContent`
+  (`@swamp/s3-datastore` and `@swamp/gcs-datastore` before `2026.10.07.1`)
+  cannot be compared: the sweep then runs once at boot (serve logs this), and a
+  lost launch or a locally signalled run waits for a restart or a manual resume.
+  `run_record_unreadable` in the audit log means the remote could not be read.
+- `swamp workflow resume` is refused while a live serve instance is resuming the
+  same run. Treat that as already handled. On a filesystem datastore the refusal
+  is `is not suspended` instead.
+- The first boot after upgrading resumes runs that were already settled and left
+  suspended. Set `autoResume: false` on a workflow to keep its runs manual.
 
 ## When to Use What
 

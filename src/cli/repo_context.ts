@@ -85,6 +85,15 @@ import {
 } from "../infrastructure/persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../infrastructure/persistence/fs_control_plane_store.ts";
 import {
+  ControlPlaneContinuationClaimStore,
+  heartbeatLiveness,
+} from "../infrastructure/persistence/control_plane_continuation_claim_store.ts";
+import {
+  type ContinuationClaims,
+  localHolder,
+  type RunRecordCurrency,
+} from "../domain/workflows/continuation_claim.ts";
+import {
   type AtomicControlPlaneStore,
   ControlPlaneSignalWaitStore,
   isAtomicControlPlaneStore,
@@ -321,13 +330,15 @@ function buildHydrateFileHook(
 ): HydrateFileHook | undefined {
   if (!syncService.hydrateFile) return undefined;
   const repoSwampDir = swampPath(repoDir);
-  return (absPath: string) => {
+  return (absPath: string, options?: { signal?: AbortSignal }) => {
     let rel = relative(cacheRoot, absPath);
     if (escapesRoot(rel)) {
       rel = relative(repoSwampDir, absPath);
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
-    return syncService.hydrateFile!(relPath);
+    return options?.signal
+      ? syncService.hydrateFile!(relPath, { signal: options.signal })
+      : syncService.hydrateFile!(relPath);
   };
 }
 
@@ -1201,6 +1212,11 @@ export function requireInitializedRepo(
         runsInDatastore: runsLiveInDatastore(datastoreResolver),
       }),
     );
+    repoContext.continuationClaims = resolveContinuationClaims(
+      datastoreConfig,
+      repoPath.value,
+      syncService,
+    );
 
     // If a remote sync pulled fresh data, invalidate the catalog so the
     // next query backfills from the freshly-pulled local cache.
@@ -1379,6 +1395,11 @@ export async function requireInitializedRepoUnlocked(
       runsInDatastore: runsLiveInDatastore(datastoreResolver),
     }),
   );
+  repoContext.continuationClaims = resolveContinuationClaims(
+    datastoreConfig,
+    repoPath.value,
+    syncService,
+  );
 
   return {
     repoDir: repoPath.value,
@@ -1551,6 +1572,121 @@ export function resolveSignalWaitSupport(
     supported: true,
     store: new ControlPlaneSignalWaitStore(remote.store),
     ready: remote.open,
+  };
+}
+
+/**
+ * The continuation claims of a control-plane store, for one holder. What is
+ * known of another holder comes from the serve heartbeats in the same store.
+ */
+export function continuationClaimsOver(
+  store: AtomicControlPlaneStore,
+  holder: string,
+  options?: { staleMs?: number },
+): ContinuationClaims {
+  return {
+    store: new ControlPlaneContinuationClaimStore(store),
+    holder,
+    liveness: heartbeatLiveness(store, options),
+  };
+}
+
+/** How long one read of a run record from the remote datastore may take. */
+export const RUN_RECORD_FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Compares this host's record of a run with the one its synced datastore
+ * holds, byte for byte (swamp-club#3108). Undefined on a filesystem
+ * datastore, where both are one file, and for a sync service that cannot
+ * read a remote file without replacing the cached one (`fetchContent`).
+ * Only for a repository whose run records are stored in the datastore
+ * ({@link runsLiveInDatastore}): one that keeps them to itself has no remote
+ * copy to compare with.
+ *
+ * A record with a change this host has not pushed yet also reads as
+ * different; the caller leaves the run for a later attempt.
+ */
+export function runRecordCurrencyOver(
+  config: DatastoreConfig,
+  syncService: DatastoreSyncService | undefined,
+  pathOf: (run: { workflowId: string; runId: string }) => string,
+): RunRecordCurrency | undefined {
+  if (!isCustomDatastoreConfig(config) || !config.cachePath) return undefined;
+  if (!syncService?.fetchContent) return undefined;
+  const cachePath = config.cachePath;
+  const namespace = config.namespace;
+  return async (run) => {
+    const absPath = pathOf(run);
+    const rel = relative(cachePath, absPath);
+    if (escapesRoot(rel)) {
+      throw markErrorPaths(
+        new Error(`Run record ${absPath} is outside the datastore cache`),
+        [absPath],
+      );
+    }
+    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    const remote = await syncService.fetchContent!(relPath, {
+      namespace,
+      signal: AbortSignal.timeout(RUN_RECORD_FETCH_TIMEOUT_MS),
+    });
+    if (remote === null) return false;
+    let local: Uint8Array;
+    try {
+      local = await Deno.readFile(absPath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    }
+    if (local.length !== remote.length) return false;
+    for (let i = 0; i < local.length; i++) {
+      if (local[i] !== remote[i]) return false;
+    }
+    return true;
+  };
+}
+
+/**
+ * The continuation claims a local command takes when it resumes a run
+ * (swamp-club#3108), in the store `swamp serve` keeps its heartbeats in:
+ *
+ * - A filesystem datastore keeps them under the repository, as serve does
+ *   when its datastore has no control-plane store of its own.
+ * - A custom datastore keeps them in its extension's control-plane store.
+ *   Without one there are no claims, and a resume takes none.
+ */
+export function resolveContinuationClaims(
+  config: DatastoreConfig,
+  repoDir: string,
+  syncService?: DatastoreSyncService,
+): ContinuationClaims | undefined {
+  if (!isCustomDatastoreConfig(config)) {
+    return continuationClaimsOver(
+      new FileSystemControlPlaneStore(swampPath(repoDir)),
+      localHolder(),
+    );
+  }
+  if (
+    !syncService?.capabilities?.().controlPlane ||
+    !syncService.controlPlaneStore
+  ) {
+    return undefined;
+  }
+  const notAtomic =
+    `the control-plane store of the "${config.type}" datastore cannot create a record atomically (putIfAbsent)`;
+  const remote = lazyRemoteStore(syncService, config.namespace, notAtomic);
+  return {
+    ...continuationClaimsOver(remote.store, localHolder()),
+    usable: async () => {
+      try {
+        await remote.open();
+        return true;
+      } catch (error) {
+        if (error instanceof UserError && error.message === notAtomic) {
+          return false;
+        }
+        throw error;
+      }
+    },
   };
 }
 

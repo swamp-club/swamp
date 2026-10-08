@@ -1529,6 +1529,31 @@ Deno.test("WorkflowRun.resetUnknownStepsForRecovery: resets unknown steps to pen
   assertEquals(run.completedAt, undefined);
 });
 
+Deno.test("WorkflowRun.resetUnknownStepsForRecovery: marks the run recovered until it is next resumed", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.jobs[0].start();
+  run.jobs[0].steps[0].start();
+  assertEquals(run.awaitsResumeAfterRecovery, false);
+  assertEquals(run.toData().recovered, undefined);
+
+  run.interrupt("server_crash");
+  run.resetUnknownStepsForRecovery();
+
+  assertEquals(run.awaitsResumeAfterRecovery, true);
+  assertEquals(run.toData().recovered, true);
+  const stored = WorkflowRun.fromData(run.toData());
+  assertEquals(stored.awaitsResumeAfterRecovery, true);
+
+  stored.resumeFromSuspended({ pid: 1 });
+  assertEquals(stored.awaitsResumeAfterRecovery, false);
+  assertEquals(stored.toData().recovered, undefined);
+  // Suspended again by something else: the recovery is not remembered.
+  stored.suspend();
+  assertEquals(stored.awaitsResumeAfterRecovery, false);
+  assertEquals(stored.toData().recovered, undefined);
+});
+
 Deno.test("WorkflowRun.resetUnknownStepsForRecovery: throws on non-interrupted run", () => {
   const wf = createTestWorkflow();
   const run = WorkflowRun.create(wf);

@@ -34,6 +34,7 @@ import {
   cancelSuccessBody,
   collectServeExtraArgs,
   MAX_CANCEL_BODY_BYTES,
+  parseContinuationSweepInterval,
   parseDatastorePollInterval,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
@@ -236,6 +237,24 @@ Deno.test("parseShutdownDrainTimeout: rejects malformed and oversized values", (
     () => parseShutdownDrainTimeout("1mo"),
     UserError,
     "--shutdown-drain-timeout (1mo) exceeds the maximum safe timer duration",
+  );
+});
+
+Deno.test("parseContinuationSweepInterval: unset gives the default, and 0 disables", () => {
+  assertEquals(parseContinuationSweepInterval(undefined), 30_000);
+  for (const raw of ["0", "0s", "00", "0m"]) {
+    assertEquals(parseContinuationSweepInterval(raw), 0, raw);
+  }
+});
+
+Deno.test("parseContinuationSweepInterval: accepts seconds and larger units, and rejects milliseconds", () => {
+  assertEquals(parseContinuationSweepInterval("5s"), 5_000);
+  assertEquals(parseContinuationSweepInterval("5"), 5_000);
+  assertEquals(parseContinuationSweepInterval("2m"), 120_000);
+  assertThrows(
+    () => parseContinuationSweepInterval("500ms"),
+    UserError,
+    "--continuation-sweep-interval must be in whole seconds or larger units",
   );
 });
 

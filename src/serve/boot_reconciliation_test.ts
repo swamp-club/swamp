@@ -1553,6 +1553,19 @@ Deno.test("hydrateLocalCache: catches pull failure and returns zero", async () =
   assertEquals(result.pulled, 0);
 });
 
+Deno.test("hydrateLocalCache: reports whether the pull succeeded, which the continuation sweep waits on", async () => {
+  assertEquals(
+    (await hydrateLocalCache(createHydrateDeps({ pullResult: 0 }).deps)).ok,
+    true,
+  );
+  assertEquals(
+    (await hydrateLocalCache(
+      createHydrateDeps({ pullError: new Error("S3 timeout") }).deps,
+    )).ok,
+    false,
+  );
+});
+
 Deno.test("hydrateLocalCache: does not invalidate catalog on failure", async () => {
   const h = createHydrateDeps({ pullError: new Error("network error") });
   await hydrateLocalCache(h.deps);
