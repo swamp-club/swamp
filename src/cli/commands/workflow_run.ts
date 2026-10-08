@@ -570,6 +570,7 @@ export const workflowRunCommand = new Command()
                 ? new JUnitWorkflowRunRenderer({
                   failOnSeverity,
                   outFile: options.out as string | undefined,
+                  quiet: ctx.verbosity === "quiet",
                 })
                 : createWorkflowRunRenderer(ctx.outputMode, {
                   workflowName: workflowIdOrName,
@@ -751,6 +752,7 @@ async function runWorkflowViaServer(
       const renderer = options.junit
         ? new JUnitWorkflowRunRenderer({
           outFile: options.out as string | undefined,
+          quiet: ctx.verbosity === "quiet",
         })
         : createWorkflowRunRenderer(ctx.outputMode, {
           workflowName: workflowIdOrName,

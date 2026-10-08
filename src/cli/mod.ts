@@ -220,7 +220,11 @@ import {
 } from "../infrastructure/update/launchd_scheduler.ts";
 import { detectInstalledLinuxMode } from "../infrastructure/update/scheduler_factory.ts";
 import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
-import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
+import {
+  getOutputModeFromArgs,
+  isQuietFromArgs,
+  postCommandNoticesAllowed,
+} from "./context.ts";
 import { isValueOnlyStdoutCommand } from "./stdout_contract.ts";
 import {
   buildKnownSensitiveValues,
@@ -256,6 +260,7 @@ export { resolveModelsDir };
 import {
   ensureManagedConfigBase,
   resolveManagedConfigPaths,
+  setLockProgressQuiet,
 } from "./repo_context.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
@@ -2551,10 +2556,17 @@ async function runInvocation(
     );
   }
 
+  // Cliffy's own reading of -q, for the notices printed after the command
+  // (swamp-club#2257). Set before any command action runs. Startup code that
+  // fires before parsing has only the isQuietFromArgs pre-parse.
+  let quietRequested = false;
+
   const cli = createRootCommand(colorEnabled)
     .globalAction(async function (options: GlobalOptions) {
       const outputMode = getOutputModeFromArgs(args);
       setConsoleGuardJsonMode(outputMode === "json");
+      quietRequested = options.quiet ?? false;
+      setLockProgressQuiet(quietRequested);
 
       // The colour switch was already flipped at the top of `runCli`. This
       // value feeds the two things that are not the switch: the `NO_COLOR` that
@@ -2724,7 +2736,7 @@ async function runInvocation(
         // A failed attempt is retried after 24h, so this shows at most daily.
         if (
           refresh.outcome === "failed" &&
-          getOutputModeFromArgs(args) === "log"
+          postCommandNoticesAllowed(getOutputModeFromArgs(args), quietRequested)
         ) {
           console.error(
             `\n⚠ Could not re-register the autoupdate scheduler: ${refresh.error}` +
@@ -2738,7 +2750,10 @@ async function runInvocation(
         const outputMode = getOutputModeFromArgs(args);
         const commandName = commandInfo.command;
 
-        if (outputMode === "log" && commandName !== "update") {
+        if (
+          postCommandNoticesAllowed(outputMode, quietRequested) &&
+          commandName !== "update"
+        ) {
           try {
             const prefsRepo = new UpdatePreferencesFileRepository();
             const prefs = await prefsRepo.read();

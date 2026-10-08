@@ -177,13 +177,28 @@ function labeledPrefix(label: string): string {
   return dim(`${padded} │`);
 }
 
-function defaultLockWriter(message: string): void {
-  console.error(`${labeledPrefix("system")} ${message}`);
+// Lock and sync progress is commentary, so `-q` silences it. Set once per
+// invocation from the CLI's global action (swamp-club#2257).
+let lockProgressQuiet = false;
+
+/** Silence lock-wait and datastore sync progress for this invocation. */
+export function setLockProgressQuiet(quiet: boolean): void {
+  lockProgressQuiet = quiet;
 }
 
-export function createLockProgressWriter(label: string): LockProgressWriter {
+const writeStderrLine = (line: string): void => console.error(line);
+
+function defaultLockWriter(message: string): void {
+  createLockProgressWriter("system")(message);
+}
+
+export function createLockProgressWriter(
+  label: string,
+  writeStderr: (line: string) => void = writeStderrLine,
+): LockProgressWriter {
   return (message: string) => {
-    console.error(`${labeledPrefix(label)} ${message}`);
+    if (lockProgressQuiet) return;
+    writeStderr(`${labeledPrefix(label)} ${message}`);
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";

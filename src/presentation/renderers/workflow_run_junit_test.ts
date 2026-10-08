@@ -175,3 +175,24 @@ Deno.test("JUnitWorkflowRunRenderer: clean failure uses <failure> element", asyn
     await Deno.remove(outFile);
   }
 });
+
+Deno.test("JUnitWorkflowRunRenderer: -q silences the stdout notice (swamp-club#2257)", () => {
+  const started = {
+    kind: "started" as const,
+    runId: "run-1",
+    workflowName: "test-workflow",
+    jobs: [],
+  };
+
+  const loud: string[] = [];
+  new JUnitWorkflowRunRenderer({ writeStderr: (l) => loud.push(l) })
+    .handlers().started(started);
+  assertEquals(loud, ["JUnit XML will be written to stdout on completion."]);
+
+  const quiet: string[] = [];
+  new JUnitWorkflowRunRenderer({
+    quiet: true,
+    writeStderr: (l) => quiet.push(l),
+  }).handlers().started(started);
+  assertEquals(quiet, []);
+});

@@ -63,6 +63,7 @@ import {
   runRecordCurrencyOver,
   runsLiveInDatastore,
   runUnderModelLocks,
+  setLockProgressQuiet,
   signalWaitsOf,
   waitForPerModelLocks,
 } from "./repo_context.ts";
@@ -1769,6 +1770,60 @@ Deno.test(
       assertStringIncludes(captured[0], "test message");
     } finally {
       console.error = originalError;
+    }
+  },
+);
+
+Deno.test(
+  "createLockProgressWriter - writes nothing while -q is set (swamp-club#2257)",
+  () => {
+    const captured: string[] = [];
+    const writer = createLockProgressWriter("my-model", (line) => {
+      captured.push(line);
+    });
+    try {
+      setLockProgressQuiet(true);
+      writer("quiet message");
+      assertEquals(captured, []);
+
+      setLockProgressQuiet(false);
+      writer("loud message");
+      assertEquals(captured.length, 1);
+      assertStringIncludes(captured[0], "loud message");
+    } finally {
+      setLockProgressQuiet(false);
+    }
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - default progress writer is silent while -q is set (swamp-club#2257)",
+  async () => {
+    const sequence = [1, 0];
+    let i = 0;
+    const scanner = (): Promise<PerModelLockScan> => {
+      const next = sequence[Math.min(i, sequence.length - 1)];
+      i++;
+      return Promise.resolve(heldCount(next));
+    };
+
+    const captured: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      captured.push(String(args[0]));
+    };
+    try {
+      setLockProgressQuiet(true);
+      await waitForPerModelLocks(
+        "/unused/datastore/path",
+        undefined,
+        { findModelLocks: scanner, pollIntervalMs: 1 },
+      );
+      assertEquals(i, 2);
+      assertEquals(captured, []);
+    } finally {
+      console.error = originalError;
+      setLockProgressQuiet(false);
     }
   },
 );
