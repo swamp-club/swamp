@@ -922,6 +922,7 @@ Deno.test("isQuietFromArgs: reads -q the way Cliffy parses it", () => {
     // Everything after a bare -- is a literal argument, not an option.
     [["run", "--", "-q"], false],
     [["run", "--", "--quiet"], false],
+    // Cliffy rejects a value on --quiet, so this form never runs a command.
     [["--quiet=true"], false],
   ];
   for (const [args, expected] of cases) {

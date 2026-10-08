@@ -213,9 +213,12 @@ const BOOLEAN_SHORT_FLAGS = new Set(["q", "v", "h"]);
  * fire before Cliffy's globalAction has parsed options (e.g. extension
  * load warnings emitted from lazy loaders inside ensureLoaded()).
  *
- * Follows Cliffy's reading of the arguments: a short cluster such as `-qv`
+ * Follows Cliffy's reading of the global flags: a short cluster such as `-qv`
  * or `-vq` is quiet, but in `-tq` the `q` is the value of `-t`, and nothing
- * after a bare `--` is an option (swamp-club#2257).
+ * after a bare `--` is an option (swamp-club#2257). It cannot see a
+ * command's own boolean flags, so a cluster like `-yq` reads as not quiet
+ * here though Cliffy parses it as quiet — the miss shows output, never hides
+ * it. Code that runs after parsing reads Cliffy's `options.quiet` instead.
  */
 export function isQuietFromArgs(args: string[]): boolean {
   for (const arg of args) {

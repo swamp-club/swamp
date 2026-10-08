@@ -2557,7 +2557,8 @@ async function runInvocation(
   }
 
   // Cliffy's own reading of -q, for the notices printed after the command
-  // (swamp-club#2257). Set before any command action runs.
+  // (swamp-club#2257). Set before any command action runs. Startup code that
+  // fires before parsing has only the isQuietFromArgs pre-parse.
   let quietRequested = false;
 
   const cli = createRootCommand(colorEnabled)
