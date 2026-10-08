@@ -2747,7 +2747,7 @@ Deno.test("append: refuses a content file the remote also holds short", async ()
       () => repo.append(testType, "model-1", "log", enc("line3\n")),
       Error,
     );
-    assertStringIncludes(error.message, "acceptedShort");
+    assertStringIncludes(error.message, "push may not have finished");
     assertEquals(dec(await Deno.readFile(path)), "line1\n");
   });
 });
@@ -2766,7 +2766,7 @@ Deno.test("append: refuses a content file that is neither local nor remote", asy
     await assertRejects(
       () => repo.append(testType, "model-1", "log", enc("line2\n")),
       Error,
-      "missing",
+      "could not be downloaded",
     );
   });
 });

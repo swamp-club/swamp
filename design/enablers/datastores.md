@@ -1764,6 +1764,11 @@ convert paths themselves.
   Paths outside the cache are not checked.
 - Implementations MUST write atomically (tmp + rename) so concurrent readers
   never see a partial file.
+- Implementations MUST replace a file that already exists at the path with
+  the remote's copy: core hydrates a local `raw` that is shorter than its
+  metadata records (see "Content-ensuring step"). One that skips existing
+  files leaves the stale copy, which core then uses as the remote's short copy
+  for `ACCEPTED_SHORT_CONTENT_TTL_MS`.
 
 #### `getContentSync` limitation
 

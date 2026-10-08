@@ -481,13 +481,6 @@ export function createExtensionCelEnvironment(): Environment {
 }
 
 /**
- * CEL evaluator that wraps the cel-js library.
- *
- * Uses the cel-js Environment class with registered types and receiver methods
- * to support function call syntax (e.g., file.contents(), data.latest()) in
- * CEL expressions.
- */
-/**
  * Awaits the context's data-namespace `prepare` for one expression, when the
  * context has one. Async evaluation calls it before every expression; a
  * synchronous evaluation pass calls it for each expression it is about to
@@ -520,6 +513,13 @@ export async function prepareExpressionsIn(
   }
 }
 
+/**
+ * CEL evaluator that wraps the cel-js library.
+ *
+ * Uses the cel-js Environment class with registered types and receiver methods
+ * to support function call syntax (e.g., file.contents(), data.latest()) in
+ * CEL expressions.
+ */
 export class CelEvaluator {
   private readonly env: Environment;
   private readonly warnedPatterns = new Set<string>();

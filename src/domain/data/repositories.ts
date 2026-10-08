@@ -23,14 +23,14 @@ import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 
 /**
- * Error thrown when ownership validation fails.
- */
-/**
  * Whether a version's content file can be read as current, from
  * {@link UnifiedDataRepository.ensureContentLocal}.
  */
 export type ContentAvailability = "current" | "acceptedShort" | "missing";
 
+/**
+ * Error thrown when ownership validation fails.
+ */
 export class OwnershipValidationError extends Error {
   constructor(
     readonly dataName: string,

@@ -964,8 +964,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     );
     if (availability !== "current") {
       throw new Error(
-        `Cannot append to "${dataName}" version ${latestVersion}: its content ` +
-          `is not available locally in full (${availability})`,
+        availability === "missing"
+          ? `Cannot append to "${dataName}" version ${latestVersion}: its ` +
+            `content could not be downloaded from the datastore`
+          : `Cannot append to "${dataName}" version ${latestVersion}: the ` +
+            `datastore holds less content than its metadata records, so ` +
+            `another host's push may not have finished; retry once it has`,
       );
     }
 
@@ -1201,7 +1205,14 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (error instanceof Deno.errors.NotFound) return undefined;
       throw error;
     }
-    const metadata = parseYaml(text) as { size?: unknown } | null;
+    // A metadata file that does not parse records no size; the read goes
+    // ahead as it did before the size check.
+    let metadata: { size?: unknown } | null;
+    try {
+      metadata = parseYaml(text) as { size?: unknown } | null;
+    } catch {
+      return undefined;
+    }
     return typeof metadata?.size === "number" ? metadata.size : undefined;
   }
 

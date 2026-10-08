@@ -1103,13 +1103,23 @@ export class ModelResolver {
             data.version,
           );
           const before = localFileSize(contentPath);
-          await dataRepo.ensureContentLocal(
-            modelType,
-            modelId,
-            data.name,
-            data.version,
-            data.size,
-          );
+          try {
+            await dataRepo.ensureContentLocal(
+              modelType,
+              modelId,
+              data.name,
+              data.version,
+              data.size,
+            );
+          } catch (error) {
+            throw new Error(
+              `Could not download ${data.name} of model ${ref}, which the ` +
+                `expression reads: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              { cause: error },
+            );
+          }
           if (localFileSize(contentPath) !== before) {
             changed.push({ data, modelType, modelId });
           }
@@ -1338,10 +1348,9 @@ export class ModelResolver {
                   data.tags,
                   sensitiveValues,
                 );
-                // Content already ensured above; a body that could not be
-                // made local is not requested a second time.
-                if (available) await this.materializePath(record);
-                else if (record?.path && !fileExists(record.path)) {
+                // Content was ensured above, so the path only needs to name
+                // a present file; it is not requested a second time.
+                if (record?.path && (!available || !fileExists(record.path))) {
                   record.path = "";
                 }
                 return record;

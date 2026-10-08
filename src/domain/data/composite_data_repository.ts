@@ -287,11 +287,12 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
     knownSize?: number,
   ): Promise<ContentAvailability> {
-    const repo = this.ephemeral.getLatestVersionSync(
+    const repo = this.holdsEphemerally(
         coerceModelType(type),
         modelId,
         dataName,
-      ) !== null
+        version,
+      )
       ? this.ephemeral
       : this.persistent;
     return repo.ensureContentLocal(
@@ -310,11 +311,29 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     version: number,
     size: number,
   ): boolean {
-    const repo =
-      this.ephemeral.getLatestVersionSync(type, modelId, dataName) !== null
-        ? this.ephemeral
-        : this.persistent;
+    const repo = this.holdsEphemerally(type, modelId, dataName, version)
+      ? this.ephemeral
+      : this.persistent;
     return repo.isContentAcceptedSync(type, modelId, dataName, version, size);
+  }
+
+  /**
+   * Whether the ephemeral store holds the version a content read would read
+   * from it, as {@link getContent} tries the ephemeral store for that exact
+   * version first. Without a version, its latest.
+   */
+  private holdsEphemerally(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number | undefined,
+  ): boolean {
+    if (version === undefined) {
+      return this.ephemeral.getLatestVersionSync(type, modelId, dataName) !==
+        null;
+    }
+    return this.ephemeral.listVersionsSync(type, modelId, dataName)
+      .includes(version);
   }
 
   async *stream(
