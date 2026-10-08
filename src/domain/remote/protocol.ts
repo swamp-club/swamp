@@ -141,6 +141,13 @@ export function parseRpcFrame(data: unknown): RpcFrame | string | null {
  * malformed, or the binary speaks another protocol version. A worker stops
  * on these; every other coded rejection is retried.
  */
+/**
+ * The enrollment error an orchestrator with no auth gate pass returns to a
+ * worker that asked for one (`needsGatePass`). The worker reports it as the
+ * gate's block.
+ */
+export const GATE_PASS_UNAVAILABLE = "gate_pass_unavailable";
+
 export const PERMANENT_ENROLLMENT_ERROR_CODES: ReadonlySet<string> = new Set([
   "protocol_mismatch",
   "invalid_token",
@@ -212,6 +219,13 @@ export const EnrollParamsSchema = z.object({
   /** Scheduling selectors (region, gpu, sandbox tier, ...). */
   labels: z.record(z.string(), z.string()).default({}),
   resourceLimits: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Set by a worker without a swamp-club credential, which passes the auth
+   * gate on the orchestrator's pass (design/surfaces/auth-gate.md, "Remote
+   * workers"). An orchestrator with no pass to give refuses before redeeming
+   * the token (`gate_pass_unavailable`), so no enrollment is spent.
+   */
+  needsGatePass: z.boolean().optional(),
 });
 
 export type EnrollParams = z.infer<typeof EnrollParamsSchema>;
@@ -223,6 +237,13 @@ export interface EnrollResult {
   /** Epoch ms when the session credential expires; refresh before this. */
   sessionExpiresAtMs: number;
   protocolVersion: number;
+  /**
+   * The orchestrator's auth gate pass, `<base64url proof>.<signature>`: the
+   * swamp-club signed proof its own pass rests on. A worker without a
+   * credential passes the gate on it. Absent when the orchestrator has none,
+   * or predates it.
+   */
+  gatePass?: string;
 }
 
 export interface SessionRefreshResult {

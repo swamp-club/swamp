@@ -90,6 +90,30 @@ Deno.test("authGateTiming: every other subcommand is gated", () => {
   }
 });
 
+Deno.test("authGateTiming: worker connect waits for enrollment; other worker commands are gated", () => {
+  for (
+    const args of [
+      ["worker", "connect", "wss://orch:4000", "--token-file", "/t"],
+      ["--json", "worker", "connect", "wss://orch:4000"],
+      ["worker", "connect"],
+    ]
+  ) {
+    assertEquals(timing(args), "enrollment", args.join(" "));
+  }
+  for (
+    const args of [
+      ["worker", "exec-dispatch"],
+      ["worker", "list"],
+      ["worker", "daemon", "enable"],
+      ["worker", "token", "create", "pool"],
+      ["worker"],
+    ]
+  ) {
+    assertEquals(timing(args), "gated", args.join(" "));
+  }
+  assertEquals(timing(["worker", "connect", "--help"]), "exempt");
+});
+
 Deno.test("authGateTiming: a boolean global option never hides the command after it", () => {
   // Regression: a positional guess once read `swamp --log init` as bare
   // `swamp`, because it did not know `--log` takes no value.

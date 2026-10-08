@@ -47,6 +47,7 @@ import {
   DispatchResultSchema,
   EnrollParamsSchema,
   type EnrollResult,
+  GATE_PASS_UNAVAILABLE,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   type RpcStreamEvent,
@@ -230,6 +231,13 @@ export interface WorkerGatewayOptions {
   verifyWorker?: (
     workerName: string,
   ) => Promise<{ ok: boolean; failureReason?: string }>;
+  /**
+   * The auth gate pass this serve hands each worker it enrolls
+   * (`formatOrchestratorGatePass`), or undefined when it has none. A worker
+   * without a swamp-club credential passes the gate on it
+   * (design/surfaces/auth-gate.md, "Remote workers").
+   */
+  gatePass?: () => string | undefined;
   /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
   /**
@@ -591,6 +599,18 @@ export class WorkerGateway {
     }
     const { name, secret } = split;
 
+    // Read once, so the refusal below and the reply agree. A worker that
+    // needs a pass is refused before the token is redeemed, so it spends no
+    // enrollment.
+    const gatePass = this.#options.gatePass?.();
+    if (params.needsGatePass && gatePass === undefined) {
+      throw new RpcError({
+        code: GATE_PASS_UNAVAILABLE,
+        message:
+          "This orchestrator has no auth gate pass to give a worker without a credential",
+      });
+    }
+
     return await this.#recordTransition<EnrollResult>(async () => {
       // Redeem validates state, expiry, the secret, and allowance — and
       // appends a binding on first enrollment or re-auths a known machine.
@@ -774,6 +794,7 @@ export class WorkerGateway {
         sessionCredential: session.credential,
         sessionExpiresAtMs: session.expiresAtMs,
         protocolVersion: REMOTE_PROTOCOL_VERSION,
+        ...(gatePass === undefined ? {} : { gatePass }),
       };
     });
   }

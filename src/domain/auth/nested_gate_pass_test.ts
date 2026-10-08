@@ -21,8 +21,10 @@ import { assertEquals } from "@std/assert";
 import {
   admitsNestedRun,
   formatNestedGatePass,
+  formatOrchestratorGatePass,
   type NestedGatePass,
   parseNestedGatePass,
+  parseOrchestratorGatePass,
 } from "./nested_gate_pass.ts";
 
 const PASS: NestedGatePass = {
@@ -82,4 +84,31 @@ Deno.test("admitsNestedRun: a proof expired before the ancestor started does not
 
 Deno.test("admitsNestedRun: a proof without exp (a signin token) never does", () => {
   assertEquals(admitsNestedRun({}, 0), false);
+});
+
+Deno.test("formatOrchestratorGatePass: is the nested encoding without the pid", () => {
+  const value = formatOrchestratorGatePass(PASS);
+  assertEquals(value, formatNestedGatePass(PASS).split(".").slice(1).join("."));
+});
+
+Deno.test("parseOrchestratorGatePass: reads back what formatOrchestratorGatePass wrote", () => {
+  const { proof, signature } = PASS;
+  assertEquals(
+    parseOrchestratorGatePass(formatOrchestratorGatePass(PASS)),
+    { proof, signature },
+  );
+});
+
+Deno.test("parseOrchestratorGatePass: rejects a nested pass, which carries a pid", () => {
+  assertEquals(parseOrchestratorGatePass(formatNestedGatePass(PASS)), null);
+});
+
+Deno.test("parseOrchestratorGatePass: rejects malformed values", () => {
+  const notJson = btoa("not json").replace(/=+$/, "");
+  assertEquals(parseOrchestratorGatePass(`${notJson}.c2ln`), null);
+  assertEquals(parseOrchestratorGatePass("e30=.c2ln"), null);
+  assertEquals(parseOrchestratorGatePass("e30.c2l+"), null);
+  assertEquals(parseOrchestratorGatePass(".c2ln"), null);
+  assertEquals(parseOrchestratorGatePass("e30"), null);
+  assertEquals(parseOrchestratorGatePass(""), null);
 });

@@ -20,16 +20,23 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
+  admitOrchestratorPass,
   authGateBlockedError,
   type AuthGateCredential,
   type AuthGateDeps,
   blockMessage,
+  createGatePassKeeper,
   type NestedGateDeps,
   nestedGatePassValue,
+  orchestratorBlockedError,
   runAuthGate,
   runProofRefresh,
 } from "./auth_gate.ts";
-import { parseNestedGatePass } from "../domain/auth/nested_gate_pass.ts";
+import {
+  formatNestedGatePass,
+  formatOrchestratorGatePass,
+  parseNestedGatePass,
+} from "../domain/auth/nested_gate_pass.ts";
 import { AuthVerificationRepository } from "../infrastructure/persistence/auth_verification_repository.ts";
 import type {
   IdentityCheckResult,
@@ -900,5 +907,276 @@ Deno.test("runAuthGate: a process that does not own the config dir honours a run
     assert(outcome.kind === "pass");
     assertStringIncludes(outcome.warning ?? "", "24 hours");
     assertEquals(await h.repo.readFailOpenSince(), NOW - 60);
+  });
+});
+
+/** An orchestrator's pass for `minted`, as a serve sends it at enrollment. */
+function orchestratorPass(minted: MintedProof): string {
+  return formatOrchestratorGatePass(minted);
+}
+
+Deno.test("admitOrchestratorPass: a signed proof valid at the gate admits the worker, naming itself", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const serveProof = await mintTestProof(h.key, "serve_key", {
+      iat: NOW - DAY,
+      exp: NOW + 13 * DAY,
+    });
+    const admission = await admitOrchestratorPass(
+      h.repo,
+      orchestratorPass(serveProof),
+      NOW,
+    );
+    assertEquals(admission, {
+      kind: "pass",
+      handoff: { proof: serveProof.proof, signature: serveProof.signature },
+    });
+    // No issuer pid: the worker's own pid goes into the pass it hands down.
+    assert(admission.kind === "pass");
+    assertEquals(
+      parseNestedGatePass(nestedGatePassValue(admission.handoff, 777)!)
+        ?.parentPid,
+      777,
+    );
+  });
+});
+
+Deno.test("admitOrchestratorPass: a key neither cached nor embedded blocks", async () => {
+  await withHarness(async (h) => {
+    // Nothing cached, and the binary does not embed the test key: the serve's
+    // proof is never checked against a key the pass itself could supply.
+    const serveProof = await mintTestProof(h.key, "serve_key", {
+      iat: NOW - DAY,
+      exp: NOW + 13 * DAY,
+    });
+    const admission = await admitOrchestratorPass(
+      h.repo,
+      orchestratorPass(serveProof),
+      NOW,
+    );
+    assertEquals(admission.kind, "block");
+  });
+});
+
+Deno.test("admitOrchestratorPass: no pass, a malformed pass or a nested pass blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const serveProof = await mintTestProof(h.key, "serve_key", {
+      iat: NOW - DAY,
+      exp: NOW + 13 * DAY,
+    });
+    for (
+      const value of [
+        undefined,
+        "",
+        "not-a-pass",
+        formatNestedGatePass({ parentPid: 42, ...serveProof }),
+      ]
+    ) {
+      const admission = await admitOrchestratorPass(h.repo, value, NOW);
+      assertEquals(admission.kind, "block", String(value));
+    }
+  });
+});
+
+Deno.test("admitOrchestratorPass: a forged signature, no exp, or an exp at or before the gate blocks", async () => {
+  await withHarness(async (h) => {
+    await cacheTestKey(h);
+    const forged = await mintTestProof(
+      await generateTestSigningKey(h.key.publicKey.kid),
+      "serve_key",
+      { iat: NOW, exp: NOW + 14 * DAY },
+    );
+    const noExp = await mintTestProof(h.key, "serve_key", { iat: NOW - DAY });
+    const expiredAtGate = await mintTestProof(h.key, "serve_key", {
+      iat: NOW - 14 * DAY,
+      exp: NOW,
+    });
+    for (const minted of [forged, noExp, expiredAtGate]) {
+      const admission = await admitOrchestratorPass(
+        h.repo,
+        orchestratorPass(minted),
+        NOW,
+      );
+      assertEquals(admission.kind, "block");
+    }
+  });
+});
+
+Deno.test("orchestratorBlockedError: reports no_credential with the orchestrator's reason", () => {
+  const error = orchestratorBlockedError("the orchestrator sent no pass");
+  assertEquals(error.reason, { kind: "no_credential" });
+  assertEquals(error.code, "auth_gate_blocked");
+  assertEquals(error.temporary, false);
+  assertStringIncludes(error.message, "the orchestrator sent no pass");
+  assertStringIncludes(error.message, "SWAMP_API_KEY_FILE");
+});
+
+Deno.test("runProofRefresh: returns what it heard and the fresh proof", async () => {
+  await withHarness(async (h) => {
+    const fresh = await mintTestProof(h.key, API_KEY, { iat: NOW });
+    const verified = await runProofRefresh(
+      h.deps({ answer: verifiedWith(fresh) }),
+    );
+    assertEquals(verified?.outcome.kind, "verified");
+    assertEquals(verified?.proof, {
+      proof: fresh.proof,
+      signature: fresh.signature,
+    });
+    const rejected = await runProofRefresh(
+      h.deps({ answer: { outcome: { kind: "rejected", status: 401 } } }),
+    );
+    assertEquals(rejected, {
+      outcome: { kind: "rejected", status: 401 },
+      proof: undefined,
+    });
+    assertEquals(
+      await runProofRefresh(h.deps({ credential: null })),
+      undefined,
+    );
+  });
+});
+
+Deno.test("runProofRefresh: a process that does not own the config dir writes nothing", async () => {
+  await withHarness(async (h) => {
+    const fresh = await mintTestProof(h.key, API_KEY, { iat: NOW });
+    await runProofRefresh(
+      h.deps({ answer: verifiedWith(fresh), canWrite: false }),
+    );
+    assertEquals(await h.repo.readRefreshAttempt(), undefined);
+    assertEquals((await h.repo.loadCandidates()).length, 0);
+  });
+});
+
+Deno.test("createGatePassKeeper: hands out the startup proof until it is due", async () => {
+  await withHarness(async (h) => {
+    const startup = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - DAY,
+      exp: NOW + 13 * DAY,
+    });
+    const keeper = createGatePassKeeper(
+      h.deps({ answer: verifiedWith() }),
+      { ...startup, issuerPid: 99 },
+    );
+    await keeper.tick();
+    assertEquals(h.calls.length, 0);
+    assertEquals(keeper.current(), {
+      proof: startup.proof,
+      signature: startup.signature,
+    });
+  });
+});
+
+Deno.test("createGatePassKeeper: refreshes a week-old proof in memory, even without writing", async () => {
+  await withHarness(async (h) => {
+    const startup = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - 8 * DAY,
+      exp: NOW + 6 * DAY,
+    });
+    const fresh = await mintTestProof(h.key, API_KEY, {
+      iat: NOW,
+      exp: NOW + 14 * DAY,
+    });
+    const keeper = createGatePassKeeper(
+      h.deps({ answer: verifiedWith(fresh), canWrite: false }),
+      startup,
+    );
+    await keeper.tick();
+    assertEquals(h.calls.length, 1);
+    assertEquals(keeper.current(), {
+      proof: fresh.proof,
+      signature: fresh.signature,
+    });
+    // Held in memory only: this process may not write its config dir.
+    assertEquals((await h.repo.loadCandidates()).length, 0);
+  });
+});
+
+Deno.test("createGatePassKeeper: retries at most once an hour and keeps the proof on failure", async () => {
+  await withHarness(async (h) => {
+    const startup = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - 8 * DAY,
+      exp: NOW + 6 * DAY,
+    });
+    let now = NOW;
+    const deps = { ...h.deps(), now: () => now };
+    const keeper = createGatePassKeeper(deps, startup);
+    await keeper.tick();
+    now += 30 * 60;
+    await keeper.tick();
+    assertEquals(h.calls.length, 1);
+    now += 30 * 60;
+    await keeper.tick();
+    assertEquals(h.calls.length, 2);
+    assertEquals(keeper.current()?.proof, startup.proof);
+  });
+});
+
+Deno.test("createGatePassKeeper: a rejection stops the serve vouching", async () => {
+  await withHarness(async (h) => {
+    const startup = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - 8 * DAY,
+      exp: NOW + 6 * DAY,
+    });
+    const keeper = createGatePassKeeper(
+      h.deps({ answer: { outcome: { kind: "rejected", status: 401 } } }),
+      startup,
+    );
+    await keeper.tick();
+    assertEquals(keeper.current(), undefined);
+  });
+});
+
+Deno.test("createGatePassKeeper: a serve with no credential keeps handing on its inherited pass", async () => {
+  await withHarness(async (h) => {
+    const inherited = await mintTestProof(h.key, "parent_key", {
+      iat: NOW - 8 * DAY,
+      exp: NOW + 6 * DAY,
+    });
+    const keeper = createGatePassKeeper(
+      h.deps({ credential: null }),
+      { ...inherited, issuerPid: 4242 },
+    );
+    await keeper.tick();
+    assertEquals(h.calls.length, 0);
+    assertEquals(keeper.current()?.proof, inherited.proof);
+  });
+});
+
+Deno.test("createGatePassKeeper: a serve with no pass has nothing to hand out", async () => {
+  await withHarness(async (h) => {
+    const keeper = createGatePassKeeper(h.deps(), undefined);
+    await keeper.tick();
+    assertEquals(keeper.current(), undefined);
+    assertEquals(h.calls.length, 0);
+  });
+});
+
+Deno.test("createGatePassKeeper: stop clears the timer and waits for a check in flight", async () => {
+  await withHarness(async (h) => {
+    const startup = await mintTestProof(h.key, API_KEY, {
+      iat: NOW - 8 * DAY,
+      exp: NOW + 6 * DAY,
+    });
+    const fresh = await mintTestProof(h.key, API_KEY, { iat: NOW });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => release = resolve);
+    const deps: AuthGateDeps = {
+      ...h.deps(),
+      verifyIdentity: async () => {
+        await gate;
+        return verifiedWith(fresh);
+      },
+    };
+    const keeper = createGatePassKeeper(deps, startup);
+    keeper.start(60 * 60 * 1000);
+    const ticking = keeper.tick();
+    // A second tick while one is in flight joins it.
+    assert(keeper.tick() === ticking);
+    const stopped = keeper.stop();
+    release();
+    await stopped;
+    await ticking;
+    assertEquals(keeper.current()?.proof, fresh.proof);
   });
 });

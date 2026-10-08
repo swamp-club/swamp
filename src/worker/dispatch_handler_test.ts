@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   overlayEnvironment,
   stripWorkerCredentials,
@@ -128,6 +128,45 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
     drainError = error as RpcError;
   }
   assertEquals(drainError?.code, "worker_draining");
+});
+
+Deno.test("registerDispatchHandler: a dispatch waits for admission and fails when it does", async () => {
+  const { worker, orchestrator } = channelPair();
+  let reject: (error: Error) => void = () => {};
+  const admitted = new Promise<void>((_, r) => reject = r);
+  // The worker handles the rejection itself; the handler only awaits it.
+  admitted.catch(() => {});
+  registerDispatchHandler({
+    channel: worker,
+    sessionCredential: () => "test-cred",
+    dataPlaneUrl: "http://localhost:0",
+    cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
+    admitted,
+  });
+  const call = orchestrator.call(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: 1_000 },
+  );
+  reject(new Error("not admitted"));
+  const error = await call.then(() => null, (e: unknown) => e as Error);
+  assertStringIncludes(error?.message ?? "", "not admitted");
+});
+
+Deno.test("buildRunnerEnvironment: the worker's own nested pass reaches runners; a shipped one does not", () => {
+  const fromWorker = buildRunnerEnvironment(
+    { SWAMP_NESTED_GATE_PASS: "77.cHJvb2Y.c2ln" },
+    {},
+    undefined,
+  );
+  assertEquals(fromWorker["SWAMP_NESTED_GATE_PASS"], "77.cHJvb2Y.c2ln");
+  const shipped = buildRunnerEnvironment(
+    {},
+    { SWAMP_NESTED_GATE_PASS: "1.cHJvb2Y.c2ln" },
+    undefined,
+  );
+  assertEquals("SWAMP_NESTED_GATE_PASS" in shipped, false);
 });
 
 Deno.test("dispatch spawn env: worker credentials are stripped after overlay", () => {

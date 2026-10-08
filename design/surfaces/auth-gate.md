@@ -1,6 +1,6 @@
 ---
 audience: everyone
-last-verified: 2026-10-01 @ HEAD
+last-verified: 2026-10-08 @ HEAD
 ---
 
 # Auth Gate
@@ -11,10 +11,12 @@ down: a user who has proved who they are once keeps running.
 
 ## Rules
 
-1. **No credential blocks, except in a nested run.** A credential is the API
-   key in `auth.json` (from `swamp auth login`) or a collective key from
-   `--club-api-key-file`, `SWAMP_API_KEY_FILE` or `SWAMP_API_KEY`. A swamp
-   started by another swamp that passed may pass on its pass instead (rule 6).
+1. **No credential blocks, except in a nested run or an enrolled worker.** A
+   credential is the API key in `auth.json` (from `swamp auth login`) or a
+   collective key from `--club-api-key-file`, `SWAMP_API_KEY_FILE` or
+   `SWAMP_API_KEY`. A swamp started by another swamp that passed may pass on
+   its pass instead (rule 6), and a worker on the pass of the serve that
+   enrolls it (rule 7).
 2. **A valid proof passes with no network call.** A proof is a payload signed by
    swamp-club with Ed25519. It names the key it was issued for by fingerprint
    (`fpr`), and it may expire (`exp`). `/api/whoami` returns one with every
@@ -30,6 +32,10 @@ down: a user who has proved who they are once keeps running.
    own, a swamp passes when it holds a pass whose proof swamp-club signed, was
    still valid when its issuer started, and whose issuer is a live ancestor
    running the same executable. See [Nested runs](#nested-runs).
+7. **A worker inherits the pass of the serve that enrolls it.** Without a
+   credential of its own, `worker connect` passes when the serve that enrolls
+   it sends a pass whose proof swamp-club signed and that had not expired when
+   the worker reached the gate. See [Remote workers](#remote-workers).
 
 The policy is a pure domain service (`src/domain/auth/auth_gate_policy.ts`).
 The orchestrator does the I/O (`src/cli/auth_gate.ts`). It runs at the start
@@ -71,7 +77,9 @@ for verification.
     be able to install the release that fixes it.
 - **Gated**: everything else, including `serve`, `worker`, `init` and
   `doctor`. The gate runs right after telemetry starts, before the repo
-  marker, extension loaders or auto-resolver.
+  marker, extension loaders or auto-resolver. For `worker connect` alone, a
+  `no_credential` block waits for enrollment (rule 7); every other block
+  stands.
 
 The decision is made against the real command tree, the same declarations
 Cliffy parses (`createRootCommand` and `registerCommands` in
@@ -204,6 +212,65 @@ through them, after a signing-key rotation or against a non-production
 swamp-club, it may find no key for the proof and block. On macOS a binary
 replaced in place may no longer match its running ancestor.
 
+## Remote workers
+
+A worker enrolls with a serve that has already passed the gate, and it runs
+only the work that serve hands it (see
+[remote execution](../enablers/remote-execution.md)). It needs no key of its
+own. For `worker connect`, a `no_credential` block (no credential and no
+valid nested pass) does not end the run. The command starts, connects and
+enrolls, and the serve's pass decides at enrollment, before the worker takes
+any work. Any other block, such as a rejected key or swamp-club failing for a
+day, still ends the run before the command starts. A worker with its own
+credential follows rules 1 to 5 and ignores the serve's pass.
+
+The serve sends `gatePass` in its `enrolled` reply: the proof its own pass
+rests on, the same one it hands its nested runs, encoded as
+`<base64url proof>.<signature>` with no pid. A serve that passed without such
+a proof (offline on its signin token alone, or fail-open) has none. A worker
+without a credential sets `needsGatePass` in its `enroll` request. A serve with
+no pass then refuses with `gate_pass_unavailable` before it redeems the token,
+so the worker uses up no enrollment.
+
+The worker accepts the pass when both checks hold:
+
+- **swamp-club signed the proof.** The check is the nested pass's check:
+  against the keys cached in the worker's `auth_verified.json`, then the
+  embedded key. A key the pass supplies is never used.
+- **The proof had an `exp` later than when the worker reached the gate.** A
+  proof without one (a signin token) never qualifies.
+
+The serve admitting the worker, which redeemed its enrollment token and, on an
+authenticated serve, checked its server token, takes the place of the nested
+pass's ancestry check. A worker that fails either check exits with
+`auth_gate_blocked` and reason `no_credential`, and the message says why. It
+takes no dispatch. A dispatch that arrives between enrollment and the check
+waits for it. A worker that passes is recorded as `verified`. It publishes
+`SWAMP_NESTED_GATE_PASS` under its own pid, so the `worker exec-dispatch`
+runners it starts, and any `swamp` their shell steps run, pass as nested runs.
+The check runs once per process: a reconnect does not repeat it, just as a
+serve and a worker are not re-gated while they run.
+
+A serve passes on a proof that expires 14 days after it was issued. Its weekly
+refresh would otherwise run only at exit. So a serve that passed on its own
+credential checks once an hour whether its pass is older than seven days. If
+it is, the serve calls `/api/whoami` with the 3-second refresh timeout, at most
+once an hour. It holds the fresh proof in memory and hands that out, so a
+system daemon that cannot write its config dir keeps vouching too. It saves the
+proof only when it owns the config dir. A rejection drops the pass, and from
+then on the serve refuses workers that need one. Its own nested runs keep
+the pass it started with. A serve admitted on an inherited nested pass has no
+key to refresh with and hands that pass on.
+
+Every enrolled worker receives the serve key holder's proof payload (`sub`,
+`org`, `scopes`, `fpr`). That is what a nested child receives too. It carries
+no key and is not a credential.
+
+A worker without a key cannot run commands that call swamp-club itself, such
+as `extension push` or `issue`, the same trade-off as a nested run. An older
+serve sends no pass, so a worker without a credential is blocked there and
+should be given a key, or the serve upgraded.
+
 ## Weekly refresh
 
 A file proof older than seven days is refreshed after the command finishes.
@@ -299,10 +366,15 @@ Emergency rotation (the old key is compromised):
   source. A nested pass is no stronger: it needs a proof swamp-club issued, an
   ancestor started before that proof expired, and a swamp ancestor, which a
   gate-exempt command can be made to provide. Under `deno run dev` any `deno`
-  ancestor counts as the same executable. The gate enforces an account
+  ancestor counts as the same executable. A worker's pass is weaker still: a
+  worker trusts whatever its orchestrator sends, so a fake orchestrator could
+  hand it any unexpired proof swamp-club signed. That worker already runs
+  whatever code its orchestrator ships. The gate enforces an account
   requirement. It is not a security boundary.
 - **Re-checking long-running processes.** `serve` and `worker` pass the gate
-  when they start and are checked again when they restart. A revoked collective
+  when they start (a worker without a credential at its first enrollment) and
+  are checked again when they restart. The serve's hourly pass check keeps
+  the pass it hands workers fresh. It never re-gates the serve. A revoked collective
   key still fails their own swamp-club calls, such as heartbeat and
   registration.
 

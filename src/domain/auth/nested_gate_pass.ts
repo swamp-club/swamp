@@ -70,6 +70,47 @@ export function parseNestedGatePass(value: string): NestedGatePass | null {
   if (!PID_PATTERN.test(pidText)) return null;
   const parentPid = Number(pidText);
   if (!Number.isSafeInteger(parentPid)) return null;
+  const signed = decodeSignedProof(proofB64, signature);
+  return signed ? { parentPid, ...signed } : null;
+}
+
+/**
+ * The pass a serve hands a worker it enrolled (design/surfaces/auth-gate.md,
+ * "Remote workers"): the proof the serve's own pass rests on, with no pid.
+ * The issuer is a remote process, so there is no ancestry to check; the
+ * serve admitting the worker stands in for it.
+ */
+export interface OrchestratorGatePass {
+  /** The signed proof payload, as JSON. */
+  readonly proof: string;
+  /** The proof's Ed25519 signature, base64url. */
+  readonly signature: string;
+}
+
+/** Encode a pass as `<base64url proof>.<signature>`, as a signin token is. */
+export function formatOrchestratorGatePass(
+  pass: OrchestratorGatePass,
+): string {
+  const proofB64 = base64urlEncode(new TextEncoder().encode(pass.proof));
+  return `${proofB64}.${pass.signature}`;
+}
+
+/**
+ * Decode an orchestrator pass, or return null for anything that is not
+ * exactly `<base64url>.<base64url>` with a proof that decodes to JSON.
+ */
+export function parseOrchestratorGatePass(
+  value: string,
+): OrchestratorGatePass | null {
+  const parts = value.split(".");
+  if (parts.length !== 2) return null;
+  return decodeSignedProof(parts[0], parts[1]);
+}
+
+function decodeSignedProof(
+  proofB64: string,
+  signature: string,
+): OrchestratorGatePass | null {
   if (!BASE64URL_PATTERN.test(proofB64) || !BASE64URL_PATTERN.test(signature)) {
     return null;
   }
@@ -78,7 +119,7 @@ export function parseNestedGatePass(value: string): NestedGatePass | null {
       base64urlDecode(proofB64),
     );
     JSON.parse(proof);
-    return { parentPid, proof, signature };
+    return { proof, signature };
   } catch {
     return null;
   }

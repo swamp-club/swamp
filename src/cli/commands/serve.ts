@@ -149,6 +149,12 @@ import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { DaemonTelemetryFlushService } from "../../serve/telemetry_flush.ts";
 import { runDetached } from "../../infrastructure/tracing/mod.ts";
 import { getActiveTelemetryContext } from "../telemetry_integration.ts";
+import { currentAuthGateSession } from "../auth_gate_session.ts";
+import {
+  createGatePassKeeper,
+  GATE_PASS_KEEPER_INTERVAL_MS,
+} from "../auth_gate.ts";
+import { formatOrchestratorGatePass } from "../../domain/auth/nested_gate_pass.ts";
 import { HttpTelemetrySender } from "../../infrastructure/telemetry/http_telemetry_sender.ts";
 import { USER_AGENT } from "../load_identity.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
@@ -2753,6 +2759,20 @@ export const serveCommand = new Command()
       dispatchEnvAllow,
     });
     const verifyOnEnroll = merged.verifyOnEnroll;
+    // The pass a worker without a credential enrolls on, kept fresh for as
+    // long as this serve runs (design/surfaces/auth-gate.md, "Remote
+    // workers").
+    const gateSession = currentAuthGateSession();
+    const gatePassKeeper = gateSession
+      ? createGatePassKeeper(
+        gateSession.deps,
+        gateSession.outcome.kind === "pass"
+          ? gateSession.outcome.handoff
+          : undefined,
+      )
+      : undefined;
+    // Armed detached so the keeper's checks never join swamp.cli's trace.
+    runDetached(() => gatePassKeeper?.start(GATE_PASS_KEEPER_INTERVAL_MS));
     const workerGateway = new WorkerGateway({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -2765,6 +2785,10 @@ export const serveCommand = new Command()
       onWorkerDraining: (worker) =>
         dispatchService.notifyWorkerDraining(worker),
       verifyOnEnroll,
+      gatePass: () => {
+        const pass = gatePassKeeper?.current();
+        return pass ? formatOrchestratorGatePass(pass) : undefined;
+      },
       verifyWorker: verifyOnEnroll
         ? async (workerName) => {
           const probe = await dispatchFleetProbe(
@@ -6613,6 +6637,7 @@ export const serveCommand = new Command()
       if (telemetryFlushService) {
         await telemetryFlushService.stop();
       }
+      await gatePassKeeper?.stop();
       if (connectionCtx.auditEmitter) {
         emitSystemAuditEvent(connectionCtx, "instance.stop");
         await connectionCtx.auditEmitter.flush();

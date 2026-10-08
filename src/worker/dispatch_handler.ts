@@ -101,6 +101,12 @@ export interface DispatchHandlerOptions {
   onDispatch?: (event: WorkerDispatchEvent) => void;
   /** Override the runner command + args (test seam). */
   runnerCommand?: { cmd: string; args: string[] };
+  /**
+   * Settles once a worker without a credential has been admitted through
+   * the auth gate on its orchestrator's pass. A dispatch that arrives first
+   * waits for it, and fails if admission does (the worker then stops).
+   */
+  admitted?: Promise<void>;
 }
 
 export interface DispatchHandlerHandle {
@@ -133,6 +139,7 @@ export function registerDispatchHandler(
     }
     activeRunners++;
     try {
+      await options.admitted;
       return await handleDispatch(rawParams, ctx, options);
     } finally {
       activeRunners--;

@@ -34,6 +34,7 @@ import { join } from "@std/path";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   type EnrollResult,
+  GATE_PASS_UNAVAILABLE,
   PERMANENT_ENROLLMENT_ERROR_CODES,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
@@ -47,6 +48,7 @@ import {
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { AuthGateBlockedError } from "../domain/auth/auth_gate_blocked_error.ts";
 import {
   createTlsHttpClient,
   diagnoseTlsMessage,
@@ -126,6 +128,15 @@ export interface RunWorkerOptions {
   createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   /** Test seam: override the runner command for the dispatch child process. */
   runnerCommand?: { cmd: string; args: string[] };
+  /**
+   * Set for a worker without a swamp-club credential, which passes the auth
+   * gate on its orchestrator's pass (design/surfaces/auth-gate.md, "Remote
+   * workers"). Called with the pass from the first successful enrollment, or
+   * with undefined when the orchestrator has none; it throws the gate's
+   * block error to stop the worker. Admission happens once per process: a
+   * reconnect does not repeat it.
+   */
+  admitGatePass?: (gatePass: string | undefined) => Promise<void>;
 }
 
 interface SessionState {
@@ -143,6 +154,7 @@ export async function runWorker(
 ): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
   const session: SessionState = { credential: "", expiresAtMs: 0 };
+  const gate: GateState = { admitted: options.admitGatePass === undefined };
   const dataPlaneUrl = options.dataPlaneUrl ??
     dataPlaneUrlFromConnectUrl(options.url);
   const cacheDir = options.cacheDir ??
@@ -222,6 +234,7 @@ export async function runWorker(
         instanceUuid,
         machineId,
         session,
+        gate,
         dataPlaneUrl,
         cacheDirPath: join(cacheDir, "bundles"),
         concurrency,
@@ -324,6 +337,7 @@ async function loadOrCreateMachineId(cacheDir: string): Promise<string> {
  * a retryable failure into a permanent stop.
  */
 function isPermanentEnrollmentFailure(error: unknown): boolean {
+  if (error instanceof AuthGateBlockedError) return true;
   if (error instanceof RpcError && error.code !== "handler_failed") {
     return PERMANENT_ENROLLMENT_ERROR_CODES.has(error.code);
   }
@@ -353,12 +367,18 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/** Whether this process has passed the auth gate (see `admitGatePass`). */
+interface GateState {
+  admitted: boolean;
+}
+
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
   httpClient: Deno.HttpClient;
   instanceUuid: string;
   machineId: string;
   session: SessionState;
+  gate: GateState;
   dataPlaneUrl: string;
   cacheDirPath: string;
   concurrency: number;
@@ -373,7 +393,7 @@ interface ConnectOnceArgs {
 
 /** One socket lifetime: connect, enroll, serve dispatches until close. */
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
-  const { options, instanceUuid, machineId, session } = args;
+  const { options, instanceUuid, machineId, session, gate } = args;
   return new Promise<string>((resolve, reject) => {
     const defaultCreate = (url: string, headers?: Record<string, string>) => {
       const opts: Record<string, unknown> = { client: args.httpClient };
@@ -449,10 +469,18 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         arch: Deno.build.arch,
         labels: options.labels ?? {},
         resourceLimits: { capacity: args.concurrency },
+        ...(gate.admitted ? {} : { needsGatePass: true }),
       }).then((result) => {
-        enrolled = true;
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
+        // The orchestrator counts the worker as ready once enrollment
+        // returns, so the handler is registered now; a dispatch that
+        // arrives before admission waits for it.
+        const admitted = gate.admitted || !options.admitGatePass
+          ? Promise.resolve()
+          : options.admitGatePass(result.gatePass).then(() => {
+            gate.admitted = true;
+          });
         const handle = registerDispatchHandler({
           channel,
           sessionCredential: () => session.credential,
@@ -461,6 +489,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           caCerts: options.caCerts,
           capacity: args.concurrency,
           runnerCommand: options.runnerCommand,
+          admitted,
           onDispatch: (event) => {
             if (event.kind === "dispatch_started") {
               args.onDispatchStarted();
@@ -470,22 +499,41 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
             options.onStatus?.(event);
           },
         });
-        args.onDispatchHandlerRegistered(
-          handle,
-          channel,
-          () => finish("drained"),
-        );
-        scheduleRefresh();
-        logger.info("Enrolled as {workerId}", { workerId: result.workerId });
-        options.onStatus?.({
-          kind: "enrolled",
-          workerId: result.workerId,
-          reconnect: false,
+        return admitted.then(() => {
+          // The socket closed while admission was pending: the reconnect
+          // loop owns what happens next.
+          if (settled) return;
+          enrolled = true;
+          args.onDispatchHandlerRegistered(
+            handle,
+            channel,
+            () => finish("drained"),
+          );
+          scheduleRefresh();
+          logger.info("Enrolled as {workerId}", { workerId: result.workerId });
+          options.onStatus?.({
+            kind: "enrolled",
+            workerId: result.workerId,
+            reconnect: false,
+          });
         });
-      }).catch((error: unknown) => {
+      }).catch(async (error: unknown) => {
+        // An orchestrator with no pass to give refuses before redeeming the
+        // token; admission turns that into the gate's own block.
+        let failure = error;
+        if (
+          options.admitGatePass && error instanceof RpcError &&
+          error.code === GATE_PASS_UNAVAILABLE
+        ) {
+          try {
+            await options.admitGatePass(undefined);
+          } catch (blocked) {
+            failure = blocked;
+          }
+        }
         finish(
           "enrollment failed",
-          error instanceof Error ? error : new Error(String(error)),
+          failure instanceof Error ? failure : new Error(String(failure)),
         );
       });
     };

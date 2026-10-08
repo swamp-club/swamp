@@ -203,11 +203,13 @@ import {
   authGateBlockedError,
   type AuthGateOutcome,
   createAuthGateDeps,
-  type GateHandoff,
-  nestedGatePassValue,
   runAuthGate,
 } from "./auth_gate.ts";
-import { NESTED_GATE_PASS_ENV } from "../domain/auth/nested_gate_pass.ts";
+import {
+  beginAuthGateSession,
+  endAuthGateSession,
+  publishNestedGatePass,
+} from "./auth_gate_session.ts";
 import { processLockHolderMarker } from "../domain/datastore/lock_holder_marker.ts";
 import { authGateTiming } from "./auth_gate_exemptions.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
@@ -2059,6 +2061,7 @@ function endInvocation(): void {
   clearActiveTelemetryService();
   clearActiveTelemetryContext();
   setApiKeyFileOverride(undefined);
+  endAuthGateSession();
 }
 
 /**
@@ -2130,22 +2133,6 @@ async function gateWhoamiOr(
   }
   const client = new SwampClubClient(serverUrl, await loadIdentity());
   return await client.whoami(apiKey, AbortSignal.timeout(10_000));
-}
-
-/**
- * Hand this run's pass down to any swamp it starts (design/surfaces/
- * auth-gate.md, "Nested runs"), through the process env as
- * SWAMP_LOCK_HOLDER_PID is (see `nestedGatePassValue`). A run with nothing
- * to hand down clears any pass it inherited. Fixed for the life of the
- * process: the gate runs once.
- */
-function publishNestedGatePass(handoff: GateHandoff | undefined): void {
-  const value = nestedGatePassValue(handoff, Deno.pid);
-  if (value) {
-    Deno.env.set(NESTED_GATE_PASS_ENV, value);
-  } else {
-    Deno.env.delete(NESTED_GATE_PASS_ENV);
-  }
 }
 
 /**
@@ -2317,7 +2304,7 @@ async function runInvocation(
   const gateTiming = commandTree ? authGateTiming(commandTree, args) : "gated";
   let gateOutcome: AuthGateOutcome | undefined;
   if (gateTiming === "exempt") telemetryCtx?.service.setAuthMode("none");
-  if (gateTiming === "gated") {
+  if (gateTiming !== "exempt") {
     // Ends the run before the outer try is entered: records the failure the
     // same way the outer catch would (best effort), then clears per-run state.
     const endGatedRun = async (error: Error): Promise<void> => {
@@ -2340,13 +2327,13 @@ async function runInvocation(
         endInvocation();
       }
     };
+    const gateDeps = createAuthGateDeps({
+      liveChecks: !hookMode,
+      canWrite: configDirOwned,
+    });
+    const gateTime = gateDeps.now();
     try {
-      gateOutcome = await runAuthGate(
-        createAuthGateDeps({
-          liveChecks: !hookMode,
-          canWrite: configDirOwned,
-        }),
-      );
+      gateOutcome = await runAuthGate(gateDeps);
     } catch (error) {
       // A misconfigured key source or an unreadable auth.json. Hook mode
       // treats it as a block; otherwise it is reported as itself.
@@ -2358,14 +2345,32 @@ async function runInvocation(
       }
       gateOutcome = { kind: "block", reason: { kind: "no_credential" } };
     }
-    if (gateOutcome.kind === "block") {
+    // A `worker connect` with no credential may pass on the serve that
+    // enrolls it instead (design/surfaces/auth-gate.md, "Remote workers"):
+    // its `no_credential` block waits for enrollment, where the command
+    // checks the serve's pass before it takes any work. Every other block
+    // stands.
+    const deferred = gateOutcome.kind === "block" &&
+      gateTiming === "enrollment" &&
+      gateOutcome.reason.kind === "no_credential";
+    if (gateOutcome.kind === "block" && !deferred) {
       const error = authGateBlockedError(gateOutcome.reason);
       await endGatedRun(error);
       if (hookMode) return;
       throw error;
     }
-    telemetryCtx?.service.setAuthMode(gateOutcome.authMode);
-    publishNestedGatePass(gateOutcome.handoff);
+    telemetryCtx?.service.setAuthMode(
+      gateOutcome.kind === "pass" ? gateOutcome.authMode : "none",
+    );
+    publishNestedGatePass(
+      gateOutcome.kind === "pass" ? gateOutcome.handoff : undefined,
+    );
+    beginAuthGateSession({
+      deps: gateDeps,
+      outcome: gateOutcome,
+      gateTime,
+      deferred,
+    });
   }
 
   // Before any command can drain or take per-model locks: hand this
