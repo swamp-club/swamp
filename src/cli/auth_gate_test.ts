@@ -974,7 +974,11 @@ Deno.test("admitOrchestratorPass: no pass, a malformed pass or a nested pass blo
       ]
     ) {
       const admission = await admitOrchestratorPass(h.repo, value, NOW);
-      assertEquals(admission.kind, "block", String(value));
+      assert(admission.kind === "block", String(value));
+      assertEquals(
+        admission.cause,
+        value === undefined ? "no_pass" : "rejected_pass",
+      );
     }
   });
 });
@@ -1004,12 +1008,24 @@ Deno.test("admitOrchestratorPass: a forged signature, no exp, or an exp at or be
 });
 
 Deno.test("orchestratorBlockedError: reports no_credential with the orchestrator's reason", () => {
-  const error = orchestratorBlockedError("the orchestrator sent no pass");
+  const error = orchestratorBlockedError(
+    "no_pass",
+    "the orchestrator sent no pass",
+  );
   assertEquals(error.reason, { kind: "no_credential" });
   assertEquals(error.code, "auth_gate_blocked");
   assertEquals(error.temporary, false);
   assertStringIncludes(error.message, "the orchestrator sent no pass");
   assertStringIncludes(error.message, "SWAMP_API_KEY_FILE");
+});
+
+Deno.test("orchestratorBlockedError: names the fix for each cause", () => {
+  const noPass = orchestratorBlockedError("no_pass", "x").message;
+  assertStringIncludes(noPass, "predate worker gate passes");
+  assertStringIncludes(noPass, "its own");
+  const rejected = orchestratorBlockedError("rejected_pass", "x").message;
+  assertStringIncludes(rejected, "swamp update");
+  assertEquals(rejected.includes("predate"), false);
 });
 
 Deno.test("runProofRefresh: returns what it heard and the fresh proof", async () => {

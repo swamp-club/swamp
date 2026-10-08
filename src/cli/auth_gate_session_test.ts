@@ -61,7 +61,11 @@ async function withSession(
     await fn(repo);
   } finally {
     endAuthGateSession();
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    await Deno.remove(dir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
   }
 }
 

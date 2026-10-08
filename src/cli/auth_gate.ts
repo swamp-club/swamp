@@ -512,6 +512,12 @@ async function verifyWithTrustedKeys(
   });
 }
 
+/**
+ * Why a worker without a credential was not admitted: the orchestrator sent
+ * no pass, or its pass did not check out here.
+ */
+export type OrchestratorBlockCause = "no_pass" | "rejected_pass";
+
 /** What a worker without a credential made of its orchestrator's pass. */
 export type OrchestratorAdmission =
   | {
@@ -519,7 +525,11 @@ export type OrchestratorAdmission =
     /** The proof the worker hands down, naming the worker itself. */
     readonly handoff: GateHandoff;
   }
-  | { readonly kind: "block"; readonly detail: string };
+  | {
+    readonly kind: "block";
+    readonly cause: OrchestratorBlockCause;
+    readonly detail: string;
+  };
 
 /**
  * Admit a worker that has no credential on the pass the serve enrolling it
@@ -538,26 +548,33 @@ export async function admitOrchestratorPass(
   if (passValue === undefined) {
     return {
       kind: "block",
-      detail: "the orchestrator sent no pass (it predates this, or it passed " +
-        "the gate without a signed proof of its own)",
+      cause: "no_pass",
+      detail: "the orchestrator sent no pass",
     };
   }
   const pass = parseOrchestratorGatePass(passValue);
   if (!pass) {
-    return { kind: "block", detail: "the orchestrator's pass is malformed" };
+    return {
+      kind: "block",
+      cause: "rejected_pass",
+      detail: "the orchestrator's pass is malformed",
+    };
   }
   const signature = await verifyWithTrustedKeys(repo, pass, gateTime);
   if (!signature.valid) {
     return {
       kind: "block",
-      detail: `the orchestrator's pass failed its check: ${signature.reason}`,
+      cause: "rejected_pass",
+      detail: "the orchestrator's pass is not signed by a swamp-club key " +
+        "this worker trusts",
     };
   }
   if (!admitsNestedRun(signature.payload, gateTime)) {
     return {
       kind: "block",
-      detail: "the orchestrator's pass has no exp, or had expired when this " +
-        "worker started",
+      cause: "rejected_pass",
+      detail: "the orchestrator's pass had expired when this worker reached " +
+        "the gate",
     };
   }
   return {
@@ -883,8 +900,21 @@ export function blockMessage(reason: BlockReason): string {
  * not count.
  */
 export function orchestratorBlockedError(
+  cause: OrchestratorBlockCause,
   detail: string,
 ): AuthGateBlockedError {
+  const remedy = cause === "no_pass"
+    ? [
+      "  Its swamp may predate worker gate passes (upgrade it), or it passed",
+      "  the gate without a signed proof of its own (run it on its own",
+      "  swamp-club key, online). Or give the worker a credential",
+      `  (SWAMP_API_KEY_FILE). See ${ACCOUNT_REQUIREMENT_URL}`,
+    ]
+    : [
+      "  Run `swamp update` on the worker and the orchestrator so both trust",
+      "  the same swamp-club keys, or give the worker a credential",
+      `  (SWAMP_API_KEY_FILE). See ${ACCOUNT_REQUIREMENT_URL}`,
+    ];
   return new AuthGateBlockedError(
     { kind: "no_credential" },
     [
@@ -893,8 +923,7 @@ export function orchestratorBlockedError(
       "  This worker has no credential of its own, and the orchestrator it",
       `  enrolled with did not vouch for it: ${detail}.`,
       "",
-      "  Upgrade swamp on the orchestrator, or give the worker a credential",
-      `  (SWAMP_API_KEY_FILE). See ${ACCOUNT_REQUIREMENT_URL}`,
+      ...remedy,
     ].join("\n"),
   );
 }

@@ -235,6 +235,13 @@ Deno.test("WorkerGateway: enrollment hands the worker this serve's gate pass", a
   assertEquals(result.gatePass, "cHJvb2Y.c2ln");
 });
 
+Deno.test("WorkerGateway: a worker that does not ask for the pass is not sent it", async () => {
+  const h = createHarness({ gatePass: () => "cHJvb2Y.c2ln" });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  assertEquals("gatePass" in result, false);
+});
+
 Deno.test("WorkerGateway: a serve without a pass omits it, and enrolls workers that do not need one", async () => {
   for (const gatePass of [undefined, () => undefined]) {
     const h = createHarness({ gatePass });

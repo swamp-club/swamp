@@ -137,17 +137,17 @@ export function parseRpcFrame(data: unknown): RpcFrame | string | null {
 }
 
 /**
- * Enrollment rejection codes that retrying cannot fix: the token is dead or
- * malformed, or the binary speaks another protocol version. A worker stops
- * on these; every other coded rejection is retried.
- */
-/**
  * The enrollment error an orchestrator with no auth gate pass returns to a
  * worker that asked for one (`needsGatePass`). The worker reports it as the
  * gate's block.
  */
 export const GATE_PASS_UNAVAILABLE = "gate_pass_unavailable";
 
+/**
+ * Enrollment rejection codes that retrying cannot fix: the token is dead or
+ * malformed, or the binary speaks another protocol version. A worker stops
+ * on these; every other coded rejection is retried.
+ */
 export const PERMANENT_ENROLLMENT_ERROR_CODES: ReadonlySet<string> = new Set([
   "protocol_mismatch",
   "invalid_token",
@@ -239,9 +239,9 @@ export interface EnrollResult {
   protocolVersion: number;
   /**
    * The orchestrator's auth gate pass, `<base64url proof>.<signature>`: the
-   * swamp-club signed proof its own pass rests on. A worker without a
-   * credential passes the gate on it. Absent when the orchestrator has none,
-   * or predates it.
+   * swamp-club signed proof its own pass rests on. Sent only to a worker that
+   * set `needsGatePass`, which passes the gate on it. Absent otherwise, and
+   * from an orchestrator that predates it.
    */
   gatePass?: string;
 }

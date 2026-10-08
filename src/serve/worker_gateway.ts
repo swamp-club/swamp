@@ -599,10 +599,13 @@ export class WorkerGateway {
     }
     const { name, secret } = split;
 
-    // Read once, so the refusal below and the reply agree. A worker that
-    // needs a pass is refused before the token is redeemed, so it spends no
-    // enrollment.
-    const gatePass = this.#options.gatePass?.();
+    // Only a worker that asks gets the pass, which carries the serve key
+    // holder's proof payload. Read once, so the refusal below and the reply
+    // agree. A worker that needs a pass is refused before the token is
+    // redeemed, so it spends no enrollment.
+    const gatePass = params.needsGatePass
+      ? this.#options.gatePass?.()
+      : undefined;
     if (params.needsGatePass && gatePass === undefined) {
       throw new RpcError({
         code: GATE_PASS_UNAVAILABLE,

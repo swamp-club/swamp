@@ -271,7 +271,13 @@ export async function runWorker(
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
       if (isPermanentEnrollmentFailure(error)) {
-        options.onStatus?.({ kind: "stopped", reason: raw });
+        // The gate's block is reported in full once, by the caller.
+        options.onStatus?.({
+          kind: "stopped",
+          reason: error instanceof AuthGateBlockedError
+            ? "auth gate blocked"
+            : raw,
+        });
         throw error;
       }
       const message = diagnoseTlsMessage(raw) ?? raw;
@@ -370,6 +376,11 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 /** Whether this process has passed the auth gate (see `admitGatePass`). */
 interface GateState {
   admitted: boolean;
+  /**
+   * The admission check in flight, shared by a reconnect that enrolls while
+   * it runs; cleared when it fails, so the next enrollment checks again.
+   */
+  pending?: Promise<void>;
 }
 
 interface ConnectOnceArgs {
@@ -476,10 +487,14 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         // The orchestrator counts the worker as ready once enrollment
         // returns, so the handler is registered now; a dispatch that
         // arrives before admission waits for it.
-        const admitted = gate.admitted || !options.admitGatePass
+        const admitGatePass = options.admitGatePass;
+        const admitted = gate.admitted || !admitGatePass
           ? Promise.resolve()
-          : options.admitGatePass(result.gatePass).then(() => {
+          : gate.pending ??= admitGatePass(result.gatePass).then(() => {
             gate.admitted = true;
+          }, (error: unknown) => {
+            gate.pending = undefined;
+            throw error;
           });
         const handle = registerDispatchHandler({
           channel,

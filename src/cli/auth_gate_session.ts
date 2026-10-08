@@ -35,6 +35,9 @@ import {
   orchestratorBlockedError,
 } from "./auth_gate.ts";
 import { getActiveTelemetryService } from "./telemetry_integration.ts";
+import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["auth", "gate"]);
 
 export interface AuthGateSession {
   readonly deps: AuthGateDeps;
@@ -101,9 +104,10 @@ export function deferredWorkerAdmission(
       current.gateTime,
     );
     if (admission.kind === "block") {
-      throw orchestratorBlockedError(admission.detail);
+      throw orchestratorBlockedError(admission.cause, admission.detail);
     }
     getActiveTelemetryService()?.setAuthMode("verified");
     publish(admission.handoff);
+    logger.info("Passed the auth gate on the orchestrator's pass");
   };
 }

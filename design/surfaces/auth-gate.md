@@ -224,13 +224,13 @@ any work. Any other block, such as a rejected key or swamp-club failing for a
 day, still ends the run before the command starts. A worker with its own
 credential follows rules 1 to 5 and ignores the serve's pass.
 
-The serve sends `gatePass` in its `enrolled` reply: the proof its own pass
-rests on, the same one it hands its nested runs, encoded as
-`<base64url proof>.<signature>` with no pid. A serve that passed without such
-a proof (offline on its signin token alone, or fail-open) has none. A worker
-without a credential sets `needsGatePass` in its `enroll` request. A serve with
-no pass then refuses with `gate_pass_unavailable` before it redeems the token,
-so the worker uses up no enrollment.
+A worker without a credential sets `needsGatePass` in its `enroll` request,
+and only such a worker gets `gatePass` in the `enrolled` reply. The pass is the
+proof the serve's own pass rests on, the same one it hands its nested runs,
+encoded as `<base64url proof>.<signature>` with no pid. A serve that passed
+without such a proof (offline on its signin token alone, or fail-open) has
+none. It then refuses with `gate_pass_unavailable` before it redeems the
+token, so the worker uses up no enrollment.
 
 The worker accepts the pass when both checks hold:
 
@@ -243,13 +243,16 @@ The worker accepts the pass when both checks hold:
 The serve admitting the worker, which redeemed its enrollment token and, on an
 authenticated serve, checked its server token, takes the place of the nested
 pass's ancestry check. A worker that fails either check exits with
-`auth_gate_blocked` and reason `no_credential`, and the message says why. It
-takes no dispatch. A dispatch that arrives between enrollment and the check
+`auth_gate_blocked` and reason `no_credential`. The message says why and
+names the fix: for no pass, upgrade the serve or run it online on its own key;
+for a pass that fails its check, `swamp update` both sides. It takes no
+dispatch. A dispatch that arrives between enrollment and the check
 waits for it. A worker that passes is recorded as `verified`. It publishes
 `SWAMP_NESTED_GATE_PASS` under its own pid, so the `worker exec-dispatch`
 runners it starts, and any `swamp` their shell steps run, pass as nested runs.
-The check runs once per process: a reconnect does not repeat it, just as a
-serve and a worker are not re-gated while they run.
+The check runs once per process: a reconnect does not repeat it (one that
+enrolls while the check runs waits for it), just as a serve and a worker are
+not re-gated while they run.
 
 A serve passes on a proof that expires 14 days after it was issued. Its weekly
 refresh would otherwise run only at exit. So a serve that passed on its own
@@ -262,9 +265,12 @@ then on the serve refuses workers that need one. Its own nested runs keep
 the pass it started with. A serve admitted on an inherited nested pass has no
 key to refresh with and hands that pass on.
 
-Every enrolled worker receives the serve key holder's proof payload (`sub`,
-`org`, `scopes`, `fpr`). That is what a nested child receives too. It carries
-no key and is not a credential.
+Every worker that asks for the pass receives the serve key holder's proof
+payload (`sub`, `org`, `scopes`, `fpr`). That is what a nested child receives
+too. It carries no key and is not a credential. The refusal comes before the
+token is checked, so anyone who can open the control socket learns whether the
+serve has a pass to give; on an authenticated serve that already needs the
+server token.
 
 A worker without a key cannot run commands that call swamp-club itself, such
 as `extension push` or `issue`, the same trade-off as a nested run. An older

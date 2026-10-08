@@ -725,7 +725,11 @@ async function keylessWorker(
       return { published, enrolled };
     });
   } finally {
-    await Deno.remove(workerDir, { recursive: true }).catch(() => {});
+    await Deno.remove(workerDir, { recursive: true }).catch(
+      Deno.build.os === "windows" ? () => {} : (e) => {
+        throw e;
+      },
+    );
   }
 }
 

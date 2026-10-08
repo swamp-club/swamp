@@ -620,6 +620,62 @@ Deno.test("runWorker: admission that settles after the socket closed does not re
   release();
   await pending;
   // One macrotask turn drains every microtask the admission chain queues.
+  // waitFor cannot express this: the assertion is that nothing happens.
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   assertEquals(events.some((e) => e.kind === "enrolled"), false);
+});
+
+Deno.test("runWorker: a reconnect while admission is pending shares the check", async () => {
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => release = resolve);
+  let admitCalls = 0;
+  let enrollCount = 0;
+  const sockets: FakeSocket[] = [];
+  const controller = new AbortController();
+  let secondEnroll: () => void = () => {};
+  const secondEnrollSeen = new Promise<void>((r) => secondEnroll = r);
+  let firstAdmit: () => void = () => {};
+  const firstAdmitSeen = new Promise<void>((r) => firstAdmit = r);
+
+  const done = runWorker({
+    url: "ws://test:1",
+    token: "ci.s",
+    swampVersion: "1.2.3",
+    signal: controller.signal,
+    admitGatePass: () => {
+      admitCalls++;
+      firstAdmit();
+      return pending;
+    },
+    onStatus: (event) => {
+      if (event.kind === "enrolled") {
+        controller.abort();
+        queueMicrotask(() => sockets.at(-1)!.drop());
+      }
+    },
+    createSocket: () => {
+      const socket = new FakeSocket((channel) => {
+        channel.register(RemoteMethod.enroll, () => {
+          enrollCount++;
+          if (enrollCount === 2) secondEnroll();
+          return Promise.resolve({
+            ...enrollResult("ci"),
+            gatePass: "cHJvb2Y.c2ln",
+          });
+        });
+      });
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  await firstAdmitSeen;
+  sockets[0].drop();
+  await secondEnrollSeen;
+  // Let the second enrolled reply arrive while the first check still runs.
+  // waitFor cannot express this: the assertion is that no second check starts.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  release();
+  await done;
+  assertEquals(admitCalls, 1);
 });
