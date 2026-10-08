@@ -428,7 +428,17 @@ type that names a resource, and
 | `write`   | Create or update models, definitions, data             |
 | `approve` | Approve or reject a workflow manual-approval gate      |
 | `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else |
-| `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored), and any operation on a control-plane record |
+| `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored; see below), and any operation on a control-plane record |
+
+**Restricted model types**: a model whose stored type is listed in
+`--restricted-model-types` needs `admin` on `access:*` to be created, run,
+edited (including a rename or retag) or deleted, by id or by name, for its
+data to be deleted or renamed, and for a workflow step that runs it to be
+added or changed (swamp-club#3129, swamp-club#3131). Reading it stays open to
+`read`. `data.gc`, `data.prune` and `run.gc` are unchanged: they apply
+retention across the repository rather than acting on one model. Data a
+restricted model's arguments read from other models is not covered
+(swamp-club#3171).
 
 **`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
 checks, so existing `run` grants can still approve. To allow approval without
@@ -965,7 +975,13 @@ it is held to the same check; `model` used any other way (aliased with
 resolve to any model, restricted and control-plane ones included, which the
 engine does not gate, so it needs `admin`; a computed nested workflow needs
 `run` on every workflow. Steps already stored are not re-checked, and neither
-is a run, so users running a workflow an admin wrote are unaffected. An edit
+is a run, so users running a workflow an admin wrote are unaffected. The
+exception is a stored step the edit changes — its inputs, method or
+`dependsOn`, or its name or job — that runs a restricted or control-plane
+model, or a model it computes: what the step holds is what that model runs
+with, so the change needs `admin` (swamp-club#3131). Removing a step, a retag,
+or a change to the workflow's input defaults or a job's `dependsOn` does not,
+since a caller with `run` on the workflow already chooses its inputs. An edit
 that changes the workflow's inputs or a step's `forEach` re-checks stored
 computed targets that read `inputs` or `self`, since those are what can
 retarget them; a retag or any other edit does not. Such a target placed in a
