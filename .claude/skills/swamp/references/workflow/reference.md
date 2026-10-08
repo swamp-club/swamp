@@ -872,7 +872,7 @@ it. Use it when a step needs a value, not a yes or no:
   allowFailure: true # a timeout then does not fail the run
   task:
     type: wait_for_signal
-    timeout: 86400 # Required: seconds the wait stays open (max 31536000)
+    timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -921,7 +921,9 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   `__proto__`, `constructor` and `prototype` are refused at any depth.
 - `resume` refuses while a wait is open. Past the deadline, a signal is refused
   and the next `resume` fails the step with `wait_timeout`, so a `failed`
-  dependent runs. `workflow waits` flags such a wait as expired.
+  dependent runs. `workflow waits` flags such a wait as expired. Under serve
+  with auto-resume on, the timeout is applied and the run resumed without that
+  manual `resume`, within `--continuation-sweep-interval` of the deadline.
 - Without `swamp serve`, resume is manual. Under serve with auto-resume on (see
   below), the run resumes by itself once every wait on it has an outcome,
   whether the signal came through serve or from a local command.

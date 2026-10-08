@@ -490,6 +490,7 @@ decided and every `wait_for_signal` step on it has an outcome.
 | `--auto-resume`                 | `false` | Auto-resume workflows that declare no inputs         |
 | `SWAMP_AUTO_RESUME`             | `false` | Env var equivalent (serve.yaml: `auto-resume: true`) |
 | `--continuation-sweep-interval` | `30s`   | How often serve looks for runs to resume; `0` = off  |
+| `--max-signal-wait-timeout`     | `1y`    | Longest `wait_for_signal` timeout this server allows |
 
 A workflow's own `autoResume: true | false` always wins. A workflow that
 declares inputs is never covered by the server flag and must set
@@ -510,11 +511,20 @@ runs signalled by a local command. Things to know:
   when an approval is what settles it.
 - A `signal` or `approve` grant releases the rest of the run. Nothing else is
   authorized at the resume, and no inputs can be supplied.
-- A run with a wait still open, or past its deadline and not yet settled, is not
-  resumed. Neither is a parent waiting on a nested run, except right after its
+- A run with a wait still open is not resumed. A wait past its deadline is
+  settled as timed out by the sweep and the run resumed, so the step fails with
+  `wait_timeout` and its `failed` dependents run with no client action. This
+  follows the auto-resume policy, needs the sweep to be running, and reads the
+  server's own clock: keep serve hosts' clocks in sync. An approval gate past
+  its timeout is not failed this way.
+- `--max-signal-wait-timeout` (env `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT`, e.g. `7d`)
+  fails a step that asks for a longer wait when it would start waiting. Local
+  runs and `workflow validate` do not apply it; waits already open keep their
+  deadline.
+- A parent waiting on a nested run is not resumed either, except right after its
   child was continued by a caller who may `signal` (or `approve`) the parent. A
-  parent whose child the sweep continued stays suspended; serve logs the
-  `swamp workflow resume` command for it.
+  parent whose child the sweep continued, or timed out, stays suspended; serve
+  logs the `swamp workflow resume` command for it.
 - A run reset by `swamp workflow recover` is never resumed by serve, with no
   event: run `swamp workflow resume` as recover says. A run recovered before the
   upgrade is not protected this way.

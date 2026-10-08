@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
   autoResumeAfterApproval,
@@ -41,6 +41,7 @@ import {
   InMemoryContinuationClaimStore,
 } from "../domain/workflows/continuation_claim_test_helpers.ts";
 import { SignalWait } from "../domain/workflows/signal_wait.ts";
+import { registrationOf } from "../domain/workflows/signal_wait_records.ts";
 import {
   acceptedOutcomeFor,
   inMemorySignalWaits,
@@ -1020,6 +1021,99 @@ Deno.test("continueSettledRun: leaves a run alone until every wait has an outcom
   assertEquals(audit[0].action, "workflow.auto_resume");
   assertStringIncludes(audit[0].detail ?? "", "cause=sweep");
   await registry.registered[0].completion;
+});
+
+/** Registers the run's wait as the executor does when the step starts waiting. */
+async function registerWait(
+  waits: InMemorySignalWaitStore,
+  run: WorkflowRun,
+  wait: SignalWait,
+): Promise<void> {
+  await waits.register(
+    registrationOf(
+      {
+        workflowId: run.workflowId,
+        workflowName: run.workflowName,
+        runId: run.id,
+        jobName: "main",
+        stepName: "review",
+      },
+      wait,
+      new Date(),
+    ),
+  );
+}
+
+Deno.test("continueSettledRun: settles a registered wait past its deadline as timed out, and launches the run", async () => {
+  const workflow = waitingWorkflow();
+  const { run, wait } = makeWaitingRun(workflow);
+  const { ctx, registry, audit, waits } = continuationHarness([workflow], [
+    run,
+  ]);
+  await registerWait(waits, run, wait);
+  const target = { workflowId: workflow.id, runId: run.id };
+  const deadline = wait.deadline.getTime();
+
+  assertEquals(
+    await continueSettledRun(ctx, target, SWEEP, () => deadline),
+    false,
+  );
+  assertEquals(waits.outcomes.size, 0);
+  assertEquals(audit, []);
+
+  assertEquals(
+    await continueSettledRun(ctx, target, SWEEP, () => deadline + 1),
+    true,
+  );
+  const outcome = await waits.findOutcome(wait.id);
+  assert(outcome.kind === "found");
+  assertEquals(outcome.record.kind, "timed_out");
+  assertEquals(registry.registered.map((r) => r.runId), [run.id]);
+  assertEquals(audit[0].action, "workflow.auto_resume");
+  assertStringIncludes(audit[0].detail ?? "", "cause=sweep waitsTimedOut=1");
+  await registry.registered[0].completion;
+});
+
+Deno.test("continueSettledRun: an expired wait is left alone when its registration is gone or its workflow is not resumed by serve", async () => {
+  const unregistered = waitingWorkflow();
+  const policyOff = Workflow.create({
+    name: "manual",
+    autoResume: false,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, WAIT_SCHEMA),
+          }),
+        ],
+      }),
+    ],
+  });
+  const gone = makeWaitingRun(unregistered);
+  const manual = makeWaitingRun(policyOff);
+  const { ctx, registry, audit, waits } = continuationHarness(
+    [unregistered, policyOff],
+    [gone.run, manual.run],
+  );
+  await registerWait(waits, manual.run, manual.wait);
+  const late = () => gone.wait.deadline.getTime() + 60_000;
+
+  for (const { run } of [gone, manual]) {
+    assertEquals(
+      await continueSettledRun(
+        ctx,
+        { workflowId: run.workflowId, runId: run.id },
+        SWEEP,
+        late,
+      ),
+      false,
+    );
+  }
+  assertEquals(waits.outcomes.size, 0);
+  assertEquals(registry.registered.length, 0);
+  assertEquals(audit, []);
 });
 
 Deno.test("continueSettledRun: launches an approved run whose auto-resume launch was lost", async () => {

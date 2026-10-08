@@ -28,6 +28,10 @@
  * boot and then on an interval, and each pass offers every suspended run
  * this instance has a record of to {@link continueSettledRun}, which decides
  * and launches through the run's continuation claim.
+ *
+ * It is also what notices a deadline under serve (swamp-club#3109): a run
+ * held back only by a wait for a signal that is past its deadline has that
+ * wait settled as timed out, and continues.
  */
 
 import { runDetached } from "../infrastructure/tracing/mod.ts";
@@ -60,7 +64,12 @@ export interface ContinuationSweepResult {
  */
 export async function sweepContinuations(
   ctx: ConnectionContext,
-  options: { takeover: boolean; isStopping?: () => boolean },
+  options: {
+    takeover: boolean;
+    isStopping?: () => boolean;
+    /** The clock deadlines and backoffs are read against, for tests. */
+    now?: () => number;
+  },
 ): Promise<ContinuationSweepResult> {
   let examined = 0;
   let launched = 0;
@@ -88,6 +97,7 @@ export async function sweepContinuations(
           ctx,
           { workflowId: workflow.id, runId: summary.id },
           { kind: "sweep", principalId: null, takeover: options.takeover },
+          options.now,
         );
         if (started) launched++;
       } catch (error) {

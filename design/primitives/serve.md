@@ -90,6 +90,7 @@ it the default file is optional.
 | `--shutdown-drain-timeout` | `SWAMP_SHUTDOWN_DRAIN_TIMEOUT` | 30 s | How long shutdown waits for in-flight runs; `0` aborts at once; in serve.yaml quote the value (`"0"`) |
 | `--datastore-poll-interval` | `SWAMP_DATASTORE_POLL_INTERVAL` | 30 s | Config, access and runtime pollers; min 1 s; no effect without a remote datastore or managedConfig |
 | `--continuation-sweep-interval` | `SWAMP_CONTINUATION_SWEEP_INTERVAL` | 30 s | How often serve looks for suspended runs that need no further decision and continues them; `0` disables; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
+| `--max-signal-wait-timeout` | `SWAMP_MAX_SIGNAL_WAIT_TIMEOUT` | 1 y | Longest `timeout` a `wait_for_signal` step may ask for on this server; at most one year; a step that asks for more fails when it would start waiting |
 | `--token-gc-interval`, `--token-gc-grace-period` | `SWAMP_TOKEN_GC_INTERVAL`, `SWAMP_TOKEN_GC_GRACE_PERIOD` | 1 h, 1 h | Server token GC (see Tokens below); interval `0` disables, grace `0` collects at expiry; whole seconds or larger; in serve.yaml quote the value (`"0"`) |
 | `--max-concurrent-runs`, `--max-runs-per-principal`, `--max-run-duration` | `SWAMP_MAX_*` | `100`, unset, unset | Enforced by `ActiveRunRegistry` |
 | `--hot-reload` | — | `false` | Writes `.swamp/serve.pid`; not supported on Windows |
@@ -135,10 +136,16 @@ Table notes:
   `src/serve/continuation_sweep_service.ts`). The sweep continues a suspended
   run whose gates are all decided and whose waits for a signal are all
   settled, under the workflow's auto-resume policy, and is what retries a
-  launch that was lost. On a synced datastore it does not start when the boot
+  launch that was lost. It also settles a wait past its deadline as timed
+  out, so the run's `failed` handlers run without a client (see "Timing out"
+  in workflows.md). On a synced datastore it does not start when the boot
   hydration failed, and it runs only its boot pass when the sync service has
   no `fetchContent` to compare a run record with the remote one. Two instances never resume the same run: see
   "Continuation claims" in workflows.md.
+- `--max-signal-wait-timeout` is not a timer and is not capped at 24.8 days:
+  it is compared with a step's `timeout` when the step would open its wait
+  (`parseMaxSignalWaitTimeout`, `src/cli/commands/serve.ts`). Waits already
+  open keep their deadline.
 - Once shutdown begins the active-run registry refuses every new run
   (`ActiveRunRegistry.beginDraining`, called first by `runShutdownDrain`), so
   a resume chained after another cannot start on an instance that is going

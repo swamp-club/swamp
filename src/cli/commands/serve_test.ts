@@ -36,6 +36,7 @@ import {
   MAX_CANCEL_BODY_BYTES,
   parseContinuationSweepInterval,
   parseDatastorePollInterval,
+  parseMaxSignalWaitTimeout,
   parseShutdownDrainTimeout,
   parseTokenGcSettings,
   readCancelRequestReason,
@@ -255,6 +256,28 @@ Deno.test("parseContinuationSweepInterval: accepts seconds and larger units, and
     () => parseContinuationSweepInterval("500ms"),
     UserError,
     "--continuation-sweep-interval must be in whole seconds or larger units",
+  );
+});
+
+Deno.test("parseMaxSignalWaitTimeout: unset is no maximum, and a value is read as seconds", () => {
+  assertEquals(parseMaxSignalWaitTimeout(undefined), undefined);
+  assertEquals(parseMaxSignalWaitTimeout("3600"), 3600);
+  assertEquals(parseMaxSignalWaitTimeout("90s"), 90);
+  assertEquals(parseMaxSignalWaitTimeout("1h"), 3600);
+  assertEquals(parseMaxSignalWaitTimeout("7d"), 7 * 24 * 60 * 60);
+  assertEquals(parseMaxSignalWaitTimeout("1y"), 365 * 24 * 60 * 60);
+});
+
+Deno.test("parseMaxSignalWaitTimeout: refuses zero and anything above one year", () => {
+  assertThrows(
+    () => parseMaxSignalWaitTimeout("0"),
+    UserError,
+    "--max-signal-wait-timeout",
+  );
+  assertThrows(
+    () => parseMaxSignalWaitTimeout("2y"),
+    UserError,
+    "--max-signal-wait-timeout (2y) is more than the one year",
   );
 });
 
@@ -768,6 +791,13 @@ Deno.test("collectServeExtraArgs: forwards --dispatch-env-allow names", () => {
   assertEquals(collectServeExtraArgs({ dispatchEnvAllow: "DEPLOY_ENV,A" }), [
     "--dispatch-env-allow",
     "DEPLOY_ENV,A",
+  ]);
+});
+
+Deno.test("collectServeExtraArgs: forwards --max-signal-wait-timeout", () => {
+  assertEquals(collectServeExtraArgs({ maxSignalWaitTimeout: "7d" }), [
+    "--max-signal-wait-timeout",
+    "7d",
   ]);
 });
 

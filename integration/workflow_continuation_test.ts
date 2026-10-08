@@ -71,6 +71,8 @@ import {
 } from "../src/libswamp/workflows/delete.ts";
 import { acceptedOutcomeFor } from "../src/domain/workflows/signal_wait_store_test_helpers.ts";
 import { closeRunWaits } from "../src/domain/workflows/signal_wait_cleanup.ts";
+import { WAIT_TIMEOUT_STEP_ERROR } from "../src/domain/workflows/signal_wait.ts";
+import type { SignalWaitStore } from "../src/domain/workflows/signal_wait_store.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -95,8 +97,14 @@ interface Fixture {
   control: FileSystemControlPlaneStore;
   /** How many times the step after the wait has executed. */
   executions: () => number;
-  /** Saves a workflow that waits for a signal, then runs the counted step. */
-  saveWaiting(options?: { autoResume?: boolean }): Promise<Workflow>;
+  /**
+   * Saves a workflow that waits for a signal, then runs the counted step.
+   * With `onFailure`, a second counted step, `notify`, runs when the wait
+   * fails instead.
+   */
+  saveWaiting(
+    options?: { autoResume?: boolean; onFailure?: boolean },
+  ): Promise<Workflow>;
 }
 
 /** A repository with a model whose one method counts its executions. */
@@ -151,6 +159,16 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
                       condition: TriggerCondition.succeeded(),
                     }],
                   }),
+                  ...(options.onFailure
+                    ? [Step.create({
+                      name: "notify",
+                      task: StepTask.modelMethod(model.name, "ship"),
+                      dependsOn: [{
+                        step: "review",
+                        condition: TriggerCondition.failed(),
+                      }],
+                    })]
+                    : []),
                 ],
               }),
             ],
@@ -856,3 +874,378 @@ for (const waits of ["with", "without"] as const) {
     },
   });
 }
+
+// Deadlines noticed by the sweep (swamp-club#3109). The sweep reads the
+// clock each test hands it; the executor reads the real one, and the stored
+// outcome is what carries the sweep's decision into the resume.
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function waitStore(f: Fixture): SignalWaitStore {
+  const support = f.repo.repoContext.signalWaits;
+  assert(support?.supported, "the datastore holds wait records");
+  return support.store;
+}
+
+/** A clock `ms` past the deadline of the run's wait. */
+function pastDeadline(run: WorkflowRun, ms = 1): () => number {
+  const deadline = run.findSignalWaits()[0].wait!.deadline.getTime();
+  return () => deadline + ms;
+}
+
+function stepStatuses(run: WorkflowRun): Record<string, string> {
+  return Object.fromEntries(
+    run.getJob("main")!.steps.map((step) => [step.stepName, step.status]),
+  );
+}
+
+Deno.test({
+  name:
+    "continuation: the sweep settles a wait past its deadline as timed out, and the run's failed handler runs with no client action",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run, waitId } = await suspend(f, workflow);
+      const a = instance(f, "a");
+
+      // Before the deadline the wait is open and the pass changes nothing.
+      assertEquals(
+        await sweepContinuations(a.ctx, {
+          takeover: true,
+          now: pastDeadline(run, -1),
+        }),
+        { examined: 1, launched: 0 },
+      );
+      assertEquals((await waitStore(f).findOutcome(waitId)).kind, "absent");
+
+      assertEquals(
+        await sweepContinuations(a.ctx, {
+          takeover: true,
+          now: pastDeadline(run),
+        }),
+        { examined: 1, launched: 1 },
+      );
+      await idle(a);
+
+      const outcome = await waitStore(f).findOutcome(waitId);
+      assert(outcome.kind === "found");
+      assertEquals(outcome.record.kind, "timed_out");
+      const ended = await loadRun(f, workflow, run.id);
+      assertEquals(ended.status, "failed");
+      assertEquals(stepStatuses(ended), {
+        review: "failed",
+        ship: "skipped",
+        notify: "succeeded",
+      });
+      assertEquals(
+        ended.getJob("main")!.getStep("review")!.error,
+        WAIT_TIMEOUT_STEP_ERROR,
+      );
+      assertEquals(f.executions(), 1);
+      const resumed = a.audit.find((e) => e.action === "workflow.auto_resume");
+      assertStringIncludes(JSON.stringify(resumed), "waitsTimedOut=1");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a wait that expired while no instance was up is settled and its run continued by the first pass",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run } = await suspend(f, workflow);
+
+      // An instance that starts thirty days after the deadline.
+      const restarted = instance(f, "restarted");
+      assertEquals(
+        await sweepContinuations(restarted.ctx, {
+          takeover: true,
+          now: pastDeadline(run, 30 * DAY_MS),
+        }),
+        { examined: 1, launched: 1 },
+      );
+      await idle(restarted);
+
+      assertEquals(
+        stepStatuses(await loadRun(f, workflow, run.id)).notify,
+        "succeeded",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a signal accepted before the deadline still holds when the sweep runs after it",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run, waitId } = await suspend(f, workflow);
+      await settleLocally(f, run);
+      const a = instance(f, "a");
+
+      await sweepContinuations(a.ctx, {
+        takeover: true,
+        now: pastDeadline(run, DAY_MS),
+      });
+      await idle(a);
+
+      const outcome = await waitStore(f).findOutcome(waitId);
+      assert(outcome.kind === "found");
+      assertEquals(outcome.record.kind, "accepted");
+      const ended = await loadRun(f, workflow, run.id);
+      assertEquals(ended.status, "succeeded");
+      assertEquals(stepStatuses(ended), {
+        review: "succeeded",
+        ship: "succeeded",
+        notify: "skipped",
+      });
+      const resumed = a.audit.find((e) => e.action === "workflow.auto_resume");
+      assert(!JSON.stringify(resumed).includes("waitsTimedOut"));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a signal that arrives after the sweep timed its wait out is answered expired",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run, waitId } = await suspend(f, workflow);
+      const a = instance(f, "a");
+      await sweepContinuations(a.ctx, {
+        takeover: true,
+        now: pastDeadline(run),
+      });
+      await idle(a);
+
+      const frames = await sendRequest(a.ctx, {
+        type: "workflow.signal",
+        id: `signal-${crypto.randomUUID()}`,
+        payload: { waitId, payload: { verdict: "ship" } },
+      }, null);
+
+      assertStringIncludes(JSON.stringify(errorFrame(frames)), "expired");
+      assertEquals(
+        stepStatuses(await loadRun(f, workflow, run.id)).ship,
+        "skipped",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: two instances sweeping the same expired wait store one outcome and run its failed handler once",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run, waitId } = await suspend(f, workflow);
+      const a = instance(f, "a");
+      const b = instance(f, "b");
+
+      // Clocks that disagree: the create decides, not either clock.
+      const [swept, alsoSwept] = await Promise.all([
+        sweepContinuations(a.ctx, { takeover: true, now: pastDeadline(run) }),
+        sweepContinuations(b.ctx, {
+          takeover: true,
+          now: pastDeadline(run, 5000),
+        }),
+      ]);
+      await idle(a, b);
+
+      assert(swept.launched + alsoSwept.launched >= 1);
+      assertEquals(
+        (await waitStore(f).listOutcomes()).filter((o) => o.waitId === waitId)
+          .map((o) => o.kind),
+        ["timed_out"],
+      );
+      assertEquals(
+        stepStatuses(await loadRun(f, workflow, run.id)).notify,
+        "succeeded",
+      );
+      assertEquals(f.executions(), 1);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: the sweep neither settles nor continues an expired wait of a workflow serve may not resume",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({
+        autoResume: false,
+        onFailure: true,
+      });
+      const { run, waitId } = await suspend(f, workflow);
+      const a = instance(f, "a");
+
+      assertEquals(
+        await sweepContinuations(a.ctx, {
+          takeover: true,
+          now: pastDeadline(run, DAY_MS),
+        }),
+        { examined: 1, launched: 0 },
+      );
+
+      assertEquals((await waitStore(f).findOutcome(waitId)).kind, "absent");
+      assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
+      assertEquals(f.executions(), 0);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: an expired wait whose registration is gone is not settled from a suspended copy of its run",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ onFailure: true });
+      const { run, waitId } = await suspend(f, workflow);
+      // What a peer that ended or deleted the run leaves behind.
+      await waitStore(f).removeRegistration(waitId);
+      const a = instance(f, "a");
+
+      assertEquals(
+        await sweepContinuations(a.ctx, {
+          takeover: true,
+          now: pastDeadline(run, DAY_MS),
+        }),
+        { examined: 1, launched: 0 },
+      );
+
+      assertEquals((await waitStore(f).findOutcome(waitId)).kind, "absent");
+      assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a nested run whose wait timed out fails, and its parent stays suspended for a manual resume",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const child = await f.saveWaiting({ onFailure: true });
+      const parent = Workflow.create({
+        name: `parent-${crypto.randomUUID().slice(0, 8)}`,
+        autoResume: true,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "call-child",
+                task: StepTask.workflow(child.name),
+              }),
+            ],
+          }),
+        ],
+      });
+      await f.repo.repoContext.workflowRepo.save(parent);
+      const frames = await sendRequest(createServeCtx(f.repo), {
+        type: "workflow.run",
+        id: `run-${crypto.randomUUID()}`,
+        payload: { workflowIdOrName: parent.name },
+      }, null);
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const runRepo = f.repo.repoContext.workflowRunRepo;
+      const [parentSummary] = await runRepo.findSummariesByStatus(
+        parent.id,
+        "suspended",
+      );
+      const [childSummary] = await runRepo.findSummariesByStatus(
+        child.id,
+        "suspended",
+      );
+      assert(parentSummary && childSummary, JSON.stringify(frames));
+      const childRun = await loadRun(f, child, childSummary.id);
+      const a = instance(f, "a");
+
+      assertEquals(
+        (await sweepContinuations(a.ctx, {
+          takeover: true,
+          now: pastDeadline(childRun),
+        })).launched,
+        1,
+      );
+      await idle(a);
+
+      const ended = await loadRun(f, child, childSummary.id);
+      assertEquals(ended.status, "failed");
+      assertEquals(stepStatuses(ended).notify, "succeeded");
+      assertEquals(
+        (await loadRun(f, parent, parentSummary.id)).status,
+        "suspended",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: a server maximum fails a step that asks for a longer wait, and leaves a longer wait already open alone",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      // Opened with a timeout of an hour, before the maximum applied.
+      const open = await f.saveWaiting();
+      const { run, waitId } = await suspend(f, open);
+      const deadline = run.findSignalWaits()[0].wait!.deadline;
+
+      const support = f.repo.repoContext.signalWaits;
+      assert(support?.supported);
+      const capped = instance(f, "capped");
+      capped.ctx.repoContext.signalWaits = {
+        ...support,
+        maxTimeoutSeconds: 60,
+      };
+
+      const refused = await f.saveWaiting({ onFailure: true });
+      const frames = await sendRequest(capped.ctx, {
+        type: "workflow.run",
+        id: `run-${crypto.randomUUID()}`,
+        payload: { workflowIdOrName: refused.name },
+      }, null);
+      const [refusedRun] = await f.repo.repoContext.workflowRunRepo
+        .findAllByWorkflowId(refused.id);
+      assert(refusedRun, JSON.stringify(frames));
+      assertEquals(stepStatuses(refusedRun), {
+        review: "failed",
+        ship: "skipped",
+        notify: "succeeded",
+      });
+      assertStringIncludes(
+        refusedRun.getJob("main")!.getStep("review")!.error ?? "",
+        "more than the 60 seconds this server allows",
+      );
+
+      // The open wait keeps its deadline and is still signalled.
+      await sweepContinuations(capped.ctx, { takeover: true });
+      assertEquals(
+        (await loadRun(f, open, run.id)).findSignalWaits()[0].wait!.deadline,
+        deadline,
+      );
+      const signalled = await sendRequest(capped.ctx, {
+        type: "workflow.signal",
+        id: `signal-${crypto.randomUUID()}`,
+        payload: { waitId, payload: { verdict: "ship" } },
+      }, null);
+      assertEquals(errorFrame(signalled), undefined, JSON.stringify(signalled));
+      await waitFor(
+        async () => (await loadRun(f, open, run.id)).status === "succeeded",
+        "the open wait was signalled and its run finished",
+      );
+    });
+  },
+});

@@ -46,6 +46,7 @@ import {
   ORPHAN_WAIT_RECORD_GRACE_MS,
   outcomeAt,
   removeWaitRecordsOfRuns,
+  settleExpiredWaits,
   settleReenteredWait,
   sweepWaitRecords,
   waitIdsOf,
@@ -615,4 +616,46 @@ Deno.test("sweepWaitRecords: a run that cannot be read is skipped, and the rest 
     (await store.listOutcomes()).map((o) => o.runId).sort(),
     [damaged.id, ended.id].sort(),
   );
+});
+
+Deno.test("settleExpiredWaits: settles a registered wait as timed out only once its deadline has passed, and only once", async () => {
+  const { run, store } = await waitingRun(["a", "b"]);
+
+  assertEquals(await settleExpiredWaits(store, run, DEADLINE), 0);
+  assertEquals(store.outcomes.size, 0);
+
+  assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 2);
+  for (const name of ["a", "b"]) {
+    const stored = await store.findOutcome(stepOf(run, name).signalWait!.id);
+    assert(stored.kind === "found");
+    assertEquals(stored.record.kind, "timed_out");
+    assertEquals(stored.record.runId, run.id);
+  }
+  // The run record is the resume's to change.
+  assertEquals(stepOf(run, "a").status, "waiting_signal");
+  assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 0);
+});
+
+Deno.test("settleExpiredWaits: a signal accepted before the deadline stays the outcome", async () => {
+  const { run, store } = await waitingRun();
+  const accepted = accept(run, "a");
+  await store.settle(accepted);
+
+  assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 0);
+  assertEquals(
+    await store.findOutcome(stepOf(run, "a").signalWait!.id),
+    { kind: "found", record: accepted },
+  );
+});
+
+Deno.test("settleExpiredWaits: a wait whose registration is gone or cannot be read is left with no outcome", async () => {
+  const { run, store } = await waitingRun(["a", "b"]);
+  await store.removeRegistration(stepOf(run, "a").signalWait!.id);
+  store.registrations.set(
+    stepOf(run, "b").signalWait!.id,
+    new TextEncoder().encode("{"),
+  );
+
+  assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 0);
+  assertEquals(store.outcomes.size, 0);
 });

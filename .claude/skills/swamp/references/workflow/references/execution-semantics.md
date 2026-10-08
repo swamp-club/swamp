@@ -74,11 +74,12 @@ no inputs. A run with `wait_for_signal` steps resumes the same way once every
 wait has an outcome; serve also checks for such runs every
 `--continuation-sweep-interval` (default 30s), so a signal given by a local
 command is picked up too (a local approval only on a filesystem datastore; on S3
-or GCS approve with `--server`). An automatic resume supplies no inputs. If it
-fails to start, the run stays suspended and serve tries again on its next check;
-when the workflow changed shape it needs a cancel or a revert of the change. The
-dashboard lists approved-but-suspended runs with a Resume action and the
-equivalent CLI command.
+or GCS approve with `--server`). The same check fails a wait past its deadline
+with `wait_timeout` and resumes the run, so `failed` dependents run unattended.
+An automatic resume supplies no inputs. If it fails to start, the run stays
+suspended and serve tries again on its next check; when the workflow changed
+shape it needs a cancel or a revert of the change. The dashboard lists
+approved-but-suspended runs with a Resume action and the equivalent CLI command.
 
 A gate inside a nested workflow suspends the child run and its parent. Approve
 and resume the child run first, then resume the parent; see

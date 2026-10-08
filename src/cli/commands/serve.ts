@@ -39,6 +39,7 @@ import {
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "../../domain/workflows/signal_wait.ts";
 import {
   MAX_TIMER_DELAY_MS,
   parseTimeout,
@@ -1186,6 +1187,12 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
       options.continuationSweepInterval as string,
     );
   }
+  if (options.maxSignalWaitTimeout) {
+    args.push(
+      "--max-signal-wait-timeout",
+      options.maxSignalWaitTimeout as string,
+    );
+  }
   if (options.tokenGcInterval) {
     args.push("--token-gc-interval", options.tokenGcInterval as string);
   }
@@ -1349,6 +1356,25 @@ export function parseContinuationSweepInterval(
 }
 
 /**
+ * Parses `--max-signal-wait-timeout` into seconds: the longest timeout a
+ * `wait_for_signal` step may ask for on this server. Unset gives
+ * `undefined`, which leaves the task schema's one year as the only limit;
+ * a value above that is refused, since no wait could use it.
+ */
+export function parseMaxSignalWaitTimeout(
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const seconds = parseTimeout(raw, "--max-signal-wait-timeout") / 1000;
+  if (seconds > SIGNAL_WAIT_MAX_TIMEOUT_SECONDS) {
+    throw new UserError(
+      `--max-signal-wait-timeout (${raw}) is more than the one year (${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS}s) any wait may ask for`,
+    );
+  }
+  return seconds;
+}
+
+/**
  * Whether to warn that `--group-refresh-interval` has no effect. Only an
  * interval the operator supplied (flag, env var or config key) warrants the
  * warning — the unset 4h default must stay silent outside OAuth mode.
@@ -1420,6 +1446,8 @@ export interface ServeStartupSettings {
   hydrationTimeoutMs: number;
   datastorePollIntervalMs?: number;
   continuationSweepIntervalMs: number;
+  /** Unset when no maximum was configured. */
+  maxSignalWaitTimeoutSeconds?: number;
   tokenGcSettings: TokenGcSettings;
   maxConcurrentRuns?: number;
   maxRunsPerPrincipal?: number;
@@ -1497,6 +1525,10 @@ export function resolveServeStartupSettings(
     merged.continuationSweepInterval,
   );
 
+  const maxSignalWaitTimeoutSeconds = parseMaxSignalWaitTimeout(
+    merged.maxSignalWaitTimeout,
+  );
+
   const tokenGcSettings = parseTokenGcSettings(
     merged.tokenGcInterval,
     merged.tokenGcGracePeriod,
@@ -1559,6 +1591,7 @@ export function resolveServeStartupSettings(
     hydrationTimeoutMs,
     datastorePollIntervalMs,
     continuationSweepIntervalMs,
+    maxSignalWaitTimeoutSeconds,
     tokenGcSettings,
     maxConcurrentRuns,
     maxRunsPerPrincipal,
@@ -1737,6 +1770,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--continuation-sweep-interval <duration:string>",
     "Continuation sweep interval (default: 30s, 0 disables, env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
+  )
+  .option(
+    "--max-signal-wait-timeout <duration:string>",
+    "Longest timeout a wait_for_signal step may ask for (default: 1y, env: SWAMP_MAX_SIGNAL_WAIT_TIMEOUT)",
   )
   .option(
     "--token-gc-interval <duration:string>",
@@ -2503,6 +2540,12 @@ export const serveCommand = new Command()
       "Accepts seconds (30), explicit units (30s, 1m). Default: 30s. 0 disables (env: SWAMP_CONTINUATION_SWEEP_INTERVAL)",
   )
   .option(
+    "--max-signal-wait-timeout <duration:string>",
+    "The longest timeout a wait_for_signal step may ask for on this server. " +
+      "A step that asks for more fails when it would start waiting; a wait already open keeps its deadline. " +
+      "Accepts seconds (3600), explicit units (1h, 7d). Default and upper limit: 1y (env: SWAMP_MAX_SIGNAL_WAIT_TIMEOUT)",
+  )
+  .option(
     "--token-gc-interval <duration:string>",
     "How often to delete revoked server tokens, and expired ones past the grace period. " +
       "Accepts seconds (3600), explicit units (30s, 1h). Default: 1h. 0 disables (env: SWAMP_TOKEN_GC_INTERVAL)",
@@ -2643,6 +2686,7 @@ export const serveCommand = new Command()
       hydrationTimeoutMs,
       datastorePollIntervalMs,
       continuationSweepIntervalMs,
+      maxSignalWaitTimeoutSeconds,
       tokenGcSettings,
       maxConcurrentRuns,
       maxRunsPerPrincipal,
@@ -2871,6 +2915,12 @@ export const serveCommand = new Command()
       setRemoteOnlyMode(true);
       logger.info(
         "Remote-only mode enabled — all steps require explicit placement",
+      );
+    }
+    if (maxSignalWaitTimeoutSeconds !== undefined) {
+      logger.info(
+        "Longest wait_for_signal timeout: {seconds}s — a step that asks for more fails when it would start waiting",
+        { seconds: maxSignalWaitTimeoutSeconds },
       );
     }
     if (merged.autoResume) {
@@ -3349,14 +3399,24 @@ export const serveCommand = new Command()
 
     // The namespace is bound by now, so wait records use the datastore's
     // store as it is instead of binding it again on first use.
-    attachSignalWaits(
-      repoContext,
-      resolveSignalWaitSupport(datastoreConfig, syncService, {
+    const signalWaitSupport = resolveSignalWaitSupport(
+      datastoreConfig,
+      syncService,
+      {
         namespaceBound: true,
         runsInDatastore: runsLiveInDatastore(
           new DefaultDatastorePathResolver(resolvedRepoDir, datastoreConfig),
         ),
-      }),
+      },
+    );
+    attachSignalWaits(
+      repoContext,
+      signalWaitSupport.supported
+        ? {
+          ...signalWaitSupport,
+          maxTimeoutSeconds: maxSignalWaitTimeoutSeconds,
+        }
+        : signalWaitSupport,
     );
 
     // Initialize the encrypted control-plane vault provider for serve-internal

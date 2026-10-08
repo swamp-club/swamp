@@ -18284,6 +18284,66 @@ Deno.test("wait_for_signal: sibling steps of the level finish before the run sus
   });
 });
 
+Deno.test("wait_for_signal: a timeout above the maximum of the wait support fails the step before a wait is opened", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-over-max-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "within",
+              task: StepTask.waitForSignal(300, { type: "object" }),
+            }),
+            Step.create({
+              name: "over",
+              task: StepTask.waitForSignal(301, { type: "object" }),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    assert(waits.supported);
+    service.signalWaits = { ...waits, maxTimeoutSeconds: 300 };
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertEquals(failed.stepId, "over");
+    assertStringIncludes(
+      failed.error,
+      "is 301 seconds, more than the 300 seconds this server allows",
+    );
+    // The step at the maximum opened its wait; the one above it opened none.
+    assertEquals(
+      (await waits.store.listRegistrations()).map((r) => r.stepName),
+      ["within"],
+    );
+    const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
+    assertEquals(stored.getJob("job1")!.getStep("over")!.status, "failed");
+    assertEquals(
+      stored.getJob("job1")!.getStep("within")!.status,
+      "waiting_signal",
+    );
+  });
+});
+
 /** Records the vaults list each step runs under, and reads vault `erp`. */
 class VaultScopeRecordingExecutor implements StepExecutor {
   seen = new Map<string, string[] | undefined>();
