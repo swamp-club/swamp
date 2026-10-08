@@ -25,7 +25,11 @@ import type {
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
 import { UserError } from "../errors.ts";
-import type { RenameForward, UnifiedDataRepository } from "./repositories.ts";
+import type {
+  ContentAvailability,
+  RenameForward,
+  UnifiedDataRepository,
+} from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
@@ -366,7 +370,7 @@ export class DataQueryService {
     // everything including our target.
     if (!populated && this.backfillPromise) {
       await this.backfillPromise;
-      return this.buildRecordFromRow(latestRow(), includePath);
+      return await this.buildRecordFromRow(latestRow(), includePath);
     }
 
     // Tier 1: try the indexed SQL lookup.
@@ -381,17 +385,17 @@ export class DataQueryService {
             options?.excludeModelTypes,
           );
         }
-        return this.buildRecordFromRow(row, includePath);
+        return await this.buildRecordFromRow(row, includePath);
       }
       // Catalog not populated, so the row may predate a pull or another
       // repository's write. Prefer the version the on-disk latest marker
       // names (swamp-club#2858).
       const current = this.refreshFromLatestMarker(row);
-      if (current) return this.buildRecordFromRow(current, includePath);
+      if (current) return await this.buildRecordFromRow(current, includePath);
       // Verify the data still exists to guard against stale rows left
       // behind after invalidate().
       if (await this.rowHasContent(row)) {
-        return this.buildRecordFromRow(row, includePath);
+        return await this.buildRecordFromRow(row, includePath);
       }
       // Stale row — fall through to scoped backfill
     }
@@ -405,7 +409,7 @@ export class DataQueryService {
     // Verify the row points to real data (it may be the same stale row
     // that triggered the scoped backfill).
     if (!(await this.rowHasContent(freshRow))) return null;
-    return this.buildRecordFromRow(freshRow, includePath);
+    return await this.buildRecordFromRow(freshRow, includePath);
   }
 
   /**
@@ -567,12 +571,61 @@ export class DataQueryService {
       .map((r) => r.data_name);
   }
 
-  private buildRecordFromRow(
+  /**
+   * Maps the row {@link getLatestRecord} found, after making its content
+   * local and current: `fromRow` reads it synchronously, so a body a
+   * metadata-only pull left absent or stale would otherwise come back as
+   * empty or old attributes (swamp-club#3179). Only rows of this
+   * repository's namespace have a content file here to ensure.
+   */
+  private async buildRecordFromRow(
     row: CatalogRow | null,
     includeContentPath: boolean,
-  ): DataRecord | null {
+  ): Promise<DataRecord | null> {
     if (!row) return null;
+    await this.ensureRowContent(row);
     return fromRow(row, this.dataRepo, true, true, includeContentPath);
+  }
+
+  /**
+   * Makes a row's content file local and not shorter than the row's size,
+   * through the repository's content-ensuring step. Only rows of this
+   * repository's namespace have a content file here; a repository without
+   * the step (a test double) is left as it is. Undefined when nothing was
+   * ensured.
+   */
+  private async ensureRowContent(
+    row: CatalogRow,
+  ): Promise<ContentAvailability | undefined> {
+    return await this.ensureContentOf({
+      namespace: row.namespace,
+      modelType: row.type_normalized,
+      modelId: row.model_id,
+      name: row.data_name,
+      version: row.version,
+      size: row.size,
+    });
+  }
+
+  private async ensureContentOf(item: {
+    namespace: string;
+    modelType: string;
+    modelId: string;
+    name: string;
+    version: number;
+    size: number;
+  }): Promise<ContentAvailability | undefined> {
+    if (
+      item.namespace !== this.dataRepo.namespace ||
+      typeof this.dataRepo.ensureContentLocal !== "function"
+    ) return undefined;
+    return await this.dataRepo.ensureContentLocal(
+      ModelType.create(item.modelType),
+      item.modelId,
+      item.name,
+      item.version,
+      item.size,
+    );
   }
 
   private async scopedBackfill(
@@ -1003,6 +1056,9 @@ export class DataQueryService {
           options?.include &&
           !(await options.include(this.rowToRecord(row, false, false, false)))
         ) continue;
+        // The row's own size catches a local body a metadata-only pull left
+        // shorter than the row (swamp-club#3178).
+        if ((await this.ensureRowContent(row)) === "missing") continue;
         if (await this.rowHasContent(row)) hydrated = true;
       }
       if (!hydrated) {
@@ -1507,9 +1563,21 @@ export class DataQueryService {
     const contents = new Map<DataRecord, ProjectedContent>();
     for (const record of records) {
       const known = this.projectedContentWithoutBytes(record);
+      if (known) {
+        contents.set(record, known);
+        continue;
+      }
+      await this.ensureContentOf({
+        namespace: record.namespace,
+        modelType: record.modelType,
+        modelId: record.modelId,
+        name: record.name,
+        version: record.version,
+        size: record.size,
+      });
       contents.set(
         record,
-        known ?? this.encodeProjected(
+        this.encodeProjected(
           await this.dataRepo.getContent(
             ModelType.create(record.modelType),
             record.modelId,

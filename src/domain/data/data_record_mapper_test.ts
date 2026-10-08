@@ -810,3 +810,65 @@ Deno.test("fromData: a vault access refusal fails the read instead of leaving th
     "${{ vault.get('erp', 'absent') }}",
   );
 });
+
+// ============================================================================
+// fromRow — a local body shorter than its row (swamp-club#3178)
+// ============================================================================
+
+function shortBodyRepo(
+  bytes: Uint8Array,
+  accepted: boolean | undefined,
+): UnifiedDataRepository {
+  return {
+    namespace: "",
+    getContentSync: () => bytes,
+    ...(accepted === undefined
+      ? {}
+      : { isContentAcceptedSync: () => accepted }),
+  } as unknown as UnifiedDataRepository;
+}
+
+Deno.test("fromRow: reports a body shorter than its row as missing and does not parse it", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, false),
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 1);
+  assertEquals(record.attributes, {});
+});
+
+Deno.test("fromRow: parses a short body the repository accepts", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, true),
+    true,
+    true,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 0);
+  assertEquals(record.attributes, { a: 1 });
+});
+
+Deno.test("fromRow: a repository without isContentAcceptedSync accepts a short body", () => {
+  const bytes = encoder.encode('{"a":1}');
+  let missing = 0;
+  const record = fromRow(
+    createRow({ size: bytes.length + 10 }),
+    shortBodyRepo(bytes, undefined),
+    true,
+    false,
+    false,
+    () => missing++,
+  );
+  assertEquals(missing, 0);
+  assertEquals(record.attributes, { a: 1 });
+});

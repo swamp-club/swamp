@@ -28,6 +28,7 @@ import {
 import type { Namespace } from "../../domain/data/namespace.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  type ContentAvailability,
   type DeferredWriteReceipt,
   EphemeralBudgetExceededError,
   type FindAllGlobalOptions,
@@ -631,6 +632,27 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     return Promise.resolve(
       this.getContentSync(coerceModelType(type), modelId, dataName, version),
     );
+  }
+
+  /** Content held in memory is always complete; nothing hydrates it. */
+  ensureContentLocal(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version?: number,
+  ): Promise<ContentAvailability> {
+    this.ensureNotDisposed();
+    const content = this.getContentSync(
+      coerceModelType(type),
+      modelId,
+      dataName,
+      version,
+    );
+    return Promise.resolve(content === null ? "missing" : "current");
+  }
+
+  isContentAcceptedSync(): boolean {
+    return true;
   }
 
   async *stream(

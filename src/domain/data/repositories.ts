@@ -25,6 +25,12 @@ import type { Namespace } from "./namespace.ts";
 /**
  * Error thrown when ownership validation fails.
  */
+/**
+ * Whether a version's content file can be read as current, from
+ * {@link UnifiedDataRepository.ensureContentLocal}.
+ */
+export type ContentAvailability = "current" | "acceptedShort" | "missing";
+
 export class OwnershipValidationError extends Error {
   constructor(
     readonly dataName: string,
@@ -249,6 +255,47 @@ export interface UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<Uint8Array | null>;
+
+  /**
+   * Makes a version's content file local and current before a caller reads
+   * it. On a datastore that hydrates lazily the cache can hold a version's
+   * metadata without its content, or content older than the metadata (a
+   * metadata-only pull after another host appended to it). A missing file,
+   * or one shorter than the size its metadata records, is downloaded through
+   * the repository's hydrate hook.
+   *
+   * @param type - The model type
+   * @param modelId - The model input ID
+   * @param dataName - The data name
+   * @param version - Optional version (defaults to latest)
+   * @param knownSize - The recorded size, when the caller already holds it
+   * @returns `current` when the file is present and not shorter than its
+   *   recorded size (always, when the repository cannot hydrate);
+   *   `acceptedShort` when it is still shorter after a refresh, so the
+   *   remote's copy is short too; `missing` when there is no file
+   */
+  ensureContentLocal(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version?: number,
+    knownSize?: number,
+  ): Promise<ContentAvailability>;
+
+  /**
+   * Whether a synchronous reader may use the local content file of a
+   * version whose recorded size is `size`: the file is not shorter than
+   * that, or a recent refresh found the remote's copy short too (so
+   * {@link getContent} returns the same bytes). Always true when the
+   * repository cannot hydrate, since then nothing would replace the file.
+   */
+  isContentAcceptedSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    size: number,
+  ): boolean;
 
   /**
    * Deletes data, optionally for a specific version.

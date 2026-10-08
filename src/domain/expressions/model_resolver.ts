@@ -50,6 +50,7 @@ import { freeRoots } from "./cel_grammar.ts";
 import { findVaultGetCalls } from "./vault_reference_extractor.ts";
 import { VaultAccessDeniedError } from "../vaults/run_vault_access.ts";
 import { extractOwnNamespaceDataModelNames } from "./dependency_extractor.ts";
+import { analyzeExpression } from "./expression_references.ts";
 import {
   type VaultRefreshOptions,
   VaultService,
@@ -206,6 +207,15 @@ function deduplicateByName(
   return [...byKey.values()];
 }
 
+/** The size of the file at `path`, or null when there is none. */
+function localFileSize(path: string): number | null {
+  try {
+    return Deno.statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether a regular file or directory exists at the path. */
 function fileExists(path: string): boolean {
   try {
@@ -329,12 +339,47 @@ export interface DataNamespace {
   invalidateLatest?(modelName: string, dataName: string): void;
 
   /**
-   * Resolves the definitions behind the own-namespace model names an
-   * expression passes to the data accessors, so the synchronous
-   * `listVersions()` can read by definition identity too. Awaited by async
-   * evaluation before the expression runs.
+   * Prepares the context for one expression before it is evaluated, since
+   * some of what it reads is read synchronously:
+   *
+   * - resolves the definitions behind the own-namespace model names the
+   *   expression passes to the data accessors, so the synchronous
+   *   `listVersions()` can read by definition identity too
+   *   (swamp-club#3029);
+   * - makes local the content the expression reads through the model map
+   *   and `file.contents`, which read the cache without downloading, so on
+   *   a lazily hydrating datastore they do not see empty or stale data
+   *   (swamp-club#3179).
+   *
+   * Awaited by async evaluation before the expression runs, and by the
+   * synchronous evaluation passes before they run.
    */
-  resolveModelNames?(expression: string): Promise<void>;
+  prepare?(expression: string): Promise<void>;
+}
+
+/**
+ * State one full expression context shares between its model map's lazy
+ * `resource`/`file` getters and its data namespace's `prepare`
+ * (swamp-club#3179).
+ */
+interface ReadSetState {
+  /** Coordinates by every way the model map is keyed: name and id. */
+  readonly coordsByRef: Map<string, ModelCoordinates[]>;
+  /**
+   * Updates a model's already-loaded maps in place with items whose
+   * content `prepare` changed, keyed like {@link coordsByRef}. A model
+   * whose getter has not fired yet is left to load current content itself.
+   */
+  readonly refreshers: Map<string, (items: ChangedItem[]) => void>;
+  /** Reads already made local in this context, so each is done once. */
+  readonly ensured: Set<string>;
+}
+
+/** A data item whose local content `prepare` downloaded or replaced. */
+interface ChangedItem {
+  readonly data: Data;
+  readonly modelType: ModelType;
+  readonly modelId: string;
 }
 
 /**
@@ -704,6 +749,7 @@ export class ModelResolver {
     // model.resource and model.file are populated lazily on first access
     // to avoid the O(N) findAllGlobal() filesystem walk.
     const coordsMap: ModelCoordinatesMap = new Map();
+    let readSet: ReadSetState | undefined;
     if (this.dataRepo) {
       for (const { definition: def, type: defType } of visibleDefinitions) {
         const coords: ModelCoordinates = {
@@ -713,6 +759,13 @@ export class ModelResolver {
         if (!coordsMap.has(def.name)) coordsMap.set(def.name, []);
         coordsMap.get(def.name)!.push(coords);
       }
+      // model["<id>"] reads the same entry, and so the same coordinates, as
+      // model.<name>.
+      const coordsByRef = new Map(coordsMap);
+      for (const { definition: def } of visibleDefinitions) {
+        coordsByRef.set(def.id, coordsMap.get(def.name)!);
+      }
+      readSet = { coordsByRef, refreshers: new Map(), ensured: new Set() };
 
       // Lazy-load model.resource and model.file on first property access.
       // Instead of walking all data on disk upfront, each model's data is
@@ -804,6 +857,47 @@ export class ModelResolver {
           },
         });
 
+        const refresh = (items: ChangedItem[]): void => {
+          // Until a getter fires, the maps are not loaded and will read the
+          // content just made local.
+          if (Object.getOwnPropertyDescriptor(modelData, "resource")?.get) {
+            return;
+          }
+          const fresh: {
+            resource?: Record<string, Record<string, DataRecord>>;
+            file?: Record<string, Record<string, FileDataRecord>>;
+          } = {};
+          for (const item of items) {
+            populateFromItems(
+              [item.data],
+              fresh,
+              dataRepo,
+              boundDataToRecord,
+              defName,
+              item.modelType,
+              item.modelId,
+            );
+          }
+          // Only the changed items are replaced: records a step merged in
+          // after the getter fired (execution_service, with resolved
+          // sensitive values) were written locally, so they are never
+          // changed by prepare and are kept.
+          for (
+            const [spec, instances] of Object.entries(fresh.resource ?? {})
+          ) {
+            modelData.resource ??= {};
+            modelData.resource[spec] ??= {};
+            Object.assign(modelData.resource[spec], instances);
+          }
+          for (const [spec, instances] of Object.entries(fresh.file ?? {})) {
+            modelData.file ??= {};
+            modelData.file[spec] ??= {};
+            Object.assign(modelData.file[spec], instances);
+          }
+        };
+        readSet.refreshers.set(def.name, refresh);
+        readSet.refreshers.set(def.id, refresh);
+
         Object.defineProperty(modelData, "file", {
           configurable: true,
           enumerable: true,
@@ -832,6 +926,8 @@ export class ModelResolver {
       ownNamespace,
       coordsMap,
       sensitiveValues,
+      false,
+      readSet,
     );
     context.workers = this.buildWorkersNamespace();
     attachSensitiveValues(context, sensitiveValues);
@@ -894,23 +990,24 @@ export class ModelResolver {
   }
 
   /**
-   * Makes a single-record lookup's `path` name a file that is present. On a
-   * lazy-hydration datastore the version's raw file may not have been pulled
-   * yet; the async content read fetches it through the repository's hydrate
-   * hook. If it is still absent — or the fetch fails — `path` is cleared, so
-   * hydration can add a path but never fail a lookup that would otherwise
-   * succeed. List lookups use {@link dropMissingPaths} instead so they never
-   * download.
+   * Makes a single-record lookup's `path` name a file that is present and
+   * current. On a lazy-hydration datastore the version's raw file may not
+   * have been pulled yet, or a metadata-only pull may have left bytes older
+   * than the record's size (swamp-club#3178); the repository's
+   * content-ensuring step fetches it through its hydrate hook. If it is
+   * still absent — or the fetch fails — `path` is cleared, so hydration can
+   * add a path but never fail a lookup that would otherwise succeed. List
+   * lookups use {@link dropMissingPaths} instead so they never download.
    */
   private async materializePath(record: DataRecord | null): Promise<void> {
     if (!record?.path || !this.dataRepo) return;
-    if (fileExists(record.path)) return;
     try {
-      await this.dataRepo.getContent(
+      await this.dataRepo.ensureContentLocal(
         ModelType.create(record.modelType),
         record.modelId,
         record.name,
         record.version,
+        record.size,
       );
     } catch (error) {
       getLogger(["swamp", "expressions"])
@@ -950,6 +1047,76 @@ export class ModelResolver {
       // unavailable vault.
       if (error instanceof VaultAccessDeniedError) throw error;
       // Vault unavailable — leave refs unresolved
+    }
+  }
+
+  /**
+   * Makes local the content `expression` reads through the synchronous
+   * readers — the model map's `resource` and `file` and `file.contents` —
+   * so they read current data on a lazily hydrating datastore
+   * (swamp-club#3179). Only what a reader reads is ensured: text resources
+   * for `resource` (other content types are never read), and files of the
+   * specs read. Each read is ensured once per context. A model's maps that
+   * are already loaded get the items whose content changed. A download
+   * error fails the evaluation, as it fails `data get`.
+   */
+  private async ensureReadSet(
+    expression: string,
+    state: ReadSetState,
+  ): Promise<void> {
+    const dataRepo = this.dataRepo;
+    // Only the model map and the file namespace read synchronously.
+    if (!dataRepo || !/\b(?:model|file)\b/.test(expression)) return;
+    const reads = analyzeExpression(expression).syncDataReads;
+    for (const [ref, read] of reads) {
+      const coords = state.coordsByRef.get(ref);
+      if (!coords) continue;
+      const wanted = (data: Data): boolean => {
+        const kind = data.tags["type"];
+        if (kind === "resource") {
+          return read.resource && isTextContentType(data.contentType);
+        }
+        if (kind === "file") {
+          return read.allFiles ||
+            read.fileSpecs.has(data.tags["specName"] ?? data.name);
+        }
+        return false;
+      };
+      const changed: ChangedItem[] = [];
+      for (const { modelType, modelId } of coords) {
+        const keys = [
+          ...(read.resource ? ["resource"] : []),
+          ...(read.allFiles ? ["file"] : []),
+          ...[...read.fileSpecs].map((spec) => `file:${spec}`),
+        ].map((k) => `${modelType.normalized}/${modelId}/${k}`);
+        const covered = (key: string) =>
+          state.ensured.has(key) ||
+          (key.includes("/file:") &&
+            state.ensured.has(key.replace(/\/file:.*$/, "/file")));
+        if (keys.every(covered)) continue;
+        for (const data of await dataRepo.findAllForModel(modelType, modelId)) {
+          if (data.isRenamed || !wanted(data)) continue;
+          const contentPath = dataRepo.getContentPath(
+            modelType,
+            modelId,
+            data.name,
+            data.version,
+          );
+          const before = localFileSize(contentPath);
+          await dataRepo.ensureContentLocal(
+            modelType,
+            modelId,
+            data.name,
+            data.version,
+            data.size,
+          );
+          if (localFileSize(contentPath) !== before) {
+            changed.push({ data, modelType, modelId });
+          }
+        }
+        for (const key of keys) state.ensured.add(key);
+      }
+      if (changed.length > 0) state.refreshers.get(ref)?.(changed);
     }
   }
 
@@ -1008,6 +1175,7 @@ export class ModelResolver {
     coordsMap: ModelCoordinatesMap,
     sensitiveValues: RunSensitiveValues,
     lookUpIdentities = false,
+    readSet?: ReadSetState,
   ): DataNamespace {
     // The modelName tag records the name at write time, so an own-namespace
     // read also selects the definition's data by type and id, and data
@@ -1137,6 +1305,26 @@ export class ModelResolver {
                     { modelType, modelId },
                   );
                 }
+                // dataToRecord reads the content synchronously, so make it
+                // local and current first, or a lazily hydrating datastore
+                // returns empty attributes (swamp-club#3179). As in
+                // materializePath, a failed download never fails a lookup
+                // that would otherwise succeed.
+                let available = false;
+                try {
+                  available = await this.dataRepo.ensureContentLocal(
+                    modelType,
+                    modelId,
+                    dataName,
+                    data.version,
+                    data.size,
+                  ) !== "missing";
+                } catch (error) {
+                  getLogger(["swamp", "expressions"])
+                    .debug`Could not hydrate ${ns.modelName}/${data.name}@v${data.version}: ${
+                    String(error)
+                  }`;
+                }
                 const record = this.dataToRecord(
                   data,
                   modelType,
@@ -1150,7 +1338,12 @@ export class ModelResolver {
                   data.tags,
                   sensitiveValues,
                 );
-                await this.materializePath(record);
+                // Content already ensured above; a body that could not be
+                // made local is not requested a second time.
+                if (available) await this.materializePath(record);
+                else if (record?.path && !fileExists(record.path)) {
+                  record.path = "";
+                }
                 return record;
               }
             }
@@ -1365,10 +1558,11 @@ export class ModelResolver {
       invalidateLatest: (_modelName: string, _dataName: string): void => {
         // No-op — latest() always reads from disk; no cache to invalidate.
       },
-      resolveModelNames: async (expression: string): Promise<void> => {
+      prepare: async (expression: string): Promise<void> => {
         for (const name of extractOwnNamespaceDataModelNames(expression)) {
           await resolveIdentities(name);
         }
+        if (readSet) await this.ensureReadSet(expression, readSet);
       },
     };
   }

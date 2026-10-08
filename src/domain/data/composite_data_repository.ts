@@ -23,6 +23,7 @@ import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 import { coerceModelType } from "../models/model_type.ts";
 import type { Namespace } from "./namespace.ts";
 import type {
+  ContentAvailability,
   DeferredWriteReceipt,
   FindAllGlobalOptions,
   GarbageCollectionResult,
@@ -277,6 +278,43 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     );
     if (ephContent) return ephContent;
     return this.persistent.getContent(type, modelId, dataName, version);
+  }
+
+  ensureContentLocal(
+    type: ModelTypeInput,
+    modelId: string,
+    dataName: string,
+    version?: number,
+    knownSize?: number,
+  ): Promise<ContentAvailability> {
+    const repo = this.ephemeral.getLatestVersionSync(
+        coerceModelType(type),
+        modelId,
+        dataName,
+      ) !== null
+      ? this.ephemeral
+      : this.persistent;
+    return repo.ensureContentLocal(
+      type,
+      modelId,
+      dataName,
+      version,
+      knownSize,
+    );
+  }
+
+  isContentAcceptedSync(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    size: number,
+  ): boolean {
+    const repo =
+      this.ephemeral.getLatestVersionSync(type, modelId, dataName) !== null
+        ? this.ephemeral
+        : this.persistent;
+    return repo.isContentAcceptedSync(type, modelId, dataName, version, size);
   }
 
   async *stream(

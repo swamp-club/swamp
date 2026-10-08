@@ -27,6 +27,7 @@ import { dirname, join } from "@std/path";
 import { hostname } from "node:os";
 import { processHostIdentity } from "../runtime/process.ts";
 import {
+  ACCEPTED_SHORT_CONTENT_TTL_MS,
   FileSystemUnifiedDataRepository,
   sortedSubdirectoryNames,
 } from "./unified_data_repository.ts";
@@ -2406,3 +2407,404 @@ Deno.test("allocateVersion: a failed pending-row write removes the allocated ver
     }
   }
 });
+
+// --- Content-ensuring step (swamp-club#3178) ---
+
+/**
+ * A repository whose hydrate hook copies from `remote`, keyed by the
+ * absolute content path, as a lazily hydrating datastore downloads the
+ * remote's copy of a file.
+ */
+async function withLazyRepo(
+  fn: (ctx: {
+    repo: FileSystemUnifiedDataRepository;
+    remote: Map<string, Uint8Array>;
+    hydrations: string[];
+    clock: { now: number };
+    tmpDir: string;
+    catalogStore: CatalogStore;
+  }) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const remote = new Map<string, Uint8Array>();
+    const hydrations: string[] = [];
+    const clock = { now: 1_000_000 };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      async (absPath) => {
+        hydrations.push(absPath);
+        const bytes = remote.get(absPath);
+        if (!bytes) return false;
+        await Deno.mkdir(dirname(absPath), { recursive: true });
+        await Deno.writeFile(absPath, bytes);
+        return true;
+      },
+      SOLO_NAMESPACE,
+      false,
+      () => clock.now,
+    );
+    await fn({
+      repo,
+      remote,
+      hydrations,
+      clock,
+      tmpDir,
+      catalogStore,
+    });
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+}
+
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b: Uint8Array | null) =>
+  b === null ? null : new TextDecoder().decode(b);
+
+function makeStreamingData(name: string): Data {
+  return Data.create({
+    name,
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: 100,
+    tags: { type: "test" },
+    ownerDefinition: owner,
+    streaming: true,
+  });
+}
+
+/**
+ * Saves `full` as version 1, publishes it as the remote's copy, then leaves
+ * `local` in the cache: the state a metadata-only pull leaves after another
+ * host appended to the version.
+ */
+async function seedStale(
+  repo: FileSystemUnifiedDataRepository,
+  remote: Map<string, Uint8Array>,
+  name: string,
+  full: string,
+  local: string | null,
+  data: Data = makeData(name),
+): Promise<string> {
+  await repo.save(testType, "model-1", data, enc(full));
+  const contentPath = repo.getContentPath(testType, "model-1", name, 1);
+  remote.set(contentPath, enc(full));
+  if (local === null) await Deno.remove(contentPath);
+  else await Deno.writeFile(contentPath, enc(local));
+  return contentPath;
+}
+
+Deno.test("getContent: downloads again a content file shorter than its metadata records", async () => {
+  await withLazyRepo(async ({ repo, remote, hydrations }) => {
+    await seedStale(repo, remote, "stale", "line1\nline2\nline3\n", "line1\n");
+    const result = await repo.getContent(testType, "model-1", "stale", 1);
+    assertEquals(dec(result), "line1\nline2\nline3\n");
+    assertEquals(hydrations.length, 1);
+  });
+});
+
+Deno.test("stream: downloads a content file that is not local", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    await seedStale(repo, remote, "absent", "all of it", null);
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of repo.stream(testType, "model-1", "absent", 1)) {
+      chunks.push(chunk);
+    }
+    assertEquals(dec(concatBytes(chunks)), "all of it");
+  });
+});
+
+Deno.test("stream: downloads again a content file shorter than its metadata records", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    await seedStale(repo, remote, "stale", "line1\nline2\n", "line1\n");
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of repo.stream(testType, "model-1", "stale")) {
+      chunks.push(chunk);
+    }
+    assertEquals(dec(concatBytes(chunks)), "line1\nline2\n");
+  });
+});
+
+Deno.test("getContent: leaves a content file that is not shorter than its metadata alone", async () => {
+  await withLazyRepo(async ({ repo, remote, hydrations }) => {
+    await seedStale(repo, remote, "equal", "abcdef", "uvwxyz");
+    await seedStale(repo, remote, "larger", "abc", "abcdef");
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "equal", 1)),
+      "uvwxyz",
+    );
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "larger", 1)),
+      "abcdef",
+    );
+    assertEquals(hydrations, []);
+  });
+});
+
+Deno.test("getContent: leaves a content file alone when its metadata records no size", async () => {
+  await withLazyRepo(async ({ repo, remote, hydrations }) => {
+    await seedStale(repo, remote, "nosize", "abcdef", "abc");
+    const metadataPath = join(
+      repo.getPath(testType, "model-1", "nosize", 1),
+      "metadata.yaml",
+    );
+    const text = await Deno.readTextFile(metadataPath);
+    await Deno.writeTextFile(
+      metadataPath,
+      text.split("\n").filter((l) => !l.startsWith("size:")).join("\n"),
+    );
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "nosize", 1)),
+      "abc",
+    );
+    assertEquals(hydrations, []);
+  });
+});
+
+Deno.test("getContent: uses a copy the remote also holds short until the window passes", async () => {
+  await withLazyRepo(async ({ repo, remote, hydrations, clock }) => {
+    const path = await seedStale(repo, remote, "short", "abcdef", "abc");
+    remote.set(path, enc("abcd"));
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "short", 1)),
+      "abcd",
+    );
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "short", 1)),
+      "abcd",
+    );
+    assertEquals(hydrations.length, 1);
+
+    // The remote's raw lands; a read after the window picks it up.
+    remote.set(path, enc("abcdef"));
+    clock.now += ACCEPTED_SHORT_CONTENT_TTL_MS - 1;
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "short", 1)),
+      "abcd",
+    );
+    clock.now += 1;
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "short", 1)),
+      "abcdef",
+    );
+    assertEquals(hydrations.length, 2);
+  });
+});
+
+Deno.test("ensureContentLocal: reports current, acceptedShort and missing", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    await seedStale(repo, remote, "fresh", "abc", "abc");
+    const shortPath = await seedStale(repo, remote, "short", "abcdef", "abc");
+    remote.set(shortPath, enc("abcd"));
+    const gonePath = await seedStale(repo, remote, "gone", "abc", null);
+    remote.delete(gonePath);
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "fresh"),
+      "current",
+    );
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "short", 1, 6),
+      "acceptedShort",
+    );
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "gone"),
+      "missing",
+    );
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "never-written"),
+      "missing",
+    );
+  });
+});
+
+Deno.test("ensureContentLocal: a repository without a hydrate hook reports current without looking", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog.db")),
+    );
+    await repo.save(testType, "model-1", makeData("x"), enc("abcdef"));
+    await Deno.writeFile(
+      repo.getContentPath(testType, "model-1", "x", 1),
+      enc("abc"),
+    );
+    assertEquals(
+      await repo.ensureContentLocal(testType, "model-1", "x", 1),
+      "current",
+    );
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "x", 1, 6),
+      true,
+    );
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "x", 1)),
+      "abc",
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("isContentAcceptedSync: accepts a short copy only while a refresh found the remote short too", async () => {
+  await withLazyRepo(async ({ repo, remote, clock }) => {
+    const path = await seedStale(repo, remote, "short", "abcdef", "abc");
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "short", 1, 6),
+      false,
+    );
+    remote.set(path, enc("abcd"));
+    await repo.getContent(testType, "model-1", "short", 1);
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "short", 1, 6),
+      true,
+    );
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "short", 1, 4),
+      true,
+    );
+    clock.now += ACCEPTED_SHORT_CONTENT_TTL_MS;
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "short", 1, 6),
+      false,
+    );
+    assertEquals(
+      repo.isContentAcceptedSync(testType, "model-1", "absent", 1, 6),
+      false,
+    );
+  });
+});
+
+Deno.test("isContentAcceptedSync: one repository's accepted copies are its own", async () => {
+  await withLazyRepo(async ({ repo, remote, tmpDir, catalogStore }) => {
+    const path = await seedStale(repo, remote, "short", "abcdef", "abc");
+    remote.set(path, enc("abcd"));
+    await repo.getContent(testType, "model-1", "short", 1);
+    const other = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      () => Promise.resolve(false),
+    );
+    assertEquals(
+      other.isContentAcceptedSync(testType, "model-1", "short", 1, 6),
+      false,
+    );
+  });
+});
+
+Deno.test("append: downloads a stale content file before appending to it", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    await seedStale(
+      repo,
+      remote,
+      "log",
+      "line1\nline2\n",
+      "line1\n",
+      makeStreamingData("log"),
+    );
+    await repo.append(testType, "model-1", "log", enc("line3\n"));
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "log", 1)),
+      "line1\nline2\nline3\n",
+    );
+    const data = await repo.findByName(testType, "model-1", "log", 1);
+    assertEquals(data?.size, 18);
+  });
+});
+
+Deno.test("append: refuses a content file the remote also holds short", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    const path = await seedStale(
+      repo,
+      remote,
+      "log",
+      "line1\nline2\n",
+      "line1\n",
+      makeStreamingData("log"),
+    );
+    remote.set(path, enc("line1\n"));
+    // An earlier read accepts the short copy; append still refuses it.
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "log", 1)),
+      "line1\n",
+    );
+    const error = await assertRejects(
+      () => repo.append(testType, "model-1", "log", enc("line3\n")),
+      Error,
+    );
+    assertStringIncludes(error.message, "acceptedShort");
+    assertEquals(dec(await Deno.readFile(path)), "line1\n");
+  });
+});
+
+Deno.test("append: refuses a content file that is neither local nor remote", async () => {
+  await withLazyRepo(async ({ repo, remote }) => {
+    const path = await seedStale(
+      repo,
+      remote,
+      "log",
+      "line1\n",
+      null,
+      makeStreamingData("log"),
+    );
+    remote.delete(path);
+    await assertRejects(
+      () => repo.append(testType, "model-1", "log", enc("line2\n")),
+      Error,
+      "missing",
+    );
+  });
+});
+
+Deno.test("append: a repository without a hydrate hook appends as before", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      new CatalogStore(join(tmpDir, "_catalog.db")),
+    );
+    await repo.save(
+      testType,
+      "model-1",
+      makeStreamingData("log"),
+      enc("line1\n"),
+    );
+    await repo.append(testType, "model-1", "log", enc("line2\n"));
+    assertEquals(
+      dec(await repo.getContent(testType, "model-1", "log", 1)),
+      "line1\nline2\n",
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}

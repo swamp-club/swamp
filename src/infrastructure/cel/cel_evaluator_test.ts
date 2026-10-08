@@ -1903,13 +1903,13 @@ Deno.test("CelEvaluator.evaluate: every top-level ExpressionContext key resolves
 
 // --- Model name pre-resolution (swamp-club#3029) ---
 
-Deno.test("evaluateAsync: awaits data.resolveModelNames before evaluating", async () => {
+Deno.test("evaluateAsync: awaits data.prepare before evaluating", async () => {
   const evaluator = new CelEvaluator();
   const calls: string[] = [];
   let resolved = false;
   const context = {
     data: {
-      resolveModelNames: async (expression: string) => {
+      prepare: async (expression: string) => {
         calls.push(expression);
         await Promise.resolve();
         resolved = true;
@@ -1923,12 +1923,12 @@ Deno.test("evaluateAsync: awaits data.resolveModelNames before evaluating", asyn
   assertEquals(calls, [expression]);
 });
 
-Deno.test("evaluate: does not call data.resolveModelNames", () => {
+Deno.test("evaluate: does not call data.prepare", () => {
   const evaluator = new CelEvaluator();
   let called = false;
   const context = {
     data: {
-      resolveModelNames: () => {
+      prepare: () => {
         called = true;
         return Promise.resolve();
       },
