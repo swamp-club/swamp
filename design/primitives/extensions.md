@@ -1451,7 +1451,8 @@ acceptable on its own (see Declared acceptances):
   since an alias reaches `Command` (`const d = Deno`, destructuring from `Deno`,
   passing it, `Deno[key]` with a non-literal key). A member named `Command` on
   any other object is not flagged. Not caught: an alias of the global object
-  itself (`const g = globalThis; new g.Deno.Command()`) and names assembled at
+  itself (`const g = globalThis; new g.Deno.Command()`, or a parameter pattern
+  given it, `(({ Deno: d }) => ...)(globalThis)`) and names assembled at
   runtime. A file that does not parse falls back to the old text check
   (`Deno.Command(` on the line). Other process APIs (`node:child_process`) are
   not covered by this rule (swamp-club#3169).

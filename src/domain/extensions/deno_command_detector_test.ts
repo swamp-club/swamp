@@ -83,6 +83,16 @@ const FLAGGED: Array<[string, string, DenoCommandKind[]]> = [
     "deno-value",
   ]],
   ["shorthand Deno off self", "const { Deno } = self;", ["deno-value"]],
+  [
+    "Deno key nested under globalThis.self",
+    "const { self: { Deno: d } } = globalThis;",
+    ["deno-value"],
+  ],
+  [
+    "Deno key nested two global keys deep",
+    "const { window: { self: { Deno } } } = globalThis;",
+    ["deno-value"],
+  ],
   ["Reflect.get on globalThis", 'Reflect.get(globalThis, "Deno");', [
     "deno-value",
   ]],
@@ -137,6 +147,16 @@ const SILENT: Array<[string, string]> = [
   ["type-only import-equals Deno", "import type D = Deno;"],
   ["re-export from another module", 'export { Deno } from "./x.ts";'],
   ["parameter property", "class A { constructor(private Deno: number) {} }"],
+  ["namespace re-export named Deno", 'export * as Deno from "./x.ts";'],
+  ["UMD namespace export named Deno", "export as namespace Deno;"],
+  [
+    "Deno key nested under a non-global key",
+    "const { config: { Deno: d } } = globalThis;",
+  ],
+  [
+    "Deno key nested in a pattern from another object",
+    "const { self: { Deno: d } } = config;",
+  ],
 ];
 
 for (const [name, source] of SILENT) {

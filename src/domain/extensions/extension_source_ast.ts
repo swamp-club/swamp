@@ -222,6 +222,11 @@ export function unwrap(node: AstNode | undefined): AstNode | undefined {
   return current;
 }
 
+/** The name is a global object's (`globalThis`, `self`, `window`, ...). */
+export function isGlobalName(name: string | undefined): boolean {
+  return name !== undefined && GLOBAL_OBJECTS.has(name);
+}
+
 /**
  * The expression is a global object: a global name, a cast of one, or a
  * chain of them (`globalThis.self`).

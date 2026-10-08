@@ -39,7 +39,8 @@
  * `"x" in Deno` are not flagged, nor is a member named `Command` on any other
  * object: a CLI framework's `Command` class or a field named `Command` is
  * not a subprocess. Not caught: an alias of the global object itself
- * (`const g = globalThis; new g.Deno.Command()`), since following it would
+ * (`const g = globalThis; new g.Deno.Command()`, or a parameter pattern
+ * given it: `(({ Deno: d }) => ...)(globalThis)`), since following it would
  * mean flagging every member named `Deno`, and names assembled at runtime
  * (`globalThis["De" + "no"]`). A file that does not parse falls back to the
  * old text check: each line containing `Deno.Command(`.
@@ -50,6 +51,7 @@ import {
   child,
   identifierRole,
   isCall,
+  isGlobalName,
   isGlobalObject,
   isMember,
   isNode,
@@ -90,6 +92,7 @@ const TS_DECLARATIONS = new Set([
   "TSEnumDeclaration",
   "TSImportEqualsDeclaration",
   "TSEnumMember",
+  "TSNamespaceExportDeclaration",
 ]);
 
 const IMPORT_SPECIFIERS = new Set([
@@ -151,6 +154,10 @@ function isBindingSite(visit: Visit): boolean {
   if (parent.type === "TSParameterProperty" && key === "parameter") {
     return true;
   }
+  // `export * as Deno from "./x.ts"` names a namespace of that module.
+  if (parent.type === "ExportNamespaceSpecifier" && key === "exported") {
+    return true;
+  }
   // `export { Deno } from "./x.ts"` names the other module's export.
   if (
     parent.type === "ExportSpecifier" && key === "local" &&
@@ -171,6 +178,36 @@ function isBindingSite(visit: Visit): boolean {
 }
 
 /** The expression a pattern destructures: `const <pattern> = <source>`. */
+/** A pattern property's key name: `Deno` in `{ Deno: d }` or `{ ["Deno"]: d }`. */
+function propertyKeyName(property: AstNode): string | undefined {
+  const key = child(property, "key");
+  return property.computed === true
+    ? literalKey(key)
+    : str(key, "name") ?? literalKey(key);
+}
+
+/**
+ * The pattern destructures a global object: it is bound from one directly
+ * (`const { ... } = globalThis`), or it is nested under global-object keys
+ * of such a pattern (`const { self: { ... } } = globalThis`).
+ */
+function destructuresGlobalObject(pattern: Visit): boolean {
+  let current = pattern;
+  for (let i = 0; i < MAX_CHAIN; i++) {
+    const property = current.parent;
+    const outer = property?.parent;
+    if (
+      property?.node.type !== "ObjectProperty" || current.key !== "value" ||
+      outer?.node.type !== "ObjectPattern" ||
+      !isGlobalName(propertyKeyName(property.node))
+    ) {
+      return isGlobalObject(patternSource(current));
+    }
+    current = outer;
+  }
+  return false;
+}
+
 function patternSource(pattern: Visit): AstNode | undefined {
   const owner = pattern.parent;
   if (!owner) return undefined;
@@ -322,17 +359,16 @@ class Analyzer {
     }
   }
 
-  /** `const { Deno: d } = globalThis`: a `Deno` key read off a global object. */
+  /**
+   * `const { Deno: d } = globalThis`, `const { self: { Deno: d } } =
+   * globalThis`: a `Deno` key read off a global object.
+   */
   private checkPatternKey(visit: Visit): void {
     const pattern = visit.parent;
     if (pattern?.node.type !== "ObjectPattern") return;
-    const node = visit.node;
-    const key = child(node, "key");
-    const name = node.computed === true
-      ? literalKey(key)
-      : str(key, "name") ?? literalKey(key);
-    if (name !== DENO || !key) return;
-    if (isGlobalObject(patternSource(pattern))) this.flag(key, "deno-value");
+    const key = child(visit.node, "key");
+    if (propertyKeyName(visit.node) !== DENO || !key) return;
+    if (destructuresGlobalObject(pattern)) this.flag(key, "deno-value");
   }
 
   /**
