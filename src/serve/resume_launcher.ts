@@ -894,19 +894,20 @@ export async function noteParkedParent(
  * outcome. A wait past its deadline with no outcome is given one first,
  * `timed_out` (swamp-club#3109). Returns whether a resume was launched.
  *
- * Nothing is authorized here. The stored outcome is the authorization, as
- * an approval is for its own auto-resume: whoever settled the run's last
- * wait was allowed to, and a deadline needs nobody's leave. A run another
- * holder has claimed or resumed is left alone without a word, since that is
- * the ordinary state of a copy of the run that is behind, as is a run whose
- * record here differs from the one the datastore holds; the one exception
- * is a claim a local command left on a run this instance knows is still
+ * Nothing is authorized here. The stored outcome is the authorization, as an
+ * approval is for its own auto-resume: whoever settled the run's last wait
+ * was allowed to, and a deadline needs nobody's leave. A run another holder
+ * has claimed or resumed is left alone without a word, since that is the
+ * ordinary state of a copy of the run that is behind, as is a run whose
+ * record here differs from the one the datastore holds; the one exception is
+ * a claim a local command left on a run this instance knows is still
  * suspended, which only a manual resume clears. Any other skip or refusal
- * leaves the run suspended and is logged and audited once per suspension
- * and reason; the next pass of the sweep tries again. A resume that was launched and failed, leaving the run
- * suspended, is tried again only after a backoff that doubles with each
- * failure of that suspension, from {@link CONTINUATION_BACKOFF_BASE_MS} up
- * to {@link CONTINUATION_BACKOFF_MAX_MS}.
+ * leaves the run suspended and is logged and audited once per suspension and
+ * reason; the next pass of the sweep tries again. A resume that was launched
+ * and failed, leaving the run suspended, is tried again only after a backoff
+ * that doubles with each failure of that suspension, from
+ * {@link CONTINUATION_BACKOFF_BASE_MS} up to
+ * {@link CONTINUATION_BACKOFF_MAX_MS}.
  */
 export async function continueSettledRun(
   ctx: ConnectionContext,

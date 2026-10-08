@@ -1100,9 +1100,7 @@ Deno.test("continueSettledRun: an expired wait is left alone when its registrati
   await registerWait(waits, manual.run, manual.wait);
   const late = () => gone.wait.deadline.getTime() + 60_000;
 
-  for (
-    const { run } of [gone, manual]
-  ) {
+  for (const { run } of [gone, manual]) {
     assertEquals(
       await continueSettledRun(
         ctx,
