@@ -372,17 +372,18 @@ import {
 } from "../../domain/access/admin_materializer.ts";
 import {
   collectErrors,
-  parseGrantFile,
-  readGrantFiles,
-  resolveExternalGrantsDir,
-  resolveExternalGrantsFile,
+  type GrantFileError,
 } from "../../domain/access/grant_file.ts";
-import { validateGrantCondition } from "../../infrastructure/cel/grant_condition_environment.ts";
-import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
 import {
-  GRANTS_FILE_SOURCE_NAME,
-  grantsDirSourceName,
-} from "../../domain/access/grant_source.ts";
+  checkServeGrantFiles,
+  readServeGrantFiles,
+} from "../../domain/access/grant_file_loader.ts";
+import {
+  readConditionTypeLiterals,
+  validateGrantCondition,
+} from "../../infrastructure/cel/grant_condition_environment.ts";
+import { reconcileAllFileGrants } from "../../domain/access/grant_file_reconciler.ts";
+import { GRANTS_FILE_SOURCE_NAME } from "../../domain/access/grant_source.ts";
 import {
   createGrantWriteCommit,
   createGrantWriteTracking,
@@ -1969,6 +1970,16 @@ async function checkTokenSecretsKey(
   }
 }
 
+/** Grant-file errors as indented lines, one per error, for a refusal. */
+function formatGrantFileErrorLines(errors: readonly GrantFileError[]): string {
+  return errors.map((e) => {
+    const loc = e.entryIndex !== undefined
+      ? `${e.filename} entry ${e.entryIndex + 1}`
+      : e.filename;
+    return `  ${loc}: ${e.message}`;
+  }).join("\n");
+}
+
 const checkConfigCommand = new Command()
   .name("check-config")
   .description(
@@ -1981,7 +1992,11 @@ const checkConfigCommand = new Command()
       "credential, and only sends it to the provider that issued it (set SWAMP_CLUB_URL " +
       "for a custom provider). With a token-secrets block, also reads the token " +
       "secrets key from its vault and checks it is a usable 32-byte key, without " +
-      "printing it. It reads only this repository's files and never contacts the " +
+      "printing it. It also reads the grant files serve reads (grants/, --grants-file " +
+      "and --grants-dir) and fails if serve would refuse them; grant type spellings " +
+      "that match no type as written are warnings, and stored grants are reported " +
+      "by serve at startup. Apart from a --grants-file or --grants-dir outside the " +
+      "repository, it reads only this repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +
@@ -2025,6 +2040,14 @@ const checkConfigCommand = new Command()
     "OAuth provider URL, as passed to 'swamp serve' (overrides the config file)",
   )
   .option(
+    "--grants-file <path:string>",
+    "External grants YAML file to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_FILE)",
+  )
+  .option(
+    "--grants-dir <path:string>",
+    "Directory of grants YAML files to check, as passed to 'swamp serve' (overrides the config file; env: SWAMP_GRANTS_DIR)",
+  )
+  .option(
     `${CLUB_API_KEY_FILE_FLAG} <path:string>`,
     "Path to a file containing the collective API key used to look up " +
       "usernames; overrides SWAMP_API_KEY_FILE and SWAMP_API_KEY",
@@ -2058,6 +2081,23 @@ const checkConfigCommand = new Command()
     const restrictionWarnings = restrictionFindings.filter((finding) =>
       finding.reason !== "no-type"
     );
+    // The grant files serve would read, judged as serve startup judges them
+    // (swamp-club#3130). Stored grants live in the datastore, which this
+    // command never contacts; serve reports their spellings at startup.
+    const grantCheck = checkServeGrantFiles(
+      await readServeGrantFiles(repoDir, {
+        grantsFile: merged.grantsFile,
+        grantsDir: merged.grantsDir,
+        validateCondition: validateGrantCondition,
+        readTypeLiterals: readConditionTypeLiterals,
+      }),
+    );
+    const grantsLoad = grantCheck.errors.length === 0;
+    const grantReport = {
+      grantFilesChecked: grantCheck.filesChecked,
+      grantErrors: grantCheck.errors,
+      grantWarnings: grantCheck.warnings,
+    };
     const unnamedType = restrictionFindings.find((finding) =>
       finding.reason === "no-type"
     );
@@ -2075,6 +2115,7 @@ const checkConfigCommand = new Command()
         wouldStart: false,
         refusal: unnamedType.message,
         restrictionWarnings,
+        ...grantReport,
       }, ctx.outputMode);
       Deno.exitCode = 1;
       return;
@@ -2106,16 +2147,18 @@ const checkConfigCommand = new Command()
     const keyUsable = tokenSecretsKey?.status !== "failed";
 
     if (authConfig.mode !== "oauth") {
+      const starts = keyUsable && grantsLoad;
       renderServeCheckConfig({
-        passed: keyUsable,
+        passed: starts,
         authMode: authConfig.mode,
         entries: [],
         allowedCollectives: [],
-        wouldStart: keyUsable,
+        wouldStart: starts,
         restrictionWarnings,
+        ...grantReport,
         ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
       }, ctx.outputMode);
-      if (!keyUsable) Deno.exitCode = 1;
+      if (!starts) Deno.exitCode = 1;
       return;
     }
 
@@ -2150,7 +2193,8 @@ const checkConfigCommand = new Command()
       providerUrl,
     );
     const notFound = check.entries.filter((e) => e.status === "not-found");
-    const passed = check.wouldStart && notFound.length === 0 && keyUsable;
+    const passed = check.wouldStart && notFound.length === 0 && keyUsable &&
+      grantsLoad;
 
     renderServeCheckConfig({
       passed,
@@ -2158,9 +2202,10 @@ const checkConfigCommand = new Command()
       oauthProvider: providerUrl,
       entries: check.entries,
       allowedCollectives: authConfig.allowedCollectives,
-      wouldStart: check.wouldStart && keyUsable,
+      wouldStart: check.wouldStart && keyUsable && grantsLoad,
       ...(check.refusal !== undefined ? { refusal: check.refusal } : {}),
       restrictionWarnings,
+      ...grantReport,
       ...(tokenSecretsKey ? { tokenSecretsKey } : {}),
     }, ctx.outputMode);
 
@@ -3662,22 +3707,27 @@ export const serveCommand = new Command()
     });
 
     const grantsDir = join(resolvedRepoDir, "grants");
-    const grantFileResults = await readGrantFiles(
-      grantsDir,
-      validateGrantCondition,
-    );
-    const grantFileErrors = collectErrors(grantFileResults);
+    // No literal reader: the policy snapshot loader reports each grant's
+    // type spellings once it is reconciled, so reading them here as well
+    // would warn twice (swamp-club#3130).
+    const grantFiles = await readServeGrantFiles(resolvedRepoDir, {
+      grantsFile: merged.grantsFile,
+      grantsDir: merged.grantsDir,
+      validateCondition: validateGrantCondition,
+    });
+    if (grantFiles.repoUnreadable) throw grantFiles.repoUnreadable.cause;
+    const grantFileErrors = collectErrors(grantFiles.repo);
 
     if (grantFileErrors.length > 0) {
-      const errorMessages = grantFileErrors.map((e) => {
-        const loc = e.entryIndex !== undefined
-          ? `${e.filename} entry ${e.entryIndex + 1}`
-          : e.filename;
-        return `  ${loc}: ${e.message}`;
-      });
+      // Named as grants/<name>, as swamp serve check-config names them.
       throw new UserError(
         `Grant file validation failed — refusing to start:\n${
-          errorMessages.join("\n")
+          formatGrantFileErrorLines(
+            grantFileErrors.map((e) => ({
+              ...e,
+              filename: join("grants", e.filename),
+            })),
+          )
         }`,
       );
     }
@@ -3686,148 +3736,100 @@ export const serveCommand = new Command()
       string,
       import("../../domain/access/grant_file.ts").GrantFileEntry[]
     >();
-    for (const [filename, result] of grantFileResults) {
+    for (const [filename, result] of grantFiles.repo) {
       validEntries.set(filename, result.entries);
     }
 
-    const externalGrantsFilePath = resolveExternalGrantsFile(
-      resolvedRepoDir,
-      merged.grantsFile,
-    );
-    if (externalGrantsFilePath) {
-      let content: string;
-      try {
-        content = await Deno.readTextFile(externalGrantsFilePath);
-      } catch (cause) {
-        if (cause instanceof Deno.errors.NotFound) {
-          throw markErrorPaths(
-            new UserError(
-              `External grants file not found: ${externalGrantsFilePath}`,
-            ),
-            [externalGrantsFilePath],
-          );
-        }
+    const externalGrantsFilePath = grantFiles.grantsFile?.path;
+    if (grantFiles.grantsFile) {
+      const load = grantFiles.grantsFile;
+      if (load.status === "missing") {
         throw markErrorPaths(
-          new UserError(
-            `Failed to read external grants file ${externalGrantsFilePath}: ${cause}`,
-          ),
-          [externalGrantsFilePath, ...errorPaths(cause)],
+          new UserError(`External grants file not found: ${load.path}`),
+          [load.path],
         );
       }
-
-      if (content.trim().length > 0) {
-        const externalResult = parseGrantFile(
-          externalGrantsFilePath,
-          content,
-          validateGrantCondition,
+      if (load.status === "unreadable") {
+        throw markErrorPaths(
+          new UserError(
+            `Failed to read external grants file ${load.path}: ${load.cause}`,
+          ),
+          [load.path, ...errorPaths(load.cause)],
         );
+      }
+      const externalResult = load.file.result;
+      if (externalResult !== null) {
         if (externalResult.errors.length > 0) {
-          const errorMessages = externalResult.errors.map((e) => {
-            const loc = e.entryIndex !== undefined
-              ? `${e.filename} entry ${e.entryIndex + 1}`
-              : e.filename;
-            return `  ${loc}: ${e.message}`;
-          });
           throw new UserError(
             `External grants file validation failed — refusing to start:\n${
-              errorMessages.join("\n")
+              formatGrantFileErrorLines(externalResult.errors)
             }`,
           );
         }
         validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
         logger
-          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${externalGrantsFilePath}`;
+          .info`Loaded ${externalResult.entries.length} grant(s) from external file ${load.file.path}`;
       } else {
         logger
-          .info`External grants file ${externalGrantsFilePath} is empty — no external grants added`;
+          .info`External grants file ${load.file.path} is empty — no external grants added`;
       }
     }
 
-    const externalGrantsDirPath = await resolveExternalGrantsDir(
-      resolvedRepoDir,
-      merged.grantsDir,
-    );
-    if (merged.grantsDir && !externalGrantsDirPath) {
+    const grantsDirLoad = grantFiles.grantsDir;
+    const externalGrantsDirPath = grantsDirLoad &&
+        grantsDirLoad.status !== "same-as-repo"
+      ? grantsDirLoad.path
+      : undefined;
+    if (grantsDirLoad?.status === "same-as-repo") {
       logger
-        .info`Grants directory ${merged.grantsDir} is the repository grants directory — its files are read once, from there`;
+        .info`Grants directory ${grantsDirLoad.configured} is the repository grants directory — its files are read once, from there`;
     }
-    if (externalGrantsDirPath) {
-      let dirEntries: Deno.DirEntry[];
-      try {
-        dirEntries = [];
-        for await (const entry of Deno.readDir(externalGrantsDirPath)) {
-          dirEntries.push(entry);
-        }
-      } catch (cause) {
-        if (cause instanceof Deno.errors.NotFound) {
-          throw markErrorPaths(
-            new UserError(
-              `External grants directory not found: ${externalGrantsDirPath}`,
-            ),
-            [externalGrantsDirPath],
-          );
-        }
-        throw markErrorPaths(
-          new UserError(
-            `Failed to read external grants directory ${externalGrantsDirPath}: ${cause}`,
-          ),
-          [externalGrantsDirPath, ...errorPaths(cause)],
-        );
-      }
-
-      const yamlFiles = dirEntries
-        .filter((e) =>
-          (e.isFile || e.isSymlink) &&
-          (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
-          !e.name.startsWith(".")
-        )
-        .sort((a, b) => a.name.localeCompare(b.name));
-
+    if (grantsDirLoad?.status === "missing") {
+      throw markErrorPaths(
+        new UserError(
+          `External grants directory not found: ${grantsDirLoad.path}`,
+        ),
+        [grantsDirLoad.path],
+      );
+    }
+    if (grantsDirLoad?.status === "unreadable") {
+      throw markErrorPaths(
+        new UserError(
+          `Failed to read external grants directory ${grantsDirLoad.path}: ${grantsDirLoad.cause}`,
+        ),
+        [grantsDirLoad.path, ...errorPaths(grantsDirLoad.cause)],
+      );
+    }
+    if (grantsDirLoad?.status === "loaded") {
       let totalLoaded = 0;
-      for (const file of yamlFiles) {
-        const filePath = join(externalGrantsDirPath, file.name);
-        let content: string;
-        try {
-          content = await Deno.readTextFile(filePath);
-        } catch (cause) {
+      for (const file of grantsDirLoad.files) {
+        if (file.readError !== undefined) {
           throw markErrorPaths(
             new UserError(
-              `Failed to read grants file ${filePath}: ${cause}`,
+              `Failed to read grants file ${file.path}: ${file.readError}`,
             ),
-            [filePath, ...errorPaths(cause)],
+            [file.path, ...errorPaths(file.readError)],
           );
         }
-
-        if (content.trim().length === 0) continue;
-
-        const result = parseGrantFile(
-          filePath,
-          content,
-          validateGrantCondition,
-        );
-        if (result.errors.length > 0) {
-          const errorMessages = result.errors.map((e) => {
-            const loc = e.entryIndex !== undefined
-              ? `${e.filename} entry ${e.entryIndex + 1}`
-              : e.filename;
-            return `  ${loc}: ${e.message}`;
-          });
+        const parsed = file.result;
+        if (parsed === null) continue;
+        if (parsed.errors.length > 0) {
           throw new UserError(
             `Grants directory file validation failed — refusing to start:\n${
-              errorMessages.join("\n")
+              formatGrantFileErrorLines(parsed.errors)
             }`,
           );
         }
-        validEntries.set(grantsDirSourceName(file.name), result.entries);
-        totalLoaded += result.entries.length;
+        validEntries.set(file.sourceName, parsed.entries);
+        totalLoaded += parsed.entries.length;
       }
 
       if (totalLoaded > 0) {
         logger
-          .info`Loaded ${totalLoaded} grant(s) from ${yamlFiles.length} file(s) in external grants directory ${externalGrantsDirPath}`;
+          .info`Loaded ${totalLoaded} grant(s) from ${grantsDirLoad.files.length} file(s) in external grants directory ${grantsDirLoad.path}`;
       } else {
         logger
-          .info`External grants directory ${externalGrantsDirPath} contains no grants`;
+          .info`External grants directory ${grantsDirLoad.path} contains no grants`;
       }
     }
 
@@ -3877,6 +3879,7 @@ export const serveCommand = new Command()
         runImpliesApprove: !authConfig.approveRequiresExplicitGrant,
         runImpliesSignal: !authConfig.signalRequiresExplicitGrant,
       },
+      readConditionTypeLiterals,
     );
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {

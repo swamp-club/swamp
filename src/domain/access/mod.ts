@@ -100,6 +100,13 @@ export {
   ResourceSelectorSchema,
   resourceSelectorToString,
 } from "./resource_selector.ts";
+export {
+  type ConditionTypeLiteral,
+  type ConditionTypeLiteralReader,
+  findGrantSpellingIssues,
+  type GrantSpellingFinding,
+  type SpelledGrant,
+} from "./grant_spelling.ts";
 
 export {
   type AuthMode,

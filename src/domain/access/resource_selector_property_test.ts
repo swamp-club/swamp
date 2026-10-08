@@ -19,11 +19,14 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import fc from "fast-check";
+import { ModelType } from "../models/model_type.ts";
 import {
+  canonicalTypePattern,
   parseResourceSelector,
   type ResourceKind,
   resourceSelectorMatches,
   resourceSelectorToString,
+  typePatternMatchesIgnoringAt,
 } from "./resource_selector.ts";
 
 const KINDS: ResourceKind[] = ["workflow", "model", "data", "access", "vault"];
@@ -236,5 +239,47 @@ Deno.test("resourceSelectorMatches: 'prefix*' rejects names with a different fir
       },
     ),
     { numRuns: 300 },
+  );
+});
+
+const arbTypeSpelling = fc.stringOf(
+  fc.constantFrom(..."abcAB01-_@/.: ".split("")),
+  { minLength: 1, maxLength: 16 },
+);
+
+Deno.test("canonicalTypePattern: canonical form is a fixed point", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(arbTypeSpelling, arbTypeSpelling.map((p) => `${p}*`)),
+      (pattern) => {
+        const canonical = canonicalTypePattern(pattern);
+        if (canonical === null) return;
+        assertEquals(canonicalTypePattern(canonical), canonical);
+      },
+    ),
+  );
+});
+
+Deno.test("typePatternMatchesIgnoringAt: covers every type the raw pattern matched in canonical spelling", () => {
+  fc.assert(
+    fc.property(
+      fc.oneof(arbTypeSpelling, arbTypeSpelling.map((p) => `${p}*`)),
+      arbTypeSpelling,
+      (pattern, rawType) => {
+        let type: string;
+        try {
+          type = ModelType.create(rawType).normalized;
+        } catch {
+          return;
+        }
+        const canonical = canonicalTypePattern(pattern);
+        if (canonical === null) return;
+        if (
+          resourceSelectorMatches({ kind: "model", pattern: canonical }, type)
+        ) {
+          assert(typePatternMatchesIgnoringAt(canonical, type));
+        }
+      },
+    ),
   );
 });

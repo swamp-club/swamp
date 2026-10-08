@@ -20,6 +20,10 @@
 import { Environment } from "cel-js";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
 import { CONDITION_FIELDS } from "../../domain/access/condition_fields.ts";
+import type {
+  ConditionTypeLiteral,
+  ConditionTypeLiteralReader,
+} from "../../domain/access/grant_spelling.ts";
 import { registerArithmeticOverloads } from "./cel_evaluator.ts";
 
 export type { PrincipalContext } from "../../domain/access/principal_context.ts";
@@ -318,3 +322,109 @@ export function validateGrantCondition(
 
   return { valid: true };
 }
+
+/** The variable a grant condition compares with a resource's type. */
+function typeVariable(kind: ResourceKind): string | null {
+  if (kind === "model") return "modelType";
+  if (kind === "access") return "name";
+  return null;
+}
+
+function isTypeVariable(node: unknown, variable: string): boolean {
+  return isASTNode(node) && node.op === "id" && node.args === variable;
+}
+
+function stringValue(node: unknown): string | null {
+  return isASTNode(node) && node.op === "value" && typeof node.args === "string"
+    ? node.args
+    : null;
+}
+
+function isASTNode(value: unknown): value is ASTNode {
+  return typeof value === "object" && value !== null && "op" in value;
+}
+
+const TYPE_LITERAL_METHODS: Record<string, ConditionTypeLiteral["match"]> = {
+  startsWith: "prefix",
+  endsWith: "fragment",
+  contains: "fragment",
+};
+
+function collectTypeLiterals(
+  node: unknown,
+  variable: string,
+  out: ConditionTypeLiteral[],
+): void {
+  if (!isASTNode(node)) return;
+  const { op, args } = node;
+  if ((op === "==" || op === "!=") && Array.isArray(args)) {
+    const [left, right] = args;
+    const literal = isTypeVariable(left, variable)
+      ? stringValue(right)
+      : isTypeVariable(right, variable)
+      ? stringValue(left)
+      : null;
+    if (literal !== null) out.push({ literal, match: "exact" });
+  }
+  if (op === "in" && Array.isArray(args)) {
+    const [left, right] = args;
+    if (
+      isTypeVariable(left, variable) && isASTNode(right) &&
+      right.op === "list" && Array.isArray(right.args)
+    ) {
+      for (const element of right.args) {
+        const literal = stringValue(element);
+        if (literal !== null) out.push({ literal, match: "exact" });
+      }
+    }
+  }
+  if (op === "rcall" && Array.isArray(args)) {
+    const [method, receiver, callArgs] = args as [string, unknown, unknown[]];
+    const match = TYPE_LITERAL_METHODS[method];
+    if (match && isTypeVariable(receiver, variable)) {
+      const literal = stringValue(callArgs?.[0]);
+      if (literal !== null) out.push({ literal, match });
+    }
+  }
+  visitChildren(args, (child) => collectTypeLiterals(child, variable, out));
+}
+
+/**
+ * Calls `visit` on every AST node within `value`, however deeply it is
+ * nested in arrays: call arguments, list elements and map entries.
+ */
+function visitChildren(value: unknown, visit: (node: ASTNode) => void): void {
+  if (isASTNode(value)) {
+    visit(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) visitChildren(item, visit);
+  }
+}
+
+/**
+ * The string literals a grant condition compares with the resource's type —
+ * `modelType` on a model, `name` on an access resource — so a spelling no
+ * type is stored in can be reported (swamp-club#3130). Literals are reported,
+ * never rewritten. Returns [] for a condition that does not parse; validation
+ * reports that.
+ */
+export const readConditionTypeLiterals: ConditionTypeLiteralReader = (
+  condition,
+  kind,
+) => {
+  const variable = typeVariable(kind);
+  if (variable === null || condition.length > MAX_CONDITION_LENGTH) return [];
+  let parsed: { ast: ASTNode };
+  try {
+    parsed = createGrantConditionEnvironment(kind).parse(
+      condition,
+    ) as unknown as {
+      ast: ASTNode;
+    };
+  } catch {
+    return [];
+  }
+  const out: ConditionTypeLiteral[] = [];
+  collectTypeLiterals(parsed.ast, variable, out);
+  return out;
+};

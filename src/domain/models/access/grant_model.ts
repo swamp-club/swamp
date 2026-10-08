@@ -34,7 +34,11 @@ import {
 } from "../../access/resource_selector.ts";
 import { parseSubject, SubjectSchema } from "../../access/subject.ts";
 import { parsePrincipal, PrincipalSchema } from "../../access/principal.ts";
-import { validateGrantCondition } from "../../../infrastructure/cel/grant_condition_environment.ts";
+import {
+  readConditionTypeLiterals,
+  validateGrantCondition,
+} from "../../../infrastructure/cel/grant_condition_environment.ts";
+import { findGrantSpellingIssues } from "../../access/grant_spelling.ts";
 
 export const GRANT_MODEL_TYPE = ModelType.create("swamp/grant");
 
@@ -114,6 +118,25 @@ async function create(
         `Invalid grant condition: ${validation.error}`,
       );
     }
+  }
+
+  // A condition literal no type is spelled as matches nothing, so a new grant
+  // with one is refused; a selector may also name instance names, so it is
+  // only warned about (swamp-club#3130).
+  const spelling = findGrantSpellingIssues(
+    { effect: args.effect, resource, condition: args.condition },
+    readConditionTypeLiterals,
+  );
+  const literals = spelling.filter((finding) => finding.part === "condition");
+  if (literals.length > 0) {
+    throw new Error(
+      `Invalid grant condition:${
+        literals.map((finding) => `\n  - ${finding.message}`).join("")
+      }`,
+    );
+  }
+  for (const finding of spelling) {
+    context.logger.warn`${finding.message}`;
   }
 
   const grant: Grant = {

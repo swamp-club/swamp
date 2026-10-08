@@ -39,13 +39,13 @@ import type {
 import {
   collectErrors,
   type GrantFileError,
-  parseGrantFile,
   readGrantFiles,
 } from "../../domain/access/grant_file.ts";
 import {
-  GRANTS_FILE_SOURCE_NAME,
-  grantsDirSourceName,
-} from "../../domain/access/grant_source.ts";
+  readGrantsDirSource,
+  readGrantsFileSource,
+} from "../../domain/access/grant_file_loader.ts";
+import { GRANTS_FILE_SOURCE_NAME } from "../../domain/access/grant_source.ts";
 import {
   createFileGrantStore,
   type FileGrantStore,
@@ -712,30 +712,24 @@ export async function handleAccessReload(
     }
 
     if (ctx.grantsFile) {
-      try {
-        const content = await Deno.readTextFile(ctx.grantsFile);
-        if (content.trim().length > 0) {
-          const externalResult = parseGrantFile(
-            ctx.grantsFile,
-            content,
-            validateGrantCondition,
-          );
-          if (externalResult.errors.length > 0) {
-            allErrors.push(...externalResult.errors.map((e) => ({
-              ...e,
-              filename: "external-grants-file",
-            })));
-          } else {
-            validEntries.set(GRANTS_FILE_SOURCE_NAME, externalResult.entries);
-          }
-        }
-      } catch (error) {
+      const load = await readGrantsFileSource(ctx.grantsFile, {
+        validateCondition: validateGrantCondition,
+      });
+      if (load.status !== "loaded") {
         logger
-          .error`Failed to read external grants file ${ctx.grantsFile}: ${error}`;
+          .error`Failed to read external grants file ${ctx.grantsFile}: ${load.cause}`;
         allErrors.push({
           filename: "external-grants-file",
           message: "Failed to read external grants file",
         });
+      } else if (load.file.result !== null) {
+        if (load.file.result.errors.length > 0) {
+          for (const e of load.file.result.errors) {
+            allErrors.push({ ...e, filename: "external-grants-file" });
+          }
+        } else {
+          validEntries.set(GRANTS_FILE_SOURCE_NAME, load.file.result.entries);
+        }
       }
 
       if (allErrors.length > 0) {
@@ -754,50 +748,33 @@ export async function handleAccessReload(
     }
 
     if (ctx.grantsDir) {
-      try {
-        const dirEntries: Deno.DirEntry[] = [];
-        for await (const entry of Deno.readDir(ctx.grantsDir)) {
-          dirEntries.push(entry);
-        }
-        const yamlFiles = dirEntries
-          .filter((e) =>
-            (e.isFile || e.isSymlink) &&
-            (e.name.endsWith(".yaml") || e.name.endsWith(".yml")) &&
-            !e.name.startsWith(".")
-          )
-          .sort((a, b) => a.name.localeCompare(b.name));
-
-        for (const file of yamlFiles) {
-          const filePath = join(ctx.grantsDir, file.name);
-          try {
-            const content = await Deno.readTextFile(filePath);
-            if (content.trim().length === 0) continue;
-            const result = parseGrantFile(
-              filePath,
-              content,
-              validateGrantCondition,
-            );
-            if (result.errors.length > 0) {
-              allErrors.push(...result.errors);
-            } else {
-              validEntries.set(grantsDirSourceName(file.name), result.entries);
-            }
-          } catch (error) {
-            logger
-              .error`Failed to read external grants dir file ${filePath}: ${error}`;
-            allErrors.push({
-              filename: filePath,
-              message: `Failed to read: ${error}`,
-            });
-          }
-        }
-      } catch (error) {
+      const load = await readGrantsDirSource(ctx.grantsDir, {
+        validateCondition: validateGrantCondition,
+      });
+      if (load.status === "missing" || load.status === "unreadable") {
         logger
-          .error`Failed to read external grants directory ${ctx.grantsDir}: ${error}`;
+          .error`Failed to read external grants directory ${ctx.grantsDir}: ${load.cause}`;
         allErrors.push({
           filename: "external-grants-dir",
           message: "Failed to read external grants directory",
         });
+      } else if (load.status === "loaded") {
+        for (const file of load.files) {
+          if (file.readError !== undefined) {
+            logger
+              .error`Failed to read external grants dir file ${file.path}: ${file.readError}`;
+            allErrors.push({
+              filename: file.path,
+              message: `Failed to read: ${file.readError}`,
+            });
+          } else if (file.result !== null) {
+            if (file.result.errors.length > 0) {
+              for (const e of file.result.errors) allErrors.push(e);
+            } else {
+              validEntries.set(file.sourceName, file.result.entries);
+            }
+          }
+        }
       }
 
       if (allErrors.length > 0) {
