@@ -73,6 +73,15 @@ const INSTRUCTIONS_SECTION_BEGIN =
 const INSTRUCTIONS_SECTION_END = "<!-- END swamp managed section -->";
 const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
 
+// Earlier versions allowed every vault subcommand in Claude settings, which
+// pre-approves `swamp vault read-secret`. Upgrade removes this exact entry.
+const LEGACY_CLAUDE_VAULT_ALLOW = "Bash(swamp vault:*)";
+
+// Kiro IDE checks its denylist before its trusted commands and matches by
+// substring, so this asks before `read-secret` however the command is spelled
+// (e.g. `swamp --json vault read-secret`).
+const KIRO_COMMAND_DENYLIST = ["read-secret"];
+
 /**
  * Describes what happened to the .gitignore during init/upgrade.
  * - "created": a new .gitignore file was created with the managed section
@@ -1650,7 +1659,23 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       "Bash(swamp workflow validate:*)",
       "Bash(swamp workflow schema:*)",
       "Bash(swamp workflow history:*)",
-      "Bash(swamp vault:*)",
+      // Every vault subcommand except read-secret, which reveals a secret
+      // value and must ask first (swamp-club#3219).
+      "Bash(swamp vault type:*)",
+      "Bash(swamp vault search:*)",
+      "Bash(swamp vault list:*)",
+      "Bash(swamp vault get:*)",
+      "Bash(swamp vault describe:*)",
+      "Bash(swamp vault inspect:*)",
+      "Bash(swamp vault list-keys:*)",
+      "Bash(swamp vault audit-trail:*)",
+      "Bash(swamp vault create:*)",
+      "Bash(swamp vault edit:*)",
+      "Bash(swamp vault put:*)",
+      "Bash(swamp vault write-secret:*)",
+      "Bash(swamp vault delete:*)",
+      "Bash(swamp vault annotate:*)",
+      "Bash(swamp vault migrate:*)",
       "Bash(swamp data:*)",
       "Bash(swamp repo:*)",
       "Bash(swamp telemetry:*)",
@@ -1789,9 +1814,13 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     // Get our allowed commands
     const ourCommands = this.getClaudeAllowedCommands();
 
-    // Merge with existing permissions
+    // Merge with existing permissions, dropping the vault wildcard earlier
+    // versions wrote because it pre-approves read-secret.
     const existingAllow = existingSettings.permissions?.allow ?? [];
-    const mergedAllow = [...new Set([...existingAllow, ...ourCommands])];
+    const keptAllow = existingAllow.filter((cmd) =>
+      cmd !== LEGACY_CLAUDE_VAULT_ALLOW
+    );
+    const mergedAllow = [...new Set([...keptAllow, ...ourCommands])];
 
     // Merge hooks
     const ourHooks = this.getClaudeHooks();
@@ -1803,6 +1832,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
 
     // Check if anything changed
     const permissionsChanged = mergedAllow.length !== existingAllow.length ||
+      keptAllow.length !== existingAllow.length ||
       !ourCommands.every((cmd) => existingAllow.includes(cmd));
     const hooksChanged = JSON.stringify(existingSettings.hooks ?? {}) !==
       JSON.stringify(mergedHooks);
@@ -1913,6 +1943,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       "kiroAgent.trustedCommands": [
         "swamp *",
       ],
+      "kiroAgent.commandDenylist": KIRO_COMMAND_DENYLIST,
     };
     return JSON.stringify(settings, null, 2) + "\n";
   }
@@ -1962,8 +1993,19 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
         [];
     const mergedCommands = [...new Set([...existingCommands, ...ourCommands])];
 
+    const rawDenylist = existingSettings["kiroAgent.commandDenylist"];
+    const existingDenylist = Array.isArray(rawDenylist)
+      ? rawDenylist.filter((entry): entry is string =>
+        typeof entry === "string"
+      )
+      : [];
+    const mergedDenylist = [
+      ...new Set([...existingDenylist, ...KIRO_COMMAND_DENYLIST]),
+    ];
+
     const hasChanges = mergedCommands.length !== existingCommands.length ||
-      !ourCommands.every((cmd) => existingCommands.includes(cmd));
+      !ourCommands.every((cmd) => existingCommands.includes(cmd)) ||
+      !KIRO_COMMAND_DENYLIST.every((cmd) => existingDenylist.includes(cmd));
 
     if (!hasChanges && settingsExisted) {
       return false;
@@ -1972,6 +2014,7 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     const newSettings = {
       ...existingSettings,
       "kiroAgent.trustedCommands": mergedCommands,
+      "kiroAgent.commandDenylist": mergedDenylist,
     };
     await atomicWriteTextFile(
       settingsPath,
@@ -2259,6 +2302,10 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       toolsSettings: {
         shell: {
           allowedCommands: ["swamp .*"],
+          // Denied wins over allowed. kiro-cli blocks a denied command
+          // rather than asking, and its regex has no look-ahead to exclude
+          // read-secret from the allow pattern (swamp-club#3219).
+          deniedCommands: [".*read-secret.*"],
         },
       },
       hooks: {
