@@ -592,6 +592,10 @@ export {
   type ServerTokenRotateInput,
 } from "./access/token_rotate.ts";
 export { createServerTokenRunDeps } from "./access/run_deps.ts";
+export {
+  explainedAccessResource,
+  type ExplainedResourceDeps,
+} from "./access/explained_resource.ts";
 
 export {
   createNamespace,

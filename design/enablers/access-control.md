@@ -1172,3 +1172,31 @@ tested before deployment.
 
 Implementation: `src/cli/commands/access_can_i.ts`,
 `src/serve/handlers/access_handlers.ts`.
+
+## The access check
+
+`swamp access check` explains whether a subject can perform an action on a
+resource. With `--server` the server explains it. Without `--server` it is
+explained locally against the repo's grants. Both explain a concrete model,
+data or workflow name as a request would judge it: the name is resolved from
+the repo to the resource it names, with its stored type and tags, so
+`deny write --on model:command/shell` denies a write to a `command/shell` model
+under any name, and a condition on `tags` reads the resource's own tags. A name
+that matches nothing is a resource with no tags. A wildcard pattern or an
+`access:` resource is a check on the kind. Locally and on the server the
+resource is built by one function, so the two give the same answer for the same
+repo (swamp-club#3224).
+
+`--field key=value` (local only) overrides a resolved field, to simulate a
+resource that does not exist yet or a future tag; a `tags.<key>` field replaces
+that one tag and keeps the others. A lookup that fails is reported as a warning,
+and the resource is then checked by name only.
+
+A local check knows nothing a server is started with: `--restricted-model-types`
+(which needs `admin` on `access:*` to create or run a restricted type) and the
+caller's IdP groups are not reflected, so check against the server when those
+matter.
+
+Implementation: `src/libswamp/access/explained_resource.ts` (used by
+`src/cli/commands/access_check.ts` and `src/serve/handlers/access_handlers.ts`),
+`src/domain/access/access_resources.ts`.
