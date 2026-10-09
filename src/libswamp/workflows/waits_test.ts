@@ -588,3 +588,43 @@ Deno.test("workflowWaits: a signal a resume already applied is not listed as sig
   const after = await listAll(depsOf([run], T1, waits), true);
   assertEquals(after.signalled?.map((w) => w.stepName), ["second"]);
 });
+
+Deno.test("workflowWaits: a keyed wait is listed with its key, open or signalled, and an unkeyed one has no key field", async () => {
+  const workflow = workflowNamed("release", ["review", "plain"]);
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  job.getStep("review")!.start();
+  job.getStep("review")!.waitForSignal(
+    SignalWait.open(SCHEMA, 60, T0, undefined, "kitchen-verdict"),
+  );
+  job.getStep("plain")!.start();
+  job.getStep("plain")!.waitForSignal(SignalWait.open(SCHEMA, 120, T0));
+  job.getStep("gate")!.waitForApproval("Approve");
+  run.suspend();
+  const store = new InMemorySignalWaitStore();
+  const deps = depsOf([run], T1, store);
+
+  // Nothing registered the waits: the listing rebuilds each registration
+  // from the run record, key included.
+  const waits = await list(deps);
+  assertEquals(waits.map((w) => [w.stepName, w.key]), [
+    ["review", "kitchen-verdict"],
+    ["plain", undefined],
+  ]);
+  assertEquals("key" in waits[1], false);
+
+  const keyed = job.getStep("review")!.signalWait!;
+  await store.settle(
+    acceptedOutcomeFor(keyed, { verdict: "ship" }, { runId: run.id }),
+  );
+  const events = await collect<WorkflowWaitsEvent>(
+    workflowWaits(createLibSwampContext(), deps, { includeSignalled: true }),
+  );
+  const last = events.at(-1)!;
+  assert(last.kind === "completed");
+  assertEquals(last.data.signalled?.map((w) => [w.stepName, w.key]), [
+    ["review", "kitchen-verdict"],
+  ]);
+});

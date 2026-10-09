@@ -174,3 +174,36 @@ Deno.test("renderWaits: an unreadable wait is listed with its resume command, an
     unreadableWaits: [UNREADABLE],
   });
 });
+
+Deno.test("renderWaits: a keyed wait shows its key in JSON and in the log lines, and an unkeyed wait shows none", () => {
+  const keyed = wait({ key: "kitchen-verdict" });
+  const json = captureStdout(() =>
+    renderWaits(
+      hintTestContext({ outputMode: "json" }),
+      listed([keyed, wait()]),
+    )
+  );
+  const printed = JSON.parse(json[0]) as { waits: SignalWaitInfo[] };
+  assertEquals(printed.waits.map((w) => w.key), [
+    "kitchen-verdict",
+    undefined,
+  ]);
+
+  const logged: string[] = [];
+  const logger = {
+    info: (message: string, properties?: Record<string, unknown>) =>
+      logged.push(
+        message.replace(
+          /\{(\w+)\}/g,
+          (_match, name) => String(properties?.[name]),
+        ),
+      ),
+    warn: () => {},
+  } as unknown as ReturnType<typeof hintTestContext>["logger"];
+  captureStdout(() =>
+    renderWaits(hintTestContext({ logger }), listed([keyed, wait()]))
+  );
+  assertEquals(logged.filter((line) => line.includes("Key:")), [
+    "  Key:      kitchen-verdict",
+  ]);
+});

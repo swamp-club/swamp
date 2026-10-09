@@ -2700,3 +2700,82 @@ Deno.test("passes a signal wait whose workflow sets autoResume, declares no inpu
     );
   }
 });
+
+// --- wait keys (swamp-club#3209) ---
+
+function keyedWorkflow(
+  steps: { job: string; step: string; key?: string; forEach?: boolean }[],
+): Workflow {
+  const jobs = [...new Set(steps.map((s) => s.job))];
+  return Workflow.create({
+    name: "keyed",
+    jobs: jobs.map((job) =>
+      Job.create({
+        name: job,
+        steps: steps.filter((s) => s.job === job).map((s) =>
+          Step.create({
+            name: s.step,
+            ...(s.forEach
+              ? { forEach: { item: "room", in: "${{ inputs.rooms }}" } }
+              : {}),
+            task: StepTask.waitForSignal(60, { type: "object" }, s.key),
+          })
+        ),
+      })
+    ),
+  });
+}
+
+function keyFailures(results: WorkflowValidationResult[]) {
+  return results.filter((r) => !r.passed && /wait key/i.test(r.name));
+}
+
+Deno.test("passes waits with distinct keys, and waits with no key", async () => {
+  const results = await service.validate(keyedWorkflow([
+    { job: "a", step: "one", key: "kitchen" },
+    { job: "a", step: "two", key: "hall" },
+    { job: "b", step: "one" },
+    { job: "b", step: "two" },
+    { job: "b", step: "each", forEach: true },
+  ]));
+  assertEquals(keyFailures(results), []);
+});
+
+Deno.test("fails the same wait key on two steps, in one job or across jobs, naming the steps", async () => {
+  const results = await service.validate(keyedWorkflow([
+    { job: "a", step: "one", key: "kitchen" },
+    { job: "a", step: "two", key: "kitchen" },
+    { job: "b", step: "one", key: "hall" },
+    { job: "c", step: "one", key: "hall" },
+    { job: "c", step: "two", key: "porch" },
+  ]));
+  assertEquals(
+    keyFailures(results).map((r) => [r.name, r.error]),
+    [
+      [
+        "Unique wait key 'kitchen'",
+        "The key is declared by job 'a' step 'one' and job 'a' step 'two'. One open wait holds a key at a time, so each wait_for_signal step of a workflow needs its own key",
+      ],
+      [
+        "Unique wait key 'hall'",
+        "The key is declared by job 'b' step 'one' and job 'c' step 'one'. One open wait holds a key at a time, so each wait_for_signal step of a workflow needs its own key",
+      ],
+    ],
+  );
+});
+
+Deno.test("fails a wait key on a step under forEach, naming the step", async () => {
+  const results = await service.validate(keyedWorkflow([
+    { job: "a", step: "each", key: "kitchen", forEach: true },
+  ]));
+  const failures = keyFailures(results);
+  assertEquals(failures.map((r) => r.name), [
+    "Wait key in job 'a' step 'each'",
+  ]);
+  assertEquals(
+    failures[0].error?.includes(
+      "a wait_for_signal step under forEach cannot declare a key",
+    ),
+    true,
+  );
+});

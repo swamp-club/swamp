@@ -779,6 +779,7 @@ as its instance id. The coordination records:
 | `claims/reconcile-instance/<instanceId>`    | `putIfAbsent` by the instance that will reap a dead peer        | `cleanupExpiredClaims` (5 min TTL)                                         |
 | `waits/<waitId>`                            | The executor, when a `wait_for_signal` step starts waiting      | `workflow signal`, `workflow waits`; removed when the run ends            |
 | `wait-outcomes/<waitId>`                    | `putIfAbsent` by whichever of a signal, a timeout or a cancel settles the wait first | The resume that applies it; removed with the run record |
+| `wait-keys/<workflowId>/<key>/<generation>` | `putIfAbsent` by a `wait_for_signal` step that declares a `key`, before it registers its wait; a release by whoever removes the highest claim | The next step that claims the key; removed with the run record, or with the workflow |
 | `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance

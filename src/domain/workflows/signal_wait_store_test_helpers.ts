@@ -29,15 +29,29 @@ import type {
   SignalWaitStore,
   SignalWaitSupport,
 } from "./signal_wait_store.ts";
+import {
+  decodeWaitKeyRecord,
+  encodeWaitKeyRecord,
+  type HighestKeyRecord,
+  type WaitKeyAddress,
+  waitKeyAddressFromKey,
+  waitKeyPrefix,
+  type WaitKeyRecord,
+  waitKeyRecordKey,
+  waitKeyWorkflowPrefix,
+} from "./wait_key_claim.ts";
 
 /**
  * A {@link SignalWaitStore} held in memory, for tests. Records are kept as
  * the bytes a real store holds, so every read is parsed as in production,
- * and `registrations` and `outcomes` can be edited to stage a damaged one.
+ * and `registrations`, `outcomes` and `keyRecords` can be edited to stage a
+ * damaged one.
  */
 export class InMemorySignalWaitStore implements SignalWaitStore {
   readonly registrations = new Map<string, Uint8Array>();
   readonly outcomes = new Map<string, Uint8Array>();
+  /** Key records by their store key. */
+  readonly keyRecords = new Map<string, Uint8Array>();
 
   register(registration: WaitRegistration): Promise<void> {
     if (!this.registrations.has(registration.waitId)) {
@@ -96,6 +110,67 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
   removeOutcome(waitId: string): Promise<void> {
     this.outcomes.delete(waitId);
     return Promise.resolve();
+  }
+
+  highestKeyRecord(
+    workflowId: string,
+    key: string,
+  ): Promise<HighestKeyRecord> {
+    const prefix = waitKeyPrefix(workflowId, key);
+    let generation = 0;
+    for (const storeKey of this.keyRecords.keys()) {
+      if (!storeKey.startsWith(prefix)) continue;
+      const at = waitKeyAddressFromKey(storeKey);
+      if (at !== undefined && at.generation > generation) {
+        generation = at.generation;
+      }
+    }
+    if (generation === 0) return Promise.resolve({ kind: "none" });
+    const stored = this.#findKeyRecord({ workflowId, key, generation });
+    return Promise.resolve(
+      stored.kind === "found" ? stored : { kind: "unreadable", generation },
+    );
+  }
+
+  createKeyRecord(
+    record: WaitKeyRecord,
+  ): Promise<StoredWaitRecord<WaitKeyRecord>> {
+    const storeKey = waitKeyRecordKey(record);
+    if (!this.keyRecords.has(storeKey)) {
+      this.keyRecords.set(storeKey, encodeWaitKeyRecord(record));
+    }
+    return Promise.resolve(this.#findKeyRecord(record));
+  }
+
+  listKeyRecords(): Promise<WaitKeyRecord[]> {
+    const found: WaitKeyRecord[] = [];
+    for (const storeKey of [...this.keyRecords.keys()]) {
+      const at = waitKeyAddressFromKey(storeKey);
+      if (at === undefined) continue;
+      const stored = this.#findKeyRecord(at);
+      if (stored.kind === "found") found.push(stored.record);
+    }
+    return Promise.resolve(found);
+  }
+
+  removeKeyRecord(at: WaitKeyAddress): Promise<void> {
+    this.keyRecords.delete(waitKeyRecordKey(at));
+    return Promise.resolve();
+  }
+
+  removeKeyRecordsOfWorkflow(workflowId: string): Promise<void> {
+    const prefix = waitKeyWorkflowPrefix(workflowId);
+    for (const storeKey of [...this.keyRecords.keys()]) {
+      if (storeKey.startsWith(prefix)) this.keyRecords.delete(storeKey);
+    }
+    return Promise.resolve();
+  }
+
+  #findKeyRecord(at: WaitKeyAddress): StoredWaitRecord<WaitKeyRecord> {
+    return decodeWaitKeyRecord(
+      this.keyRecords.get(waitKeyRecordKey(at)) ?? null,
+      at,
+    );
   }
 }
 

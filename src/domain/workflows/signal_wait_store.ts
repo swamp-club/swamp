@@ -22,13 +22,15 @@ import type {
   WaitOutcome,
   WaitRegistration,
 } from "./signal_wait_records.ts";
+import type { WaitKeyRecords } from "./wait_key_claim.ts";
 
 /**
  * Where the registrations and outcomes of signal waits are kept
- * (swamp-club#3093). Every process on the datastore reads and writes the
+ * (swamp-club#3093), and the records of the keys waits hold
+ * (swamp-club#3209). Every process on the datastore reads and writes the
  * same records, without the run claim and without the run record.
  */
-export interface SignalWaitStore {
+export interface SignalWaitStore extends WaitKeyRecords {
   /**
    * Records a wait. A registration that already exists is left as it is, so
    * a backfill and the executor never overwrite each other.
@@ -136,4 +138,9 @@ export const UNSHARED_SIGNAL_WAITS: SignalWaitStore = {
   settle: (outcome) => Promise.resolve({ kind: "found", record: outcome }),
   removeRegistration: () => Promise.resolve(),
   removeOutcome: () => Promise.resolve(),
+  highestKeyRecord: () => Promise.resolve({ kind: "none" }),
+  createKeyRecord: (record) => Promise.resolve({ kind: "found", record }),
+  listKeyRecords: () => Promise.resolve([]),
+  removeKeyRecord: () => Promise.resolve(),
+  removeKeyRecordsOfWorkflow: () => Promise.resolve(),
 };

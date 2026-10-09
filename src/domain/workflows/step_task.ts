@@ -23,9 +23,11 @@ import {
   RequiredInputsSchemaSchema,
 } from "../definitions/definition.ts";
 import {
+  isWaitKey,
   SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
   SUPPORTED_WAIT_SCHEMA_KEYWORDS,
   unenforcedSchemaKeywords,
+  WAIT_KEY_FORM,
 } from "./signal_wait.ts";
 
 const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}\s*$/s;
@@ -81,6 +83,12 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     timeout: z.number().positive().max(SIGNAL_WAIT_MAX_TIMEOUT_SECONDS),
     // The payload schema, in the same form as workflow `inputs`.
     schema: RequiredInputsSchemaSchema,
+    // A name at most one open wait of the workflow holds at a time
+    // (swamp-club#3209). A literal: it takes no expression.
+    key: z.string().refine(
+      isWaitKey,
+      `A wait_for_signal key must be ${WAIT_KEY_FORM}. It takes no expression.`,
+    ).optional(),
   }),
 ]);
 
@@ -302,6 +310,7 @@ export class StepTask {
   static waitForSignal(
     timeout: number,
     schema: InputsSchema,
+    key?: string,
   ): StepTask {
     // Parsed, so the schema's keys are in the order a loaded task has them
     // and equals() compares the two alike.
@@ -309,6 +318,7 @@ export class StepTask {
       type: "wait_for_signal",
       timeout,
       schema,
+      ...(key !== undefined ? { key } : {}),
     });
   }
 

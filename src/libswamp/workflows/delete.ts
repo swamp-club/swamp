@@ -95,9 +95,13 @@ export interface WorkflowDeleteDeps {
   deleteRunSnapshots: (runIds: readonly string[]) => Promise<void>;
   /**
    * Removes the signal wait records of the given runs, so an outcome never
-   * outlives its run. Absent where the datastore holds no wait records.
+   * outlives its run, and the key records of the workflow. Absent where
+   * the datastore holds no wait records.
    */
-  deleteWaitRecords?: (runIds: readonly string[]) => Promise<void>;
+  deleteWaitRecords?: (
+    runIds: readonly string[],
+    workflowId: WorkflowId,
+  ) => Promise<void>;
   deleteEvaluated: (workflowId: WorkflowId) => Promise<void>;
   deleteWorkflow: (workflowId: WorkflowId, name?: string) => Promise<void>;
 }
@@ -153,9 +157,17 @@ export function createWorkflowDeleteDeps(
     listRunIds: (workflowId) =>
       workflowRunRepo.listRunIdsForWorkflow(workflowId),
     deleteWaitRecords: signalWaits?.supported || continuationClaims
-      ? async (runIds) => {
+      ? async (runIds, workflowId) => {
         if (signalWaits?.supported) {
-          await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+          try {
+            await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+          } finally {
+            // Every key record of the workflow goes with it, the release
+            // records its last claims left behind included, and whether
+            // or not the runs' records could be removed: no sweep removes
+            // the highest record of a key (swamp-club#3209).
+            await signalWaits.store.removeKeyRecordsOfWorkflow(workflowId);
+          }
         }
         // The continuation claims of a run go with it (swamp-club#3108).
         await removeClaimsOfRuns(
@@ -262,7 +274,7 @@ export async function* workflowDelete(
           // The runs are gone by now. A store that cannot be reached must
           // not leave the workflow half deleted, so the delete goes on.
           try {
-            await deps.deleteWaitRecords(runIds);
+            await deps.deleteWaitRecords(runIds, workflow.id);
           } catch (error) {
             ctx.logger
               .warn`Could not remove the signal wait records and continuation claims of the deleted runs: ${
