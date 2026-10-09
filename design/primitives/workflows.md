@@ -857,9 +857,7 @@ as a new claim with a new wait ID. A step whose process stopped between its
 claim and its registration finds the highest claim naming its own run, job and
 step with no outcome, and opens the wait that claim names instead of a second
 one. The key is kept on the wait in the run record and on the registration, so
-a registration rebuilt from the run record keeps it. A registration that fails
-after the claim was created settles the claimed wait as cancelled before the
-error is passed on, so a store error does not leave the key held.
+a registration rebuilt from the run record keeps it. A store error in the claim itself or in the registration that follows it settles the wait the claim names as cancelled before the error is passed on. A create that landed and could not be read back, or a registration that failed, therefore does not leave the key held; where that settle fails too, the abandoned-claim rule below frees the key.
 
 Claims live as long as outcomes, because the holder decision reads the
 outcome: nothing is removed when a run ends. They are removed with the run's

@@ -24,7 +24,7 @@ import {
 } from "./signal_wait_store_test_helpers.ts";
 import type { WaitRegistration } from "./signal_wait_records.ts";
 import { WAIT_KEY_HELD_STEP_ERROR } from "./signal_wait.ts";
-import { waitKeyRecordKey } from "./wait_key_claim.ts";
+import { type WaitKeyRecord, waitKeyRecordKey } from "./wait_key_claim.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
@@ -18705,6 +18705,77 @@ Deno.test("wait_for_signal: a registration that fails after the key was claimed 
     assert(highest.kind === "found" && highest.record.kind === "claim");
     assertEquals(highest.record.generation, 2);
     assertEquals(highest.record.waitId, registrations[0].waitId);
+  });
+});
+
+Deno.test("wait_for_signal: a claim that was created and could not be read back does not leave the key held", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-key-read-back-fails-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    // The create lands; the read that follows it fails, once.
+    class LosesTheReadBack extends InMemorySignalWaitStore {
+      failing = true;
+      override async createKeyRecord(record: WaitKeyRecord) {
+        const stored = await super.createKeyRecord(record);
+        if (!this.failing) return stored;
+        this.failing = false;
+        throw new Error("read timed out");
+      }
+    }
+    const store = new LosesTheReadBack();
+    const service = () => {
+      const made = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        undefined,
+        undefined,
+        new CatalogStore(join(tempDir, `_catalog-${crypto.randomUUID()}.db`)),
+      );
+      made.signalWaits = { supported: true, store };
+      return made;
+    };
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service().run(workflow.name)) events.push(event);
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertStringIncludes(failed.error, "read timed out");
+    // The claim is there, no wait was registered for it, and it is closed.
+    const claims = await store.listKeyRecords();
+    assertEquals(claims.length, 1);
+    assert(claims[0].kind === "claim");
+    assertEquals(await store.listRegistrations(), []);
+    const outcome = await store.findOutcome(claims[0].waitId);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "cancelled");
+
+    // Another run takes the key straight away, with no grace period to wait
+    // out.
+    for await (const _event of service().run(workflow.name)) { /* drain */ }
+    const registrations = await store.listRegistrations();
+    assertEquals(registrations.length, 1);
+    const highest = await store.highestKeyRecord(workflow.id, "verdict");
+    assert(highest.kind === "found" && highest.record.kind === "claim");
+    assertEquals(
+      [highest.record.generation, highest.record.waitId],
+      [2, registrations[0].waitId],
+    );
   });
 });
 

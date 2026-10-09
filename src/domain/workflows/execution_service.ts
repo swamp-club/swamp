@@ -91,7 +91,11 @@ import {
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "./signal_wait.ts";
-import { claimWaitKey, waitKeyRefusal } from "./wait_key_claim.ts";
+import {
+  claimWaitKey,
+  type WaitKeyAcquisition,
+  waitKeyRefusal,
+} from "./wait_key_claim.ts";
 import {
   cancelAndSettle,
   failAbandonedSteps,
@@ -5296,16 +5300,47 @@ export class WorkflowExecutionService {
         // A keyed wait claims its key before it is registered, so a step
         // that finds the key held opens nothing (swamp-club#3209). A wait
         // taken over holds its claim already.
+        // A claim that was created for a wait that is then not opened would
+        // hold the key with nothing on the run record to settle it. The
+        // wait is settled as cancelled, which frees the key at once. Where
+        // the store fails this too, the next claimant closes the claim once
+        // it has aged (`settleAbandoned`).
+        const closeUnopenedWait = async (unopened: SignalWait) => {
+          if (unopened.key === undefined) return;
+          try {
+            await waits.settle(cancelledOutcome({
+              waitId: unopened.id,
+              workflowId: run.workflowId,
+              runId: run.id,
+              deadline: unopened.deadline.toISOString(),
+            }, new Date()));
+          } catch {
+            // The store is failing; the error that led here is the one to
+            // report.
+          }
+        };
         if (!earlier && task.key !== undefined) {
-          const acquisition = await claimWaitKey(waits, {
-            workflowId: run.workflowId,
-            key: task.key,
-            waitId: wait.id,
-            runId: run.id,
-            jobName: job.name,
-            stepName,
-            deadline: wait.deadline.toISOString(),
-          }, openedAt);
+          let acquisition: WaitKeyAcquisition;
+          try {
+            acquisition = await claimWaitKey(waits, {
+              workflowId: run.workflowId,
+              key: task.key,
+              waitId: wait.id,
+              runId: run.id,
+              jobName: job.name,
+              stepName,
+              deadline: wait.deadline.toISOString(),
+              // Read now, not when the step began: finding a wait to take
+              // over reads every registration, and a claim dated before
+              // that would look older than it is to a claimant judging
+              // whether it was abandoned.
+            }, new Date());
+          } catch (error) {
+            // The claim may have been created before the store failed: a
+            // create that landed and could not be read back, for one.
+            await closeUnopenedWait(wait);
+            throw error;
+          }
           if (acquisition.kind === "own") {
             // This step claimed the key and its process stopped before the
             // wait was registered. The claim names that wait, so the step
@@ -5360,22 +5395,7 @@ export class WorkflowExecutionService {
               ),
             );
           } catch (error) {
-            // The claim was created and the wait was not: nothing on the
-            // run record would ever settle it, and it would hold the key
-            // until its deadline. Settling it frees the key now.
-            if (wait.key !== undefined) {
-              try {
-                await waits.settle(cancelledOutcome({
-                  waitId: wait.id,
-                  workflowId: run.workflowId,
-                  runId: run.id,
-                  deadline: wait.deadline.toISOString(),
-                }, openedAt));
-              } catch {
-                // The store is failing; the registration error is the one
-                // to report, and the claim ends at its deadline.
-              }
-            }
+            await closeUnopenedWait(wait);
             throw error;
           }
         }
