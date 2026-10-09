@@ -128,6 +128,15 @@ Deno.test("escapeLogTemplate: escapes curly braces for LogTape", async (t) => {
     );
   });
 
+  await t.step("leaves a closing brace alone when no brace opens", () => {
+    assertEquals(escapeLogTemplate("7 | +};"), "7 | +};");
+    assertEquals(escapeLogTemplate("}}"), "}}");
+  });
+
+  await t.step("escapes both braces when a closing brace comes first", () => {
+    assertEquals(escapeLogTemplate("} else {"), "}} else {{");
+  });
+
   await t.step("leaves arrays unchanged", () => {
     assertEquals(escapeLogTemplate("[1,2]"), "[1,2]");
   });
