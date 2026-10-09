@@ -24,6 +24,7 @@ import { escapeControlCharacters } from "../control_characters.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
+import { gateTimeoutSeconds } from "./approval_timeout.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
   type ExpandedStep,
@@ -991,24 +992,23 @@ function suspendedEventFor(
 ): WorkflowExecutionEvent | undefined {
   const waiting = run.findWaitingApprovalStep();
   if (waiting) {
-    const taskData = workflow.jobs
-      .find((j) => j.name === waiting.jobName)?.steps
-      .find((s) => s.name === waiting.stepName)?.task.data;
-    // The step run holds the prompt its gate was requested with. A step
-    // expanded by forEach has no step of its name in the definition, so the
-    // definition answers only for a run record without one (swamp-club#3217).
-    const requestedPrompt = run.getJob(waiting.jobName)
-      ?.getStep(waiting.stepName)?.approvalPrompt;
+    const definitionSteps = workflow.jobs
+      .find((j) => j.name === waiting.jobName)?.steps;
+    const taskData = definitionSteps
+      ?.find((s) => s.name === waiting.stepName)?.task.data;
+    // The step run holds the prompt and the timeout its gate was requested
+    // with. A step expanded by forEach has no step of its name in the
+    // definition, so the definition answers only for a run record without
+    // them (swamp-club#3217, swamp-club#3218).
+    const stepRun = run.getJob(waiting.jobName)?.getStep(waiting.stepName);
     return {
       kind: "suspended",
       run,
       jobId: waiting.jobName,
       stepId: waiting.stepName,
-      prompt: requestedPrompt ??
+      prompt: stepRun?.approvalPrompt ??
         (taskData?.type === "manual_approval" ? taskData.prompt : ""),
-      timeout: taskData?.type === "manual_approval"
-        ? taskData.timeout
-        : undefined,
+      timeout: gateTimeoutSeconds(stepRun, definitionSteps),
     };
   }
   const signalWait = run.findSignalWaits()[0];
@@ -5421,7 +5421,7 @@ export class WorkflowExecutionService {
 
       // Handle manual approval tasks — suspend the workflow
       if (task.type === "manual_approval") {
-        stepRun.waitForApproval(task.prompt);
+        stepRun.waitForApproval(task.prompt, task.timeout);
         yield {
           kind: "approval_requested",
           runId: run.id,

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -572,4 +572,114 @@ Deno.test("workflowApprove: a step waiting for a signal is not a gate to approve
 
   assertEquals(last?.kind, "error");
   assertEquals(run.getJob("main")!.getStep("deploy")!.status, "waiting_signal");
+});
+
+// --- timeout of a forEach-expanded gate (swamp-club#3218) ---
+
+/**
+ * A run suspended two hours ago on `approve-prod`, expanded from a forEach
+ * gate with a one-hour timeout. `recorded` is whether the step run holds the
+ * timeout, which a run suspended before swamp-club#3218 does not.
+ */
+function expiredForEachGate(
+  recorded: boolean,
+): { workflow: Workflow; run: WorkflowRun } {
+  const template = "approve-${{ self.env }}";
+  const workflow = Workflow.create({
+    name: "gated",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: template,
+            task: StepTask.manualApproval("Deploy?", 3600),
+            forEach: { item: "env", in: "${{ inputs.envs }}" },
+          }),
+        ],
+      }),
+    ],
+  });
+  const suspended = WorkflowRun.create(workflow);
+  suspended.start();
+  suspended.getJob("main")!.start();
+  suspended.suspend();
+  const data = suspended.toData();
+  const run = WorkflowRun.fromData({
+    ...data,
+    jobs: data.jobs.map((job) => ({
+      ...job,
+      steps: [{
+        stepName: "approve-prod",
+        status: "waiting_approval" as const,
+        startedAt: new Date(Date.now() - 7_200_000).toISOString(),
+        approvalPrompt: "Deploy?",
+        forEachTemplate: template,
+        ...(recorded ? { approvalTimeout: 3600 } : {}),
+      }],
+    })),
+  });
+  return { workflow, run };
+}
+
+for (const recorded of [true, false]) {
+  const which = recorded
+    ? "past its timeout"
+    : "past its timeout on a run suspended before the step run held it";
+
+  Deno.test(`workflowApprove: refuses a forEach-expanded gate ${which}`, async () => {
+    const { workflow, run } = expiredForEachGate(recorded);
+
+    const last = await approve(makeDeps(workflow, run), "approve-prod");
+
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertStringIncludes(
+        last.error.message,
+        'Approval timed out: step "approve-prod"',
+      );
+      assertStringIncludes(last.error.message, "(timeout: 3600s)");
+    }
+    assertEquals(
+      run.getJob("main")!.getStep("approve-prod")!.status,
+      "waiting_approval",
+    );
+  });
+
+  Deno.test(`workflowReject: refuses a forEach-expanded gate ${which}`, async () => {
+    const { workflow, run } = expiredForEachGate(recorded);
+
+    const events = await collect<WorkflowRejectEvent>(
+      workflowReject(
+        createLibSwampContext(),
+        rejectDeps(makeDeps(workflow, run)),
+        { workflowIdOrName: "gated", stepName: "approve-prod", decidedBy: "x" },
+      ),
+    );
+    const last = events.at(-1);
+
+    assertEquals(last?.kind, "error");
+    if (last?.kind === "error") {
+      assertStringIncludes(
+        last.error.message,
+        'Approval timed out: step "approve-prod"',
+      );
+    }
+    assertEquals(
+      run.getJob("main")!.getStep("approve-prod")!.status,
+      "waiting_approval",
+    );
+  });
+}
+
+Deno.test("workflowApprove: approves a forEach-expanded gate inside its timeout", async () => {
+  const { workflow, run } = expiredForEachGate(true);
+  const step = run.getJob("main")!.getStep("approve-prod")!;
+  step.start();
+  step.waitForApproval("Deploy?", 3600);
+
+  const last = await approve(makeDeps(workflow, run), "approve-prod");
+
+  assertEquals(last?.kind, "completed");
+  assertEquals(step.status, "succeeded");
 });

@@ -27,7 +27,10 @@ import {
   type SuspendedRunInfo,
 } from "../../domain/workflows/suspended_run_resolver.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
-import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
+import {
+  evaluateApprovalTimeout,
+  gateTimeoutSeconds,
+} from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -160,10 +163,9 @@ async function approveClaimedRun(
   }
 
   const wfJob = workflow.jobs.find((j) => j.name === jobName);
-  const wfStep = wfJob?.steps.find((s) => s.name === input.stepName);
   const timeout = evaluateApprovalTimeout(
     step.startedAt,
-    wfStep?.task.data,
+    gateTimeoutSeconds(step, wfJob?.steps),
     new Date(),
   );
   if (timeout?.expired) {

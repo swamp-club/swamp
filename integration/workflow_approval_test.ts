@@ -40,6 +40,24 @@ import {
   type WorkflowRunEvent,
 } from "../src/libswamp/workflows/run.ts";
 import { createWorkflowRunRenderer } from "../src/presentation/renderers/workflow_run.ts";
+import { collect } from "../src/libswamp/testing.ts";
+import { createLibSwampContext } from "../src/libswamp/context.ts";
+import {
+  workflowApprove,
+  type WorkflowApproveEvent,
+} from "../src/libswamp/workflows/approve.ts";
+import {
+  workflowReject,
+  type WorkflowRejectEvent,
+} from "../src/libswamp/workflows/reject.ts";
+import {
+  createWorkflowApprovalsDeps,
+  workflowApprovals,
+  type WorkflowApprovalsEvent,
+} from "../src/libswamp/workflows/approvals.ts";
+import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
+import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
+import { createWorkflowRunId } from "../src/domain/workflows/workflow_id.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-approval-" });
@@ -325,3 +343,120 @@ Deno.test("Workflow: a forEach-expanded approval gate is reported as a gate by w
     });
   });
 });
+
+// --- timeout of a forEach-expanded gate (swamp-club#3218) ---
+
+for (const recorded of [true, false]) {
+  const which = recorded
+    ? "past its timeout"
+    : "past its timeout on a run suspended before the step run held it";
+
+  Deno.test(`Workflow: a forEach-expanded approval gate ${which} is listed as expired and refuses approve and reject (swamp-club#3218)`, async () => {
+    await withTempDir(async (repoDir) => {
+      const workflow = Workflow.create({
+        name: "foreach-timed-gate",
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "approve-${{ self.env }}",
+                task: StepTask.manualApproval("Deploy?", 3600),
+                forEach: { item: "env", in: "${{ [inputs.env] }}" },
+              }),
+            ],
+          }),
+        ],
+      });
+
+      const events = await publishedRunEvents(repoDir, workflow, {
+        env: "prod",
+      });
+      const suspended = events.findLast((e) => e.kind === "suspended");
+      assert(suspended?.kind === "suspended");
+      const runId = suspended.run.id;
+
+      // workflow run reports the deadline the gate was requested with.
+      const json = await renderRun("json", workflow.name, events);
+      assertEquals(JSON.parse(json[json.length - 1]).approvalRequired, {
+        workflowName: "foreach-timed-gate",
+        runId,
+        stepId: "approve-prod",
+        jobId: "main",
+        prompt: "Deploy?",
+        timeout: 3600,
+      });
+
+      // Move the gate's start two hours back, past its one-hour timeout.
+      const workflowRepo = new YamlWorkflowRepository(repoDir);
+      const runRepo = new YamlWorkflowRunRepository(repoDir);
+      const stored = await runRepo.findById(
+        workflow.id,
+        createWorkflowRunId(runId),
+      );
+      const data = stored!.toData();
+      const twoHoursAgo = new Date(Date.now() - 7_200_000).toISOString();
+      for (const job of data.jobs) {
+        for (const step of job.steps) {
+          assertEquals(step.stepName, "approve-prod");
+          assertEquals(step.approvalTimeout, 3600);
+          step.startedAt = twoHoursAgo;
+          if (!recorded) delete step.approvalTimeout;
+        }
+      }
+      await runRepo.save(workflow.id, WorkflowRun.fromData(data));
+
+      const ctx = createLibSwampContext();
+      const listed = (await collect<WorkflowApprovalsEvent>(
+        workflowApprovals(
+          ctx,
+          createWorkflowApprovalsDeps(workflowRepo, runRepo),
+        ),
+      )).at(-1);
+      assert(listed?.kind === "completed");
+      assertEquals(listed.data.approvals, []);
+      assertEquals(
+        listed.data.expired.map((e) => [e.runId, e.stepName, e.timeoutSeconds]),
+        [[runId, "approve-prod", 3600]],
+      );
+
+      const deps = { workflowRepo, runRepo, runClaims: unclaimedRuns };
+      const input = {
+        workflowIdOrName: workflow.name,
+        stepName: "approve-prod",
+        runId,
+        decidedBy: "approver",
+      };
+      const approved = (await collect<WorkflowApproveEvent>(
+        workflowApprove(ctx, deps, input),
+      )).at(-1);
+      assert(approved?.kind === "error");
+      assertStringIncludes(
+        approved.error.message,
+        'Approval timed out: step "approve-prod"',
+      );
+
+      const rejected = (await collect<WorkflowRejectEvent>(
+        workflowReject(ctx, {
+          ...deps,
+          findEvaluatedWorkflow: () => Promise.resolve(null),
+        }, input),
+      )).at(-1);
+      assert(rejected?.kind === "error");
+      assertStringIncludes(
+        rejected.error.message,
+        'Approval timed out: step "approve-prod"',
+      );
+
+      // Neither refusal decided the gate.
+      const after = await runRepo.findById(
+        workflow.id,
+        createWorkflowRunId(runId),
+      );
+      assertEquals(
+        after!.getJob("main")!.getStep("approve-prod")!.status,
+        "waiting_approval",
+      );
+    });
+  });
+}

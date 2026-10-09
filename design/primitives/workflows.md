@@ -133,7 +133,14 @@ steps:
 - `prompt` (required, string): message shown to the operator.
 - `timeout` (optional, number): seconds. Checked at both approve and reject
   time against when the step was suspended (`evaluateApprovalTimeout` in
-  `src/libswamp/workflows/approve.ts` and `reject.ts`). Once it expires,
+  `src/domain/workflows/approval_timeout.ts`). The step run records the
+  timeout its gate was requested with (`approvalTimeout`), and that is the one
+  checked (`gateTimeoutSeconds`): a gate expanded by `forEach` expires like
+  any other, and editing the workflow does not move the deadline of a gate
+  that is already waiting. A run record written before the step run held it
+  is answered by the definition instead — the step of the run step's name,
+  or the step a `forEach` iteration was expanded from — so a gate requested
+  with no timeout takes one the definition gains later. Once it expires,
   approve and reject are both refused and the gate is an **expired gate**: the
   run stays `suspended` and can only be cancelled.
   `swamp workflow approvals` (`src/libswamp/workflows/approvals.ts`) lists it
