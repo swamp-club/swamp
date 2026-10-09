@@ -649,7 +649,9 @@ path that sends run events applies it: a run, a buffered run, a resume, a
 buffered resume, and `run.attach`. For a run on a server the CLI prints the
 signal command with the `--server` it was given.
 
-`swamp workflow signal` and `swamp workflow waits` take `--server`. Against a
+`swamp workflow signal` and `swamp workflow waits` take `--server`. A signal
+through a server names a wait ID; the command refuses `--workflow` and `--key`
+with `--server` until swamp-club#3211. Against a
 server that predates these requests they report that the server needs an
 upgrade (`requestNewerServerResponse`, `src/cli/remote_run.ts`).
 

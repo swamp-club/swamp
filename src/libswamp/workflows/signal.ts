@@ -20,8 +20,15 @@ import type {
   StepRun,
   WorkflowRun,
 } from "../../domain/workflows/workflow_run.ts";
-import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
-import type { SignalReceipt } from "../../domain/workflows/signal_wait.ts";
+import type {
+  WorkflowRepository,
+  WorkflowRunRepository,
+} from "../../domain/workflows/repositories.ts";
+import type { Workflow } from "../../domain/workflows/workflow.ts";
+import {
+  isWaitKey,
+  type SignalReceipt,
+} from "../../domain/workflows/signal_wait.ts";
 import {
   decideSignal,
   normalizeWaitId,
@@ -36,6 +43,11 @@ import {
   type SignalWaitStore,
   type SignalWaitSupport,
 } from "../../domain/workflows/signal_wait_store.ts";
+import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
+import {
+  declaredWaitKeyStep,
+  findKeyHolder,
+} from "../../domain/workflows/wait_key_claim.ts";
 import {
   ensureRegistered,
   outcomeAt,
@@ -51,7 +63,10 @@ import { notFound, validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface WorkflowSignalData {
+  /** The wait that took the signal, however the signal was addressed. */
   waitId: string;
+  /** The key the wait holds, when its step declared one. */
+  key?: string;
   workflowId: string;
   workflowName: string;
   runId: string;
@@ -80,9 +95,20 @@ export type WorkflowSignalEvent =
   | { kind: "completed"; data: WorkflowSignalData }
   | { kind: "error"; error: SwampError };
 
-export interface WorkflowSignalInput {
-  /** The wait the signal is for. A signal names the wait and nothing else. */
-  waitId: string;
+/**
+ * How a signal names its wait: by the wait's ID, or by a workflow and a key
+ * one of its `wait_for_signal` steps declares (swamp-club#3210). A key is
+ * resolved to the ID of the wait that holds it before anything is decided.
+ */
+export type WorkflowSignalAddress =
+  | { waitId: string }
+  | {
+    /** The workflow's name or ID. */
+    workflow: string;
+    key: string;
+  };
+
+export type WorkflowSignalInput = WorkflowSignalAddress & {
   /** The message. Untrusted: it is validated before anything is stored. */
   payload: unknown;
   /** Who sent it. Defaults to the OS user, as a local approval's decider. */
@@ -96,7 +122,7 @@ export interface WorkflowSignalInput {
    * passes none: it does no authorization.
    */
   authorize?: (wait: SignalWaitSubject) => Promise<boolean>;
-}
+};
 
 /** What a wait belongs to, as far as the stored records say. */
 export interface SignalWaitSubject {
@@ -120,6 +146,7 @@ export interface SignalWaitSubject {
 /** Why a signal was not delivered, in the `refusal` field of the error's details. */
 export type SignalRefusalKind =
   | "unknown"
+  | "no_open_wait"
   | "expired"
   | "invalid_payload"
   | "already_settled"
@@ -129,6 +156,7 @@ export type SignalRefusalKind =
 
 const SIGNAL_REFUSAL_KINDS: ReadonlySet<string> = new Set<SignalRefusalKind>([
   "unknown",
+  "no_open_wait",
   "expired",
   "invalid_payload",
   "already_settled",
@@ -158,6 +186,11 @@ export interface WorkflowSignalDeps {
     WorkflowRunRepository,
     "findById" | "findGlobalByStatus" | "findAllGlobal"
   >;
+  /**
+   * The workflow a name or an ID refers to, for a signal addressed by key.
+   * Read only.
+   */
+  findWorkflow: (idOrName: string) => Promise<Workflow | null>;
   /** Where wait records are kept, or why this datastore cannot hold them. */
   signalWaits: SignalWaitSupport;
   /** The time the deadline is compared against. Defaults to the current time. */
@@ -174,8 +207,13 @@ export interface WorkflowSignalDeps {
 export function createWorkflowSignalDeps(
   runRepo: WorkflowSignalDeps["runRepo"],
   signalWaits: SignalWaitSupport,
+  workflowRepo: Pick<WorkflowRepository, "findByName" | "findById">,
 ): WorkflowSignalDeps {
-  return { runRepo, signalWaits };
+  return {
+    runRepo,
+    signalWaits,
+    findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
+  };
 }
 
 /** The step of `run` that holds the wait, in any status. */
@@ -387,6 +425,7 @@ async function resolveRegistration(
   typedId: string,
   waitId: string,
   authorize: WorkflowSignalInput["authorize"],
+  heldUnder: SignalTarget["heldUnder"],
 ): Promise<
   | { registration: WaitRegistration; authorized: boolean }
   | { error: SwampError }
@@ -394,7 +433,9 @@ async function resolveRegistration(
   const stored = await store.findRegistration(waitId);
   // The caller is authorized by `deliver`, which reads the run record first.
   if (stored.kind === "found") {
-    return { registration: stored.record, authorized: false };
+    return heldBy(stored.record, heldUnder)
+      ? { registration: stored.record, authorized: false }
+      : { error: unreadableRecord(typedId) };
   }
 
   // No registration, or one that cannot be read: the run record still
@@ -407,6 +448,11 @@ async function resolveRegistration(
     // A settled wait whose registration is gone: answered from the outcome
     // alone, which names the run but not the step.
     if (outcome.kind === "found") {
+      if (
+        !heldBy({ workflowId: outcome.record.workflowId, key: null }, heldUnder)
+      ) {
+        return { error: unreadableRecord(typedId) };
+      }
       // The outcome does not name the workflow, so the run it references is
       // asked: a workflow renamed since is still authorized under the name
       // the run recorded. Without the run record only the id is left.
@@ -456,6 +502,12 @@ async function resolveRegistration(
   }
 
   const { run, jobName, step } = held;
+  if (
+    !heldBy({
+      workflowId: run.workflowId,
+      key: step.signalWait ? step.signalWait.key : null,
+    }, heldUnder)
+  ) return { error: unreadableRecord(typedId) };
   const place: WaitPlace = {
     workflowId: run.workflowId,
     workflowName: run.workflowName,
@@ -507,19 +559,53 @@ async function resolveRegistration(
   };
 }
 
+/** The wait a signal is delivered to, once its address is resolved. */
+interface SignalTarget {
+  waitId: string;
+  /**
+   * What a message calls the wait, after the word "wait": the ID as it was
+   * typed, or the workflow and key it was addressed by.
+   */
+  typedId: string;
+  /**
+   * The workflow and key a key address named. Whatever record places the
+   * wait must name that workflow, and that key where it names one: key
+   * records are plaintext in a store other writers can reach, and a claim
+   * altered to name a wait of another workflow must neither carry a signal
+   * there nor be answered with what is stored about that wait.
+   */
+  heldUnder?: { workflowId: string; key: string };
+}
+
+/**
+ * True when a record that places a wait agrees with the key address the
+ * wait was resolved from, or when the wait was named by ID. `key` is left
+ * out for a record that names no key: an outcome, or a step that has left
+ * its wait.
+ */
+function heldBy(
+  placed: { workflowId: string; key?: string | null },
+  heldUnder: SignalTarget["heldUnder"],
+): boolean {
+  if (!heldUnder) return true;
+  return placed.workflowId === heldUnder.workflowId &&
+    (placed.key === null || placed.key === heldUnder.key);
+}
+
 async function deliver(
   deps: WorkflowSignalDeps,
   store: SignalWaitStore,
   input: WorkflowSignalInput,
-  waitId: string,
+  target: SignalTarget,
 ): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
-  const typedId = input.waitId;
+  const { waitId, typedId, heldUnder } = target;
   const resolved = await resolveRegistration(
     deps,
     store,
     typedId,
     waitId,
     input.authorize,
+    heldUnder,
   );
   if ("error" in resolved) return resolved;
   const { registration } = resolved;
@@ -634,6 +720,7 @@ async function deliver(
   return {
     data: {
       waitId: registration.waitId,
+      ...(registration.key !== undefined ? { key: registration.key } : {}),
       workflowId: registration.workflowId,
       workflowName: registration.workflowName,
       runId: registration.runId,
@@ -644,6 +731,77 @@ async function deliver(
         (await decideContinuation(run, store)).kind === "resumable",
       runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(registration),
+    },
+  };
+}
+
+/** A key address in a message, as the workflow and key were typed. */
+function namedByKey(address: { workflow: string; key: string }): string {
+  return `key "${printable(address.key)}" of workflow "${
+    printable(address.workflow)
+  }"`;
+}
+
+/** Refusals after which the wait a key resolved to may still be open. */
+const LEAVES_WAIT_OPEN: ReadonlySet<SignalRefusalKind> = new Set<
+  SignalRefusalKind
+>(["invalid_payload", "unreadable"]);
+
+/**
+ * Delivers a signal addressed by workflow and key (swamp-club#3210): the
+ * key is resolved to the wait that holds it, and that wait takes the signal
+ * as one named by ID does. Resolving writes nothing. A holder settled
+ * between the two is answered from what is stored; the signal is never
+ * moved on to another wait.
+ *
+ * No message names the wait ID. Telemetry removes from a message what was
+ * typed, and the ID was not typed, while it is all a signal needs. It is in
+ * the error's details for a caller of this function; the command prints the
+ * message alone, and `workflow waits` lists the ID beside the key.
+ */
+async function deliverByKey(
+  deps: WorkflowSignalDeps,
+  store: SignalWaitStore,
+  input: WorkflowSignalInput & { workflow: string; key: string },
+): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
+  // An unknown workflow and a key it does not declare are answered alike.
+  const named = namedByKey(input);
+  const typedId = `holding ${named}`;
+  const workflow = await deps.findWorkflow(input.workflow);
+  if (!workflow || !declaredWaitKeyStep(workflow, input.key)) {
+    return { error: unknownWait(named) };
+  }
+  const holder = await findKeyHolder(store, workflow.id, input.key);
+  if (holder.kind === "unreadable") {
+    return { error: unreadableRecord(typedId) };
+  }
+  if (holder.kind === "free") {
+    return {
+      error: refused(
+        "no_open_wait",
+        `No open wait holds ${named}, so the signal was not delivered and nothing was stored. ` +
+          `Run "swamp workflow waits" for the waits that are open.`,
+      ),
+    };
+  }
+  const waitId = holder.claim.waitId;
+  const outcome = await deliver(deps, store, input, {
+    waitId,
+    typedId,
+    heldUnder: { workflowId: workflow.id, key: input.key },
+  });
+  if (!("error" in outcome)) return outcome;
+  const kind = signalRefusalKind(outcome.error);
+  // The claim names a wait nothing here knows: answered as that wait's ID
+  // would be, in the words of the address that was given.
+  const error = kind === "unknown" ? unknownWait(named) : outcome.error;
+  return {
+    error: {
+      ...error,
+      message: kind !== undefined && LEAVES_WAIT_OPEN.has(kind)
+        ? `${error.message}\n"swamp workflow waits" lists the wait and its ID.`
+        : error.message,
+      details: { ...(error.details as object), waitId },
     },
   };
 }
@@ -663,13 +821,22 @@ export async function* workflowSignal(
 ): AsyncIterable<WorkflowSignalEvent> {
   yield* withGeneratorSpan(
     "swamp.workflow.signal",
-    { "wait.id": input.waitId },
+    "waitId" in input ? { "wait.id": input.waitId } : { "wait.key": input.key },
     (async function* () {
       yield { kind: "resolving" };
 
-      const waitId = normalizeWaitId(input.waitId);
-      if (!waitId) {
-        yield { kind: "error", error: unknownWait(input.waitId) };
+      const byKey = "waitId" in input ? undefined : input;
+      let target: SignalTarget | undefined;
+      if ("waitId" in input) {
+        const waitId = normalizeWaitId(input.waitId);
+        if (!waitId) {
+          yield { kind: "error", error: unknownWait(input.waitId) };
+          return;
+        }
+        target = { waitId, typedId: input.waitId };
+      } else if (!isWaitKey(input.key)) {
+        // A string that is not in the form of a key is one no step declares.
+        yield { kind: "error", error: unknownWait(namedByKey(input)) };
         return;
       }
       if (!deps.signalWaits.supported) {
@@ -683,12 +850,10 @@ export async function* workflowSignal(
         return;
       }
 
-      const outcome = await deliver(
-        deps,
-        deps.signalWaits.store,
-        input,
-        waitId,
-      );
+      const store = deps.signalWaits.store;
+      const outcome = target
+        ? await deliver(deps, store, input, target)
+        : await deliverByKey(deps, store, byKey!);
       if ("error" in outcome) {
         yield { kind: "error", error: outcome.error };
         return;

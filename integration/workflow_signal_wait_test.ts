@@ -330,17 +330,26 @@ function waitIdOf(run: WorkflowRun, stepName = "review"): string {
   return wait.id;
 }
 
+/** A wait ID, or the workflow and key a signal names its wait by. */
+type SignalAddress = string | { workflow: string; key: string };
+
 async function signal(
   h: Harness,
-  waitId: string,
+  address: SignalAddress,
   payload: unknown,
 ): Promise<WorkflowSignalEvent> {
   let last: WorkflowSignalEvent | undefined;
   for await (
     const event of workflowSignal(
       createLibSwampContext(),
-      createWorkflowSignalDeps(h.runRepo, { supported: true, store: h.waits }),
-      { waitId, payload, submittedBy: "tester" },
+      createWorkflowSignalDeps(
+        h.runRepo,
+        { supported: true, store: h.waits },
+        h.workflowRepo,
+      ),
+      typeof address === "string"
+        ? { waitId: address, payload, submittedBy: "tester" }
+        : { ...address, payload, submittedBy: "tester" },
     )
   ) {
     last = event;
@@ -351,10 +360,10 @@ async function signal(
 
 async function signalOk(
   h: Harness,
-  waitId: string,
+  address: SignalAddress,
   payload: unknown,
 ): Promise<WorkflowSignalData> {
-  const event = await signal(h, waitId, payload);
+  const event = await signal(h, address, payload);
   if (event.kind !== "completed") {
     throw new Error(`signal refused: ${JSON.stringify(event)}`);
   }
@@ -363,10 +372,10 @@ async function signalOk(
 
 async function signalError(
   h: Harness,
-  waitId: string,
+  address: SignalAddress,
   payload: unknown,
-): Promise<{ code: string; message: string }> {
-  const event = await signal(h, waitId, payload);
+): Promise<{ code: string; message: string; details?: unknown }> {
+  const event = await signal(h, address, payload);
   if (event.kind !== "error") {
     throw new Error(`signal accepted: ${JSON.stringify(event)}`);
   }
@@ -2850,5 +2859,225 @@ Deno.test("wait key: a run collected by a build from before key claims leaves a 
     assert(closed.kind === "found");
     assertEquals(closed.record.kind, "cancelled");
     await signalOk(h, waitIdOf(next), { verdict: "ship" });
+  });
+});
+
+// A signal addressed by workflow and key (swamp-club#3210).
+
+Deno.test("signal by key: the holder takes the signal, and after a resume the step's outputs are those of a signal by ID", async () => {
+  const keyed = release("by-key", { key: "release-verdict" });
+  const plain = release("by-id");
+  await withHarness([keyed, plain], async (h) => {
+    const run = await startRun(h, keyed);
+    const waitId = waitIdOf(run);
+    const sent = { verdict: "ship" };
+
+    const data = await signalOk(
+      h,
+      { workflow: keyed.name, key: "release-verdict" },
+      sent,
+    );
+    assertEquals(data.waitId, waitId);
+    assertEquals(data.key, "release-verdict");
+    assertEquals(data.runId, run.id);
+    assertEquals(data.signal.waitId, waitId);
+    // Only the outcome was written: the run record and the claim are as
+    // they were.
+    assertEquals((await reload(h, run)).toData(), run.toData());
+    const claim = await highestOf(h, keyed, "release-verdict");
+    assertEquals([claim.kind, claim.generation], ["claim", 1]);
+
+    await drain(h.service.resume(keyed.name, run.id));
+    const finished = await reload(h, run);
+    assertEquals(finished.status, "succeeded");
+    assertEquals(stepOf(finished, "review").output, {
+      type: "wait_for_signal",
+      payload: sent,
+      signal: data.signal,
+    });
+    assertEquals(stepOf(finished, "ship").status, "succeeded");
+
+    // The same message by wait ID gives a step output of the same shape.
+    const other = await startRun(h, plain);
+    const byId = await signalOk(h, waitIdOf(other), sent);
+    assertEquals("key" in byId, false);
+    await drain(h.service.resume(plain.name, other.id));
+    assertEquals(stepOf(await reload(h, other), "review").output, {
+      type: "wait_for_signal",
+      payload: sent,
+      signal: byId.signal,
+    });
+  });
+});
+
+Deno.test("signal by key: the workflow may be named by its ID, and a keyed wait still takes a signal by wait ID", async () => {
+  const workflow = release("by-key-id", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const first = await startRun(h, workflow);
+    const data = await signalOk(
+      h,
+      { workflow: workflow.id, key: "verdict" },
+      { verdict: "fix" },
+    );
+    assertEquals(data.waitId, waitIdOf(first));
+
+    const second = await startRun(h, workflow);
+    const byId = await signalOk(h, waitIdOf(second), { verdict: "ship" });
+    assertEquals(byId.key, "verdict");
+  });
+});
+
+Deno.test("signal by key: a payload the schema refuses is refused with its errors, and the wait stays open under its key", async () => {
+  const workflow = release("by-key-invalid", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const waitId = waitIdOf(run);
+    const address = { workflow: workflow.name, key: "verdict" };
+
+    const refused = await signalError(h, address, { verdict: "maybe" });
+    assertEquals(refused.code, "validation_failed");
+    assertStringIncludes(refused.message, "Payload refused");
+    assertStringIncludes(refused.message, "verdict");
+    // The ID was not typed, so no message carries it.
+    assertEquals(refused.message.includes(waitId), false);
+    assertEquals(
+      (refused.details as { refusal?: string; waitId?: string }).refusal,
+      "invalid_payload",
+    );
+    assertEquals((refused.details as { waitId?: string }).waitId, waitId);
+    assertEquals((await h.waits.findOutcome(waitId)).kind, "absent");
+    assertEquals((await listWaits(h)).waits.map((w) => w.waitId), [waitId]);
+
+    const data = await signalOk(h, address, { verdict: "ship" });
+    assertEquals(data.waitId, waitId);
+  });
+});
+
+Deno.test("signal by key: a declared key with no open wait is refused as such and nothing is stored", async () => {
+  const workflow = release("by-key-early", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const address = { workflow: workflow.name, key: "verdict" };
+    const refusalOf = async () => {
+      const refused = await signalError(h, address, { verdict: "ship" });
+      assertStringIncludes(refused.message, 'No open wait holds key "verdict"');
+      return (refused.details as { refusal?: string }).refusal;
+    };
+
+    // Before any run reached the wait.
+    assertEquals(await refusalOf(), "no_open_wait");
+    assertEquals(
+      (await h.waits.highestKeyRecord(workflow.id, "verdict")).kind,
+      "none",
+    );
+    assertEquals(await h.waits.listOutcomes(), []);
+
+    // After the holder was signalled, cancelled, or timed out.
+    const signalled = await startRun(h, workflow);
+    await signalOk(h, address, { verdict: "ship" });
+    assertEquals(await refusalOf(), "no_open_wait");
+    const stored = await h.waits.findOutcome(waitIdOf(signalled));
+    assert(stored.kind === "found" && stored.record.kind === "accepted");
+    assertEquals(stored.record.payload, { verdict: "ship" });
+
+    const cancelled = await startRun(h, workflow);
+    await cancelRun(h, cancelled);
+    assertEquals(await refusalOf(), "no_open_wait");
+  });
+});
+
+Deno.test("signal by key: a holder past its deadline is settled as timed out and answered expired", async () => {
+  const workflow = release("by-key-expired", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const waitId = waitIdOf(run);
+    await expireWaits(h, run);
+    // expireWaits moves the registration's deadline; the claim keeps the
+    // one it was made with, and the lookup settles nothing either way.
+    const refused = await signalError(
+      h,
+      { workflow: workflow.name, key: "verdict" },
+      { verdict: "ship" },
+    );
+    assertEquals((refused.details as { refusal?: string }).refusal, "expired");
+    const outcome = await h.waits.findOutcome(waitId);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "timed_out");
+  });
+});
+
+Deno.test("signal by key: an undeclared key and an unknown workflow are not found, in the same words", async () => {
+  const workflow = release("by-key-unknown", { key: "verdict" });
+  const unkeyed = release("by-key-unkeyed");
+  await withHarness([workflow, unkeyed], async (h) => {
+    await startRun(h, workflow);
+    await startRun(h, unkeyed);
+    for (
+      const address of [
+        { workflow: workflow.name, key: "other" },
+        { workflow: unkeyed.name, key: "verdict" },
+        { workflow: "no-such-workflow", key: "verdict" },
+        { workflow: workflow.name, key: "Verdict" },
+        { workflow: workflow.name, key: "../verdict" },
+      ]
+    ) {
+      const refused = await signalError(h, address, { verdict: "ship" });
+      assertEquals(refused.code, "not_found");
+      assertEquals(
+        refused.message,
+        `Signal wait not found: key "${address.key}" of workflow "${address.workflow}"`,
+      );
+    }
+    assertEquals(await h.waits.listOutcomes(), []);
+  });
+});
+
+Deno.test("signal by key: a holder settled between resolving and delivering is answered from what is stored, and the wait that took the key since gets nothing", async () => {
+  const workflow = release("by-key-race", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const first = await startRun(h, workflow);
+    const firstWait = waitIdOf(first);
+    let next: WorkflowRun | undefined;
+    // The lookup reads the highest record twice. After the second read the
+    // holder is known; before the signal is delivered its run is cancelled
+    // and the next run's wait claims the key.
+    const original = h.waits.highestKeyRecord.bind(h.waits);
+    let reads = 0;
+    h.waits.highestKeyRecord = async (workflowId, key) => {
+      const highest = await original(workflowId, key);
+      if (++reads === 2) {
+        h.waits.highestKeyRecord = original;
+        await cancelRun(h, first);
+        next = await startRun(h, workflow);
+      }
+      return highest;
+    };
+    let refused;
+    try {
+      refused = await signalError(
+        h,
+        { workflow: workflow.name, key: "verdict" },
+        { verdict: "ship" },
+      );
+    } finally {
+      h.waits.highestKeyRecord = original;
+    }
+
+    assertEquals((refused.details as { refusal?: string }).refusal, "closed");
+    assertEquals((refused.details as { waitId?: string }).waitId, firstWait);
+    assert(next);
+    const nextWait = waitIdOf(next);
+    assertNotEquals(nextWait, firstWait);
+    assertEquals((await h.waits.findOutcome(nextWait)).kind, "absent");
+    const stored = await h.waits.findOutcome(firstWait);
+    assert(stored.kind === "found");
+    assertEquals(stored.record.kind, "cancelled");
+
+    // The key now names the new holder.
+    const data = await signalOk(
+      h,
+      { workflow: workflow.name, key: "verdict" },
+      { verdict: "ship" },
+    );
+    assertEquals(data.waitId, nextWait);
   });
 });

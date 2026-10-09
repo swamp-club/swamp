@@ -49,6 +49,7 @@ skill.
 | List approvals     | `swamp workflow approvals` (pending gates, and expired ones to cancel)   |
 | List signal waits  | `swamp workflow waits`                                                   |
 | Signal a wait      | `swamp workflow signal <wait_id> --payload '<json>'`                     |
+| Signal by key      | `swamp workflow signal --workflow <name> --key <key> --payload '<json>'` |
 | Cancel a run       | `swamp workflow cancel <workflow> [--run <id>]`                          |
 | Cancel by run id   | `swamp workflow cancel --run <id>`                                       |
 | Cancel serve run   | `swamp workflow cancel --run <id> --server <url>`                        |

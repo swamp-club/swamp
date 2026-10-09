@@ -829,8 +829,9 @@ while the wait is open, and past the deadline fails the step with
 
 **Keys.** A `wait_for_signal` step may declare a `key` (swamp-club#3209). It
 is a second way to name a wait, for a sender configured once with a fixed
-address; nothing can be signalled by key yet (swamp-club#3210). This part adds
-the key and the rule that keeps it unambiguous: one key, one open wait.
+address: a signal can name the workflow and the key in place of the wait ID
+(swamp-club#3210, under "Signalling" below). The rule that keeps the key
+unambiguous is one key, one open wait.
 
 `workflow validate` refuses the same key on two steps of one workflow, in one
 job or across jobs, and a key on a step under `forEach`, where every iteration
@@ -907,14 +908,54 @@ The S3 and GCS datastore extensions need no change: key records use `get`,
 (`src/libswamp/workflows/signal.ts`) reads the wait's registration, decides the
 payload against it, and creates the outcome. It takes no run claim, asks nothing
 of the run's owner and never writes a run record
-(`integration/signal_wait_records_rules_test.ts` holds it to that). A signal
-names the wait ID and nothing else: step names are unique only within a job and
+(`integration/signal_wait_records_rules_test.ts` holds it to that). The wait ID
+is the identity of a wait: step names are unique only within a job and
 `forEach` expands one step into many, so a name does not identify a wait. The ID
-must be a UUID before a key is built from it. Each refusal has its own message:
+must be a UUID before a key is built from it.
+
+A signal names its wait in one of two ways: by the wait ID, or by a workflow
+and a key, `swamp workflow signal --workflow <id_or_name> --key <key>`
+(swamp-club#3210). Exactly one form is given. A key is resolved to the ID of the
+wait that holds it before anything is decided, and from there the signal is the
+one a wait ID gets: the same decision, the same write-once outcome, the same
+refusals. The result names the wait ID that took the signal, and the key of any
+wait that has one, whichever way it was addressed.
+
+Resolving reads and never writes. The workflow is looked up by name, then by
+ID, and must have a `wait_for_signal` step that declares the key in its
+definition as it is now (`declaredWaitKeyStep`); the holder is then read from
+the key's records (`findKeyHolder` in
+`src/domain/workflows/wait_key_claim.ts`, over the same `decideKeyHolder` a
+claimant uses). It does not settle an overdue holder: that wait is still the
+one the key names, and the acceptance settles it as timed out and answers
+expired. A holder settled between resolving and delivering gets the refusal for
+what is stored; the signal is never moved on to the wait that claimed the key
+since. Whatever record places the holder (its registration, its outcome, or
+the step of a run record) must name the same workflow, and the same key where
+it names one, or the signal is refused as unreadable before anything stored
+about that wait is said: key records are plaintext in a store other writers can
+reach, and a claim altered to name another workflow's wait must neither carry a
+signal there nor be answered with that wait's step, run or receipt. A claim whose wait has no registration and
+no run record on this host is answered not found, as that wait ID would be.
+
+By key no message names the wait ID. Telemetry removes from an error message
+what was typed, and by key the ID was not typed, while it is all a signal
+needs. The messages name the workflow and key. The ID is in the error's
+details for a caller of the use case; the command prints the message alone, so
+its user finds the ID with `workflow waits`, which lists it beside the key.
+
+Because the key is checked against the current definition, a key removed from
+the workflow while a wait is open under it is not found by key; the wait still
+takes a signal by ID. A wait opened unclaimed by a build from before
+swamp-club#3209 (see "Mixing builds") is likewise answered no open wait by key
+and takes a signal by ID.
+
+Each refusal has its own message:
 
 | Refusal           | When                                                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
-| not found         | No registration, outcome or run record holds a wait with that ID.                                                    |
+| not found         | No registration, outcome or run record holds a wait with that ID. By key: the workflow does not exist, or no step of it declares the key. |
+| no open wait      | By key only: the workflow declares the key and no open wait holds it. Nothing is stored (holding such a signal is swamp-club#3212). |
 | expired           | The deadline has passed. The wait is settled as `timed_out` on the spot; the message names the resume that fails the step. |
 | payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                |
 | already settled   | A signal already settled the wait. The stored receipt is shown.                                                      |
@@ -931,7 +972,9 @@ claiming the run still waits on something else.
 
 **Through `swamp serve`.** A signal can also be delivered to a server, with
 `swamp workflow signal --server`, the WebSocket request `workflow.signal`, or
-`POST /api/v1/signal/<waitId>` (swamp-club#3094). It is the same use case behind
+`POST /api/v1/signal/<waitId>` (swamp-club#3094). A server takes a wait ID
+only: `--workflow` and `--key` with `--server` are refused by the command until
+swamp-club#3211. It is the same use case behind
 an authorization boundary: the caller needs the `signal` action on the wait's
 workflow, an unknown wait and a wait the caller may not signal are answered
 alike, and the workflow, run and step are named only to a caller who may also
