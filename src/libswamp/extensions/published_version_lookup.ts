@@ -45,7 +45,16 @@ export async function findPublishedVersion(
       page,
     }, apiKey);
     const match = listed.versions.find((v) => v.version === version);
-    if (match) return { version: match.version, channel: match.channel };
+    if (match) {
+      // A yanked version still answers: its number stays taken.
+      return {
+        version: match.version,
+        channel: match.channel,
+        ...(match.yankedAt
+          ? { yank: { reason: match.yankReason ?? null } }
+          : {}),
+      };
+    }
     // A short page is the last page; so is reaching the total. A
     // response without usable paging metadata is not paged further.
     const perPage = listed.meta?.perPage;

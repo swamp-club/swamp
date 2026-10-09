@@ -60,3 +60,57 @@ Deno.test("findPublishedVersion: resolves null when no channel carries the versi
     null,
   );
 });
+
+Deno.test("findPublishedVersion: a yanked version still answers, with its yank and reason", async () => {
+  const client = fakeClient([{
+    versions: [{
+      version: "2026.10.06.1",
+      channel: "beta",
+      publishedAt: "",
+      yankedAt: "2026-10-07T00:00:00.000Z",
+      yankReason: "broken build",
+    }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  assertEquals(
+    await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
+    {
+      version: "2026.10.06.1",
+      channel: "beta",
+      yank: { reason: "broken build" },
+    },
+  );
+});
+
+Deno.test("findPublishedVersion: a yank without a reason has a null reason", async () => {
+  const client = fakeClient([{
+    versions: [{
+      version: "2026.10.06.1",
+      channel: "beta",
+      publishedAt: "",
+      yankedAt: "2026-10-07T00:00:00.000Z",
+    }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  assertEquals(
+    await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
+    { version: "2026.10.06.1", channel: "beta", yank: { reason: null } },
+  );
+});
+
+Deno.test("findPublishedVersion: a null yankedAt is not a yank", async () => {
+  const client = fakeClient([{
+    versions: [{
+      version: "2026.10.06.1",
+      channel: "beta",
+      publishedAt: "",
+      yankedAt: null,
+      yankReason: null,
+    }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  assertEquals(
+    await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
+    { version: "2026.10.06.1", channel: "beta" },
+  );
+});

@@ -105,3 +105,36 @@ Deno.test("existingVersionChoicePrompt: offers promote, bump and stop, in that o
     { action: "stop", label: "Stop: exit; nothing is pushed" },
   ]);
 });
+
+Deno.test("bumpVersionPrompt: a yanked version says it is yanked, why, and that it cannot be promoted", () => {
+  const prompt = bumpVersionPrompt({
+    name: "@x/y",
+    version: "2026.10.06.1",
+    bumpedVersion: "2026.10.06.2",
+    existingChannel: "beta",
+    requestedChannel: "rc",
+    yank: { reason: "broken build" },
+  });
+  assertEquals(
+    prompt.details[0],
+    "Version 2026.10.06.1 of @x/y already exists on channel 'beta' and has been yanked (broken build); " +
+      "a yanked version stays taken and cannot be promoted.",
+  );
+  assertEquals(prompt.question, "Bump to 2026.10.06.2 and publish it to 'rc'?");
+});
+
+Deno.test("bumpVersionPrompt: a yank without a reason leaves the reason out", () => {
+  const prompt = bumpVersionPrompt({
+    name: "@x/y",
+    version: "2026.10.06.1",
+    bumpedVersion: "2026.10.06.2",
+    existingChannel: "stable",
+    requestedChannel: "beta",
+    yank: {},
+  });
+  assertEquals(
+    prompt.details[0],
+    "Version 2026.10.06.1 of @x/y already exists on channel 'stable' and has been yanked; " +
+      "a yanked version stays taken and cannot be promoted.",
+  );
+});

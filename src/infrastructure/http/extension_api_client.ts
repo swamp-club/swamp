@@ -282,6 +282,9 @@ export interface VersionEntry {
   version: string;
   channel: string;
   publishedAt: string;
+  /** Set when the version is yanked; an older registry omits it. */
+  yankedAt?: string | null;
+  yankReason?: string | null;
 }
 
 /** Response from the list versions endpoint. */
@@ -864,6 +867,14 @@ export class ExtensionApiClient {
         const parsed = JSON.parse(body);
         if (parsed.message) serverMessage = parsed.message;
         if (parsed.error) serverMessage = parsed.error;
+        // A yank refusal carries why in `reason`. Some refusals already
+        // repeat it inside `error`, so it is added only when missing.
+        if (typeof parsed.reason === "string") {
+          const reason = parsed.reason.replace(UNPRINTABLE, " ").trim();
+          if (reason !== "" && !serverMessage.includes(reason)) {
+            serverMessage = `${serverMessage} (${reason})`;
+          }
+        }
       } catch {
         // Use raw body
       }

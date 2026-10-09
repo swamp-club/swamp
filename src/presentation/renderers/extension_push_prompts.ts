@@ -58,7 +58,8 @@ export function finalPushPrompt(input: {
 
 /**
  * The bump prompt, for a version already on the requested channel or on a
- * higher one, where promoting is not possible.
+ * higher one, where promoting is not possible, and for a yanked version on
+ * any channel, which stays taken and cannot be promoted.
  */
 export function bumpVersionPrompt(input: {
   name: string;
@@ -66,12 +67,17 @@ export function bumpVersionPrompt(input: {
   bumpedVersion: string;
   existingChannel: string;
   requestedChannel: string;
+  /** Set when the existing version is yanked. */
+  yank?: { reason?: string };
 }): ConfirmationPromptText {
-  const where =
-    placeExistingVersion(input.existingChannel, input.requestedChannel) ===
+  const where = input.yank
+    ? ` and has been yanked${
+      input.yank.reason ? ` (${input.yank.reason})` : ""
+    }; a yanked version stays taken and cannot be promoted.`
+    : placeExistingVersion(input.existingChannel, input.requestedChannel) ===
         "higher-channel"
-      ? `; you asked for '${input.requestedChannel}', and a version cannot move down a channel.`
-      : ".";
+    ? `; you asked for '${input.requestedChannel}', and a version cannot move down a channel.`
+    : ".";
   return {
     details: [
       `Version ${input.version} of ${input.name} already exists on channel '${input.existingChannel}'${where}`,

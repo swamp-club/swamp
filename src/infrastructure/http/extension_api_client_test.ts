@@ -1469,3 +1469,76 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail: a version with none, or a 
     );
   }
 });
+
+function refusalServer(status: number, body: Record<string, unknown>) {
+  return Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+}
+
+Deno.test("ExtensionApiClient.checkResponse appends a refusal's reason to its error", async () => {
+  const server = refusalServer(410, {
+    error: "Version has been yanked",
+    reason: "broken build",
+  });
+  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
+  const error = await assertRejects(
+    () => client.getLatestVersion("@test/ext", "fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Version has been yanked (broken build)");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.checkResponse does not repeat a reason the error already carries", async () => {
+  const message =
+    "Version 2026.10.06.1 of @test/ext has been yanked (broken build) and cannot be promoted";
+  const server = refusalServer(409, { error: message, reason: "broken build" });
+  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
+  const error = await assertRejects(
+    () =>
+      client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
+    UserError,
+  );
+  assertEquals(error.message, message);
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.checkResponse ignores a null, empty or non-string reason", async () => {
+  for (const reason of [null, "", "  ", 7]) {
+    const server = refusalServer(409, {
+      error: "Version has been yanked",
+      reason,
+    });
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const error = await assertRejects(
+      () =>
+        client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
+      UserError,
+    );
+    assertEquals(error.message, "Version has been yanked");
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.checkResponse replaces control characters in a reason with spaces", async () => {
+  const server = refusalServer(409, {
+    error: "Version has been yanked",
+    reason: "bad\u001b[31mbuild\u202e",
+  });
+  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
+  const error = await assertRejects(
+    () =>
+      client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
+    UserError,
+  );
+  assertEquals(error.message, "Version has been yanked (bad [31mbuild)");
+  await server.shutdown();
+});
