@@ -42,6 +42,7 @@ import {
   runModelMethodOverServer,
   runWorkflowOverServer,
   serverReloadCommand,
+  ServerResponseError,
   setMarkerServerAddress,
   subscribeServerEvents,
   toWebSocketUrl,
@@ -2651,6 +2652,29 @@ Deno.test("requestNewerServerResponse: any other refusal and a reply pass throug
     "Signal wait not found",
   );
   assertEquals(error.code, "not_found");
+
+  // The server's details are kept beside the message and the code.
+  const refused = await assertRejects(
+    () =>
+      requestNewerServerResponse(
+        "signals",
+        inMemoryServer((request) => ({
+          type: "error",
+          id: request.id,
+          error: {
+            code: "workflow_signal_refused",
+            message: "refused",
+            details: { refusal: "no_open_wait" },
+          },
+        })),
+        { type: "workflow.signal", payload: {} },
+      ),
+    ServerResponseError,
+    "Server reported workflow_signal_refused: refused",
+  );
+  assertEquals(refused.code, "workflow_signal_refused");
+  assertEquals(refused.name, "UserError");
+  assertEquals(refused.details, { refusal: "no_open_wait" });
 
   const sent: string[] = [];
   assertEquals(

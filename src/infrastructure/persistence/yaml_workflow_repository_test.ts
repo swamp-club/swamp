@@ -825,3 +825,75 @@ Deno.test("YamlWorkflowRepository.findAll: returns workflows in file-name order"
     );
   });
 });
+
+// --- findAllById tests ---
+
+/** Counts YAML documents built into workflows while `fn` runs. */
+async function countingBuilds<T>(fn: () => Promise<T>): Promise<[T, number]> {
+  const original = Workflow.fromData;
+  let count = 0;
+  Workflow.fromData = ((...args: Parameters<typeof original>) => {
+    count++;
+    return original(...args);
+  }) as typeof original;
+  try {
+    return [await fn(), count];
+  } finally {
+    Workflow.fromData = original;
+  }
+}
+
+Deno.test("YamlWorkflowRepository.findAllById: returns every workflow sharing the ID and builds only the files that can declare it", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const original = createTestWorkflow("original");
+    await repo.save(original);
+    // A copied file keeps its ID.
+    const copy = original.toData();
+    copy.name = "copy";
+    await Deno.writeTextFile(
+      join(dir, "workflows", "workflow-copy.yaml"),
+      stringifyYaml(JSON.parse(JSON.stringify(copy))),
+    );
+    for (let i = 0; i < 4; i++) {
+      await repo.save(createTestWorkflow(`other-${i}`));
+    }
+
+    const [found, builds] = await countingBuilds(() =>
+      repo.findAllById(original.id)
+    );
+    assertEquals(found.map((w) => w.name).sort(), ["copy", "original"]);
+    assertEquals(builds, 2);
+    assertEquals(
+      found.map((w) => w.name).sort(),
+      (await repo.findAll()).filter((w) => w.id === original.id)
+        .map((w) => w.name).sort(),
+    );
+    assertEquals(await repo.findAllById(repo.nextId()), []);
+  });
+});
+
+Deno.test("YamlWorkflowRepository.findAllById: finds an ID written with an escape sequence", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    const workflow = createTestWorkflow("escaped");
+    const text = stringifyYaml(JSON.parse(JSON.stringify(workflow.toData())));
+    // The first hyphen of the ID as \x2d: the ID is not in the text.
+    const escaped = `"${workflow.id.replace("-", "\\x2d")}"`;
+    const rewritten = text.replace(
+      /^id: .*$/m,
+      `id: ${escaped}`,
+    );
+    assertEquals(rewritten.includes(workflow.id), false);
+    await Deno.mkdir(join(dir, "workflows"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "workflows", "workflow-escaped.yaml"),
+      rewritten,
+    );
+
+    assertEquals(
+      (await repo.findAllById(workflow.id)).map((w) => w.name),
+      ["escaped"],
+    );
+  });
+});

@@ -73,6 +73,22 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
     return [...primaryWorkflows, ...uniqueExtension];
   }
 
+  /**
+   * The primary's workflows with `id`, then the extension's that no primary
+   * workflow shadows by name, as `findAll` leaves them out.
+   */
+  async findAllById(id: WorkflowId): Promise<Workflow[]> {
+    const primary = await workflowsWithId(this.primary, id);
+    if (!this.extension) return primary;
+    const unshadowed: Workflow[] = [];
+    for (const workflow of await workflowsWithId(this.extension, id)) {
+      if (!(await this.primary.findByName(workflow.name))) {
+        unshadowed.push(workflow);
+      }
+    }
+    return [...primary, ...unshadowed];
+  }
+
   async save(workflow: Workflow): Promise<void> {
     await this.primary.save(workflow);
   }
@@ -88,4 +104,14 @@ export class CompositeWorkflowRepository implements WorkflowRepository {
   getPath(id: WorkflowId): string {
     return this.primary.getPath(id);
   }
+}
+
+/** The workflows of `repo` that declare `id`, by its own listing when it has one. */
+async function workflowsWithId(
+  repo: WorkflowRepository,
+  id: WorkflowId,
+): Promise<Workflow[]> {
+  return repo.findAllById
+    ? await repo.findAllById(id)
+    : (await repo.findAll()).filter((workflow) => workflow.id === id);
 }

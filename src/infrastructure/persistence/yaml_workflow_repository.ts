@@ -223,7 +223,31 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
   }
 
-  async findAll(): Promise<Workflow[]> {
+  findAll(): Promise<Workflow[]> {
+    return this.readAll();
+  }
+
+  /**
+   * Reads every file, as `findAll` does, and parses only those that can
+   * declare `id`, so the cost of the rest is one read each. A file is passed
+   * over only when its text holds neither the ID nor a backslash: without an
+   * escape sequence, a YAML scalar equal to the ID has the ID in the text.
+   */
+  async findAllById(id: WorkflowId): Promise<Workflow[]> {
+    const found = await this.readAll((content) =>
+      content.includes(id) || content.includes("\\")
+    );
+    return found.filter((workflow) => workflow.id === id);
+  }
+
+  /**
+   * Every workflow in the directory, or only those in files `mayMatch`
+   * accepts the text of. A file it refuses is not parsed, so nothing is
+   * said of whether it is broken.
+   */
+  private async readAll(
+    mayMatch?: (content: string) => boolean,
+  ): Promise<Workflow[]> {
     const dir = this.getWorkflowsDir();
     const workflows: Workflow[] = [];
 
@@ -233,6 +257,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
           const path = join(dir, entry.name);
           try {
             const content = await Deno.readTextFile(path);
+            if (mayMatch && !mayMatch(content)) continue;
             const data = parseYaml(content) as WorkflowData | null;
             if (!data) continue;
             const workflow = Workflow.fromData(data);

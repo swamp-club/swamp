@@ -140,6 +140,23 @@ function formatServerError(
   return `Server reported ${error.code}${qualifier}: ${error.message}`;
 }
 
+/**
+ * An error a server answered a request with. It is the UserError the message
+ * and code alone made, and also keeps the error's `details`, which a command
+ * may read for what the message does not say. The details are the server's
+ * and untrusted.
+ */
+export class ServerResponseError extends UserError {
+  readonly details: unknown;
+
+  constructor(error: { code: string; message: string; details?: unknown }) {
+    super(formatServerError(error), error.code);
+    // Reported under the name it had before it kept the details.
+    this.name = "UserError";
+    this.details = error.details;
+  }
+}
+
 /** How long to keep draining after sending `cancel` before giving up. */
 const CANCEL_DRAIN_MS = 10_000;
 
@@ -518,12 +535,7 @@ export function requestServerResponse<T>(
           try {
             socket.close();
           } catch { /* already closed */ }
-          reject(
-            new UserError(
-              formatServerError(message.error),
-              message.error.code,
-            ),
-          );
+          reject(new ServerResponseError(message.error));
           return;
         }
         if ("payload" in message) {

@@ -23,6 +23,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { AuthGateBlockedError } from "../../domain/auth/auth_gate_blocked_error.ts";
+import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import type { OutputMode } from "./output.ts";
 import { takeAuthGateWarning } from "../renderers/auth_gate_warning.ts";
 
@@ -45,6 +46,9 @@ const logger = getSwampLogger(["error"]);
  *   `kind`, `type`, `existing`, and `conflicting` (per plan v4 step
  *   11). Lets `--json` consumers (jq, AI agents, CI scripts) read the
  *   collision details without re-parsing the message.
+ * - {@link SignalRefusedUserError} adds `refusal` and, for a key no open
+ *   wait holds, `lastWait`: the wait that last held the key, how it was
+ *   settled and when.
  */
 export function buildErrorJson(err: Error): Record<string, unknown> {
   const data: Record<string, unknown> = { error: err.message };
@@ -72,6 +76,10 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
     // so scripts and agents can branch without parsing the message.
     data.reason = { ...err.reason };
     data.temporary = err.temporary;
+  }
+  if (err instanceof SignalRefusedUserError) {
+    data.refusal = err.refusal;
+    if (err.lastWait) data.lastWait = { ...err.lastWait };
   }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {

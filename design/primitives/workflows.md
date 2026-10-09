@@ -1032,7 +1032,11 @@ its user finds the ID with `workflow waits`, which lists it beside the key.
 
 Because the key is checked against the current definition, a key removed from
 the workflow while a wait is open under it is not found by key; the wait still
-takes a signal by ID. A wait opened unclaimed by a build from before
+takes a signal by ID. A key that is renamed strands its open wait the same
+way: the old key is not found, and the new key is answered no open wait with
+no `lastWait`, since nothing has held it. A sender that knows only the key
+cannot reach that wait, so let the wait settle before changing a key, or
+signal it by the ID `workflow waits` lists. A wait opened unclaimed by a build from before
 swamp-club#3209 (see "Mixing builds") is likewise answered no open wait by key
 and takes a signal by ID.
 
@@ -1041,7 +1045,7 @@ Each refusal has its own message:
 | Refusal           | When                                                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | not found         | No registration, outcome or run record holds a wait with that ID. By key: the workflow does not exist, or no step of it declares the key. |
-| no open wait      | By key only: the workflow declares the key and no open wait holds it. Nothing is stored (holding such a signal is swamp-club#3212). |
+| no open wait      | By key only: the workflow declares the key and no open wait holds it. Nothing is stored (holding such a signal is swamp-club#3212). While the claim of the wait that last held the key is still the key's highest record, the error's details carry `lastWait` (the wait ID, how and when it was settled, and the receipt of a signal that settled it) and the message says how and when, which is how a sender that retries after a lost reply tells its signal landed from being early for the next run (`findSettledKeyHolder`, swamp-club#3211). The command's `--json` error carries `refusal` and `lastWait`. |
 | expired           | The deadline has passed. The wait is settled as `timed_out` on the spot; the message names the resume that fails the step. |
 | payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                |
 | already settled   | A signal already settled the wait. The stored receipt is shown.                                                      |
@@ -1058,9 +1062,10 @@ claiming the run still waits on something else.
 
 **Through `swamp serve`.** A signal can also be delivered to a server, with
 `swamp workflow signal --server`, the WebSocket request `workflow.signal`, or
-`POST /api/v1/signal/<waitId>` (swamp-club#3094). A server takes a wait ID
-only: `--workflow` and `--key` with `--server` are refused by the command until
-swamp-club#3211. It is the same use case behind
+`POST /api/v1/signal/<waitId>` (swamp-club#3094). Each also takes a workflow
+and a key in place of the wait ID (swamp-club#3211; over HTTP,
+`POST /api/v1/signal` with both in the body), which is how a credential that
+may only signal, and so cannot list waits, answers one. It is the same use case behind
 an authorization boundary: the caller needs the `signal` action on the wait's
 workflow, an unknown wait and a wait the caller may not signal are answered
 alike, and the workflow, run and step are named only to a caller who may also

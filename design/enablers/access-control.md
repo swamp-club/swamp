@@ -504,6 +504,16 @@ passes `signal` checks, for the reason it passes `approve`: whoever may start
 the workflow gains little from answering its waits. `approve` does not imply
 `signal`, and `signal` implies nothing.
 
+A holder of `signal` alone cannot list waits, so it signals a wait it was told
+the ID of, or names the workflow and a key a `wait_for_signal` step declares
+(swamp-club#3211). By key the request names the workflow, and it is resolved
+and authorized like any request that names one, before anything about the key
+is read. Key claims are kept per workflow ID, which a copied file shares, so the
+caller needs `signal` on every workflow with that ID; the wait the key resolves
+to is then authorized as a wait named by ID is. A refused caller gets the answer
+an unknown workflow or key gets. See
+"Signal" in [serve](../primitives/serve.md).
+
 **Requiring an explicit `signal` grant** (opt-in): `swamp serve
 --signal-requires-explicit-grant` (config key
 `auth.signal-requires-explicit-grant`, env var

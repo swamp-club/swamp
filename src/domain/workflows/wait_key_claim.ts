@@ -504,6 +504,32 @@ export async function findKeyHolder(
   return { kind: "free" };
 }
 
+/**
+ * The wait that last held a key and its outcome, when the key's highest
+ * record is still that wait's claim: one that was signalled, timed out or
+ * cancelled and that no later wait has claimed over. Undefined once the
+ * claim is released or its outcome is removed with its run. It reads two
+ * records and writes nothing, for a signal by key that found no open wait
+ * and has to say whether an earlier signal already landed.
+ */
+export async function findSettledKeyHolder(
+  store: Pick<WaitKeyRecords, "highestKeyRecord" | "findOutcome">,
+  workflowId: string,
+  key: string,
+): Promise<{ claim: WaitKeyClaim; outcome: WaitOutcome } | undefined> {
+  if (!isSinglePathSegment(workflowId) || !isWaitKey(key)) return undefined;
+  const highest = await store.highestKeyRecord(workflowId, key);
+  if (highest.kind !== "found" || highest.record.kind !== "claim") {
+    return undefined;
+  }
+  const claim = highest.record;
+  const stored = await store.findOutcome(claim.waitId);
+  // An outcome that names another run is not that wait's outcome.
+  return stored.kind === "found" && stored.record.runId === claim.runId
+    ? { claim, outcome: stored.record }
+    : undefined;
+}
+
 /** What superseding and removing claims did. */
 export interface KeyClaimRemoval {
   /** Claims and superseded releases deleted. */

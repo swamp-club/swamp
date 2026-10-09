@@ -41,6 +41,15 @@ export interface WorkflowRepository {
   findAll(): Promise<Workflow[]>;
 
   /**
+   * Every workflow that declares `id`: exactly those {@link findAll} returns
+   * with that ID. IDs are not unique, as a copied file keeps its ID, so
+   * there can be more than one. Optional: a repository that can answer
+   * without building every workflow implements it, and a caller falls back
+   * to filtering `findAll`.
+   */
+  findAllById?(id: WorkflowId): Promise<Workflow[]>;
+
+  /**
    * Saves a workflow.
    */
   save(workflow: Workflow): Promise<void>;

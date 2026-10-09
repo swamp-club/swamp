@@ -17,16 +17,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import type { WorkflowSignalData } from "../../libswamp/workflows/signal.ts";
+import type {
+  WorkflowSignalAddress,
+  WorkflowSignalData,
+} from "../../libswamp/workflows/signal.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { CommandContext } from "../context.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {
   parseSignalAddress,
   parseSignalPayload,
+  remoteSignalPayload,
+  remoteSignalUserError,
   renderRemoteSignalResult,
   renderSignalResult,
+  signalUserError,
 } from "./workflow_signal.ts";
+import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
+import { ServerResponseError } from "../remote_run.ts";
+import { buildErrorJson } from "../../presentation/output/error_output.ts";
 
 const RUN_ID = "8603d973-24ca-4f36-9c04-7b7c39a4a41a";
 const WAIT_ID = "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90";
@@ -197,6 +206,18 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
   );
 });
 
+Deno.test("renderRemoteSignalResult: a full reply for a keyed wait names the wait, its key and the receipt", () => {
+  const data = { ...signalled(), key: "release-verdict" };
+  const json = captureStdout(() =>
+    renderRemoteSignalResult(
+      hintTestContext({ outputMode: "json" }),
+      data,
+      "http://swamp.test",
+    )
+  );
+  assertEquals(JSON.parse(json.join("")).key, "release-verdict");
+});
+
 Deno.test("parseSignalAddress: a wait ID alone, or --workflow with --key, names the wait", () => {
   assertEquals(parseSignalAddress(WAIT_ID, {}), { waitId: WAIT_ID });
   assertEquals(
@@ -248,4 +269,127 @@ Deno.test("renderSignalResult: json mode carries the key beside the wait ID and 
   assertEquals(printed.key, "release-verdict");
   assertEquals(printed.waitId, WAIT_ID);
   assertEquals(printed.signal, result.signal);
+});
+
+Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow and key as given", () => {
+  assertEquals(
+    remoteSignalPayload({ waitId: WAIT_ID.toUpperCase() }, { verdict: "ship" }),
+    { waitId: WAIT_ID, payload: { verdict: "ship" } },
+  );
+  assertEquals(
+    remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
+    { workflow: "@acme/release", key: "verdict", payload: 7 },
+  );
+});
+
+Deno.test("remoteSignalPayload: an address the server would call malformed is not found, and nothing is sent", () => {
+  const refused: WorkflowSignalAddress[] = [
+    { waitId: "not-a-uuid" },
+    { workflow: "release", key: "Not A Key" },
+    { workflow: "release", key: "" },
+    { workflow: "release", key: "k".repeat(65) },
+    { workflow: "", key: "verdict" },
+    { workflow: "w".repeat(257), key: "verdict" },
+  ];
+  for (const address of refused) {
+    const error = assertThrows(
+      () => remoteSignalPayload(address, {}),
+      UserError,
+      "Signal wait not found",
+    );
+    assertEquals(error.code, "not_found");
+  }
+});
+
+Deno.test("remoteSignalPayload: the not-found message quotes the address, hides control characters and says how to signal a long name", () => {
+  const typed = assertThrows(
+    () =>
+      remoteSignalPayload({ workflow: "rel\u001bease", key: "Not A Key" }, {}),
+    UserError,
+  );
+  assertStringIncludes(
+    typed.message,
+    'Signal wait not found: key "Not A Key" of workflow "rel?ease". No step can declare that key: a key is 1 to 64 lowercase',
+  );
+  // A well-formed address that is only too long gets no hint about keys.
+  assertEquals(
+    assertThrows(
+      () => remoteSignalPayload({ workflow: "", key: "verdict" }, {}),
+      UserError,
+    ).message,
+    'Signal wait not found: key "verdict" of workflow ""',
+  );
+  assertThrows(
+    () =>
+      remoteSignalPayload({ workflow: "w".repeat(257), key: "verdict" }, {}),
+    UserError,
+    "is signalled by its ID",
+  );
+});
+
+const LAST_WAIT = {
+  waitId: WAIT_ID,
+  settledAs: "accepted",
+  settledAt: "2026-01-01T00:00:30.000Z",
+};
+
+Deno.test("signalUserError: a refusal keeps its kind and the key's last wait for JSON output", () => {
+  const error = signalUserError({
+    code: "validation_failed",
+    message: "No open wait holds that key.",
+    details: { refusal: "no_open_wait", lastWait: LAST_WAIT },
+  });
+  assertEquals(error instanceof SignalRefusedUserError, true);
+  assertEquals(buildErrorJson(error), {
+    error: "No open wait holds that key.",
+    code: "validation_failed",
+    refusal: "no_open_wait",
+    lastWait: LAST_WAIT,
+  });
+});
+
+Deno.test("signalUserError: an error that is no refusal stays a plain user error", () => {
+  const error = signalUserError({ code: "io_error", message: "disk" });
+  assertEquals(error instanceof SignalRefusedUserError, false);
+  assertEquals(buildErrorJson(error), { error: "disk", code: "io_error" });
+});
+
+Deno.test("remoteSignalUserError: a server's refusal keeps its kind and the key's last wait", () => {
+  const error = remoteSignalUserError(
+    new ServerResponseError({
+      code: "workflow_signal_refused",
+      message: "No open wait holds that key.",
+      details: { refusal: "no_open_wait", lastWait: LAST_WAIT },
+    }),
+  );
+  assertEquals(buildErrorJson(error as Error), {
+    error:
+      "Server reported workflow_signal_refused: No open wait holds that key.",
+    code: "workflow_signal_refused",
+    refusal: "no_open_wait",
+    lastWait: LAST_WAIT,
+  });
+});
+
+Deno.test("remoteSignalUserError: a last wait that is not in the form of one is dropped, and other errors pass through", () => {
+  const malformed = remoteSignalUserError(
+    new ServerResponseError({
+      code: "workflow_signal_refused",
+      message: "refused",
+      details: { refusal: "no_open_wait", lastWait: { settledAs: "won" } },
+    }),
+  );
+  assertEquals(buildErrorJson(malformed as Error), {
+    error: "Server reported workflow_signal_refused: refused",
+    code: "workflow_signal_refused",
+    refusal: "no_open_wait",
+  });
+
+  const notFound = new ServerResponseError({
+    code: "not_found",
+    message: "Signal wait not found",
+  });
+  assertEquals(remoteSignalUserError(notFound), notFound);
+  const other = new Error("socket closed");
+  assertEquals(remoteSignalUserError(other), other);
 });

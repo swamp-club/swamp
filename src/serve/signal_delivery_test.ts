@@ -132,6 +132,7 @@ async function fixture(name = "release"): Promise<Fixture> {
     },
     workflowRepo: {
       findByName: (n: string) => Promise.resolve(workflows.get(n) ?? null),
+      findAll: () => Promise.resolve([...workflows.values()]),
       findById: (id: string) =>
         Promise.resolve(
           [...workflows.values()].find((w) => w.id === id) ?? null,
@@ -576,4 +577,90 @@ Deno.test("continueAfterSignal: a failure to continue never reaches the caller",
     .workflowRunRepo.findById = () => Promise.reject(new Error("disk gone"));
 
   await continueAfterSignal(ctx, result, SUBJECT);
+});
+
+/** `f`'s context with a wait store that fails the test if anything reads it. */
+function withUnreadableWaits(
+  f: Fixture,
+  grants: Grant[],
+): ConnectionContext {
+  const ctx = f.ctxWith(grants);
+  const untouchable = new Proxy({}, {
+    get: (_target, property) => {
+      throw new Error(
+        `wait store read (${String(property)}) before authorization`,
+      );
+    },
+  });
+  return {
+    ...ctx,
+    repoContext: {
+      ...ctx.repoContext,
+      signalWaits: { supported: true, store: untouchable },
+    },
+  } as unknown as ConnectionContext;
+}
+
+function deliverByKey(
+  ctx: ConnectionContext,
+  workflow: string,
+  key: string,
+): Promise<SignalDeliveryResult> {
+  return deliverSignalForCaller(ctx, CALLER, {
+    requestId: "req-1",
+    workflow,
+    key,
+    payload: { verdict: "ship" },
+  });
+}
+
+Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workflow is answered before any wait record is read", async () => {
+  const f = await fixture();
+  for (
+    const grants of [
+      [grantOf(["read"])],
+      [grantOf(["signal"], "other")],
+      [grantOf(["signal"]), grantOf(["signal"], f.workflow.name, "deny")],
+    ]
+  ) {
+    const ctx = withUnreadableWaits(f, grants);
+    // By name and by ID: a selector matches the name either way.
+    for (const workflow of [f.workflow.name, f.workflow.id]) {
+      assertEquals(await deliverByKey(ctx, workflow, "verdict"), NOT_FOUND);
+    }
+  }
+});
+
+Deno.test("deliverSignalForCaller: by key, an unknown workflow, an undeclared key and text that is no key are not found, and no wait record is read", async () => {
+  const f = await fixture();
+  const ctx = withUnreadableWaits(f, [grantOf(["signal"])]);
+  for (
+    const [workflow, key] of [
+      ["no-such-workflow", "verdict"],
+      ["", "verdict"],
+      ["w".repeat(257), "verdict"],
+      [f.workflow.name, "undeclared"],
+      [f.workflow.name, "Not A Key"],
+      [f.workflow.name, "../waits"],
+      [f.workflow.name, ""],
+    ]
+  ) {
+    assertEquals(await deliverByKey(ctx, workflow, key), NOT_FOUND);
+  }
+});
+
+Deno.test("deliverSignalForCaller: by key, a payload over the limit is refused before the workflow is looked up", async () => {
+  const f = await fixture();
+  f.workflows.clear();
+  const result = await deliverSignalForCaller(
+    withUnreadableWaits(f, []),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: f.workflow.name,
+      key: "verdict",
+      payload: { note: "x".repeat(20_000) },
+    },
+  );
+  assertEquals(result.status, "invalid_payload");
 });

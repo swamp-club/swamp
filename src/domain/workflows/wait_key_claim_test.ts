@@ -36,6 +36,7 @@ import {
   decodeWaitKeyRecord,
   encodeWaitKeyRecord,
   findKeyHolder,
+  findSettledKeyHolder,
   releaseKeyClaims,
   WAIT_KEY_RECORD_MAX_BYTES,
   WAIT_KEY_UNREGISTERED_GRACE_MS,
@@ -655,4 +656,44 @@ Deno.test("declaredWaitKeyStep: names the step that declares the key, in any job
   });
   assertEquals(declaredWaitKeyStep(workflow, "other"), undefined);
   assertEquals(declaredWaitKeyStep(workflow, ""), undefined);
+});
+
+Deno.test("findSettledKeyHolder: names the wait that last held a key only while its settled claim is the highest record", async () => {
+  const store = new InMemorySignalWaitStore();
+  assertEquals(
+    await findSettledKeyHolder(store, WORKFLOW, "verdict"),
+    undefined,
+  );
+
+  // An open holder is not a settled one.
+  const claim = await acquire(store);
+  assertEquals(
+    await findSettledKeyHolder(store, WORKFLOW, claim.key),
+    undefined,
+  );
+
+  await store.settle(cancelled(claim));
+  const settled = await findSettledKeyHolder(store, WORKFLOW, claim.key);
+  assertEquals(settled?.claim.waitId, claim.waitId);
+  assertEquals(settled?.outcome.kind, "cancelled");
+  // The key is free all the while: this says who held it, not who holds it.
+  assertEquals(await findKeyHolder(store, WORKFLOW, claim.key), {
+    kind: "free",
+  });
+
+  // Once the claim is released with its run, nothing is said of it.
+  await releaseKeyClaims(store, () => true, NOW);
+  assertEquals(
+    await findSettledKeyHolder(store, WORKFLOW, claim.key),
+    undefined,
+  );
+});
+
+Deno.test("findSettledKeyHolder: a workflow id or a key no record can be kept under names nothing", async () => {
+  const store = new InMemorySignalWaitStore();
+  for (
+    const [workflowId, key] of [["../wf", "verdict"], [WORKFLOW, "Not A Key"]]
+  ) {
+    assertEquals(await findSettledKeyHolder(store, workflowId, key), undefined);
+  }
 });

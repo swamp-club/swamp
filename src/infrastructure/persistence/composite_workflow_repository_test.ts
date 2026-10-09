@@ -225,3 +225,38 @@ Deno.test("CompositeWorkflowRepository getPath delegates to primary", () => {
   const path = composite.getPath(id);
   assertEquals(path, "workflows/workflow-test-id.yaml");
 });
+
+Deno.test("CompositeWorkflowRepository.findAllById: the workflows findAll returns with that ID, across both repositories", async () => {
+  const shared = crypto.randomUUID();
+  const original = createTestWorkflow("original", shared);
+  const copy = createTestWorkflow("copy", shared);
+  const shadowed = createTestWorkflow("taken", shared);
+  const composite = new CompositeWorkflowRepository(
+    new InMemoryWorkflowRepository([original, createTestWorkflow("taken")]),
+    new InMemoryWorkflowRepository([copy]),
+  );
+  const expected = (await composite.findAll()).filter((w) => w.id === shared);
+  assertEquals(
+    (await composite.findAllById(createWorkflowId(shared))).map((w) => w.name),
+    expected.map((w) => w.name),
+  );
+  assertEquals(expected.map((w) => w.name), ["original", "copy"]);
+
+  // An extension workflow a primary one shadows by name is left out, as
+  // findAll leaves it out.
+  const hiding = new CompositeWorkflowRepository(
+    new InMemoryWorkflowRepository([original, createTestWorkflow("taken")]),
+    new InMemoryWorkflowRepository([shadowed]),
+  );
+  assertEquals(
+    (await hiding.findAllById(createWorkflowId(shared))).map((w) => w.name),
+    ["original"],
+  );
+  assertEquals(
+    await new CompositeWorkflowRepository(
+      new InMemoryWorkflowRepository([original]),
+      null,
+    ).findAllById(createWorkflowId(crypto.randomUUID())),
+    [],
+  );
+});

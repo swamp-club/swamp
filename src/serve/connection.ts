@@ -37,6 +37,10 @@ import {
   runAdoptingForwardedLocks,
 } from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
+import {
+  SIGNAL_KEY_MAX_LENGTH,
+  SIGNAL_WORKFLOW_MAX_LENGTH,
+} from "../domain/workflows/signal_wait.ts";
 import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import { AuditQueryService } from "../domain/serve_audit/audit_query_service.ts";
@@ -820,19 +824,45 @@ const WorkflowRejectRequestSchema = z.object({
   }),
 });
 
-// The wait ID is the only address of a signal. Only a UUID is accepted, so
-// no other client text reaches a store key or the audit log through it. It
-// is judged by normalizeWaitId, as the HTTP route and the CLI judge it, so
-// all three accept the same IDs.
+// A signal names its wait by ID, or by a workflow and a key (swamp-club#3211).
+// A wait ID, when present, is the address: the first form is tried first and
+// strips every other field, a `workflow` or `key` among them. A request that
+// carries both is therefore authorized and delivered as a signal by ID, as a
+// server from before the key form delivers it, and a client that sends extra
+// context beside a wait ID keeps working. Only a request with no wait ID is
+// read as a key address: the second form refuses a `waitId`, so one that is
+// not a UUID is malformed, as it always was, and never falls through to the
+// key. Only a UUID is accepted as a wait ID, so no other
+// client text reaches a store key or the audit log through it. It is judged
+// by normalizeWaitId, as the HTTP route and the CLI judge it, so all three
+// accept the same IDs. A workflow and a key are only bounded here: whether
+// they name anything is decided after the caller is authorized, and answered
+// as a wait that does not exist.
 const WorkflowSignalRequestSchema = z.object({
   type: z.literal("workflow.signal"),
   id: z.string().min(1).max(256),
-  payload: z.object({
-    waitId: z.string().max(64).refine(
-      (value) => normalizeWaitId(value) !== undefined,
-      "must be a UUID",
-    ),
-    payload: z.unknown(),
+  payload: z.union([
+    z.object({
+      waitId: z.string().max(64).refine(
+        (value) => normalizeWaitId(value) !== undefined,
+        "must be a UUID",
+      ),
+      payload: z.unknown(),
+    }),
+    z.object({
+      waitId: z.never().optional(),
+      workflow: z.string().min(1).max(SIGNAL_WORKFLOW_MAX_LENGTH),
+      key: z.string().min(1).max(SIGNAL_KEY_MAX_LENGTH),
+      payload: z.unknown(),
+    }),
+  ], {
+    // A request with no message is told so: the sentence about the address
+    // would send a client with a good address looking for a fault in it.
+    error: (issue) =>
+      typeof issue.input === "object" && issue.input !== null &&
+        !("payload" in issue.input)
+        ? `must carry a "payload": the JSON message for the wait`
+        : `must name the wait with a "waitId" that is a UUID, or with a "workflow" of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters and a "key" of at most ${SIGNAL_KEY_MAX_LENGTH}`,
   }),
 });
 
@@ -3028,8 +3058,9 @@ export function handleMessage(
       break;
     case "workflow.signal":
       // Not gated: a signal writes one control-plane record and pushes
-      // nothing. Audited under the wait ID until the handler has authorized
-      // the caller on the wait's workflow.
+      // nothing. Audited under the wait ID, or the workflow a key address
+      // names, until the handler has authorized the caller on the wait's
+      // workflow.
       task = audited(
         handleWorkflowSignal(
           socket,
@@ -3041,7 +3072,9 @@ export function handleMessage(
         auditOpts(
           "execution",
           "workflow",
-          normalizeWaitId(request.payload.waitId) ?? "invalid",
+          "waitId" in request.payload
+            ? normalizeWaitId(request.payload.waitId) ?? "invalid"
+            : request.payload.workflow,
         ),
       );
       break;

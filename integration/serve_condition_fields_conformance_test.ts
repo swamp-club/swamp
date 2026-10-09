@@ -112,8 +112,10 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.reject": "resource",
   "workflow.resume": "resource",
   "workflow.cancel": "resource",
-  // Names a wait, not a workflow, so serve_id_deny_conformance has no field
-  // to drive; its tags deny is exercised in serve_signal_test.
+  // By ID it names a wait, not a workflow, so serve_id_deny_conformance has
+  // no field to drive. By key it names the workflow and replies not_found,
+  // not unauthorized. The tags deny, and the deny by name for a workflow
+  // named by its ID, are exercised for both forms in serve_signal_test.
   "workflow.signal": "resource",
   "run.attach": "resource",
   "cancel": "resource",

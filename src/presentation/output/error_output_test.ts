@@ -34,6 +34,7 @@ import {
   LockWaitCycleError,
 } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import { SignalRefusedUserError } from "../../domain/workflows/signal_refused_user_error.ts";
 import {
   InvalidDatastoreFormatMarkerError,
   UnsupportedDatastoreFormatError,
@@ -947,4 +948,34 @@ Deno.test("datastore format errors: --json carries the stable code and no stack,
     assertEquals(logs[0].includes("    at "), false);
     assertEquals(JSON.parse(logs[1]), { error: error.message, code });
   }
+});
+
+Deno.test("buildErrorJson: a refused signal carries the refusal, and the key's last wait when there is one", () => {
+  const lastWait = {
+    waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+    settledAs: "timed_out" as const,
+    settledAt: "2026-01-01T00:00:30.000Z",
+  };
+  assertEquals(
+    buildErrorJson(
+      new SignalRefusedUserError(
+        "No open wait holds that key.",
+        "validation_failed",
+        "no_open_wait",
+        lastWait,
+      ),
+    ),
+    {
+      error: "No open wait holds that key.",
+      code: "validation_failed",
+      refusal: "no_open_wait",
+      lastWait,
+    },
+  );
+  assertEquals(
+    buildErrorJson(
+      new SignalRefusedUserError("expired", "validation_failed", "expired"),
+    ),
+    { error: "expired", code: "validation_failed", refusal: "expired" },
+  );
 });

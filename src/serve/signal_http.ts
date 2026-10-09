@@ -18,9 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The HTTP signal route: `POST /api/v1/signal/<waitId>` with a JSON body
- * `{ "payload": { ... } }`. It is how a system that holds a token and a
- * wait ID, and no WebSocket client, answers a wait. Delivery itself is
+ * The HTTP signal routes. `POST /api/v1/signal/<waitId>` with a JSON body
+ * `{ "payload": { ... } }` is how a system that holds a token and a wait
+ * ID, and no WebSocket client, answers a wait. `POST /api/v1/signal` with
+ * `{ "workflow": "...", "key": "...", "payload": { ... } }` answers the wait
+ * that holds a key (swamp-club#3211); the workflow travels in the body, as
+ * its name may hold `@` and `/`. Delivery itself is
  * {@link deliverSignalForCaller}, shared with the `workflow.signal` request.
  */
 
@@ -28,7 +31,11 @@ import { parsePrincipal } from "../domain/access/principal.ts";
 import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
-import { SIGNAL_PAYLOAD_MAX_BYTES } from "../domain/workflows/signal_wait.ts";
+import {
+  SIGNAL_KEY_MAX_LENGTH,
+  SIGNAL_PAYLOAD_MAX_BYTES,
+  SIGNAL_WORKFLOW_MAX_LENGTH,
+} from "../domain/workflows/signal_wait.ts";
 import { normalizeWaitId } from "../domain/workflows/signal_wait_records.ts";
 import {
   type AccessCaller,
@@ -47,6 +54,7 @@ import {
 import {
   continueAfterSignal,
   deliverSignalForCaller,
+  type SignalDeliveryAddress,
   type SignalDeliveryResult,
 } from "./signal_delivery.ts";
 import type { ServerTokenAuthResult } from "./token_auth.ts";
@@ -65,18 +73,28 @@ export const MAX_SIGNAL_BODY_BYTES = SIGNAL_PAYLOAD_MAX_BYTES * 6 + 1024;
 // Only narrows the path segment; normalizeWaitId decides what a wait ID is.
 const SIGNAL_ROUTE = /^\/api\/v1\/signal\/([0-9A-Fa-f-]{36})$/;
 
-/** The request type this route is the HTTP form of. */
+/** The route of a signal addressed by workflow and key, both in the body. */
+const SIGNAL_BY_KEY_ROUTE = "/api/v1/signal";
+
+/** The request type these routes are the HTTP form of. */
 const SIGNAL_REQUEST_TYPE = "workflow.signal";
 
+/** Which signal route a path is: by the wait ID it names, or by key. */
+export type SignalRoute =
+  | { readonly waitId: string }
+  | { readonly byKey: true };
+
 /**
- * The wait ID a request path names, lower-cased, or undefined when the path
- * is not the signal route. Only a UUID matches, so no other client text
- * reaches a store key or the audit log through the path.
+ * The signal route a request path is, or undefined when it is neither. By
+ * ID it carries the wait ID, lower-cased; only a UUID matches, so no other
+ * client text reaches a store key or the audit log through the path.
  */
-export function matchSignalRoute(pathname: string): string | undefined {
+export function matchSignalRoute(pathname: string): SignalRoute | undefined {
+  if (pathname === SIGNAL_BY_KEY_ROUTE) return { byKey: true };
   const segment = SIGNAL_ROUTE.exec(pathname)?.[1];
   // Judged as the WebSocket request and the CLI judge a wait ID.
-  return segment === undefined ? undefined : normalizeWaitId(segment);
+  const waitId = segment === undefined ? undefined : normalizeWaitId(segment);
+  return waitId === undefined ? undefined : { waitId };
 }
 
 export interface SignalHttpDeps {
@@ -93,6 +111,10 @@ const STATUS: Record<SignalDeliveryResult["status"], number> = {
   not_found: 404,
   invalid_payload: 422,
   already_settled: 409,
+  // The key is declared and nothing waits on it now: the request is right
+  // and the workflow's state refuses it. The body's `status` tells it from
+  // a wait that is already settled.
+  no_open_wait: 409,
   expired: 410,
   closed: 410,
   unsupported: 501,
@@ -136,7 +158,7 @@ function badRequest(message: string, status = 400): Response {
  */
 export async function handleSignalHttpRequest(
   req: Request,
-  waitId: string,
+  route: SignalRoute,
   sourceIp: string,
   deps: SignalHttpDeps,
 ): Promise<Response> {
@@ -233,12 +255,39 @@ export async function handleSignalHttpRequest(
     );
   }
 
+  let address: SignalDeliveryAddress;
+  if ("waitId" in route) {
+    address = { waitId: route.waitId };
+  } else {
+    // Only the shape is judged here. Whether the two name anything is
+    // decided after the caller is authorized, and answered 404.
+    const { workflow, key } = body as { workflow?: unknown; key?: unknown };
+    if (
+      typeof workflow !== "string" || workflow.length === 0 ||
+      workflow.length > SIGNAL_WORKFLOW_MAX_LENGTH ||
+      typeof key !== "string" || key.length === 0 ||
+      key.length > SIGNAL_KEY_MAX_LENGTH || "waitId" in body
+    ) {
+      return badRequest(
+        `Request body must be {"workflow": ..., "key": ..., "payload": ...}: a workflow name or ID of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters, a key of at most ${SIGNAL_KEY_MAX_LENGTH}, and no "waitId"`,
+      );
+    }
+    address = { workflow, key };
+  }
+
+  // The wait ID, or the workflow a key address names: as sent until it
+  // resolves, then under its canonical name, as its denial is audited.
+  let named = "waitId" in address ? address.waitId : address.workflow;
   const result = await deliverSignalForCaller(ctx, caller, {
     requestId,
-    waitId,
+    ...address,
     payload: (body as { payload: unknown }).payload,
+  }, {
+    onWorkflowResolved: (name) => {
+      named = name;
+    },
   });
-  emitResponseAudit(ctx, caller, requestId, waitId, result);
+  emitResponseAudit(ctx, caller, requestId, named, result);
   await continueAfterSignal(ctx, result, {
     principal: caller.principal,
     ...(tokenBinding ? { token: tokenBinding } : {}),
@@ -253,14 +302,16 @@ export async function handleSignalHttpRequest(
 
 /**
  * Audits the response, as the WebSocket dispatch audits every request. The
- * resource is the workflow once the caller was told it, otherwise the wait
- * ID. A denial is audited separately, with the workflow, where it is decided.
+ * resource is the workflow once the caller was told it, otherwise `named`:
+ * the wait ID, or the workflow a key address names (its canonical name once
+ * it resolved, else the string as sent). A denial is audited separately,
+ * with the workflow, where it is decided.
  */
 function emitResponseAudit(
   ctx: ConnectionContext,
   caller: AccessCaller,
   requestId: string,
-  waitId: string,
+  named: string,
   result: SignalDeliveryResult,
 ): void {
   if (!ctx.auditEmitter) return;
@@ -277,7 +328,7 @@ function emitResponseAudit(
     resourceKind: "workflow",
     resourceName:
       (result.status === "delivered" ? result.data.workflowName : undefined) ??
-        waitId,
+        named,
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",

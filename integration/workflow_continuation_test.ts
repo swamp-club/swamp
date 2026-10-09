@@ -103,7 +103,7 @@ interface Fixture {
    * fails instead.
    */
   saveWaiting(
-    options?: { autoResume?: boolean; onFailure?: boolean },
+    options?: { autoResume?: boolean; onFailure?: boolean; key?: string },
   ): Promise<Workflow>;
 }
 
@@ -149,7 +149,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
                 steps: [
                   Step.create({
                     name: "review",
-                    task: StepTask.waitForSignal(3600, SCHEMA),
+                    task: StepTask.waitForSignal(3600, SCHEMA, options.key),
                   }),
                   Step.create({
                     name: "ship",
@@ -282,6 +282,37 @@ async function idle(...instances: Instance[]): Promise<void> {
     "every launched resume finished",
   );
 }
+
+Deno.test({
+  name:
+    "continuation: a signal addressed by workflow and key resumes the run as one by wait ID does",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({ key: "verdict" });
+      const { run } = await suspend(f, workflow);
+      const a = instance(f, "a");
+
+      const frames = await sendRequest(a.ctx, {
+        type: "workflow.signal",
+        id: `signal-${crypto.randomUUID()}`,
+        payload: {
+          workflow: workflow.name,
+          key: "verdict",
+          payload: { verdict: "ship" },
+        },
+      }, null);
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+
+      await waitFor(
+        async () => (await loadRun(f, workflow, run.id)).status === "succeeded",
+        "the run continued and finished",
+      );
+      assertEquals(f.executions(), 1);
+      assert(actions(a).includes("workflow.auto_resume"));
+    });
+  },
+});
 
 Deno.test({
   name:
