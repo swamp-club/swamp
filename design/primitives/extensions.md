@@ -41,6 +41,10 @@ place (see [Promotion](#promotion)), which moves the published build without
 uploading the local files. `--yes` and `--json` never prompt: they fail, and
 the message gives the promote command when one applies.
 
+A yanked version stays taken: its number cannot be published again. It cannot
+be promoted either, so on any channel the push offers only to bump or stop, and
+its message names the yank and the reason in place of the promote command.
+
 ### Epoch suffix
 
 `swamp extension push manifest.yaml --version-suffix epoch` replaces the micro
@@ -268,6 +272,12 @@ Promotion changes registry metadata only; the archive is not uploaded again.
 The server then recalculates the latest version per channel. The CLI checks the
 direction only when `--from-channel` is given; otherwise the server enforces it
 (`src/libswamp/extensions/promote.ts`).
+
+The registry refuses to promote a yanked version, or any version of a yanked
+extension, and its refusal names the yank and the reason. The manifest form
+already knows the yank from its lookup, so it refuses with the same sentence
+before calling the registry; the name form does no lookup and leaves the
+refusal to the registry.
 
 ### Auto-resolve safety
 

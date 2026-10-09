@@ -2754,3 +2754,58 @@ for (const warnings of [undefined, { messages: [], omitted: 0 }]) {
     },
   );
 }
+
+Deno.test("extensionPushPrepare: push rejection for a yanked version carries the yank and its reason", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({
+        version: "2026.03.22.1",
+        channel: "beta",
+        yank: { reason: "broken build" },
+      }),
+  });
+
+  const error = await assertRejects(
+    () =>
+      extensionPushPrepare(
+        ctx,
+        deps,
+        makePrepareInput({ dryRun: false, channel: "rc" }),
+      ),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "has been yanked (broken build)");
+  assertEquals(error.message.includes("swamp extension promote"), false);
+  assertEquals(error.details, {
+    existingVersion: "2026.03.22.1",
+    existingChannel: "beta",
+    requestedChannel: "rc",
+    existingYanked: true,
+    existingYankReason: "broken build",
+  });
+});
+
+Deno.test("extensionPushPrepare: dry run reports a yanked version as taken and names the yank", async () => {
+  const deps = makePrepareDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({
+        version: "2026.03.22.1",
+        channel: "beta",
+        yank: { reason: null },
+      }),
+  });
+
+  const result = await extensionPushPrepare(
+    ctx,
+    deps,
+    makePrepareInput({ dryRun: true }),
+  );
+  const check = result.registryChecks.find((c) => c.name === "version-exists");
+  assertEquals(check?.status, "failed");
+  assertEquals(check?.existingYanked, true);
+  assertStringIncludes(check?.message ?? "", "has been yanked.");
+  assertEquals(
+    (check?.message ?? "").includes("swamp extension promote"),
+    false,
+  );
+});

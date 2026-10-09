@@ -33,6 +33,7 @@ import {
   type RegistryCheckResult,
   registryChecksVerdict,
   signedInCheck,
+  yankedVersionPromoteRefusal,
 } from "./extension_publish_checks.ts";
 
 Deno.test("collectiveOf: returns the namespace between @ and /", () => {
@@ -643,4 +644,86 @@ Deno.test("signedInCheck: without a username or collective, the fingerprint alon
     assertEquals(check.credential?.fingerprint, "9c1e4b7a2f60d835");
     assertEquals(check.credential?.username, undefined);
   }
+});
+
+Deno.test("evaluateVersionExists: a yanked version on a lower channel names the yank and not the promote command", () => {
+  const result = evaluateVersionExists({
+    extensionName: "@acme/tool",
+    version: "2026.10.06.1",
+    published: {
+      version: "2026.10.06.1",
+      channel: "beta",
+      yank: { reason: "broken build" },
+    },
+    requestedChannel: "rc",
+  });
+  assertEquals(result, {
+    name: "version-exists",
+    status: "failed",
+    message:
+      "Version 2026.10.06.1 already exists for @acme/tool on channel 'beta' " +
+      "and has been yanked (broken build). " +
+      "A yanked version stays taken and cannot be promoted; publish a new version instead.",
+    existingChannel: "beta",
+    requestedChannel: "rc",
+    existingYanked: true,
+    existingYankReason: "broken build",
+  });
+});
+
+Deno.test("evaluateVersionExists: a yanked version fails on the same and on a higher channel too", () => {
+  for (
+    const [channel, requestedChannel] of [["rc", "rc"], ["stable", "beta"]]
+  ) {
+    const result = evaluateVersionExists({
+      extensionName: "@acme/tool",
+      version: "2026.10.06.1",
+      published: {
+        version: "2026.10.06.1",
+        channel,
+        yank: { reason: "broken build" },
+      },
+      requestedChannel,
+    });
+    assertEquals(result.status, "failed");
+    assertEquals(result.existingYanked, true);
+    assertEquals(
+      result.message,
+      `Version 2026.10.06.1 already exists for @acme/tool on channel '${channel}' ` +
+        "and has been yanked (broken build). " +
+        "A yanked version stays taken and cannot be promoted; publish a new version instead.",
+    );
+  }
+});
+
+Deno.test("evaluateVersionExists: a yank without a reason leaves the reason out", () => {
+  const result = evaluateVersionExists({
+    extensionName: "@acme/tool",
+    version: "2026.10.06.1",
+    published: {
+      version: "2026.10.06.1",
+      channel: "beta",
+      yank: { reason: null },
+    },
+    requestedChannel: "rc",
+  });
+  assertEquals(
+    result.message,
+    "Version 2026.10.06.1 already exists for @acme/tool on channel 'beta' " +
+      "and has been yanked. " +
+      "A yanked version stays taken and cannot be promoted; publish a new version instead.",
+  );
+  assertEquals(result.existingYanked, true);
+  assertEquals("existingYankReason" in result, false);
+});
+
+Deno.test("yankedVersionPromoteRefusal: matches the registry's wording, with and without a reason", () => {
+  assertEquals(
+    yankedVersionPromoteRefusal("@acme/tool", "2026.10.06.1", "broken build"),
+    "Version 2026.10.06.1 of @acme/tool has been yanked (broken build) and cannot be promoted",
+  );
+  assertEquals(
+    yankedVersionPromoteRefusal("@acme/tool", "2026.10.06.1", null),
+    "Version 2026.10.06.1 of @acme/tool has been yanked and cannot be promoted",
+  );
 });

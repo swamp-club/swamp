@@ -21,7 +21,10 @@ import { AuthRepository } from "../../infrastructure/persistence/auth_repository
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { PromoteResult } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
-import type { PublishedVersion } from "../../domain/extensions/extension_publish_checks.ts";
+import {
+  type PublishedVersion,
+  yankedVersionPromoteRefusal,
+} from "../../domain/extensions/extension_publish_checks.ts";
 import { findPublishedVersion } from "./published_version_lookup.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -202,6 +205,21 @@ export async function* extensionPromote(
             kind: "error",
             error: validationFailed(
               `Nothing to promote: ${ref} is not published on any channel.`,
+            ),
+          };
+          return;
+        }
+        // Refused here in the registry's wording, before the channel check:
+        // a yanked version cannot be promoted from any channel.
+        if (published.yank) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              yankedVersionPromoteRefusal(
+                input.extensionName,
+                input.version,
+                published.yank.reason,
+              ),
             ),
           };
           return;

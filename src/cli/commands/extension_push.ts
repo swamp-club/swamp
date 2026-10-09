@@ -235,6 +235,10 @@ export type ExistingVersionResponse =
  * pass `--yes`. A refusal keeps the pre-#2939 message for a duplicate on the
  * requested channel; a version on another channel gets the check's message,
  * which names that channel and, when lower, the promote command.
+ *
+ * A yanked version is never offered for promotion, whatever channel it is
+ * on: the registry refuses it. It gets the bump prompt, and a refusal uses
+ * the check's message, which names the yank.
  */
 export function resolveExistingVersionResponse(input: {
   extensionName: string;
@@ -242,6 +246,7 @@ export function resolveExistingVersionResponse(input: {
   checkMessage: string;
   existingChannel?: string;
   requestedChannel?: string;
+  existingYanked?: boolean;
   outputMode: OutputMode;
   yes?: boolean;
   force?: boolean;
@@ -252,13 +257,13 @@ export function resolveExistingVersionResponse(input: {
   if (input.outputMode !== "log" || input.yes || input.force) {
     return {
       kind: "refuse",
-      message: placement === "same-channel"
+      message: placement === "same-channel" && !input.existingYanked
         ? `Version ${input.version} already exists for ${input.extensionName}. ` +
           `Use a different version or let the CLI bump it interactively.`
         : input.checkMessage,
     };
   }
-  return placement === "lower-channel"
+  return placement === "lower-channel" && !input.existingYanked
     ? { kind: "choose" }
     : { kind: "bump-prompt" };
 }
@@ -643,12 +648,14 @@ export const extensionPushCommand = new Command()
             const existingChannel =
               (details.existingChannel as string | undefined) ??
                 requestedChannel;
+            const existingYanked = details.existingYanked === true;
             const response = resolveExistingVersionResponse({
               extensionName: manifest.name,
               version: existingVersion,
               checkMessage: error.message,
               existingChannel,
               requestedChannel,
+              existingYanked,
               outputMode: cliCtx.outputMode,
               yes: options.yes,
               force: options.force,
@@ -673,7 +680,18 @@ export const extensionPushCommand = new Command()
               );
               action = index === null ? "stop" : prompt.choices[index].action;
             } else {
-              const prompt = bumpVersionPrompt(promptInput);
+              const prompt = bumpVersionPrompt({
+                ...promptInput,
+                ...(existingYanked
+                  ? {
+                    yank: {
+                      reason: typeof details.existingYankReason === "string"
+                        ? details.existingYankReason
+                        : undefined,
+                    },
+                  }
+                  : {}),
+              });
               action = await promptConfirmation(prompt.question, prompt.details)
                 ? "bump"
                 : "stop";
