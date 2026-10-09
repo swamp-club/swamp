@@ -36,6 +36,7 @@ import {
   getSwampLogger,
 } from "../../infrastructure/logging/logger.ts";
 import { displayPath } from "../output/display_path.ts";
+import { logTextBlock } from "./log_text_block.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import {
   qualityCheckLabel,
@@ -222,14 +223,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     return finding.line !== undefined ? `${file}:${finding.line}` : file;
   }
 
-  /**
-   * Prints free text one line per log line, verbatim. Interpolated as a value,
-   * LogTape would print a multi-line string as a JS string concatenation.
-   */
+  /** Prints free text one line per log line, verbatim. */
   private textBlock(level: LogLevelName, text: string, indent: string): void {
-    for (const line of text.replace(/(\r?\n)+$/, "").split(/\r?\n/)) {
-      this.logger[level](escapeLogTemplate(`${indent}${line}`));
-    }
+    logTextBlock(this.logger, level, text, indent);
   }
 
   /**

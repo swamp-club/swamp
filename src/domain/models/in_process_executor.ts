@@ -48,12 +48,14 @@ import { processTraceEnv } from "./process_trace_env.ts";
  * Renders a LogTape string template the way LogTape does for its own sinks:
  * `{{` and `}}` are escaped braces, and `{key}` is a placeholder filled from
  * `props`. Without props, a single-brace span is left as written so plain
- * output (JSON, say) still displays verbatim.
+ * output (JSON, say) still displays verbatim. A template with no opening
+ * brace is not parsed at all, so `}}` in one stays doubled.
  */
 function renderMessageTemplate(
   tpl: string,
   props: Record<string, unknown> | undefined,
 ): string {
+  if (!tpl.includes("{")) return tpl;
   return tpl.replace(
     /\{\{|\}\}|\{(\w+)\}/g,
     (match, key: string | undefined) => {
