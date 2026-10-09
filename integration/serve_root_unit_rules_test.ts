@@ -274,6 +274,7 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   "src/serve/handlers/data_handlers.ts: handleRunGc",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprove",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowReject",
+  "src/serve/nested_run_cascade.ts: cascadeEndedRunUnderGate",
   "src/serve/suspended_run_cancel.ts: cancelLocatedRunAndPush",
   // Request handlers that push only once their success reply was sent
   // (swamp-club#3035).

@@ -20,6 +20,7 @@
 import { acceptedOutcomeFor } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import { assertEquals } from "@std/assert";
 import { supersedeSuspendedRuns } from "./supersede.ts";
+import { emptyNestedCascade } from "./nested_cascade.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -29,6 +30,7 @@ import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
 import { SignalWait } from "../../domain/workflows/signal_wait.ts";
+import { nestedChain } from "../../domain/workflows/nested_run_test_helpers.ts";
 
 function createWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -422,5 +424,53 @@ Deno.test("supersedeSuspendedRuns: a run with different inputs is neither cancel
   );
 
   assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, []);
+});
+
+Deno.test("supersedeSuspendedRuns: leaves a run whose nested run waits for a signal, and never reaches the cascade", async () => {
+  const wait = SignalWait.open({ type: "object" }, 60, new Date());
+  const { chain, runs, workflows } = nestedChain(3, wait);
+  let cascaded = 0;
+
+  const result = await supersedeSuspendedRuns(
+    workflows[0],
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+      cascade: () => {
+        cascaded++;
+        return Promise.resolve(emptyNestedCascade());
+      },
+    },
+    runs as unknown as WorkflowRunRepository,
+  );
+
+  assertEquals(result.cancelledRunIds, []);
+  assertEquals(result.skippedRuns, [{
+    runId: chain[0].id,
+    waitIds: [wait.id],
+  }]);
+  assertEquals(runs.saved, []);
+  assertEquals(cascaded, 0);
+  assertEquals(runs.get(chain[2]).status, "suspended");
+});
+
+Deno.test("supersedeSuspendedRuns: a run whose nested run waits at a gate is still superseded", async () => {
+  const { chain, runs, workflows } = nestedChain(2);
+
+  const result = await supersedeSuspendedRuns(
+    workflows[0],
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    runs as unknown as WorkflowRunRepository,
+  );
+
+  assertEquals(result.cancelledRunIds, [chain[0].id]);
   assertEquals(result.skippedRuns, []);
 });

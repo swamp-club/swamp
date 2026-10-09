@@ -86,6 +86,11 @@ import { nestedWaitView } from "../src/libswamp/workflows/history_get.ts";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { unclaimedRuns } from "../src/domain/workflows/run_claim.ts";
+import {
+  createNestedCascade,
+  type NestedCascade,
+} from "../src/libswamp/workflows/nested_cascade.ts";
+import { OrphanedNestedRunError } from "../src/domain/workflows/orphaned_nested_run.ts";
 
 await initializeLogging({});
 
@@ -395,7 +400,7 @@ Deno.test("nested approval: rejecting the child fails the parent's step as a rej
   });
 });
 
-Deno.test("nested approval: cancelling the waiting parent leaves the child suspended and lists it", async () => {
+Deno.test("nested approval: without a cascade, cancelling the waiting parent leaves the child suspended and lists it", async () => {
   const child = gatedChild();
   const parent = caller("waiting-parent", child.name);
   await withHarness([parent, child], async (h) => {
@@ -431,6 +436,115 @@ Deno.test("nested approval: cancelling the waiting parent leaves the child suspe
       ),
     );
     assertEquals(approvals.approvals[0].parentWaiting, false);
+    // The gate can no longer be decided (swamp-club#2867).
+    assertEquals(approvals.approvals[0].parentEnded, true);
+  });
+});
+
+Deno.test("nested approval: run cleanup keeps a finished parent while its child is unfinished, and a child whose parent record is gone is listed as cancel-only", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    const cancel = (runId: string) =>
+      completed<WorkflowCancelSuspendedData>(
+        workflowCancelSuspended(
+          createLibSwampContext(),
+          createWorkflowCancelSuspendedDeps(
+            h.workflowRepo,
+            h.runRepo,
+            () => true,
+            () => Promise.resolve(null),
+          ),
+          { runId, reason: "operator" },
+        ),
+      );
+    // No cascade: the child is left suspended under a cancelled parent.
+    await cancel(parentRun.id);
+
+    const parentPath = h.runRepo.getPath(parent.id, parentRun.id);
+    const old = new Date("2020-01-01T00:00:00Z");
+    const future = new Date(Date.now() + 60_000);
+    const backdate = async () => {
+      // Backdate the record itself too: cleanup reads completedAt.
+      const text = await Deno.readTextFile(parentPath);
+      await Deno.writeTextFile(
+        parentPath,
+        text.replace(
+          /^completedAt: .*$/m,
+          `completedAt: "${old.toISOString()}"`,
+        ),
+      );
+      await Deno.utime(parentPath, old, old);
+    };
+    await backdate();
+
+    let result = await h.runRepo.deleteOlderThan(future, { dryRun: true });
+    assertEquals(result.deletedRunIds.includes(parentRun.id), false);
+
+    // A child that cannot be read may still be unfinished: the parent stays.
+    const findById = h.runRepo.findById;
+    h.runRepo.findById = () => Promise.reject(new Error("EMFILE"));
+    try {
+      result = await h.runRepo.deleteOlderThan(future, { dryRun: true });
+    } finally {
+      h.runRepo.findById = findById;
+    }
+    assertEquals(result.deletedRunIds.includes(parentRun.id), false);
+
+    // A parent an older binary's cleanup already removed: the listing offers
+    // only the cancel, which still works.
+    await h.runRepo.deleteAllByWorkflowId(parent.id);
+    const approvals = await completed<WorkflowApprovalsData>(
+      workflowApprovals(
+        createLibSwampContext(),
+        createWorkflowApprovalsDeps(h.workflowRepo, h.runRepo),
+      ),
+    );
+    assertEquals(approvals.approvals[0].parentMissing, true);
+    assertEquals(approvals.approvals[0].parentEnded, undefined);
+    await cancel(childRun.id);
+    assertEquals((await only(h.runRepo, child)).status, "cancelled");
+  });
+});
+
+Deno.test("nested approval: run cleanup collects a finished parent once its child has finished", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    for (const runId of [parentRun.id, childRun.id]) {
+      await completed<WorkflowCancelSuspendedData>(
+        workflowCancelSuspended(
+          createLibSwampContext(),
+          createWorkflowCancelSuspendedDeps(
+            h.workflowRepo,
+            h.runRepo,
+            () => true,
+            () => Promise.resolve(null),
+          ),
+          { runId, reason: "operator" },
+        ),
+      );
+    }
+    const parentPath = h.runRepo.getPath(parent.id, parentRun.id);
+    const old = new Date("2020-01-01T00:00:00Z");
+    const text = await Deno.readTextFile(parentPath);
+    await Deno.writeTextFile(
+      parentPath,
+      text.replace(/^completedAt: .*$/m, `completedAt: "${old.toISOString()}"`),
+    );
+    await Deno.utime(parentPath, old, old);
+
+    const result = await h.runRepo.deleteOlderThan(
+      new Date(Date.now() + 60_000),
+      { dryRun: true },
+    );
+    assertEquals(result.deletedRunIds.includes(parentRun.id), true);
   });
 });
 
@@ -537,5 +651,301 @@ Deno.test("nested approval: two levels of nesting suspend every ancestor and res
     await drain(h.service.resume(middle.name, middleRun.id));
     await drain(h.service.resume(root.name, rootRun.id));
     assertEquals((await only(h.runRepo, root)).status, "succeeded");
+  });
+});
+
+// --- swamp-club#2867: ending a parent cancels the nested runs it waited on,
+// and a nested run nothing waits on any more refuses to continue.
+
+function cascadeOf(h: Harness): NestedCascade {
+  return createNestedCascade({
+    workflowRepo: h.workflowRepo,
+    runRepo: h.runRepo,
+    runClaims: unclaimedRuns,
+    findEvaluatedWorkflow: () => Promise.resolve(null),
+  });
+}
+
+function cancelRun(
+  h: Harness,
+  runId: string,
+  cascade?: NestedCascade,
+): Promise<WorkflowCancelSuspendedData> {
+  return completed<WorkflowCancelSuspendedData>(
+    workflowCancelSuspended(
+      createLibSwampContext(),
+      {
+        ...createWorkflowCancelSuspendedDeps(
+          h.workflowRepo,
+          h.runRepo,
+          () => true,
+          () => Promise.resolve(null),
+        ),
+        cascade,
+      },
+      { runId, reason: "operator" },
+    ),
+  );
+}
+
+/** A workflow with a nested step and, beside it, a gate of its own. */
+function callerWithOwnGate(name: string, callee: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "call-nested",
+            task: StepTask.workflow(callee),
+          }),
+          Step.create({
+            name: "own-gate",
+            task: StepTask.manualApproval("Approve the parent"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("nested cascade: cancelling the waiting parent cancels the suspended child with it", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+
+    const cancelled = await cancelRun(h, parentRun.id, cascadeOf(h));
+    assertEquals(cancelled.cancelledNestedRuns?.map((c) => c.runId), [
+      childRun.id,
+    ]);
+    assertEquals(cancelled.detachedNestedRuns, undefined);
+
+    const stored = await only(h.runRepo, child);
+    assertEquals(stored.status, "cancelled");
+    assertStringIncludes(stored.tags["cancel_reason"], parentRun.id);
+    assertEquals(stored.findWaitingApprovalStep(), undefined);
+    // Nothing is left to approve.
+    const approvals = await completed<WorkflowApprovalsData>(
+      workflowApprovals(
+        createLibSwampContext(),
+        createWorkflowApprovalsDeps(h.workflowRepo, h.runRepo),
+      ),
+    );
+    assertEquals(approvals.approvals, []);
+    assertEquals(h.executor.executed, []);
+  });
+});
+
+Deno.test("nested cascade: rejecting the parent's own gate cancels the child it also waited on", async () => {
+  const child = gatedChild();
+  const parent = callerWithOwnGate("gated-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    assertEquals(childRun.status, "suspended");
+
+    const rejected = await completed<WorkflowRejectData>(
+      workflowReject(
+        createLibSwampContext(),
+        {
+          ...createWorkflowRejectDeps(
+            h.workflowRepo,
+            h.runRepo,
+            unclaimedRuns,
+            () => Promise.resolve(null),
+          ),
+          cascade: cascadeOf(h),
+        },
+        {
+          workflowIdOrName: parent.name,
+          stepName: "own-gate",
+          runId: parentRun.id,
+        },
+      ),
+    );
+    assertEquals(rejected.cancelledNestedRuns?.map((c) => c.runId), [
+      childRun.id,
+    ]);
+    assertEquals((await only(h.runRepo, parent)).status, "failed");
+    assertEquals((await only(h.runRepo, child)).status, "cancelled");
+  });
+});
+
+Deno.test("nested cascade: a new run that supersedes the waiting parent cancels its child", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+
+    const result = await supersedeSuspendedRuns(
+      parent,
+      {},
+      {
+        findSuspendedRuns: (id) => h.runRepo.findAllByWorkflowId(id),
+        findEvaluatedWorkflow: () => Promise.resolve(null),
+        runClaims: unclaimedRuns,
+        cascade: cascadeOf(h),
+      },
+      h.runRepo,
+    );
+    assertEquals(result.cancelledRunIds, [parentRun.id]);
+    assertEquals(result.cancelledNestedRuns.map((c) => c.runId), [
+      childRun.id,
+    ]);
+    assertEquals(result.detachedNestedRuns, []);
+    assertEquals((await only(h.runRepo, child)).status, "cancelled");
+  });
+});
+
+Deno.test("nested cascade: cancelling the top of two levels cancels the child and the grandchild", async () => {
+  const grandchild = gatedChild("gated-grandchild");
+  const middle = caller("middle", grandchild.name);
+  const top = caller("top", middle.name);
+  await withHarness([top, middle, grandchild], async (h) => {
+    await drain(h.service.run(top.name));
+    const topRun = await only(h.runRepo, top);
+    const middleRun = await only(h.runRepo, middle);
+    const grandchildRun = await only(h.runRepo, grandchild);
+
+    const cancelled = await cancelRun(h, topRun.id, cascadeOf(h));
+    assertEquals(cancelled.cancelledNestedRuns?.map((c) => c.runId), [
+      middleRun.id,
+      grandchildRun.id,
+    ]);
+    assertEquals((await only(h.runRepo, middle)).status, "cancelled");
+    assertEquals((await only(h.runRepo, grandchild)).status, "cancelled");
+  });
+});
+
+Deno.test("nested backstop: approving a child whose parent ended refuses and cancels the child", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    // Ended by a path that does not cascade.
+    await cancelRun(h, parentRun.id);
+    assertEquals((await only(h.runRepo, child)).status, "suspended");
+
+    const error = await assertRejects(() =>
+      completed<WorkflowApproveData>(
+        workflowApprove(
+          createLibSwampContext(),
+          createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+          {
+            workflowIdOrName: child.name,
+            stepName: "gate",
+            runId: childRun.id,
+          },
+        ),
+      )
+    );
+    assertStringIncludes((error as Error).message, "was not continued");
+    assertStringIncludes((error as Error).message, parentRun.id);
+
+    const stored = await only(h.runRepo, child);
+    assertEquals(stored.status, "cancelled");
+    assertEquals(
+      stored.getJob("child-job")!.getStep("gate")!.approvalDecision,
+      undefined,
+    );
+    assertEquals(h.executor.executed, []);
+  });
+});
+
+Deno.test("nested backstop: rejecting or resuming a child whose parent ended refuses and cancels it", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    await cancelRun(h, (await only(h.runRepo, parent)).id);
+    const childRun = await only(h.runRepo, child);
+
+    await assertRejects(
+      () => drain(h.service.resume(child.name, childRun.id)),
+      OrphanedNestedRunError,
+    );
+    assertEquals((await only(h.runRepo, child)).status, "cancelled");
+    assertEquals(h.executor.executed, []);
+  });
+
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    await cancelRun(h, (await only(h.runRepo, parent)).id);
+    const childRun = await only(h.runRepo, child);
+
+    await assertRejects(() =>
+      completed<WorkflowRejectData>(
+        workflowReject(
+          createLibSwampContext(),
+          createWorkflowRejectDeps(
+            h.workflowRepo,
+            h.runRepo,
+            unclaimedRuns,
+            () => Promise.resolve(null),
+          ),
+          {
+            workflowIdOrName: child.name,
+            stepName: "gate",
+            runId: childRun.id,
+          },
+        ),
+      )
+    );
+    // Cancelled with its parent, not failed as a rejected approval.
+    assertEquals((await only(h.runRepo, child)).status, "cancelled");
+  });
+});
+
+Deno.test("nested backstop: a grandchild refuses once the top run ended, though its own parent still waits", async () => {
+  const grandchild = gatedChild("gated-grandchild");
+  const middle = caller("middle", grandchild.name);
+  const top = caller("top", middle.name);
+  await withHarness([top, middle, grandchild], async (h) => {
+    await drain(h.service.run(top.name));
+    await cancelRun(h, (await only(h.runRepo, top)).id);
+    assertEquals((await only(h.runRepo, middle)).status, "suspended");
+    const grandchildRun = await only(h.runRepo, grandchild);
+
+    await assertRejects(() =>
+      completed<WorkflowApproveData>(
+        workflowApprove(
+          createLibSwampContext(),
+          createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+          {
+            workflowIdOrName: grandchild.name,
+            stepName: "gate",
+            runId: grandchildRun.id,
+          },
+        ),
+      )
+    );
+    assertEquals((await only(h.runRepo, grandchild)).status, "cancelled");
+  });
+});
+
+Deno.test("nested backstop: a child whose parent still waits is approved as before", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const childRun = await only(h.runRepo, child);
+    const approved = await completed<WorkflowApproveData>(
+      workflowApprove(
+        createLibSwampContext(),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+        { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
+      ),
+    );
+    assertEquals(approved.approved, true);
+    assertEquals((await only(h.runRepo, child)).status, "suspended");
   });
 });

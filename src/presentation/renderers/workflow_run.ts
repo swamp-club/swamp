@@ -280,6 +280,28 @@ class ConsoleWorkflowRunRenderer implements WorkflowRunRenderer {
               ),
             );
           }
+          for (const cancelled of e.cancelledNestedRuns ?? []) {
+            writeOutput(
+              this.pipe.statusLine(
+                "system",
+                "Superseded",
+                STATUS_COLORS.warn,
+                `cancelled nested run ${cancelled.runId} of workflow ${cancelled.workflowName} with its parent`,
+                formatTimestamp(),
+              ),
+            );
+          }
+          for (const stopping of e.stopRequestedNestedRuns ?? []) {
+            writeOutput(
+              this.pipe.statusLine(
+                "system",
+                "Stopping",
+                STATUS_COLORS.warn,
+                `nested run ${stopping.runId} of workflow ${stopping.workflowName} is running and was asked to stop`,
+                formatTimestamp(),
+              ),
+            );
+          }
           for (const detached of e.detachedNestedRuns ?? []) {
             writeOutput(
               this.pipe.statusLine(
@@ -1126,6 +1148,12 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         unguardedConsole.error(JSON.stringify({
           event: "superseded_runs",
           cancelledRunIds: e.cancelledRunIds,
+          ...(e.cancelledNestedRuns
+            ? { cancelledNestedRuns: e.cancelledNestedRuns }
+            : {}),
+          ...(e.stopRequestedNestedRuns
+            ? { stopRequestedNestedRuns: e.stopRequestedNestedRuns }
+            : {}),
           ...(e.detachedNestedRuns
             ? { detachedNestedRuns: e.detachedNestedRuns }
             : {}),

@@ -856,7 +856,8 @@ swamp workflow approvals  # list pending approvals and expired gates with run ID
 ```
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
-run under the child's name, then resume the parent; see
+run under the child's name, then resume the parent. Cancelling or rejecting the
+parent cancels its suspended child runs; see
 [references/nested-workflows.md](references/nested-workflows.md#approval-gates-in-a-child-workflow).
 
 Editing the workflow while a run is suspended can make its resume refuse (a step

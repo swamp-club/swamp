@@ -240,6 +240,12 @@ import {
 } from "../../libswamp/worker/list.ts";
 import { createWorkerModelRunDeps } from "../../libswamp/worker/run_deps.ts";
 import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
+import {
+  type CascadedNestedRunData,
+  nestedCascadeFields,
+  type NestedCascadeResult,
+} from "../../libswamp/workflows/nested_cascade.ts";
+import { cascadeEndedRunAndPush } from "../../serve/nested_run_cascade.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import {
   normalizeFireTime,
@@ -521,10 +527,16 @@ export interface CancelResult {
   executionId: string;
   message?: string;
   /**
-   * Nested runs a cancelled suspended run waited on, left suspended on their
-   * own (swamp-club#2736).
+   * Nested runs a cancelled run waited on and that were left unfinished
+   * (swamp-club#2736).
    */
   detachedNestedRuns?: DetachedNestedRunData[];
+  /**
+   * Nested runs cancelled with the run, and running ones asked to stop
+   * (swamp-club#2867).
+   */
+  cancelledNestedRuns?: CascadedNestedRunData[];
+  stopRequestedNestedRuns?: CascadedNestedRunData[];
 }
 
 export interface CancelDeps {
@@ -538,6 +550,11 @@ export interface CancelDeps {
    * Tried only for a workflow-run that no registry holds.
    */
   cancelSuspended?: (id: string) => Promise<SuspendedRunCancelResult>;
+  /**
+   * Cancels the nested runs a workflow run waited on, for a run this
+   * instance was driving and that the abort ended (swamp-club#2867).
+   */
+  cascadeEnded?: (id: string) => Promise<Partial<NestedCascadeResult>>;
 }
 
 export interface CancelAuthorizationRequest {
@@ -699,9 +716,7 @@ export async function cancelExecution(
           status: "cancelled",
           executionType,
           executionId,
-          ...(suspended.detachedNestedRuns
-            ? { detachedNestedRuns: suspended.detachedNestedRuns }
-            : {}),
+          ...nestedCascadeFields(nestedOf(suspended)),
         };
       case "active":
         // A resume registered the run after the registry miss above.
@@ -758,6 +773,12 @@ export async function cancelExecution(
         deps.activeRunRegistry?.cancel(executionId, deps.reason);
         return { status: "cancellation_requested", executionType, executionId };
       }
+      // The persisted cancel cascades; a run the abort ended settled itself
+      // and left the nested runs it waited on.
+      const nested = left.status === "cancelled"
+        ? nestedCascadeFields(nestedOf(left))
+        : await deps.cascadeEnded?.(executionId) ?? {};
+      return { status: "cancelled", executionType, executionId, ...nested };
     }
     return { status: "cancelled", executionType, executionId };
   }
@@ -838,9 +859,26 @@ export function cancelSuccessBody(
     ...(result.executionType === "workflow-run" ? { reason } : {}),
     // The endpoint requires admin on every resource, so the nested runs need
     // no further check.
+    ...(result.cancelledNestedRuns
+      ? { cancelledNestedRuns: result.cancelledNestedRuns }
+      : {}),
+    ...(result.stopRequestedNestedRuns
+      ? { stopRequestedNestedRuns: result.stopRequestedNestedRuns }
+      : {}),
     ...(result.detachedNestedRuns
       ? { detachedNestedRuns: result.detachedNestedRuns }
       : {}),
+  };
+}
+
+/** The nested-run lists of a persisted cancel, each defaulting to empty. */
+function nestedOf(
+  cancelled: Partial<NestedCascadeResult>,
+): NestedCascadeResult {
+  return {
+    cancelledNestedRuns: cancelled.cancelledNestedRuns ?? [],
+    stopRequestedNestedRuns: cancelled.stopRequestedNestedRuns ?? [],
+    detachedNestedRuns: cancelled.detachedNestedRuns ?? [],
   };
 }
 
@@ -6125,6 +6163,8 @@ export const serveCommand = new Command()
                       { runId: id, reason },
                       () => true,
                     ),
+                  cascadeEnded: (id) =>
+                    cascadeEndedRunAndPush(connectionCtx, id, reason),
                 },
               );
             } catch (error) {

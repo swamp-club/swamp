@@ -35,10 +35,15 @@ import { validationFailed } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
+import { settleOrphanedNestedRun } from "../../domain/workflows/orphaned_nested_run.ts";
+import type { EvaluatedWorkflowLookup } from "../../domain/workflows/abort_settlement.ts";
+import type { RunRecordCurrency } from "../../domain/workflows/continuation_claim.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import {
   type AwaitingParentData,
   awaitingParentOf,
   nestedWaitGateError,
+  orphanedNestedRunError,
 } from "./nested_runs.ts";
 
 export interface WorkflowApproveData {
@@ -94,6 +99,17 @@ export interface WorkflowApproveDeps {
    * no other writer saves over it (swamp-club#2919).
    */
   runClaims: WorkflowRunClaims;
+  /**
+   * What cancelling a nested run nothing waits on any more needs beyond the
+   * repositories (swamp-club#2867). All optional.
+   */
+  findEvaluatedWorkflow?: EvaluatedWorkflowLookup;
+  runTracker?: RunTrackerRepository;
+  runRecordCurrency?: RunRecordCurrency;
+  /** Fetches a parent run's record this host does not have. */
+  fetchMissing?: (
+    run: { workflowId: string; runId: string },
+  ) => Promise<void>;
 }
 
 export function createWorkflowApproveDeps(
@@ -136,6 +152,9 @@ async function approveClaimedRun(
   }
 
   const { run, workflowName, workflow } = resolved;
+
+  const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
+  if (orphaned) return { error: orphanedNestedRunError(orphaned) };
 
   let step:
     | import("../../domain/workflows/workflow_run.ts").StepRun

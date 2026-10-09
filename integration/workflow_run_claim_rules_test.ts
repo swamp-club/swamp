@@ -107,11 +107,15 @@ async function filesMentioning(pattern: RegExp): Promise<string[]> {
  *   a datastore.
  * - `workflow_handlers.ts` passes it to approve and reject after reserving
  *   the run in serve's active-run registry.
+ * - `nested_run_cascade.ts` passes it to the cascade, which reserves each
+ *   nested run in that registry before cancelling it, as a serve cancel of
+ *   that run does (swamp-club#2867).
  */
 const UNCLAIMED_PINNED = [
   "src/domain/workflows/execution_service.ts",
   "src/domain/workflows/run_claim.ts",
   "src/serve/handlers/workflow_handlers.ts",
+  "src/serve/nested_run_cascade.ts",
 ];
 
 Deno.test("unclaimedRuns is named only where another claim already holds", async () => {
@@ -137,6 +141,7 @@ const CLAIMED_PINNED = [
   "src/cli/commands/workflow_cancel.ts",
   "src/domain/workflows/execution_service.ts",
   "src/libswamp/workflows/approve.ts",
+  "src/libswamp/workflows/nested_cascade.ts",
   "src/libswamp/workflows/reject.ts",
   "src/libswamp/workflows/supersede.ts",
 ];

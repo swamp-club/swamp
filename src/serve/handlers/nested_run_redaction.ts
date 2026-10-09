@@ -19,7 +19,12 @@
 
 import type { Principal } from "../../domain/access/principal.ts";
 import type { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
-import { nestedWaitGateOf } from "../../libswamp/workflows/nested_runs.ts";
+import {
+  nestedWaitGateOf,
+  orphanedNestedRunOf,
+} from "../../libswamp/workflows/nested_runs.ts";
+import type { NestedCascadeResult } from "../../libswamp/workflows/nested_cascade.ts";
+import type { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nested_run.ts";
 import type { SwampError } from "../../libswamp/errors.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
 import type { SerializedEvent } from "../protocol.ts";
@@ -69,7 +74,12 @@ export function nestedRunReadDecider(
  * may not read, together with anything derived from it.
  */
 export async function redactParentRun<
-  T extends { parentRun?: NamedWorkflow; parentWaiting?: boolean },
+  T extends {
+    parentRun?: NamedWorkflow;
+    parentWaiting?: boolean;
+    parentEnded?: boolean;
+    parentMissing?: boolean;
+  },
 >(
   row: T,
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
@@ -77,6 +87,8 @@ export async function redactParentRun<
   if (row.parentRun && !(await canRead(row.parentRun))) {
     delete row.parentRun;
     delete row.parentWaiting;
+    delete row.parentEnded;
+    delete row.parentMissing;
   }
 }
 
@@ -220,8 +232,72 @@ export async function nestedGateRefusalForClient(
   canRead: (workflow: NamedWorkflow) => Promise<boolean>,
 ): Promise<string | undefined> {
   const gate = nestedWaitGateOf(error);
-  if (!gate) return undefined;
-  return await canRead(gate) ? error.message : gate.genericMessage;
+  if (gate) return await canRead(gate) ? error.message : gate.genericMessage;
+  // A nested run that was not continued names the run above it only to a
+  // reader of that run's workflow (swamp-club#2867).
+  const orphan = orphanedNestedRunOf(error);
+  if (!orphan) return undefined;
+  if (
+    orphan.parentWorkflowId === undefined ||
+    orphan.parentWorkflowName === undefined
+  ) {
+    return orphan.genericMessage;
+  }
+  return await canRead({
+      workflowId: orphan.parentWorkflowId,
+      workflowName: orphan.parentWorkflowName,
+    })
+    ? error.message
+    : orphan.genericMessage;
+}
+
+/**
+ * The refusal to resume a nested run that nothing waits on any more, naming
+ * the run above it only to a reader of that run's workflow. Without a
+ * decider it names none.
+ */
+export async function orphanedRefusalForClient(
+  error: OrphanedNestedRunError,
+  canRead: ((workflow: NamedWorkflow) => Promise<boolean>) | undefined,
+): Promise<string> {
+  const parent = error.refusal.parent;
+  if (!canRead || !parent) return error.genericMessage;
+  return await canRead({
+      workflowId: parent.workflowId,
+      workflowName: parent.workflowName,
+    })
+    ? error.message
+    : error.genericMessage;
+}
+
+/**
+ * The nested runs a cancel or reject reports, each list keeping only the
+ * runs of a workflow the caller may read (swamp-club#2736, #2867).
+ */
+export async function readableNestedCascade(
+  nested: Partial<NestedCascadeResult>,
+  canRead: (workflow: NamedWorkflow) => Promise<boolean>,
+): Promise<Partial<NestedCascadeResult>> {
+  const cancelled = await readableNestedRuns(
+    nested.cancelledNestedRuns,
+    (d) => d.workflowId,
+    canRead,
+  );
+  const stopping = await readableNestedRuns(
+    nested.stopRequestedNestedRuns,
+    (d) => d.workflowId,
+    canRead,
+  );
+  const detached = await readableNestedRuns(
+    nested.detachedNestedRuns,
+    (d) => d.workflowId,
+    canRead,
+  );
+  return {
+    ...(cancelled ? { cancelledNestedRuns: cancelled } : {}),
+    ...(stopping ? { stopRequestedNestedRuns: stopping } : {}),
+    ...(detached ? { detachedNestedRuns: detached } : {}),
+  };
 }
 
 /**

@@ -44,9 +44,17 @@ import {
   type AwaitingParentData,
   awaitingParentOf,
   type DetachedNestedRunData,
-  detachedNestedRunsOf,
   nestedWaitGateError,
+  orphanedNestedRunError,
 } from "./nested_runs.ts";
+import {
+  type CascadedNestedRunData,
+  type NestedCascade,
+  nestedCascadeFields,
+  settleNestedRunsOf,
+} from "./nested_cascade.ts";
+import { settleOrphanedNestedRun } from "../../domain/workflows/orphaned_nested_run.ts";
+import type { RunRecordCurrency } from "../../domain/workflows/continuation_claim.ts";
 
 export interface WorkflowRejectData {
   runId: string;
@@ -63,6 +71,12 @@ export interface WorkflowRejectData {
    * suspended on their own (swamp-club#2736).
    */
   detachedNestedRuns?: DetachedNestedRunData[];
+  /**
+   * Nested runs cancelled with this run, and running ones asked to stop
+   * (swamp-club#2867).
+   */
+  cancelledNestedRuns?: CascadedNestedRunData[];
+  stopRequestedNestedRuns?: CascadedNestedRunData[];
   /** The parent run still waiting on this nested run, to resume next. */
   awaitingParent?: AwaitingParentData;
 }
@@ -105,6 +119,20 @@ export interface WorkflowRejectDeps {
    */
   findEvaluatedWorkflow: EvaluatedWorkflowLookup;
   runTracker?: RunTrackerRepository;
+  /**
+   * Confirms a parent run that still reads as waiting against the datastore
+   * before a nested run's gate is decided (swamp-club#2867).
+   */
+  runRecordCurrency?: RunRecordCurrency;
+  /** Fetches a parent run's record this host does not have. */
+  fetchMissing?: (
+    run: { workflowId: string; runId: string },
+  ) => Promise<void>;
+  /**
+   * Cancels the nested runs the ended run waited on (swamp-club#2867).
+   * Without it they are only reported.
+   */
+  cascade?: NestedCascade;
 }
 
 export function createWorkflowRejectDeps(
@@ -162,6 +190,9 @@ async function rejectClaimedRun(
   }
 
   const { run, workflowName, workflowId, workflow } = resolved;
+
+  const orphaned = await settleOrphanedNestedRun(deps, run, workflow);
+  if (orphaned) return { error: orphanedNestedRunError(orphaned) };
 
   let step:
     | import("../../domain/workflows/workflow_run.ts").StepRun
@@ -275,9 +306,8 @@ export async function* workflowReject(
         const { run, workflowName, workflowId, decidedBy } = outcome;
         // The decision is saved: an unreadable linked run must not turn it
         // into an error, so these reads are best effort.
-        const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
-          () => [],
-        );
+        const nested = await settleNestedRunsOf(deps, deps.cascade, run)
+          .catch(() => undefined);
         const awaitingParent = await awaitingParentOf(deps, run).catch(() =>
           undefined
         );
@@ -293,7 +323,7 @@ export async function* workflowReject(
             decidedBy,
             reason: input.reason ?? null,
             runStatus: "failed",
-            ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+            ...(nested ? nestedCascadeFields(nested) : {}),
             ...(awaitingParent ? { awaitingParent } : {}),
           },
         };

@@ -76,6 +76,10 @@ import {
   supersedeSuspendedRuns,
 } from "./supersede.ts";
 import type { DetachedNestedRunData } from "./nested_runs.ts";
+import {
+  type CascadedNestedRunData,
+  nestedCascadeFields,
+} from "./nested_cascade.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -95,8 +99,11 @@ export type WorkflowRunEvent =
   | {
     kind: "superseded_runs";
     cancelledRunIds: string[];
-    /** Nested runs the superseded runs had waited on, left suspended. */
+    /** Nested runs the superseded runs had waited on, left unfinished. */
     detachedNestedRuns?: DetachedNestedRunData[];
+    /** Nested runs cancelled with them, and running ones asked to stop. */
+    cancelledNestedRuns?: CascadedNestedRunData[];
+    stopRequestedNestedRuns?: CascadedNestedRunData[];
     /** Matching suspended runs left alone because they wait for a signal. */
     skippedRuns?: SkippedSupersedeData[];
   }
@@ -856,7 +863,7 @@ export async function* workflowRun(
           }
 
           if (!resolvedInput.noSupersede && deps.supersede) {
-            const { cancelledRunIds, detachedNestedRuns, skippedRuns } =
+            const { cancelledRunIds, skippedRuns, ...nested } =
               await supersedeSuspendedRuns(
                 workflow,
                 resolvedInput.inputs ?? {},
@@ -867,9 +874,7 @@ export async function* workflowRun(
               yield {
                 kind: "superseded_runs",
                 cancelledRunIds,
-                ...(detachedNestedRuns.length > 0
-                  ? { detachedNestedRuns }
-                  : {}),
+                ...nestedCascadeFields(nested),
                 ...(skippedRuns.length > 0 ? { skippedRuns } : {}),
               };
             }

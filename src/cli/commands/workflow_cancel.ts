@@ -29,7 +29,7 @@ import {
 } from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
-import { renderDetachedNestedRuns } from "./nested_run_hints.ts";
+import { renderNestedCascade } from "./nested_run_hints.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   normalizeServerUrl,
@@ -88,10 +88,15 @@ import {
   listBrokenWorkflows,
   workflowsDirFor,
 } from "../../libswamp/workflows/broken_workflow.ts";
+import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
 import {
-  type DetachedNestedRunData,
-  detachedNestedRunsOf,
-} from "../../libswamp/workflows/nested_runs.ts";
+  type CascadedNestedRunData,
+  emptyNestedCascade,
+  mergeNestedCascade,
+  nestedCascadeFields,
+  type NestedCascadeResult,
+} from "../../libswamp/workflows/nested_cascade.ts";
+import { localNestedCascade } from "../local_nested_cascade.ts";
 import type { WorkflowRunSummary } from "../../domain/workflows/workflow_run_summary.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { basename } from "@std/path";
@@ -1001,19 +1006,38 @@ export const workflowCancelCommand = withRemoteOptions(
         cliCtx.logger
           .warn`The server did not confirm the reason; it may predate cancel reasons over HTTP`;
       }
-      // Nested runs the cancelled run waited on, left suspended
-      // (swamp-club#2736). An older serve reports none.
-      const remoteDetached = Array.isArray(body.detachedNestedRuns)
-        ? (body.detachedNestedRuns as DetachedNestedRunData[])
-        : [];
+      // What became of the nested runs the cancelled run waited on
+      // (swamp-club#2736, #2867). An older serve reports none, or only the
+      // ones left unfinished.
+      const remoteNested: Partial<NestedCascadeResult> = {
+        ...(Array.isArray(body.cancelledNestedRuns) &&
+            body.cancelledNestedRuns.length > 0
+          ? {
+            cancelledNestedRuns: body
+              .cancelledNestedRuns as CascadedNestedRunData[],
+          }
+          : {}),
+        ...(Array.isArray(body.stopRequestedNestedRuns) &&
+            body.stopRequestedNestedRuns.length > 0
+          ? {
+            stopRequestedNestedRuns: body
+              .stopRequestedNestedRuns as CascadedNestedRunData[],
+          }
+          : {}),
+        ...(Array.isArray(body.detachedNestedRuns) &&
+            body.detachedNestedRuns.length > 0
+          ? {
+            detachedNestedRuns: body
+              .detachedNestedRuns as DetachedNestedRunData[],
+          }
+          : {}),
+      };
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
           runId: body.executionId ?? runId,
           status: body.status,
           ...(recordedReason !== undefined ? { reason: recordedReason } : {}),
-          ...(remoteDetached.length > 0
-            ? { detachedNestedRuns: remoteDetached }
-            : {}),
+          ...remoteNested,
         }));
       } else {
         if (body.status === "cancelled") {
@@ -1025,7 +1049,7 @@ export const workflowCancelCommand = withRemoteOptions(
         if (recordedReason !== undefined) {
           cliCtx.logger.info`Reason: ${recordedReason}`;
         }
-        renderDetachedNestedRuns(cliCtx, remoteDetached, {
+        renderNestedCascade(cliCtx, remoteNested, {
           server: options.server as string | undefined,
         });
       }
@@ -1093,7 +1117,14 @@ export const workflowCancelCommand = withRemoteOptions(
           .info`Stopping ${stopping} run(s); waiting up to ${STOP_GRACE_SECONDS}s for cleanup steps to finish (cancel again to stop immediately)`;
       }
 
-      const { cancelled, finished, deleted, claimTimedOut, ...settled } =
+      const {
+        cancelled,
+        finished,
+        deleted,
+        claimTimedOut,
+        nested,
+        ...settled
+      } =
         // In a root unit of work with no push, so the run saves stage into
         // it instead of reaching the hook through signalChange's fallback
         // (swamp-club#3056). Nothing pushes, as before.
@@ -1103,14 +1134,38 @@ export const workflowCancelCommand = withRemoteOptions(
           () =>
             withRunTracker(
               repoDir,
-              (runTracker) =>
-                cancelAllLocalRuns(localRuns, reason, {
+              async (runTracker) => {
+                const result = await cancelAllLocalRuns(localRuns, reason, {
                   runRepo,
                   findEvaluatedWorkflow,
                   runTracker,
                   runClaims,
                   outputRepo: repoContext.outputRepo,
-                }),
+                });
+                // A nested run that was itself active is in the list and
+                // already cancelled; the cascade reaches the suspended ones
+                // the cancelled runs waited on (swamp-club#2867).
+                const cascade = localNestedCascade({
+                  workflowRepo,
+                  runRepo,
+                  runClaims,
+                  findEvaluatedWorkflow,
+                  runTracker,
+                });
+                const nested = emptyNestedCascade();
+                const cancelledIds = new Set(
+                  result.cancelled.map((entry) => entry.runId),
+                );
+                for (const { run } of localRuns) {
+                  if (!cancelledIds.has(run.id)) continue;
+                  const ended = await runRepo
+                    .findById(createWorkflowId(run.workflowId), run.id)
+                    .catch(() => null);
+                  if (!ended) continue;
+                  mergeNestedCascade(nested, await cascade(ended));
+                }
+                return { ...result, nested: nestedCascadeFields(nested) };
+              },
             ),
         );
 
@@ -1141,6 +1196,7 @@ export const workflowCancelCommand = withRemoteOptions(
           skipped: serveSkipped,
           count: cancelled.length,
           reason,
+          ...nested,
         }));
       } else {
         if (cancelled.length > 0) {
@@ -1151,6 +1207,7 @@ export const workflowCancelCommand = withRemoteOptions(
               .info`  ${entry.workflowName} (${entry.runId}): ${entry.previousStatus} -> cancelled`;
           }
         }
+        renderNestedCascade(cliCtx, nested);
         if (finished.length > 0) {
           cliCtx.logger
             .warn`${finished.length} run(s) finished before the cancel took effect`;
@@ -1227,31 +1284,42 @@ export const workflowCancelCommand = withRemoteOptions(
     const previousStatus = run.status;
     // In a root unit of work with no push, as for --all above
     // (swamp-club#3056).
-    const finalRun = await runCommandInRootUnit(
+    const { finalRun, nested } = await runCommandInRootUnit(
       repoContext,
       { push: undefined },
       () =>
         withRunTracker(
           repoDir,
-          (runTracker) =>
-            cancelLocalRun(run, workflow, reason, {
+          async (runTracker) => {
+            const finalRun = await cancelLocalRun(run, workflow, reason, {
               runRepo,
               findEvaluatedWorkflow,
               runTracker,
               runClaims,
               outputRepo: repoContext.outputRepo,
-            }),
+            });
+            // The suspended nested runs a cancelled run waited on are
+            // cancelled with it; the rest are reported (swamp-club#2867).
+            const nested: Partial<NestedCascadeResult> =
+              finalRun?.status === "cancelled"
+                ? nestedCascadeFields(
+                  await localNestedCascade({
+                    workflowRepo,
+                    runRepo,
+                    runClaims,
+                    findEvaluatedWorkflow,
+                    runTracker,
+                  })(finalRun),
+                )
+                : {};
+            return { finalRun, nested };
+          },
         ),
     );
     if (!finalRun) {
       throw new UserError(`Workflow run no longer exists: ${run.id}`);
     }
     const status = finalRun.status;
-    // Cancelling a parent leaves the nested runs it waited on suspended on
-    // their own (swamp-club#2736).
-    const detachedNestedRuns = status === "cancelled"
-      ? await detachedNestedRunsOf({ runRepo }, finalRun)
-      : [];
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
@@ -1260,7 +1328,7 @@ export const workflowCancelCommand = withRemoteOptions(
         previousStatus,
         status,
         ...(status === "cancelled" ? { reason } : {}),
-        ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+        ...nested,
       }));
     } else {
       if (status === "cancelled") {
@@ -1275,7 +1343,7 @@ export const workflowCancelCommand = withRemoteOptions(
       if (options.reason && status === "cancelled") {
         cliCtx.logger.info`Reason: ${reason}`;
       }
-      renderDetachedNestedRuns(cliCtx, detachedNestedRuns);
+      renderNestedCascade(cliCtx, nested);
     }
   },
 );

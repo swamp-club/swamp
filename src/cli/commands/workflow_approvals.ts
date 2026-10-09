@@ -183,7 +183,20 @@ export function renderApprovals(
         const quiet = cliCtx.verbosity === "quiet";
         const workflow = quoteShellWord(item.workflowName);
         const step = quoteShellWord(item.stepName);
-        if (!quiet) {
+        if (item.parentEnded || item.parentMissing) {
+          // The run above it ended, or its record is gone: the gate cannot
+          // be decided, so only the cancel is offered (swamp-club#2867).
+          if (!quiet) {
+            writeOutput(
+              `  ${
+                cancelCommand(
+                  { ...item, serveStarted: item.serveStarted === true },
+                  target,
+                )
+              }`,
+            );
+          }
+        } else if (!quiet) {
           writeOutput(
             `  swamp workflow approve ${workflow} ${step} --run ${item.runId}${target}`,
           );
@@ -197,7 +210,15 @@ export function renderApprovals(
         // A nested workflow's gate: its parent resumes after it
         // (swamp-club#2736).
         if (item.parentRun) {
-          if (item.parentWaiting === false) {
+          if (item.parentMissing) {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow} ({parentRunId}): the parent run's record no longer exists, so this run cannot continue. Cancel it, or restore the record",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          } else if (item.parentWaiting === false) {
             cliCtx.logger.info(
               "  Nested run of {parentWorkflow} ({parentRunId}): the parent no longer waits on it",
               {

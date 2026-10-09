@@ -59,6 +59,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import { localNestedCascade } from "../local_nested_cascade.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import {
   cancelAndSettle,
@@ -523,6 +524,28 @@ export const workflowRunCommand = new Command()
                 findEvaluatedWorkflow: (runId) =>
                   evaluatedWorkflowRepo.findByRunId(runId),
                 runClaims: createWorkflowRunClaims(unlocked.datastoreConfig),
+                // The suspended nested runs a superseded run waited on are
+                // cancelled with it (swamp-club#2867). The tracker is opened
+                // for the cascade alone: it reads each child's owner there.
+                cascade: async (superseded) => {
+                  const tracker = RunTrackerStore.fromSwampDir(
+                    swampPath(repoDir),
+                  );
+                  try {
+                    return await localNestedCascade({
+                      workflowRepo: repoContext.workflowRepo,
+                      runRepo,
+                      runClaims: createWorkflowRunClaims(
+                        unlocked.datastoreConfig,
+                      ),
+                      findEvaluatedWorkflow: (runId) =>
+                        evaluatedWorkflowRepo.findByRunId(runId),
+                      runTracker: tracker,
+                    })(superseded);
+                  } finally {
+                    tracker.close();
+                  }
+                },
               },
             };
 

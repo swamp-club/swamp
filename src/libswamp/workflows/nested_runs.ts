@@ -26,8 +26,12 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
-import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import type {
+  DetachedNestedRunRef,
+  WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
+import type { OrphanedNestedRunRefusal } from "../../domain/workflows/orphaned_nested_run.ts";
 import { type SwampError, validationFailed } from "../errors.ts";
 
 /**
@@ -84,12 +88,20 @@ export async function detachedNestedRunsOf(
       runId: detached.child.runId,
       jobName: detached.jobName,
       stepName: detached.stepName,
-      cancelCommand: `swamp workflow cancel ${
-        quoteShellWord(detached.child.workflowName)
-      } --run ${detached.child.runId}${serverSuffix(child)}`,
+      cancelCommand: detachedCancelCommand(detached, child),
     });
   }
   return result;
+}
+
+/** The command that cancels a detached nested run. */
+export function detachedCancelCommand(
+  detached: DetachedNestedRunRef,
+  child: { instanceId?: string } | null | undefined,
+): string {
+  return `swamp workflow cancel ${
+    quoteShellWord(detached.child.workflowName)
+  } --run ${detached.child.runId}${serverSuffix(child)}`;
 }
 
 /**
@@ -163,4 +175,48 @@ export function nestedWaitGateOf(
 ): NestedWaitGateDetails["nestedWaitGate"] | undefined {
   const details = error.details as Partial<NestedWaitGateDetails> | undefined;
   return details?.nestedWaitGate;
+}
+
+/**
+ * What a refusal to continue an orphaned nested run carries in its
+ * `details`: the workflow of the run above it, and the refusal without
+ * naming that run, so a server can name it only to a reader of its workflow
+ * (swamp-club#2867).
+ */
+export interface OrphanedNestedRunDetails {
+  orphanedNestedRun: {
+    kind: OrphanedNestedRunRefusal["kind"];
+    parentWorkflowId?: string;
+    parentWorkflowName?: string;
+    genericMessage: string;
+  };
+}
+
+/** The refusal to approve, reject or resume an orphaned nested run. */
+export function orphanedNestedRunError(
+  refusal: OrphanedNestedRunRefusal,
+): SwampError {
+  const details: OrphanedNestedRunDetails = {
+    orphanedNestedRun: {
+      kind: refusal.kind,
+      ...(refusal.parent
+        ? {
+          parentWorkflowId: refusal.parent.workflowId,
+          parentWorkflowName: refusal.parent.workflowName,
+        }
+        : {}),
+      genericMessage: refusal.genericMessage,
+    },
+  };
+  return validationFailed(refusal.message, details);
+}
+
+/** What a refusal from {@link orphanedNestedRunError} carries, if any. */
+export function orphanedNestedRunOf(
+  error: SwampError,
+): OrphanedNestedRunDetails["orphanedNestedRun"] | undefined {
+  const details = error.details as
+    | Partial<OrphanedNestedRunDetails>
+    | undefined;
+  return details?.orphanedNestedRun;
 }
