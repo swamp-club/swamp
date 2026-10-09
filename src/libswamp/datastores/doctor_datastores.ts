@@ -502,7 +502,7 @@ export async function* repairUnmigratedData(
         yield {
           kind: "error",
           error: {
-            code: "reserved_namespace",
+            code: "validation_failed",
             message: layoutCollisionMessage(namespace),
           },
         };

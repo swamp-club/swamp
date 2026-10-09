@@ -119,9 +119,12 @@ export function layoutCollisionMessage(namespace: string): string {
     `To move it to another name by hand:\n` +
     `  1. swamp datastore namespace set <new-name>\n` +
     `  2. Move the layout directories (data, outputs, ...) inside ` +
-    `<datastore>/${namespace}/ into <datastore>/<new-name>/\n` +
+    `<datastore>/${namespace}/ into <datastore>/<new-name>/. Leave ` +
+    `anything else where it is: it is un-namespaced data\n` +
     `  3. Delete <datastore>/${namespace}/.namespace.json\n` +
-    `  4. swamp doctor datastores`;
+    `  4. If un-namespaced data remains at the datastore root, run ` +
+    `'swamp datastore namespace migrate --confirm'\n` +
+    `  5. swamp doctor datastores`;
 }
 
 export interface NamespaceMigrateDeps {

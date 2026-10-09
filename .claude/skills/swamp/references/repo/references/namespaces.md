@@ -139,11 +139,11 @@ The manifest enables:
 ## Repo Bound to a Reserved Namespace
 
 A repo bound to a layout directory name before the name was reserved still
-loads, but `namespace migrate`, `namespace unset --migrate`, re-running
-`datastore setup extension` and the doctor un-migrated data repair refuse to
-run, and `swamp doctor datastores` fails its `reserved_namespace` check. Move it
-to another name by hand (filesystem datastore, `<ds>` is the datastore path,
-`<old>` the reserved name):
+loads, but `namespace migrate`, `namespace unset --migrate` and re-running
+`datastore setup extension` refuse to run, and `swamp doctor datastores` fails
+its `reserved_namespace` check. `doctor datastores --repair` skips the
+un-migrated data repair and runs the rest. Move it to another name by hand
+(filesystem datastore, `<ds>` is the datastore path, `<old>` the reserved name):
 
 1. `swamp datastore namespace set <new>`
 2. Move the layout directories inside `<ds>/<old>/` (`data`, `outputs`,

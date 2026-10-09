@@ -316,12 +316,16 @@ directory added to the layout is reserved with it.
   which does not apply the reserved rule. A repo bound to such a name before it
   was reserved, or by hand, still loads.
 - For a repo loaded with a colliding name, `namespace migrate` (both
-  directions), `namespace unset --migrate`, a re-run of
-  `datastore setup extension` and the doctor un-migrated data repair refuse
-  before touching anything, and `swamp doctor datastores` reports
+  directions), `namespace unset --migrate` and the doctor un-migrated data
+  repair refuse before touching anything, and `swamp doctor datastores` reports
   a failing `reserved_namespace` check. They cannot tell the namespace directory
-  from solo data. The way out is a move by hand, described in the swamp skill's
-  namespaces reference.
+  from solo data. `doctor datastores --repair` skips only the un-migrated data
+  repair and still runs the others. The way out is a move by hand, described in
+  the swamp skill's namespaces reference.
+- `datastore setup extension` checks reserved names only. It writes a datastore
+  block without `directories`, so the defaults apply afterwards and a configured
+  directory name cannot collide. A re-run on a repo already bound to a reserved
+  name is refused with the same move-by-hand steps.
 
 #### Migration
 

@@ -1199,7 +1199,7 @@ Deno.test("repairUnmigratedData: refuses a namespace named after a layout direct
   assertEquals(events.map((e) => e.kind), ["scanning", "error"]);
   const error = events[1];
   if (error.kind === "error") {
-    assertEquals(error.error.code, "reserved_namespace");
+    assertEquals(error.error.code, "validation_failed");
   }
   assertEquals(removedFiles, []);
 });
