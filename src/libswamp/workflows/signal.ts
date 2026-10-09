@@ -43,6 +43,7 @@ import {
   type SignalWaitStore,
   type SignalWaitSupport,
 } from "../../domain/workflows/signal_wait_store.ts";
+import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.ts";
 import {
   declaredWaitKeyStep,
   findKeyHolder,
@@ -211,9 +212,7 @@ export function createWorkflowSignalDeps(
   return {
     runRepo,
     signalWaits,
-    findWorkflow: async (idOrName) =>
-      await workflowRepo.findByName(idOrName) ??
-        await workflowRepo.findById(createWorkflowId(idOrName)),
+    findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
   };
 }
 
@@ -426,6 +425,7 @@ async function resolveRegistration(
   typedId: string,
   waitId: string,
   authorize: WorkflowSignalInput["authorize"],
+  heldUnder: SignalTarget["heldUnder"],
 ): Promise<
   | { registration: WaitRegistration; authorized: boolean }
   | { error: SwampError }
@@ -433,7 +433,9 @@ async function resolveRegistration(
   const stored = await store.findRegistration(waitId);
   // The caller is authorized by `deliver`, which reads the run record first.
   if (stored.kind === "found") {
-    return { registration: stored.record, authorized: false };
+    return heldBy(stored.record, heldUnder)
+      ? { registration: stored.record, authorized: false }
+      : { error: unreadableRecord(typedId) };
   }
 
   // No registration, or one that cannot be read: the run record still
@@ -446,6 +448,11 @@ async function resolveRegistration(
     // A settled wait whose registration is gone: answered from the outcome
     // alone, which names the run but not the step.
     if (outcome.kind === "found") {
+      if (
+        !heldBy({ workflowId: outcome.record.workflowId, key: null }, heldUnder)
+      ) {
+        return { error: unreadableRecord(typedId) };
+      }
       // The outcome does not name the workflow, so the run it references is
       // asked: a workflow renamed since is still authorized under the name
       // the run recorded. Without the run record only the id is left.
@@ -495,6 +502,12 @@ async function resolveRegistration(
   }
 
   const { run, jobName, step } = held;
+  if (
+    !heldBy({
+      workflowId: run.workflowId,
+      key: step.signalWait ? step.signalWait.key : null,
+    }, heldUnder)
+  ) return { error: unreadableRecord(typedId) };
   const place: WaitPlace = {
     workflowId: run.workflowId,
     workflowName: run.workflowName,
@@ -555,12 +568,28 @@ interface SignalTarget {
    */
   typedId: string;
   /**
-   * The workflow and key a key address named. The wait's registration must
-   * name both: key records are plaintext in a store other writers can
-   * reach, and a claim altered to name a wait of another workflow must not
-   * carry a signal there.
+   * The workflow and key a key address named. Whatever record places the
+   * wait must name that workflow, and that key where it names one: key
+   * records are plaintext in a store other writers can reach, and a claim
+   * altered to name a wait of another workflow must neither carry a signal
+   * there nor be answered with what is stored about that wait.
    */
   heldUnder?: { workflowId: string; key: string };
+}
+
+/**
+ * True when a record that places a wait agrees with the key address the
+ * wait was resolved from, or when the wait was named by ID. `key` is left
+ * out for a record that names no key: an outcome, or a step that has left
+ * its wait.
+ */
+function heldBy(
+  placed: { workflowId: string; key?: string | null },
+  heldUnder: SignalTarget["heldUnder"],
+): boolean {
+  if (!heldUnder) return true;
+  return placed.workflowId === heldUnder.workflowId &&
+    (placed.key === null || placed.key === heldUnder.key);
 }
 
 async function deliver(
@@ -576,13 +605,10 @@ async function deliver(
     typedId,
     waitId,
     input.authorize,
+    heldUnder,
   );
   if ("error" in resolved) return resolved;
   const { registration } = resolved;
-  if (
-    heldUnder && (registration.workflowId !== heldUnder.workflowId ||
-      registration.key !== heldUnder.key)
-  ) return { error: unreadableRecord(typedId) };
   const now = deps.now?.() ?? new Date();
   const run = await runOf(deps, registration);
   if (
@@ -711,7 +737,7 @@ async function deliver(
 
 /** A key address in a message, as the workflow and key were typed. */
 function namedByKey(address: { workflow: string; key: string }): string {
-  return `key ${printable(address.key)} of workflow "${
+  return `key "${printable(address.key)}" of workflow "${
     printable(address.workflow)
   }"`;
 }
@@ -730,7 +756,8 @@ const LEAVES_WAIT_OPEN: ReadonlySet<SignalRefusalKind> = new Set<
  *
  * No message names the wait ID. Telemetry removes from a message what was
  * typed, and the ID was not typed, while it is all a signal needs. It is in
- * the error's details, and `workflow waits` lists it beside the key.
+ * the error's details for a caller of this function; the command prints the
+ * message alone, and `workflow waits` lists the ID beside the key.
  */
 async function deliverByKey(
   deps: WorkflowSignalDeps,
@@ -739,7 +766,7 @@ async function deliverByKey(
 ): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
   // An unknown workflow and a key it does not declare are answered alike.
   const named = namedByKey(input);
-  const typedId = `under ${named}`;
+  const typedId = `holding ${named}`;
   const workflow = await deps.findWorkflow(input.workflow);
   if (!workflow || !declaredWaitKeyStep(workflow, input.key)) {
     return { error: unknownWait(named) };

@@ -90,7 +90,7 @@ export function parseSignalAddress(
       ? "Name the wait to signal: give its wait ID, or --workflow with --key."
       : waitId !== undefined
       ? "Give a wait ID, or --workflow with --key, not both."
-      : "--workflow and --key are given together: the key is one a wait_for_signal step of that workflow declares.",
+      : "Give --workflow and --key together: the key is one a wait_for_signal step of that workflow declares.",
   );
 }
 

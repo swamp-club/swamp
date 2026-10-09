@@ -2959,7 +2959,7 @@ Deno.test("signal by key: a declared key with no open wait is refused as such an
     const address = { workflow: workflow.name, key: "verdict" };
     const refusalOf = async () => {
       const refused = await signalError(h, address, { verdict: "ship" });
-      assertStringIncludes(refused.message, "No open wait holds key verdict");
+      assertStringIncludes(refused.message, 'No open wait holds key "verdict"');
       return (refused.details as { refusal?: string }).refusal;
     };
 
@@ -3024,7 +3024,7 @@ Deno.test("signal by key: an undeclared key and an unknown workflow are not foun
       assertEquals(refused.code, "not_found");
       assertEquals(
         refused.message,
-        `Signal wait not found: key ${address.key} of workflow "${address.workflow}"`,
+        `Signal wait not found: key "${address.key}" of workflow "${address.workflow}"`,
       );
     }
     assertEquals(await h.waits.listOutcomes(), []);

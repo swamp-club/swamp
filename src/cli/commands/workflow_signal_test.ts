@@ -213,8 +213,8 @@ Deno.test("parseSignalAddress: no address, both forms, or half of the key form i
     [WAIT_ID, { workflow: "release", key: "verdict" }, "not both"],
     [WAIT_ID, { key: "verdict" }, "not both"],
     [WAIT_ID, { workflow: "release" }, "not both"],
-    [undefined, { workflow: "release" }, "given together"],
-    [undefined, { key: "verdict" }, "given together"],
+    [undefined, { workflow: "release" }, "Give --workflow and --key together"],
+    [undefined, { key: "verdict" }, "Give --workflow and --key together"],
   ];
   for (const [waitId, options, message] of refused) {
     assertThrows(

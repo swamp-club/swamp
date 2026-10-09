@@ -923,16 +923,19 @@ claimant uses). It does not settle an overdue holder: that wait is still the
 one the key names, and the acceptance settles it as timed out and answers
 expired. A holder settled between resolving and delivering gets the refusal for
 what is stored; the signal is never moved on to the wait that claimed the key
-since. The registration found for the holder must name the same workflow and
-key, or the signal is refused as unreadable: key records are plaintext in a
-store other writers can reach, and a claim altered to name another workflow's
-wait must not carry a signal there. A claim whose wait has no registration and
+since. Whatever record places the holder (its registration, its outcome, or
+the step of a run record) must name the same workflow, and the same key where
+it names one, or the signal is refused as unreadable before anything stored
+about that wait is said: key records are plaintext in a store other writers can
+reach, and a claim altered to name another workflow's wait must neither carry a
+signal there nor be answered with that wait's step, run or receipt. A claim whose wait has no registration and
 no run record on this host is answered not found, as that wait ID would be.
 
 By key no message names the wait ID. Telemetry removes from an error message
 what was typed, and by key the ID was not typed, while it is all a signal
-needs. The messages name the workflow and key; the ID is in the error's
-details, and `workflow waits` lists it beside the key.
+needs. The messages name the workflow and key. The ID is in the error's
+details for a caller of the use case; the command prints the message alone, so
+its user finds the ID with `workflow waits`, which lists it beside the key.
 
 Because the key is checked against the current definition, a key removed from
 the workflow while a wait is open under it is not found by key; the wait still
