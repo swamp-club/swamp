@@ -22,9 +22,17 @@ import {
   createNamespace,
   formatNamespacedModelName,
   isEmptyNamespace,
+  isReservedNamespaceName,
+  namespaceCollidesWithLayout,
   parseNamespacedModelName,
+  RESERVED_NAMESPACE_NAMES,
+  restoreNamespace,
   SOLO_NAMESPACE,
 } from "./namespace.ts";
+import {
+  ALWAYS_LOCAL_SUBDIRS,
+  DEFAULT_DATASTORE_SUBDIRS,
+} from "../datastore/datastore_config.ts";
 
 // --- createNamespace validation ---
 
@@ -245,4 +253,72 @@ Deno.test("formatNamespacedModelName: round-trips with parseNamespacedModelName"
   const formatted = formatNamespacedModelName("infra", "@swamp/echo");
   const parsed = parseNamespacedModelName(formatted);
   assertEquals(parsed, { namespace: "infra", modelName: "@swamp/echo" });
+});
+
+// --- reserved names ---
+
+Deno.test("RESERVED_NAMESPACE_NAMES: is every datastore layout directory", () => {
+  assertEquals(
+    [...RESERVED_NAMESPACE_NAMES].sort(),
+    [...new Set([...DEFAULT_DATASTORE_SUBDIRS, ...ALWAYS_LOCAL_SUBDIRS])]
+      .sort(),
+  );
+});
+
+Deno.test("createNamespace: rejects every reserved name", () => {
+  for (const name of RESERVED_NAMESPACE_NAMES) {
+    assertThrows(
+      () => createNamespace(name),
+      Error,
+      "is reserved: it is a directory of the datastore layout",
+    );
+  }
+});
+
+Deno.test("createNamespace: accepts names that only resemble a reserved name", () => {
+  for (const slug of ["data-1", "mydata", "datas", "output", "my-logs"]) {
+    assertEquals(createNamespace(slug) as string, slug);
+  }
+});
+
+Deno.test("restoreNamespace: accepts a reserved name", () => {
+  assertEquals(restoreNamespace("data") as string, "data");
+});
+
+Deno.test("restoreNamespace: still rejects a malformed slug", () => {
+  assertThrows(() => restoreNamespace(""), Error, "Namespace cannot be empty");
+  assertThrows(
+    () => restoreNamespace("Not Valid"),
+    Error,
+    "Namespace must match",
+  );
+  assertThrows(
+    () => restoreNamespace("a".repeat(65)),
+    Error,
+    "at most 64 characters",
+  );
+});
+
+Deno.test("isReservedNamespaceName: true only for layout directory names", () => {
+  assertEquals(isReservedNamespaceName("data"), true);
+  assertEquals(isReservedNamespaceName("workflow-runs"), true);
+  assertEquals(isReservedNamespaceName("infra"), false);
+});
+
+Deno.test("namespaceCollidesWithLayout: true for a reserved name with no directories", () => {
+  assertEquals(namespaceCollidesWithLayout("outputs", []), true);
+});
+
+Deno.test("namespaceCollidesWithLayout: true for a configured directory", () => {
+  assertEquals(
+    namespaceCollidesWithLayout("scratch", ["data", "scratch"]),
+    true,
+  );
+});
+
+Deno.test("namespaceCollidesWithLayout: false for an unrelated name", () => {
+  assertEquals(
+    namespaceCollidesWithLayout("infra", ["data", "scratch"]),
+    false,
+  );
 });

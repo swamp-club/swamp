@@ -62,8 +62,8 @@ import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import {
-  createNamespace,
   type Namespace,
+  restoreNamespace,
   SOLO_NAMESPACE,
 } from "../../domain/data/namespace.ts";
 import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
@@ -134,7 +134,7 @@ export function namespaceFromResolver(
   datastoreResolver?: DatastorePathResolver,
 ): Namespace {
   const slug = datastoreResolver?.config().namespace ?? "";
-  return slug.length > 0 ? createNamespace(slug) : SOLO_NAMESPACE;
+  return slug.length > 0 ? restoreNamespace(slug) : SOLO_NAMESPACE;
 }
 
 /**
@@ -466,7 +466,7 @@ export function createRepositoryContext(
   // exactly once — this factory is the single composition root where config
   // becomes a domain value. Empty/absent → SOLO_NAMESPACE (solo mode).
   const namespace: Namespace = config.namespace
-    ? createNamespace(config.namespace)
+    ? restoreNamespace(config.namespace)
     : SOLO_NAMESPACE;
 
   // Helper to resolve datastore-tier base directories

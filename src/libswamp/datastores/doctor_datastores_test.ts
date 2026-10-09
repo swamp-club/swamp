@@ -617,6 +617,7 @@ function makeUnmigratedDeps(
   return {
     getBasePath: () => "/tmp/cache",
     getNamespace: () => "homelab",
+    getDatastoreDirectories: () => [],
     listFiles: () => Promise.resolve([]),
     compareFiles: () => Promise.resolve(true),
     removeFile: () => Promise.resolve(),
@@ -1087,4 +1088,118 @@ Deno.test("repairCatalogDuplicateLatest: repairs with confirm", async () => {
   if (completed?.kind === "completed") {
     assertEquals(completed.result.demotedRows, 5);
   }
+});
+
+Deno.test("doctorDatastores: reports a namespace named after a layout directory and skips the un-migrated data check", async () => {
+  let unmigratedChecked = false;
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () =>
+      Promise.resolve({ ...filesystemConfig, namespace: "data" }),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+    checkUnmigratedData: () => {
+      unmigratedChecked = true;
+      return Promise.resolve({ unmigrated: true, directories: ["data"] });
+    },
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const reserved = completed.data.healthFindings.find(
+      (f) => f.check === "reserved_namespace",
+    );
+    assertEquals(reserved?.passed, false);
+    assertStringIncludes(
+      reserved?.message ?? "",
+      'Namespace "data" has the same name as a datastore layout directory',
+    );
+    assertEquals(
+      completed.data.healthFindings.some((f) =>
+        f.check === "namespace_migration"
+      ),
+      false,
+    );
+  }
+  assertEquals(unmigratedChecked, false);
+});
+
+Deno.test("doctorDatastores: reports a namespace equal to a configured datastore directory", async () => {
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () =>
+      Promise.resolve({
+        ...filesystemConfig,
+        directories: ["data", "scratch"],
+        namespace: "scratch",
+      }),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(
+      completed.data.healthFindings.find((f) =>
+        f.check === "reserved_namespace"
+      )?.passed,
+      false,
+    );
+  }
+});
+
+Deno.test("doctorDatastores: no reserved_namespace finding for an ordinary namespace", async () => {
+  const deps: DoctorDatastoresDeps = {
+    getDatastoreConfig: () =>
+      Promise.resolve({ ...filesystemConfig, namespace: "infra" }),
+    checkHealth: () =>
+      Promise.resolve({ healthy: true, message: "OK", latencyMs: 1 }),
+    getVaultConfigs: () => Promise.resolve([]),
+  };
+
+  const events = await collect<DoctorDatastoresEvent>(
+    doctorDatastores(createLibSwampContext(), deps),
+  );
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(
+      completed.data.healthFindings.some((f) =>
+        f.check === "reserved_namespace"
+      ),
+      false,
+    );
+  }
+});
+
+Deno.test("repairUnmigratedData: refuses a namespace named after a layout directory without removing anything", async () => {
+  const removedFiles: string[] = [];
+  const deps = makeUnmigratedDeps({
+    getNamespace: () => "data",
+    dirExists: () => Promise.resolve(true),
+    listFiles: () => Promise.resolve(["model/raw"]),
+    removeFile: (path) => {
+      removedFiles.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<RepairUnmigratedDataEvent>(
+    repairUnmigratedData(createLibSwampContext(), deps, { confirm: true }),
+  );
+
+  assertEquals(events.map((e) => e.kind), ["scanning", "error"]);
+  const error = events[1];
+  if (error.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+  }
+  assertEquals(removedFiles, []);
 });

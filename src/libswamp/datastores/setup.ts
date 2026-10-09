@@ -44,7 +44,11 @@ import {
   getMigrationSentinelPath,
   isConfigTierPopulated,
 } from "../../domain/datastore/managed_config_migration.ts";
-import { createNamespace } from "../../domain/data/namespace.ts";
+import {
+  createNamespace,
+  isReservedNamespaceName,
+} from "../../domain/data/namespace.ts";
+import { layoutCollisionMessage } from "./namespace_migrate.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
@@ -439,6 +443,12 @@ export interface DatastoreSetupExtensionInput {
   skipMigration: boolean;
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  /**
+   * True when `namespace` is the one the repo's config already holds, rather
+   * than one this setup is claiming. Only changes the error for a reserved
+   * name: a repo already bound to one is told how to move off it.
+   */
+  namespaceAlreadyBound?: boolean;
   syncTimeoutMsOverride?: number;
 }
 
@@ -590,6 +600,17 @@ export async function* datastoreSetupExtension(
         cachePath,
       );
       const ns = input.namespace;
+
+      if (ns && input.namespaceAlreadyBound && isReservedNamespaceName(ns)) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: layoutCollisionMessage(ns),
+          },
+        };
+        return;
+      }
 
       if (ns) {
         try {

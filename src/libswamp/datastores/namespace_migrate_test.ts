@@ -37,6 +37,7 @@ function makeDeps(
   return {
     getDatastorePath: () => DS_PATH,
     getNamespace: () => NAMESPACE,
+    getDatastoreDirectories: () => [],
     dirExists: () => Promise.resolve(false),
     dirHasDataFiles: () => Promise.resolve(false),
     dirSize: () => Promise.resolve({ fileCount: 0, totalBytes: 0 }),
@@ -621,4 +622,62 @@ Deno.test("datastoreNamespaceMigrate: forward migration with mixed identical and
 
   const error = events.find((e) => e.kind === "error");
   assertEquals(error?.kind, "error");
+});
+
+for (const reverse of [false, true]) {
+  Deno.test(`datastoreNamespaceMigrate: refuses a namespace named after a layout directory before moving anything (reverse=${reverse})`, async () => {
+    const touched: string[] = [];
+    const deps = makeDeps({
+      getNamespace: () => "data",
+      dirExists: () => Promise.resolve(true),
+      renameDir: (source) => {
+        touched.push(source);
+        return Promise.resolve();
+      },
+      mergeDirInto: (source) => {
+        touched.push(source);
+        return Promise.resolve({ moved: 0, skipped: 0, skippedPaths: [] });
+      },
+      removeFile: (path) => {
+        touched.push(path);
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<NamespaceMigrateEvent>(
+      datastoreNamespaceMigrate(createLibSwampContext({}), deps, {
+        confirm: true,
+        reverse,
+      }),
+    );
+    assertEquals(events.length, 1);
+    assertEquals(events[0].kind, "error");
+    if (events[0].kind === "error") {
+      assertEquals(events[0].error.code, "validation_failed");
+      assertStringIncludes(
+        events[0].error.message,
+        'Namespace "data" has the same name as a datastore layout directory',
+      );
+      assertStringIncludes(
+        events[0].error.message,
+        "swamp datastore namespace set <new-name>",
+      );
+      assertEquals(events[0].succeededDirectories, []);
+    }
+    assertEquals(touched, []);
+  });
+}
+
+Deno.test("datastoreNamespaceMigrate: refuses a namespace equal to a configured datastore directory", async () => {
+  const deps = makeDeps({
+    getNamespace: () => "scratch",
+    getDatastoreDirectories: () => ["data", "scratch"],
+  });
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(createLibSwampContext({}), deps, {
+      confirm: true,
+      reverse: false,
+    }),
+  );
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
 });

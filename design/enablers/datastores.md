@@ -301,6 +301,32 @@ Solo mode (empty namespace) gives byte-identical paths to an un-namespaced repo,
 with no prefix or stray separator. The local tier (`localPath`, `.swamp/`) is
 never namespaced.
 
+#### Reserved namespace names
+
+Because a namespace is the outermost segment, one named after a layout directory
+(`data`, `outputs`, ...) is the same directory as the solo layout's
+`{base}/{subdir}/`. `RESERVED_NAMESPACE_NAMES` in `src/domain/data/namespace.ts`
+is derived from `DEFAULT_DATASTORE_SUBDIRS` and `ALWAYS_LOCAL_SUBDIRS`, so a
+directory added to the layout is reserved with it.
+
+- **Claiming** a name goes through `createNamespace`, which rejects a reserved
+  name. `namespace set` also rejects a name equal to one of the repo's
+  configured `datastore.directories`.
+- **Loading** a name already in `.swamp.yaml` goes through `restoreNamespace`,
+  which does not apply the reserved rule. A repo bound to such a name before it
+  was reserved, or by hand, still loads.
+- For a repo loaded with a colliding name, `namespace migrate` (both
+  directions), `namespace unset --migrate` and the doctor un-migrated data
+  repair refuse before touching anything, and `swamp doctor datastores` reports
+  a failing `reserved_namespace` check. They cannot tell the namespace directory
+  from solo data. `doctor datastores --repair` skips only the un-migrated data
+  repair and still runs the others. The way out is a move by hand, described in
+  the swamp skill's namespaces reference.
+- `datastore setup extension` checks reserved names only. It writes a datastore
+  block without `directories`, so the defaults apply afterwards and a configured
+  directory name cannot collide. A re-run on a repo already bound to a reserved
+  name is refused with the same move-by-hand steps.
+
 #### Migration
 
 `swamp datastore namespace migrate` moves data from the solo layout to the

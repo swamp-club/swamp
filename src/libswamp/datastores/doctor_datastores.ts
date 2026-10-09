@@ -21,11 +21,14 @@ import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  getDatastoreDirectories,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import type { NamespaceContaminationSummary } from "../../domain/datastore/datastore_sync_service.ts";
 
+import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import type { LibSwampContext } from "../context.ts";
+import { layoutCollisionMessage } from "./namespace_migrate.ts";
 import type { SwampError } from "../errors.ts";
 
 import { join } from "@std/path";
@@ -141,8 +144,26 @@ export async function* doctorDatastores(
         message,
       });
 
+      // A namespace named after a layout directory shares that directory
+      // with the solo layout, so the un-migrated data check below cannot
+      // tell the two apart and is skipped.
+      const namespaceCollides = config.namespace !== undefined &&
+        namespaceCollidesWithLayout(
+          config.namespace,
+          getDatastoreDirectories(config),
+        );
+      if (config.namespace && namespaceCollides) {
+        healthFindings.push({
+          check: "reserved_namespace",
+          passed: false,
+          message: layoutCollisionMessage(config.namespace),
+        });
+      }
+
       // Un-migrated namespace data check
-      if (config.namespace && deps.checkUnmigratedData) {
+      if (
+        config.namespace && !namespaceCollides && deps.checkUnmigratedData
+      ) {
         const result = await deps.checkUnmigratedData(config);
         if (result.unmigrated) {
           healthFindings.push({
@@ -452,6 +473,8 @@ export type RepairUnmigratedDataEvent =
 export interface RepairUnmigratedDataDeps {
   getBasePath: () => string;
   getNamespace: () => string;
+  /** The repo's configured datastore-tier directories. */
+  getDatastoreDirectories: () => readonly string[];
   listFiles: (dir: string) => Promise<string[]>;
   compareFiles: (a: string, b: string) => Promise<boolean>;
   removeFile: (path: string) => Promise<void>;
@@ -472,6 +495,19 @@ export async function* repairUnmigratedData(
 
       const basePath = deps.getBasePath();
       const namespace = deps.getNamespace();
+
+      if (
+        namespaceCollidesWithLayout(namespace, deps.getDatastoreDirectories())
+      ) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: layoutCollisionMessage(namespace),
+          },
+        };
+        return;
+      }
 
       const unmigratedDirs: string[] = [];
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {

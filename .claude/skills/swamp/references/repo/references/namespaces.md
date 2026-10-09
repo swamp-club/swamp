@@ -22,7 +22,9 @@ All commands support `--json` for machine-readable output.
 swamp datastore namespace set <slug> --json
 ```
 
-- Validates the slug (lowercase alphanumeric + hyphens, max 64 chars)
+- Validates the slug (lowercase alphanumeric + hyphens, max 64 chars). Rejects a
+  datastore layout directory name (`data`, `outputs`, `config`, `logs`, ...) and
+  any name in the repo's `datastore.directories`
 - Checks for conflicts — rejects if the slug is already registered by a
   different repo (via `.namespace.json` manifest)
 - Registers the namespace manifest at `{slug}/.namespace.json`
@@ -133,6 +135,29 @@ The manifest enables:
   by a different `repoId`
 - **Discovery**: `namespace list` scans for manifests to enumerate all
   namespaces
+
+## Repo Bound to a Reserved Namespace
+
+A repo bound to a layout directory name before the name was reserved still
+loads, but `namespace migrate`, `namespace unset --migrate` and re-running
+`datastore setup extension` refuse to run, and `swamp doctor datastores` fails
+its `reserved_namespace` check. `doctor datastores --repair` skips the
+un-migrated data repair and runs the rest. Move it to another name by hand
+(filesystem datastore, `<ds>` is the datastore path, `<old>` the reserved name):
+
+1. `swamp datastore namespace set <new>`
+2. Move the layout directories inside `<ds>/<old>/` (`data`, `outputs`,
+   `definitions-evaluated`, ...) into `<ds>/<new>/`. Leave anything that is not
+   a layout directory — it is un-namespaced data that happens to share the
+   directory.
+3. Delete `<ds>/<old>/.namespace.json`, and `<ds>/<old>/` if it is now empty.
+4. If un-namespaced data remains at the datastore root, run
+   `swamp datastore namespace migrate --confirm`.
+5. `swamp doctor datastores` — every check should pass.
+
+For a bucket-backed datastore (S3, GCS) the same move is a copy of the `<old>/`
+key prefix to `<new>/`; that path has not been exercised, so confirm with the
+user and back up the bucket first.
 
 ## Path Resolution
 

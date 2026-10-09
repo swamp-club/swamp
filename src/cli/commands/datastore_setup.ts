@@ -381,6 +381,8 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       skipMigration: !!options.skipMigration,
       hydrationStrategy,
       namespace,
+      namespaceAlreadyBound: namespace !== undefined &&
+        namespace === marker?.datastore?.namespace,
       syncTimeoutMsOverride,
     }),
     renderer.handlers(),
@@ -678,6 +680,7 @@ export const datastoreSetupCommand = new Command()
           repoId: marker?.repoId,
           skipMigration: false,
           namespace: marker?.datastore?.namespace,
+          namespaceAlreadyBound: marker?.datastore?.namespace !== undefined,
         }),
         renderer.handlers(),
       );

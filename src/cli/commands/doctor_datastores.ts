@@ -58,9 +58,11 @@ import type { DoctorDatastoresResponse } from "../../serve/protocol.ts";
 import {
   type CustomDatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  getDatastoreDirectories,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { UserError } from "../../domain/errors.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
@@ -438,6 +440,7 @@ async function createUnmigratedRepairDeps(
   return {
     getBasePath: () => basePath,
     getNamespace: () => config.namespace!,
+    getDatastoreDirectories: () => getDatastoreDirectories(config),
     listFiles: (dir: string) => listFilesRecursive(dir),
     compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),
@@ -537,6 +540,21 @@ export const doctorDatastoresCommand = withRemoteOptions(
       } else {
         throw error;
       }
+    }
+
+    // A namespace named after a layout directory cannot have this repair run
+    // against it; skip it here so the repairs below still run.
+    if (
+      unmigratedDeps &&
+      namespaceCollidesWithLayout(
+        unmigratedDeps.getNamespace(),
+        unmigratedDeps.getDatastoreDirectories(),
+      )
+    ) {
+      cliCtx.logger
+        .warn`Skipping unmigrated data repair: namespace ${unmigratedDeps.getNamespace()} has the same name as a datastore layout directory. Run 'swamp doctor datastores' for how to move it.`;
+      exitCode = 1;
+      unmigratedDeps = null;
     }
 
     if (unmigratedDeps) {

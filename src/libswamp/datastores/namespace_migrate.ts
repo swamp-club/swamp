@@ -22,6 +22,7 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
+import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface SubdirPreview {
@@ -106,9 +107,31 @@ const MERGEABLE_ON_REVERSE = new Set([
   "report-bundles",
 ]);
 
+/**
+ * Explains why a namespace named after a datastore layout directory cannot be
+ * migrated or repaired automatically: `{base}/{namespace}` and the solo
+ * layout's `{base}/{subdir}` are the same directory.
+ */
+export function layoutCollisionMessage(namespace: string): string {
+  return `Namespace "${namespace}" has the same name as a datastore layout ` +
+    `directory, so its data cannot be told apart from un-namespaced data and ` +
+    `cannot be moved automatically.\n\n` +
+    `To move it to another name by hand:\n` +
+    `  1. swamp datastore namespace set <new-name>\n` +
+    `  2. Move the layout directories (data, outputs, ...) inside ` +
+    `<datastore>/${namespace}/ into <datastore>/<new-name>/. Leave ` +
+    `anything else where it is: it is un-namespaced data\n` +
+    `  3. Delete <datastore>/${namespace}/.namespace.json\n` +
+    `  4. If un-namespaced data remains at the datastore root, run ` +
+    `'swamp datastore namespace migrate --confirm'\n` +
+    `  5. swamp doctor datastores`;
+}
+
 export interface NamespaceMigrateDeps {
   getDatastorePath: () => string;
   getNamespace: () => string | undefined;
+  /** The repo's configured datastore-tier directories. */
+  getDatastoreDirectories: () => readonly string[];
   dirExists: (path: string) => Promise<boolean>;
   dirHasDataFiles: (path: string) => Promise<boolean>;
   dirSize: (path: string) => Promise<DirSize>;
@@ -147,6 +170,17 @@ export async function* datastoreNamespaceMigrate(
           error: validationFailed(
             "No namespace is configured. Run 'swamp datastore namespace set <slug>' first.",
           ),
+          succeededDirectories: [],
+        };
+        return;
+      }
+
+      if (
+        namespaceCollidesWithLayout(namespace, deps.getDatastoreDirectories())
+      ) {
+        yield {
+          kind: "error",
+          error: validationFailed(layoutCollisionMessage(namespace)),
           succeededDirectories: [],
         };
         return;

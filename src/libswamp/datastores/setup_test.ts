@@ -3120,3 +3120,51 @@ Deno.test("datastoreSetupExtension: a format check that passes leaves setup unch
     "completed",
   ]);
 });
+
+Deno.test("datastoreSetupExtension: rejects a reserved namespace before syncing", async () => {
+  setupSyncSpyCalls.length = 0;
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    namespace: "data",
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(error.error.message, 'Namespace "data" is reserved');
+  }
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  assertEquals(setupSyncSpyCalls, []);
+});
+
+Deno.test("datastoreSetupExtension: tells a repo already bound to a reserved namespace how to move off it", async () => {
+  setupSyncSpyCalls.length = 0;
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    namespace: "data",
+    namespaceAlreadyBound: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const error = events.find((e) => e.kind === "error");
+  assertEquals(error?.kind, "error");
+  if (error?.kind === "error") {
+    assertEquals(error.error.code, "validation_failed");
+    assertStringIncludes(
+      error.error.message,
+      "swamp datastore namespace set <new-name>",
+    );
+  }
+  assertEquals(events.some((e) => e.kind === "completed"), false);
+  assertEquals(setupSyncSpyCalls, []);
+});

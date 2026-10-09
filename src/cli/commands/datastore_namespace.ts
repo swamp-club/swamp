@@ -59,6 +59,8 @@ import {
 import { basename } from "@std/path";
 import {
   type CustomDatastoreConfig,
+  type DatastoreConfig,
+  getDatastoreDirectories,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
@@ -110,6 +112,7 @@ export const datastoreNamespaceSetCommand = new Command()
     const deps = {
       getDatastorePath: () => dsBasePath,
       getCurrentNamespace: () => datastoreConfig.namespace,
+      getDatastoreDirectories: () => getDatastoreDirectories(datastoreConfig),
       supportsRegistration,
       listNamespaces: async () => {
         if (resolvedProvider?.listNamespaces) {
@@ -336,18 +339,17 @@ async function dirSize(
 function buildMigrateDeps(
   repoDir: string,
   dsBasePath: string,
-  datastoreConfig: { namespace?: string; type: string },
+  datastoreConfig: DatastoreConfig,
   namespace: string,
   provider: DatastoreProvider | undefined,
 ): Parameters<typeof datastoreNamespaceMigrate>[1] {
-  const isExtension = isCustomDatastoreConfig(
-    datastoreConfig as Parameters<typeof isCustomDatastoreConfig>[0],
-  );
+  const isExtension = isCustomDatastoreConfig(datastoreConfig);
   let catalogStore: ReturnType<typeof createCatalogStore> | null = null;
 
   return {
     getDatastorePath: () => dsBasePath,
     getNamespace: () => namespace,
+    getDatastoreDirectories: () => getDatastoreDirectories(datastoreConfig),
     dirExists: async (path: string) => {
       try {
         const stat = await Deno.stat(path);

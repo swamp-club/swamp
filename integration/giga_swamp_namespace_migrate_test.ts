@@ -116,10 +116,12 @@ function buildDeps(
   dsPath: string,
   namespace: string,
   catalogStore: CatalogStore,
+  directories: readonly string[] = DEFAULT_DATASTORE_SUBDIRS,
 ) {
   return {
     getDatastorePath: () => dsPath,
     getNamespace: () => namespace,
+    getDatastoreDirectories: () => directories,
     dirExists,
     dirHasDataFiles: async (path: string) => {
       if (!(await dirExists(path))) return false;
@@ -421,3 +423,69 @@ Deno.test("namespace migrate: skips subdirs that don't exist in source", async (
     }
   });
 });
+
+async function listTree(dir: string, prefix = ""): Promise<string[]> {
+  const paths: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory) {
+      paths.push(`${rel}/`, ...await listTree(join(dir, entry.name), rel));
+    } else {
+      paths.push(rel);
+    }
+  }
+  return paths.sort();
+}
+
+// swamp-club#2478: a namespace named after a layout directory shares that
+// directory with the solo layout. Before the guard, forward migrate moved
+// the directories ahead of `data` and then failed renaming `data` into
+// itself, leaving the datastore half-migrated.
+for (
+  const { namespace, directories } of [
+    { namespace: "data", directories: DEFAULT_DATASTORE_SUBDIRS },
+    { namespace: "scratch", directories: ["data", "outputs", "scratch"] },
+  ]
+) {
+  for (const reverse of [false, true]) {
+    Deno.test(`namespace migrate: leaves the datastore untouched for namespace "${namespace}" (reverse=${reverse})`, async () => {
+      await withTempDir(async (root) => {
+        const repoDir = join(root, "repo");
+        const dsPath = join(root, "ds");
+        await ensureDir(join(repoDir, ".swamp"));
+
+        // A repo whose config was bound to the name outside `namespace set`:
+        // solo data at the root, plus the namespace manifest.
+        for (const subdir of ["config", "data", "outputs", "scratch"]) {
+          const dir = join(dsPath, subdir, "test-model", "v1");
+          await ensureDir(dir);
+          await Deno.writeTextFile(join(dir, "raw"), `{"in":"${subdir}"}`);
+        }
+        await writeNamespaceManifest(dsPath, namespace, "repo-1");
+
+        const before = await listTree(dsPath);
+
+        const catalogStore = new CatalogStore(catalogDbPath(repoDir));
+        try {
+          const events = await collect<NamespaceMigrateEvent>(
+            datastoreNamespaceMigrate(
+              createLibSwampContext({}),
+              buildDeps(dsPath, namespace, catalogStore, directories),
+              { confirm: true, reverse },
+            ),
+          );
+
+          assertEquals(events.map((e) => e.kind), ["error"]);
+          if (events[0].kind === "error") {
+            assertEquals(events[0].error.code, "validation_failed");
+            assertEquals(events[0].succeededDirectories, []);
+          }
+        } finally {
+          catalogStore.close();
+        }
+
+        assertEquals(await listTree(dsPath), before);
+      });
+    });
+  }
+}
