@@ -19,7 +19,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { WAIT_KEY_PATTERN } from "./signal_wait.ts";
+import { isWaitKey, WAIT_KEY_PATTERN } from "./signal_wait.ts";
 import { cancelledOutcome } from "./signal_wait_records.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 import {
@@ -38,7 +38,7 @@ import {
 const NOW = new Date("2026-01-01T00:00:00.000Z");
 const DEADLINE = "2026-01-01T01:00:00.000Z";
 
-const keyArb = fc.stringMatching(WAIT_KEY_PATTERN);
+const keyArb = fc.stringMatching(WAIT_KEY_PATTERN).filter(isWaitKey);
 const workflowIdArb = fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$/)
   .filter((id) => id !== "." && id !== "..");
 const addressArb = {
@@ -89,7 +89,7 @@ Deno.test("wait key: a store key is one path below the family for every valid ke
   fc.assert(
     fc.property(fc.string({ maxLength: 80 }), (key) => {
       const at = { workflowId: "wf", key, generation: 1 };
-      if (WAIT_KEY_PATTERN.test(key)) {
+      if (isWaitKey(key)) {
         assertEquals(waitKeyRecordKey(at).split("/").length, 4);
       } else {
         let threw = false;

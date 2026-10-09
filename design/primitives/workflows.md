@@ -683,8 +683,10 @@ swamp workflow resume release           # continues the run
 
 - `key` (optional, swamp-club#3209): a name at most one open wait of the
   workflow holds at a time. A literal of 1 to 64 lowercase letters, digits,
-  hyphens and underscores, starting with a letter or digit
-  (`WAIT_KEY_PATTERN` in `src/domain/workflows/signal_wait.ts`). It takes no
+  hyphens and underscores, starting with a letter or digit, and not a
+  Windows device name (`con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to
+  `lpt9`), which could not be a directory of a filesystem datastore there
+  (`isWaitKey` in `src/domain/workflows/signal_wait.ts`). It takes no
   expression, so the workflow definition is the list of its valid keys. See
   "Keys" below.
 
@@ -876,6 +878,21 @@ before it answers: a claim whose outcome went with its run was superseded
 before that outcome was removed, so a holder that is still the highest record
 is a wait that is open.
 
+A claim can be left with no wait behind it: its process stopped, or failed
+inside the claim, before the wait was registered; or a build from before key
+claims collected the run, removing the wait's registration and outcome and
+leaving the claim it does not know. Such a claim would read as an open wait
+until its deadline. So a claimant that finds a key held by a claim older than
+five minutes (`WAIT_KEY_UNREGISTERED_GRACE_MS`) whose wait has no registration
+settles that wait as cancelled and claims the key (`settleAbandoned`). A step
+registers its wait straight after it claims, and a registration is removed only once its wait has an outcome or its run is gone, so a wait with neither record is
+not one a signal could reach. The outcome is what makes this safe, not the
+clock: it is created once, like any other, so a step that was only slow and
+registers after all holds a wait that is already closed. A signal for it is
+answered closed and a resume fails the step with `cancelled`. A registration
+that cannot be read is not absent, and its claim keeps the key. The step that
+made the claim still takes its own wait over, whatever the claim's age.
+
 The S3 and GCS datastore extensions need no change: key records use `get`,
 `putIfAbsent`, `list` and `delete`, as wait records do.
 `integration/signal_wait_records_rules_test.ts` holds that only
@@ -976,7 +993,9 @@ until they are.
 A binary from before swamp-club#3209 does not know `key`. The task schema
 drops a field it does not know, so that binary runs the workflow and opens the
 wait with no claim: a second wait can then be open under a key another wait
-holds, and a later build's claim does not see it. Upgrade every host that runs
+holds, and a later build's claim does not see it. Its run garbage collection
+and its workflow deletion also leave key records behind (see the limits
+below). Upgrade every host that runs
 a workflow before giving one of its waits a key.
 
 The `signal` access action (swamp-club#3094) has a mixed-build hazard of its
@@ -1308,10 +1327,24 @@ every iteration would claim it.
   with `wait_key_held` until the holder is signalled, times out or is
   cancelled, so the `timeout` of a keyed wait bounds how long a forgotten run
   blocks the next one.
-- A process killed between claiming a key and registering its wait leaves a
-  claim whose wait is on no run record. If that run is recovered or resumed,
-  the step takes the wait over. If it is cancelled instead, nothing settles
-  that wait and the key stays held until the claim's deadline.
+- A claim left with no registered wait (a process killed between claiming and
+  registering, or a run collected by a build from before key claims) holds
+  its key for five minutes after the claim was made, then the next claimant
+  closes it. The five minutes are read against the claimant's clock and the
+  claim's timestamp, so a claimant whose clock runs far ahead of the host
+  that made a claim can close a wait that host was about to register; that
+  step then fails with `cancelled`.
+- A registration deleted by hand while its keyed wait is open lets the next
+  claimant close that wait once the claim is five minutes old. `workflow
+  waits` rebuilds a missing registration from the run record.
+- A build from before key claims removes no key record: its run garbage
+  collection leaves the claims of the runs it deletes, and its workflow
+  deletion leaves the workflow's `wait-keys/` records. The claims stop
+  holding their keys as described above. The records themselves stay until a
+  later build deletes the workflow or, on a filesystem datastore that stores
+  runs itself, sweeps the claims of runs that are gone; one release per key
+  is kept. Nothing removes the records of a workflow that an older build
+  deleted.
 - A key record that cannot be read as the highest of its key blocks the key
   until the workflow is deleted or the record is removed by hand.
 - The dashboard lists suspended runs as awaiting approval, expired or awaiting

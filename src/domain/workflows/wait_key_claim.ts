@@ -39,13 +39,14 @@
 
 import { z } from "zod";
 import { generationFromKey } from "./continuation_claim.ts";
-import { WAIT_KEY_FORM, WAIT_KEY_PATTERN } from "./signal_wait.ts";
+import { isWaitKey, WAIT_KEY_FORM } from "./signal_wait.ts";
 import type {
   StoredWaitRecord,
   WaitOutcome,
   WaitRef,
+  WaitRegistration,
 } from "./signal_wait_records.ts";
-import { timedOutOutcome } from "./signal_wait_records.ts";
+import { cancelledOutcome, timedOutOutcome } from "./signal_wait_records.ts";
 
 /** Key family of key records: `wait-keys/<workflowId>/<key>/<generation>`. */
 export const WAIT_KEY_RECORD_PREFIX = "wait-keys/";
@@ -60,6 +61,16 @@ export const WAIT_KEY_RECORD_MAX_BYTES = 16 * 1024;
  */
 export const WAIT_KEY_CLAIM_ATTEMPTS = 8;
 
+/**
+ * How long a claim may stand with no registration and no outcome before
+ * its wait counts as abandoned. A step registers its wait straight after
+ * it claims, so a claim this old with neither record names a wait that was
+ * never opened, or whose records were removed without the claim: by a
+ * process that stopped in between, or by the run garbage collection of a
+ * build from before key claims.
+ */
+export const WAIT_KEY_UNREGISTERED_GRACE_MS = 5 * 60 * 1000;
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** True for a workflow id that is one path segment, as a key needs. */
@@ -72,7 +83,7 @@ const address = {
     isSinglePathSegment,
     "must be a single path segment",
   ),
-  key: z.string().regex(WAIT_KEY_PATTERN),
+  key: z.string().refine(isWaitKey),
   /** 1 for the first record of a key; each later record adds one. */
   generation: z.number().int().min(1),
   recordedAt: z.string().datetime(),
@@ -125,7 +136,7 @@ export function waitKeyWorkflowPrefix(workflowId: string): string {
 
 /** The key prefix of the records of one key. Throws for a malformed key. */
 export function waitKeyPrefix(workflowId: string, key: string): string {
-  if (!WAIT_KEY_PATTERN.test(key)) {
+  if (!isWaitKey(key)) {
     throw new Error(`A wait key must be ${WAIT_KEY_FORM}, got ${key}.`);
   }
   return `${waitKeyWorkflowPrefix(workflowId)}${key}/`;
@@ -150,7 +161,7 @@ export function waitKeyAddressFromKey(
   const generation = generationFromKey(storeKey);
   if (
     generation === undefined || !isSinglePathSegment(workflowId) ||
-    !WAIT_KEY_PATTERN.test(key)
+    !isWaitKey(key)
   ) return undefined;
   return { workflowId, key, generation };
 }
@@ -255,6 +266,10 @@ export interface WaitKeyRecords {
   findOutcome(waitId: string): Promise<StoredWaitRecord<WaitOutcome>>;
 
   settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
+
+  findRegistration(
+    waitId: string,
+  ): Promise<StoredWaitRecord<WaitRegistration>>;
 }
 
 /** The wait that asks for a key. */
@@ -326,6 +341,33 @@ async function outcomeOfClaim(
 }
 
 /**
+ * Settles the wait of `claim` as cancelled when it was abandoned: the claim
+ * is older than {@link WAIT_KEY_UNREGISTERED_GRACE_MS} and its wait has no
+ * registration. True when the wait has an outcome afterwards.
+ *
+ * The outcome is what makes this safe, not the clock. It is created once,
+ * like any other, so a step that was only slow and registers its wait
+ * later holds a wait that is already closed: a signal for it is answered
+ * closed and a resume fails the step. Two waits are never open under one
+ * key. A registration that cannot be read is not absent, and is left.
+ */
+async function settleAbandoned(
+  store: WaitKeyRecords,
+  claim: WaitKeyClaim,
+  now: Date,
+): Promise<boolean> {
+  const age = now.getTime() - new Date(claim.recordedAt).getTime();
+  if (!(age > WAIT_KEY_UNREGISTERED_GRACE_MS)) return false;
+  if ((await store.findRegistration(claim.waitId)).kind !== "absent") {
+    return false;
+  }
+  const stored = await store.settle(
+    cancelledOutcome(waitRefOfClaim(claim), now),
+  );
+  return stored.kind !== "absent";
+}
+
+/**
  * Claims a key for a wait, or reports who holds it. Called before the wait
  * is registered, so a step that finds its key held opens nothing.
  */
@@ -362,7 +404,9 @@ export async function claimWaitKey(
       const mine = holding.claim.runId === request.runId &&
         holding.claim.jobName === request.jobName &&
         holding.claim.stepName === request.stepName;
-      return { kind: mine ? "own" : "held", claim: holding.claim };
+      if (mine) return { kind: "own", claim: holding.claim };
+      if (await settleAbandoned(store, holding.claim, now)) continue;
+      return { kind: "held", claim: holding.claim };
     }
 
     const claim: WaitKeyClaim = {

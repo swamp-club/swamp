@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { cancelledOutcome, type WaitOutcome } from "./signal_wait_records.ts";
+import {
+  cancelledOutcome,
+  registrationOf,
+  type WaitOutcome,
+} from "./signal_wait_records.ts";
+import { SignalWait } from "./signal_wait.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 import {
   claimWaitKey,
@@ -27,6 +32,7 @@ import {
   encodeWaitKeyRecord,
   releaseKeyClaims,
   WAIT_KEY_RECORD_MAX_BYTES,
+  WAIT_KEY_UNREGISTERED_GRACE_MS,
   waitKeyAddressFromKey,
   type WaitKeyClaim,
   waitKeyPrefix,
@@ -410,4 +416,84 @@ Deno.test("releaseKeyClaims: a key whose highest record cannot be read is left a
     released: 0,
   });
   assertEquals(store.keyRecords.size, 2);
+});
+
+// A claim whose wait was never registered, or whose records went without it.
+
+const AGED = new Date(NOW.getTime() + WAIT_KEY_UNREGISTERED_GRACE_MS + 1);
+
+Deno.test("claimWaitKey: a claim with no registration holds the key through the grace period, and not a moment longer", async () => {
+  const store = new InMemorySignalWaitStore();
+  const holder = await acquire(store);
+  const atTheLimit = new Date(NOW.getTime() + WAIT_KEY_UNREGISTERED_GRACE_MS);
+
+  assertEquals(await claimWaitKey(store, request(), atTheLimit), {
+    kind: "held",
+    claim: holder,
+  });
+  assertEquals((await store.findOutcome(holder.waitId)).kind, "absent");
+
+  const next = await acquire(store, {}, AGED);
+  assertEquals(next.generation, 2);
+  // The abandoned wait is closed with an outcome, so it can take no signal
+  // if its step registers it after all.
+  const outcome = await store.findOutcome(holder.waitId);
+  assert(outcome.kind === "found");
+  assertEquals(outcome.record.kind, "cancelled");
+  assertEquals(outcome.record.runId, holder.runId);
+});
+
+Deno.test("claimWaitKey: an aged claim whose wait is registered, or whose registration cannot be read, still holds the key", async () => {
+  for (const registration of ["registered", "damaged"] as const) {
+    const store = new InMemorySignalWaitStore();
+    const asked = request();
+    const holder = await acquire(store, asked);
+    if (registration === "registered") {
+      await store.register({
+        ...registrationOf(
+          {
+            workflowId: WORKFLOW,
+            workflowName: "release",
+            runId: asked.runId,
+            jobName: "main",
+            stepName: "review",
+          },
+          SignalWait.open({ type: "object" }, 3600, NOW, undefined, "verdict"),
+          NOW,
+        ),
+        waitId: asked.waitId,
+      });
+    } else {
+      store.registrations.set(asked.waitId, new TextEncoder().encode("{"));
+    }
+
+    assertEquals(
+      await claimWaitKey(store, request(), AGED),
+      { kind: "held", claim: holder },
+      registration,
+    );
+    assertEquals((await store.findOutcome(holder.waitId)).kind, "absent");
+  }
+});
+
+Deno.test("claimWaitKey: the step that made an aged, unregistered claim still takes its own wait over", async () => {
+  const store = new InMemorySignalWaitStore();
+  const asked = request();
+  const holder = await acquire(store, asked);
+  assertEquals(
+    await claimWaitKey(
+      store,
+      { ...asked, waitId: crypto.randomUUID() },
+      AGED,
+    ),
+    { kind: "own", claim: holder },
+  );
+  assertEquals((await store.findOutcome(holder.waitId)).kind, "absent");
+});
+
+Deno.test("waitKeyPrefix: a Windows device name is not a key", () => {
+  for (const key of ["con", "nul", "com1", "lpt9"]) {
+    assertThrows(() => waitKeyPrefix(WORKFLOW, key), Error, "wait key");
+  }
+  assertEquals(waitKeyAddressFromKey("wait-keys/wf/nul/1"), undefined);
 });

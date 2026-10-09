@@ -19,6 +19,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import type { InputsSchema } from "../definitions/definition.ts";
 import {
+  isWaitKey,
   openSignalWaitMessage,
   parseStoredWait,
   persistedWait,
@@ -573,4 +574,27 @@ Deno.test("SignalWait: a key outside the allowed form is refused when the wait o
     key: "../escape",
   });
   assertEquals(stored?.kind, "broken");
+});
+
+Deno.test("isWaitKey: accepts the key form and refuses Windows device names, in a stored wait and an opened one alike", () => {
+  for (const key of ["a", "kitchen-verdict", "door_2", "console", "com10"]) {
+    assertEquals(isWaitKey(key), true, key);
+  }
+  for (
+    const key of ["", "A", "a.b", "a/b", "con", "nul", "aux", "prn", "lpt9"]
+  ) {
+    assertEquals(isWaitKey(key), false, key);
+  }
+  assertThrows(
+    () => SignalWait.open(VERDICT, 60, NOW, undefined, "nul"),
+    Error,
+    "not a Windows device name",
+  );
+  assertEquals(
+    parseStoredWait({
+      ...SignalWait.open(VERDICT, 60, NOW).toData(),
+      key: "con",
+    })?.kind,
+    "broken",
+  );
 });

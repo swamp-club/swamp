@@ -57,9 +57,23 @@ export const RESERVED_PAYLOAD_KEYS: ReadonlyArray<string> = [
  */
 export const WAIT_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+/**
+ * Names Windows keeps for devices. No file or directory can have one, so a
+ * key by such a name could not be kept on a filesystem datastore there.
+ */
+const WINDOWS_DEVICE_NAME = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
+
+/**
+ * True for a string a wait may use as its key: one in the form of
+ * {@link WAIT_KEY_PATTERN} that is not a Windows device name.
+ */
+export function isWaitKey(key: string): boolean {
+  return WAIT_KEY_PATTERN.test(key) && !WINDOWS_DEVICE_NAME.test(key);
+}
+
 /** What a refused key is told the form is. */
 export const WAIT_KEY_FORM =
-  "1 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit";
+  "1 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit, and not a Windows device name (con, prn, aux, nul, com0 to com9, lpt0 to lpt9)";
 
 /** The error a step fails with when its wait passed its deadline unsignalled. */
 export const WAIT_TIMEOUT_STEP_ERROR = "wait_timeout";
@@ -109,7 +123,7 @@ export const SignalWaitSchema = z.object({
   deadline: z.string().datetime(),
   receipt: SignalReceiptSchema.optional(),
   // The key the step declared, if any (swamp-club#3209).
-  key: z.string().regex(WAIT_KEY_PATTERN).optional(),
+  key: z.string().refine(isWaitKey).optional(),
 });
 
 export type SignalWaitData = z.infer<typeof SignalWaitSchema>;
@@ -350,7 +364,7 @@ export class SignalWait {
    * cannot be stored, and for one above `maxTimeoutSeconds`, the lower
    * maximum of whoever runs the workflow (swamp-club#3109). A maximum above
    * {@link SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} counts as that. Throws for a
-   * `key` that is not in the form of {@link WAIT_KEY_PATTERN}.
+   * `key` that {@link isWaitKey} refuses.
    */
   static open(
     schema: InputsSchema,
@@ -359,7 +373,7 @@ export class SignalWait {
     maxTimeoutSeconds: number = SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
     key?: string,
   ): SignalWait {
-    if (key !== undefined && !WAIT_KEY_PATTERN.test(key)) {
+    if (key !== undefined && !isWaitKey(key)) {
       throw new Error(`A wait key must be ${WAIT_KEY_FORM}, got ${key}.`);
     }
     const max = Math.min(maxTimeoutSeconds, SIGNAL_WAIT_MAX_TIMEOUT_SECONDS);

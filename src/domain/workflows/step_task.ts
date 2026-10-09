@@ -23,11 +23,11 @@ import {
   RequiredInputsSchemaSchema,
 } from "../definitions/definition.ts";
 import {
+  isWaitKey,
   SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
   SUPPORTED_WAIT_SCHEMA_KEYWORDS,
   unenforcedSchemaKeywords,
   WAIT_KEY_FORM,
-  WAIT_KEY_PATTERN,
 } from "./signal_wait.ts";
 
 const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}\s*$/s;
@@ -85,8 +85,8 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     schema: RequiredInputsSchemaSchema,
     // A name at most one open wait of the workflow holds at a time
     // (swamp-club#3209). A literal: it takes no expression.
-    key: z.string().regex(
-      WAIT_KEY_PATTERN,
+    key: z.string().refine(
+      isWaitKey,
       `A wait_for_signal key must be ${WAIT_KEY_FORM}. It takes no expression.`,
     ).optional(),
   }),

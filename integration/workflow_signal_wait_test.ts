@@ -55,6 +55,9 @@ import {
 } from "../src/domain/workflows/signal_wait.ts";
 import {
   claimWaitKey,
+  encodeWaitKeyRecord,
+  WAIT_KEY_UNREGISTERED_GRACE_MS,
+  waitKeyRecordKey,
   type WaitKeyRecords,
   type WaitKeyRequest,
 } from "../src/domain/workflows/wait_key_claim.ts";
@@ -2647,6 +2650,7 @@ function heldAfterRead(
       removeKeyRecordsOfWorkflow: (w) => store.removeKeyRecordsOfWorkflow(w),
       findOutcome: (id) => store.findOutcome(id),
       settle: (o) => store.settle(o),
+      findRegistration: (id) => store.findRegistration(id),
     },
   };
 }
@@ -2693,16 +2697,21 @@ Deno.test("wait key: collecting the holder's run while two waits claim leaves on
     );
     await slow.read;
 
-    // ...the run is collected, with its claim and its outcome...
-    await createRunGcDeps(h.repoDir, undefined, undefined, {
+    // ...the run is collected, with its claim and its outcome. A run is
+    // collected once the clock has moved past the moment it ended, so the
+    // collection is asked again until it has taken the run.
+    const gc = createRunGcDeps(h.repoDir, undefined, undefined, {
       supported: true,
       store: h.waits,
-    }).gcAll({
-      workflowRunRetentionDays: 0,
-      outputRetentionDays: 0,
-      dryRun: false,
     });
-    assertEquals(await h.runRepo.findAllByWorkflowId(workflow.id), []);
+    await waitFor(async () => {
+      await gc.gcAll({
+        workflowRunRetentionDays: 0,
+        outputRetentionDays: 0,
+        dryRun: false,
+      });
+      return (await h.runRepo.findAllByWorkflowId(workflow.id)).length === 0;
+    }, "the ended run to be collected");
     const released = await highestOf(h, workflow, "verdict");
     assertEquals([released.kind, released.generation], ["release", 2]);
     assertEquals((await h.waits.listKeyRecords()).length, 1);
@@ -2793,5 +2802,53 @@ Deno.test("wait key: a wait without a key writes no key record", async () => {
       undefined,
       undefined,
     ]);
+  });
+});
+
+Deno.test("wait key: a run collected by a build from before key claims leaves a claim with no outcome, and the next run still takes the key once the claim has aged", async () => {
+  const workflow = release("keyed-old-gc", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const ended = await startRun(h, workflow);
+    const endedWait = waitIdOf(ended);
+    await signalOk(h, endedWait, { verdict: "ship" });
+    await drain(h.service.resume(workflow.name, ended.id));
+    assertEquals((await reload(h, ended)).status, "succeeded");
+
+    // What that build's collection does: the run and its wait records go,
+    // and the claim, which it does not know, stays.
+    await h.runRepo.deleteAllByWorkflowId(workflow.id);
+    await h.waits.removeRegistration(endedWait);
+    await h.waits.removeOutcome(endedWait);
+    const orphan = await highestOf(h, workflow, "verdict");
+    assert(orphan.kind === "claim");
+    assertEquals(orphan.waitId, endedWait);
+
+    // Still inside the grace period, the claim reads as a wait about to be
+    // registered, and holds the key.
+    const early = await startRun(h, workflow);
+    assertEquals(stepOf(early, "review").error, WAIT_KEY_HELD_STEP_ERROR);
+
+    // The same claim as it reads once it is older than the grace period.
+    const aged = {
+      ...orphan,
+      recordedAt: new Date(
+        Date.now() - WAIT_KEY_UNREGISTERED_GRACE_MS - 60_000,
+      ).toISOString(),
+    };
+    await new FileSystemControlPlaneStore(join(h.repoDir, ".swamp")).put(
+      waitKeyRecordKey(aged),
+      encodeWaitKeyRecord(aged),
+    );
+
+    const next = await startRun(h, workflow);
+    assertEquals(next.status, "suspended");
+    const claim = await highestOf(h, workflow, "verdict");
+    assert(claim.kind === "claim");
+    assertEquals([claim.generation, claim.waitId], [2, waitIdOf(next)]);
+    // The abandoned wait was closed, not passed over: it has an outcome.
+    const closed = await h.waits.findOutcome(endedWait);
+    assert(closed.kind === "found");
+    assertEquals(closed.record.kind, "cancelled");
+    await signalOk(h, waitIdOf(next), { verdict: "ship" });
   });
 });

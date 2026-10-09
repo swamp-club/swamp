@@ -34,10 +34,10 @@
 import { z } from "zod";
 import { RequiredInputsSchemaSchema } from "../definitions/definition.ts";
 import {
+  isWaitKey,
   type SignalReceipt,
   SignalReceiptSchema,
   SignalWait,
-  WAIT_KEY_PATTERN,
 } from "./signal_wait.ts";
 
 /** Key family of registrations: `waits/<waitId>`. */
@@ -120,7 +120,7 @@ export const WaitRegistrationSchema = z.object({
   schema: RequiredInputsSchemaSchema,
   registeredAt: z.string().datetime(),
   // The key the wait holds, if its step declared one (swamp-club#3209).
-  key: z.string().regex(WAIT_KEY_PATTERN).optional(),
+  key: z.string().refine(isWaitKey).optional(),
 });
 
 export type WaitRegistration = z.infer<typeof WaitRegistrationSchema>;
