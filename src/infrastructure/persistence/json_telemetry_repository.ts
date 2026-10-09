@@ -23,6 +23,7 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { TelemetryRepository } from "../../domain/telemetry/repositories.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import {
   TelemetryEntry,
   type TelemetryEntryData,
@@ -78,7 +79,7 @@ export class JsonTelemetryRepository implements TelemetryRepository {
     try {
       const telemetryDir = this.getTelemetryDir();
 
-      for await (const entry of Deno.readDir(telemetryDir)) {
+      for (const entry of await readDirSorted(telemetryDir)) {
         if (
           entry.isFile &&
           entry.name.startsWith(prefix) &&

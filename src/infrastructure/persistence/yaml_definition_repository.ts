@@ -47,6 +47,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "./paths.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -249,7 +250,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const definitions: Definition[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
@@ -408,7 +409,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
   ): Promise<{ definition: Definition; path: string }[]> {
     const definitions: { definition: Definition; path: string }[] = [];
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (
           (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
         ) {
@@ -552,7 +553,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     primary: boolean,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
     try {
-      for await (const entry of Deno.readDir(currentDir)) {
+      for (const entry of await readDirSorted(currentDir)) {
         const fullPath = join(currentDir, entry.name);
 
         if (
@@ -681,7 +682,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     recordPaths = true,
   ): Promise<void> {
     try {
-      for await (const entry of Deno.readDir(currentDir)) {
+      for (const entry of await readDirSorted(currentDir)) {
         const fullPath = join(currentDir, entry.name);
 
         if (

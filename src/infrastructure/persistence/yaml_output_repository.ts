@@ -34,6 +34,7 @@ import {
 } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
 import { isIoError } from "./io_errors.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
@@ -220,7 +221,7 @@ export class YamlOutputRepository implements OutputRepository {
 
     try {
       // Iterate over method directories
-      for await (const methodEntry of Deno.readDir(typeDir)) {
+      for (const methodEntry of await readDirSorted(typeDir)) {
         if (!methodEntry.isDirectory) continue;
         const methodDir = join(typeDir, methodEntry.name);
 
@@ -232,7 +233,7 @@ export class YamlOutputRepository implements OutputRepository {
         // from earlier method directories of this type."
         try {
           // Iterate over output files in method directory
-          for await (const entry of Deno.readDir(methodDir)) {
+          for (const entry of await readDirSorted(methodDir)) {
             if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
             const path = join(methodDir, entry.name);
 
@@ -322,7 +323,7 @@ export class YamlOutputRepository implements OutputRepository {
     for (const modelType of modelRegistry.types()) {
       const typeDir = this.getTypeDir(modelType);
       try {
-        for await (const methodEntry of Deno.readDir(typeDir)) {
+        for (const methodEntry of await readDirSorted(typeDir)) {
           if (!methodEntry.isDirectory) continue;
           const methodDir = join(typeDir, methodEntry.name);
 
@@ -333,7 +334,7 @@ export class YamlOutputRepository implements OutputRepository {
           // means "skip it" — never "abandon results already collected
           // from earlier method directories of this type."
           try {
-            for await (const entry of Deno.readDir(methodDir)) {
+            for (const entry of await readDirSorted(methodDir)) {
               if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
               const path = join(methodDir, entry.name);
 

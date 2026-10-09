@@ -2711,3 +2711,43 @@ Deno.test("YamlDefinitionRepository.save: an unreadable uuid-named file fails th
     assertEquals(await fileExists(join(typeDir, "unreadable.yaml")), false);
   });
 });
+
+Deno.test("YamlDefinitionRepository.findAll: returns definitions in file-name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    for (const name of ["mango", "zebra", "apple", "kiwi", "banana"]) {
+      await repo.save(testType, createTestDefinition(name));
+    }
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals(
+      (await fresh.findAll(testType)).map((d) => d.name),
+      ["apple", "banana", "kiwi", "mango", "zebra"],
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal: walks type directories and files in name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const zeta = ModelType.create("test/zeta");
+    const alpha = ModelType.create("test/alpha");
+    await repo.save(zeta, createTestDefinition("mango"));
+    await repo.save(alpha, createTestDefinition("zebra"));
+    await repo.save(zeta, createTestDefinition("apple"));
+    await repo.save(alpha, createTestDefinition("kiwi"));
+
+    const fresh = new YamlDefinitionRepository(dir);
+    assertEquals(
+      (await fresh.findAllGlobal()).map((r) =>
+        `${r.type.normalized}:${r.definition.name}`
+      ),
+      [
+        "test/alpha:kiwi",
+        "test/alpha:zebra",
+        "test/zeta:apple",
+        "test/zeta:mango",
+      ],
+    );
+  });
+});

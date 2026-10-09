@@ -23,7 +23,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, relative, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -2705,6 +2705,62 @@ Deno.test("resolveExtensionFiles: under paths.base manifest a root copy that is 
     assertStringIncludes(
       err.message,
       "Workflow file shared.yaml exists under two roots",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles lists a skill's files in per-level name order", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const subdir = join(dir, "sub");
+    const skillDir = join(subdir, ".claude", "skills", "my-skill");
+    await createSkillDir(join(subdir, ".claude", "skills"), "my-skill");
+    await Deno.mkdir(join(skillDir, "references"), { recursive: true });
+    await Deno.mkdir(join(skillDir, "references1"), { recursive: true });
+    for (
+      const file of [
+        "zebra.md",
+        join("references1", "apple.md"),
+        join("references", "mango.md"),
+        "apple.md",
+        join("references", "banana.md"),
+      ]
+    ) {
+      await Deno.writeTextFile(join(skillDir, file), "# notes\n");
+    }
+    await Deno.writeTextFile(
+      join(subdir, "model.ts"),
+      'export const name = "model";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-file-order",
+        version: "2026.05.28.1",
+        paths: { base: "manifest" },
+        models: ["model.ts"],
+        skills: ["my-skill"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(
+      result.allSkillFiles.map((f) => relative(skillDir, f)),
+      [
+        "SKILL.md",
+        "apple.md",
+        join("references", "banana.md"),
+        join("references", "mango.md"),
+        join("references1", "apple.md"),
+        "zebra.md",
+      ],
     );
   });
 });

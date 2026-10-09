@@ -68,6 +68,7 @@ import {
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import { readDirSorted } from "../../infrastructure/persistence/sorted_dir_entries.ts";
 import {
   assertContainedPath,
   PathTraversalError,
@@ -481,12 +482,12 @@ async function copyDir(
 }
 
 /**
- * Lists all files recursively under a directory.
+ * Lists all files recursively under a directory, each level in name order.
  */
 async function listFiles(dir: string): Promise<string[]> {
   const files: string[] = [];
   try {
-    for await (const entry of Deno.readDir(dir)) {
+    for (const entry of await readDirSorted(dir)) {
       if (isMacOsResourceFork(entry.name)) continue;
 
       const path = join(dir, entry.name);

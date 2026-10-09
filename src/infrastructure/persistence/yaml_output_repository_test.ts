@@ -1687,3 +1687,32 @@ Deno.test(
     });
   },
 );
+
+Deno.test("YamlOutputRepository.findAll: outputs with one startedAt come back in file-name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+    const startedAt = new Date("2026-01-01T00:00:00.000Z");
+    const definitionIds = [
+      "88888888-8888-4888-8888-888888888888",
+      "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "11111111-1111-4111-8111-111111111111",
+    ];
+    for (const id of definitionIds) {
+      await repo.save(
+        testType,
+        "create",
+        ModelOutput.create({
+          definitionId: createDefinitionId(id),
+          methodName: "create",
+          provenance: defaultProvenance,
+          startedAt,
+        }),
+      );
+    }
+
+    assertEquals(
+      (await repo.findAll(testType)).map((o) => o.definitionId as string),
+      [...definitionIds].sort(),
+    );
+  });
+});

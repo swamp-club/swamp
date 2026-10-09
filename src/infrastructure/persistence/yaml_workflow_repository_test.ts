@@ -810,3 +810,18 @@ Deno.test("YamlWorkflowRepository.findAll: still skips a schema-broken file", as
     assertEquals(results.map((w) => w.name), ["good-workflow"]);
   });
 });
+
+Deno.test("YamlWorkflowRepository.findAll: returns workflows in file-name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRepository(dir);
+    for (const name of ["mango", "zebra", "apple", "kiwi", "banana"]) {
+      await repo.save(createTestWorkflow(name));
+    }
+
+    const fresh = new YamlWorkflowRepository(dir);
+    assertEquals(
+      (await fresh.findAll()).map((w) => w.name),
+      ["apple", "banana", "kiwi", "mango", "zebra"],
+    );
+  });
+});

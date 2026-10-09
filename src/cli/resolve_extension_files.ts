@@ -31,6 +31,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
+import { readDirSorted } from "../infrastructure/persistence/sorted_dir_entries.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { markErrorPaths, UserError } from "../domain/errors.ts";
 import {
@@ -1065,9 +1066,9 @@ export async function resolveExtensionFiles(
 
       skillDirs.push({ name: skillName, absolutePath: skillPath });
 
-      // Recursively collect all files
+      // Recursively collect all files, each level in name order
       const collectSkillFiles = async (dir: string): Promise<void> => {
-        for await (const entry of Deno.readDir(dir)) {
+        for (const entry of await readDirSorted(dir)) {
           const fullPath = join(dir, entry.name);
           if (entry.isDirectory) {
             await collectSkillFiles(fullPath);

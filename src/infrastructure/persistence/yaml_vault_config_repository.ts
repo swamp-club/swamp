@@ -24,6 +24,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
 import { signalChange } from "./unit_of_work_scope.ts";
+import { comparePathsBySegment } from "./sorted_dir_entries.ts";
 import {
   VaultConfig,
   type VaultConfigData,
@@ -118,16 +119,11 @@ export class YamlVaultConfigRepository {
     const vaultDir = this.getVaultDir();
     let parseError: VaultConfigParseError | null = null;
     try {
-      for await (
-        const entry of walk(vaultDir, {
-          exts: [".yaml"],
-          includeDirs: false,
-        })
-      ) {
-        const content = await Deno.readTextFile(entry.path);
+      for (const path of await this.yamlFilesSorted(vaultDir)) {
+        const content = await Deno.readTextFile(path);
         let data: VaultConfigData;
         try {
-          data = this.parseVaultConfig(content, entry.path);
+          data = this.parseVaultConfig(content, path);
         } catch (error) {
           if (!(error instanceof VaultConfigParseError)) throw error;
           if (!skipUnparseable) parseError ??= error;
@@ -155,14 +151,9 @@ export class YamlVaultConfigRepository {
     const configs: VaultConfig[] = [];
 
     try {
-      for await (
-        const entry of walk(dir, {
-          exts: [".yaml"],
-          includeDirs: false,
-        })
-      ) {
-        const content = await Deno.readTextFile(entry.path);
-        const data = this.parseVaultConfig(content, entry.path);
+      for (const path of await this.yamlFilesSorted(dir)) {
+        const content = await Deno.readTextFile(path);
+        const data = this.parseVaultConfig(content, path);
         configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
@@ -183,14 +174,9 @@ export class YamlVaultConfigRepository {
     const configs: VaultConfig[] = [];
 
     try {
-      for await (
-        const entry of walk(vaultDir, {
-          exts: [".yaml"],
-          includeDirs: false,
-        })
-      ) {
-        const content = await Deno.readTextFile(entry.path);
-        const data = this.parseVaultConfig(content, entry.path);
+      for (const path of await this.yamlFilesSorted(vaultDir)) {
+        const content = await Deno.readTextFile(path);
+        const data = this.parseVaultConfig(content, path);
         configs.push(VaultConfig.fromData(data));
       }
     } catch (error) {
@@ -272,6 +258,24 @@ export class YamlVaultConfigRepository {
       }
       throw error;
     }
+  }
+
+  /**
+   * Paths of every `.yaml` under `dir`, in the order a walk sorted by name at
+   * each level visits them, so the same vault directory reads identically on
+   * every filesystem (swamp-club#3067). NotFound propagates.
+   */
+  private async yamlFilesSorted(dir: string): Promise<string[]> {
+    const paths: string[] = [];
+    for await (
+      const entry of walk(dir, {
+        exts: [".yaml"],
+        includeDirs: false,
+      })
+    ) {
+      paths.push(entry.path);
+    }
+    return paths.sort(comparePathsBySegment);
   }
 
   /**
