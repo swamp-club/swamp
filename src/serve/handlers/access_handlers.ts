@@ -83,15 +83,10 @@ import {
   parseResourceSelector,
   type ResourceKind,
 } from "../../domain/access/resource_selector.ts";
-import {
-  type AccessPrincipal,
-  type AccessResource,
-  kindResource,
+import type {
+  AccessPrincipal,
+  AccessResource,
 } from "../../domain/access/access_decision_service.ts";
-import {
-  resolveModelTarget,
-  resolveWorkflowTarget,
-} from "./resource_resolution.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -113,14 +108,13 @@ import {
   terminateTokenSessions,
   TOKEN_REVOKED_REASON,
   TOKEN_ROTATED_REASON,
-  vaultKindResource,
   wouldAuthorize,
 } from "./shared.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { readServerTokenRecord } from "../token_auth.ts";
 
 import { consumeStream, withDefaults } from "../../libswamp/stream.ts";
-import { findVaultByNameOrId } from "../../libswamp/vaults/edit.ts";
+import { explainedAccessResource } from "../../libswamp/access/explained_resource.ts";
 import {
   createServerTokenCreateDeps,
   serverTokenCreate,
@@ -1280,31 +1274,6 @@ export async function handleAccessTokenMint(
   );
 }
 
-/**
- * The vault resource an access check explains for a concrete
- * `vault:<name-or-id>` (swamp-club#2676): the vault it resolves to through
- * the vault config repository, by its name, as a vault request authorizes
- * it. A name that resolves to nothing is explained by that name. This is
- * the one place a vault is explained, so a later run-time decision for the
- * same vault can be reported alongside it.
- */
-async function explainedVaultResource(
-  ctx: ConnectionContext,
-  nameOrId: string,
-): Promise<AccessResource> {
-  let name = nameOrId;
-  try {
-    const resolved = await findVaultByNameOrId(
-      ctx.repoContext.vaultConfigRepo,
-      nameOrId,
-    );
-    if (resolved) name = resolved.name;
-  } catch {
-    // A vault that cannot be loaded is explained by the requested name.
-  }
-  return vaultKindResource(name);
-}
-
 /** The strings of a payload list, or `undefined` when it is not a list. */
 function stringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -1362,34 +1331,14 @@ function runVaultAccessReport(
 
 /**
  * The resource an access check explains, judged as a request would judge it
- * (swamp-club#2675). A concrete model, data or workflow name is resolved to
- * the resource it names, with all of its fields, so a condition on its tags
- * decides as it would for a request; a name that matches nothing is a
- * resource with no tags. A pattern with a wildcard, or an access resource,
- * names no single resource and is explained as a check on the kind.
+ * (swamp-club#2675). The local `swamp access check` explains through the same
+ * function (swamp-club#3224).
  */
-async function explainedResource(
+function explainedResource(
   ctx: ConnectionContext,
   kind: ResourceKind,
   pattern: string,
   extraFields: Record<string, unknown>,
 ): Promise<AccessResource> {
-  const withExtra = (resource: AccessResource): AccessResource => ({
-    ...resource,
-    fields: { ...resource.fields, ...extraFields },
-  });
-  if (kind === "access" || pattern.includes("*")) {
-    return withExtra({ ...kindResource(kind), name: pattern });
-  }
-  if (kind === "vault") {
-    return withExtra(await explainedVaultResource(ctx, pattern));
-  }
-  const resolution = kind === "workflow"
-    ? await resolveWorkflowTarget(ctx.repoContext.workflowRepo, pattern)
-    : await resolveModelTarget(ctx.repoContext.definitionRepo, pattern, kind);
-  if (resolution.status === "failed") {
-    // Only the name is known, so conditions on anything else fail closed.
-    return withExtra({ kind, name: pattern, fields: { name: pattern } });
-  }
-  return withExtra(resolution.resource);
+  return explainedAccessResource(ctx.repoContext, kind, pattern, extraFields);
 }

@@ -308,9 +308,19 @@ attribute statements).
 # Admin explain mode — see why a subject is allowed or denied
 swamp access check --subject user:alice --action run --on workflow:@acme/deploy
 
+# Deny by type: `--on model:<type>` matches models of that type under any name
+swamp access grant create --subject user:alice --deny write --on model:command/shell
+swamp access check --subject user:alice --action write --on model:team-x-probe  # DENY if team-x-probe is command/shell
+
 # User self-service — check your own permissions
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://...
 ```
+
+A local `access check` resolves a concrete model, data or workflow name from the
+repo (its stored type and tags), as serve does. `--field key=value` overrides a
+resolved field to simulate a resource or tag that does not exist yet. Settings a
+server is started with, such as `--restricted-model-types`, are only reflected
+with `--server`.
 
 ## Token Management
 
