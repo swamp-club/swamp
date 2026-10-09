@@ -33,7 +33,7 @@ import {
   type OwnerLiveness,
   suspendedRunOwnerStillRuns,
 } from "../../domain/workflows/orphaned_run_reaper.ts";
-import { parentEndedCancelReason } from "../../domain/workflows/orphaned_nested_run.ts";
+import { PARENT_ENDED_CANCEL_REASON } from "../../domain/workflows/orphaned_nested_run.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -215,11 +215,7 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
         }
         const workflowId = createWorkflowId(current.workflowId);
         const workflow = await deps.workflowRepo.findById(workflowId);
-        const reason = parentEndedCancelReason({
-          workflowId: parent.workflowId,
-          workflowName: parent.workflowName,
-          runId: parent.id,
-        });
+        const reason = PARENT_ENDED_CANCEL_REASON;
         cancelAndSettle(
           current,
           await resolveSettlementWorkflow(
@@ -277,11 +273,7 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
           continue;
         }
         if (child.status === "running" || child.status === "pending") {
-          const reason = parentEndedCancelReason({
-            workflowId: parent.workflowId,
-            workflowName: parent.workflowName,
-            runId: parent.id,
-          });
+          const reason = PARENT_ENDED_CANCEL_REASON;
           if (deps.requestStop?.(child, reason)) {
             result.stopRequestedNestedRuns.push(cascaded(detached));
           } else {

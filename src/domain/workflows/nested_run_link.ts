@@ -395,9 +395,18 @@ export class NestedRunLink {
         };
       }
       const forward = step.nestedRun;
+      // A link that cannot be read says nothing about which run the step
+      // waits on, so it is never taken for the step having moved on.
+      if (forward !== undefined && forward.kind !== "valid") {
+        return {
+          kind: "unreadable",
+          reason:
+            `step "${ref.stepName}" of parent run ${ref.runId} has a malformed nested run link`,
+          parent: ancestor,
+        };
+      }
       const movedOn = forward !== undefined
-        ? forward.kind !== "valid" ||
-          !sameRunId(forward.ref.runId, current.id)
+        ? !sameRunId(forward.ref.runId, current.id)
         : step.startedAt === undefined ||
           (current.startedAt !== undefined &&
             current.startedAt.getTime() < step.startedAt.getTime());

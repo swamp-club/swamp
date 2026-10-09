@@ -91,7 +91,10 @@ import {
   createNestedCascade,
   type NestedCascade,
 } from "../src/libswamp/workflows/nested_cascade.ts";
-import { OrphanedNestedRunError } from "../src/domain/workflows/orphaned_nested_run.ts";
+import {
+  OrphanedNestedRunError,
+  PARENT_ENDED_CANCEL_REASON,
+} from "../src/domain/workflows/orphaned_nested_run.ts";
 
 await initializeLogging({});
 
@@ -727,7 +730,7 @@ Deno.test("nested cascade: cancelling the waiting parent cancels the suspended c
 
     const stored = await only(h.runRepo, child);
     assertEquals(stored.status, "cancelled");
-    assertStringIncludes(stored.tags["cancel_reason"], parentRun.id);
+    assertEquals(stored.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
     assertEquals(stored.findWaitingApprovalStep(), undefined);
     // Nothing is left to approve.
     const approvals = await completed<WorkflowApprovalsData>(

@@ -24,6 +24,7 @@ import { nestedChain } from "./nested_run_test_helpers.ts";
 import { SignalWait } from "./signal_wait.ts";
 import {
   OrphanedNestedRunError,
+  PARENT_ENDED_CANCEL_REASON,
   settleOrphanedNestedRun,
 } from "./orphaned_nested_run.ts";
 import { WorkflowRun } from "./workflow_run.ts";
@@ -203,7 +204,9 @@ Deno.test("settleOrphanedNestedRun: a suspended run whose parent ended is cancel
   assertEquals(runs.saved, [chain[1].id]);
   const stored = runs.get(chain[1]);
   assertEquals(stored.status, "cancelled");
-  assert(stored.tags["cancel_reason"].includes(chain[0].id));
+  // The reason names no other run: it is shown to any reader of the run.
+  assertEquals(stored.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
+  assert(!JSON.stringify(stored.toData().tags).includes(chain[0].id));
   assertEquals(stored.findWaitingApprovalStep(), undefined);
   assertEquals(completed.map((c) => c.slice(0, 2)), [[
     chain[1].id,
@@ -452,4 +455,25 @@ Deno.test("NestedRunLink.signalWaitsBelow: a nested run that cannot be read is p
     ),
     [],
   );
+});
+
+Deno.test("settleOrphanedNestedRun: a malformed nested run link on the parent's step refuses and writes nothing", async () => {
+  const { chain, runs, workflowRepo, workflows } = nestedChain();
+  const data = chain[0].toData();
+  data.jobs[0].steps[0].nestedRun = { runId: 7 };
+  runs.add(WorkflowRun.fromData(data));
+
+  const verdict = await new NestedRunLink({ runRepo: runs, workflowRepo })
+    .parentVerdict(chain[1]);
+  assertEquals(verdict.kind, "unreadable");
+
+  const refusal = await settleOrphanedNestedRun(
+    { runRepo: runs, workflowRepo },
+    chain[1],
+    workflows[1],
+  );
+  assertEquals(refusal?.kind, "unreadable");
+  assertStringIncludes(refusal!.message, "malformed nested run link");
+  assertEquals(runs.saved, []);
+  assertEquals(chain[1].status, "suspended");
 });

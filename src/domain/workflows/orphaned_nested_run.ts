@@ -90,10 +90,14 @@ export class OrphanedNestedRunError extends UserError {
   }
 }
 
-/** The cancel reason recorded on a nested run cancelled with its parent. */
-export function parentEndedCancelReason(parent: AncestorRunRef): string {
-  return `Parent run ${parent.runId} of workflow "${parent.workflowName}" ended`;
-}
+/**
+ * The cancel reason recorded on a nested run nothing waits on any more. It
+ * names no other run: the reason is stored on the run and shown to anyone
+ * who may read it, and a link to another run is shown only to a reader of
+ * that run's workflow. The run's `parentRun` names the parent.
+ */
+export const PARENT_ENDED_CANCEL_REASON =
+  "The run that started this nested run ended or moved on";
 
 /**
  * Stops a nested run from continuing once nothing waits on it
@@ -236,14 +240,10 @@ export async function settleOrphanedNestedRun(
         deps.findEvaluatedWorkflow,
       )
       : workflow,
-    parentEndedCancelReason(parent),
+    PARENT_ENDED_CANCEL_REASON,
   );
   await deps.runRepo.save(createWorkflowId(run.workflowId), run);
-  deps.runTracker?.complete(
-    run.id,
-    "cancelled",
-    parentEndedCancelReason(parent),
-  );
+  deps.runTracker?.complete(run.id, "cancelled", PARENT_ENDED_CANCEL_REASON);
   return {
     kind: "orphaned",
     message: `${self} was not continued: ${why}. It was cancelled.`,

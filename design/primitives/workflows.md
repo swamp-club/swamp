@@ -558,6 +558,11 @@ resume, so it is refused there too.
   interrupted parent still awaits.
 - A parent that cannot be read, or no longer exists, refuses and writes
   nothing: a missing record is not proof that the parent ended.
+  So does a parent whose step holds a nested run link that cannot be read:
+  it does not show which run the step waits on.
+- The cancel reason stored on the run names no other run. The reason is
+  shown to any reader of the run, and its `parentRun` link, which serve
+  returns only to a reader of the parent's workflow, names the parent.
 - With a `RunRecordCurrency`, a verdict of awaited is confirmed against the
   datastore for every run above. One whose local record differs refuses with
   nothing written, and the command can be tried again. A verdict of ended is

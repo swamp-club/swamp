@@ -33,6 +33,7 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { PARENT_ENDED_CANCEL_REASON } from "../src/domain/workflows/orphaned_nested_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -317,7 +318,11 @@ Deno.test({
       );
       assertEquals(endedParent?.status, "cancelled");
       assertEquals(endedChild?.status, "cancelled");
-      assert(endedChild?.tags["cancel_reason"].includes(parentRun.id));
+      // The stored reason names no other run (swamp-club#2867).
+      assertEquals(
+        endedChild?.tags["cancel_reason"],
+        PARENT_ENDED_CANCEL_REASON,
+      );
       // Neither id is left reserved.
       for (const id of [parentRun.id, childRun.id]) {
         const release = registry.reserve(id);

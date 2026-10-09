@@ -223,7 +223,7 @@ export function renderApprovals(
             );
           } else if (item.parentMissing) {
             cliCtx.logger.info(
-              "  Nested run of {parentWorkflow} ({parentRunId}): the server holds no record of the parent run. It fetches the record before deciding, and refuses if there is none",
+              "  Nested run of {parentWorkflow} ({parentRunId}): the server holds no record of the parent run. Approve and reject fetch it first and are refused if there is none; resume is refused until the server has it",
               {
                 parentWorkflow: item.parentRun.workflowName,
                 parentRunId: item.parentRun.runId,

@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
+import { PARENT_ENDED_CANCEL_REASON } from "../../domain/workflows/orphaned_nested_run.ts";
 import {
   type NestedChain,
   nestedChain,
@@ -91,8 +92,9 @@ Deno.test("createNestedCascade: cancels the suspended child and the runs below i
   const grandchild = built.runs.get(built.chain[2]);
   assertEquals(child.status, "cancelled");
   assertEquals(grandchild.status, "cancelled");
-  assert(child.tags["cancel_reason"].includes(built.ended.id));
-  assert(grandchild.tags["cancel_reason"].includes(built.chain[1].id));
+  // The reason names no other run: it is shown to any reader of the child.
+  assertEquals(child.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
+  assertEquals(grandchild.tags["cancel_reason"], PARENT_ENDED_CANCEL_REASON);
   assertEquals(grandchild.findWaitingApprovalStep(), undefined);
   assertEquals(tracker.completed, [built.chain[1].id, built.chain[2].id]);
   // The ended parent is never written.
@@ -213,7 +215,9 @@ Deno.test("createNestedCascade: a running child is asked to stop when something 
     driven.chain[1].id,
   ]);
   assertEquals(stopping.detachedNestedRuns, []);
-  assert(asked[0].includes(driven.ended.id));
+  assertEquals(asked, [
+    `${driven.chain[1].id}:${PARENT_ENDED_CANCEL_REASON}`,
+  ]);
   assertEquals(driven.runs.saved, []);
 
   const elsewhere = endedChain();
