@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   applyAcceptances,
@@ -311,6 +311,25 @@ Deno.test("analyzeExtensionSafety: CR and U+2028 line breaks cannot hide a Deno.
         result.warnings.map((w) => [w.ruleId, w.line]),
         [["deno-command", 1], ["deno-command", 1]],
       );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: a dynamic-code error names the \\n-counted line in CR and U+2028 files", async () => {
+  await withTempFiles(
+    {
+      "cr.ts": "const a = 1;\rconst b = 2;\reval(a);\n",
+      "ls.ts": "/*\u2028\u2028*/ eval(a);\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.errors.map((e) => [e.ruleId, e.line]),
+        [["dynamic-code", 1], ["dynamic-code", 1]],
+      );
+      for (const error of result.errors) {
+        assertStringIncludes(error.message, "(line 1:");
+      }
     },
   );
 });
