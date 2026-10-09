@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { parse } from "@babel/parser";
-import { BABEL_PLUGINS } from "./extension_source_ast.ts";
+import { BABEL_PLUGINS, LineIndex } from "./extension_source_ast.ts";
 import { extname, isAbsolute, join, relative, SEPARATOR } from "@std/path";
 import {
   findRule,
@@ -716,9 +716,7 @@ export function commentSites(
       else if (inComment && close !== -1) inComment = false;
     });
   } else {
-    let spans: {
-      loc?: { start: { line: number }; end: { line: number } } | null;
-    }[];
+    let spans: { start?: number | null; end?: number | null }[];
     try {
       const parsed = parse(content, {
         sourceType: "module",
@@ -739,10 +737,15 @@ export function commentSites(
       return {};
     }
     // A token or comment spanning lines covers every line after its first.
+    // Lines are counted from offsets, by `\n` alone like `text`, not from
+    // Babel's `loc`, which also breaks at `\r`, U+2028 and U+2029.
+    const index = new LineIndex(content);
     for (const span of spans) {
-      const loc = span.loc;
-      if (!loc) continue;
-      for (let l = loc.start.line + 1; l <= loc.end.line; l++) {
+      if (typeof span.start !== "number" || typeof span.end !== "number") {
+        continue;
+      }
+      const last = index.position(span.end).line;
+      for (let l = index.position(span.start).line + 1; l <= last; l++) {
         barriers.add(l);
       }
     }

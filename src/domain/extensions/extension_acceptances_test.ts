@@ -762,6 +762,31 @@ Deno.test("commentSites: no line inside a multi-line template literal, string or
   assertEquals(commentSites("const x = ;\n", TS, [1]), {});
 });
 
+Deno.test("commentSites: line breaks Babel reads inside a comment or string do not move the barriers", () => {
+  const source = (br: string) =>
+    [
+      `/* a${br}b${br}c */ const s = "x${br}y";`, // 1
+      "const a = 1;", // 2
+      "const t = `one", // 3
+      "  two", // 4
+      "  three`;", // 5
+      "const z = 2;", // 6
+    ].join("\n");
+  const lines = [1, 2, 3, 4, 5, 6];
+  const plain = commentSites(source(" "), TS, lines);
+  assertEquals(plain, { 1: "", 2: "", 3: "", 6: "" });
+  // \r cannot sit in a string literal, so it is tried in the comment alone.
+  for (const br of ["\u2028", "\u2029"]) {
+    assertEquals(
+      commentSites(source(br), TS, lines),
+      plain,
+      JSON.stringify(br),
+    );
+  }
+  const cr = source(" ").replace("a b c", "a\rb\rc");
+  assertEquals(commentSites(cr, TS, lines), plain);
+});
+
 Deno.test("commentSites: no Markdown line inside a fenced block, through the closing fence", () => {
   const md = [
     "# T", // 1

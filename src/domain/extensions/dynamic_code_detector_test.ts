@@ -332,6 +332,28 @@ Deno.test("findDynamicCodeExecution: counts CRLF line endings once", () => {
   assertEquals(findings, [{ line: 3, column: 1, kind: "eval-reference" }]);
 });
 
+Deno.test("findDynamicCodeExecution: a CR-only file reports the line the analyzer splits on", () => {
+  // Babel counts \r as a line break; lines here are counted by \n alone.
+  assertEquals(findDynamicCodeExecution("const a = 1;\reval(x);\n"), [
+    { line: 1, column: 14, kind: "eval-reference" },
+  ]);
+});
+
+Deno.test("findDynamicCodeExecution: line breaks Babel reads inside a comment do not move a finding", () => {
+  for (const br of ["\r", "\r\n", "\u2028", "\u2029"]) {
+    const source = `/*${br}${br}*/ eval(x);\nconst b = 2;\n`;
+    const lines = findDynamicCodeExecution(source).map((f) => f.line);
+    assertEquals(lines, [br === "\r\n" ? 3 : 1], JSON.stringify(br));
+  }
+});
+
+Deno.test("findDynamicCodeExecution: a U+2028 before a call does not shift later lines", () => {
+  const source = 'const a = "x\u2028y";\nconst b = 1;\neval(x);\n';
+  assertEquals(findDynamicCodeExecution(source), [
+    { line: 3, column: 1, kind: "eval-reference" },
+  ]);
+});
+
 Deno.test("findDynamicCodeExecution: unterminated input does not throw", () => {
   for (
     const source of [

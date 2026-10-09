@@ -180,3 +180,29 @@ Deno.test("findDynamicCodeExecution property: an inserted eval call is found at 
     { numRuns: 1000 },
   );
 });
+
+Deno.test("findDynamicCodeExecution property: a finding's line and column are counted by \\n under any line terminator", () => {
+  // Inside a block comment every terminator is legal, so the source parses.
+  const arbBreaks = fc.array(
+    fc.constantFrom("\n", "\r", "\r\n", "\u2028", "\u2029"),
+    { maxLength: 6 },
+  ).map((breaks) => `/*${breaks.join("")}*/`);
+  fc.assert(
+    fc.property(
+      fc.array(fc.tuple(arbBreaks, arbCleanStatement), { maxLength: 6 }),
+      arbBreaks,
+      (before, gap) => {
+        const prefix = before.map(([breaks, s]) => `${breaks}{ ${s} }`).join(
+          "",
+        ) + gap;
+        const source = `${prefix}eval(x);\n`;
+        const findings = findDynamicCodeExecution(source);
+        assertEquals(findings.map((f) => f.kind), ["eval-reference"]);
+        const lines = source.split("\n");
+        const { line, column } = findings[0];
+        assertEquals(lines[line - 1].slice(column - 1), "eval(x);");
+      },
+    ),
+    { numRuns: 1000 },
+  );
+});

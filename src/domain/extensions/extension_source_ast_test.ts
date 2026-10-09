@@ -22,6 +22,7 @@ import {
   type AstNode,
   identifierRole,
   isGlobalObject,
+  LineIndex,
   parseExtensionSource,
   type Visit,
   walkRuntimeNodes,
@@ -108,4 +109,24 @@ Deno.test("isGlobalObject: global names, casts and chains of them", () => {
   assertEquals(isGlobalObject(expression('globalThis["self"];')), true);
   assertEquals(isGlobalObject(expression("config;")), false);
   assertEquals(isGlobalObject(expression("globalThis.config;")), false);
+});
+
+Deno.test("LineIndex: 1-based line and column of an offset, counted by \\n", () => {
+  const index = new LineIndex("ab\ncd\n");
+  assertEquals(index.position(0), { line: 1, column: 1 });
+  // The \n itself is the last column of its own line.
+  assertEquals(index.position(2), { line: 1, column: 3 });
+  assertEquals(index.position(3), { line: 2, column: 1 });
+  assertEquals(index.position(4), { line: 2, column: 2 });
+  assertEquals(index.position(6), { line: 3, column: 1 });
+  assertEquals(new LineIndex("abc").position(2), { line: 1, column: 3 });
+});
+
+Deno.test("LineIndex: \\r, U+2028 and U+2029 are not line breaks", () => {
+  for (const br of ["\r", "\u2028", "\u2029"]) {
+    const index = new LineIndex(`a${br}b\nc`);
+    assertEquals(index.position(2), { line: 1, column: 3 }, JSON.stringify(br));
+    assertEquals(index.position(4), { line: 2, column: 1 }, JSON.stringify(br));
+  }
+  assertEquals(new LineIndex("a\r\nb").position(3), { line: 2, column: 1 });
 });
