@@ -2920,7 +2920,11 @@ and `recover --assess-only` would disagree with it.
 **Recovery assessment (`swamp workflow recover --assess-only`):** classifies
 each `unknown` step as auto-recoverable (it has a `guard` expression) or
 requires-acknowledgement (no guard). A guarded step is safe to re-run, because
-the guard skips it if the work was already done.
+the guard skips it if the work was already done. A step is looked up in its own
+job, and a forEach iteration is judged by the guard of the step it was expanded
+from (the step run's `forEachTemplate`). A step run that matches no step of its
+job, such as an iteration stored without `forEachTemplate`, requires
+acknowledgement.
 
 **Recovery flow:**
 

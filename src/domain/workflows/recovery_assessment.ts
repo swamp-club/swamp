@@ -60,18 +60,28 @@ export async function assessRecoveryForRun(
     }
   }
 
-  const unknownStepNames = run.unknownSteps();
   const guardedSteps: string[] = [];
   const unguardedSteps: string[] = [];
 
-  for (const stepName of unknownStepNames) {
-    const step = workflow.jobs
-      .flatMap((j) => j.steps)
-      .find((s) => s.name === stepName);
-    if (step?.guard) {
-      guardedSteps.push(stepName);
-    } else {
-      unguardedSteps.push(stepName);
+  // A step is resolved in its own job, and a forEach iteration by the step it
+  // was expanded from: another job may have a step of the same name, and no
+  // step of the definition has an iteration's name. One that resolves to
+  // nothing counts as unguarded (swamp-club#3221).
+  for (const jobRun of run.jobs) {
+    const job = workflow.getJob(jobRun.jobName);
+    for (const stepRun of jobRun.steps) {
+      if (stepRun.status !== "unknown") continue;
+      const template = stepRun.forEachTemplate !== undefined
+        ? job?.getStep(stepRun.forEachTemplate)
+        : undefined;
+      const step = template?.forEach !== undefined
+        ? template
+        : job?.getStep(stepRun.stepName);
+      if (step?.guard) {
+        guardedSteps.push(stepRun.stepName);
+      } else {
+        unguardedSteps.push(stepRun.stepName);
+      }
     }
   }
 

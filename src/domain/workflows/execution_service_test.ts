@@ -13688,6 +13688,108 @@ Deno.test("resume: queued forEach iterations run after serve shutdown and recove
   });
 });
 
+/**
+ * Stores an interrupted run of `workflow` whose job `jobName` was running the
+ * step run `step` when the process died.
+ */
+async function storeInterruptedAt(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  jobName: string,
+  step: { stepName: string; forEachTemplate?: string },
+): Promise<WorkflowRun> {
+  const started = WorkflowRun.create(workflow);
+  started.start();
+  const data = started.toData();
+  for (const job of data.jobs) {
+    if (job.jobName !== jobName) continue;
+    job.status = "running";
+    job.steps = [{ ...step, status: "running" }];
+  }
+  const run = WorkflowRun.fromData(data);
+  run.interrupt("server_crash");
+  await runRepo.save(workflow.id, run);
+  return run;
+}
+
+// swamp-club#3221
+Deno.test("recover: refuses an unguarded unknown step whose name a guarded step of another job shares", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "recover-same-name-wf",
+      jobs: [
+        Job.create({
+          name: "a",
+          steps: [modelStep("deploy", { guard: "${{ true }}" })],
+        }),
+        Job.create({ name: "b", steps: [modelStep("deploy")] }),
+      ],
+    });
+    const executor = new CountingStepExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const run = await storeInterruptedAt(runRepo, workflow, "b", {
+      stepName: "deploy",
+    });
+
+    const error = await assertRejects(
+      async () => {
+        for await (const _ of service.recover(workflow.name)) {
+          // drain
+        }
+      },
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Unguarded steps: deploy");
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "interrupted");
+    assertEquals(stored?.getJob("b")?.getStep("deploy")?.status, "unknown");
+    assertEquals(executor.count("b/deploy"), 0);
+  });
+});
+
+Deno.test("recover: a guarded forEach iteration left unknown needs no acknowledgement", async () => {
+  await withTempDir(async (tempDir) => {
+    const template = "deploy-${{ self.env }}";
+    const workflow = Workflow.create({
+      name: "recover-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep(template, {
+              guard: "${{ true }}",
+              forEach: { item: "env", in: '${{ ["prod"] }}' },
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new CountingStepExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    await storeInterruptedAt(runRepo, workflow, "main", {
+      stepName: "deploy-prod",
+      forEachTemplate: template,
+    });
+
+    const { run } = await finishedRun(service.recover(workflow.name));
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("main")?.getStep("deploy-prod")?.status, "skipped");
+    assertEquals(executor.count("main/deploy-prod"), 0);
+  });
+});
+
 Deno.test("resume: a step queued when a crash hit cleanup runs after server_crash recovery", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
