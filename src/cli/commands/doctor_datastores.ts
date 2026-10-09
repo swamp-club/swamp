@@ -58,6 +58,7 @@ import type { DoctorDatastoresResponse } from "../../serve/protocol.ts";
 import {
   type CustomDatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  getDatastoreDirectories,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -438,6 +439,7 @@ async function createUnmigratedRepairDeps(
   return {
     getBasePath: () => basePath,
     getNamespace: () => config.namespace!,
+    getDatastoreDirectories: () => getDatastoreDirectories(config),
     listFiles: (dir: string) => listFilesRecursive(dir),
     compareFiles: (a: string, b: string) => compareFiles(a, b),
     removeFile: (path: string) => Deno.remove(path),

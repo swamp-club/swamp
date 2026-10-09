@@ -20,7 +20,10 @@
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
-import { createNamespace } from "../../domain/data/namespace.ts";
+import {
+  createNamespace,
+  namespaceCollidesWithLayout,
+} from "../../domain/data/namespace.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
 export interface NamespaceSetData {
@@ -46,6 +49,8 @@ export interface NamespaceRegistration {
 export interface NamespaceSetDeps {
   getDatastorePath: () => string;
   getCurrentNamespace: () => string | undefined;
+  /** The repo's configured datastore-tier directories. */
+  getDatastoreDirectories: () => readonly string[];
   listNamespaces: () => Promise<NamespaceRegistration[]>;
   registerNamespace: (namespace: string, repoId: string) => Promise<void>;
   updateMarkerNamespace: (namespace: string) => Promise<void>;
@@ -76,6 +81,15 @@ export async function* datastoreNamespaceSet(
       }
 
       const slug: string = ns as string;
+      if (namespaceCollidesWithLayout(slug, deps.getDatastoreDirectories())) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Namespace "${slug}" is one of this repo's datastore directories — choose a different name.`,
+          ),
+        };
+        return;
+      }
       const current = deps.getCurrentNamespace();
       if (current === slug) {
         yield {

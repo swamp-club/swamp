@@ -431,3 +431,14 @@ Deno.test("writeCatalogExport: 100k rows benchmark", async () => {
     cleanup();
   }
 });
+
+Deno.test("createRepositoryContext: loads a repo already bound to a reserved namespace", () => {
+  const dir = tempRepoDir();
+  const ctx = createRepositoryContext({
+    repoDir: dir,
+    enableIndexing: false,
+    namespace: "data",
+  });
+  assertEquals(ctx.unifiedDataRepo.namespace, "data");
+  ctx.catalogStore.close();
+});

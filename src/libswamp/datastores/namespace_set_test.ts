@@ -32,6 +32,7 @@ function makeDeps(
   return {
     getDatastorePath: () => "/tmp/ds",
     getCurrentNamespace: () => undefined,
+    getDatastoreDirectories: () => [],
     listNamespaces: () => Promise.resolve([]),
     registerNamespace: () => Promise.resolve(),
     updateMarkerNamespace: () => Promise.resolve(),
@@ -169,4 +170,51 @@ Deno.test("datastoreNamespaceSet: marker updated before registration", async () 
     datastoreNamespaceSet(createLibSwampContext(), deps, { slug: "infra" }),
   );
   assertEquals(callOrder, ["marker", "register"]);
+});
+
+Deno.test("datastoreNamespaceSet: reserved slug yields error and claims nothing", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    registerNamespace: () => {
+      calls.push("register");
+      return Promise.resolve();
+    },
+    updateMarkerNamespace: () => {
+      calls.push("marker");
+      return Promise.resolve();
+    },
+  });
+  const error = await assertErrors<NamespaceSetEvent>(
+    datastoreNamespaceSet(createLibSwampContext(), deps, { slug: "data" }),
+    "validation_failed",
+  );
+  assertEquals(
+    error.message,
+    'Namespace "data" is reserved: it is a directory of the datastore layout',
+  );
+  assertEquals(calls, []);
+});
+
+Deno.test("datastoreNamespaceSet: slug equal to a configured datastore directory yields error and claims nothing", async () => {
+  const calls: string[] = [];
+  const deps = makeDeps({
+    getDatastoreDirectories: () => ["data", "scratch"],
+    registerNamespace: () => {
+      calls.push("register");
+      return Promise.resolve();
+    },
+    updateMarkerNamespace: () => {
+      calls.push("marker");
+      return Promise.resolve();
+    },
+  });
+  const error = await assertErrors<NamespaceSetEvent>(
+    datastoreNamespaceSet(createLibSwampContext(), deps, { slug: "scratch" }),
+    "validation_failed",
+  );
+  assertEquals(
+    error.message,
+    'Namespace "scratch" is one of this repo\'s datastore directories — choose a different name.',
+  );
+  assertEquals(calls, []);
 });
