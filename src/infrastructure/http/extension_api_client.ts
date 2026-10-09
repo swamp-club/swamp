@@ -137,6 +137,22 @@ function registryWarnings(value: unknown): RegistryWarnings {
   };
 }
 
+/**
+ * Reduces a reason the registry sent to one printable line of bounded
+ * length, or null when it is not a string or nothing printable is left. A
+ * yank reason is written by a publisher and printed to other people's
+ * terminals, some of it through raw prompt writes.
+ */
+function registryReason(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.replace(UNPRINTABLE, " ").trim();
+  if (text === "") return null;
+  const points = Array.from(text);
+  return points.length > MAX_REGISTRY_WARNING_LENGTH
+    ? `${points.slice(0, MAX_REGISTRY_WARNING_LENGTH).join("")}…`
+    : text;
+}
+
 /** Information about the latest published version. */
 export interface LatestVersionInfo {
   version: string;
@@ -837,7 +853,16 @@ export class ExtensionApiClient {
     }
 
     await this.checkResponse(res);
-    return await res.json();
+    const listed: ListVersionsResponse = await res.json();
+    // The yank reason is printed, so it is cleaned where it enters.
+    if (Array.isArray(listed?.versions)) {
+      for (const entry of listed.versions) {
+        if (entry?.yankReason !== undefined) {
+          entry.yankReason = registryReason(entry.yankReason);
+        }
+      }
+    }
+    return listed;
   }
 
   private authHeaders(apiKey: string): Record<string, string> {
@@ -867,13 +892,11 @@ export class ExtensionApiClient {
         const parsed = JSON.parse(body);
         if (parsed.message) serverMessage = parsed.message;
         if (parsed.error) serverMessage = parsed.error;
-        // A yank refusal carries why in `reason`. Some refusals already
-        // repeat it inside `error`, so it is added only when missing.
-        if (typeof parsed.reason === "string") {
-          const reason = parsed.reason.replace(UNPRINTABLE, " ").trim();
-          if (reason !== "" && !serverMessage.includes(reason)) {
-            serverMessage = `${serverMessage} (${reason})`;
-          }
+        // A refusal may carry why in `reason`, as a yank's does. Some
+        // already repeat it inside `error`, so it is added only when missing.
+        const reason = registryReason(parsed.reason);
+        if (reason !== null && !serverMessage.includes(reason)) {
+          serverMessage = `${serverMessage} (${reason})`;
         }
       } catch {
         // Use raw body

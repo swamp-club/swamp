@@ -685,7 +685,9 @@ export const extensionPushCommand = new Command()
                 ...(existingYanked
                   ? {
                     yank: {
-                      reason: details.existingYankReason as string | undefined,
+                      reason: typeof details.existingYankReason === "string"
+                        ? details.existingYankReason
+                        : undefined,
                     },
                   }
                   : {}),

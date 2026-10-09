@@ -1470,51 +1470,16 @@ Deno.test("ExtensionApiClient.getLatestVersionDetail: a version with none, or a 
   }
 });
 
-function refusalServer(status: number, body: Record<string, unknown>) {
-  return Deno.serve(
+/** The message a registry call fails with when it answers `body`. */
+async function refusalMessage(
+  status: number,
+  body: Record<string, unknown>,
+): Promise<string> {
+  const server = Deno.serve(
     { port: 0, onListen: () => {} },
-    () =>
-      new Response(JSON.stringify(body), {
-        status,
-        headers: { "content-type": "application/json" },
-      }),
+    () => Response.json(body, { status }),
   );
-}
-
-Deno.test("ExtensionApiClient.checkResponse appends a refusal's reason to its error", async () => {
-  const server = refusalServer(410, {
-    error: "Version has been yanked",
-    reason: "broken build",
-  });
-  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
-  const error = await assertRejects(
-    () => client.getLatestVersion("@test/ext", "fake-key"),
-    UserError,
-  );
-  assertStringIncludes(error.message, "Version has been yanked (broken build)");
-  await server.shutdown();
-});
-
-Deno.test("ExtensionApiClient.checkResponse does not repeat a reason the error already carries", async () => {
-  const message =
-    "Version 2026.10.06.1 of @test/ext has been yanked (broken build) and cannot be promoted";
-  const server = refusalServer(409, { error: message, reason: "broken build" });
-  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
-  const error = await assertRejects(
-    () =>
-      client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
-    UserError,
-  );
-  assertEquals(error.message, message);
-  await server.shutdown();
-});
-
-Deno.test("ExtensionApiClient.checkResponse ignores a null, empty or non-string reason", async () => {
-  for (const reason of [null, "", "  ", 7]) {
-    const server = refusalServer(409, {
-      error: "Version has been yanked",
-      reason,
-    });
+  try {
     const client = new ExtensionApiClient(
       `http://localhost:${server.addr.port}`,
     );
@@ -1523,22 +1488,118 @@ Deno.test("ExtensionApiClient.checkResponse ignores a null, empty or non-string 
         client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
       UserError,
     );
-    assertEquals(error.message, "Version has been yanked");
+    return error.message;
+  } finally {
     await server.shutdown();
+  }
+}
+
+Deno.test("ExtensionApiClient.checkResponse appends a refusal's reason to its error", async () => {
+  assertEquals(
+    await refusalMessage(409, {
+      error: "Version has been yanked",
+      reason: "broken build",
+    }),
+    "Version has been yanked (broken build)",
+  );
+});
+
+Deno.test("ExtensionApiClient.checkResponse does not repeat a reason the error already carries", async () => {
+  const message =
+    "Version 2026.10.06.1 of @test/ext has been yanked (broken build) and cannot be promoted";
+  assertEquals(
+    await refusalMessage(409, { error: message, reason: "broken build" }),
+    message,
+  );
+});
+
+Deno.test("ExtensionApiClient.checkResponse ignores a null, empty or non-string reason", async () => {
+  for (const reason of [null, "", "  ", 7]) {
+    assertEquals(
+      await refusalMessage(409, { error: "Version has been yanked", reason }),
+      "Version has been yanked",
+    );
   }
 });
 
 Deno.test("ExtensionApiClient.checkResponse replaces control characters in a reason with spaces", async () => {
-  const server = refusalServer(409, {
-    error: "Version has been yanked",
-    reason: "bad\u001b[31mbuild\u202e",
-  });
-  const client = new ExtensionApiClient(`http://localhost:${server.addr.port}`);
-  const error = await assertRejects(
-    () =>
-      client.promoteExtension("@test/ext", "2026.10.06.1", "rc", "fake-key"),
-    UserError,
+  assertEquals(
+    await refusalMessage(409, {
+      error: "Version has been yanked",
+      reason: "bad\u001b[31mbuild‮",
+    }),
+    "Version has been yanked (bad [31mbuild)",
   );
-  assertEquals(error.message, "Version has been yanked (bad [31mbuild)");
-  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.checkResponse truncates a long reason by code point", async () => {
+  const message = await refusalMessage(409, {
+    error: "Version has been yanked",
+    reason: "x".repeat(MAX_REGISTRY_WARNING_LENGTH + 50),
+  });
+  assertEquals(
+    message,
+    `Version has been yanked (${"x".repeat(MAX_REGISTRY_WARNING_LENGTH)}…)`,
+  );
+});
+
+/** The versions a listing returns when the registry answers `versions`. */
+async function listedVersions(versions: unknown[]) {
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      Response.json({
+        versions,
+        meta: { total: versions.length, page: 1, perPage: 100 },
+      }),
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    return (await client.listVersions("@test/ext", {}, "test-key")).versions;
+  } finally {
+    await server.shutdown();
+  }
+}
+
+Deno.test("ExtensionApiClient.listVersions: replaces control and bidi characters in a yank reason with spaces", async () => {
+  const versions = await listedVersions([{
+    version: "2026.10.06.1",
+    channel: "beta",
+    publishedAt: "",
+    yankedAt: "2026-10-07T00:00:00.000Z",
+    yankReason: "\u001b[2K\u001b[1Asafe to bump‮",
+  }]);
+  assertEquals(versions[0].yankedAt, "2026-10-07T00:00:00.000Z");
+  assertEquals(versions[0].yankReason, "[2K [1Asafe to bump");
+});
+
+Deno.test("ExtensionApiClient.listVersions: a yank reason that is not printable text reads as none", async () => {
+  const versions = await listedVersions([
+    { version: "1", channel: "beta", publishedAt: "", yankReason: "\u0007 " },
+    { version: "2", channel: "beta", publishedAt: "", yankReason: 7 },
+    { version: "3", channel: "beta", publishedAt: "", yankReason: null },
+    { version: "4", channel: "beta", publishedAt: "" },
+  ]);
+  assertEquals(versions.map((v) => v.yankReason), [
+    null,
+    null,
+    null,
+    undefined,
+  ]);
+});
+
+Deno.test("ExtensionApiClient.listVersions: truncates a long yank reason by code point", async () => {
+  const versions = await listedVersions([{
+    version: "2026.10.06.1",
+    channel: "beta",
+    publishedAt: "",
+    yankedAt: "2026-10-07T00:00:00.000Z",
+    yankReason: "x".repeat(MAX_REGISTRY_WARNING_LENGTH + 50),
+  }]);
+  assertEquals(
+    versions[0].yankReason,
+    `${"x".repeat(MAX_REGISTRY_WARNING_LENGTH)}…`,
+  );
 });
