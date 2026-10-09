@@ -3048,6 +3048,153 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
   });
 });
 
+// --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
+
+/** A workflow whose one step is an approval gate, expanded per env or not. */
+function approvalGateWorkflow(name: string, expanded: boolean): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: expanded ? "approve-${{ self.env }}" : "approve-prod",
+            task: StepTask.manualApproval("Deploy?"),
+            ...(expanded
+              ? { forEach: { item: "env", in: "${{ inputs.envs }}" } }
+              : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+type SuspendedEvent = Extract<WorkflowExecutionEvent, { kind: "suspended" }>;
+
+async function suspendedEventOf(
+  events: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<SuspendedEvent | undefined> {
+  let suspended: SuspendedEvent | undefined;
+  for await (const event of events) {
+    if (event.kind === "suspended") suspended = event;
+  }
+  return suspended;
+}
+
+Deno.test("suspend: a forEach-expanded approval gate suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("foreach-gate", true);
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+
+    assertEquals(suspended?.jobId, "main");
+    assertEquals(suspended?.stepId, "approve-prod");
+    assertEquals(suspended?.prompt, "Deploy?");
+    assertEquals(suspended?.nested, undefined);
+  });
+});
+
+Deno.test("resume: a forEach-expanded approval gate reached after resume suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "foreach-gate-resume",
+      jobs: [
+        Job.create({
+          name: "first",
+          steps: [
+            Step.create({
+              name: "confirm",
+              task: StepTask.manualApproval("Start?"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "approve-${{ self.env }}",
+              task: StepTask.manualApproval("Deploy?"),
+              forEach: { item: "env", in: "${{ inputs.envs }}" },
+            }),
+          ],
+          dependsOn: [
+            { job: "first", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const first = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+    assertEquals(first?.stepId, "confirm");
+
+    // Approve the first gate, so the resumed run reaches the expanded one.
+    const toApprove = await runRepo.findById(workflow.id, first!.run.id);
+    toApprove!.getJob("first")!.getStep("confirm")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    const second = await suspendedEventOf(
+      service.resume(workflow.name, first!.run.id),
+    );
+
+    assertEquals(second?.jobId, "main");
+    assertEquals(second?.stepId, "approve-prod");
+    assertEquals(second?.prompt, "Deploy?");
+  });
+});
+
+Deno.test("suspend: an approval gate without forEach suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("plain-gate", false);
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(service.run(workflow.name));
+
+    assertEquals(suspended?.stepId, "approve-prod");
+    assertEquals(suspended?.prompt, "Deploy?");
+  });
+});
+
 Deno.test("expandForEachSteps: single-expression step name resolves correctly", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
