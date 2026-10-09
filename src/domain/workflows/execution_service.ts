@@ -994,12 +994,18 @@ function suspendedEventFor(
     const taskData = workflow.jobs
       .find((j) => j.name === waiting.jobName)?.steps
       .find((s) => s.name === waiting.stepName)?.task.data;
+    // The step run holds the prompt its gate was requested with. A step
+    // expanded by forEach has no step of its name in the definition, so the
+    // definition answers only for a run record without one (swamp-club#3217).
+    const requestedPrompt = run.getJob(waiting.jobName)
+      ?.getStep(waiting.stepName)?.approvalPrompt;
     return {
       kind: "suspended",
       run,
       jobId: waiting.jobName,
       stepId: waiting.stepName,
-      prompt: taskData?.type === "manual_approval" ? taskData.prompt : "",
+      prompt: requestedPrompt ??
+        (taskData?.type === "manual_approval" ? taskData.prompt : ""),
       timeout: taskData?.type === "manual_approval"
         ? taskData.timeout
         : undefined,

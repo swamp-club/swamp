@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { setColorEnabled } from "@std/fmt/colors";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -28,6 +29,17 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import {
+  type StepExecutor,
+  WorkflowExecutionService,
+} from "../src/domain/workflows/execution_service.ts";
+import { consumeStream } from "../src/libswamp/stream.ts";
+import {
+  mapWorkflowExecutionEvent,
+  type WorkflowRunEvent,
+} from "../src/libswamp/workflows/run.ts";
+import { createWorkflowRunRenderer } from "../src/presentation/renderers/workflow_run.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-approval-" });
@@ -192,5 +204,124 @@ Deno.test("Workflow: suspended run persists and round-trips", async () => {
     assertEquals(loaded!.status, "suspended");
     const loadedStep = loaded!.getJob("job1")!.getStep("step1")!;
     assertEquals(loadedStep.status, "waiting_approval");
+  });
+});
+
+/** No step of these workflows reaches an executor: every one is a gate. */
+const NEVER_EXECUTES: StepExecutor = {
+  execute: () => Promise.reject(new Error("no step should execute")),
+};
+
+/**
+ * Runs `workflow` on a real repository directory and returns what
+ * `workflow run` is sent: the execution events as libswamp publishes them.
+ */
+async function publishedRunEvents(
+  repoDir: string,
+  workflow: Workflow,
+  inputs: Record<string, unknown>,
+): Promise<WorkflowRunEvent[]> {
+  await initializeTestRepo(repoDir);
+  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  await workflowRepo.save(workflow);
+  const runRepo = new YamlWorkflowRunRepository(repoDir);
+  const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+  try {
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      repoDir,
+      NEVER_EXECUTES,
+      undefined,
+      catalogStore,
+    );
+    const events: WorkflowRunEvent[] = [];
+    for await (const event of service.run(workflow.name, { inputs })) {
+      events.push(mapWorkflowExecutionEvent(event, runRepo));
+    }
+    return events;
+  } finally {
+    catalogStore.close();
+  }
+}
+
+/** Renders `events` as `workflow run` prints them in the given mode. */
+async function renderRun(
+  mode: "log" | "json",
+  workflowName: string,
+  events: WorkflowRunEvent[],
+): Promise<string[]> {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    lines.push(
+      args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+    );
+  };
+  setColorEnabled(false);
+  try {
+    const renderer = createWorkflowRunRenderer(mode, { workflowName });
+    await consumeStream(
+      (async function* () {
+        yield* events;
+      })(),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+    setColorEnabled(true);
+  }
+  return lines;
+}
+
+Deno.test("Workflow: a forEach-expanded approval gate is reported as a gate by workflow run, in log and json mode (swamp-club#3217)", async () => {
+  await withTempDir(async (repoDir) => {
+    const workflow = Workflow.create({
+      name: "foreach-input-gate",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "approve-${{ self.env }}",
+              task: StepTask.manualApproval("Deploy?"),
+              forEach: { item: "env", in: "${{ [inputs.env] }}" },
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const events = await publishedRunEvents(repoDir, workflow, {
+      env: "prod",
+    });
+    const suspended = events.findLast((e) => e.kind === "suspended");
+    assert(suspended?.kind === "suspended");
+    const runId = suspended.run.id;
+
+    const log = (await renderRun("log", workflow.name, events)).join("\n");
+    assertStringIncludes(
+      log,
+      "workflow foreach-input-gate — awaiting approval on step approve-prod",
+    );
+    assertStringIncludes(
+      log,
+      `swamp workflow approve foreach-input-gate approve-prod --run ${runId}`,
+    );
+    assertStringIncludes(
+      log,
+      `swamp workflow resume foreach-input-gate --run ${runId}`,
+    );
+    assertEquals(log.includes("waits on a nested run"), false);
+
+    const json = await renderRun("json", workflow.name, events);
+    const parsed = JSON.parse(json[json.length - 1]);
+    assertEquals(parsed.approvalRequired, {
+      workflowName: "foreach-input-gate",
+      runId,
+      stepId: "approve-prod",
+      jobId: "main",
+      prompt: "Deploy?",
+    });
   });
 });
