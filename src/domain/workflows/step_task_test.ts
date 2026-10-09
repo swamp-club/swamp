@@ -720,3 +720,84 @@ Deno.test("StepTaskSchema: a wait_for_signal schema with type object or properti
     );
   }
 });
+
+Deno.test("StepTask.waitForSignal: carries a key, and leaves the field off when none is given", () => {
+  const keyed = StepTask.waitForSignal(
+    60,
+    { type: "object" },
+    "kitchen-verdict",
+  );
+  assertEquals(keyed.data, {
+    type: "wait_for_signal",
+    timeout: 60,
+    schema: { type: "object" },
+    key: "kitchen-verdict",
+  });
+  assertEquals(StepTask.fromData(keyed.toData()).equals(keyed), true);
+  assertEquals(
+    "key" in StepTask.waitForSignal(60, { type: "object" }).data,
+    false,
+  );
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal key is a literal of lowercase letters, digits, hyphens and underscores", () => {
+  const task = (key: unknown) => ({
+    type: "wait_for_signal",
+    timeout: 60,
+    schema: { type: "object" },
+    key,
+  });
+  for (const key of ["a", "kitchen-verdict", "door_2", "0", "a".repeat(64)]) {
+    assertEquals(StepTaskSchema.safeParse(task(key)).success, true, key);
+  }
+  for (
+    const key of [
+      "",
+      "Kitchen",
+      "-verdict",
+      "_verdict",
+      "a b",
+      "a/b",
+      "a.b",
+      "..",
+      "a".repeat(65),
+      "${{ inputs.room }}",
+      "room-${{ inputs.room }}",
+      7,
+    ]
+  ) {
+    const parsed = StepTaskSchema.safeParse(task(key));
+    assertEquals(parsed.success, false, String(key));
+  }
+  const refused = StepTaskSchema.safeParse(task("${{ inputs.room }}"));
+  assertEquals(
+    refused.success ? "" : refused.error.issues[0].message,
+    "A wait_for_signal key must be 1 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit, and not a Windows device name (con, prn, aux, nul, com0 to com9, lpt0 to lpt9). It takes no expression.",
+  );
+});
+
+Deno.test("StepTaskSchema: a wait_for_signal key that is a Windows device name is refused, and a name that only contains one is accepted", () => {
+  const task = (key: string) => ({
+    type: "wait_for_signal",
+    timeout: 60,
+    schema: { type: "object" },
+    key,
+  });
+  for (
+    const key of ["con", "prn", "aux", "nul", "com0", "com1", "com9", "lpt1"]
+  ) {
+    const parsed = StepTaskSchema.safeParse(task(key));
+    assertEquals(parsed.success, false, key);
+    assertEquals(
+      parsed.success ? false : parsed.error.issues[0].message.includes(
+        "not a Windows device name",
+      ),
+      true,
+    );
+  }
+  for (
+    const key of ["console", "nul-verdict", "com10", "com", "lpt", "a-con"]
+  ) {
+    assertEquals(StepTaskSchema.safeParse(task(key)).success, true, key);
+  }
+});

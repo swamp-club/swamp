@@ -1321,6 +1321,12 @@ export async function extensionPushPrepare(
             existingVersion: input.manifest.version,
             existingChannel: check.existingChannel,
             requestedChannel: check.requestedChannel,
+            ...(check.existingYanked
+              ? {
+                existingYanked: true,
+                existingYankReason: check.existingYankReason,
+              }
+              : {}),
           });
         }
         registryChecks.push(check);

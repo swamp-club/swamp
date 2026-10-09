@@ -183,6 +183,7 @@ function existing(overrides: {
   existingChannel?: string;
   requestedChannel?: string;
   checkMessage?: string;
+  existingYanked?: boolean;
   outputMode?: OutputMode;
   yes?: boolean;
   force?: boolean;
@@ -217,6 +218,59 @@ Deno.test("resolveExistingVersionResponse: interactive, the same or a higher cha
   assertEquals(
     existing({ existingChannel: "stable", requestedChannel: "beta" }),
     { kind: "bump-prompt" },
+  );
+});
+
+const YANKED_MESSAGE =
+  "Version 2026.10.06.1 already exists for @x/y on channel 'beta' " +
+  "and has been yanked (broken build). " +
+  "A yanked version stays taken and cannot be promoted; publish a new version instead.";
+
+Deno.test("resolveExistingVersionResponse: interactive, a yanked version on a lower channel is never offered for promotion", () => {
+  assertEquals(
+    existing({
+      existingChannel: "beta",
+      requestedChannel: "stable",
+      existingYanked: true,
+    }),
+    { kind: "bump-prompt" },
+  );
+  assertEquals(
+    existing({
+      existingChannel: "beta",
+      requestedChannel: "rc",
+      existingYanked: true,
+    }),
+    { kind: "bump-prompt" },
+  );
+});
+
+Deno.test("resolveExistingVersionResponse: a refusal for a yanked version names the yank on every channel", () => {
+  for (const flags of [{ yes: true }, { force: true }]) {
+    for (
+      const requestedChannel of ["beta", "rc"]
+    ) {
+      assertEquals(
+        existing({
+          existingChannel: "beta",
+          requestedChannel,
+          existingYanked: true,
+          checkMessage: YANKED_MESSAGE,
+          ...flags,
+        }),
+        { kind: "refuse", message: YANKED_MESSAGE },
+      );
+    }
+  }
+  assertEquals(
+    existing({
+      existingChannel: "beta",
+      requestedChannel: "beta",
+      existingYanked: true,
+      checkMessage: YANKED_MESSAGE,
+      outputMode: "json",
+    }),
+    { kind: "refuse", message: YANKED_MESSAGE },
   );
 });
 

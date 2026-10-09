@@ -98,7 +98,20 @@ export {
   detachedNestedRunsOf,
   type NestedWaitGateDetails,
   nestedWaitGateOf,
+  type OrphanedNestedRunDetails,
+  orphanedNestedRunError,
+  orphanedNestedRunOf,
 } from "./workflows/nested_runs.ts";
+export {
+  type CascadedNestedRunData,
+  createNestedCascade,
+  emptyNestedCascade,
+  mergeNestedCascade,
+  type NestedCascade,
+  type NestedCascadeDeps,
+  nestedCascadeFields,
+  type NestedCascadeResult,
+} from "./workflows/nested_cascade.ts";
 export { NestedRunPendingError } from "../domain/workflows/nested_run_link.ts";
 export { inputsMatch } from "../domain/workflows/input_matching.ts";
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
@@ -387,6 +400,7 @@ export {
   signalRefusalKind,
   type SignalWaitSubject,
   workflowSignal,
+  type WorkflowSignalAddress,
   type WorkflowSignalData,
   type WorkflowSignalDeps,
   type WorkflowSignalEvent,

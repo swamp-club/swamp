@@ -649,7 +649,9 @@ path that sends run events applies it: a run, a buffered run, a resume, a
 buffered resume, and `run.attach`. For a run on a server the CLI prints the
 signal command with the `--server` it was given.
 
-`swamp workflow signal` and `swamp workflow waits` take `--server`. Against a
+`swamp workflow signal` and `swamp workflow waits` take `--server`. A signal
+through a server names a wait ID; the command refuses `--workflow` and `--key`
+with `--server` until swamp-club#3211. Against a
 server that predates these requests they report that the server needs an
 upgrade (`requestNewerServerResponse`, `src/cli/remote_run.ts`).
 
@@ -688,6 +690,24 @@ upgrade (`requestNewerServerResponse`, `src/cli/remote_run.ts`).
   same `No cancellable run with id <id>` reply, and never holds the gate or
   blocks another operation on the run. Only an allowed cancel takes the gate
   and the reservation, then re-reads, saves and pushes the run.
+- A cancel or reject of a run that waited on nested runs cancels those runs
+  in the same gated unit of work, so one push carries the parent and its
+  children (`serveNestedCascade` in `src/serve/nested_run_cascade.ts`; see
+  "Gates inside a nested workflow" in
+  [workflows](./workflows.md)). The cascade runs under the caller's grant on
+  the parent's workflow, as the cancel of a running nested step does; no
+  grant on the child's workflow is asked. Each child is reserved in the
+  registry while it is cancelled. A child this instance is running is asked
+  to abort and is not waited for: its final push needs the sync gate the
+  handler holds, and an awaited one would stall until the gate's wait times
+  out. A record this instance lacks is fetched with `hydrateFile` directly,
+  since the gate is not reentrant. Each cascaded cancel emits a
+  `workflow.nested_run_cancelled` (or `workflow.nested_run_stop_requested`)
+  audit event naming the parent run and the reason. A run this instance was
+  driving when it was aborted settles itself; the cancel then runs the
+  cascade for it in a gated unit of its own (`cascadeEndedRunAndPush`).
+  Serve's bulk cancel and its supersede do not cascade: the children are
+  cancelled when next touched.
 
 Serve's `CANCEL_GRACE_MS` is not the 30 s constant of the same name in
 `src/domain/remote/rpc_channel.ts`, which bounds RPC cancel confirmation.
@@ -779,6 +799,7 @@ as its instance id. The coordination records:
 | `claims/reconcile-instance/<instanceId>`    | `putIfAbsent` by the instance that will reap a dead peer        | `cleanupExpiredClaims` (5 min TTL)                                         |
 | `waits/<waitId>`                            | The executor, when a `wait_for_signal` step starts waiting      | `workflow signal`, `workflow waits`; removed when the run ends            |
 | `wait-outcomes/<waitId>`                    | `putIfAbsent` by whichever of a signal, a timeout or a cancel settles the wait first | The resume that applies it; removed with the run record |
+| `wait-keys/<workflowId>/<key>/<generation>` | `putIfAbsent` by a `wait_for_signal` step that declares a `key`, before it registers its wait; a release by whoever removes the highest claim | The next step that claims the key; removed with the run record, or with the workflow |
 | `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance
@@ -1077,12 +1098,14 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   waits on, and Resume appears once that run finished (`awaitingResume` is
   derived from the nested runs). A nested run's approval row names its
   parent. Fields that link a run to another run (`parentRun`, `nestedWaits`,
-  a step's `nestedRun`, detached nested runs on cancel and reject results)
+  a step's `nestedRun`, and the cancelled, stop-requested and detached nested
+  runs on cancel and reject results)
   are returned only when the caller may read the other run's workflow
   (`src/serve/handlers/nested_run_redaction.ts`). The same holds for run and
   resume streams, redacted per attached client, for the error of a step
   whose nested run is hidden, and for the refusals to approve, reject or
-  resume a run waiting on a nested run, which then name no run. A nested
+  resume a run waiting on a nested run, or a nested run whose parent ended,
+  which then name no other run. A nested
   run's own events, forwarded into its parent's stream while the parent runs
   it, are not redacted; they name the nested run, and its
   `approval_requested` event names its workflow.

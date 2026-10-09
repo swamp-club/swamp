@@ -183,7 +183,23 @@ export function renderApprovals(
         const quiet = cliCtx.verbosity === "quiet";
         const workflow = quoteShellWord(item.workflowName);
         const step = quoteShellWord(item.stepName);
-        if (!quiet) {
+        // A serve instance fetches a parent record it does not hold before
+        // it decides, so a record missing there may only not be local yet.
+        const parentGone = item.parentMissing === true && server === undefined;
+        if (item.parentEnded || parentGone) {
+          // The run above it ended, or its record is gone: the gate cannot
+          // be decided, so only the cancel is offered (swamp-club#2867).
+          if (!quiet) {
+            writeOutput(
+              `  ${
+                cancelCommand(
+                  { ...item, serveStarted: item.serveStarted === true },
+                  target,
+                )
+              }`,
+            );
+          }
+        } else if (!quiet) {
           writeOutput(
             `  swamp workflow approve ${workflow} ${step} --run ${item.runId}${target}`,
           );
@@ -197,7 +213,31 @@ export function renderApprovals(
         // A nested workflow's gate: its parent resumes after it
         // (swamp-club#2736).
         if (item.parentRun) {
-          if (item.parentWaiting === false) {
+          if (parentGone) {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow} ({parentRunId}): the parent run's record no longer exists, so this run cannot continue. Cancel it, or restore the record",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          } else if (item.parentMissing) {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow} ({parentRunId}): the server holds no record of the parent run. Approve and reject fetch it first and are refused if there is none; resume is refused until the server has it",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          } else if (item.parentEnded) {
+            cliCtx.logger.info(
+              "  Nested run of {parentWorkflow} ({parentRunId}): the parent ended or moved on, so this gate can no longer be decided. Cancel this run",
+              {
+                parentWorkflow: item.parentRun.workflowName,
+                parentRunId: item.parentRun.runId,
+              },
+            );
+          } else if (item.parentWaiting === false) {
             cliCtx.logger.info(
               "  Nested run of {parentWorkflow} ({parentRunId}): the parent no longer waits on it",
               {

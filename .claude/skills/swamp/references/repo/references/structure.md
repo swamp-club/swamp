@@ -152,7 +152,8 @@ Claude Code permissions for swamp commands:
     "allow": [
       "Bash(swamp model:*)",
       "Bash(swamp workflow:*)",
-      "Bash(swamp vault:*)",
+      "Bash(swamp vault get:*)",
+      "Bash(swamp vault list-keys:*)",
       "Bash(swamp data:*)",
       "Bash(swamp repo:*)"
     ]

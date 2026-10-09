@@ -201,6 +201,146 @@ Deno.test("assessRecoveryForRun: legacy run plan that differs is refused as unco
   );
 });
 
+function modelStep(
+  name: string,
+  opts: { guard?: string; forEach?: boolean } = {},
+): Step {
+  return Step.create({
+    name,
+    task: StepTask.model("test-model", "run"),
+    guard: opts.guard,
+    forEach: opts.forEach ? { item: "env", in: '${{ ["prod"] }}' } : undefined,
+  });
+}
+
+/**
+ * An interrupted run of `wf` whose job `jobName` was running the step run
+ * `stepName`, stored with `forEachTemplate` when it is a forEach iteration.
+ */
+function interruptedAt(
+  wf: Workflow,
+  jobName: string,
+  stepName: string,
+  forEachTemplate?: string,
+): WorkflowRun {
+  const data = WorkflowRun.create(wf).toData();
+  data.status = "running";
+  for (const job of data.jobs) {
+    if (job.jobName !== jobName) continue;
+    job.status = "running";
+    job.steps = [{ stepName, status: "running", forEachTemplate }];
+  }
+  const run = WorkflowRun.fromData(data);
+  run.interrupt("server_crash");
+  return run;
+}
+
+const GUARD = '${{ data.latest("m", "d") }}';
+const EACH = "deploy-${{ self.env }}";
+
+Deno.test("assessRecoveryForRun: a forEach iteration is judged by the guard of the step it was expanded from", async () => {
+  const guarded = Workflow.create({
+    name: "each-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [modelStep(EACH, { guard: GUARD, forEach: true })],
+      }),
+    ],
+  });
+  const unguarded = Workflow.create({
+    name: "each-wf",
+    jobs: [
+      Job.create({ name: "main", steps: [modelStep(EACH, { forEach: true })] }),
+    ],
+  });
+
+  const allowed = await assessRecoveryForRun(
+    guarded,
+    interruptedAt(guarded, "main", "deploy-prod", EACH),
+  );
+  const refused = await assessRecoveryForRun(
+    unguarded,
+    interruptedAt(unguarded, "main", "deploy-prod", EACH),
+  );
+
+  assertEquals(allowed.canAutoRecover, true);
+  assertEquals(allowed.guardedSteps, ["deploy-prod"]);
+  assertEquals(allowed.unguardedSteps, []);
+  assertEquals(refused.canAutoRecover, false);
+  assertEquals(refused.guardedSteps, []);
+  assertEquals(refused.unguardedSteps, ["deploy-prod"]);
+});
+
+Deno.test("assessRecoveryForRun: a step is judged by its own job, not a same-named step of another job", async () => {
+  const wf = Workflow.create({
+    name: "same-name-wf",
+    jobs: [
+      Job.create({ name: "a", steps: [modelStep("deploy", { guard: GUARD })] }),
+      Job.create({ name: "b", steps: [modelStep("deploy")] }),
+    ],
+  });
+
+  const inB = await assessRecoveryForRun(wf, interruptedAt(wf, "b", "deploy"));
+  const inA = await assessRecoveryForRun(wf, interruptedAt(wf, "a", "deploy"));
+
+  assertEquals(inB.canAutoRecover, false);
+  assertEquals(inB.guardedSteps, []);
+  assertEquals(inB.unguardedSteps, ["deploy"]);
+  assertEquals(inA.canAutoRecover, true);
+  assertEquals(inA.guardedSteps, ["deploy"]);
+  assertEquals(inA.unguardedSteps, []);
+});
+
+Deno.test("assessRecoveryForRun: a forEach step not yet expanded is judged by its own guard", async () => {
+  const wf = Workflow.create({
+    name: "each-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [modelStep(EACH, { guard: GUARD, forEach: true })],
+      }),
+    ],
+  });
+
+  const result = await assessRecoveryForRun(
+    wf,
+    interruptedAt(wf, "main", EACH),
+  );
+
+  assertEquals(result.canAutoRecover, true);
+  assertEquals(result.guardedSteps, [EACH]);
+});
+
+Deno.test("assessRecoveryForRun: a step that resolves to no step of its job is unguarded", async () => {
+  const wf = Workflow.create({
+    name: "each-wf",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          modelStep(EACH, { guard: GUARD, forEach: true }),
+          modelStep("plain", { guard: GUARD }),
+        ],
+      }),
+    ],
+  });
+  // An iteration stored without the step it was expanded from, an iteration
+  // whose recorded step is not a forEach step, and a job the workflow lacks.
+  const noTemplate = interruptedAt(wf, "main", "deploy-prod");
+  const notForEach = interruptedAt(wf, "main", "plain-prod", "plain");
+  const data = interruptedAt(wf, "main", "plain").toData();
+  data.jobs[0].jobName = "gone";
+  const noJob = WorkflowRun.fromData(data);
+
+  for (const run of [noTemplate, notForEach, noJob]) {
+    const result = await assessRecoveryForRun(wf, run);
+    assertEquals(result.canAutoRecover, false);
+    assertEquals(result.guardedSteps, []);
+    assertEquals(result.unguardedSteps.length, 1);
+  }
+});
+
 Deno.test("findInterruptedRun: returns null when no interrupted runs", async () => {
   const wf = createWorkflow();
   const mockRepo: WorkflowRunRepository = {

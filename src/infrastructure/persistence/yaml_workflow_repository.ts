@@ -27,6 +27,7 @@ import { isIoError } from "./io_errors.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { assertSafePath } from "./safe_path.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import {
   createWorkflowId,
   type WorkflowId,
@@ -227,7 +228,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     const workflows: Workflow[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (entry.isFile && isPrimaryWorkflowFileName(entry.name)) {
           const path = join(dir, entry.name);
           try {

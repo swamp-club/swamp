@@ -54,7 +54,11 @@ import {
   sanitizeErrorForClient,
 } from "./handlers/shared.ts";
 import { resolveRecordedWorkflow } from "./handlers/resource_resolution.ts";
-import { nestedPendingRefusalForClient } from "./handlers/nested_run_redaction.ts";
+import {
+  nestedPendingRefusalForClient,
+  orphanedRefusalForClient,
+} from "./handlers/nested_run_redaction.ts";
+import { OrphanedNestedRunError } from "../domain/workflows/orphaned_nested_run.ts";
 import {
   isFinishedRun,
   NestedRunLink,
@@ -225,6 +229,16 @@ export async function startDetachedResume(
         ok: false,
         code: "workflow_resume_failed",
         message: await nestedPendingRefusalForClient(
+          error,
+          request.canReadWorkflow,
+        ),
+      };
+    }
+    if (error instanceof OrphanedNestedRunError) {
+      return {
+        ok: false,
+        code: "workflow_resume_failed",
+        message: await orphanedRefusalForClient(
           error,
           request.canReadWorkflow,
         ),
@@ -420,6 +434,17 @@ export async function startDetachedResume(
                 kind: "error",
                 code: "workflow_resume_failed",
                 message: await nestedPendingRefusalForClient(
+                  error,
+                  request.canReadWorkflow,
+                ),
+              };
+            } else if (error instanceof OrphanedNestedRunError) {
+              // A nested run nothing waits on any more: the resume cancelled
+              // it, or refused without a write (swamp-club#2867).
+              terminal = {
+                kind: "error",
+                code: "workflow_resume_failed",
+                message: await orphanedRefusalForClient(
                   error,
                   request.canReadWorkflow,
                 ),

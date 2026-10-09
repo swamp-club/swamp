@@ -203,6 +203,9 @@ export class DefaultWorkflowValidationService
     for (const result of this.validateWaitAutoResumeDeclared(workflow)) {
       results.push(result);
     }
+    for (const result of this.validateWaitKeys(workflow)) {
+      results.push(result);
+    }
 
     // 12. affinity without placement is a no-op
     results.push(...this.validateAffinityPlacement(workflow));
@@ -513,6 +516,52 @@ export class DefaultWorkflowValidationService
           `which can supply inputs`,
       ),
     ];
+  }
+
+  /**
+   * A wait's key is held by one open wait of the workflow at a time
+   * (swamp-club#3209), so the definition lists its valid keys: no two
+   * steps declare the same one, and a step under `forEach`, whose every
+   * iteration would share it, declares none.
+   */
+  private validateWaitKeys(workflow: Workflow): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    const declaredBy = new Map<string, string[]>();
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const taskData = step.task?.data;
+        if (taskData?.type !== "wait_for_signal") continue;
+        if (taskData.key === undefined) continue;
+        const place = `job '${job.name}' step '${step.name}'`;
+        declaredBy.set(taskData.key, [
+          ...(declaredBy.get(taskData.key) ?? []),
+          place,
+        ]);
+        if (step.forEach) {
+          results.push(
+            WorkflowValidationResult.fail(
+              `Wait key in ${place}`,
+              `a wait_for_signal step under forEach cannot declare a key: ` +
+                `every iteration would claim '${taskData.key}', and one ` +
+                `open wait holds a key at a time. Remove the key, or wait ` +
+                `in a step outside the forEach`,
+            ),
+          );
+        }
+      }
+    }
+    for (const [key, places] of declaredBy) {
+      if (places.length < 2) continue;
+      results.push(
+        WorkflowValidationResult.fail(
+          `Unique wait key '${key}'`,
+          `The key is declared by ${places.join(" and ")}. One open wait ` +
+            `holds a key at a time, so each wait_for_signal step of a ` +
+            `workflow needs its own key`,
+        ),
+      );
+    }
+    return results;
   }
 
   private validateSchema(workflow: Workflow): WorkflowValidationResult {

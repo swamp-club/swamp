@@ -351,7 +351,10 @@ export function getRunLogger(
 
 // LogTape interprets {…} in message templates as property placeholders.
 // Raw process output containing JSON objects would render as "undefined".
+// It only parses a template that has an opening brace and prints any other
+// verbatim, so a closing brace is doubled only alongside an opening one.
 export function escapeLogTemplate(text: string): string {
+  if (!text.includes("{")) return text;
   return text.replaceAll("{", "{{").replaceAll("}", "}}");
 }
 

@@ -30,7 +30,6 @@ import { parse, type ParserPlugin } from "@babel/parser";
 /** The parts of a Babel AST node the safety rules read. */
 export interface AstNode {
   type: string;
-  loc?: { start: { line: number; column: number } } | null;
   [key: string]: unknown;
 }
 
@@ -352,5 +351,41 @@ export function walkRuntimeNodes(
         stack.push({ node: value, key, parent: current });
       }
     }
+  }
+}
+
+/**
+ * Positions of `source` by `\n` alone. Babel also breaks lines at `\r`,
+ * U+2028 and U+2029, but the analyzer, the other line checks and the
+ * acceptance parser split on `\n`, so a line comes from an offset here
+ * rather than from Babel's `loc`, or a file saved with other line
+ * terminators could move a finding or a comment-site barrier off its line
+ * or past the last one.
+ */
+export class LineIndex {
+  private readonly newlines: number[] = [];
+
+  constructor(source: string) {
+    for (
+      let i = source.indexOf("\n");
+      i >= 0;
+      i = source.indexOf("\n", i + 1)
+    ) {
+      this.newlines.push(i);
+    }
+  }
+
+  /** The 1-based line and column of a 0-based offset. */
+  position(offset: number): { line: number; column: number } {
+    // The number of newlines before `offset`.
+    let low = 0;
+    let high = this.newlines.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (this.newlines[mid] < offset) low = mid + 1;
+      else high = mid;
+    }
+    const lineStart = low === 0 ? 0 : this.newlines[low - 1] + 1;
+    return { line: low + 1, column: offset - lineStart + 1 };
   }
 }

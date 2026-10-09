@@ -76,7 +76,6 @@ import {
   type WorkflowWaitsData,
   type WorkflowWaitsEvent,
 } from "../../libswamp/workflows/waits.ts";
-import type { DetachedNestedRunData } from "../../libswamp/workflows/nested_runs.ts";
 import {
   mapWorkflowExecutionEvent,
   type WorkflowRunEvent,
@@ -147,6 +146,13 @@ import {
   NestedRunPendingError,
   NestedRunUnreadableError,
 } from "../../domain/workflows/nested_run_link.ts";
+import { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nested_run.ts";
+import type { NestedCascadeResult } from "../../libswamp/workflows/nested_cascade.ts";
+import {
+  cascadeEndedRunAndPush,
+  fetchMissingRunUnderGate,
+  serveNestedCascade,
+} from "../nested_run_cascade.ts";
 import {
   type Principal,
   principalToString,
@@ -166,6 +172,8 @@ import {
   nestedGateRefusalForClient,
   nestedPendingRefusalForClient,
   nestedRunReadDecider,
+  orphanedRefusalForClient,
+  readableNestedCascade,
   readableNestedRuns,
   redactingFor,
   redactParentRun,
@@ -1458,6 +1466,17 @@ export async function handleWorkflowApprove(
           // The reservation above is this process's claim on the run.
           unclaimedRuns,
         );
+        deps.runTracker = ctx.runTracker;
+        deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
+        deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
+        // Built only when a run nothing waits on has to be cancelled.
+        deps.findEvaluatedWorkflow = (runId) =>
+          new YamlEvaluatedWorkflowRepository(
+            ctx.repoDir,
+            ctx.datastoreResolver.resolvePath(
+              SWAMP_SUBDIRS.workflowsEvaluated,
+            ),
+          ).findByRunId(runId);
 
         await consumeStream(
           workflowApprove(libCtx, deps, {
@@ -1785,6 +1804,21 @@ export async function handleWorkflowReject(
           (runId) => evaluatedRepo.findByRunId(runId),
           ctx.runTracker,
         );
+        deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
+        deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
+        // The suspended nested runs the rejected run waited on are cancelled
+        // in this gated unit of work (swamp-club#2867).
+        if (ctx.activeRunRegistry) {
+          deps.cascade = serveNestedCascade(
+            ctx,
+            ctx.activeRunRegistry,
+            `Rejected by ${
+              principal
+                ? principalToString(principal)
+                : payload.decidedBy ?? "unknown"
+            }`,
+          );
+        }
 
         let result: Record<string, unknown> | undefined;
         await consumeStream(
@@ -1840,13 +1874,11 @@ export async function handleWorkflowReject(
         ) {
           delete rejected.awaitingParent;
         }
-        const detached = await readableNestedRuns(
-          rejected.detachedNestedRuns,
-          (d) => d.workflowId,
-          canRead,
-        );
-        if (detached) rejected.detachedNestedRuns = detached;
-        else delete rejected.detachedNestedRuns;
+        const nested = await readableNestedCascade(rejected, canRead);
+        delete rejected.detachedNestedRuns;
+        delete rejected.cancelledNestedRuns;
+        delete rejected.stopRequestedNestedRuns;
+        Object.assign(rejected, nested);
 
         send(socket, {
           type: "workflow.reject",
@@ -1970,10 +2002,12 @@ export async function handleWorkflowCancel(
       },
       (workflow) => mayCancel(workflow),
     );
-  const reply = (
+  // Nested runs are named only to a reader of their workflow
+  // (swamp-club#2736).
+  const reply = async (
     workflowName: string,
     status: string,
-    detachedNestedRuns?: DetachedNestedRunData[],
+    nested: Partial<NestedCascadeResult> = {},
   ) =>
     send(socket, {
       type: "workflow.cancel",
@@ -1983,7 +2017,10 @@ export async function handleWorkflowCancel(
           runId: payload.runId,
           workflowName,
           status,
-          ...(detachedNestedRuns ? { detachedNestedRuns } : {}),
+          ...await readableNestedCascade(
+            nested,
+            nestedRunReadDecider(ctx, socket, principal),
+          ),
         },
       },
     });
@@ -2005,7 +2042,7 @@ export async function handleWorkflowCancel(
         return;
       }
       if (!(await awaitAbortedRun(registry, payload.runId))) {
-        reply(workflowName, "cancellation_requested");
+        await reply(workflowName, "cancellation_requested");
         return;
       }
       const left = await cancelPersisted();
@@ -2013,9 +2050,17 @@ export async function handleWorkflowCancel(
         sendError(socket, requestId, "workflow_cancel_failed", left.message);
       } else if (left.status === "active") {
         registry.cancel(payload.runId, reason);
-        reply(workflowName, "cancellation_requested");
+        await reply(workflowName, "cancellation_requested");
+      } else if (left.status === "cancelled") {
+        await reply(workflowName, "cancelled", left);
       } else {
-        reply(workflowName, "cancelled");
+        // The aborted run settled itself, which leaves the nested runs it
+        // waited on: they are cancelled here (swamp-club#2867).
+        await reply(
+          workflowName,
+          "cancelled",
+          await cascadeEndedRunAndPush(ctx, payload.runId, reason),
+        );
       }
       return;
     }
@@ -2027,17 +2072,7 @@ export async function handleWorkflowCancel(
 
     switch (outcome.status) {
       case "cancelled":
-        // Nested runs are named only to a reader of their workflow
-        // (swamp-club#2736).
-        reply(
-          outcome.workflowName,
-          "cancelled",
-          await readableNestedRuns(
-            outcome.detachedNestedRuns,
-            (d) => d.workflowId,
-            nestedRunReadDecider(ctx, socket, principal),
-          ),
-        );
+        await reply(outcome.workflowName, "cancelled", outcome);
         return;
       case "busy":
       case "not_suspended":
@@ -2264,6 +2299,16 @@ export async function handleWorkflowResume(
               requestId,
               "workflow_resume_failed",
               await nestedPendingRefusalForClient(
+                error,
+                nestedRunReadDecider(ctx, socket, principal),
+              ),
+            );
+          } else if (error instanceof OrphanedNestedRunError) {
+            sendError(
+              socket,
+              requestId,
+              "workflow_resume_failed",
+              await orphanedRefusalForClient(
                 error,
                 nestedRunReadDecider(ctx, socket, principal),
               ),

@@ -503,6 +503,9 @@ declares inputs is never covered by the server flag and must set
 response reports `autoResumed: true` when serve resumed the run. When a nested
 workflow's run finishes through serve, serve also resumes the parent waiting on
 it, under the parent's own policy, if the approver may approve the parent.
+Cancelling or rejecting a parent through serve cancels its suspended nested runs
+under the caller's grant on the parent; the reply names them only to a caller
+who may read their workflow.
 
 The instance that takes the approval or signal that settles a run resumes it at
 once. A sweep at boot and every `--continuation-sweep-interval` (env

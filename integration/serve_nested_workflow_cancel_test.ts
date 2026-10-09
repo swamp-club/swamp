@@ -33,6 +33,7 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { PARENT_ENDED_CANCEL_REASON } from "../src/domain/workflows/orphaned_nested_run.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -46,6 +47,7 @@ import { handleWorkflowRun } from "../src/serve/handlers/workflow_handlers.ts";
 import { ActiveRunRegistry } from "../src/serve/active_run_registry.ts";
 import { RunCancelRegistry } from "../src/serve/run_cancel_registry.ts";
 import { cancelExecution } from "../src/cli/commands/serve.ts";
+import { cancelSuspendedRunAndPush } from "../src/serve/suspended_run_cancel.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
 
 // Import models barrel to trigger built-in registration.
@@ -208,6 +210,124 @@ Deno.test({
         assertEquals(childRun?.status, "cancelled");
       } finally {
         modelRegistry.invalidateType(modelType);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve: cancelling a suspended parent by its id cancels the suspended nested run with it (swamp-club#2867)",
+  ...testOpts,
+  fn: async () => {
+    await withRepo(async (repoDir) => {
+      const child = Workflow.create({
+        name: `nested-gate-child-${crypto.randomUUID()}`,
+        jobs: [Job.create({
+          name: "child-job",
+          steps: [Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve the child"),
+          })],
+        })],
+      });
+      const parent = Workflow.create({
+        name: `nested-gate-parent-${crypto.randomUUID()}`,
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "call-child",
+            task: StepTask.workflow(child.name),
+          })],
+        })],
+      });
+      const workflowRepo = new YamlWorkflowRepository(repoDir);
+      await workflowRepo.save(child);
+      await workflowRepo.save(parent);
+      const {
+        repoDir: resolved,
+        repoContext,
+        datastoreConfig,
+        datastoreResolver,
+        syncService,
+      } = await requireInitializedRepoUnlocked({ repoDir, outputMode: "log" });
+
+      const registry = new ActiveRunRegistry();
+      const ctx = {
+        repoDir: resolved,
+        repoContext,
+        datastoreConfig,
+        datastoreResolver,
+        syncService,
+        authConfig: { mode: "none" },
+        activeRunRegistry: registry,
+      } as unknown as ConnectionContext;
+      const frames: EventFrame[] = [];
+      const socket = {
+        readyState: WebSocket.OPEN,
+        send: (data: string) => frames.push(JSON.parse(data)),
+      } as unknown as WebSocket;
+
+      // The parent suspends on the child, which suspends at its gate.
+      await handleWorkflowRun(
+        socket,
+        ctx,
+        "run-1",
+        { workflowIdOrName: parent.name, inputs: {} },
+        new AbortController(),
+        null,
+      );
+      const runRepo = repoContext.workflowRunRepo;
+      const [parentRun] = await runRepo.findAllByWorkflowId(
+        createWorkflowId(parent.id),
+      );
+      const [childRun] = await runRepo.findAllByWorkflowId(
+        createWorkflowId(child.id),
+      );
+      assertEquals(parentRun.status, "suspended");
+      assertEquals(childRun.status, "suspended");
+      await waitFor(
+        () => registry.get(parentRun.id) === undefined,
+        "the suspended parent to leave the registry",
+      );
+
+      const result = await cancelExecution("workflow-run", parentRun.id, {
+        cancelRegistry: new RunCancelRegistry(),
+        activeRunRegistry: registry,
+        reason: "cancelled by test",
+        cancelSuspended: (id) =>
+          cancelSuspendedRunAndPush(
+            ctx,
+            { runId: id, reason: "cancelled by test" },
+            () => true,
+          ),
+      });
+      assertEquals(result.status, "cancelled");
+      assertEquals(result.cancelledNestedRuns?.map((r) => r.runId), [
+        childRun.id,
+      ]);
+      assertEquals(result.detachedNestedRuns, undefined);
+
+      const endedParent = await runRepo.findById(
+        createWorkflowId(parent.id),
+        parentRun.id,
+      );
+      const endedChild = await runRepo.findById(
+        createWorkflowId(child.id),
+        childRun.id,
+      );
+      assertEquals(endedParent?.status, "cancelled");
+      assertEquals(endedChild?.status, "cancelled");
+      // The stored reason names no other run (swamp-club#2867).
+      assertEquals(
+        endedChild?.tags["cancel_reason"],
+        PARENT_ENDED_CANCEL_REASON,
+      );
+      // Neither id is left reserved.
+      for (const id of [parentRun.id, childRun.id]) {
+        const release = registry.reserve(id);
+        assert(release, "the cancel released its reservation");
+        release();
       }
     });
   },

@@ -24,7 +24,9 @@ import {
   type CollectiveEntitlement,
   type CollectiveTrial,
   evaluatePrivateEntitlement,
+  evaluateVersionExists,
   explainPrivatePublishRefusal,
+  promoteCommand,
 } from "./extension_publish_checks.ts";
 
 const SERVER = "https://registry.test";
@@ -173,6 +175,37 @@ Deno.test("explainPrivatePublishRefusal: starts with the registry's sentence and
         const freeWithoutAccess = entitlement?.plan === "free" &&
           entitlement.trial?.state !== "active";
         assertEquals(message.includes(pointer), freeWithoutAccess === true);
+      },
+    ),
+  );
+});
+
+Deno.test("evaluateVersionExists: a yanked version always fails and never gives the promote command", () => {
+  const channelArb = fc.constantFrom("beta", "rc", "stable");
+  fc.assert(
+    fc.property(
+      channelArb,
+      channelArb,
+      fc.oneof(fc.constant(null), fc.stringMatching(/^[a-z0-9 ]{1,30}$/)),
+      (existingChannel, requestedChannel, reason) => {
+        const result = evaluateVersionExists({
+          extensionName: "@acme/tool",
+          version: "2026.10.06.1",
+          published: {
+            version: "2026.10.06.1",
+            channel: existingChannel,
+            yank: { reason },
+          },
+          requestedChannel,
+        });
+        assertEquals(result.status, "failed");
+        assertEquals(result.existingYanked, true);
+        assertStringIncludes(result.message, "has been yanked");
+        assert(
+          !result.message.includes(
+            promoteCommand("@acme/tool", "2026.10.06.1", requestedChannel),
+          ),
+        );
       },
     ),
   );

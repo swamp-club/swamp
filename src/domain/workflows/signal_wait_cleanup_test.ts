@@ -52,6 +52,7 @@ import {
   waitIdsOf,
   waitRefOf,
 } from "./signal_wait_cleanup.ts";
+import { claimWaitKey, type WaitKeyClaim } from "./wait_key_claim.ts";
 
 const OPENED = new Date("2026-01-01T00:00:00.000Z");
 const IN_TIME = new Date("2026-01-01T00:00:30.000Z");
@@ -360,7 +361,7 @@ Deno.test("sweepWaitRecords: closes the registration of an ended run, keeps its 
     localRunAbsenceIsAuthoritative: true,
   });
 
-  assertEquals(swept, { registrations: 1, outcomes: 0 });
+  assertEquals(swept, { registrations: 1, outcomes: 0, keyRecords: 0 });
   assertEquals(
     (await store.listRegistrations()).map((r) => r.runId),
     [live.id],
@@ -388,6 +389,7 @@ Deno.test("sweepWaitRecords: records of a run that cannot be found go only once 
     {
       registrations: 0,
       outcomes: 0,
+      keyRecords: 0,
     },
   );
   assertEquals((await store.listRegistrations()).length, 2);
@@ -399,6 +401,7 @@ Deno.test("sweepWaitRecords: records of a run that cannot be found go only once 
     {
       registrations: 2,
       outcomes: 1,
+      keyRecords: 0,
     },
   );
   assertEquals(store.registrations.size, 0);
@@ -417,7 +420,7 @@ Deno.test("sweepWaitRecords: uncertain run absence retains records regardless of
       await sweepWaitRecords(store, () => Promise.resolve(null), farFuture, {
         localRunAbsenceIsAuthoritative: authority,
       }),
-      { registrations: 0, outcomes: 0 },
+      { registrations: 0, outcomes: 0, keyRecords: 0 },
     );
     assertEquals((await store.listRegistrations()).length, 1);
     assertEquals(await store.listOutcomes(), [accepted]);
@@ -539,6 +542,7 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
   assertEquals(await sweepWaitRecords(store, findRun, later, AUTHORITATIVE), {
     registrations: 0,
     outcomes: 0,
+    keyRecords: 0,
   });
   assertEquals((await store.listRegistrations()).length, 1);
   assertEquals(store.outcomes.size, 0);
@@ -552,6 +556,7 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
   assertEquals(await sweepWaitRecords(store, findRun, later, AUTHORITATIVE), {
     registrations: 1,
     outcomes: 0,
+    keyRecords: 0,
   });
   assertEquals((await store.listOutcomes()).map((o) => o.kind), ["cancelled"]);
 });
@@ -582,6 +587,7 @@ Deno.test("sweepWaitRecords: where run records are not the datastore's own it ch
     assertEquals(await sweepWaitRecords(store, findRun, farFuture, options), {
       registrations: 0,
       outcomes: 0,
+      keyRecords: 0,
     });
     assertEquals(store.registrations, before.registrations);
     assertEquals(store.outcomes, before.outcomes);
@@ -609,7 +615,7 @@ Deno.test("sweepWaitRecords: a run that cannot be read is skipped, and the rest 
     AUTHORITATIVE,
   );
 
-  assertEquals(swept, { registrations: 1, outcomes: 0 });
+  assertEquals(swept, { registrations: 1, outcomes: 0, keyRecords: 0 });
   // Nothing is known about the damaged run, so its records stay.
   assertEquals(
     (await store.listRegistrations()).map((r) => r.runId),
@@ -661,4 +667,109 @@ Deno.test("settleExpiredWaits: a wait whose registration is gone or cannot be re
 
   assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 0);
   assertEquals(store.outcomes.size, 0);
+});
+
+// Key claims go with the records of their runs (swamp-club#3209).
+
+/** Claims `key` for the wait step `name` of `run` holds, as the executor does. */
+async function claimFor(
+  store: InMemorySignalWaitStore,
+  run: WorkflowRun,
+  name: string,
+  key = "verdict",
+): Promise<WaitKeyClaim> {
+  const wait = stepOf(run, name).signalWait!;
+  const result = await claimWaitKey(store, {
+    workflowId: run.workflowId,
+    key,
+    waitId: wait.id,
+    runId: run.id,
+    jobName: "main",
+    stepName: name,
+    deadline: wait.deadline.toISOString(),
+  }, OPENED);
+  assert(result.kind === "acquired", `got ${result.kind}`);
+  return result.claim;
+}
+
+Deno.test("removeWaitRecordsOfRuns: a deleted run's claim is released before its outcome goes, so the key reads free and its number is not used again", async () => {
+  const store = new InMemorySignalWaitStore();
+  const { run: gone } = await waitingRun(["a"], store);
+  const claim = await claimFor(store, gone, "a");
+  await store.settle(accept(gone, "a"));
+
+  await removeWaitRecordsOfRuns(store, new Set([gone.id]), IN_TIME);
+
+  assertEquals(store.outcomes.size, 0);
+  const records = await store.listKeyRecords();
+  assertEquals(records.map((r) => [r.kind, r.generation]), [
+    ["release", claim.generation + 1],
+  ]);
+  const next = await claimWaitKey(store, {
+    workflowId: gone.workflowId,
+    key: "verdict",
+    waitId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    jobName: "main",
+    stepName: "a",
+    deadline: DEADLINE.toISOString(),
+  }, IN_TIME);
+  assert(next.kind === "acquired");
+  assertEquals(next.claim.generation, 3);
+});
+
+Deno.test("removeWaitRecordsOfRuns: the claim of a run that stays is kept, and still holds its key", async () => {
+  const store = new InMemorySignalWaitStore();
+  const { run: gone } = await waitingRun(["a"], store);
+  await claimFor(store, gone, "a", "old");
+  await store.settle(accept(gone, "a"));
+  const { run: kept } = await waitingRun(["a"], store);
+  const holder = await claimFor(store, kept, "a");
+
+  await removeWaitRecordsOfRuns(store, new Set([gone.id]), IN_TIME);
+
+  const highest = await store.highestKeyRecord(kept.workflowId, "verdict");
+  assertEquals(highest, { kind: "found", record: holder });
+});
+
+Deno.test("sweepWaitRecords: the claim of a run that cannot be found is released once the deadline plus the grace period has passed, and only where run absence is authoritative", async () => {
+  const { run, store } = await waitingRun(["a"]);
+  await claimFor(store, run, "a");
+  const nowhere = () => Promise.resolve(null);
+  const justInside = new Date(DEADLINE.getTime() + ORPHAN_WAIT_RECORD_GRACE_MS);
+  const justPast = new Date(justInside.getTime() + 1);
+  const kinds = async () => (await store.listKeyRecords()).map((r) => r.kind);
+
+  await sweepWaitRecords(store, nowhere, justPast);
+  assertEquals(await kinds(), ["claim"]);
+  await sweepWaitRecords(store, nowhere, justInside, {
+    localRunAbsenceIsAuthoritative: true,
+  });
+  assertEquals(await kinds(), ["claim"]);
+
+  const swept = await sweepWaitRecords(store, nowhere, justPast, {
+    localRunAbsenceIsAuthoritative: true,
+  });
+  assertEquals(swept.keyRecords, 1);
+  assertEquals(await kinds(), ["release"]);
+});
+
+Deno.test("sweepWaitRecords: the claim of a run that exists, or that cannot be read, is left alone", async () => {
+  const { run, store } = await waitingRun(["a"]);
+  const claim = await claimFor(store, run, "a");
+  const farFuture = new Date(
+    DEADLINE.getTime() + ORPHAN_WAIT_RECORD_GRACE_MS * 10,
+  );
+  for (
+    const findRun of [
+      () => Promise.resolve(run),
+      () => Promise.reject(new Error("damaged run file")),
+    ]
+  ) {
+    const swept = await sweepWaitRecords(store, findRun, farFuture, {
+      localRunAbsenceIsAuthoritative: true,
+    });
+    assertEquals(swept.keyRecords, 0);
+    assertEquals(await store.listKeyRecords(), [claim]);
+  }
 });

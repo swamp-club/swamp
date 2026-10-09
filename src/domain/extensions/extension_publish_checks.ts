@@ -79,6 +79,10 @@ export interface RegistryCheckResult {
   existingChannel?: string;
   /** version-exists only: the channel the push asked for. */
   requestedChannel?: string;
+  /** version-exists only: the existing version is yanked. */
+  existingYanked?: true;
+  /** version-exists only: why the existing version was yanked, when given. */
+  existingYankReason?: string;
   /** A passed authentication only: the credential the registry accepted. */
   credential?: SignedInCredential;
 }
@@ -489,6 +493,8 @@ export function explainPrivatePublishRefusal(
 export interface PublishedVersion {
   version: string;
   channel: string;
+  /** Present when the version is yanked; `reason` is null when none was given. */
+  yank?: { reason: string | null };
 }
 
 /**
@@ -532,12 +538,33 @@ export function promoteCommand(
   return `swamp extension promote ${extensionName} ${version} --channel ${toChannel}`;
 }
 
+/** A yank's reason as a parenthesis, or nothing when none was given. */
+function yankReasonSuffix(reason: string | null | undefined): string {
+  return reason ? ` (${reason})` : "";
+}
+
+/**
+ * The refusal for promoting a yanked version, in the registry's own wording,
+ * so it reads the same whether the client or the registry refuses.
+ */
+export function yankedVersionPromoteRefusal(
+  extensionName: string,
+  version: string,
+  reason: string | null,
+): string {
+  return `Version ${version} of ${extensionName} has been yanked${
+    yankReasonSuffix(reason)
+  } and cannot be promoted`;
+}
+
 /**
  * Decides the version-exists check. A version is unique per extension across
  * every release channel, so a match on any channel fails the check with the
  * message a real push throws. A duplicate on the requested channel keeps the
  * plain message; a match on another channel names that channel and, when the
- * version sits on a lower one, the promote command that moves it.
+ * version sits on a lower one, the promote command that moves it. A yanked
+ * version stays taken, so it fails too, but its message names the yank and
+ * never the promote command: the registry refuses to promote it.
  */
 export function evaluateVersionExists(input: {
   extensionName: string;
@@ -549,6 +576,21 @@ export function evaluateVersionExists(input: {
   if (input.published && input.published.version === input.version) {
     const requestedChannel = input.requestedChannel ?? "stable";
     const existingChannel = input.published.channel;
+    const yank = input.published.yank;
+    if (yank) {
+      return {
+        name: "version-exists",
+        status: "failed",
+        message:
+          `Version ${input.version} already exists for ${input.extensionName} on channel '${existingChannel}' ` +
+          `and has been yanked${yankReasonSuffix(yank.reason)}. ` +
+          `A yanked version stays taken and cannot be promoted; publish a new version instead.`,
+        existingChannel,
+        requestedChannel,
+        existingYanked: true,
+        ...(yank.reason ? { existingYankReason: yank.reason } : {}),
+      };
+    }
     return {
       name: "version-exists",
       status: "failed",

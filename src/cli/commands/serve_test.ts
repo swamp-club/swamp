@@ -1097,6 +1097,100 @@ Deno.test("cancelExecution: the not_found message names a method-run", async () 
   assertEquals(result.message, "No cancellable method-run with id gone");
 });
 
+/** A registry holding a run that leaves it as soon as it is aborted. */
+function registryWithAbortableRun(runId: string): ActiveRunRegistry {
+  const registry = new ActiveRunRegistry();
+  const run = makeActiveRun(runId, Promise.resolve());
+  run.controller.signal.addEventListener(
+    "abort",
+    () => registry.deregister(runId),
+    { once: true },
+  );
+  registry.register(run);
+  return registry;
+}
+
+Deno.test("cancelExecution: a run the abort itself ended has its nested runs cancelled, and the reply lists them", async () => {
+  const cascaded: string[] = [];
+  const child = {
+    workflowId: "child-id",
+    workflowName: "child",
+    runId: "child-run",
+    jobName: "main",
+    stepName: "step",
+  };
+
+  const result = await cancelExecution("workflow-run", "run-ended", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry: registryWithAbortableRun("run-ended"),
+    // The aborted run settled itself: nothing is left suspended to cancel.
+    cancelSuspended: () =>
+      Promise.resolve({ status: "not_suspended", message: "not suspended" }),
+    cascadeEnded: (id) => {
+      cascaded.push(id);
+      return Promise.resolve({ cancelledNestedRuns: [child] });
+    },
+  });
+
+  assertEquals(cascaded, ["run-ended"]);
+  assertEquals(result, {
+    status: "cancelled",
+    executionType: "workflow-run",
+    executionId: "run-ended",
+    cancelledNestedRuns: [child],
+  });
+});
+
+Deno.test("cancelExecution: a run the abort ended is reported cancelled when nothing cascades for it", async () => {
+  const result = await cancelExecution("workflow-run", "run-ended", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry: registryWithAbortableRun("run-ended"),
+    cancelSuspended: () =>
+      Promise.resolve({ status: "not_suspended", message: "not suspended" }),
+  });
+
+  assertEquals(result, {
+    status: "cancelled",
+    executionType: "workflow-run",
+    executionId: "run-ended",
+  });
+});
+
+Deno.test("cancelExecution: a persisted cancel reports its own nested runs and is not cascaded a second time", async () => {
+  let cascaded = 0;
+  const child = {
+    workflowId: "child-id",
+    workflowName: "child",
+    runId: "child-run",
+    jobName: "main",
+    stepName: "step",
+  };
+
+  const result = await cancelExecution("workflow-run", "run-left", {
+    cancelRegistry: new RunCancelRegistry(),
+    activeRunRegistry: registryWithAbortableRun("run-left"),
+    cancelSuspended: (id) =>
+      Promise.resolve({
+        status: "cancelled",
+        runId: id,
+        workflowName: "parent",
+        cancelledNestedRuns: [child],
+      }),
+    cascadeEnded: () => {
+      cascaded++;
+      return Promise.resolve({});
+    },
+  });
+
+  assertEquals(cascaded, 0);
+  assertEquals(result, {
+    status: "cancelled",
+    executionType: "workflow-run",
+    executionId: "run-left",
+    cancelledNestedRuns: [child],
+  });
+});
+
 // --- readCancelRequestReason ---
 
 function cancelRequest(body?: string): Request {

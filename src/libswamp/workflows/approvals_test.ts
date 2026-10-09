@@ -82,11 +82,15 @@ function makeRun(overrides?: {
   approvalPrompt?: string;
   instanceId?: string;
   parentRun?: Record<string, unknown>;
+  stepName?: string;
+  approvalTimeout?: number;
+  forEachTemplate?: string;
 }): WorkflowRun {
   const stepStatus = overrides?.stepStatus ?? "waiting_approval";
   const startedAt = overrides?.startedAt ?? new Date();
   const inputs = overrides?.inputs ?? {};
   const approvalPrompt = overrides?.approvalPrompt;
+  const stepName = overrides?.stepName ?? "gate";
   return {
     id: overrides?.id ?? "run-1",
     status: overrides?.status ?? "suspended",
@@ -97,14 +101,21 @@ function makeRun(overrides?: {
       : undefined,
     findWaitingApprovalStep: () =>
       stepStatus === "waiting_approval"
-        ? { jobName: "main", stepName: "gate" }
+        ? { jobName: "main", stepName }
         : undefined,
     getJob: (name: string) =>
       name === "main"
         ? {
           getStep: (sn: string) =>
-            sn === "gate"
-              ? { startedAt, status: stepStatus, approvalPrompt }
+            sn === stepName
+              ? {
+                stepName,
+                startedAt,
+                status: stepStatus,
+                approvalPrompt,
+                approvalTimeout: overrides?.approvalTimeout,
+                forEachTemplate: overrides?.forEachTemplate,
+              }
               : undefined,
         }
         : undefined,
@@ -254,6 +265,60 @@ Deno.test("workflowApprovals: lists a gate past its timeout as expired, not pend
     expiredAt: new Date(suspendedAt.getTime() + 60_000).toISOString(),
     serveStarted: false,
   }]);
+});
+
+Deno.test("workflowApprovals: lists a forEach-expanded gate past its timeout as expired, not pending", async () => {
+  // The definition has no step named as the expanded step run is.
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
+  const suspendedAt = new Date(Date.now() - 120_000);
+  const run = makeRun({
+    startedAt: suspendedAt,
+    stepName: "approve-prod",
+    approvalTimeout: 60,
+    forEachTemplate: "gate",
+  });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals, []);
+  assertEquals(
+    data.expired.map((e) => [e.stepName, e.timeoutSeconds, e.expiredAt]),
+    [[
+      "approve-prod",
+      60,
+      new Date(suspendedAt.getTime() + 60_000).toISOString(),
+    ]],
+  );
+});
+
+Deno.test("workflowApprovals: a forEach-expanded gate suspended before the step run held its timeout expires by the step it was expanded from", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 60 });
+  const run = makeRun({
+    startedAt: new Date(Date.now() - 120_000),
+    stepName: "approve-prod",
+    forEachTemplate: "gate",
+  });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals, []);
+  assertEquals(data.expired.map((e) => e.stepName), ["approve-prod"]);
+});
+
+Deno.test("workflowApprovals: the timeout a gate was requested with wins over the definition's", async () => {
+  const wf = makeWorkflow({ stepType: "manual_approval", timeout: 3600 });
+  const run = makeRun({
+    startedAt: new Date(Date.now() - 120_000),
+    approvalTimeout: 60,
+  });
+  const deps = makeDeps([wf], new Map([[WF_ID as string, [run]]]));
+
+  const data = await completedData(deps);
+
+  assertEquals(data.approvals, []);
+  assertEquals(data.expired.map((e) => e.timeoutSeconds), [60]);
 });
 
 Deno.test("workflowApprovals: a gate inside its timeout stays pending", async () => {

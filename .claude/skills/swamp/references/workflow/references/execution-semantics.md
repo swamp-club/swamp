@@ -34,12 +34,12 @@ When a `manual_approval` step is reached:
 4. The CLI process exits
 
 A `wait_for_signal` step suspends the same way, with the step marked `waiting`
-and holding a wait ID. `swamp workflow signal <wait-id> --payload '<json>'`
-settles it without writing the run: the step stays `waiting` until the next
-resume applies the signal. A resume refuses while a wait is open; once the
-wait's deadline has passed, the resume fails the step with `wait_timeout`
-instead. The waiting step is settled as it stands: its `guard` and `dependsOn`
-are not evaluated again.
+and holding a wait ID. `swamp workflow signal <wait-id> --payload '<json>'` (or
+`--workflow <name> --key <key>` for a wait whose step declares a key) settles it
+without writing the run: the step stays `waiting` until the next resume applies
+the signal. A resume refuses while a wait is open; once the wait's deadline has
+passed, the resume fails the step with `wait_timeout` instead. The waiting step
+is settled as it stands: its `guard` and `dependsOn` are not evaluated again.
 
 Resume is a separate invocation: `swamp workflow resume <workflow>`. It
 re-enters the executor, skips completed steps, and runs the remaining pending

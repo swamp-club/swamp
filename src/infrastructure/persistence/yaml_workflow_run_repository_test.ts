@@ -2129,3 +2129,80 @@ Deno.test("verifyIndexes: a record whose body names another run is not rewritten
     assertEquals(Object.keys(index?.entries ?? {}), [run.id]);
   });
 });
+
+const orderedIds = [
+  "11111111-1111-4111-8111-111111111111",
+  "88888888-8888-4888-8888-888888888888",
+  "ffffffff-ffff-4fff-8fff-ffffffffffff",
+];
+// Written in an order no sorted listing would return.
+const unorderedIds = [orderedIds[1], orderedIds[2], orderedIds[0]];
+
+Deno.test("YamlWorkflowRunRepository.listWorkflowIds: returns ids in name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    for (const id of unorderedIds) {
+      await ensureDir(join(dir, ".swamp", "workflow-runs", id));
+    }
+
+    assertEquals((await repo.listWorkflowIds()).map(String), orderedIds);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.listRunIdsForWorkflow: returns ids in name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await ensureDir(runsDir);
+    for (const id of unorderedIds) {
+      await Deno.writeTextFile(join(runsDir, `workflow-run-${id}.yaml`), "");
+    }
+
+    assertEquals(await repo.listRunIdsForWorkflow(workflow.id), orderedIds);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.findAllByWorkflowId: runs that never started come back in id order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const run = WorkflowRun.create(workflow);
+      await repo.save(workflow.id, run);
+      ids.push(run.id);
+    }
+
+    assertEquals(
+      (await repo.findAllByWorkflowId(workflow.id)).map((r) => r.id as string),
+      [...ids].sort(),
+    );
+    assertEquals(
+      (await repo.findAllSummariesByWorkflowId(workflow.id)).map((r) =>
+        r.id as string
+      ),
+      [...ids].sort(),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.verifyIndexes: a rebuilt index lists runs in id order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const run = WorkflowRun.create(workflow);
+      await repo.save(workflow.id, run);
+      ids.push(run.id);
+    }
+    const runsDir = join(dir, ".swamp", "workflow-runs", workflow.id);
+    await Deno.remove(getIndexPath(runsDir));
+
+    await new YamlWorkflowRunRepository(dir).verifyIndexes();
+
+    const index = await readRunIndex(runsDir);
+    assertEquals(Object.keys(index!.entries), [...ids].sort());
+  });
+});

@@ -856,7 +856,8 @@ swamp workflow approvals  # list pending approvals and expired gates with run ID
 ```
 
 A gate in a nested workflow suspends the parent too. Decide and resume the child
-run under the child's name, then resume the parent; see
+run under the child's name, then resume the parent. Cancelling or rejecting the
+parent cancels its suspended child runs; see
 [references/nested-workflows.md](references/nested-workflows.md#approval-gates-in-a-child-workflow).
 
 Editing the workflow while a run is suspended can make its resume refuse (a step
@@ -882,6 +883,7 @@ it. Use it when a step needs a value, not a yes or no:
   task:
     type: wait_for_signal
     timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
+    key: release-verdict # Optional: one open wait of the workflow holds a key at a time
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -902,6 +904,7 @@ it. Use it when a step needs a value, not a yes or no:
 swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
+swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'   # by key, in place of the wait ID
 swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
@@ -922,6 +925,20 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
 - A signal names the **wait ID**, never a workflow or step name. Get it from the
   `workflow run` output (`signalWaits[].waitId` with `--json`, which lists every
   open wait of the run) or `workflow waits`.
+- `key` is a literal (lowercase letters, digits, `-`, `_`; at most 64
+  characters; no expression; not a Windows device name such as `con` or `nul`).
+  `workflow validate` refuses the same key on two steps of a workflow and a key
+  on a step under `forEach`. While one run's wait holds the key, the same step
+  of another run fails with `wait_key_held` and opens no wait, so give it
+  `allowFailure` or a `failed` dependent. The key is free again once the holder
+  is signalled, timed out or cancelled. `workflow waits` shows the key. A signal
+  names the wait ID, or `--workflow <id-or-name> --key <key>` (not both, and not
+  with `--server`): the key resolves to the wait that holds it, and the result
+  names that wait ID. A key the workflow does not declare, or an unknown
+  workflow, is not found; a declared key with no open wait is refused
+  (`no_open_wait`) and nothing is stored, so send again once the run reaches the
+  wait. Upgrade every host before adding a key: an older swamp ignores it and
+  opens the wait unclaimed.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

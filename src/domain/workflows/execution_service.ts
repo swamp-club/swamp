@@ -24,6 +24,7 @@ import { escapeControlCharacters } from "../control_characters.ts";
 import { mergePlacementFields, resolvePlacement } from "./placement.ts";
 import { StepTask } from "./step_task.ts";
 import type { AssertSeverity } from "./step_task.ts";
+import { gateTimeoutSeconds } from "./approval_timeout.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
   type ExpandedStep,
@@ -84,12 +85,22 @@ import {
   NestedRunLink,
 } from "./nested_run_link.ts";
 import {
+  OrphanedNestedRunError,
+  settleOrphanedNestedRun,
+} from "./orphaned_nested_run.ts";
+import {
   openSignalWaitMessage,
   schemaExpressions,
   SignalWait,
+  WAIT_KEY_HELD_STEP_ERROR,
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "./signal_wait.ts";
+import {
+  claimWaitKey,
+  type WaitKeyAcquisition,
+  waitKeyRefusal,
+} from "./wait_key_claim.ts";
 import {
   cancelAndSettle,
   failAbandonedSteps,
@@ -985,18 +996,23 @@ function suspendedEventFor(
 ): WorkflowExecutionEvent | undefined {
   const waiting = run.findWaitingApprovalStep();
   if (waiting) {
-    const taskData = workflow.jobs
-      .find((j) => j.name === waiting.jobName)?.steps
-      .find((s) => s.name === waiting.stepName)?.task.data;
+    const definitionSteps = workflow.jobs
+      .find((j) => j.name === waiting.jobName)?.steps;
+    const taskData = definitionSteps
+      ?.find((s) => s.name === waiting.stepName)?.task.data;
+    // The step run holds the prompt and the timeout its gate was requested
+    // with. A step expanded by forEach has no step of its name in the
+    // definition, so the definition answers only for a run record without
+    // them (swamp-club#3217, swamp-club#3218).
+    const stepRun = run.getJob(waiting.jobName)?.getStep(waiting.stepName);
     return {
       kind: "suspended",
       run,
       jobId: waiting.jobName,
       stepId: waiting.stepName,
-      prompt: taskData?.type === "manual_approval" ? taskData.prompt : "",
-      timeout: taskData?.type === "manual_approval"
-        ? taskData.timeout
-        : undefined,
+      prompt: stepRun?.approvalPrompt ??
+        (taskData?.type === "manual_approval" ? taskData.prompt : ""),
+      timeout: gateTimeoutSeconds(stepRun, definitionSteps),
     };
   }
   const signalWait = run.findSignalWaits()[0];
@@ -3717,6 +3733,33 @@ export class WorkflowExecutionService {
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
     }
+    // A nested run nothing waits on any more is cancelled, not continued
+    // (swamp-club#2867). Under the run's claim, as the save it may make
+    // needs. A run whose owner still saves it is left to the refusal below:
+    // a cancel written now would be saved over.
+    const ownerStillSaves = this.runTracker !== undefined &&
+      this.ownerLiveness !== undefined &&
+      suspendedRunOwnerStillRuns(
+        loadedRun,
+        this.runTracker,
+        this.ownerLiveness,
+      );
+    if (!ownerStillSaves) {
+      const orphaned = await settleOrphanedNestedRun(
+        {
+          runRepo: this.runRepo,
+          workflowRepo: this.workflowRepo,
+          signalWaits: this.signalWaits,
+          runTracker: this.runTracker,
+          runRecordCurrency: this.runRecordCurrency,
+          findEvaluatedWorkflow: (id) =>
+            this.evaluatedWorkflowRepo.findByRunId(id),
+        },
+        loadedRun,
+        workflow,
+      );
+      if (orphaned) throw new OrphanedNestedRunError(orphaned);
+    }
     // Derived from the record as stored, before a signal is applied to it:
     // every host holding this record derives the same key.
     const suspensionKey = loadedRun.status === "suspended"
@@ -5276,30 +5319,122 @@ export class WorkflowExecutionService {
           };
           return;
         }
-        const wait = earlier
+        let wait = earlier
           ? SignalWait.fromData({
             kind: "signal",
             id: earlier.waitId,
             schema: earlier.schema,
             deadline: earlier.deadline,
+            ...(earlier.key !== undefined ? { key: earlier.key } : {}),
           })
-          : SignalWait.open(task.schema, task.timeout, openedAt, maxTimeout);
+          : SignalWait.open(
+            task.schema,
+            task.timeout,
+            openedAt,
+            maxTimeout,
+            task.key,
+          );
+        // A keyed wait claims its key before it is registered, so a step
+        // that finds the key held opens nothing (swamp-club#3209). A wait
+        // taken over holds its claim already.
+        // A claim that was created for a wait that is then not opened would
+        // hold the key with nothing on the run record to settle it. The
+        // wait is settled as cancelled, which frees the key at once. Where
+        // the store fails this too, the next claimant closes the claim once
+        // it has aged (`settleAbandoned`).
+        const closeUnopenedWait = async (unopened: SignalWait) => {
+          if (unopened.key === undefined) return;
+          try {
+            await waits.settle(cancelledOutcome({
+              waitId: unopened.id,
+              workflowId: run.workflowId,
+              runId: run.id,
+              deadline: unopened.deadline.toISOString(),
+            }, new Date()));
+          } catch {
+            // The store is failing; the error that led here is the one to
+            // report.
+          }
+        };
+        if (!earlier && task.key !== undefined) {
+          let acquisition: WaitKeyAcquisition;
+          try {
+            acquisition = await claimWaitKey(waits, {
+              workflowId: run.workflowId,
+              key: task.key,
+              waitId: wait.id,
+              runId: run.id,
+              jobName: job.name,
+              stepName,
+              deadline: wait.deadline.toISOString(),
+              // Read now, not when the step began: finding a wait to take
+              // over reads every registration, and a claim dated before
+              // that would look older than it is to a claimant judging
+              // whether it was abandoned.
+            }, new Date());
+          } catch (error) {
+            // The claim may have been created before the store failed: a
+            // create that landed and could not be read back, for one.
+            await closeUnopenedWait(wait);
+            throw error;
+          }
+          if (acquisition.kind === "own") {
+            // This step claimed the key and its process stopped before the
+            // wait was registered. The claim names that wait, so the step
+            // opens it now instead of a second one.
+            wait = SignalWait.fromData({
+              kind: "signal",
+              id: acquisition.claim.waitId,
+              schema: task.schema,
+              deadline: acquisition.claim.deadline,
+              key: task.key,
+            });
+          } else if (acquisition.kind !== "acquired") {
+            getSwampLogger(["workflow", "run"]).warn(
+              "Step {stepName} of run {runId} did not open its wait: {reason}. The step failed with {error}.",
+              {
+                stepName,
+                runId: run.id,
+                reason: waitKeyRefusal(task.key, acquisition),
+                error: WAIT_KEY_HELD_STEP_ERROR,
+              },
+            );
+            stepRun.fail(WAIT_KEY_HELD_STEP_ERROR);
+            if (step.allowFailure) stepRun.markAllowedFailure();
+            yield {
+              kind: "step_failed",
+              jobId: job.name,
+              stepId: stepName,
+              runId: run.id,
+              error: WAIT_KEY_HELD_STEP_ERROR,
+              allowedFailure: step.allowFailure || undefined,
+              forEachTemplate,
+              forEachIndex,
+            };
+            return;
+          }
+        }
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
         if (!earlier) {
-          await waits.register(
-            registrationOf(
-              {
-                workflowId: run.workflowId,
-                workflowName: run.workflowName,
-                runId: run.id,
-                jobName: job.name,
-                stepName,
-              },
-              wait,
-              openedAt,
-            ),
-          );
+          try {
+            await waits.register(
+              registrationOf(
+                {
+                  workflowId: run.workflowId,
+                  workflowName: run.workflowName,
+                  runId: run.id,
+                  jobName: job.name,
+                  stepName,
+                },
+                wait,
+                openedAt,
+              ),
+            );
+          } catch (error) {
+            await closeUnopenedWait(wait);
+            throw error;
+          }
         }
         stepRun.waitForSignal(wait);
         yield {
@@ -5317,7 +5452,7 @@ export class WorkflowExecutionService {
 
       // Handle manual approval tasks — suspend the workflow
       if (task.type === "manual_approval") {
-        stepRun.waitForApproval(task.prompt);
+        stepRun.waitForApproval(task.prompt, task.timeout);
         yield {
           kind: "approval_requested",
           runId: run.id,

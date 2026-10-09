@@ -36,6 +36,7 @@ import {
   type WaitRegistration,
 } from "./signal_wait_records.ts";
 import { settledBy, type SignalWaitStore } from "./signal_wait_store.ts";
+import { releaseKeyClaims } from "./wait_key_claim.ts";
 
 /**
  * How long after its deadline a record is kept when its run is confirmed
@@ -351,12 +352,18 @@ export async function removeWaitRecords(
 /**
  * Removes the wait records of runs that were deleted, by run id. Returns
  * how many waits had a record removed.
+ *
+ * The key claims of those runs go first (swamp-club#3209): a claim whose
+ * outcome is gone would read as an open wait. One that is the highest of
+ * its key is superseded by a release, not just deleted.
  */
 export async function removeWaitRecordsOfRuns(
   store: SignalWaitStore,
   runIds: ReadonlySet<string>,
+  now: Date = new Date(),
 ): Promise<number> {
   if (runIds.size === 0) return 0;
+  await releaseKeyClaims(store, (claim) => runIds.has(claim.runId), now);
   const waitIds = new Set<string>();
   for (const registration of await store.listRegistrations()) {
     if (runIds.has(registration.runId)) waitIds.add(registration.waitId);
@@ -388,6 +395,8 @@ function endedAfterRegistering(
 export interface WaitRecordSweep {
   registrations: number;
   outcomes: number;
+  /** Key claims of runs that are gone, and releases since superseded. */
+  keyRecords: number;
 }
 
 /**
@@ -397,7 +406,8 @@ export interface WaitRecordSweep {
  * a run that ended after the wait was registered, and removes a
  * registration or an outcome whose run is gone once the wait's deadline
  * plus {@link ORPHAN_WAIT_RECORD_GRACE_MS} has passed. An outcome whose run
- * exists is never removed here: it lives as long as the run.
+ * exists is never removed here: it lives as long as the run. A key claim
+ * goes by the same rule as an outcome, and before it.
  *
  * Anywhere else it does nothing. A run record that reaches this host later
  * than the wait's records, or not at all, says nothing true about the wait:
@@ -419,7 +429,11 @@ export async function sweepWaitRecords(
   now: Date,
   options: { localRunAbsenceIsAuthoritative?: boolean } = {},
 ): Promise<WaitRecordSweep> {
-  const swept: WaitRecordSweep = { registrations: 0, outcomes: 0 };
+  const swept: WaitRecordSweep = {
+    registrations: 0,
+    outcomes: 0,
+    keyRecords: 0,
+  };
   if (!options.localRunAbsenceIsAuthoritative) return swept;
   const orphaned = (ref: { deadline: string }) =>
     now.getTime() >
@@ -451,6 +465,12 @@ export async function sweepWaitRecords(
       swept.registrations++;
     }
   }
+  // Before the outcomes: a claim left without its outcome reads as held.
+  swept.keyRecords = (await releaseKeyClaims(
+    store,
+    async (claim) => orphaned(claim) && await lookUp(claim) === null,
+    now,
+  )).removed;
   for (const outcome of await store.listOutcomes()) {
     if (!orphaned(outcome)) continue;
     if (await lookUp(outcome) !== null) continue;

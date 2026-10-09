@@ -275,3 +275,75 @@ Deno.test("renderApprovals: a plain ESC in a step name is escaped too", () => {
   );
   assertEquals(lines.join("\n").includes("\u001b"), false);
 });
+
+const PARENT = {
+  workflowId: "parent-id",
+  workflowName: "parent-wf",
+  runId: PARENT_RUN_ID,
+  stepName: "child",
+};
+const ALL_COMMANDS = [
+  `  swamp workflow approve wipe-drive gate --run ${RUN_ID}`,
+  `  swamp workflow reject  wipe-drive gate --run ${RUN_ID}`,
+  `  After approval: swamp workflow resume wipe-drive --run ${RUN_ID}`,
+];
+
+Deno.test("renderApprovals: a nested run whose parent ended gets only its cancel command", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ parentRun: PARENT, parentWaiting: false, parentEnded: true }),
+    ])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+Deno.test("renderApprovals: a nested run whose parent ended and that serve started gets the --server cancel form", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({
+        parentRun: PARENT,
+        parentWaiting: false,
+        parentEnded: true,
+        serveStarted: true,
+      }),
+    ])
+  );
+  assertEquals(lines, [
+    `  swamp workflow cancel --run ${RUN_ID} --server <url>`,
+  ]);
+});
+
+Deno.test("renderApprovals: a nested run whose parent record is gone gets only its cancel command", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext(), [
+      pending({ parentRun: PARENT, parentWaiting: false, parentMissing: true }),
+    ])
+  );
+  assertEquals(lines, [`  swamp workflow cancel wipe-drive --run ${RUN_ID}`]);
+});
+
+Deno.test("renderApprovals: through a server, a parent record it does not hold keeps every command, since the server fetches it", () => {
+  const server = "http://127.0.0.1:9090";
+  const lines = captureStdout(() =>
+    renderApprovals(
+      hintTestContext(),
+      [pending({
+        parentRun: PARENT,
+        parentWaiting: false,
+        parentMissing: true,
+      })],
+      [],
+      server,
+    )
+  );
+  assertEquals(lines, ALL_COMMANDS.map((line) => `${line} --server ${server}`));
+});
+
+Deno.test("renderApprovals: --quiet prints no cancel command for a nested run whose parent ended", () => {
+  const lines = captureStdout(() =>
+    renderApprovals(hintTestContext({ verbosity: "quiet" }), [
+      pending({ parentRun: PARENT, parentWaiting: false, parentEnded: true }),
+    ])
+  );
+  assertEquals(lines, []);
+});

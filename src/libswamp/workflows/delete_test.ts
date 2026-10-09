@@ -250,8 +250,9 @@ Deno.test("workflowDelete: removes the signal wait records of the deleted runs, 
       calls.push("runs");
       return Promise.resolve(2);
     },
-    deleteWaitRecords: (runIds) => {
-      calls.push(`waits:${runIds.join(",")}`);
+    // The workflow id comes too, for the workflow's key records.
+    deleteWaitRecords: (runIds, workflowId) => {
+      calls.push(`waits:${runIds.join(",")}@${workflowId}`);
       return Promise.resolve();
     },
   });
@@ -262,7 +263,7 @@ Deno.test("workflowDelete: removes the signal wait records of the deleted runs, 
     }),
   );
 
-  assertEquals(calls, ["runs", "waits:run-a,run-b"]);
+  assertEquals(calls, ["runs", `waits:run-a,run-b@${testWorkflow.id}`]);
 });
 
 Deno.test("workflowDelete: a failed run delete leaves the signal wait records in place", async () => {

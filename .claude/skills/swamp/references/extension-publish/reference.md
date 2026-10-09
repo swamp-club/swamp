@@ -227,6 +227,9 @@ visibility.
   tested version and its review report
 - Version already exists on a higher channel → a version cannot move down a
   channel; bump and publish a new version
+- Version already exists and has been yanked (the error gives the reason) → the
+  number stays taken and the version cannot be promoted; bump and publish a new
+  version
 - Network error → check connectivity and retry
 - Auth error → re-run `swamp auth login` (go back to State 2)
 
@@ -261,7 +264,8 @@ stable. The dry-run in State 7 also accepts `--channel` for validation; its
 An interactive push (no `--yes`, no `--json`) names the channel in its final
 confirmation and, when the version is already on a lower channel, offers
 promote, bump or stop. `--yes` never promotes; it fails with the promote command
-instead.
+instead. A yanked version is never offered for promotion: the push offers bump
+or stop and names the yank.
 
 ### Promoting between channels
 
@@ -285,6 +289,9 @@ swamp extension promote manifest.yaml --channel stable --json
 
 With a manifest, promote fails with "Nothing to promote" when the version is on
 no channel, or already on the target channel or above it.
+
+A yanked version cannot be promoted: promote fails with "has been yanked" and
+the reason. Publish a new version instead.
 
 | Option           | Required | Description                                                                         |
 | ---------------- | -------- | ----------------------------------------------------------------------------------- |

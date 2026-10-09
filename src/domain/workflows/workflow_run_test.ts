@@ -685,6 +685,48 @@ Deno.test("StepRun: waitForApproval transitions from running to waiting_approval
   assertEquals(step.status, "waiting_approval");
 });
 
+Deno.test("StepRun: waitForApproval records the gate's timeout and it survives a round-trip", () => {
+  const step = StepRun.pending("approve-prod", "approve-${{ self.env }}");
+  step.start();
+  step.waitForApproval("Deploy?", 3600);
+  assertEquals(step.approvalTimeout, 3600);
+
+  const data = step.toData();
+  assertEquals(data.approvalTimeout, 3600);
+  assertEquals(StepRun.fromData(data).approvalTimeout, 3600);
+});
+
+Deno.test("StepRun: a gate without a timeout records none", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval("Deploy?");
+  assertEquals(step.approvalTimeout, undefined);
+  assertEquals("approvalTimeout" in step.toData(), false);
+});
+
+Deno.test("StepRun: a gate that waits again takes the timeout of the new wait", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval("Deploy?", 3600);
+  step.waitForApproval("Deploy?");
+  assertEquals(step.approvalTimeout, undefined);
+});
+
+Deno.test("StepRun: resetToPending drops the gate's timeout", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval("Deploy?", 3600);
+  step.resetToPending();
+  assertEquals(step.approvalTimeout, undefined);
+  assertEquals("approvalTimeout" in step.toData(), false);
+});
+
+Deno.test("StepRun: fromData refuses a gate timeout that is not a positive number", () => {
+  const data = StepRun.pending("approval-step").toData();
+  assertThrows(() => StepRun.fromData({ ...data, approvalTimeout: 0 }));
+  assertThrows(() => StepRun.fromData({ ...data, approvalTimeout: -5 }));
+});
+
 Deno.test("StepRun: succeed from waiting_approval transitions to succeeded", () => {
   const step = StepRun.pending("approval-step");
   step.start();

@@ -348,3 +348,91 @@ Deno.test("extensionPromote: by name and version, never asks the registry where 
   assertEquals(events.map((e) => e.kind), ["promoting", "completed"]);
   assertEquals(lookups, 0);
 });
+
+// ── Yanked versions (swamp-club#3138) ──────────────────────────────────
+
+Deno.test("extensionPromote: from a manifest, a yanked version is refused before the registry is asked to promote", async () => {
+  let promoteCalls = 0;
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({
+        version: "2026.06.10.1",
+        channel: "beta",
+        yank: { reason: "broken build" },
+      }),
+    promoteExtension: () => {
+      promoteCalls++;
+      return Promise.reject(new Error("must not be called"));
+    },
+  });
+  const events = await collect(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+  );
+  assertEquals(events, [
+    { kind: "promoting" },
+    {
+      kind: "error",
+      error: {
+        code: "validation_failed",
+        message:
+          "Version 2026.06.10.1 of @test/ext has been yanked (broken build) and cannot be promoted",
+        details: undefined,
+      },
+    },
+  ]);
+  assertEquals(promoteCalls, 0);
+});
+
+Deno.test("extensionPromote: from a manifest, the yank is reported ahead of the channel order", async () => {
+  // Already on the target channel: without the yank this is "Nothing to promote".
+  const deps = fakeDeps({
+    findPublishedVersion: () =>
+      Promise.resolve({
+        version: "2026.06.10.1",
+        channel: "stable",
+        yank: { reason: null },
+      }),
+  });
+  const events = await collect(
+    extensionPromote(createLibSwampContext(), deps, MANIFEST_INPUT),
+  );
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+  assertEquals(
+    last.kind === "error" ? last.error.message : "",
+    "Version 2026.06.10.1 of @test/ext has been yanked and cannot be promoted",
+  );
+});
+
+Deno.test("extensionPromote: by name and version, the registry is not looked up and decides a yank itself", async () => {
+  let lookups = 0;
+  let promoteCalls = 0;
+  const deps = fakeDeps({
+    findPublishedVersion: () => {
+      lookups++;
+      return Promise.resolve(null);
+    },
+    promoteExtension: () => {
+      promoteCalls++;
+      return Promise.reject(
+        new UserError(
+          "Version 2026.06.10.1 of @test/ext has been yanked (broken build) and cannot be promoted",
+        ),
+      );
+    },
+  });
+  const events = await collect(
+    extensionPromote(createLibSwampContext(), deps, {
+      extensionName: "@test/ext",
+      version: "2026.06.10.1",
+      toChannel: "rc",
+    }),
+  );
+  const last = events[events.length - 1];
+  assertEquals(lookups, 0);
+  assertEquals(promoteCalls, 1);
+  assertEquals(
+    last.kind === "error" ? last.error.message : "",
+    "Version 2026.06.10.1 of @test/ext has been yanked (broken build) and cannot be promoted",
+  );
+});

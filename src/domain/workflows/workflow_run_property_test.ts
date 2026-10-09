@@ -31,7 +31,7 @@ import { Workflow } from "./workflow.ts";
 import {
   CANCELLED_STEP_ERROR,
   JobRun,
-  type StepRun,
+  StepRun,
   type StepRunRef,
   WorkflowRun,
 } from "./workflow_run.ts";
@@ -607,6 +607,45 @@ Deno.test("StepRun signal wait: timing out and cancelling only ever act on a wai
           );
         } else {
           assertEquals(step.toData(), before);
+        }
+      },
+    ),
+  );
+});
+
+Deno.test("StepRun gate timeout: it is the timeout of the latest wait, survives a round-trip, and resetToPending always drops it (property)", () => {
+  fc.assert(
+    fc.property(
+      fc.array(
+        fc.oneof(
+          fc.record({
+            op: fc.constant("wait" as const),
+            timeout: fc.option(fc.integer({ min: 1, max: 86400 }), {
+              nil: undefined,
+            }),
+          }),
+          fc.record({
+            op: fc.constantFrom("start" as const, "reset" as const),
+          }),
+        ),
+        { maxLength: 20 },
+      ),
+      (ops) => {
+        let step = StepRun.pending("gate");
+        let expected: number | undefined;
+        for (const o of ops) {
+          if (o.op === "wait") {
+            step.waitForApproval("Approve?", o.timeout);
+            expected = o.timeout;
+          } else if (o.op === "start") {
+            step.start();
+          } else {
+            step.resetToPending();
+            expected = undefined;
+          }
+          assertEquals(step.approvalTimeout, expected);
+          step = StepRun.fromData(step.toData());
+          assertEquals(step.approvalTimeout, expected);
         }
       },
     ),

@@ -20,7 +20,11 @@
 import {
   acceptedOutcomeFor,
   inMemorySignalWaits,
+  InMemorySignalWaitStore,
 } from "./signal_wait_store_test_helpers.ts";
+import type { WaitRegistration } from "./signal_wait_records.ts";
+import { WAIT_KEY_HELD_STEP_ERROR } from "./signal_wait.ts";
+import { type WaitKeyRecord, waitKeyRecordKey } from "./wait_key_claim.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { VaultService } from "../vaults/vault_service.ts";
@@ -3045,6 +3049,278 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
 
     // Verify uniqueness — the set size equals the array length
     assertEquals(new Set(stepNames).size, stepNames.length);
+  });
+});
+
+// --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
+
+/** A workflow whose one step is an approval gate, expanded per env or not. */
+function approvalGateWorkflow(
+  name: string,
+  expanded: boolean,
+  timeout?: number,
+): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: expanded ? "approve-${{ self.env }}" : "approve-prod",
+            task: StepTask.manualApproval("Deploy?", timeout),
+            ...(expanded
+              ? { forEach: { item: "env", in: "${{ inputs.envs }}" } }
+              : {}),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+type SuspendedEvent = Extract<WorkflowExecutionEvent, { kind: "suspended" }>;
+
+async function suspendedEventOf(
+  events: AsyncIterable<WorkflowExecutionEvent>,
+): Promise<SuspendedEvent | undefined> {
+  let suspended: SuspendedEvent | undefined;
+  for await (const event of events) {
+    if (event.kind === "suspended") suspended = event;
+  }
+  return suspended;
+}
+
+Deno.test("suspend: a forEach-expanded approval gate suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("foreach-gate", true);
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+
+    assertEquals(suspended?.jobId, "main");
+    assertEquals(suspended?.stepId, "approve-prod");
+    assertEquals(suspended?.prompt, "Deploy?");
+    assertEquals(suspended?.nested, undefined);
+  });
+});
+
+Deno.test("resume: a forEach-expanded approval gate reached after resume suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "foreach-gate-resume",
+      jobs: [
+        Job.create({
+          name: "first",
+          steps: [
+            Step.create({
+              name: "confirm",
+              task: StepTask.manualApproval("Start?"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "approve-${{ self.env }}",
+              task: StepTask.manualApproval("Deploy?"),
+              forEach: { item: "env", in: "${{ inputs.envs }}" },
+            }),
+          ],
+          dependsOn: [
+            { job: "first", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const first = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+    assertEquals(first?.stepId, "confirm");
+
+    // Approve the first gate, so the resumed run reaches the expanded one.
+    const toApprove = await runRepo.findById(workflow.id, first!.run.id);
+    toApprove!.getJob("first")!.getStep("confirm")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    const second = await suspendedEventOf(
+      service.resume(workflow.name, first!.run.id),
+    );
+
+    assertEquals(second?.jobId, "main");
+    assertEquals(second?.stepId, "approve-prod");
+    assertEquals(second?.prompt, "Deploy?");
+  });
+});
+
+Deno.test("suspend: an approval gate without forEach suspends with its prompt", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("plain-gate", false);
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(service.run(workflow.name));
+
+    assertEquals(suspended?.stepId, "approve-prod");
+    assertEquals(suspended?.prompt, "Deploy?");
+  });
+});
+
+// --- timeout of a forEach-expanded approval gate (swamp-club#3218) ---
+
+for (const expanded of [true, false]) {
+  const kind = expanded ? "a forEach-expanded approval gate" : "a plain gate";
+  Deno.test(`suspend: ${kind} records its timeout on the step run and suspends with it`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const workflow = approvalGateWorkflow("timed-gate", expanded, 3600);
+      await workflowRepo.save(workflow);
+
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        new MockStepExecutor(),
+        undefined,
+        new CatalogStore(join(tempDir, "_catalog.db")),
+      );
+
+      const suspended = await suspendedEventOf(
+        service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+      );
+
+      assertEquals(suspended?.stepId, "approve-prod");
+      assertEquals(suspended?.timeout, 3600);
+      const saved = await runRepo.findById(workflow.id, suspended!.run.id);
+      assertEquals(
+        saved!.getJob("main")!.getStep("approve-prod")!.approvalTimeout,
+        3600,
+      );
+    });
+  });
+}
+
+Deno.test("suspend: a forEach-expanded approval gate without a timeout suspends with none", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = approvalGateWorkflow("untimed-gate", true);
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const suspended = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+
+    assertEquals(suspended?.stepId, "approve-prod");
+    assertEquals(suspended?.timeout, undefined);
+  });
+});
+
+Deno.test("resume: a forEach-expanded approval gate reached after resume suspends with its timeout", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: "foreach-timed-gate-resume",
+      jobs: [
+        Job.create({
+          name: "first",
+          steps: [
+            Step.create({
+              name: "confirm",
+              task: StepTask.manualApproval("Start?"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "approve-${{ self.env }}",
+              task: StepTask.manualApproval("Deploy?", 3600),
+              forEach: { item: "env", in: "${{ inputs.envs }}" },
+            }),
+          ],
+          dependsOn: [
+            { job: "first", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const first = await suspendedEventOf(
+      service.run(workflow.name, { inputs: { envs: ["prod"] } }),
+    );
+    assertEquals(first?.stepId, "confirm");
+    assertEquals(first?.timeout, undefined);
+
+    const toApprove = await runRepo.findById(workflow.id, first!.run.id);
+    toApprove!.getJob("first")!.getStep("confirm")!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    const second = await suspendedEventOf(
+      service.resume(workflow.name, first!.run.id),
+    );
+
+    assertEquals(second?.stepId, "approve-prod");
+    assertEquals(second?.timeout, 3600);
   });
 });
 
@@ -13688,6 +13964,108 @@ Deno.test("resume: queued forEach iterations run after serve shutdown and recove
   });
 });
 
+/**
+ * Stores an interrupted run of `workflow` whose job `jobName` was running the
+ * step run `step` when the process died.
+ */
+async function storeInterruptedAt(
+  runRepo: InMemoryWorkflowRunRepository,
+  workflow: Workflow,
+  jobName: string,
+  step: { stepName: string; forEachTemplate?: string },
+): Promise<WorkflowRun> {
+  const started = WorkflowRun.create(workflow);
+  started.start();
+  const data = started.toData();
+  for (const job of data.jobs) {
+    if (job.jobName !== jobName) continue;
+    job.status = "running";
+    job.steps = [{ ...step, status: "running" }];
+  }
+  const run = WorkflowRun.fromData(data);
+  run.interrupt("server_crash");
+  await runRepo.save(workflow.id, run);
+  return run;
+}
+
+// swamp-club#3221
+Deno.test("recover: refuses an unguarded unknown step whose name a guarded step of another job shares", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflow = Workflow.create({
+      name: "recover-same-name-wf",
+      jobs: [
+        Job.create({
+          name: "a",
+          steps: [modelStep("deploy", { guard: "${{ true }}" })],
+        }),
+        Job.create({ name: "b", steps: [modelStep("deploy")] }),
+      ],
+    });
+    const executor = new CountingStepExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    const run = await storeInterruptedAt(runRepo, workflow, "b", {
+      stepName: "deploy",
+    });
+
+    const error = await assertRejects(
+      async () => {
+        for await (const _ of service.recover(workflow.name)) {
+          // drain
+        }
+      },
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Unguarded steps: deploy");
+    const stored = await runRepo.findById(workflow.id, run.id);
+    assertEquals(stored?.status, "interrupted");
+    assertEquals(stored?.getJob("b")?.getStep("deploy")?.status, "unknown");
+    assertEquals(executor.count("b/deploy"), 0);
+  });
+});
+
+Deno.test("recover: a guarded forEach iteration left unknown needs no acknowledgement", async () => {
+  await withTempDir(async (tempDir) => {
+    const template = "deploy-${{ self.env }}";
+    const workflow = Workflow.create({
+      name: "recover-each-wf",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            modelStep(template, {
+              guard: "${{ true }}",
+              forEach: { item: "env", in: '${{ ["prod"] }}' },
+            }),
+          ],
+        }),
+      ],
+    });
+    const executor = new CountingStepExecutor();
+    const { runRepo, service } = await setupRetry(
+      tempDir,
+      workflow,
+      undefined,
+      executor,
+    );
+    await storeInterruptedAt(runRepo, workflow, "main", {
+      stepName: "deploy-prod",
+      forEachTemplate: template,
+    });
+
+    const { run } = await finishedRun(service.recover(workflow.name));
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(run.getJob("main")?.getStep("deploy-prod")?.status, "skipped");
+    assertEquals(executor.count("main/deploy-prod"), 0);
+  });
+});
+
 Deno.test("resume: a step queued when a crash hit cleanup runs after server_crash recovery", async () => {
   await withTempDir(async (tempDir) => {
     const workflow = Workflow.create({
@@ -18525,6 +18903,252 @@ Deno.test("wait_for_signal: a timeout above the maximum of the wait support fail
     assertEquals(
       stored.getJob("job1")!.getStep("within")!.status,
       "waiting_signal",
+    );
+  });
+});
+
+Deno.test("wait_for_signal: of two steps that declare one key, one opens its wait and the other fails with wait_key_held", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    // Not a workflow validation accepts; the executor holds the rule too.
+    const workflow = Workflow.create({
+      name: `wait-key-twice-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: ["one", "two"].map((name) =>
+            Step.create({
+              name,
+              allowFailure: true,
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            })
+          ),
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const failed = events.filter((e) => e.kind === "step_failed");
+    assertEquals(failed.length, 1);
+    assert(failed[0].kind === "step_failed");
+    assertEquals(failed[0].error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals(failed[0].allowedFailure, true);
+    const registrations = await waits.store.listRegistrations();
+    assertEquals(registrations.length, 1);
+    assertEquals(registrations[0].key, "verdict");
+    assertNotEquals(registrations[0].stepName, failed[0].stepId);
+    const claims = await waits.store.listKeyRecords();
+    assertEquals(claims.length, 1);
+    assert(claims[0].kind === "claim");
+    assertEquals(claims[0].waitId, registrations[0].waitId);
+
+    const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
+    const loser = stored.getJob("job1")!.getStep(failed[0].stepId)!;
+    assertEquals(loser.status, "failed");
+    assertEquals(loser.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals(loser.signalWait, undefined);
+    assertEquals(stored.status, "suspended");
+  });
+});
+
+Deno.test("wait_for_signal: a key whose highest record cannot be read fails the step and opens no wait", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-key-damaged-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      undefined,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const waits = inMemorySignalWaits();
+    service.signalWaits = waits;
+    waits.store.keyRecords.set(
+      waitKeyRecordKey({
+        workflowId: workflow.id,
+        key: "verdict",
+        generation: 1,
+      }),
+      new TextEncoder().encode("{"),
+    );
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service.run(workflow.name)) events.push(event);
+
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertEquals(failed.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals(await waits.store.listRegistrations(), []);
+    assertEquals(waits.store.keyRecords.size, 1);
+    const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
+    assertEquals(stored.status, "failed");
+  });
+});
+
+Deno.test("wait_for_signal: a registration that fails after the key was claimed settles the claimed wait, so the key is free again", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-key-register-fails-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    class FailsToRegister extends InMemorySignalWaitStore {
+      failing = true;
+      override register(registration: WaitRegistration): Promise<void> {
+        return this.failing
+          ? Promise.reject(new Error("datastore unreachable"))
+          : super.register(registration);
+      }
+    }
+    const store = new FailsToRegister();
+    const service = () => {
+      const made = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        undefined,
+        undefined,
+        new CatalogStore(join(tempDir, `_catalog-${crypto.randomUUID()}.db`)),
+      );
+      made.signalWaits = { supported: true, store };
+      return made;
+    };
+
+    // The step fails with the store's error, as any step that throws does.
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service().run(workflow.name)) events.push(event);
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertStringIncludes(failed.error, "datastore unreachable");
+    const claims = await store.listKeyRecords();
+    assertEquals(claims.length, 1);
+    assert(claims[0].kind === "claim");
+    const outcome = await store.findOutcome(claims[0].waitId);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "cancelled");
+
+    // The next run claims the key as a new generation and opens its wait.
+    store.failing = false;
+    for await (const _event of service().run(workflow.name)) { /* drain */ }
+    const registrations = await store.listRegistrations();
+    assertEquals(registrations.map((r) => r.key), ["verdict"]);
+    const highest = await store.highestKeyRecord(workflow.id, "verdict");
+    assert(highest.kind === "found" && highest.record.kind === "claim");
+    assertEquals(highest.record.generation, 2);
+    assertEquals(highest.record.waitId, registrations[0].waitId);
+  });
+});
+
+Deno.test("wait_for_signal: a claim that was created and could not be read back does not leave the key held", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-key-read-back-fails-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    // The create lands; the read that follows it fails, once.
+    class LosesTheReadBack extends InMemorySignalWaitStore {
+      failing = true;
+      override async createKeyRecord(record: WaitKeyRecord) {
+        const stored = await super.createKeyRecord(record);
+        if (!this.failing) return stored;
+        this.failing = false;
+        throw new Error("read timed out");
+      }
+    }
+    const store = new LosesTheReadBack();
+    const service = () => {
+      const made = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        undefined,
+        undefined,
+        new CatalogStore(join(tempDir, `_catalog-${crypto.randomUUID()}.db`)),
+      );
+      made.signalWaits = { supported: true, store };
+      return made;
+    };
+
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service().run(workflow.name)) events.push(event);
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertStringIncludes(failed.error, "read timed out");
+    // The claim is there, no wait was registered for it, and it is closed.
+    const claims = await store.listKeyRecords();
+    assertEquals(claims.length, 1);
+    assert(claims[0].kind === "claim");
+    assertEquals(await store.listRegistrations(), []);
+    const outcome = await store.findOutcome(claims[0].waitId);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "cancelled");
+
+    // Another run takes the key straight away, with no grace period to wait
+    // out.
+    for await (const _event of service().run(workflow.name)) { /* drain */ }
+    const registrations = await store.listRegistrations();
+    assertEquals(registrations.length, 1);
+    const highest = await store.highestKeyRecord(workflow.id, "verdict");
+    assert(highest.kind === "found" && highest.record.kind === "claim");
+    assertEquals(
+      [highest.record.generation, highest.record.waitId],
+      [2, registrations[0].waitId],
     );
   });
 });

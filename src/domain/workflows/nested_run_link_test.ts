@@ -296,6 +296,29 @@ Deno.test("NestedRunLink.describeWait: an expired gate is cancelled, not approve
   assertEquals(pending.action.kind, "cancel");
 });
 
+Deno.test("NestedRunLink.describeWait: an expired forEach-expanded gate is cancelled, not approved", async () => {
+  // The child's definition has no step named as the expanded step run is.
+  const { parent, child, runs, deps } = linkedPair(gatedChildWorkflow(1));
+  for (const recorded of [true, false]) {
+    const old = WorkflowRun.fromData({
+      ...child.toData(),
+      jobs: child.toData().jobs.map((job) => ({
+        ...job,
+        steps: job.steps.map((step) => ({
+          ...step,
+          stepName: "gate-prod",
+          forEachTemplate: "gate",
+          startedAt: "2020-01-01T00:00:00.000Z",
+          ...(recorded ? { approvalTimeout: 1 } : {}),
+        })),
+      })),
+    });
+    runs.add(old);
+    const [pending] = await new NestedRunLink(deps).pendingWaits(parent);
+    assertEquals(pending.action.kind, "cancel");
+  }
+});
+
 Deno.test("NestedRunLink.describeWait: an interrupted child is recovered, a running one waited on", async () => {
   const { parent, child, deps } = linkedPair();
   const link = new NestedRunLink(deps);

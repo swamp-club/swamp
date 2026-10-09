@@ -862,3 +862,18 @@ Deno.test("JsonTelemetryRepository decodes legacy entries without parentInvocati
     assertEquals(restored[0].workflowContext, undefined);
   });
 });
+
+Deno.test("JsonTelemetryRepository.findByDate: returns entries in file-name order", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const ids = [
+      "88888888-8888-4888-8888-888888888888",
+      "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "11111111-1111-4111-8111-111111111111",
+    ];
+    for (const id of ids) await repo.save(createTestEntry({ id }));
+
+    const found = await repo.findByDate(new Date("2024-01-15T10:00:00Z"));
+    assertEquals(found.map((e) => e.id as string), [...ids].sort());
+  });
+});

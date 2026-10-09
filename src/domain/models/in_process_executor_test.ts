@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
+import { escapeLogTemplate } from "../../infrastructure/logging/logger.ts";
 import {
   InProcessExecutor,
   wrapLoggerWithOutput,
@@ -982,6 +983,27 @@ Deno.test("wrapLoggerWithOutput: escaped braces in a plain string render once", 
     "/bin/sh: ${{ 1 + 'a' }}: bad substitution",
     '{"a": 1}',
   ]);
+});
+
+// swamp-club#3220: escapeLogTemplate leaves a line with no opening brace
+// alone, as LogTape does, so the displayed line must not halve its braces.
+Deno.test("wrapLoggerWithOutput: escaped lines round-trip whichever braces they hold", () => {
+  const logger = getLogger(["test", "wrap-closing"]);
+  const events: { type: string; line: string; stream: string }[] = [];
+  const wrapped = wrapLoggerWithOutput(logger, (e) => {
+    if (e.type === "output") events.push(e);
+  });
+  const lines = [
+    "}}",
+    "      }}",
+    "a }} b",
+    "7 | +};",
+    "} else {",
+    "{{",
+    "{}}",
+  ];
+  for (const line of lines) wrapped.info(escapeLogTemplate(line));
+  assertEquals(events.map((e) => e.line), lines);
 });
 
 Deno.test("wrapLoggerWithOutput: props fill placeholders and escaped braces still render once", () => {

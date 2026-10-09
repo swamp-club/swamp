@@ -26,6 +26,7 @@ import {
 } from "../../domain/extensions/extension_quality_checker.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { logTextBlock } from "./log_text_block.ts";
 
 /** Renderer interface that also exposes pass/fail state for the CLI. */
 export interface ExtensionFmtRenderer extends Renderer<ExtensionFmtEvent> {
@@ -64,14 +65,16 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
             for (const issue of data.issues) {
               const label = qualityCheckLabel(issue.check);
               logger.error`  ${label} issues:`;
-              logger.error`${issue.output}`;
+              logTextBlock(logger, "error", issue.output, "    ");
             }
           }
         } else {
           // fix mode
           logger.info`Formatted ${data.fileCount} TypeScript files.`;
-          if (data.fmtOutput) logger.info`${data.fmtOutput}`;
-          if (data.lintOutput) logger.info`${data.lintOutput}`;
+          if (data.fmtOutput) logTextBlock(logger, "info", data.fmtOutput, "");
+          if (data.lintOutput) {
+            logTextBlock(logger, "info", data.lintOutput, "");
+          }
           if (data.remainingIssues.length > 0) {
             this._passed = false;
             this._failureMessage =
@@ -80,7 +83,7 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
             for (const issue of data.remainingIssues) {
               const label = qualityCheckLabel(issue.check);
               logger.error`  ${label} issues:`;
-              logger.error`${issue.output}`;
+              logTextBlock(logger, "error", issue.output, "    ");
             }
           }
         }

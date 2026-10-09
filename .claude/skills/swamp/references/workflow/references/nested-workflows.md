@@ -286,8 +286,21 @@ swamp workflow resume  <parent> --run <parent-run-id>
 - In `--json` output, the suspended document's `approvalRequired` names the gate
   to decide (`workflowName`, `runId`, `stepId`), and `waitingOnNestedRun` names
   the child the parent waits on.
-- Cancelling or rejecting the parent leaves the child as it was. While the child
-  is unfinished, the output includes the command that cancels it.
+- Cancelling, rejecting or superseding the parent cancels its suspended child
+  runs with it, and theirs. `--json` lists them as `cancelledNestedRuns`; a
+  running child serve asked to stop is in `stopRequestedNestedRuns`. A child it
+  could not cancel (running elsewhere, owned by a serve instance when the cancel
+  is local, or changed by another host) is in `detachedNestedRuns` with the
+  command that cancels it.
+- A child whose parent has ended cannot be approved, rejected or resumed: the
+  command fails and cancels the child. `swamp workflow approvals` shows only the
+  cancel for such a row (`parentEnded` with `--json`). If the parent's record
+  cannot be read, or differs from the datastore's copy, the command refuses and
+  changes nothing: retry, or cancel the child. A row whose parent record no
+  longer exists also shows only the cancel (`parentMissing`). `swamp run gc`
+  keeps a finished parent until its nested runs have finished.
+- A new `workflow run` does not supersede a parent whose nested run, at any
+  depth, waits for a signal: it reports the parent as kept with the wait ID.
 - With mixed swamp versions, approve the child's gate rather than the parent's
   waiting step: an older version approving the parent's step skips the child's
   outputs. A child an older version approved or resumed is still adopted, but

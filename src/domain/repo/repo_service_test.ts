@@ -426,7 +426,7 @@ Deno.test("RepoService.upgrade merges new permissions into existing settings", a
     // Default permissions added
     assertStringIncludes(
       JSON.stringify(settings.permissions.allow),
-      "Bash(swamp vault:*)",
+      "Bash(swamp vault get:*)",
     );
   });
 });
@@ -3533,5 +3533,243 @@ Deno.test("RepoService.upgrade drains the legacy telemetry spool into the inject
       join(configDir, "telemetry", "telemetry-1.json"),
     );
     assertEquals(JSON.parse(migrated), { command: "repo" });
+  });
+});
+
+// Agent permission grants must not pre-approve `swamp vault read-secret`
+// (swamp-club#3219).
+
+const READ_SECRET_COMMANDS = [
+  "swamp vault read-secret my-vault API_KEY",
+  "swamp vault read-secret my-vault API_KEY --json",
+  "swamp --json vault read-secret my-vault API_KEY",
+  "swamp version && swamp vault read-secret my-vault API_KEY",
+  "swamp version\nswamp vault read-secret my-vault API_KEY",
+];
+
+function claudeAllowCovers(entry: string, command: string): boolean {
+  const match = entry.match(/^Bash\((.*):\*\)$/);
+  return match !== null && command.startsWith(match[1]);
+}
+
+// kiro-cli anchors each pattern to the whole command (\A...\z).
+function kiroCliPatternMatches(pattern: string, command: string): boolean {
+  return new RegExp(`^(?:${pattern})$`).test(command);
+}
+
+async function readJson(path: string) {
+  return JSON.parse(await Deno.readTextFile(path));
+}
+
+Deno.test("RepoService.init: claude allow list does not cover vault read-secret", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    await service.init(RepoPath.create(tempDir));
+
+    const settings = await readJson(
+      join(tempDir, ".claude", "settings.local.json"),
+    );
+    const allow: string[] = settings.permissions.allow;
+    for (const entry of allow) {
+      assertEquals(
+        claudeAllowCovers(entry, "swamp vault read-secret"),
+        false,
+        `${entry} pre-approves swamp vault read-secret`,
+      );
+    }
+    for (
+      const sub of [
+        "type",
+        "search",
+        "list",
+        "get",
+        "describe",
+        "inspect",
+        "list-keys",
+        "audit-trail",
+        "create",
+        "edit",
+        "put",
+        "write-secret",
+        "delete",
+        "annotate",
+        "migrate",
+      ]
+    ) {
+      assertEquals(
+        allow.includes(`Bash(swamp vault ${sub}:*)`),
+        true,
+        `missing Bash(swamp vault ${sub}:*)`,
+      );
+    }
+  });
+});
+
+Deno.test("RepoService.upgrade: removes the legacy claude vault wildcard and keeps user entries", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath);
+
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    const settings = await readJson(settingsPath);
+    settings.permissions.allow = [
+      "Bash(custom command:*)",
+      "Bash(swamp vault:*)",
+      "Bash(swamp vault read-secret:*)",
+    ];
+    await Deno.writeTextFile(settingsPath, JSON.stringify(settings, null, 2));
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(result.settingsUpdated, true);
+
+    const allow: string[] = (await readJson(settingsPath)).permissions.allow;
+    assertEquals(allow.includes("Bash(swamp vault:*)"), false);
+    assertEquals(allow.includes("Bash(custom command:*)"), true);
+    assertEquals(allow.includes("Bash(swamp vault read-secret:*)"), true);
+    assertEquals(allow.includes("Bash(swamp vault get:*)"), true);
+
+    const again = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(again.settingsUpdated, false);
+  });
+});
+
+Deno.test("RepoService.upgrade: settingsUpdated when only the legacy claude vault wildcard is removed", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath);
+
+    const settingsPath = join(tempDir, ".claude", "settings.local.json");
+    const settings = await readJson(settingsPath);
+    settings.permissions.allow.push("Bash(swamp vault:*)");
+    await Deno.writeTextFile(settingsPath, JSON.stringify(settings, null, 2));
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(result.settingsUpdated, true);
+    const allow: string[] = (await readJson(settingsPath)).permissions.allow;
+    assertEquals(allow.includes("Bash(swamp vault:*)"), false);
+  });
+});
+
+Deno.test("RepoService.init: kiro IDE settings deny read-secret", async () => {
+  await withTempDir(async (tempDir) => {
+    await testService("0.1.0", tempDir).init(RepoPath.create(tempDir), {
+      tools: ["kiro"],
+    });
+
+    const settings = await readJson(
+      join(tempDir, ".vscode", "settings.local.json"),
+    );
+    const denylist: string[] = settings["kiroAgent.commandDenylist"];
+    // Kiro 0.x matches denylist entries as substrings of the command.
+    for (const command of READ_SECRET_COMMANDS) {
+      assertEquals(
+        denylist.some((entry) => command.includes(entry)),
+        true,
+        `denylist does not catch: ${command}`,
+      );
+    }
+    assertEquals(
+      denylist.some((entry) => "swamp vault get my-vault".includes(entry)),
+      false,
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade: merges read-secret into an existing kiro IDE denylist", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify({
+        "kiroAgent.trustedCommands": ["swamp *"],
+        "kiroAgent.commandDenylist": ["rm -rf"],
+      }),
+    );
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+    assertEquals(result.settingsUpdated, true);
+
+    const settings = await readJson(settingsPath);
+    assertEquals(settings["kiroAgent.commandDenylist"], [
+      "rm -rf",
+      "read-secret",
+    ]);
+    assertEquals(settings["kiroAgent.trustedCommands"], ["swamp *"]);
+
+    const again = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+    assertEquals(again.settingsUpdated, false);
+  });
+});
+
+Deno.test("RepoService.init and upgrade: kiro-cli agent denies read-secret", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
+    const check = async () => {
+      const shell = (await readJson(configPath)).toolsSettings.shell;
+      const denied: string[] = shell.deniedCommands;
+      const allowed: string[] = shell.allowedCommands;
+      for (const command of READ_SECRET_COMMANDS) {
+        const isDenied = denied.some((p) => kiroCliPatternMatches(p, command));
+        const isAllowed = allowed.some((p) =>
+          kiroCliPatternMatches(p, command)
+        );
+        // Denied wins in kiro-cli; anything not allowed prompts.
+        assertEquals(
+          isDenied || !isAllowed,
+          true,
+          `auto-approved: ${JSON.stringify(command)}`,
+        );
+      }
+      assertEquals(
+        denied.some((p) =>
+          kiroCliPatternMatches(p, "swamp vault get my-vault")
+        ),
+        false,
+      );
+    };
+    await check();
+
+    // An agent config written before the fix is replaced on upgrade.
+    const old = await readJson(configPath);
+    delete old.toolsSettings.shell.deniedCommands;
+    await Deno.writeTextFile(configPath, JSON.stringify(old, null, 2));
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+    await check();
+  });
+});
+
+Deno.test("RepoService.upgrade: adds read-secret to a kiro IDE denylist holding duplicate entries", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify({
+        "kiroAgent.trustedCommands": ["swamp *"],
+        "kiroAgent.commandDenylist": ["rm -rf", "rm -rf"],
+      }),
+    );
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+    assertEquals(result.settingsUpdated, true);
+    const settings = await readJson(settingsPath);
+    assertEquals(
+      settings["kiroAgent.commandDenylist"].includes("read-secret"),
+      true,
+    );
   });
 });

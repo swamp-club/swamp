@@ -18,20 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { evaluateApprovalTimeout } from "./approval_timeout.ts";
-import type { StepTaskData } from "./step_task.ts";
-
-const gate = (timeout?: number): StepTaskData => ({
-  type: "manual_approval",
-  prompt: "Approve?",
-  timeout,
-});
+import {
+  evaluateApprovalTimeout,
+  gateTimeoutSeconds,
+} from "./approval_timeout.ts";
+import { Step } from "./step.ts";
+import { StepTask } from "./step_task.ts";
 
 Deno.test("evaluateApprovalTimeout: reports expired once the deadline lapses", () => {
   const startedAt = new Date("2026-05-29T00:00:00.000Z");
   const now = new Date("2026-05-29T00:00:04.000Z");
 
-  const result = evaluateApprovalTimeout(startedAt, gate(1), now);
+  const result = evaluateApprovalTimeout(startedAt, 1, now);
 
   assertEquals(result, {
     expired: true,
@@ -44,7 +42,7 @@ Deno.test("evaluateApprovalTimeout: not expired while inside the window", () => 
   const startedAt = new Date("2026-05-29T00:00:00.000Z");
   const now = new Date("2026-05-29T00:00:00.500Z");
 
-  const result = evaluateApprovalTimeout(startedAt, gate(1), now);
+  const result = evaluateApprovalTimeout(startedAt, 1, now);
 
   assertEquals(result, {
     expired: false,
@@ -57,7 +55,7 @@ Deno.test("evaluateApprovalTimeout: exactly at the deadline is not yet expired",
   const startedAt = new Date("2026-05-29T00:00:00.000Z");
   const now = new Date("2026-05-29T00:00:01.000Z");
 
-  const result = evaluateApprovalTimeout(startedAt, gate(1), now);
+  const result = evaluateApprovalTimeout(startedAt, 1, now);
 
   assertEquals(result?.expired, false);
 });
@@ -66,33 +64,84 @@ Deno.test("evaluateApprovalTimeout: undefined when no timeout is configured", ()
   const startedAt = new Date("2026-05-29T00:00:00.000Z");
   const now = new Date("2026-05-29T01:00:00.000Z");
 
-  assertEquals(
-    evaluateApprovalTimeout(startedAt, gate(undefined), now),
-    undefined,
-  );
+  assertEquals(evaluateApprovalTimeout(startedAt, undefined, now), undefined);
 });
 
 Deno.test("evaluateApprovalTimeout: undefined when the step never started", () => {
   const now = new Date("2026-05-29T01:00:00.000Z");
 
-  assertEquals(evaluateApprovalTimeout(undefined, gate(1), now), undefined);
+  assertEquals(evaluateApprovalTimeout(undefined, 1, now), undefined);
 });
 
-Deno.test("evaluateApprovalTimeout: undefined for non-approval tasks", () => {
-  const startedAt = new Date("2026-05-29T00:00:00.000Z");
-  const now = new Date("2026-05-29T01:00:00.000Z");
-  const modelTask: StepTaskData = {
-    type: "model_method",
-    modelIdOrName: "shell-echo",
-    methodName: "execute",
-  };
+const gate = (name: string, timeout?: number): Step =>
+  Step.create({ name, task: StepTask.manualApproval("Approve?", timeout) });
 
-  assertEquals(evaluateApprovalTimeout(startedAt, modelTask, now), undefined);
+Deno.test("gateTimeoutSeconds: the timeout the step run holds wins over the definition", () => {
+  assertEquals(
+    gateTimeoutSeconds(
+      { stepName: "gate", approvalTimeout: 60 },
+      [gate("gate", 3600)],
+    ),
+    60,
+  );
 });
 
-Deno.test("evaluateApprovalTimeout: undefined when task data is absent", () => {
-  const startedAt = new Date("2026-05-29T00:00:00.000Z");
-  const now = new Date("2026-05-29T01:00:00.000Z");
+Deno.test("gateTimeoutSeconds: the timeout the step run holds needs no step in the definition", () => {
+  assertEquals(
+    gateTimeoutSeconds(
+      {
+        stepName: "approve-prod",
+        approvalTimeout: 60,
+        forEachTemplate: "approve-${{ self.env }}",
+      },
+      [],
+    ),
+    60,
+  );
+  assertEquals(
+    gateTimeoutSeconds({ stepName: "gate", approvalTimeout: 60 }, undefined),
+    60,
+  );
+});
 
-  assertEquals(evaluateApprovalTimeout(startedAt, undefined, now), undefined);
+Deno.test("gateTimeoutSeconds: a step run without one takes the timeout of the step of its name", () => {
+  assertEquals(
+    gateTimeoutSeconds({ stepName: "gate" }, [
+      gate("other", 5),
+      gate("gate", 9),
+    ]),
+    9,
+  );
+});
+
+Deno.test("gateTimeoutSeconds: a forEach iteration without one takes the timeout of the step it was expanded from", () => {
+  assertEquals(
+    gateTimeoutSeconds(
+      { stepName: "approve-prod", forEachTemplate: "approve-${{ self.env }}" },
+      [gate("approve-${{ self.env }}", 30)],
+    ),
+    30,
+  );
+});
+
+Deno.test("gateTimeoutSeconds: undefined when neither the step run nor the definition has a timeout", () => {
+  assertEquals(
+    gateTimeoutSeconds({ stepName: "gate" }, [gate("gate")]),
+    undefined,
+  );
+  assertEquals(gateTimeoutSeconds({ stepName: "gate" }, []), undefined);
+  assertEquals(gateTimeoutSeconds({ stepName: "gate" }, undefined), undefined);
+  assertEquals(gateTimeoutSeconds(undefined, [gate("gate", 5)]), undefined);
+});
+
+Deno.test("gateTimeoutSeconds: undefined when the step of that name is not a gate", () => {
+  const modelStep = Step.create({
+    name: "deploy",
+    task: StepTask.model("shell-echo", "execute"),
+  });
+
+  assertEquals(
+    gateTimeoutSeconds({ stepName: "deploy" }, [modelStep]),
+    undefined,
+  );
 });

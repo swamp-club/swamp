@@ -51,6 +51,8 @@ export interface SignalWaitInfo {
   runId: string;
   jobName: string;
   stepName: string;
+  /** The key the wait holds, when its step declared one. */
+  key?: string;
   /** When the step started waiting. */
   waitingSince: string | undefined;
   /** When the wait stops accepting a signal. */
@@ -92,6 +94,8 @@ export interface SignalledWaitInfo {
   runId: string;
   jobName: string;
   stepName: string;
+  /** The key the wait holds, when its step declared one. */
+  key?: string;
   /** When the step started waiting. */
   waitingSince: string | undefined;
   deadline: string;
@@ -330,6 +334,9 @@ export async function* workflowWaits(
               runId: registration.runId,
               jobName: registration.jobName,
               stepName: registration.stepName,
+              ...(registration.key !== undefined
+                ? { key: registration.key }
+                : {}),
               waitingSince: registration.registeredAt,
               deadline: registration.deadline,
               signal: { ...outcome.record.receipt },
@@ -351,6 +358,7 @@ export async function* workflowWaits(
           runId: registration.runId,
           jobName: registration.jobName,
           stepName: registration.stepName,
+          ...(registration.key !== undefined ? { key: registration.key } : {}),
           waitingSince: registration.registeredAt,
           deadline: registration.deadline,
           expired,

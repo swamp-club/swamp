@@ -48,6 +48,7 @@ import {
   isMember,
   isNode,
   isTypeofOperand,
+  LineIndex,
   literalKey,
   memberName,
   parseExtensionSource,
@@ -120,18 +121,16 @@ function isFunctionSource(node: AstNode | undefined): boolean {
 class Analyzer {
   private readonly findings: DynamicCodeFinding[] = [];
 
+  constructor(private readonly lines: LineIndex) {}
+
   run(program: AstNode): DynamicCodeFinding[] {
     walkRuntimeNodes(program, (visit) => this.check(visit));
     return this.findings.sort((a, b) => a.line - b.line || a.column - b.column);
   }
 
   private flag(node: AstNode, kind: DynamicCodeKind): void {
-    const start = node.loc?.start;
-    this.findings.push({
-      line: start?.line ?? 1,
-      column: (start?.column ?? 0) + 1,
-      kind,
-    });
+    const offset = typeof node.start === "number" ? node.start : 0;
+    this.findings.push({ ...this.lines.position(offset), kind });
   }
 
   private check(visit: Visit): void {
@@ -290,5 +289,5 @@ export function findDynamicCodeExecution(
   program: AstNode | null = parseExtensionSource(source),
 ): DynamicCodeFinding[] {
   if (!program) return textFallback(source);
-  return new Analyzer().run(program);
+  return new Analyzer(new LineIndex(source)).run(program);
 }

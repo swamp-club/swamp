@@ -19,6 +19,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import type { InputsSchema } from "../definitions/definition.ts";
 import {
+  isWaitKey,
   openSignalWaitMessage,
   parseStoredWait,
   persistedWait,
@@ -537,5 +538,63 @@ Deno.test("SignalWait.open: refuses a timeout above the caller's maximum, and ne
       ),
     Error,
     `at most ${SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} seconds`,
+  );
+});
+
+Deno.test("SignalWait: a key is kept through settling and its stored form, and is part of the wait's value", () => {
+  const keyed = SignalWait.open(VERDICT, 60, NOW, undefined, "verdict");
+  assertEquals(keyed.key, "verdict");
+  assertEquals(keyed.toData().key, "verdict");
+  assertEquals(SignalWait.fromData(keyed.toData()).equals(keyed), true);
+  const settled = keyed.settledWith({
+    id: crypto.randomUUID(),
+    waitId: keyed.id,
+    receivedAt: NOW.toISOString(),
+    submittedBy: "ada",
+  });
+  assertEquals(settled.key, "verdict");
+
+  const plain = SignalWait.open(VERDICT, 60, NOW);
+  assertEquals(plain.key, undefined);
+  assertEquals("key" in plain.toData(), false);
+  assertEquals(
+    SignalWait.fromData({ ...keyed.toData(), key: undefined }).equals(keyed),
+    false,
+  );
+});
+
+Deno.test("SignalWait: a key outside the allowed form is refused when the wait opens, and makes a stored wait unreadable", () => {
+  assertThrows(
+    () => SignalWait.open(VERDICT, 60, NOW, undefined, "Not/A-Key"),
+    Error,
+    "A wait key must be",
+  );
+  const stored = parseStoredWait({
+    ...SignalWait.open(VERDICT, 60, NOW).toData(),
+    key: "../escape",
+  });
+  assertEquals(stored?.kind, "broken");
+});
+
+Deno.test("isWaitKey: accepts the key form and refuses Windows device names, in a stored wait and an opened one alike", () => {
+  for (const key of ["a", "kitchen-verdict", "door_2", "console", "com10"]) {
+    assertEquals(isWaitKey(key), true, key);
+  }
+  for (
+    const key of ["", "A", "a.b", "a/b", "con", "nul", "aux", "prn", "lpt9"]
+  ) {
+    assertEquals(isWaitKey(key), false, key);
+  }
+  assertThrows(
+    () => SignalWait.open(VERDICT, 60, NOW, undefined, "nul"),
+    Error,
+    "not a Windows device name",
+  );
+  assertEquals(
+    parseStoredWait({
+      ...SignalWait.open(VERDICT, 60, NOW).toData(),
+      key: "con",
+    })?.kind,
+    "broken",
   );
 });

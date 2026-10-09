@@ -561,3 +561,55 @@ Deno.test("YamlVaultConfigRepository: sends nothing without a mark hook", async 
     assertEquals(marks, []);
   });
 });
+
+Deno.test("YamlVaultConfigRepository.findAll: returns vaults in type then id order", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlVaultConfigRepository(dir);
+    await repo.save(VaultConfig.create("id-m", "mango", "mock", {}));
+    await repo.save(VaultConfig.create("id-b", "banana", "mock1", {}));
+    await repo.save(VaultConfig.create("id-z", "zebra", "mock", {}));
+    await repo.save(VaultConfig.create("id-a", "apple", "mock", {}));
+
+    // "mock" sorts before "mock1" as a path segment on every platform.
+    assertEquals(
+      (await repo.findAll()).map((v) => `${v.type}:${v.id}`),
+      ["mock:id-a", "mock:id-m", "mock:id-z", "mock1:id-b"],
+    );
+    assertEquals(
+      (await repo.findAllByType("mock")).map((v) => v.id),
+      ["id-a", "id-m", "id-z"],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("YamlVaultConfigRepository.findByName: a duplicated name resolves to the first file in path order", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const repo = new YamlVaultConfigRepository(dir);
+    const typeDir = join(dir, "vaults", "mock");
+    await repo.save(VaultConfig.create("id-m", "shared", "mock", {}));
+    // Copies of the saved file under other ids give three files with one name.
+    const saved = await Deno.readTextFile(join(typeDir, "id-m.yaml"));
+    for (const id of ["id-z", "id-a"]) {
+      await Deno.writeTextFile(
+        join(typeDir, `${id}.yaml`),
+        saved.replace("id-m", id),
+      );
+    }
+
+    assertEquals((await repo.findByName("shared"))?.id, "id-a");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

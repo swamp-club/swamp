@@ -48,6 +48,7 @@ import {
   toRelativePath,
 } from "./paths.ts";
 import { assertSafePath, isSinglePathSegment } from "./safe_path.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -139,7 +140,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runs: WorkflowRun[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -206,7 +207,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const summaries: WorkflowRunSummary[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -354,7 +355,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const workflowRunsDir = this.baseDir;
 
     try {
-      for await (const entry of Deno.readDir(workflowRunsDir)) {
+      for (const entry of await readDirSorted(workflowRunsDir)) {
         if (entry.isDirectory) {
           // Directory name is the workflow ID
           const workflowIdStr = entry.name;
@@ -408,7 +409,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const cutoffMs = cutoff.getTime();
 
     try {
-      for await (const entry of Deno.readDir(this.baseDir)) {
+      for (const entry of await readDirSorted(this.baseDir)) {
         if (!entry.isDirectory) continue;
         const workflowId = entry.name as WorkflowId;
         const runs = await this.findRunsSinceByWorkflowId(workflowId, cutoffMs);
@@ -438,7 +439,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const runs: WorkflowRun[] = [];
 
     try {
-      for await (const entry of Deno.readDir(dir)) {
+      for (const entry of await readDirSorted(dir)) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
@@ -496,7 +497,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
 
     try {
-      for await (const entry of Deno.readDir(this.baseDir)) {
+      for (const entry of await readDirSorted(this.baseDir)) {
         if (!entry.isDirectory) continue;
         const workflowId = entry.name as WorkflowId;
         const matchingIds = await this.findRunIdsByStatusFromIndex(
@@ -718,6 +719,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       return status !== null && !TERMINAL_STATUSES.has(status);
     };
+    // A finished run is also kept while a nested run one of its steps
+    // started has not finished: that child reads this record to learn
+    // nothing waits on it, and refuses to continue once the record is gone
+    // (swamp-club#2867). A child that cannot be read keeps it too. A child
+    // whose parentRun names another run is not this run's to wait for.
+    const keepForChild = async (data: WorkflowRunData): Promise<boolean> => {
+      for (const job of data.jobs ?? []) {
+        for (const step of job.steps ?? []) {
+          const link = NestedRunRefSchema.safeParse(step.nestedRun);
+          if (!link.success) continue;
+          const child = await this.findById(
+            createWorkflowId(link.data.workflowId),
+            createWorkflowRunId(link.data.runId),
+          ).catch(() => undefined);
+          if (child === undefined) return true;
+          if (child === null || TERMINAL_STATUSES.has(child.status)) continue;
+          const back = child.parentRun;
+          if (
+            back === undefined ||
+            (back.kind === "valid" &&
+              back.ref.runId.toLowerCase() === String(data.id).toLowerCase())
+          ) return true;
+        }
+      }
+      return false;
+    };
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
@@ -798,6 +825,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               ) continue;
               // Read a parent only for a child old enough to collect.
               if (await keepForParent(data)) continue;
+              if (await keepForChild(data)) continue;
 
               const logPath = yamlPath.replace(/\.yaml$/, ".log");
               let fileBytes = stat.size ?? 0;
@@ -892,7 +920,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async listWorkflowIds(): Promise<WorkflowId[]> {
     const ids: WorkflowId[] = [];
     try {
-      for await (const entry of Deno.readDir(this.baseDir)) {
+      for (const entry of await readDirSorted(this.baseDir)) {
         if (entry.isDirectory) ids.push(entry.name as WorkflowId);
       }
     } catch (error) {
@@ -913,7 +941,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   private async listRunIdsInDir(dir: string): Promise<string[]> {
     const ids: string[] = [];
     try {
-      for await (const fileEntry of Deno.readDir(dir)) {
+      for (const fileEntry of await readDirSorted(dir)) {
         if (
           fileEntry.isFile &&
           fileEntry.name.startsWith("workflow-run-") &&
@@ -1134,7 +1162,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   ): Promise<WorkflowRunIndex | null> {
     const index: WorkflowRunIndex = {};
     try {
-      for await (const entry of Deno.readDir(runsDir)) {
+      for (const entry of await readDirSorted(runsDir)) {
         if (
           !entry.isFile || !entry.name.startsWith("workflow-run-") ||
           !entry.name.endsWith(".yaml")
