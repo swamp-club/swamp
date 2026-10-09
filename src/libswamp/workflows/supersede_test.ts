@@ -474,3 +474,22 @@ Deno.test("supersedeSuspendedRuns: a run whose nested run waits at a gate is sti
   assertEquals(result.cancelledRunIds, [chain[0].id]);
   assertEquals(result.skippedRuns, []);
 });
+
+Deno.test("supersedeSuspendedRuns: a nested run that cannot be read does not stop the supersede", async () => {
+  const { chain, runs, workflows } = nestedChain(2);
+  runs.unreadable.add(chain[1].id.toLowerCase());
+
+  const result = await supersedeSuspendedRuns(
+    workflows[0],
+    {},
+    {
+      findSuspendedRuns: () => Promise.resolve([chain[0]]),
+      findEvaluatedWorkflow: noSnapshot,
+      runClaims: unclaimedRuns,
+    },
+    runs as unknown as WorkflowRunRepository,
+  );
+
+  assertEquals(result.cancelledRunIds, [chain[0].id]);
+  assertEquals(result.skippedRuns, []);
+});

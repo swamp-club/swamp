@@ -68,9 +68,10 @@ export interface PendingApproval {
    */
   parentEnded?: boolean;
   /**
-   * With `parentRun`: true when a run above this one has no record on this
-   * host, so approve, reject and resume are refused until the record is
-   * restored. The run can still be cancelled (swamp-club#2867).
+   * With `parentRun`: true when a run above this one has no record on the
+   * host that listed it. Approve, reject and resume are refused while there
+   * is none; a serve instance fetches the record from the datastore before
+   * it refuses. The run can still be cancelled (swamp-club#2867).
    */
   parentMissing?: boolean;
   /** A serve instance started the run, so its cancel goes through serve. */

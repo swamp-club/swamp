@@ -296,8 +296,12 @@ export class NestedRunLink {
     if (depth > MAX_WORKFLOW_NESTING_DEPTH) return [];
     const waits: SignalWaitRef[] = [];
     for (const wait of parent.findNestedWaits()) {
-      const resolved = await this.resolveChild(parent, wait);
-      if (resolved.kind !== "resolved" || isFinishedRun(resolved.child)) {
+      // A child that cannot be read is passed over, as one that does not
+      // link back is: nothing cancels it with `parent` either.
+      const resolved = await this.resolveChild(parent, wait).catch(() =>
+        undefined
+      );
+      if (resolved?.kind !== "resolved" || isFinishedRun(resolved.child)) {
         continue;
       }
       for (const held of resolved.child.findSignalWaits()) waits.push(held);

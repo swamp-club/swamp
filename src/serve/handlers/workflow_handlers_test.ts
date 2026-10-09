@@ -37,6 +37,8 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import { StepTask } from "../../domain/workflows/step_task.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
+import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
+import { nestedChain } from "../../domain/workflows/nested_run_test_helpers.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -1159,6 +1161,83 @@ Deno.test("handleWorkflowCancel: aborts a run a resume registered again after th
   } finally {
     registry.deregister(runId);
   }
+});
+
+Deno.test("handleWorkflowCancel: a run its abort ended has its suspended nested runs cancelled and listed in the reply", async () => {
+  const built = nestedChain();
+  const [parent, child] = built.chain;
+  // The parent was resumed and is running here: its abort settles it.
+  const registry = new ActiveRunRegistry();
+  const run = {
+    ...cancellableRun(parent.id, () => {
+      cancelAndSettle(parent, undefined, "aborted");
+      built.runs.add(parent);
+      registry.deregister(parent.id);
+    }),
+    resourceName: parent.workflowName,
+  };
+  registry.register(run);
+  let pushes = 0;
+  const ctx = {
+    authConfig: { ...searchAuthBase, mode: "none" },
+    activeRunRegistry: registry,
+    datastoreConfig: { type: "filesystem" },
+    syncService: {
+      pushChanged: () => {
+        pushes++;
+        return Promise.resolve();
+      },
+    },
+    repoContext: {
+      workflowRepo: {
+        findByName: (name: string) =>
+          Promise.resolve(
+            built.workflows.find((w) => w.name === name) ?? null,
+          ),
+        findById: built.workflowRepo.findById.bind(built.workflowRepo),
+        findAll: () => Promise.resolve(built.workflows),
+      },
+      workflowRunRepo: {
+        findById: built.runs.findById.bind(built.runs),
+        save: built.runs.save.bind(built.runs),
+        findGlobalById: (runId: string) => {
+          const found = built.runs.byId.get(runId.toLowerCase());
+          return Promise.resolve(
+            found ? { run: found, workflowId: found.workflowId } : null,
+          );
+        },
+      },
+    },
+  } as unknown as ConnectionContext;
+  const frames: {
+    type: string;
+    payload?: {
+      data: { status: string; cancelledNestedRuns?: { runId: string }[] };
+    };
+  }[] = [];
+  const socket = {
+    readyState: WebSocket.OPEN,
+    send: (data: string) => frames.push(JSON.parse(data)),
+  } as unknown as WebSocket;
+
+  await handleWorkflowCancel(
+    socket,
+    ctx,
+    "req-cancel",
+    { runId: parent.id },
+    new AbortController(),
+    null,
+  );
+
+  assertEquals(frames.length, 1);
+  assertEquals(frames[0].payload?.data.status, "cancelled");
+  assertEquals(
+    frames[0].payload?.data.cancelledNestedRuns?.map((r) => r.runId),
+    [child.id],
+  );
+  assertEquals(built.runs.get(child).status, "cancelled");
+  assertEquals(built.runs.saved, [child.id]);
+  assertEquals(pushes, 1);
 });
 
 Deno.test("handleWorkflowCancel: does not abort a registered method run", async () => {

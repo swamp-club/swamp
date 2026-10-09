@@ -293,25 +293,61 @@ Deno.test("settleOrphanedNestedRun: a datastore that cannot be read refuses, nev
   assertEquals(runs.saved, []);
 });
 
-Deno.test("settleOrphanedNestedRun: an ended verdict is trusted without asking the datastore", async () => {
+Deno.test("settleOrphanedNestedRun: an ended parent is trusted from this host's copy, and only the run's own record is confirmed before the cancel", async () => {
   const { chain, runs, workflowRepo, workflows } = nestedChain();
   cancelAndSettle(chain[0], undefined, "stop");
   runs.add(chain[0]);
-  let asked = 0;
+  const asked: string[] = [];
   const refusal = await settleOrphanedNestedRun(
     {
       runRepo: runs,
       workflowRepo,
-      runRecordCurrency: () => {
-        asked++;
-        return Promise.resolve(false);
+      runRecordCurrency: (run) => {
+        asked.push(run.runId);
+        return Promise.resolve(true);
       },
     },
     chain[1],
     workflows[1],
   );
   assertEquals(refusal?.kind, "orphaned");
-  assertEquals(asked, 0);
+  assertEquals(asked, [chain[1].id]);
+  assertEquals(runs.get(chain[1]).status, "cancelled");
+});
+
+Deno.test("settleOrphanedNestedRun: an orphaned run whose own record is not the datastore's is not cancelled", async () => {
+  // A peer may have finished the run: a cancel from this copy would
+  // replace that outcome.
+  const { chain, runs, workflowRepo, workflows } = nestedChain();
+  cancelAndSettle(chain[0], undefined, "stop");
+  runs.add(chain[0]);
+
+  const stale = await settleOrphanedNestedRun(
+    {
+      runRepo: runs,
+      workflowRepo,
+      runRecordCurrency: () => Promise.resolve(false),
+    },
+    chain[1],
+    workflows[1],
+  );
+  assertEquals(stale?.kind, "stale");
+  assertStringIncludes(stale!.message, "Nothing was changed");
+
+  const failed = await settleOrphanedNestedRun(
+    {
+      runRepo: runs,
+      workflowRepo,
+      runRecordCurrency: () => Promise.reject(new Error("remote down")),
+    },
+    chain[1],
+    workflows[1],
+  );
+  assertEquals(failed?.kind, "unreadable");
+  assertStringIncludes(failed!.message, "remote down");
+
+  assertEquals(runs.saved, []);
+  assertEquals(chain[1].status, "suspended");
 });
 
 Deno.test("OrphanedNestedRunError: carries the refusal and a message that names no other run", () => {
@@ -404,4 +440,16 @@ Deno.test("NestedRunLink.signalWaitsBelow: lists the waits of unfinished runs at
   cancelAndSettle(chain[1], undefined, "stop");
   runs.add(chain[1]);
   assertEquals(await link.signalWaitsBelow(chain[0]), []);
+});
+
+Deno.test("NestedRunLink.signalWaitsBelow: a nested run that cannot be read is passed over, not thrown", async () => {
+  const wait = SignalWait.open({ type: "object" }, 60, new Date());
+  const { chain, runs, workflowRepo } = nestedChain(3, wait);
+  runs.unreadable.add(chain[1].id.toLowerCase());
+  assertEquals(
+    await new NestedRunLink({ runRepo: runs, workflowRepo }).signalWaitsBelow(
+      chain[0],
+    ),
+    [],
+  );
 });

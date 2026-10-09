@@ -1466,6 +1466,14 @@ export async function handleWorkflowApprove(
         deps.runTracker = ctx.runTracker;
         deps.runRecordCurrency = ctx.repoContext.runRecordCurrency;
         deps.fetchMissing = (run) => fetchMissingRunUnderGate(ctx, run);
+        // Built only when a run nothing waits on has to be cancelled.
+        deps.findEvaluatedWorkflow = (runId) =>
+          new YamlEvaluatedWorkflowRepository(
+            ctx.repoDir,
+            ctx.datastoreResolver.resolvePath(
+              SWAMP_SUBDIRS.workflowsEvaluated,
+            ),
+          ).findByRunId(runId);
 
         await consumeStream(
           workflowApprove(libCtx, deps, {

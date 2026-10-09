@@ -561,12 +561,19 @@ resume, so it is refused there too.
 - With a `RunRecordCurrency`, a verdict of awaited is confirmed against the
   datastore for every run above. One whose local record differs refuses with
   nothing written, and the command can be tried again. A verdict of ended is
-  terminal and is trusted from the local copy.
+  terminal and is trusted from the local copy, but the run's own record is
+  confirmed before the cancel is written: a copy behind the datastore's may
+  show a suspension a peer already finished.
+- A resume leaves a run whose owner still saves it to its own refusal: a
+  cancel written then would be saved over.
 - A failed nested run is finished: its retry is left alone.
 
 `swamp workflow approvals` marks an orphaned run's row `parentEnded` and
 offers only its cancel. A row whose parent has no record is marked
 `parentMissing` and offers only its cancel too; the cancel is not refused.
+Listed through `--server`, such a row keeps every command: serve fetches a
+parent record it does not hold before it decides, so the record may only not
+be local yet.
 Run garbage collection keeps a finished run while a nested run one of its
 steps started has not finished or cannot be read, so cleanup does not remove
 the record a child's refusal depends on. A run whose `parentRun` an older binary dropped is

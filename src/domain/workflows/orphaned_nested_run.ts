@@ -192,6 +192,41 @@ export async function settleOrphanedNestedRun(
     ? "the run that started it ended"
     : "the run that started it started another run for the step";
 
+  // The cancel is written from this host's copy of the run. A copy behind
+  // the datastore's may show a suspension a peer already finished, and the
+  // save would replace that outcome.
+  if (deps.runRecordCurrency) {
+    let current: boolean;
+    try {
+      current = await deps.runRecordCurrency({
+        workflowId: run.workflowId,
+        runId: run.id,
+      });
+    } catch (error) {
+      const failed =
+        `${self} was not continued: ${why}, and the run could not be read from the datastore`;
+      return {
+        kind: "unreadable",
+        message: `${failed} (${
+          error instanceof Error ? error.message : String(error)
+        }). Nothing was changed. Try again.`,
+        genericMessage:
+          `${self} was not continued: ${genericWhy}, and the run could not be read from the datastore. Nothing was changed. Try again.`,
+        parent,
+      };
+    }
+    if (!current) {
+      return {
+        kind: "stale",
+        message:
+          `${self} was not continued: ${why}, and this copy of the run differs from the one in the datastore. Nothing was changed. Try again shortly.`,
+        genericMessage:
+          `${self} was not continued: ${genericWhy}, and this copy of the run differs from the one in the datastore. Nothing was changed. Try again shortly.`,
+        parent,
+      };
+    }
+  }
+
   cancelAndSettle(
     run,
     deps.findEvaluatedWorkflow

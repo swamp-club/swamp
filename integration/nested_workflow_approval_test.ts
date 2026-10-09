@@ -52,6 +52,7 @@ import {
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { NestedRunPendingError } from "../src/domain/workflows/nested_run_link.ts";
 import { UserError } from "../src/domain/errors.ts";
+import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -858,6 +859,53 @@ Deno.test("nested backstop: approving a child whose parent ended refuses and can
       undefined,
     );
     assertEquals(h.executor.executed, []);
+  });
+});
+
+Deno.test("nested backstop: a child whose owner still saves it is not cancelled by a resume, whatever its parent did", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    await cancelRun(h, (await only(h.runRepo, parent)).id);
+    const childRun = await only(h.runRepo, child);
+
+    // The child's tracker row: owned here, running, by a live process.
+    const tracker = {
+      findById: (id: string) =>
+        id === childRun.id
+          ? { status: "running", pid: Deno.pid, isLocalTo: () => true }
+          : null,
+      complete: () => {
+        throw new Error("the run was not to be settled");
+      },
+    } as unknown as RunTrackerRepository;
+    const catalogStore = new CatalogStore(join(h.repoDir, "_catalog2.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        h.workflowRepo,
+        h.runRepo,
+        h.repoDir,
+        h.executor,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        tracker,
+      );
+      service.ownerLiveness = { hostname: "here", isDead: () => false };
+
+      const error = await assertRejects(
+        () => drain(service.resume(child.name, childRun.id)),
+        UserError,
+      );
+      assert(!(error instanceof OrphanedNestedRunError));
+      assertEquals((await only(h.runRepo, child)).status, "suspended");
+    } finally {
+      catalogStore.close();
+    }
   });
 });
 
