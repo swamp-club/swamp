@@ -387,6 +387,7 @@ export {
   signalRefusalKind,
   type SignalWaitSubject,
   workflowSignal,
+  type WorkflowSignalAddress,
   type WorkflowSignalData,
   type WorkflowSignalDeps,
   type WorkflowSignalEvent,

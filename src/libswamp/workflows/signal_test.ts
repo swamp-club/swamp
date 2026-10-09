@@ -53,6 +53,12 @@ import {
 } from "../../domain/workflows/signal_wait_cleanup.ts";
 import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
 import {
+  claimWaitKey,
+  type WaitKeyClaim,
+  waitKeyRecordKey,
+  waitRefOfClaim,
+} from "../../domain/workflows/wait_key_claim.ts";
+import {
   createWorkflowId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
@@ -128,6 +134,8 @@ async function fixtureOf(
     now?: Date;
     registered?: boolean;
     waits?: InMemorySignalWaitStore;
+    /** The workflows a signal by key can name. */
+    workflows?: Workflow[];
   } = {},
 ): Promise<Fixture> {
   const stored = new Map<string, WorkflowRunData>(
@@ -166,6 +174,12 @@ async function fixtureOf(
     calls,
     deps: {
       now: () => options.now ?? IN_TIME,
+      findWorkflow: (idOrName: string) =>
+        Promise.resolve(
+          (options.workflows ?? []).find((workflow) =>
+            workflow.name === idOrName || workflow.id === idOrName
+          ) ?? null,
+        ),
       signalWaits: { supported: true, store: waits },
       runRepo: {
         findById: (_workflowId: WorkflowId, runId: string) => {
@@ -1146,4 +1160,354 @@ Deno.test("workflowSignal: with the scan off a registered wait is delivered as b
   assertEquals(event.kind, "completed");
   assertEquals(fixture.calls.includes("findAllGlobal"), false);
   assertEquals(fixture.calls.includes("findGlobalByStatus"), false);
+});
+
+// A signal addressed by workflow and key (swamp-club#3210).
+
+const KEY = "release-verdict";
+
+function keyedWorkflow(name = "release", key = KEY): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, SCHEMA, key),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** A run suspended at its keyed wait, with the wait's claim on the key. */
+async function suspendedHoldingKey(
+  workflow: Workflow,
+  waits: InMemorySignalWaitStore,
+  key = KEY,
+): Promise<{ run: WorkflowRun; waitId: string; claim: WaitKeyClaim }> {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const review = job.getStep("review")!;
+  review.start();
+  const wait = SignalWait.open(SCHEMA, 60, OPENED, undefined, key);
+  const claimed = await claimWaitKey(waits, {
+    workflowId: workflow.id,
+    key,
+    waitId: wait.id,
+    runId: run.id,
+    jobName: "main",
+    stepName: "review",
+    deadline: wait.deadline.toISOString(),
+  }, OPENED);
+  assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+  review.waitForSignal(wait);
+  run.suspend();
+  return { run, waitId: wait.id, claim: claimed.claim };
+}
+
+async function keyedFixture(
+  options: { now?: Date } = {},
+): Promise<
+  Fixture & {
+    workflow: Workflow;
+    run: WorkflowRun;
+    waitId: string;
+    claim: WaitKeyClaim;
+  }
+> {
+  const workflow = keyedWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const held = await suspendedHoldingKey(workflow, waits);
+  const fixture = await fixtureOf([held.run], {
+    waits,
+    workflows: [workflow],
+    now: options.now,
+  });
+  return { ...fixture, workflow, ...held };
+}
+
+async function sendByKey(
+  fixture: Pick<Fixture, "deps">,
+  workflow: string,
+  key: string,
+  payload: unknown,
+): Promise<WorkflowSignalEvent> {
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      workflow,
+      key,
+      payload,
+      submittedBy: "tux",
+    }),
+  );
+  assertEquals(events[0], { kind: "resolving" });
+  return events.at(-1)!;
+}
+
+function refusalOf(event: WorkflowSignalEvent) {
+  assert(event.kind === "error", `expected a refusal, got ${event.kind}`);
+  return {
+    kind: signalRefusalKind(event.error),
+    code: event.error.code,
+    message: event.error.message,
+    details: event.error.details as Record<string, unknown>,
+  };
+}
+
+Deno.test("workflowSignal: a signal by workflow and key reaches the holder and names the wait that took it", async () => {
+  const fixture = await keyedFixture();
+  const before = structuredClone(fixture.stored.get(fixture.run.id));
+  const keyRecords = new Map(fixture.waits.keyRecords);
+
+  const event = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.waitId, fixture.waitId);
+  assertEquals(event.data.key, KEY);
+  assertEquals(event.data.runId, fixture.run.id);
+  assertEquals(event.data.stepName, "review");
+  assertEquals(event.data.signal.waitId, fixture.waitId);
+  const outcome = await outcomeOf(fixture, fixture.waitId);
+  assert(outcome?.kind === "accepted");
+  assertEquals(outcome.payload, { verdict: "ship" });
+  assertEquals(outcome.receipt, event.data.signal);
+  // Neither the run record nor a key record is written.
+  assertEquals(fixture.stored.get(fixture.run.id), before);
+  assertEquals(fixture.waits.keyRecords, keyRecords);
+});
+
+Deno.test("workflowSignal: the workflow of a key address may be given by ID", async () => {
+  const fixture = await keyedFixture();
+  const event = await sendByKey(fixture, fixture.workflow.id, KEY, {
+    verdict: "fix",
+  });
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.waitId, fixture.waitId);
+});
+
+Deno.test("workflowSignal: a signal by wait ID to a keyed wait is delivered as before and reports the key", async () => {
+  const fixture = await keyedFixture();
+  const event = await send(fixture, fixture.waitId, { verdict: "ship" });
+  assert(event.kind === "completed", JSON.stringify(event));
+  assertEquals(event.data.key, KEY);
+
+  const { run, waitId } = suspendedAtWait(makeWorkflow());
+  const unkeyed = await send(await fixtureOf([run]), waitId, {
+    verdict: "ship",
+  });
+  assert(unkeyed.kind === "completed");
+  assertEquals("key" in unkeyed.data, false);
+});
+
+Deno.test("workflowSignal: an unknown workflow, an undeclared key and a string that is no key are all not found with one message, and nothing is stored", async () => {
+  const fixture = await keyedFixture();
+  for (
+    const [workflow, key] of [
+      ["no-such-workflow", KEY],
+      ["release", "other-key"],
+      ["release", "Release-Verdict"],
+      ["release", "../x"],
+      ["release", ""],
+    ]
+  ) {
+    const refusal = refusalOf(
+      await sendByKey(fixture, workflow, key, { verdict: "ship" }),
+    );
+    assertEquals(refusal.kind, "unknown", `${workflow} ${key}`);
+    assertEquals(refusal.code, "not_found");
+    // One message, whichever of the three it was.
+    assertEquals(
+      refusal.message,
+      `Signal wait not found: key ${key} of workflow "${workflow}"`,
+    );
+  }
+  assertEquals(fixture.waits.outcomes.size, 0);
+});
+
+Deno.test("workflowSignal: a declared key no open wait holds is refused as such and nothing is stored", async () => {
+  const workflow = keyedWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const never = await fixtureOf([], { waits, workflows: [workflow] });
+  const first = refusalOf(
+    await sendByKey(never, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(first.kind, "no_open_wait");
+  assertEquals(first.code, "validation_failed");
+  assertStringIncludes(first.message, `No open wait holds key ${KEY}`);
+  assertEquals(waits.outcomes.size, 0);
+  assertEquals(waits.keyRecords.size, 0);
+
+  // After the holder is settled the key is free again.
+  const fixture = await keyedFixture();
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "completed");
+  const second = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
+  );
+  assertEquals(second.kind, "no_open_wait");
+  const outcome = await outcomeOf(fixture, fixture.waitId);
+  assert(outcome?.kind === "accepted");
+  assertEquals(outcome.payload, { verdict: "ship" });
+});
+
+Deno.test("workflowSignal: by key, a payload the schema refuses lists its errors, leaves the wait open, and keeps the wait ID out of the message", async () => {
+  const fixture = await keyedFixture();
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "maybe" }),
+  );
+  assertEquals(refusal.kind, "invalid_payload");
+  assertStringIncludes(
+    refusal.message,
+    `Payload refused for wait under key ${KEY} of workflow "release"`,
+  );
+  assertStringIncludes(refusal.message, "swamp workflow waits");
+  assertEquals(refusal.message.includes(fixture.waitId), false);
+  assertEquals(refusal.details.waitId, fixture.waitId);
+  assert(Array.isArray(refusal.details.errors));
+  assertEquals(await outcomeOf(fixture, fixture.waitId), undefined);
+
+  const accepted = await sendByKey(fixture, "release", KEY, {
+    verdict: "ship",
+  });
+  assertEquals(accepted.kind, "completed");
+});
+
+Deno.test("workflowSignal: by key, a holder past its deadline is settled as timed out and answered expired", async () => {
+  const fixture = await keyedFixture({ now: TOO_LATE });
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(refusal.kind, "expired");
+  assertEquals(refusal.message.includes(fixture.waitId), false);
+  assertEquals((await outcomeOf(fixture, fixture.waitId))?.kind, "timed_out");
+});
+
+Deno.test("workflowSignal: a holder settled between resolving and delivering is answered from what is stored, and the signal goes to no other wait", async () => {
+  for (const settledAs of ["accepted", "cancelled"] as const) {
+    const fixture = await keyedFixture();
+    const other = acceptedOutcomeFor(
+      { id: fixture.waitId, deadline: new Date(fixture.claim.deadline) },
+      { verdict: "fix" },
+      { runId: fixture.run.id, at: IN_TIME },
+    );
+    // The holder is read as open; before the signal is delivered another
+    // writer settles it and the next run's wait claims the key.
+    const store = fixture.waits;
+    const findRegistration = store.findRegistration.bind(store);
+    let next: WaitKeyClaim | undefined;
+    store.findRegistration = async (waitId: string) => {
+      if (waitId === fixture.waitId && next === undefined) {
+        await store.settle(
+          settledAs === "accepted"
+            ? other
+            : cancelledOutcome(waitRefOfClaim(fixture.claim), IN_TIME),
+        );
+        const later = await suspendedHoldingKey(fixture.workflow, store);
+        next = later.claim;
+      }
+      return await findRegistration(waitId);
+    };
+
+    const refusal = refusalOf(
+      await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+    );
+    assertEquals(
+      refusal.kind,
+      settledAs === "accepted" ? "already_settled" : "closed",
+    );
+    assertEquals(refusal.details.waitId, fixture.waitId);
+    assert(next);
+    // The wait that claimed the key meanwhile got nothing.
+    assertEquals((await store.findOutcome(next.waitId)).kind, "absent");
+  }
+});
+
+Deno.test("workflowSignal: a claim whose wait is registered to another workflow or under another key carries no signal there", async () => {
+  // A claim altered to name a wait of another workflow.
+  const victim = keyedWorkflow("payroll", "payroll-verdict");
+  const waits = new InMemorySignalWaitStore();
+  const target = await suspendedHoldingKey(victim, waits, "payroll-verdict");
+  const workflow = keyedWorkflow();
+  const fixture = await fixtureOf([target.run], {
+    waits,
+    workflows: [workflow, victim],
+  });
+  const forged: WaitKeyClaim = {
+    ...target.claim,
+    workflowId: workflow.id,
+    key: KEY,
+    generation: 1,
+  };
+  waits.keyRecords.set(
+    waitKeyRecordKey(forged),
+    new TextEncoder().encode(JSON.stringify(forged)),
+  );
+
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(refusal.kind, "unreadable");
+  assertEquals((await waits.findOutcome(target.waitId)).kind, "absent");
+  // The wait still takes a signal addressed to it.
+  const direct = await sendByKey(fixture, "payroll", "payroll-verdict", {
+    verdict: "ship",
+  });
+  assertEquals(direct.kind, "completed");
+});
+
+Deno.test("workflowSignal: a key whose highest record cannot be read is refused as unreadable", async () => {
+  const fixture = await keyedFixture();
+  fixture.waits.keyRecords.set(
+    waitKeyRecordKey(fixture.claim),
+    new TextEncoder().encode("{not json"),
+  );
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(refusal.kind, "unreadable");
+  assertEquals(await outcomeOf(fixture, fixture.waitId), undefined);
+});
+
+Deno.test("workflowSignal: a claim whose wait nothing here knows is not found, in the words of the key address", async () => {
+  // The step claimed its key and stopped before it registered the wait or
+  // saved the run.
+  const workflow = keyedWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const held = await suspendedHoldingKey(workflow, waits);
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(refusal.kind, "unknown");
+  assertEquals(refusal.code, "not_found");
+  assertEquals(
+    refusal.message,
+    `Signal wait not found: key ${KEY} of workflow "release"`,
+  );
+  assertEquals(refusal.details.waitId, held.waitId);
+  assertEquals(waits.outcomes.size, 0);
+});
+
+Deno.test("workflowSignal: by key on a datastore that cannot hold wait records is refused as unsupported", async () => {
+  const fixture = await keyedFixture();
+  const refusal = refusalOf(
+    await sendByKey(
+      {
+        deps: {
+          ...fixture.deps,
+          signalWaits: { supported: false, reason: "no conditional writes" },
+        },
+      },
+      "release",
+      KEY,
+      { verdict: "ship" },
+    ),
+  );
+  assertEquals(refusal.kind, "unsupported");
 });

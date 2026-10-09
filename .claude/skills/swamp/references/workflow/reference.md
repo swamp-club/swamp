@@ -903,6 +903,7 @@ it. Use it when a step needs a value, not a yes or no:
 swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
+swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'   # by key, in place of the wait ID
 swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
@@ -930,8 +931,13 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   of another run fails with `wait_key_held` and opens no wait, so give it
   `allowFailure` or a `failed` dependent. The key is free again once the holder
   is signalled, timed out or cancelled. `workflow waits` shows the key. A signal
-  cannot name a key yet. Upgrade every host before adding a key: an older swamp
-  ignores it and opens the wait unclaimed.
+  names the wait ID, or `--workflow <id-or-name> --key <key>` (not both, and not
+  with `--server`): the key resolves to the wait that holds it, and the result
+  names that wait ID. A key the workflow does not declare, or an unknown
+  workflow, is not found; a declared key with no open wait is refused
+  (`no_open_wait`) and nothing is stored, so send again once the run reaches the
+  wait. Upgrade every host before adding a key: an older swamp ignores it and
+  opens the wait unclaimed.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

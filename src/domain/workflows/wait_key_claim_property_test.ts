@@ -27,6 +27,7 @@ import {
   decideKeyHolder,
   decodeWaitKeyRecord,
   encodeWaitKeyRecord,
+  findKeyHolder,
   releaseKeyClaims,
   waitKeyAddressFromKey,
   type WaitKeyClaim,
@@ -142,7 +143,7 @@ const opArb = fc.oneof(
   fc.record({ op: fc.constant("sweep" as const) }),
 );
 
-Deno.test("wait key: over any order of claims, settlements and collections one wait holds the key at a time and no generation is reused (property)", async () => {
+Deno.test("wait key: over any order of claims, settlements and collections one wait holds the key at a time, a reader names it without writing, and no generation is reused (property)", async () => {
   await fc.assert(
     fc.asyncProperty(fc.array(opArb, { maxLength: 40 }), async (ops) => {
       const store = new InMemorySignalWaitStore();
@@ -185,6 +186,14 @@ Deno.test("wait key: over any order of claims, settlements and collections one w
           assert(highest.kind === "found");
           assertEquals(highest.record, open);
         }
+        // A reader that claims nothing names the same holder, and writes
+        // nothing to find it.
+        const before = [store.keyRecords.size, store.outcomes.size];
+        assertEquals(
+          await findKeyHolder(store, "wf", "verdict"),
+          open ? { kind: "held", claim: open } : { kind: "free" },
+        );
+        assertEquals([store.keyRecords.size, store.outcomes.size], before);
       }
     }),
     { numRuns: 200 },

@@ -152,9 +152,15 @@ Deno.test("only signal_wait_records.ts names the wait key families", async () =>
  * acceptance use case, and serve's delivery function and HTTP route. The
  * WebSocket handler shares a file with handlers that do save runs, so it is
  * held to calling the delivery function instead (the next test).
+ *
+ * The key claims are on the list for a signal addressed by key
+ * (swamp-club#3210), which finds its wait through them. That holds every
+ * function of the file to the rule, the ones a step claims and releases a
+ * key with included: none of them has a reason to write a run.
  */
 const SIGNAL_PATH_FILES = [
   ["src", "libswamp", "workflows", "signal.ts"],
+  ["src", "domain", "workflows", "wait_key_claim.ts"],
   ["src", "serve", "signal_delivery.ts"],
   ["src", "serve", "signal_http.ts"],
 ];
@@ -163,6 +169,29 @@ Deno.test("workflow signal never saves a run and never takes a run claim", async
   for (const parts of SIGNAL_PATH_FILES) {
     await assertWritesNoRun(parts);
   }
+});
+
+Deno.test("workflow signal reads who holds a key and writes no key record", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, "src", "libswamp", "workflows", "signal.ts"),
+  );
+  assertEquals(
+    mentions(source, /\bfindKeyHolder\s*\(/),
+    true,
+    "src/libswamp/workflows/signal.ts: a signal addressed by key resolves " +
+      "its wait with findKeyHolder.",
+  );
+  assertEquals(
+    mentions(
+      source,
+      /\bclaimWaitKey\b|\breleaseKeyClaims\b|\.createKeyRecord\s*\(|\.removeKeyRecord\s*\(|\.removeKeyRecordsOfWorkflow\s*\(/,
+    ),
+    false,
+    "src/libswamp/workflows/signal.ts: a signal must not claim, release " +
+      "or remove a key. It resolves a key to the wait that holds it with " +
+      "findKeyHolder, which writes nothing, and the outcome it then creates " +
+      "is the only record a signal writes.",
+  );
 });
 
 Deno.test("both serve transports deliver a signal through deliverSignalForCaller", async () => {

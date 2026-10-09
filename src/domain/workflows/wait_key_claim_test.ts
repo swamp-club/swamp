@@ -24,12 +24,18 @@ import {
   type WaitOutcome,
 } from "./signal_wait_records.ts";
 import { SignalWait } from "./signal_wait.ts";
+import { Job } from "./job.ts";
+import { Step } from "./step.ts";
+import { StepTask } from "./step_task.ts";
+import { Workflow } from "./workflow.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 import {
   claimWaitKey,
   decideKeyHolder,
+  declaredWaitKeyStep,
   decodeWaitKeyRecord,
   encodeWaitKeyRecord,
+  findKeyHolder,
   releaseKeyClaims,
   WAIT_KEY_RECORD_MAX_BYTES,
   WAIT_KEY_UNREGISTERED_GRACE_MS,
@@ -496,4 +502,157 @@ Deno.test("waitKeyPrefix: a Windows device name is not a key", () => {
     assertThrows(() => waitKeyPrefix(WORKFLOW, key), Error, "wait key");
   }
   assertEquals(waitKeyAddressFromKey("wait-keys/wf/nul/1"), undefined);
+});
+
+Deno.test("findKeyHolder: a key with no record, or whose highest record is a release, is free", async () => {
+  const store = new InMemorySignalWaitStore();
+  assertEquals(await findKeyHolder(store, WORKFLOW, "verdict"), {
+    kind: "free",
+  });
+  const claim = await acquire(store);
+  await releaseKeyClaims(store, () => true, NOW);
+  const highest = await store.highestKeyRecord(WORKFLOW, "verdict");
+  assert(highest.kind === "found" && highest.record.kind === "release");
+  assertEquals(await findKeyHolder(store, WORKFLOW, claim.key), {
+    kind: "free",
+  });
+});
+
+Deno.test("findKeyHolder: names the claim of the open wait, and only under its own workflow and key", async () => {
+  const store = new InMemorySignalWaitStore();
+  const claim = await acquire(store);
+  assertEquals(await findKeyHolder(store, WORKFLOW, "verdict"), {
+    kind: "held",
+    claim,
+  });
+  assertEquals(await findKeyHolder(store, "wf-other", "verdict"), {
+    kind: "free",
+  });
+  assertEquals(await findKeyHolder(store, WORKFLOW, "other"), {
+    kind: "free",
+  });
+});
+
+Deno.test("findKeyHolder: a holder past its deadline is still named, and nothing is settled", async () => {
+  const store = new InMemorySignalWaitStore();
+  const claim = await acquire(store);
+  // The lookup takes no clock: it cannot settle, whatever the time is.
+  assertEquals(await findKeyHolder(store, WORKFLOW, "verdict"), {
+    kind: "held",
+    claim,
+  });
+  assertEquals(store.outcomes.size, 0);
+  // A claimant at that time settles it, and the key then reads as free.
+  await claimWaitKey(store, request(), PAST_DEADLINE);
+  assertEquals(store.outcomes.has(claim.waitId), true);
+});
+
+Deno.test("findKeyHolder: a claim whose wait has an outcome is free, also when the outcome names another run", async () => {
+  const store = new InMemorySignalWaitStore();
+  const claim = await acquire(store);
+  await store.settle(cancelled(claim));
+  assertEquals(await findKeyHolder(store, WORKFLOW, "verdict"), {
+    kind: "free",
+  });
+
+  const other = new InMemorySignalWaitStore();
+  const second = await acquire(other);
+  await other.settle(
+    cancelled({ ...second, runId: crypto.randomUUID() }),
+  );
+  assertEquals(await findKeyHolder(other, WORKFLOW, "verdict"), {
+    kind: "free",
+  });
+});
+
+Deno.test("findKeyHolder: a highest record that cannot be read leaves the holder unknown", async () => {
+  const store = new InMemorySignalWaitStore();
+  const claim = await acquire(store);
+  store.keyRecords.set(
+    waitKeyRecordKey(claim),
+    new TextEncoder().encode("{not json"),
+  );
+  assertEquals(await findKeyHolder(store, WORKFLOW, "verdict"), {
+    kind: "unreadable",
+    generation: 1,
+  });
+});
+
+Deno.test("findKeyHolder: a claim superseded between the two reads is not named as an open wait", async () => {
+  const store = new InMemorySignalWaitStore();
+  const claim = await acquire(store);
+  // The claim's run is collected after the first read: a release takes the
+  // next generation, then the outcome goes.
+  let reads = 0;
+  const racing = {
+    highestKeyRecord: async (workflowId: string, key: string) => {
+      const highest = await store.highestKeyRecord(workflowId, key);
+      if (++reads === 1) {
+        await store.settle(cancelled(claim));
+        await releaseKeyClaims(store, () => true, NOW);
+        await store.removeOutcome(claim.waitId);
+      }
+      return highest;
+    },
+    findOutcome: (waitId: string) => store.findOutcome(waitId),
+  };
+  assertEquals(await findKeyHolder(racing, WORKFLOW, "verdict"), {
+    kind: "free",
+  });
+  assertEquals(reads, 2);
+});
+
+Deno.test("findKeyHolder: a workflow id or a key no record can be kept under holds nothing and is not looked up", async () => {
+  const never = {
+    highestKeyRecord: () => {
+      throw new Error("the store was asked");
+    },
+    findOutcome: () => {
+      throw new Error("the store was asked");
+    },
+  };
+  for (const workflowId of ["", "..", "a/b", "a\\b"]) {
+    assertEquals(await findKeyHolder(never, workflowId, "verdict"), {
+      kind: "free",
+    });
+  }
+  for (const key of ["", "Verdict", "../x", "con"]) {
+    assertEquals(await findKeyHolder(never, WORKFLOW, key), { kind: "free" });
+  }
+});
+
+Deno.test("declaredWaitKeyStep: names the step that declares the key, in any job, and nothing for another key", () => {
+  const workflow = Workflow.create({
+    name: "release",
+    jobs: [
+      Job.create({
+        name: "build",
+        steps: [
+          Step.create({
+            name: "compile",
+            task: StepTask.model("builder", "run"),
+          }),
+          Step.create({
+            name: "plain",
+            task: StepTask.waitForSignal(60, { type: "object" }),
+          }),
+        ],
+      }),
+      Job.create({
+        name: "gate",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, { type: "object" }, "verdict"),
+          }),
+        ],
+      }),
+    ],
+  });
+  assertEquals(declaredWaitKeyStep(workflow, "verdict"), {
+    jobName: "gate",
+    stepName: "review",
+  });
+  assertEquals(declaredWaitKeyStep(workflow, "other"), undefined);
+  assertEquals(declaredWaitKeyStep(workflow, ""), undefined);
 });

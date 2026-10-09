@@ -253,6 +253,7 @@ export async function deliverSignalForCaller(
     ...createWorkflowSignalDeps(
       ctx.repoContext.workflowRunRepo,
       ctx.repoContext.signalWaits ?? SIGNAL_WAITS_NOT_CONFIGURED,
+      ctx.repoContext.workflowRepo,
     ),
     // One request must not make serve read every run record.
     scanRunRecords: false,
@@ -279,7 +280,9 @@ export async function deliverSignalForCaller(
         },
         error: (event) => {
           const kind = signalRefusalKind(event.error);
-          if (kind === undefined) {
+          // Only a signal addressed by key is refused for having no open
+          // wait, and this function sends a wait ID.
+          if (kind === undefined || kind === "no_open_wait") {
             result = {
               status: "failed",
               message: sanitizeErrorForClient(new Error(event.error.message)),

@@ -21,6 +21,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createWorkflowSignalDeps,
   workflowSignal,
+  type WorkflowSignalAddress,
   type WorkflowSignalData,
 } from "../../libswamp/workflows/signal.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
@@ -70,6 +71,30 @@ export function parseSignalPayload(raw: string): unknown {
 }
 
 /**
+ * The wait a signal is addressed to: a wait ID, or `--workflow` with `--key`.
+ * Exactly one of the two forms is given.
+ */
+export function parseSignalAddress(
+  waitId: string | undefined,
+  options: { workflow?: string; key?: string },
+): WorkflowSignalAddress {
+  const { workflow, key } = options;
+  if (waitId !== undefined && workflow === undefined && key === undefined) {
+    return { waitId };
+  }
+  if (waitId === undefined && workflow !== undefined && key !== undefined) {
+    return { workflow, key };
+  }
+  throw new UserError(
+    waitId === undefined && workflow === undefined && key === undefined
+      ? "Name the wait to signal: give its wait ID, or --workflow with --key."
+      : waitId !== undefined
+      ? "Give a wait ID, or --workflow with --key, not both."
+      : "--workflow and --key are given together: the key is one a wait_for_signal step of that workflow declares.",
+  );
+}
+
+/**
  * Renders a delivered signal in log or JSON mode. The command to run next
  * goes through writeOutput, not the logger, so it can be copied as printed.
  * `--quiet` hides it, as it hides the logger's info lines. `commandTarget`
@@ -89,8 +114,15 @@ export function renderSignalResult(
     console.log(JSON.stringify(data));
     return;
   }
-  cliCtx.logger
-    .info`Signalled step ${data.stepName} in workflow ${data.workflowName}`;
+  if (data.key === undefined) {
+    cliCtx.logger
+      .info`Signalled step ${data.stepName} in workflow ${data.workflowName}`;
+  } else {
+    // By key the caller never typed the wait ID, so the line names the wait
+    // that took the signal and the receipt.
+    cliCtx.logger
+      .info`Signalled step ${data.stepName} in workflow ${data.workflowName}: wait ${data.waitId} holding key ${data.key}, signal ${data.signal.id}`;
+  }
   if (cliCtx.verbosity === "quiet") return;
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
@@ -160,13 +192,25 @@ export const workflowSignalCommand = withRemoteOptions(
       `swamp workflow signal 6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90 --payload '{"verdict":"ship"}'`,
     )
     .example(
+      "Answer the wait that holds a key",
+      `swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'`,
+    )
+    .example(
       "Answer a wait a server holds",
       `swamp workflow signal 6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90 --payload '{"verdict":"ship"}' --server wss://swamp.example.com`,
     )
-    .arguments("<wait_id:string>")
+    .arguments("[wait_id:string]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--workflow <id_or_name:string>",
+      "With --key, in place of a wait ID: the workflow whose wait holds the key",
+    )
+    .option(
+      "--key <key:string>",
+      "With --workflow, in place of a wait ID: the key a wait_for_signal step declares",
     )
     .option(
       "--payload <json:string>",
@@ -174,20 +218,36 @@ export const workflowSignalCommand = withRemoteOptions(
       { required: true },
     ),
 )
-  .action(async function (options: AnyOptions, waitId: string) {
+  .action(async function (options: AnyOptions, waitId?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
       "signal",
     ]);
     const payload = parseSignalPayload(options.payload as string);
+    const address = parseSignalAddress(waitId, {
+      workflow: options.workflow as string | undefined,
+      key: options.key as string | undefined,
+    });
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
+      if (!("waitId" in address)) {
+        throw new UserError(
+          `A server takes a signal by wait ID only. Find the ID with "swamp workflow waits${
+            formatCommandTarget({
+              server: options.server as string | undefined,
+            })
+          }" and signal that.`,
+        );
+      }
       // The server accepts only a UUID, and answers anything else as a
       // malformed request; it is answered here as the local command would.
-      const id = normalizeWaitId(waitId);
+      const id = normalizeWaitId(address.waitId);
       if (id === undefined) {
-        throw new UserError(`Signal wait not found: ${waitId}`, "not_found");
+        throw new UserError(
+          `Signal wait not found: ${address.waitId}`,
+          "not_found",
+        );
       }
       const token = await resolveServerTokenFromOptions(server, options);
       const response = await requestNewerServerResponse<
@@ -216,13 +276,14 @@ export const workflowSignalCommand = withRemoteOptions(
     const deps = createWorkflowSignalDeps(
       repoContext.workflowRunRepo,
       signalWaitsOf(repoContext),
+      repoContext.workflowRepo,
     );
     const commandTarget = formatCommandTarget({
       repoDir: options.repoDir as string | undefined,
     });
 
     await consumeStream(
-      workflowSignal(ctx, deps, { waitId, payload }),
+      workflowSignal(ctx, deps, { ...address, payload }),
       {
         resolving: () => {},
         completed: (e) => {

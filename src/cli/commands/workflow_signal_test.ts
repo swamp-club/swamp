@@ -19,8 +19,10 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import type { WorkflowSignalData } from "../../libswamp/workflows/signal.ts";
 import { UserError } from "../../domain/errors.ts";
+import type { CommandContext } from "../context.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {
+  parseSignalAddress,
   parseSignalPayload,
   renderRemoteSignalResult,
   renderSignalResult,
@@ -193,4 +195,57 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
     JSON.parse(json.join("")).resumeCommand,
     `swamp workflow resume release --run ${RUN_ID} --server http://swamp.test`,
   );
+});
+
+Deno.test("parseSignalAddress: a wait ID alone, or --workflow with --key, names the wait", () => {
+  assertEquals(parseSignalAddress(WAIT_ID, {}), { waitId: WAIT_ID });
+  assertEquals(
+    parseSignalAddress(undefined, { workflow: "release", key: "verdict" }),
+    { workflow: "release", key: "verdict" },
+  );
+});
+
+Deno.test("parseSignalAddress: no address, both forms, or half of the key form is a user error saying what to give", () => {
+  const refused: Array<
+    [string | undefined, { workflow?: string; key?: string }, string]
+  > = [
+    [undefined, {}, "give its wait ID, or --workflow with --key"],
+    [WAIT_ID, { workflow: "release", key: "verdict" }, "not both"],
+    [WAIT_ID, { key: "verdict" }, "not both"],
+    [WAIT_ID, { workflow: "release" }, "not both"],
+    [undefined, { workflow: "release" }, "given together"],
+    [undefined, { key: "verdict" }, "given together"],
+  ];
+  for (const [waitId, options, message] of refused) {
+    assertThrows(
+      () => parseSignalAddress(waitId, options),
+      UserError,
+      message,
+    );
+  }
+});
+
+Deno.test("renderSignalResult: log mode names the wait, its key and the receipt when the wait holds a key", () => {
+  const result = signalled({ key: "release-verdict" });
+  const logged: string[] = [];
+  const logger = {
+    info: (strings: TemplateStringsArray, ...values: unknown[]) => {
+      logged.push(String.raw({ raw: strings }, ...values));
+    },
+  } as unknown as CommandContext["logger"];
+  captureStdout(() => renderSignalResult(hintTestContext({ logger }), result));
+  assertEquals(logged, [
+    `Signalled step review in workflow release: wait ${WAIT_ID} holding key release-verdict, signal ${result.signal.id}`,
+  ]);
+});
+
+Deno.test("renderSignalResult: json mode carries the key beside the wait ID and the receipt", () => {
+  const result = signalled({ key: "release-verdict" });
+  const lines = captureStdout(() =>
+    renderSignalResult(hintTestContext({ outputMode: "json" }), result)
+  );
+  const printed = JSON.parse(lines[0]);
+  assertEquals(printed.key, "release-verdict");
+  assertEquals(printed.waitId, WAIT_ID);
+  assertEquals(printed.signal, result.signal);
 });

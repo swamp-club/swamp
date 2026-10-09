@@ -47,6 +47,7 @@ import type {
   WaitRegistration,
 } from "./signal_wait_records.ts";
 import { cancelledOutcome, timedOutOutcome } from "./signal_wait_records.ts";
+import type { Workflow } from "./workflow.ts";
 
 /** Key family of key records: `wait-keys/<workflowId>/<key>/<generation>`. */
 export const WAIT_KEY_RECORD_PREFIX = "wait-keys/";
@@ -232,6 +233,25 @@ export function decideKeyHolder(
   return outcome.kind === "absent"
     ? { held: true, claim: highest }
     : { held: false };
+}
+
+/**
+ * The job and step of the `wait_for_signal` step of `workflow` that declares
+ * `key`, or undefined when no step of it does.
+ */
+export function declaredWaitKeyStep(
+  workflow: Workflow,
+  key: string,
+): { jobName: string; stepName: string } | undefined {
+  for (const job of workflow.jobs) {
+    for (const step of job.steps) {
+      const task = step.task?.data;
+      if (task?.type === "wait_for_signal" && task.key === key) {
+        return { jobName: job.name, stepName: step.name };
+      }
+    }
+  }
+  return undefined;
 }
 
 /** The highest record of a key as read back. */
@@ -430,6 +450,58 @@ export async function claimWaitKey(
     // open claim there holds the key, anything else leaves it free.
   }
   return { kind: "contended" };
+}
+
+/** Who holds a key, as a reader that claims nothing finds it. */
+export type KeyHolderLookup =
+  /** `claim` names the open wait that holds the key. */
+  | { readonly kind: "held"; readonly claim: WaitKeyClaim }
+  | { readonly kind: "free" }
+  /** The highest record of the key cannot be read, so its holder is unknown. */
+  | { readonly kind: "unreadable"; readonly generation: number };
+
+/**
+ * Finds the wait that holds a key, for a signal addressed by key
+ * (swamp-club#3210). It writes nothing: a holder past its deadline with no
+ * outcome is still the holder, and whoever acts on the wait settles it, as
+ * every reader of a wait does. A workflow id or a key that no record can be
+ * kept under holds nothing.
+ */
+export async function findKeyHolder(
+  store: Pick<WaitKeyRecords, "highestKeyRecord" | "findOutcome">,
+  workflowId: string,
+  key: string,
+): Promise<KeyHolderLookup> {
+  if (!isSinglePathSegment(workflowId) || !isWaitKey(key)) {
+    return { kind: "free" };
+  }
+  let highest = await store.highestKeyRecord(workflowId, key);
+  for (let attempt = 0; attempt < WAIT_KEY_CLAIM_ATTEMPTS; attempt++) {
+    if (highest.kind === "unreadable") return highest;
+    const record = highest.kind === "found" ? highest.record : undefined;
+    if (record?.kind !== "claim") return { kind: "free" };
+    const stored = await store.findOutcome(record.waitId);
+    const holding = decideKeyHolder(
+      record,
+      // An outcome that names another run is not that wait's outcome.
+      stored.kind === "found" && stored.record.runId !== record.runId
+        ? { kind: "unreadable" }
+        : stored,
+    );
+    if (!holding.held) return { kind: "free" };
+    // A claim reads as held when its outcome is gone with its run, too.
+    // Such a claim was superseded before the outcome was removed, so a
+    // holder still the highest record is a wait that is open.
+    const still = await store.highestKeyRecord(workflowId, key);
+    if (
+      still.kind === "found" &&
+      still.record.generation === holding.claim.generation
+    ) return { kind: "held", claim: holding.claim };
+    highest = still;
+  }
+  // Superseded on every read: no wait held the key for long enough to be
+  // named, and the next signal reads again.
+  return { kind: "free" };
 }
 
 /** What superseding and removing claims did. */
