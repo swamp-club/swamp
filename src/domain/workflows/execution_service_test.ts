@@ -20,7 +20,9 @@
 import {
   acceptedOutcomeFor,
   inMemorySignalWaits,
+  InMemorySignalWaitStore,
 } from "./signal_wait_store_test_helpers.ts";
+import type { WaitRegistration } from "./signal_wait_records.ts";
 import { WAIT_KEY_HELD_STEP_ERROR } from "./signal_wait.ts";
 import { waitKeyRecordKey } from "./wait_key_claim.ts";
 import { RunSensitiveValues } from "../secrets/mod.ts";
@@ -18637,6 +18639,72 @@ Deno.test("wait_for_signal: a key whose highest record cannot be read fails the 
     assertEquals(waits.store.keyRecords.size, 1);
     const stored = (await runRepo.findAllByWorkflowId(workflow.id))[0];
     assertEquals(stored.status, "failed");
+  });
+});
+
+Deno.test("wait_for_signal: a registration that fails after the key was claimed settles the claimed wait, so the key is free again", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = Workflow.create({
+      name: `wait-key-register-fails-${crypto.randomUUID()}`,
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "review",
+              task: StepTask.waitForSignal(300, { type: "object" }, "verdict"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+    class FailsToRegister extends InMemorySignalWaitStore {
+      failing = true;
+      override register(registration: WaitRegistration): Promise<void> {
+        return this.failing
+          ? Promise.reject(new Error("datastore unreachable"))
+          : super.register(registration);
+      }
+    }
+    const store = new FailsToRegister();
+    const service = () => {
+      const made = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        undefined,
+        undefined,
+        new CatalogStore(join(tempDir, `_catalog-${crypto.randomUUID()}.db`)),
+      );
+      made.signalWaits = { supported: true, store };
+      return made;
+    };
+
+    // The step fails with the store's error, as any step that throws does.
+    const events: WorkflowExecutionEvent[] = [];
+    for await (const event of service().run(workflow.name)) events.push(event);
+    const failed = events.find((e) => e.kind === "step_failed");
+    assert(failed?.kind === "step_failed");
+    assertStringIncludes(failed.error, "datastore unreachable");
+    const claims = await store.listKeyRecords();
+    assertEquals(claims.length, 1);
+    assert(claims[0].kind === "claim");
+    const outcome = await store.findOutcome(claims[0].waitId);
+    assert(outcome.kind === "found");
+    assertEquals(outcome.record.kind, "cancelled");
+
+    // The next run claims the key as a new generation and opens its wait.
+    store.failing = false;
+    for await (const _event of service().run(workflow.name)) { /* drain */ }
+    const registrations = await store.listRegistrations();
+    assertEquals(registrations.map((r) => r.key), ["verdict"]);
+    const highest = await store.highestKeyRecord(workflow.id, "verdict");
+    assert(highest.kind === "found" && highest.record.kind === "claim");
+    assertEquals(highest.record.generation, 2);
+    assertEquals(highest.record.waitId, registrations[0].waitId);
   });
 });
 

@@ -464,3 +464,48 @@ Deno.test("ControlPlaneSignalWaitStore: of many concurrent claims of a free key 
     assertEquals((await stores[0].listKeyRecords()).length, 1);
   });
 });
+
+Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: a listing that keeps naming a record that is gone ends as unreadable, after a bounded number of reads", async () => {
+  const backing = memoryStore();
+  let listings = 0;
+  const stale: AtomicControlPlaneStore = {
+    ...backing,
+    list: (prefix) => {
+      listings++;
+      return Promise.resolve(
+        prefix.startsWith("wait-keys/") ? ["wait-keys/wf-1/verdict/7"] : [],
+      );
+    },
+  };
+  const store = new ControlPlaneSignalWaitStore(stale);
+
+  assertEquals(await store.highestKeyRecord("wf-1", "verdict"), {
+    kind: "unreadable",
+    generation: 7,
+  });
+  assertEquals(listings, 4);
+});
+
+Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: a record removed between the listing and the read is passed over for what superseded it", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  const kept = keyClaim(2);
+  await store.createKeyRecord(kept);
+  let first = true;
+  const racing = new ControlPlaneSignalWaitStore({
+    ...backing,
+    list: async (prefix) => {
+      const keys = await backing.list(prefix);
+      if (!first) return keys;
+      first = false;
+      return ["wait-keys/wf-1/verdict/1", ...keys].filter((k) =>
+        k !== "wait-keys/wf-1/verdict/2"
+      );
+    },
+  });
+
+  assertEquals(await racing.highestKeyRecord("wf-1", "verdict"), {
+    kind: "found",
+    record: kept,
+  });
+});

@@ -59,6 +59,12 @@ export function isAtomicControlPlaneStore(
 }
 
 /**
+ * How often the highest record of a key is looked for when the one a
+ * listing names is gone by the time it is read.
+ */
+const HIGHEST_KEY_RECORD_READS = 4;
+
+/**
  * {@link SignalWaitStore} over a {@link ControlPlaneStore}: registrations
  * under `waits/`, outcomes under `wait-outcomes/` and key records under
  * `wait-keys/`, each written with `putIfAbsent` so the first writer of a
@@ -144,24 +150,34 @@ export class ControlPlaneSignalWaitStore implements SignalWaitStore {
     // The highest generation is read from the key names, so one record is
     // fetched however many runs have claimed the key.
     let generation = 0;
-    for (
-      const storeKey of await this.#store.list(waitKeyPrefix(workflowId, key))
-    ) {
-      const at = waitKeyAddressFromKey(storeKey);
-      if (at !== undefined && at.generation > generation) {
-        generation = at.generation;
+    for (let attempt = 0; attempt < HIGHEST_KEY_RECORD_READS; attempt++) {
+      generation = 0;
+      for (
+        const storeKey of await this.#store.list(
+          waitKeyPrefix(workflowId, key),
+        )
+      ) {
+        const at = waitKeyAddressFromKey(storeKey);
+        if (at !== undefined && at.generation > generation) {
+          generation = at.generation;
+        }
       }
+      if (generation === 0) return { kind: "none" };
+      const stored = await this.#findKeyRecord({
+        workflowId,
+        key,
+        generation,
+      });
+      if (stored.kind === "found") return stored;
+      if (stored.kind === "unreadable") {
+        return { kind: "unreadable", generation };
+      }
+      // Listed and gone again: superseded and removed in between. The
+      // next listing shows what superseded it.
     }
-    if (generation === 0) return { kind: "none" };
-    const stored = await this.#findKeyRecord({ workflowId, key, generation });
-    // Listed and gone again: superseded and removed in between. The next
-    // read sees what superseded it.
-    if (stored.kind === "absent") {
-      return await this.highestKeyRecord(workflowId, key);
-    }
-    return stored.kind === "found"
-      ? stored
-      : { kind: "unreadable", generation };
+    // A listing that keeps naming a record that is not there says nothing
+    // true about the key's holder.
+    return { kind: "unreadable", generation };
   }
 
   async createKeyRecord(

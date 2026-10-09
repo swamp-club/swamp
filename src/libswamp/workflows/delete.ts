@@ -159,10 +159,15 @@ export function createWorkflowDeleteDeps(
     deleteWaitRecords: signalWaits?.supported || continuationClaims
       ? async (runIds, workflowId) => {
         if (signalWaits?.supported) {
-          await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
-          // Every key record of the workflow goes with it, the release
-          // records its last claims left behind included (swamp-club#3209).
-          await signalWaits.store.removeKeyRecordsOfWorkflow(workflowId);
+          try {
+            await removeWaitRecordsOfRuns(signalWaits.store, new Set(runIds));
+          } finally {
+            // Every key record of the workflow goes with it, the release
+            // records its last claims left behind included, and whether
+            // or not the runs' records could be removed: no sweep removes
+            // the highest record of a key (swamp-club#3209).
+            await signalWaits.store.removeKeyRecordsOfWorkflow(workflowId);
+          }
         }
         // The continuation claims of a run go with it (swamp-club#3108).
         await removeClaimsOfRuns(

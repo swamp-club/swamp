@@ -5345,19 +5345,39 @@ export class WorkflowExecutionService {
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
         if (!earlier) {
-          await waits.register(
-            registrationOf(
-              {
-                workflowId: run.workflowId,
-                workflowName: run.workflowName,
-                runId: run.id,
-                jobName: job.name,
-                stepName,
-              },
-              wait,
-              openedAt,
-            ),
-          );
+          try {
+            await waits.register(
+              registrationOf(
+                {
+                  workflowId: run.workflowId,
+                  workflowName: run.workflowName,
+                  runId: run.id,
+                  jobName: job.name,
+                  stepName,
+                },
+                wait,
+                openedAt,
+              ),
+            );
+          } catch (error) {
+            // The claim was created and the wait was not: nothing on the
+            // run record would ever settle it, and it would hold the key
+            // until its deadline. Settling it frees the key now.
+            if (wait.key !== undefined) {
+              try {
+                await waits.settle(cancelledOutcome({
+                  waitId: wait.id,
+                  workflowId: run.workflowId,
+                  runId: run.id,
+                  deadline: wait.deadline.toISOString(),
+                }, openedAt));
+              } catch {
+                // The store is failing; the registration error is the one
+                // to report, and the claim ends at its deadline.
+              }
+            }
+            throw error;
+          }
         }
         stepRun.waitForSignal(wait);
         yield {
