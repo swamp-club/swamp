@@ -30,7 +30,7 @@
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { ensureDir } from "@std/fs";
+import { ensureDir, exists } from "@std/fs";
 import { dirname, join } from "@std/path";
 import {
   configureStartupExtensions,
@@ -224,6 +224,7 @@ async function startup(
   fixture: Fixture,
   opts: {
     thinClient?: boolean;
+    deferCatalog?: boolean;
     suppressWarning?: (warning: DeferredWarning) => boolean;
   } = {},
 ): Promise<{ warnings: DeferredWarning[]; dispose: () => void }> {
@@ -235,6 +236,7 @@ async function startup(
     deferredWarnings: warnings,
     quiet: true,
     thinClient: opts.thinClient ?? false,
+    deferCatalog: opts.deferCatalog ?? false,
     readDatastoreEnv: unsetDatastoreEnv,
     suppressWarning: opts.suppressWarning,
   });
@@ -668,6 +670,58 @@ Deno.test("configureStartupExtensions: a thin client skips eager resolution, and
       dispose();
     }
   });
+});
+
+Deno.test("configureStartupExtensions: deferCatalog creates no catalog for an extension-backed datastore until a vault load resolves the base (swamp-club#3139)", async () => {
+  await withManagedRepo(async (fixture) => {
+    const catalogPath = join(
+      fixture.repoDir,
+      ".swamp",
+      "_extension_catalog.db",
+    );
+    const { dispose } = await startup(fixture, { deferCatalog: true });
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), false);
+      assertEquals(await exists(catalogPath), false);
+      await vaultTypeRegistry.ensureLoaded();
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+      assertEquals(await exists(catalogPath), true);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+Deno.test("configureStartupExtensions: deferCatalog creates no catalog for a managedConfig filesystem datastore (swamp-club#3139)", async () => {
+  await withManagedRepo(async (fixture) => {
+    const datastorePath = join(fixture.repoDir, "ds");
+    await ensureDir(datastorePath);
+    const dispose = await configureStartupExtensions({
+      repoDir: fixture.repoDir,
+      marker: {
+        ...fixture.marker,
+        datastore: {
+          type: "filesystem",
+          path: datastorePath,
+          managedConfig: true,
+        },
+      },
+      resolvedSources: [],
+      deferredWarnings: [],
+      quiet: true,
+      deferCatalog: true,
+      readDatastoreEnv: unsetDatastoreEnv,
+    });
+    try {
+      assertEquals(isManagedConfigBaseResolved(fixture.repoDir), true);
+      assertEquals(
+        await exists(join(fixture.repoDir, ".swamp", "_extension_catalog.db")),
+        false,
+      );
+    } finally {
+      dispose();
+    }
+  }, { datastoreRoot: "none" });
 });
 
 Deno.test("configureStartupExtensions: a filesystem datastore at a custom path resolves even for a thin client", async () => {

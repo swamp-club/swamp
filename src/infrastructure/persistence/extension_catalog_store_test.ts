@@ -65,6 +65,29 @@ Deno.test("ExtensionCatalogStore: creates schema on construction", () => {
   store.close();
 });
 
+Deno.test("ExtensionCatalogStore: openOnFirstUse writes nothing until the catalog is used (swamp-club#3139)", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath, { openOnFirstUse: true });
+  assertEquals([...Deno.readDirSync(dirname(dbPath))], []);
+
+  assertEquals(store.count(), 0);
+  assert(Deno.statSync(dbPath).isFile);
+  store.upsert(makeRow());
+  assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: closing an unused openOnFirstUse catalog writes nothing (swamp-club#3139)", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath, { openOnFirstUse: true });
+  store.close();
+  assertEquals([...Deno.readDirSync(dirname(dbPath))], []);
+
+  // A closed catalog is not reopened by a late caller.
+  assertThrows(() => store.count(), Error, "extension catalog is closed");
+  assertEquals([...Deno.readDirSync(dirname(dbPath))], []);
+});
+
 Deno.test("ExtensionCatalogStore: upsert and findByType round-trip", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);

@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   commandNeedsLoaderSetup,
   type DeferredWarning,
+  defersExtensionCatalog,
   isDispatchRunnerCommand,
   isHookCommand,
   isLocalhostUrl,
@@ -633,6 +634,39 @@ Deno.test("resolveAutoResolverLockfilePath: records in the in-repo lockfile on a
     ),
     join(base, "upstream_extensions.json"),
   );
+});
+
+// ── defersExtensionCatalog (swamp-club#3139) ────────────────────────────────
+
+Deno.test("defersExtensionCatalog: serve check-config defers the catalog", () => {
+  assertEquals(
+    defersExtensionCatalog(extractCommandInfo(["serve", "check-config"])),
+    true,
+  );
+  assertEquals(
+    defersExtensionCatalog(
+      extractCommandInfo(["serve", "check-config", "--auth-mode", "none"]),
+    ),
+    true,
+  );
+});
+
+Deno.test("defersExtensionCatalog: serve and other commands open the catalog at startup", () => {
+  for (
+    const args of [
+      ["serve"],
+      ["serve", "daemon", "enable"],
+      ["model", "type", "search"],
+      ["data", "query", "true"],
+      ["doctor", "check-config"],
+    ]
+  ) {
+    assertEquals(
+      defersExtensionCatalog(extractCommandInfo(args)),
+      false,
+      args.join(" "),
+    );
+  }
 });
 
 // ── isThinClientCommand (swamp-club#2483) ───────────────────────────────────

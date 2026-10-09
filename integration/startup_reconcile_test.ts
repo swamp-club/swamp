@@ -33,7 +33,14 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { configure, type LogRecord, reset } from "@logtape/logtape";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { configureStartupExtensions } from "../src/cli/mod.ts";
+import {
+  configureExtensionAutoResolver,
+  configureStartupExtensions,
+} from "../src/cli/mod.ts";
+import {
+  getAutoResolver,
+  setAutoResolver,
+} from "../src/domain/extensions/auto_resolver_context.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { vaultTypeRegistry } from "../src/domain/vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_registry.ts";
@@ -179,6 +186,7 @@ async function startup(
   fixture: Fixture,
   during: () => Promise<void> = () => Promise.resolve(),
   lowestLevel: "debug" | "warning" = "warning",
+  deferCatalog = false,
 ): Promise<string[]> {
   const records: LogRecord[] = [];
   await configure({
@@ -196,6 +204,7 @@ async function startup(
       resolvedSources: [],
       deferredWarnings: [],
       quiet: true,
+      deferCatalog,
       readDatastoreEnv: () => undefined,
     });
     try {
@@ -313,5 +322,112 @@ Deno.test("configureStartupExtensions: removing the provider that kept the type 
 
     assertEquals(methods, ["fromSecond"]);
     assertEquals(logs.filter((l) => l.includes("repair failed")), []);
+  });
+});
+
+// ── deferCatalog (swamp-club#3139) ──────────────────────────────────────────
+
+/** The catalog's files (the database, its WAL and shared-memory index) as
+ *  `name size:mtime`, sorted. Empty when no catalog exists. */
+async function catalogFiles(fixture: Fixture): Promise<string[]> {
+  const files: string[] = [];
+  const swampDir = join(fixture.repoDir, ".swamp");
+  try {
+    for await (const entry of Deno.readDir(swampDir)) {
+      if (!entry.name.startsWith("_extension_catalog.db")) continue;
+      const stat = await Deno.stat(join(swampDir, entry.name));
+      files.push(`${entry.name} ${stat.size}:${stat.mtime?.getTime()}`);
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return files.sort();
+}
+
+Deno.test("configureStartupExtensions: startup creates the extension catalog", async () => {
+  await withRepo(async (fixture) => {
+    await startup(fixture);
+    assertEquals(
+      (await catalogFiles(fixture)).some((f) =>
+        f.startsWith("_extension_catalog.db ")
+      ),
+      true,
+    );
+  });
+});
+
+Deno.test("configureStartupExtensions: deferCatalog creates no extension catalog (swamp-club#3139)", async () => {
+  await withRepo(async (fixture) => {
+    await writeTwoProviders(fixture);
+    const logs = await startup(fixture, undefined, "debug", true);
+    assertEquals(await catalogFiles(fixture), []);
+    assertEquals(
+      logs.filter((l) => l.startsWith("swamp.extensions.reconcile")),
+      [],
+    );
+  });
+});
+
+Deno.test("configureStartupExtensions: deferCatalog leaves an existing extension catalog untouched (swamp-club#3139)", async () => {
+  await withRepo(async (fixture) => {
+    await startup(fixture);
+    const past = new Date("2026-01-01T00:00:00.000Z");
+    const swampDir = join(fixture.repoDir, ".swamp");
+    for await (const entry of Deno.readDir(swampDir)) {
+      if (entry.name.startsWith("_extension_catalog.db")) {
+        await Deno.utime(join(swampDir, entry.name), past, past);
+      }
+    }
+    const before = await catalogFiles(fixture);
+    assertEquals(before.length > 0, true);
+
+    await startup(fixture, undefined, "warning", true);
+    assertEquals(await catalogFiles(fixture), before);
+  });
+});
+
+Deno.test("configureStartupExtensions: after deferCatalog the first load reconciles and loads pulled types (swamp-club#3139)", async () => {
+  await withRepo(async (fixture) => {
+    await writeTwoProviders(fixture);
+
+    let methods: string[] = [];
+    const logs = await startup(
+      fixture,
+      async () => {
+        assertEquals(await catalogFiles(fixture), []);
+        methods = await loadedMethods(fixture);
+      },
+      "warning",
+      true,
+    );
+
+    assertEquals(methods, ["fromFirst"]);
+    assertEquals(logs.filter((l) => l.includes("both provide")).length, 1);
+
+    // The deferred reconcile marked the catalog populated, so an ordinary
+    // startup does not reconcile again.
+    const again = await startup(fixture, undefined, "debug");
+    assertEquals(
+      again.filter((l) => l.startsWith("swamp.extensions.reconcile")),
+      [],
+    );
+  });
+});
+
+Deno.test("configureExtensionAutoResolver: creates no extension catalog (swamp-club#3139)", async () => {
+  await withRepo(async (fixture) => {
+    const previous = getAutoResolver();
+    try {
+      configureExtensionAutoResolver(
+        fixture.repoDir,
+        fixture.marker,
+        undefined,
+        "log",
+      );
+      assertEquals(getAutoResolver() !== null, true);
+      assertEquals(await catalogFiles(fixture), []);
+    } finally {
+      setAutoResolver(previous);
+    }
   });
 });

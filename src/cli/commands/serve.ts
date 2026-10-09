@@ -2154,7 +2154,10 @@ const checkConfigCommand = new Command()
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +
-      "written to the repository or the vault.",
+      "written to the vault. Nothing is written to the repository either, except " +
+      "that checking a token-secrets key loads vault extensions, which can create " +
+      "or refresh swamp's extension catalog (.swamp/_extension_catalog.db) and, " +
+      "when the vault's type is not installed, install its extension.",
   )
   .example("Check the repository's serve config", "swamp serve check-config")
   .example(
