@@ -30,6 +30,7 @@ import {
 } from "./nested_run_redaction.ts";
 import {
   NestedRunPendingError,
+  NestedRunUnreadableError,
   type PendingNestedWait,
 } from "../../domain/workflows/nested_run_link.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
@@ -385,6 +386,29 @@ Deno.test("nestedPendingRefusalForClient: names the nested runs only when every 
     await nestedPendingRefusalForClient(all, undefined),
     all.genericMessage,
   );
+});
+
+Deno.test("nestedPendingRefusalForClient: names an unreadable nested run only to a reader of its workflow", async () => {
+  const refusal = (workflowId: string) =>
+    new NestedRunUnreadableError(
+      { workflowName: "parent", id: "p-1" },
+      { workflowId, workflowName: "child", runId: "c-1" },
+    );
+  const readable = refusal("readable-id");
+  assertEquals(
+    await nestedPendingRefusalForClient(readable, canRead),
+    readable.message,
+  );
+  const secret = refusal("secret-id");
+  assertEquals(
+    await nestedPendingRefusalForClient(secret, canRead),
+    secret.genericMessage,
+  );
+  assertEquals(
+    await nestedPendingRefusalForClient(readable, undefined),
+    readable.genericMessage,
+  );
+  assertEquals(readable.genericMessage.includes("c-1"), false);
 });
 
 Deno.test("redactingFor: leaves the stream alone when serve runs without auth", () => {

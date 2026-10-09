@@ -21,13 +21,20 @@ import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import { findUnsettledWait, type OpenWaitRef } from "./signal_wait_cleanup.ts";
 import { UserError } from "../errors.ts";
 import { evaluateApprovalTimeout } from "./approval_timeout.ts";
-import { MAX_WORKFLOW_NESTING_DEPTH, sameRunId } from "./nested_run_ref.ts";
+import {
+  MAX_WORKFLOW_NESTING_DEPTH,
+  type NestedRunRef,
+  sameRunId,
+} from "./nested_run_ref.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
 import type { NestedWaitRef, WorkflowRun } from "./workflow_run.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+
+const logger = getSwampLogger(["workflow", "nested-run"]);
 
 /** What NestedRunLink reads. It never writes. */
 export interface NestedRunLinkDeps {
@@ -54,7 +61,13 @@ export type ChildResolution =
     readonly backLinkDropped?: true;
   }
   | { readonly kind: "missing"; readonly reason: string }
-  | { readonly kind: "broken"; readonly reason: string };
+  | { readonly kind: "broken"; readonly reason: string }
+  | {
+    /** The child's record exists, or may, but reading it failed. */
+    readonly kind: "unreadable";
+    readonly ref: NestedRunRef;
+    readonly reason: string;
+  };
 
 /** The run a next action names. */
 export interface NestedRunTarget {
@@ -166,6 +179,9 @@ export class NestedRunLink {
    * agree with this parent: no trigger source of its own, the parent's
    * initiator, and a start no earlier than the waiting step's. A malformed
    * or mismatched parentRun is never accepted.
+   *
+   * A child whose record cannot be read is reported as unreadable, never
+   * thrown: the cause is logged, since a parse error quotes the record.
    */
   async resolveChild(
     parent: WorkflowRun,
@@ -178,10 +194,28 @@ export class NestedRunLink {
       };
     }
     const ref = wait.link.ref;
-    const child = await this.deps.runRepo.findById(
-      createWorkflowId(ref.workflowId),
-      createWorkflowRunId(ref.runId),
-    );
+    let child: WorkflowRun | null;
+    try {
+      child = await this.deps.runRepo.findById(
+        createWorkflowId(ref.workflowId),
+        createWorkflowRunId(ref.runId),
+      );
+    } catch (error) {
+      logger.warn(
+        "Could not read the record of nested run {runId} of workflow {workflowName}: {error}",
+        {
+          runId: ref.runId,
+          workflowName: ref.workflowName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return {
+        kind: "unreadable",
+        ref,
+        reason:
+          `the record of nested run ${ref.runId} of workflow "${ref.workflowName}" cannot be read`,
+      };
+    }
     if (!child) {
       return {
         kind: "missing",
@@ -215,12 +249,19 @@ export class NestedRunLink {
   /**
    * The parent's nested waits whose child has not finished, each with the
    * action that settles it. A missing child or broken link is not pending:
-   * the parent's resume fails that step.
+   * the parent's resume fails that step. A child whose record cannot be read
+   * may be either, so it throws {@link NestedRunUnreadableError}.
    */
   async pendingWaits(parent: WorkflowRun): Promise<PendingNestedWait[]> {
     const pending: PendingNestedWait[] = [];
     for (const wait of parent.findNestedWaits()) {
       const resolved = await this.resolveChild(parent, wait);
+      if (resolved.kind === "unreadable") {
+        throw new NestedRunUnreadableError(
+          { workflowName: parent.workflowName, id: parent.id },
+          resolved.ref,
+        );
+      }
       if (resolved.kind !== "resolved" || isFinishedRun(resolved.child)) {
         continue;
       }
@@ -233,7 +274,10 @@ export class NestedRunLink {
     return pending;
   }
 
-  /** True when every nested wait of the parent has a finished child. */
+  /**
+   * True when every nested wait of the parent has a finished child. Throws
+   * {@link NestedRunUnreadableError} when a child's record cannot be read.
+   */
   async childrenSettled(parent: WorkflowRun): Promise<boolean> {
     return (await this.pendingWaits(parent)).length === 0;
   }
@@ -423,9 +467,35 @@ export class NestedRunPendingError extends UserError {
 }
 
 /**
+ * Refuses a resume of a run whose nested workflow step waits on a child run
+ * whose record cannot be read, so whether the child finished is unknown.
+ * The message names the child; {@link genericMessage} does not, for callers
+ * that may not reveal the child runs.
+ */
+export class NestedRunUnreadableError extends UserError {
+  constructor(
+    readonly parent: { readonly workflowName: string; readonly id: string },
+    readonly child: NestedRunRef,
+  ) {
+    super(
+      `Run ${parent.id} of workflow "${parent.workflowName}" waits on nested run ${child.runId} of workflow "${child.workflowName}", whose record cannot be read. ` +
+        `Repair that run's record, then resume this run with 'swamp workflow resume ${parent.workflowName} --run ${parent.id}', ` +
+        `or cancel this run with 'swamp workflow cancel ${parent.workflowName} --run ${parent.id}'.`,
+    );
+    this.name = "NestedRunUnreadableError";
+  }
+
+  /** The refusal without naming the child run. */
+  get genericMessage(): string {
+    return `Run ${this.parent.id} waits on a nested workflow run whose record cannot be read. ` +
+      `Repair that run's record, then resume this run, or cancel this run.`;
+  }
+}
+
+/**
  * Refuses, changing nothing, while a nested workflow step of the run waits
- * on a child run that has not finished. Every resume entry reaches this
- * before the run is changed.
+ * on a child run that has not finished, or whose record cannot be read.
+ * Every resume entry reaches this before the run is changed.
  */
 export async function assertNestedWaitsSettled(
   deps: NestedRunLinkDeps,

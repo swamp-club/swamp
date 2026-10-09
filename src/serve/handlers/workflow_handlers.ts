@@ -143,7 +143,10 @@ import {
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { unclaimedRuns } from "../../domain/workflows/run_claim.ts";
-import { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
+import {
+  NestedRunPendingError,
+  NestedRunUnreadableError,
+} from "../../domain/workflows/nested_run_link.ts";
 import {
   type Principal,
   principalToString,
@@ -2252,7 +2255,10 @@ export async function handleWorkflowResume(
           } else if (error instanceof LockTimeoutError) {
             const lt = lockTimeoutErrorForClient(error);
             sendError(socket, requestId, lt.code, lt.message, lt.details);
-          } else if (error instanceof NestedRunPendingError) {
+          } else if (
+            error instanceof NestedRunPendingError ||
+            error instanceof NestedRunUnreadableError
+          ) {
             sendError(
               socket,
               requestId,

@@ -5843,7 +5843,8 @@ export class WorkflowExecutionService {
    * (swamp-club#2736). A succeeded child's outputs are adopted; a child
    * whose approval was rejected fails the step as a rejected approval; any
    * other finished child, a missing one or a broken link fails the step; an
-   * unfinished child suspends the run on it again.
+   * unfinished child, or one whose record cannot be read, suspends the run
+   * on it again.
    */
   private async *settleNestedWait(
     run: WorkflowRun,
@@ -5888,6 +5889,15 @@ export class WorkflowExecutionService {
       runRepo: this.runRepo,
       workflowRepo: this.workflowRepo,
     }).resolveChild(run, { jobName: job.name, stepName, link });
+    if (resolved.kind === "unreadable") {
+      // Readable when the resume checked it: whether it finished is unknown
+      // now, so wait on it again instead of failing the step for good.
+      getWorkflowRunLogger(run.workflowName, job.name, stepName, run.id)
+        .warn`Step ${stepName} waits on its nested run again: ${resolved.reason}`;
+      stepRun.waitForNestedRun(resolved.ref);
+      run.suspend(expressionContext?.inputs);
+      return undefined;
+    }
     if (resolved.kind !== "resolved") {
       yield fail(`Cannot read the nested run: ${resolved.reason}.`);
       return undefined;
