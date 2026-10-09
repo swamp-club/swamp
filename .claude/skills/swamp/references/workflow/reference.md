@@ -938,10 +938,14 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   workflow, is not found; a declared key with no open wait is refused
   (`no_open_wait`) and nothing is stored, so send again once the run reaches the
   wait. A retry after a signal that landed gets `no_open_wait` too: the message
-  says the last wait under the key was settled by a signal (and the error
-  details carry `lastWait.settledAs: accepted`), so read it before sending
-  again. Upgrade every host before adding a key: an older swamp ignores it and
-  opens the wait unclaimed.
+  says how and when the key's last wait was settled, and the `--json` error
+  carries `refusal` and `lastWait` (`waitId`, `settledAs`, `settledAt`).
+  `settledAs: accepted` at about the time of the first attempt means it landed;
+  an older time means the next run has not reached its wait. Changing a step's
+  `key` while its wait is open strands that wait for key senders (old key: not
+  found; new key: `no_open_wait`, no `lastWait`): signal it by wait ID, or let
+  it settle first. Upgrade every host before adding a key: an older swamp
+  ignores it and opens the wait unclaimed.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

@@ -629,7 +629,13 @@ What differs by key, in order:
   would otherwise learn, from `no_open_wait` against `not_found`, whether the
   original has a wait open under the key. This costs one listing of the
   workflow files, made only for a caller who may signal the workflow they
-  named. The reverse holds too: a caller allowed on the original and denied on
+  named. It asks the repository for the workflows with that ID
+  (`WorkflowRepository.findAllById`): the YAML repository reads every file
+  but parses only those whose text holds the ID or a backslash, since without
+  an escape sequence a scalar equal to the ID has the ID in the text.
+  Extension workflows are still all parsed, as is every workflow when the one
+  named is an extension workflow. The cost still grows with the number of
+  workflow files, by a read each. The reverse holds too: a caller allowed on the original and denied on
   a copy that shares its ID is refused by key, and signals by wait ID.
 - **A caller who may not signal the workflow, an unknown workflow, a key the
   workflow does not declare and a string that is not in the form of a key get
@@ -657,12 +663,17 @@ What differs by key, in order:
   `no_open_wait`, not the `already_settled` a retry by ID gets, because the key
   is free once its wait is settled; so does a sender that is early for the next
   run. `lastWait` tells them apart: `accepted` with a `settledAt` after the
-  first attempt means the signal landed. It is present while that wait's claim
+  first attempt means the signal landed. The server cannot tell them apart
+  and does not try: the same answer also reaches a sender whose wait another
+  principal's signal settled. It is present while that wait's claim
   is still the key's highest record (until a later wait claims the key or the
   run's records are removed), and only when the caller may signal that wait.
-  The message says the same in words, without the receipt for a caller who
-  may not read the workflow, because the CLI prints a server's message and not
-  its details.
+  The message says how the last wait was settled and at what time, without
+  the receipt for a caller who may not read the workflow, and draws no
+  conclusion for the sender. `swamp workflow signal --json` carries `refusal`
+  and `lastWait` in its error, locally and with `--server`.
+  A reader's message names `swamp workflow waits --server <server>`: the
+  server does not know the address a client reached it by.
   Several senders racing for one open wait can still get `already_settled`
   instead: each resolved the key while the wait was open. Both are 409, and
   neither makes a retry idempotent; a sender that needs that sends one signal

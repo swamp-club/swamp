@@ -1358,12 +1358,33 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
     await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
   );
   assertEquals(second.kind, "no_open_wait");
-  // A sender who retries after a lost reply is told its signal landed: the
-  // wait that last held the key, and the signal that settled it.
+  // The wait that last held the key, and the signal that settled it. The
+  // same refusal reaches a sender who retries after a lost reply and one who
+  // is early for the next run, so the message says when the wait was settled
+  // and leaves the conclusion to the sender.
   assertEquals(second.lastWait?.waitId, fixture.waitId);
   assertEquals(second.lastWait?.settledAs, "accepted");
   assertEquals(second.lastWait?.receipt?.id, sent.data.signal.id);
-  assertStringIncludes(second.message, "has already landed");
+  assertStringIncludes(
+    second.message,
+    `settled by signal ${sent.data.signal.id} at ${second.lastWait?.settledAt}.`,
+  );
+  assertEquals(second.message.includes("has already landed"), false);
+  assertStringIncludes(second.message, 'Run "swamp workflow waits" for');
+
+  // A caller that answers for a server names the command that reaches it.
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "fix" },
+      waitsCommand: "swamp workflow waits --server <server>",
+    }),
+  );
+  assertStringIncludes(
+    refusalOf(events.at(-1)!).message,
+    'Run "swamp workflow waits --server <server>" for the waits that are open.',
+  );
   const outcome = await outcomeOf(fixture, fixture.waitId);
   assert(outcome?.kind === "accepted");
   assertEquals(outcome.payload, { verdict: "ship" });

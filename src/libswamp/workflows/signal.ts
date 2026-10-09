@@ -123,7 +123,20 @@ export type WorkflowSignalInput = WorkflowSignalAddress & {
    * passes none: it does no authorization.
    */
   authorize?: (wait: SignalWaitSubject) => Promise<boolean>;
+  /**
+   * The command a refusal suggests for listing the open waits. Defaults to
+   * the local one; a caller that answers for a server passes the form that
+   * reaches it.
+   */
+  waitsCommand?: string;
 };
+
+/** The command that lists the open waits of the repository a signal ran in. */
+const LOCAL_WAITS_COMMAND = "swamp workflow waits";
+
+function waitsCommandOf(input: Pick<WorkflowSignalInput, "waitsCommand">) {
+  return input.waitsCommand ?? LOCAL_WAITS_COMMAND;
+}
 
 /** What a wait belongs to, as far as the stored records say. */
 export interface SignalWaitSubject {
@@ -330,11 +343,11 @@ function expiredAt(typedId: string, deadline: string): SwampError {
   );
 }
 
-function closedBeforeSignal(typedId: string): SwampError {
+function closedBeforeSignal(typedId: string, waitsCommand: string): SwampError {
   return refused(
     "closed",
     `Wait ${typedId} was closed before a signal arrived: its run ended, or its step moved on to a new wait. ` +
-      `Run "swamp workflow waits" for the waits still open.`,
+      `Run "${waitsCommand}" for the waits still open.`,
   );
 }
 
@@ -371,6 +384,7 @@ function refusalFor(
   typedId: string,
   place: WaitPlace,
   outcome: WaitOutcome,
+  waitsCommand: string,
   closed = false,
 ): SwampError {
   const where = whereOf(place);
@@ -391,7 +405,7 @@ function refusalFor(
       return refused(
         "closed",
         `Wait ${typedId} was closed before a signal arrived: the run of ${where} ended, or the step moved on to a new wait. ` +
-          `Run "swamp workflow waits" for the waits still open.`,
+          `Run "${waitsCommand}" for the waits still open.`,
       );
   }
 }
@@ -450,6 +464,7 @@ async function resolveRegistration(
   waitId: string,
   authorize: WorkflowSignalInput["authorize"],
   heldUnder: SignalTarget["heldUnder"],
+  waitsCommand: string,
 ): Promise<
   | { registration: WaitRegistration; authorized: boolean }
   | { error: SwampError }
@@ -512,7 +527,7 @@ async function resolveRegistration(
       return {
         error: stored.kind === "unreadable"
           ? unreadableRecord(typedId)
-          : closedBeforeSignal(typedId),
+          : closedBeforeSignal(typedId, waitsCommand),
       };
     }
     // Nothing says which workflow the wait belongs to, so a caller that
@@ -552,7 +567,9 @@ async function resolveRegistration(
     }))
   ) return { error: unknownWait(typedId) };
   if (outcome.kind === "found") {
-    return { error: refusalFor(typedId, place, outcome.record, true) };
+    return {
+      error: refusalFor(typedId, place, outcome.record, waitsCommand, true),
+    };
   }
   if (outcome.kind === "unreadable") {
     return { error: unreadableRecord(typedId) };
@@ -630,6 +647,7 @@ async function deliver(
     waitId,
     input.authorize,
     heldUnder,
+    waitsCommandOf(input),
   );
   if ("error" in resolved) return resolved;
   const { registration } = resolved;
@@ -724,7 +742,7 @@ async function deliver(
           runId: registration.runId,
           deadline: registration.deadline,
           settledAt: now.toISOString(),
-        }),
+        }, waitsCommandOf(input)),
       };
     }
     delivered = decision.outcome;
@@ -738,7 +756,14 @@ async function deliver(
     !delivered || stored.record.kind !== "accepted" ||
     !settledBy(stored, delivered)
   ) {
-    return { error: refusalFor(typedId, registration, stored.record) };
+    return {
+      error: refusalFor(
+        typedId,
+        registration,
+        stored.record,
+        waitsCommandOf(input),
+      ),
+    };
   }
 
   return {
@@ -813,11 +838,11 @@ function lastWaitSentence(last: SignalLastWait): string {
     case "accepted":
       return ` The last wait under the key was settled by signal ${
         last.receipt?.id ?? "unknown"
-      }, so a signal sent again after a lost reply has already landed.`;
+      } at ${last.settledAt}. A signal you sent at about that time has landed; one meant for a later run is early.`;
     case "timed_out":
-      return " The last wait under the key expired unsignalled.";
+      return ` The last wait under the key expired unsignalled at ${last.settledAt}.`;
     case "cancelled":
-      return " The last wait under the key was closed before a signal arrived.";
+      return ` The last wait under the key was closed at ${last.settledAt}, before a signal arrived.`;
   }
 }
 
@@ -870,7 +895,7 @@ async function deliverByKey(
         "no_open_wait",
         `No open wait holds ${named}, so the signal was not delivered and nothing was stored.` +
           (last ? lastWaitSentence(last) : "") +
-          ` Run "swamp workflow waits" for the waits that are open.`,
+          ` Run "${waitsCommandOf(input)}" for the waits that are open.`,
         last ? { lastWait: last } : {},
       ),
     };
@@ -890,7 +915,9 @@ async function deliverByKey(
     error: {
       ...error,
       message: kind !== undefined && LEAVES_WAIT_OPEN.has(kind)
-        ? `${error.message}\n"swamp workflow waits" lists the wait and its ID.`
+        ? `${error.message}\n"${
+          waitsCommandOf(input)
+        }" lists the wait and its ID.`
         : error.message,
       details: { ...(error.details as object), waitId },
     },

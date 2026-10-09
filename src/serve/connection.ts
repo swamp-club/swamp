@@ -856,8 +856,13 @@ const WorkflowSignalRequestSchema = z.object({
       payload: z.unknown(),
     }),
   ], {
-    error:
-      `must name the wait with a "waitId" that is a UUID, or with a "workflow" of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters and a "key" of at most ${SIGNAL_KEY_MAX_LENGTH}`,
+    // A request with no message is told so: the sentence about the address
+    // would send a client with a good address looking for a fault in it.
+    error: (issue) =>
+      typeof issue.input === "object" && issue.input !== null &&
+        !("payload" in issue.input)
+        ? `must carry a "payload": the JSON message for the wait`
+        : `must name the wait with a "waitId" that is a UUID, or with a "workflow" of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters and a "key" of at most ${SIGNAL_KEY_MAX_LENGTH}`,
   }),
 });
 

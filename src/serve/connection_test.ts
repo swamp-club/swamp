@@ -204,6 +204,38 @@ Deno.test("validateServerRequest rejects missing payload for workflow.run", () =
   assertEquals(typeof result, "string");
 });
 
+Deno.test("validateServerRequest: a workflow.signal with no message says the payload is missing, by ID and by key", () => {
+  for (
+    const address of [
+      { waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90" },
+      { workflow: "release", key: "release-verdict" },
+    ]
+  ) {
+    assertEquals(
+      validateServerRequest({
+        type: "workflow.signal",
+        id: "req-1",
+        payload: address,
+      }),
+      'Invalid request: payload: must carry a "payload": the JSON message for the wait',
+    );
+    const sent = validateServerRequest({
+      type: "workflow.signal",
+      id: "req-1",
+      payload: { ...address, payload: null },
+    });
+    assertEquals(typeof sent, "object");
+  }
+  // An address that names no wait is still told about the address.
+  const result = validateServerRequest({
+    type: "workflow.signal",
+    id: "req-1",
+    payload: { workflow: "release", payload: {} },
+  });
+  assertEquals(typeof result, "string");
+  assertStringIncludes(result as string, "must name the wait");
+});
+
 Deno.test("validateServerRequest rejects missing methodName for model.method.run", () => {
   const input = {
     type: "model.method.run",

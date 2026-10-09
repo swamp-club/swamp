@@ -1340,7 +1340,7 @@ Deno.test({
       const receipt = first.signal as { id: string };
 
       // A sender whose reply was lost can tell its signal landed: the last
-      // wait under the key is the one it settled.
+      // wait under the key was settled when it sent.
       const plain = refusalOf(
         await signalByKey(signalOnly, w.workflow.name, KEY, payload),
       );
@@ -1356,8 +1356,13 @@ Deno.test({
       assertEquals(last.settledAs, "accepted");
       assertEquals(plain.message.includes(w.workflow.name), false);
       assertEquals(JSON.stringify(plain).includes(receipt.id), false);
-      // The message says it too: the CLI prints the message, not the details.
-      assertStringIncludes(plain.message, "has already landed");
+      // The message says when, too: the CLI prints the message, and the
+      // refusal also reaches a sender who is early for the next run.
+      assertStringIncludes(
+        plain.message,
+        `settled by a signal at ${last.settledAt}.`,
+      );
+      assertEquals(plain.message.includes("has already landed"), false);
 
       // A caller who may read the workflow is told which signal it was.
       const told = refusalOf(
@@ -1365,6 +1370,15 @@ Deno.test({
       );
       assertEquals(told.details?.refusal, "no_open_wait");
       assertStringIncludes(told.message, w.workflow.name);
+      assertStringIncludes(
+        told.message,
+        `settled by signal ${receipt.id} at ${last.settledAt}.`,
+      );
+      // The reader's message names the command that reaches the server.
+      assertStringIncludes(
+        told.message,
+        'Run "swamp workflow waits --server <server>"',
+      );
       assertEquals(
         ((told.details?.lastWait as Record<string, unknown>).receipt as {
           id: string;

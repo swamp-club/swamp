@@ -185,16 +185,27 @@ const GENERIC_REFUSAL: Record<SignalRefusalStatus, string> = {
 /**
  * What a caller who may not read the workflow is told of the wait that last
  * held a key, after the fixed `no_open_wait` sentence. It says how the wait
- * was settled, which `lastWait` already tells them, and never by which
- * signal. A client that shows only the message, as the CLI does, can then
- * tell a signal that landed from a run that has not reached its wait.
+ * was settled and when, which `lastWait` already tells them, and never by
+ * which signal. A client that shows only the message, as the CLI does, can
+ * then set the time against its own attempt: the same refusal reaches a
+ * sender whose signal landed and one who is early for the next run.
  */
-const GENERIC_LAST_WAIT: Record<SignalLastWait["settledAs"], string> = {
-  accepted:
-    " The last wait under the key was settled by a signal, so a signal sent again after a lost reply has already landed.",
-  timed_out: " The last wait under the key expired unsignalled.",
-  cancelled: " The last wait under the key was closed before a signal arrived.",
-};
+function genericLastWait(last: SignalLastWait): string {
+  switch (last.settledAs) {
+    case "accepted":
+      return ` The last wait under the key was settled by a signal at ${last.settledAt}. A signal you sent at about that time has landed; one meant for a later run is early.`;
+    case "timed_out":
+      return ` The last wait under the key expired unsignalled at ${last.settledAt}.`;
+    case "cancelled":
+      return ` The last wait under the key was closed at ${last.settledAt}, before a signal arrived.`;
+  }
+}
+
+/**
+ * The command a refusal suggests for listing the open waits. The server does
+ * not know the address a client reached it by, so that is left to fill in.
+ */
+const SERVER_WAITS_COMMAND = "swamp workflow waits --server <server>";
 
 const NOT_FOUND: SignalDeliveryResult = {
   status: "not_found",
@@ -298,10 +309,16 @@ async function authorizeKeyTarget(
   if (resolution.status !== "found") return NOT_FOUND;
 
   // Asked only of a caller who may signal the workflow they named: one
-  // listing of the workflow files, never of runs.
+  // listing of the workflow files, never of runs. A repository that can
+  // find the workflows with an ID without building every workflow is asked
+  // for just those.
   let sharing: AccessResource[];
   try {
-    sharing = (await ctx.repoContext.workflowRepo.findAll())
+    const repo = ctx.repoContext.workflowRepo;
+    const sameId = repo.findAllById
+      ? await repo.findAllById(createWorkflowId(resolution.id))
+      : (await repo.findAll()).filter((other) => other.id === resolution.id);
+    sharing = sameId
       .filter((other) =>
         other.id === resolution.id && other.name !== resolution.name
       )
@@ -482,6 +499,7 @@ export async function deliverSignalForCaller(
           ? { submittedBy: principalToString(caller.principal) }
           : {}),
         authorize,
+        waitsCommand: SERVER_WAITS_COMMAND,
       }),
       {
         resolving: () => {},
@@ -520,7 +538,7 @@ export async function deliverSignalForCaller(
               message: readable
                 ? sanitizeErrorForClient(new Error(event.error.message))
                 : GENERIC_REFUSAL[kind] +
-                  (last ? GENERIC_LAST_WAIT[last.settledAs] : ""),
+                  (last ? genericLastWait(last) : ""),
               ...(receipt ? { receipt: { ...receipt } } : {}),
               ...(last
                 ? {

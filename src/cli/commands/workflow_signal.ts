@@ -20,6 +20,7 @@ import { Command } from "@cliffy/command";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createWorkflowSignalDeps,
+  signalRefusalKind,
   workflowSignal,
   type WorkflowSignalAddress,
   type WorkflowSignalData,
@@ -36,12 +37,18 @@ import {
   requireInitializedRepoUnlocked,
   signalWaitsOf,
 } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
+import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
+import {
+  signalRefusalFromDetails,
+  SignalRefusedUserError,
+} from "../../domain/workflows/signal_refused_user_error.ts";
+import type { SwampError } from "../../libswamp/errors.ts";
 import {
   formatCommandTarget,
   requestNewerServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
+  ServerResponseError,
   withRemoteOptions,
 } from "../remote_run.ts";
 import type {
@@ -237,6 +244,48 @@ export function renderRemoteSignalResult(
   );
 }
 
+/**
+ * The error the command throws for a signal that was not delivered here. A
+ * refusal keeps what its details say of it, so `--json` output carries the
+ * refusal and the key's last wait beside the message.
+ */
+export function signalUserError(error: SwampError): UserError {
+  const plain = userErrorFromSwampError(error);
+  const refusal = signalRefusalKind(error) === undefined
+    ? undefined
+    : signalRefusalFromDetails(error.details);
+  if (!refusal) return plain;
+  return markErrorPaths(
+    new SignalRefusedUserError(
+      plain.message,
+      plain.code,
+      refusal.refusal,
+      refusal.lastWait,
+    ),
+    errorPaths(plain),
+  );
+}
+
+/**
+ * The error the command throws for what a server answered. A refused signal
+ * keeps the refusal and the key's last wait from the server's details; any
+ * other error is passed on as it is.
+ */
+export function remoteSignalUserError(error: unknown): unknown {
+  if (
+    !(error instanceof ServerResponseError) ||
+    error.code !== "workflow_signal_refused"
+  ) return error;
+  const refusal = signalRefusalFromDetails(error.details);
+  if (!refusal) return error;
+  return new SignalRefusedUserError(
+    error.message,
+    error.code,
+    refusal.refusal,
+    refusal.lastWait,
+  );
+}
+
 export const workflowSignalCommand = withRemoteOptions(
   new Command()
     .name("signal")
@@ -293,14 +342,17 @@ export const workflowSignalCommand = withRemoteOptions(
     if (server) {
       const named = remoteSignalPayload(address, payload);
       const token = await resolveServerTokenFromOptions(server, options);
-      const response = await requestNewerServerResponse<
-        WorkflowSignalResponse
-      >(
-        // A server from before swamp-club#3211 takes a wait ID only.
-        "waitId" in named ? "signals" : "signalling by workflow and key",
-        { server, token },
-        { type: "workflow.signal", payload: named },
-      );
+      let response: WorkflowSignalResponse;
+      try {
+        response = await requestNewerServerResponse<WorkflowSignalResponse>(
+          // A server from before swamp-club#3211 takes a wait ID only.
+          "waitId" in named ? "signals" : "signalling by workflow and key",
+          { server, token },
+          { type: "workflow.signal", payload: named },
+        );
+      } catch (error) {
+        throw remoteSignalUserError(error);
+      }
       renderRemoteSignalResult(
         cliCtx,
         response.data,
@@ -334,7 +386,7 @@ export const workflowSignalCommand = withRemoteOptions(
           renderSignalResult(cliCtx, e.data, commandTarget);
         },
         error: (e) => {
-          throw userErrorFromSwampError(e.error);
+          throw signalUserError(e.error);
         },
       },
     );
