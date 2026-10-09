@@ -439,6 +439,14 @@ export interface StartupExtensionOptions {
    * eager managed config resolution for extension-backed datastores.
    */
   thinClient?: boolean;
+  /**
+   * The command promises to leave the repository untouched unless it loads
+   * extensions (swamp-club#3139). Opens the extension catalog on first use,
+   * and leaves the managed config resolution for extension-backed
+   * datastores, the reconcile and the missing-source-files check to the
+   * first loader that runs.
+   */
+  deferCatalog?: boolean;
   /** Reads `SWAMP_DATASTORE`; injectable for tests. */
   readDatastoreEnv?: DatastoreEnvReader;
   /**
@@ -473,6 +481,9 @@ export interface StartupExtensionOptions {
  *    resolved (or the repo does not need it); if startup had to skip them,
  *    they run once, best-effort, when a loader first finds it resolved.
  *
+ * With `deferCatalog`, steps 3 (for extension-backed datastores) and 5 wait
+ * for the first loader as well, and the catalog is not opened before then.
+ *
  * Until swamp-club#2495, auto-resolved installs in an extension-backed repo
  * are recorded in the in-repo `.swamp/config/upstream_extensions.json`;
  * loaders, the reconcile orphan rule and the missing-files check read those
@@ -492,6 +503,7 @@ export async function configureStartupExtensions(
     quiet = false,
     extensionsDir,
     thinClient = false,
+    deferCatalog = false,
     readDatastoreEnv,
   } = options;
   const effectiveExtDir = extensionsDir ?? repoDir;
@@ -565,6 +577,7 @@ export async function configureStartupExtensions(
 
   const catalog = new ExtensionCatalogStore(
     swampPath(repoDir, "_extension_catalog.db"),
+    { openOnFirstUse: deferCatalog },
   );
   const dispose = () => catalog.close();
 
@@ -628,7 +641,7 @@ export async function configureStartupExtensions(
     };
     if (managed && !extensionBacked) {
       await ensureManagedConfigBase(repoDir, marker);
-    } else if (extensionBacked && !thinClient) {
+    } else if (extensionBacked && !thinClient && !deferCatalog) {
       await ensureResolvedForLoaders();
     }
     const baseReady = () =>
@@ -760,7 +773,7 @@ export async function configureStartupExtensions(
     // unreadable one (caught mid-rewrite by a sync) is retried on a later
     // load rather than skipped for the rest of the process.
     let reconciled = false;
-    if (baseReady()) {
+    if (baseReady() && !deferCatalog) {
       // A failed repair must not fail every command, or doctor extensions
       // and extension rm, which fix the state, become unreachable
       // (swamp-club#2702). It is marked done so the deferred path does not
@@ -949,6 +962,19 @@ export function isThinClientCommand(
 }
 
 /**
+ * True for `swamp serve check-config`, which promises to leave the repository
+ * untouched: startup must not create or refresh the extension catalog for it
+ * (swamp-club#3139). The catalog is still opened if the command loads
+ * extensions, as it does to read a token secrets key from its vault.
+ */
+export function defersExtensionCatalog(
+  commandInfo: Pick<CommandInvocationData, "command" | "subcommand">,
+): boolean {
+  return commandInfo.command === "serve" &&
+    commandInfo.subcommand === "check-config";
+}
+
+/**
  * The lockfile the auto-resolver records installs in. Until swamp-club#2495,
  * a managedConfig repo on an extension-backed datastore records them in the
  * in-repo lockfile, never the datastore's (which pulls would overwrite).
@@ -1015,8 +1041,11 @@ export function configureExtensionAutoResolver(
             ? resolveManagedConfigPaths(repoDir, marker).lockfilePath
             : undefined,
         repository: new ExtensionRepository({
+          // Opened by the first install, so a command that resolves
+          // nothing does not create the catalog (swamp-club#3139).
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
+            { openOnFirstUse: true },
           ),
           lockfileRepository: new LockfileRepository(
             effectiveLockfilePath,
@@ -2441,6 +2470,7 @@ async function runInvocation(
             quiet: isQuietFromArgs(args),
             extensionsDir,
             thinClient: isThinClientCommand(commandInfo),
+            deferCatalog: defersExtensionCatalog(commandInfo),
             suppressWarning: (warning) =>
               shouldSuppressMissingExtensionsWarning(commandInfo, warning),
           });

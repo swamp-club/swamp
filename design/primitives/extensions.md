@@ -2649,6 +2649,11 @@ deletion-sweep shim.
 and an explicit `swamp doctor extensions`. It does not run on every command,
 where reconcile would dominate hot-path performance.
 
+`swamp serve check-config` promises to leave the repository untouched, so
+startup neither opens the catalog nor reconciles for it. Both wait for the first
+registry load, which the command only reaches when it reads a token secrets key
+from a vault.
+
 A reconcile that fails at startup is logged ("Extension catalog repair failed")
 and the command continues on the loaders' own indexing, so
 `swamp doctor extensions` and `swamp extension rm`, which repair the state, stay

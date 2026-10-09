@@ -257,29 +257,57 @@ export interface ExtensionTypeRow {
  * populated flag is not set.
  */
 export class ExtensionCatalogStore {
-  private db: DatabaseSync;
+  private handle: DatabaseSync | undefined;
+  private closed = false;
   private readonly dbPath: string;
 
-  constructor(dbPath: string) {
-    ensureDirSync(dirname(dbPath));
+  /**
+   * Opens the catalog, creating the database and its schema when missing.
+   * With `openOnFirstUse` nothing is opened or written until the first
+   * method that reads or writes the catalog, so a command that never uses
+   * it leaves the repository untouched (swamp-club#3139). Any method may
+   * then throw the error an eager open would have thrown.
+   */
+  constructor(dbPath: string, options: { openOnFirstUse?: boolean } = {}) {
     this.dbPath = dbPath;
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec("PRAGMA busy_timeout=5000");
+    if (!options.openOnFirstUse) this.open();
+  }
+
+  private get db(): DatabaseSync {
+    if (this.handle) return this.handle;
+    // Opening after close would create a catalog nothing closes.
+    if (this.closed) throw new Error("The extension catalog is closed");
+    return this.open();
+  }
+
+  private open(): DatabaseSync {
+    const dbPath = this.dbPath;
+    ensureDirSync(dirname(dbPath));
+    // initializeWithRetry reads `this.db`, so the handle is assigned first.
+    this.handle = new DatabaseSync(dbPath);
+    this.handle.exec("PRAGMA busy_timeout=5000");
     try {
-      this.initializeWithRetry();
-    } catch (error: unknown) {
-      if (isReadOnlyError(error)) {
+      try {
+        this.initializeWithRetry();
+      } catch (error: unknown) {
+        if (!isReadOnlyError(error)) throw error;
         logger
           .warn`Catalog DB is read-only during schema migration; recreating from scratch`;
-        this.db.close();
+        this.handle.close();
+        this.handle = undefined;
         removeCatalogFiles(dbPath);
-        this.db = new DatabaseSync(dbPath);
-        this.db.exec("PRAGMA busy_timeout=5000");
+        this.handle = new DatabaseSync(dbPath);
+        this.handle.exec("PRAGMA busy_timeout=5000");
         this.initializeWithRetry();
-      } else {
-        throw error;
       }
+    } catch (error: unknown) {
+      // A failed open leaves no handle, so the next use retries it rather
+      // than reading a database with no schema.
+      this.handle?.close();
+      this.handle = undefined;
+      throw error;
     }
+    return this.handle;
   }
 
   /**
@@ -1360,10 +1388,12 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Closes the database connection.
+   * Closes the database connection. A catalog that was never opened stays
+   * unopened.
    */
   close(): void {
-    this.db.close();
+    this.closed = true;
+    this.handle?.close();
   }
 
   // ---- methods added for ExtensionRepository (W1b) ----
