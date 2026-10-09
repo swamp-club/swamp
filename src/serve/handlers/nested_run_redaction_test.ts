@@ -22,6 +22,8 @@ import {
   type NamedWorkflow,
   nestedGateRefusalForClient,
   nestedPendingRefusalForClient,
+  orphanedRefusalForClient,
+  readableNestedCascade,
   readableNestedRuns,
   redactingFor,
   redactParentRun,
@@ -33,6 +35,8 @@ import {
   type PendingNestedWait,
 } from "../../domain/workflows/nested_run_link.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
+import { OrphanedNestedRunError } from "../../domain/workflows/orphaned_nested_run.ts";
+import { orphanedNestedRunError } from "../../libswamp/workflows/nested_runs.ts";
 import type { SerializedEvent } from "../protocol.ts";
 import type { ConnectionContext } from "./shared.ts";
 
@@ -390,4 +394,101 @@ Deno.test("nestedPendingRefusalForClient: names the nested runs only when every 
 Deno.test("redactingFor: leaves the stream alone when serve runs without auth", () => {
   const ctx = { authConfig: { mode: "none" } } as unknown as ConnectionContext;
   assertEquals(redactingFor(ctx, {} as WebSocket, null), undefined);
+});
+
+// --- swamp-club#2867
+
+const orphanRefusal = (workflowId?: string) => ({
+  kind: "orphaned" as const,
+  message: 'parent run p-1 of workflow "secret-parent" ended',
+  genericMessage: "the run that started it ended",
+  ...(workflowId
+    ? {
+      parent: { workflowId, workflowName: "secret-parent", runId: "p-1" },
+    }
+    : {}),
+});
+
+Deno.test("nestedGateRefusalForClient: names the run above an orphaned nested run only to a reader of its workflow", async () => {
+  assertEquals(
+    await nestedGateRefusalForClient(
+      orphanedNestedRunError(orphanRefusal("secret-id")),
+      canRead,
+    ),
+    "the run that started it ended",
+  );
+  assertEquals(
+    await nestedGateRefusalForClient(
+      orphanedNestedRunError(orphanRefusal("readable-id")),
+      canRead,
+    ),
+    'parent run p-1 of workflow "secret-parent" ended',
+  );
+  // With no parent named in the details, nothing shows the message is safe.
+  assertEquals(
+    await nestedGateRefusalForClient(
+      orphanedNestedRunError(orphanRefusal()),
+      canRead,
+    ),
+    "the run that started it ended",
+  );
+});
+
+Deno.test("orphanedRefusalForClient: names the run above only to a reader, and to no one without a decider", async () => {
+  const error = (workflowId?: string) =>
+    new OrphanedNestedRunError(orphanRefusal(workflowId));
+  assertEquals(
+    await orphanedRefusalForClient(error("secret-id"), canRead),
+    "the run that started it ended",
+  );
+  assertEquals(
+    await orphanedRefusalForClient(error("readable-id"), canRead),
+    'parent run p-1 of workflow "secret-parent" ended',
+  );
+  assertEquals(
+    await orphanedRefusalForClient(error("readable-id"), undefined),
+    "the run that started it ended",
+  );
+  assertEquals(
+    await orphanedRefusalForClient(error(), canRead),
+    "the run that started it ended",
+  );
+});
+
+Deno.test("readableNestedCascade: every list keeps only runs of a workflow the principal may read", async () => {
+  const run = (workflowId: string, runId: string) => ({
+    workflowId,
+    workflowName: workflowId,
+    runId,
+    jobName: "main",
+    stepName: "step",
+  });
+  const nested = await readableNestedCascade({
+    cancelledNestedRuns: [run("readable-id", "c-1"), run("secret-id", "c-2")],
+    stopRequestedNestedRuns: [run("secret-id", "s-1")],
+    detachedNestedRuns: [
+      { ...run("readable-id", "d-1"), cancelCommand: "cancel d-1" },
+      { ...run("secret-id", "d-2"), cancelCommand: "cancel d-2" },
+    ],
+  }, canRead);
+  assertEquals(nested.cancelledNestedRuns?.map((r) => r.runId), ["c-1"]);
+  assertEquals(nested.stopRequestedNestedRuns, undefined);
+  assertEquals(nested.detachedNestedRuns?.map((r) => r.runId), ["d-1"]);
+  assertEquals(await readableNestedCascade({}, canRead), {});
+});
+
+Deno.test("redactParentRun: drops parentEnded and parentMissing with a parent the principal may not read", async () => {
+  const row: {
+    parentRun?: NamedWorkflow;
+    parentWaiting?: boolean;
+    parentEnded?: boolean;
+    parentMissing?: boolean;
+  } = {
+    parentRun: { workflowId: "secret-id", workflowName: "parent" },
+    parentWaiting: false,
+    parentEnded: true,
+    parentMissing: true,
+  };
+  await redactParentRun(row, canRead);
+  assertEquals(row, {});
 });

@@ -719,6 +719,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
       return status !== null && !TERMINAL_STATUSES.has(status);
     };
+    // A finished run is also kept while a nested run one of its steps
+    // started has not finished: that child reads this record to learn
+    // nothing waits on it, and refuses to continue once the record is gone
+    // (swamp-club#2867). A child that cannot be read keeps it too. A child
+    // whose parentRun names another run is not this run's to wait for.
+    const keepForChild = async (data: WorkflowRunData): Promise<boolean> => {
+      for (const job of data.jobs ?? []) {
+        for (const step of job.steps ?? []) {
+          const link = NestedRunRefSchema.safeParse(step.nestedRun);
+          if (!link.success) continue;
+          const child = await this.findById(
+            createWorkflowId(link.data.workflowId),
+            createWorkflowRunId(link.data.runId),
+          ).catch(() => undefined);
+          if (child === undefined) return true;
+          if (child === null || TERMINAL_STATUSES.has(child.status)) continue;
+          const back = child.parentRun;
+          if (
+            back === undefined ||
+            (back.kind === "valid" &&
+              back.ref.runId.toLowerCase() === String(data.id).toLowerCase())
+          ) return true;
+        }
+      }
+      return false;
+    };
     const cutoffMs = cutoff.getTime();
     let deleted = 0;
     let bytesReclaimed = 0;
@@ -799,6 +825,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               ) continue;
               // Read a parent only for a child old enough to collect.
               if (await keepForParent(data)) continue;
+              if (await keepForChild(data)) continue;
 
               const logPath = yamlPath.replace(/\.yaml$/, ".log");
               let fileBytes = stat.size ?? 0;

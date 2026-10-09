@@ -36,7 +36,10 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
+import {
+  isOrphaned,
+  NestedRunLink,
+} from "../../domain/workflows/nested_run_link.ts";
 
 export interface PendingApproval {
   workflowId: string;
@@ -61,6 +64,21 @@ export interface PendingApproval {
    * the parent ended and left this run suspended on its own.
    */
   parentWaiting?: boolean;
+  /**
+   * With `parentRun`: true once a run above this one ended or moved on to
+   * another run, so the gate can no longer be decided and the run is
+   * cancelled when it is next touched (swamp-club#2867).
+   */
+  parentEnded?: boolean;
+  /**
+   * With `parentRun`: true when a run above this one has no record on the
+   * host that listed it. Approve, reject and resume are refused while there
+   * is none; a serve instance fetches the record from the datastore before
+   * it refuses. The run can still be cancelled (swamp-club#2867).
+   */
+  parentMissing?: boolean;
+  /** A serve instance started the run, so its cancel goes through serve. */
+  serveStarted?: boolean;
 }
 
 /**
@@ -254,6 +272,10 @@ export async function* workflowApprovals(
               : undefined;
           }
 
+          // One unreadable parent must not fail the whole listing.
+          const verdict = parentRun && parentWaiting === false
+            ? await nestedLink.parentVerdict(run).catch(() => undefined)
+            : undefined;
           pending.push({
             workflowId: workflow.id,
             workflowName: workflow.name,
@@ -263,6 +285,18 @@ export async function* workflowApprovals(
             prompt,
             inputs: run.inputs,
             ...(parentRun ? { parentRun, parentWaiting } : {}),
+            ...(verdict && isOrphaned(verdict)
+              ? {
+                parentEnded: true,
+                serveStarted: run.instanceId !== undefined,
+              }
+              : {}),
+            ...(verdict?.kind === "unreadable" && verdict.missing
+              ? {
+                parentMissing: true,
+                serveStarted: run.instanceId !== undefined,
+              }
+              : {}),
           });
         }
       }

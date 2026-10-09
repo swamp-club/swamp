@@ -85,6 +85,10 @@ import {
   NestedRunLink,
 } from "./nested_run_link.ts";
 import {
+  OrphanedNestedRunError,
+  settleOrphanedNestedRun,
+} from "./orphaned_nested_run.ts";
+import {
   openSignalWaitMessage,
   schemaExpressions,
   SignalWait,
@@ -3728,6 +3732,33 @@ export class WorkflowExecutionService {
     );
     if (!loadedRun) {
       throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    // A nested run nothing waits on any more is cancelled, not continued
+    // (swamp-club#2867). Under the run's claim, as the save it may make
+    // needs. A run whose owner still saves it is left to the refusal below:
+    // a cancel written now would be saved over.
+    const ownerStillSaves = this.runTracker !== undefined &&
+      this.ownerLiveness !== undefined &&
+      suspendedRunOwnerStillRuns(
+        loadedRun,
+        this.runTracker,
+        this.ownerLiveness,
+      );
+    if (!ownerStillSaves) {
+      const orphaned = await settleOrphanedNestedRun(
+        {
+          runRepo: this.runRepo,
+          workflowRepo: this.workflowRepo,
+          signalWaits: this.signalWaits,
+          runTracker: this.runTracker,
+          runRecordCurrency: this.runRecordCurrency,
+          findEvaluatedWorkflow: (id) =>
+            this.evaluatedWorkflowRepo.findByRunId(id),
+        },
+        loadedRun,
+        workflow,
+      );
+      if (orphaned) throw new OrphanedNestedRunError(orphaned);
     }
     // Derived from the record as stored, before a signal is applied to it:
     // every host holding this record derives the same key.

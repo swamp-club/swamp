@@ -48,6 +48,12 @@ import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { parentResumeCommand } from "./nested_run_hints.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -172,7 +178,7 @@ export const workflowApproveCommand = withRemoteOptions(
       return;
     }
 
-    const { repoContext, datastoreConfig } =
+    const { repoDir, repoContext, datastoreResolver, datastoreConfig } =
       await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
@@ -184,23 +190,37 @@ export const workflowApproveCommand = withRemoteOptions(
       repoContext.workflowRunRepo,
       createWorkflowRunClaims(datastoreConfig),
     );
+    // A nested run nothing waits on is cancelled instead of approved
+    // (swamp-club#2867): settled against its own evaluated snapshot, and its
+    // tracker row closed.
+    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    deps.runTracker = runTracker;
+    deps.findEvaluatedWorkflow = (runId) =>
+      new YamlEvaluatedWorkflowRepository(
+        repoDir,
+        datastoreResolver.resolvePath(SWAMP_SUBDIRS.workflowsEvaluated),
+      ).findByRunId(runId);
 
-    await consumeStream(
-      workflowApprove(ctx, deps, {
-        workflowIdOrName,
-        stepName,
-        reason: options.reason as string | undefined,
-        runId: options.run as string | undefined,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          renderApproveResult(cliCtx, e.data);
+    try {
+      await consumeStream(
+        workflowApprove(ctx, deps, {
+          workflowIdOrName,
+          stepName,
+          reason: options.reason as string | undefined,
+          runId: options.run as string | undefined,
+        }),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            renderApproveResult(cliCtx, e.data);
+          },
+          error: (e) => {
+            throw userErrorFromSwampError(e.error);
+          },
         },
-        error: (e) => {
-          throw userErrorFromSwampError(e.error);
-        },
-      },
-    );
+      );
+    } finally {
+      runTracker.close();
+    }
   },
 );

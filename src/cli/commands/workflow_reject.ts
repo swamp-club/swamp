@@ -39,9 +39,10 @@ import {
 } from "../repo_context.ts";
 import {
   renderAwaitingParent,
-  renderDetachedNestedRuns,
+  renderNestedCascade,
   type ThroughServe,
 } from "./nested_run_hints.ts";
+import { localNestedCascade } from "../local_nested_cascade.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -160,6 +161,15 @@ export const workflowRejectCommand = withRemoteOptions(
         (runId) => evaluatedWorkflowRepo.findByRunId(runId),
         runTracker,
       );
+      // The suspended nested runs the rejected run waited on are cancelled
+      // with it (swamp-club#2867).
+      deps.cascade = localNestedCascade({
+        workflowRepo: deps.workflowRepo,
+        runRepo: deps.runRepo,
+        runClaims: deps.runClaims,
+        findEvaluatedWorkflow: deps.findEvaluatedWorkflow,
+        runTracker,
+      });
 
       await consumeStream(
         workflowReject(ctx, deps, {
@@ -200,7 +210,7 @@ function logNestedRunFollowUps(
   data: WorkflowRejectData,
   remote?: ThroughServe,
 ): void {
-  renderDetachedNestedRuns(cliCtx, data.detachedNestedRuns ?? [], remote);
+  renderNestedCascade(cliCtx, data, remote);
   if (data.awaitingParent) {
     renderAwaitingParent(cliCtx, data.awaitingParent, remote);
   }

@@ -35,6 +35,8 @@ import {
 import type { ActiveRunRegistry } from "./active_run_registry.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import type { DetachedNestedRunData } from "../libswamp/workflows/nested_runs.ts";
+import type { CascadedNestedRunData } from "../libswamp/workflows/nested_cascade.ts";
+import { serveNestedCascade } from "./nested_run_cascade.ts";
 import { YamlEvaluatedWorkflowRepository } from "../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
@@ -61,10 +63,16 @@ export type SuspendedRunCancelResult =
     runId: string;
     workflowName: string;
     /**
-     * Nested runs the cancelled run waited on, left suspended on their own
+     * Nested runs the cancelled run waited on and that were left unfinished
      * (swamp-club#2736).
      */
     detachedNestedRuns?: DetachedNestedRunData[];
+    /**
+     * Nested runs cancelled with the run, and running ones asked to stop
+     * (swamp-club#2867).
+     */
+    cancelledNestedRuns?: CascadedNestedRunData[];
+    stopRequestedNestedRuns?: CascadedNestedRunData[];
   }
   /** A run is registered under the id: cancel it through the registry. */
   | { status: "active" }
@@ -255,10 +263,16 @@ async function cancelLocatedRunAndPush(
       try {
         let failure: SwampError | undefined;
         let result: SuspendedRunCancelResult | undefined;
+        // The suspended nested runs the run waited on are cancelled in this
+        // unit of work, so one push carries them (swamp-club#2867).
+        const cascading: WorkflowCancelSuspendedDeps = {
+          ...deps,
+          cascade: serveNestedCascade(ctx, registry, request.reason),
+        };
         for await (
           const event of workflowCancelSuspended(
             handlerLibSwampContext(ctx),
-            deps,
+            cascading,
             {
               runId: request.runId,
               workflowId,
@@ -273,6 +287,14 @@ async function cancelLocatedRunAndPush(
               workflowName: event.data.workflowName,
               ...(event.data.detachedNestedRuns
                 ? { detachedNestedRuns: event.data.detachedNestedRuns }
+                : {}),
+              ...(event.data.cancelledNestedRuns
+                ? { cancelledNestedRuns: event.data.cancelledNestedRuns }
+                : {}),
+              ...(event.data.stopRequestedNestedRuns
+                ? {
+                  stopRequestedNestedRuns: event.data.stopRequestedNestedRuns,
+                }
                 : {}),
             };
           } else if (event.kind === "error") {

@@ -42,6 +42,7 @@ import { WorkflowRun } from "../domain/workflows/workflow_run.ts";
 import { Job } from "../domain/workflows/job.ts";
 import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
+import { nestedChain } from "../domain/workflows/nested_run_test_helpers.ts";
 
 function makeWorkflow(name: string): Workflow {
   return Workflow.create({
@@ -743,4 +744,85 @@ Deno.test("cancelSuspendedRunAndPush: without recorded heartbeats, a running run
     assertEquals(h.saved, []);
     assertEquals(run.status, "running");
   });
+});
+
+// --- swamp-club#2867: the gated cancel settles the nested runs with it.
+
+Deno.test("cancelSuspendedRunAndPush: cancels the suspended nested runs with the run, in one push, and releases their ids", async () => {
+  const { chain, workflows } = nestedChain(3);
+  const h = harness(workflows, chain);
+
+  const result = await cancelSuspendedRunAndPush(
+    h.ctx,
+    { runId: chain[0].id, reason: "Cancelled by user:alice" },
+    allow,
+  );
+
+  assert(result.status === "cancelled");
+  assertEquals(result.cancelledNestedRuns?.map((r) => r.runId), [
+    chain[1].id,
+    chain[2].id,
+  ]);
+  assertEquals(result.detachedNestedRuns, undefined);
+  assertEquals(h.saved.map((r) => r.id), chain.map((r) => r.id));
+  assertEquals(chain.map((r) => r.status), [
+    "cancelled",
+    "cancelled",
+    "cancelled",
+  ]);
+  assertEquals(h.pushes, 1);
+  for (const run of chain) {
+    const release = h.registry.reserve(run.id);
+    assert(release, "every reservation was released");
+    release();
+  }
+});
+
+Deno.test("cancelSuspendedRunAndPush: a nested run another operation holds is left and reported", async () => {
+  const { chain, workflows } = nestedChain();
+  const h = harness(workflows, chain);
+  const release = h.registry.reserve(chain[1].id)!;
+  try {
+    const result = await cancelSuspendedRunAndPush(
+      h.ctx,
+      { runId: chain[0].id, reason: "r" },
+      allow,
+    );
+    assert(result.status === "cancelled");
+    assertEquals(result.cancelledNestedRuns, undefined);
+    assertEquals(result.detachedNestedRuns?.map((r) => r.runId), [
+      chain[1].id,
+    ]);
+    assertEquals(chain[1].status, "suspended");
+    assertEquals(h.saved.map((r) => r.id), [chain[0].id]);
+  } finally {
+    release();
+  }
+});
+
+Deno.test("cancelSuspendedRunAndPush: a nested run this instance is running is asked to stop and not waited for", async () => {
+  const { chain, workflows } = nestedChain();
+  // The child was approved and resumed: it runs under its own registration.
+  const running = WorkflowRun.fromData({
+    ...chain[1].toData(),
+    status: "running",
+  });
+  const h = harness(workflows, [chain[0], running]);
+  // A completion that never settles: the cancel must not wait on it.
+  const active = fakeActiveRun(running.id, new Promise<void>(() => {}));
+  h.registry.register(active);
+
+  const result = await cancelSuspendedRunAndPush(
+    h.ctx,
+    { runId: chain[0].id, reason: "r" },
+    allow,
+  );
+
+  assert(result.status === "cancelled");
+  assertEquals(result.stopRequestedNestedRuns?.map((r) => r.runId), [
+    running.id,
+  ]);
+  assertEquals(result.cancelledNestedRuns, undefined);
+  assertEquals(active.controller.signal.aborted, true);
+  assertEquals(h.saved.map((r) => r.id), [chain[0].id]);
 });

@@ -23,10 +23,15 @@ import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowRunClaims } from "../../domain/workflows/run_claim.ts";
 import { inputsMatch } from "../../domain/workflows/input_matching.ts";
+import { NestedRunLink } from "../../domain/workflows/nested_run_link.ts";
+import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
-  type DetachedNestedRunData,
-  detachedNestedRunsOf,
-} from "./nested_runs.ts";
+  type CascadedNestedRunData,
+  emptyNestedCascade,
+  mergeNestedCascade,
+  type NestedCascade,
+  settleNestedRunsOf,
+} from "./nested_cascade.ts";
 import {
   cancelAndSettle,
   type EvaluatedWorkflowLookup,
@@ -36,13 +41,19 @@ import {
 export interface SupersedeResult {
   cancelledRunIds: string[];
   /**
-   * Nested runs the superseded runs were still waiting on, left suspended
-   * on their own (swamp-club#2736).
+   * Nested runs the superseded runs were still waiting on and that were
+   * left unfinished (swamp-club#2736).
    */
   detachedNestedRuns: DetachedNestedRunData[];
   /**
-   * Suspended runs with matching inputs left alone because a step of theirs
-   * waits for a signal. Cancelling one would discard the wait, and a
+   * Nested runs cancelled with the superseded runs, and running ones asked
+   * to stop (swamp-club#2867).
+   */
+  cancelledNestedRuns: CascadedNestedRunData[];
+  stopRequestedNestedRuns: CascadedNestedRunData[];
+  /**
+   * Suspended runs with matching inputs left alone because a step of theirs,
+   * or of a nested run they wait on, waits for a signal. Cancelling one would discard the wait, and a
    * workflow with no inputs would cancel its own waiting run each time it is
    * started. A wait past its deadline is left too: a resume fails its step,
    * so `failed` handlers run.
@@ -69,6 +80,11 @@ export interface SupersedeDeps {
    * stored and no other writer saves over it (swamp-club#2919).
    */
   runClaims: WorkflowRunClaims;
+  /**
+   * Cancels the nested runs the ended run waited on (swamp-club#2867).
+   * Without it they are only reported.
+   */
+  cascade?: NestedCascade;
 }
 
 /** Whether a new run of the workflow with `newInputs` supersedes `run`. */
@@ -92,13 +108,19 @@ function isSuperseded(
 export async function supersedeSuspendedRuns(
   workflow: Workflow,
   newInputs: Readonly<Record<string, unknown>>,
-  { findSuspendedRuns, findEvaluatedWorkflow, runClaims }: SupersedeDeps,
+  { findSuspendedRuns, findEvaluatedWorkflow, runClaims, cascade }:
+    SupersedeDeps,
   runRepo: WorkflowRunRepository,
 ): Promise<SupersedeResult> {
   const suspendedRuns = await findSuspendedRuns(workflow.id);
   const cancelledRunIds: string[] = [];
-  const detachedNestedRuns: DetachedNestedRunData[] = [];
+  const nested = emptyNestedCascade();
   const skippedRuns: SkippedSupersedeData[] = [];
+  // Only child runs are read through it: no workflow is looked up.
+  const nestedLink = new NestedRunLink({
+    runRepo,
+    workflowRepo: { findById: () => Promise.resolve(null) },
+  });
 
   for (const listed of suspendedRuns) {
     if (!isSuperseded(listed, newInputs)) continue;
@@ -108,7 +130,12 @@ export async function supersedeSuspendedRuns(
     const run = await runClaims.withClaim(listed.id, async () => {
       const current = await runRepo.findById(workflow.id, listed.id);
       if (!current || !isSuperseded(current, newInputs)) return null;
-      const signalWaits = current.findSignalWaits();
+      // A nested run's wait counts as the run's own: superseding the run
+      // would cancel that child, or leave it with no parent to signal for.
+      const signalWaits = [
+        ...current.findSignalWaits(),
+        ...await nestedLink.signalWaitsBelow(current),
+      ];
       if (signalWaits.length > 0) {
         skippedRuns.push({
           runId: current.id,
@@ -130,10 +157,12 @@ export async function supersedeSuspendedRuns(
     });
     if (!run) continue;
     cancelledRunIds.push(run.id);
-    for (const detached of await detachedNestedRunsOf({ runRepo }, run)) {
-      detachedNestedRuns.push(detached);
-    }
+    // After the run's claim is released: each child is claimed on its own.
+    mergeNestedCascade(
+      nested,
+      await settleNestedRunsOf({ runRepo }, cascade, run),
+    );
   }
 
-  return { cancelledRunIds, detachedNestedRuns, skippedRuns };
+  return { cancelledRunIds, ...nested, skippedRuns };
 }

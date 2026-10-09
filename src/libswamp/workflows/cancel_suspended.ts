@@ -47,10 +47,13 @@ import {
   withGeneratorSpan,
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
+import type { DetachedNestedRunData } from "./nested_runs.ts";
 import {
-  type DetachedNestedRunData,
-  detachedNestedRunsOf,
-} from "./nested_runs.ts";
+  type CascadedNestedRunData,
+  type NestedCascade,
+  nestedCascadeFields,
+  settleNestedRunsOf,
+} from "./nested_cascade.ts";
 
 export interface WorkflowCancelSuspendedData {
   runId: string;
@@ -59,10 +62,16 @@ export interface WorkflowCancelSuspendedData {
   previousStatus: "suspended" | "running";
   status: "cancelled";
   /**
-   * Nested runs the cancelled run's nested steps still waited on, left
-   * suspended on their own (swamp-club#2736).
+   * Nested runs the cancelled run's nested steps still waited on and that
+   * were left unfinished (swamp-club#2736).
    */
   detachedNestedRuns?: DetachedNestedRunData[];
+  /**
+   * Nested runs cancelled with this run, and running ones asked to stop
+   * (swamp-club#2867).
+   */
+  cancelledNestedRuns?: CascadedNestedRunData[];
+  stopRequestedNestedRuns?: CascadedNestedRunData[];
 }
 
 export type WorkflowCancelSuspendedEvent =
@@ -138,6 +147,11 @@ export interface WorkflowCancelSuspendedDeps {
    * gone, it is refused, since a live owner would save over the cancel.
    */
   ownerGone?: (run: WorkflowRun) => Promise<RunOwnerVerdict> | RunOwnerVerdict;
+  /**
+   * Cancels the nested runs the ended run waited on (swamp-club#2867).
+   * Without it they are only reported.
+   */
+  cascade?: NestedCascade;
 }
 
 /**
@@ -300,9 +314,8 @@ export async function* workflowCancelSuspended(
         if (deps.runTracker) {
           deps.runTracker.complete(run.id, "cancelled", input.reason);
         }
-        const detachedNestedRuns = await detachedNestedRunsOf(deps, run).catch(
-          () => [],
-        );
+        const nested = await settleNestedRunsOf(deps, deps.cascade, run)
+          .catch(() => undefined);
 
         yield {
           kind: "completed",
@@ -311,7 +324,7 @@ export async function* workflowCancelSuspended(
             workflowName: target.name,
             previousStatus,
             status: "cancelled",
-            ...(detachedNestedRuns.length > 0 ? { detachedNestedRuns } : {}),
+            ...(nested ? nestedCascadeFields(nested) : {}),
           },
         };
       })(),

@@ -2153,8 +2153,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
   /**
    * Settles every nested workflow step still waiting on its child run as
    * the run ends, and fails a job left with nothing else to finish. Only
-   * this run changes: each child stays suspended on its own. Not called on
-   * interrupt, since an interrupted run is recovered and keeps waiting.
+   * this run changes: cancelling the children is the caller's cascade
+   * (swamp-club#2867). Not called on interrupt, since an interrupted run is
+   * recovered and keeps waiting.
    */
   detachNestedWaits(): void {
     for (const job of this._jobs) {
@@ -2167,7 +2168,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
           ? `run ${step.nestedRun.ref.runId} of nested workflow "${step.nestedRun.ref.workflowName}"`
           : "its nested workflow run";
         step.detachNestedRun(
-          `Detached: the run ended while this step waited on ${child}. The nested run was left as it was.`,
+          `Detached: the run ended while this step waited on ${child}.`,
         );
         detached = true;
       }

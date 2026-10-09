@@ -30,7 +30,11 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
-import type { NestedWaitRef, WorkflowRun } from "./workflow_run.ts";
+import type {
+  NestedWaitRef,
+  SignalWaitRef,
+  WorkflowRun,
+} from "./workflow_run.ts";
 
 /** What NestedRunLink reads. It never writes. */
 export interface NestedRunLinkDeps {
@@ -111,6 +115,46 @@ export interface PendingNestedWait {
   readonly wait: NestedWaitRef;
   readonly child: WorkflowRun;
   readonly action: NestedWaitAction;
+}
+
+/** A run above a nested run, as its parentRun link names it. */
+export interface AncestorRunRef {
+  readonly workflowId: string;
+  readonly workflowName: string;
+  readonly runId: string;
+}
+
+/**
+ * A nested run's view of the runs above it (see
+ * {@link NestedRunLink.parentVerdict}). `ended` and `replaced` make the run
+ * orphaned: nothing will read its outcome.
+ */
+export type ParentVerdict =
+  | { readonly kind: "none" }
+  | {
+    readonly kind: "awaited";
+    /** Every ancestor record read, nearest first. */
+    readonly ancestors: readonly AncestorRunRef[];
+  }
+  | {
+    readonly kind: "ended";
+    readonly parent: AncestorRunRef;
+    readonly status: string;
+  }
+  | { readonly kind: "replaced"; readonly parent: AncestorRunRef }
+  | {
+    readonly kind: "unreadable";
+    readonly reason: string;
+    readonly parent?: AncestorRunRef;
+    /** True when the run above has no record at all, not a failed read. */
+    readonly missing?: true;
+  };
+
+/** True when the verdict says nothing waits on the run any more. */
+export function isOrphaned(
+  verdict: ParentVerdict,
+): verdict is Extract<ParentVerdict, { kind: "ended" | "replaced" }> {
+  return verdict.kind === "ended" || verdict.kind === "replaced";
 }
 
 const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
@@ -242,6 +286,38 @@ export class NestedRunLink {
   }
 
   /**
+   * The signal waits held by the unfinished runs below `parent`, at any
+   * depth, in stored order. A signal for one of them is what moves `parent`
+   * on, so ending `parent` discards the wait as surely as ending the run
+   * that holds it (swamp-club#2867). Only a child linked both ways is
+   * followed.
+   */
+  async signalWaitsBelow(
+    parent: WorkflowRun,
+    depth = 1,
+  ): Promise<SignalWaitRef[]> {
+    if (depth > MAX_WORKFLOW_NESTING_DEPTH) return [];
+    const waits: SignalWaitRef[] = [];
+    for (const wait of parent.findNestedWaits()) {
+      // A child that cannot be read is passed over, as one that does not
+      // link back is: nothing cancels it with `parent` either.
+      const resolved = await this.resolveChild(parent, wait).catch(() =>
+        undefined
+      );
+      if (resolved?.kind !== "resolved" || isFinishedRun(resolved.child)) {
+        continue;
+      }
+      for (const held of resolved.child.findSignalWaits()) waits.push(held);
+      for (
+        const below of await this.signalWaitsBelow(resolved.child, depth + 1)
+      ) {
+        waits.push(below);
+      }
+    }
+    return waits;
+  }
+
+  /**
    * True while the child's parent run exists, has not finished, and a step
    * of it still waits on this exact child.
    */
@@ -256,6 +332,92 @@ export class NestedRunLink {
     const step = parent.getJob(link.ref.jobName)?.getStep(link.ref.stepName);
     return step?.isNestedWait === true && step.nestedRun?.kind === "valid" &&
       sameRunId(step.nestedRun.ref.runId, child.id);
+  }
+
+  /**
+   * Whether the runs above a nested run still wait on it, walking up its
+   * parentRun links (swamp-club#2867). A run with no parentRun is `none`.
+   * The first ancestor that finished, or whose step moved on to another
+   * child, decides; otherwise the run is `awaited`, with the ancestor
+   * records that was read from.
+   *
+   * A parent records its wait only once its child has suspended, so an
+   * unfinished parent whose step carries no link yet still awaits a child
+   * that started no earlier than that step.
+   */
+  async parentVerdict(run: WorkflowRun): Promise<ParentVerdict> {
+    if (run.parentRun === undefined) return { kind: "none" };
+    const ancestors: AncestorRunRef[] = [];
+    let current = run;
+    for (let depth = 0; depth < MAX_WORKFLOW_NESTING_DEPTH; depth++) {
+      const link = current.parentRun;
+      if (link === undefined) break;
+      if (link.kind !== "valid") {
+        return {
+          kind: "unreadable",
+          reason: `run ${current.id} has a malformed parent run link`,
+        };
+      }
+      const ref = link.ref;
+      const ancestor: AncestorRunRef = {
+        workflowId: ref.workflowId,
+        workflowName: ref.workflowName,
+        runId: ref.runId,
+      };
+      let parent: WorkflowRun | null;
+      try {
+        parent = await this.deps.runRepo.findById(
+          createWorkflowId(ref.workflowId),
+          createWorkflowRunId(ref.runId),
+        );
+      } catch {
+        return {
+          kind: "unreadable",
+          reason: `parent run ${ref.runId} could not be read`,
+          parent: ancestor,
+        };
+      }
+      if (!parent) {
+        return {
+          kind: "unreadable",
+          reason: `parent run ${ref.runId} no longer exists`,
+          parent: ancestor,
+          missing: true,
+        };
+      }
+      if (isFinishedRun(parent)) {
+        return { kind: "ended", parent: ancestor, status: parent.status };
+      }
+      const step = parent.getJob(ref.jobName)?.getStep(ref.stepName);
+      if (!step) {
+        return {
+          kind: "unreadable",
+          reason:
+            `parent run ${ref.runId} has no step "${ref.stepName}" in job "${ref.jobName}"`,
+          parent: ancestor,
+        };
+      }
+      const forward = step.nestedRun;
+      // A link that cannot be read says nothing about which run the step
+      // waits on, so it is never taken for the step having moved on.
+      if (forward !== undefined && forward.kind !== "valid") {
+        return {
+          kind: "unreadable",
+          reason:
+            `step "${ref.stepName}" of parent run ${ref.runId} has a malformed nested run link`,
+          parent: ancestor,
+        };
+      }
+      const movedOn = forward !== undefined
+        ? !sameRunId(forward.ref.runId, current.id)
+        : step.startedAt === undefined ||
+          (current.startedAt !== undefined &&
+            current.startedAt.getTime() < step.startedAt.getTime());
+      if (movedOn) return { kind: "replaced", parent: ancestor };
+      ancestors.push(ancestor);
+      current = parent;
+    }
+    return { kind: "awaited", ancestors };
   }
 
   /**

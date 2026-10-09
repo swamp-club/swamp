@@ -510,18 +510,95 @@ A parent this instance still drives is awaited first. Each skip is audited as
 `workflow.auto_resume_skipped`; no auto-resume starts once shutdown began.
 
 When a parent ends while a step still waits on a child (a reject of its own
-gate, a cancel, a supersede), only the parent changes: `cancelAndSettle`
-and `completeAndSettle` mark each such step failed with `detachedNestedRun`, and the
-child is left as it was. The step's error names the child but not its state,
-which may have changed since the parent last read it. The command reports each
-detached child that has not finished with the command that cancels it (the
-`--server` form when serve owns it; `detachedNestedRunsOf` in
-`src/libswamp/workflows/nested_runs.ts`). A child that already finished, or no
-longer exists, needs no cancel and is not reported; one that cannot be read is
-reported. `swamp workflow approvals` marks the child's row as no longer
-awaited.
-Cancelling the children with their parent is swamp-club#2867. Supersede skips
-runs that have a `parentRun`. Run cleanup keeps a finished child while its
+gate, a cancel, a supersede), the parent settles itself first: `cancelAndSettle`
+and `completeAndSettle` mark each such step failed with `detachedNestedRun`.
+The step's error names the child but not its state, which may have changed
+since the parent last read it. Such a child is a *detached nested run*. Two
+things then keep it from continuing (swamp-club#2867).
+
+**The cascade.** A cancel, a reject and a supersede cancel the detached
+children with the parent (`createNestedCascade` in
+`src/libswamp/workflows/nested_cascade.ts`, injected into
+`workflowCancelSuspended`, `workflowReject` and `supersedeSuspendedRuns` as
+their `cascade` dependency). It is best effort and never changes the parent:
+
+- It follows only a link both runs agree on: the parent's step names the
+  child, and `NestedRunLink.resolveChild` finds the child naming that step
+  back. A run that does not link back is left.
+- A suspended child is cancelled under its own claim, read again there, and
+  the cascade then recurses into the runs that child waited on, down to the
+  nesting depth limit.
+- Whether a suspended child's owner still runs is read from its run tracker
+  row (`suspendedRunOwnerStillRuns`), never from the record's status or pid:
+  a run saved suspended can still have sibling steps running, and a resumed
+  run that suspends again restores the pid of its first owner.
+- A running child is asked to stop only by a caller that drives it (serve,
+  for a run registered in that instance), and is not waited for.
+- With a `RunRecordCurrency` (a synced datastore whose sync service has
+  `fetchContent`), a child whose local record is not the datastore's is left:
+  a peer may have approved it.
+
+The command reports three lists: `cancelledNestedRuns`,
+`stopRequestedNestedRuns`, and `detachedNestedRuns` for every child left
+unfinished, each with the command that cancels it (the `--server` form when
+serve owns it). A child that already finished, or no longer exists, is in
+none of them; one that cannot be read is reported as left. The local CLI
+leaves a child a serve instance owns, and one another local process is
+running, to their own cancel.
+
+**The refusal on the child.** A suspended nested run asks, before it is
+approved, rejected or resumed, whether the runs above it still wait
+(`NestedRunLink.parentVerdict`, walking up `parentRun`; applied by
+`settleOrphanedNestedRun` in `src/domain/workflows/orphaned_nested_run.ts`,
+called from approve, reject and the resume's take-over under the run's
+claim). An *orphaned nested run* is one where a run above ended, or where the
+parent's step moved on to another child. It is cancelled there and the
+command fails saying so: the run writes its own record, so the rule that no
+run writes another run's record holds. This covers every path the cascade
+does not reach: a run aborted in its own process, the stranded-run reaper,
+serve's bulk cancel and supersede, a child owned elsewhere, and a cascade
+that failed part way. A delivered signal continues a run through the same
+resume, so it is refused there too.
+
+- A parent that has not saved its wait yet (it records the link only once
+  the child has suspended) still awaits a child its step started. An
+  interrupted parent still awaits.
+- A parent that cannot be read, or no longer exists, refuses and writes
+  nothing: a missing record is not proof that the parent ended.
+  So does a parent whose step holds a nested run link that cannot be read:
+  it does not show which run the step waits on.
+- The cancel reason stored on the run names no other run. The reason is
+  shown to any reader of the run, and its `parentRun` link, which serve
+  returns only to a reader of the parent's workflow, names the parent.
+- With a `RunRecordCurrency`, a verdict of awaited is confirmed against the
+  datastore for every run above. One whose local record differs refuses with
+  nothing written, and the command can be tried again. A verdict of ended is
+  terminal and is trusted from the local copy, but the run's own record is
+  confirmed before the cancel is written: a copy behind the datastore's may
+  show a suspension a peer already finished.
+- A resume leaves a run whose owner still saves it to its own refusal: a
+  cancel written then would be saved over.
+- A failed nested run is finished: its retry is left alone.
+
+`swamp workflow approvals` marks an orphaned run's row `parentEnded` and
+offers only its cancel. A row whose parent has no record is marked
+`parentMissing` and offers only its cancel too; the cancel is not refused.
+Listed through `--server`, such a row keeps every command: serve fetches a
+parent record it does not hold before it decides, so the record may only not
+be local yet.
+Run garbage collection keeps a finished run while a nested run one of its
+steps started has not finished or cannot be read, so cleanup does not remove
+the record a child's refusal depends on. A run whose `parentRun` an older binary dropped is
+not seen as nested by the refusal; the cascade still reaches it from the
+parent's step.
+
+Not done: finding the children of a parent that crashed before saving its
+wait (they carry a `parentRun` but the parent has no link to them; the
+refusal cancels them when they are next touched), and ending an interrupted
+nested run with its parent (it is recovered first, and the resume that
+follows cancels it).
+
+Supersede skips runs that have a `parentRun`. Run cleanup keeps a finished child while its
 parent exists and has not finished (an interrupted parent still counts).
 A child inherits its parent's serve instance id and `initiatedBy`, so its
 cancel is routed as its parent's is, and its `run.initiatedBy` names the
@@ -1270,7 +1347,8 @@ sweep that fails does not fail `workflow waits`.
 The sweep runs from `workflow waits` and from the run garbage collection.
 
 **Supersede.** `workflow run` cancels suspended runs of the same workflow with
-matching inputs. It leaves alone a run that has a step waiting for a signal and
+matching inputs. It leaves alone a run that has a step waiting for a signal, or
+that waits on a nested run holding one at any depth, and
 reports it as kept, with its wait IDs (`skippedRuns` on the `superseded_runs`
 event). Otherwise a workflow with no inputs would cancel its own waiting run
 each time it is started. A run whose wait is past its deadline is left alone
@@ -1536,7 +1614,8 @@ cancelled and superseded as the run of whoever started it. See
 - **A retried nested workflow starts a new child run.** It does not resume the
   earlier child. A step detached when its run ended (see "Gates inside a
   nested workflow") is reopened by a plain retry or `--from`, which clears its
-  link and starts a fresh child; the old child stays as it was.
+  link and starts a fresh child. The old child, if the cascade left it, is
+  orphaned and is cancelled when it is next approved, rejected or resumed.
 - **One operator per run.** There is no ownership lock. Separate CLI processes
   or serve instances can race.
 - **Approvals are never reused silently.** Retry refuses a rejected approval. A

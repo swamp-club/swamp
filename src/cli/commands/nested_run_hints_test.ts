@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   renderAwaitingParent,
   renderDetachedNestedRuns,
+  renderNestedCascade,
 } from "./nested_run_hints.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 
@@ -150,4 +151,26 @@ Deno.test("renderAwaitingParent: through serve, a workflow name carrying a plain
     `swamp workflow resume $'par\\x1bent' --run ${PARENT_RUN_ID}`,
   );
   assertEquals(lines[0].includes("\u001b"), false);
+});
+
+Deno.test("renderNestedCascade: prints the cancel command only for a nested run left unfinished", () => {
+  const cancelled = { ...detached, runId: "c-1" };
+  const stopping = { ...detached, runId: "s-1" };
+  const lines = captureStdout(() =>
+    renderNestedCascade(hintTestContext(), {
+      cancelledNestedRuns: [cancelled],
+      stopRequestedNestedRuns: [stopping],
+      detachedNestedRuns: [detached],
+    })
+  );
+  assertEquals(lines, [
+    `Cancel nested run ${CHILD_RUN_ID} with: swamp workflow cancel child-wf --run ${CHILD_RUN_ID}`,
+  ]);
+});
+
+Deno.test("renderNestedCascade: nothing to report prints nothing", () => {
+  assertEquals(
+    captureStdout(() => renderNestedCascade(hintTestContext(), {})),
+    [],
+  );
 });

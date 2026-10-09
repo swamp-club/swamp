@@ -21,6 +21,7 @@ import type {
   AwaitingParentData,
   DetachedNestedRunData,
 } from "../../libswamp/workflows/nested_runs.ts";
+import type { NestedCascadeResult } from "../../libswamp/workflows/nested_cascade.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { escapeControlCharacters } from "../../domain/control_characters.ts";
 import { quoteShellWord } from "../../domain/shell_word.ts";
@@ -87,6 +88,28 @@ export function renderDetachedNestedRuns(
       );
     }
   }
+}
+
+/**
+ * Reports what became of the nested runs an ended run waited on: the ones
+ * cancelled with it, the running ones asked to stop, and the ones left
+ * unfinished with the command that cancels each (swamp-club#2867).
+ */
+export function renderNestedCascade(
+  cliCtx: CommandContext,
+  nested: Partial<NestedCascadeResult>,
+  remote?: ThroughServe,
+): void {
+  if (cliCtx.outputMode === "json") return;
+  for (const child of nested.cancelledNestedRuns ?? []) {
+    cliCtx.logger
+      .info`Nested run ${child.runId} of workflow ${child.workflowName} was cancelled with it.`;
+  }
+  for (const child of nested.stopRequestedNestedRuns ?? []) {
+    cliCtx.logger
+      .info`Nested run ${child.runId} of workflow ${child.workflowName} is running and was asked to stop.`;
+  }
+  renderDetachedNestedRuns(cliCtx, nested.detachedNestedRuns ?? [], remote);
 }
 
 /** Names the parent run still waiting on this run, with its resume command. */
