@@ -180,6 +180,10 @@ export const StepRunSchema = z.object({
   allowedFailure: z.boolean().optional(),
   approvalDecision: ApprovalDecisionSchema.optional(),
   approvalPrompt: z.string().optional(),
+  // Seconds the gate was requested with. The step run holds it because a
+  // step expanded by forEach has no step of its name in the definition
+  // (swamp-club#3218).
+  approvalTimeout: z.number().positive().optional(),
   assertResult: AssertResultSchema.optional(),
   forEachTemplate: z.string().optional(),
   skipReason: StepSkipReasonSchema.optional(),
@@ -390,6 +394,7 @@ export class StepRun {
     private _nestedRun: RunLink<NestedRunRef> | undefined = undefined,
     private _detachedNestedRun: boolean = false,
     private _wait: StoredWait | undefined = undefined,
+    private _approvalTimeout: number | undefined = undefined,
   ) {}
 
   /**
@@ -440,6 +445,7 @@ export class StepRun {
       parseNestedRunLink(validated.nestedRun),
       validated.detachedNestedRun ?? false,
       parseStoredWait(validated.wait),
+      validated.approvalTimeout,
     );
   }
 
@@ -483,6 +489,11 @@ export class StepRun {
 
   get approvalPrompt(): string | undefined {
     return this._approvalPrompt;
+  }
+
+  /** Seconds the waiting gate was requested with, when it has a deadline. */
+  get approvalTimeout(): number | undefined {
+    return this._approvalTimeout;
   }
 
   get assertResult(): AssertResultData | undefined {
@@ -601,6 +612,7 @@ export class StepRun {
     this._allowedFailure = false;
     this._approvalDecision = undefined;
     this._approvalPrompt = undefined;
+    this._approvalTimeout = undefined;
     this._assertResult = undefined;
     this._skipReason = undefined;
     this._resetByResume = false;
@@ -765,14 +777,17 @@ export class StepRun {
   }
 
   /**
-   * Marks the step as waiting for manual approval.
+   * Marks the step as waiting for manual approval. `timeout` is the seconds
+   * the gate stays open, counted from when the step started; a gate that
+   * waits again takes the timeout of the new wait.
    */
-  waitForApproval(prompt?: string): void {
+  waitForApproval(prompt?: string, timeout?: number): void {
     this._status = "waiting_approval";
     this._resetByResume = false;
     if (prompt !== undefined) {
       this._approvalPrompt = prompt;
     }
+    this._approvalTimeout = timeout;
   }
 
   /**
@@ -879,6 +894,9 @@ export class StepRun {
     }
     if (this._approvalPrompt !== undefined) {
       data.approvalPrompt = this._approvalPrompt;
+    }
+    if (this._approvalTimeout !== undefined) {
+      data.approvalTimeout = this._approvalTimeout;
     }
     if (this._assertResult) {
       data.assertResult = { ...this._assertResult };

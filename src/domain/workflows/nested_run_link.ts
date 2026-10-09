@@ -20,7 +20,10 @@
 import type { SignalWaitSupport } from "./signal_wait_store.ts";
 import { findUnsettledWait, type OpenWaitRef } from "./signal_wait_cleanup.ts";
 import { UserError } from "../errors.ts";
-import { evaluateApprovalTimeout } from "./approval_timeout.ts";
+import {
+  evaluateApprovalTimeout,
+  gateTimeoutSeconds,
+} from "./approval_timeout.ts";
 import { MAX_WORKFLOW_NESTING_DEPTH, sameRunId } from "./nested_run_ref.ts";
 import type {
   WorkflowRepository,
@@ -273,11 +276,12 @@ export class NestedRunLink {
       const workflow = await this.deps.workflowRepo.findById(
         createWorkflowId(child.workflowId),
       );
-      const taskData = workflow?.jobs.find((j) => j.name === gate.jobName)
-        ?.steps.find((s) => s.name === gate.stepName)?.task.data;
       const timeout = evaluateApprovalTimeout(
         step?.startedAt,
-        taskData,
+        gateTimeoutSeconds(
+          step,
+          workflow?.jobs.find((j) => j.name === gate.jobName)?.steps,
+        ),
         new Date(),
       );
       if (timeout?.expired) {

@@ -28,7 +28,10 @@ import {
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
-import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
+import {
+  evaluateApprovalTimeout,
+  gateTimeoutSeconds,
+} from "../../domain/workflows/approval_timeout.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
@@ -170,13 +173,14 @@ export async function* workflowApprovals(
 
           const job = run.getJob(waiting.jobName);
           const step = job?.getStep(waiting.stepName);
-          const taskData = workflow.jobs
-            .find((j) => j.name === waiting.jobName)?.steps
-            .find((s) => s.name === waiting.stepName)?.task.data;
+          const definitionSteps = workflow.jobs
+            .find((j) => j.name === waiting.jobName)?.steps;
+          const taskData = definitionSteps
+            ?.find((s) => s.name === waiting.stepName)?.task.data;
 
           const timeout = evaluateApprovalTimeout(
             step?.startedAt,
-            taskData,
+            gateTimeoutSeconds(step, definitionSteps),
             new Date(),
           );
           const parentRun = run.parentRun?.kind === "valid"

@@ -33,7 +33,10 @@ import {
   type EvaluatedWorkflowLookup,
   resolveSettlementWorkflow,
 } from "../../domain/workflows/abort_settlement.ts";
-import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
+import {
+  evaluateApprovalTimeout,
+  gateTimeoutSeconds,
+} from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -186,10 +189,9 @@ async function rejectClaimedRun(
   }
 
   const wfJob = workflow.jobs.find((j) => j.name === jobName);
-  const wfStep = wfJob?.steps.find((s) => s.name === input.stepName);
   const timeout = evaluateApprovalTimeout(
     step.startedAt,
-    wfStep?.task.data,
+    gateTimeoutSeconds(step, wfJob?.steps),
     new Date(),
   );
   if (timeout?.expired) {
