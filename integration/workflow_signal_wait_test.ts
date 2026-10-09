@@ -49,9 +49,15 @@ import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import {
+  WAIT_KEY_HELD_STEP_ERROR,
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "../src/domain/workflows/signal_wait.ts";
+import {
+  claimWaitKey,
+  type WaitKeyRecords,
+  type WaitKeyRequest,
+} from "../src/domain/workflows/wait_key_claim.ts";
 import { FileSystemControlPlaneStore } from "../src/infrastructure/persistence/fs_control_plane_store.ts";
 import {
   decideSignal,
@@ -248,7 +254,7 @@ const VERDICT_SCHEMA: InputsSchema = {
 /** The workflow from the issue: a review wait, then ship or escalate. */
 function release(
   name: string,
-  options: { allowFailure?: boolean; reviewGuard?: string } = {},
+  options: { allowFailure?: boolean; reviewGuard?: string; key?: string } = {},
 ): Workflow {
   return Workflow.create({
     name,
@@ -267,7 +273,7 @@ function release(
             name: "review",
             allowFailure: options.allowFailure ?? true,
             guard: options.reviewGuard,
-            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA),
+            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA, options.key),
           }),
           Step.create({
             name: "ship",
@@ -2010,6 +2016,11 @@ Deno.test("signal wait: a new run opens its waits without reading every registra
       settle: (o) => h.waits.settle(o),
       removeRegistration: (id) => h.waits.removeRegistration(id),
       removeOutcome: (id) => h.waits.removeOutcome(id),
+      highestKeyRecord: (w, k) => h.waits.highestKeyRecord(w, k),
+      createKeyRecord: (r) => h.waits.createKeyRecord(r),
+      listKeyRecords: () => h.waits.listKeyRecords(),
+      removeKeyRecord: (at) => h.waits.removeKeyRecord(at),
+      removeKeyRecordsOfWorkflow: (w) => h.waits.removeKeyRecordsOfWorkflow(w),
     };
     h.service.signalWaits = { supported: true, store: counting };
 
@@ -2455,5 +2466,332 @@ Deno.test("signal wait: a run still suspends, naming no nested wait, when its ne
     assertEquals(suspended.nestedSignalWaits, undefined);
     h.runRepo.findById = original;
     assertEquals((await only(h, parent)).status, "suspended");
+  });
+});
+
+// Wait keys (swamp-club#3209): a key is held by one open wait of a workflow
+// at a time.
+
+/** Starts a run and returns it, among however many the workflow has. */
+async function startRun(h: Harness, workflow: Workflow): Promise<WorkflowRun> {
+  const before = new Set(
+    (await h.runRepo.findAllByWorkflowId(workflow.id)).map((run) => run.id),
+  );
+  await drain(h.service.run(workflow.name));
+  const started = (await h.runRepo.findAllByWorkflowId(workflow.id)).filter(
+    (run) => !before.has(run.id),
+  );
+  assertEquals(started.length, 1);
+  return started[0];
+}
+
+async function highestOf(h: Harness, workflow: Workflow, key: string) {
+  const highest = await h.waits.highestKeyRecord(workflow.id, key);
+  assert(highest.kind === "found", `no readable record of key ${key}`);
+  return highest.record;
+}
+
+async function cancelRun(h: Harness, run: WorkflowRun): Promise<void> {
+  for await (
+    const event of workflowCancelSuspended(
+      createLibSwampContext(),
+      createWorkflowCancelSuspendedDeps(
+        h.workflowRepo,
+        h.runRepo,
+        () => true,
+        () => Promise.resolve(null),
+      ),
+      { runId: run.id, reason: "operator" },
+    )
+  ) {
+    if (event.kind === "error") throw new Error(event.error.message);
+  }
+}
+
+Deno.test("wait key: the first run holds the key, and a second run's step fails with wait_key_held while the first wait stays open", async () => {
+  const workflow = release("keyed-held", { key: "kitchen-verdict" });
+  await withHarness([workflow], async (h) => {
+    const first = await startRun(h, workflow);
+    const firstWait = waitIdOf(first);
+    const second = await startRun(h, workflow);
+
+    // The second run opened nothing: its step failed, and its failed
+    // dependent ran.
+    const review = stepOf(second, "review");
+    assertEquals(review.status, "failed");
+    assertEquals(review.error, WAIT_KEY_HELD_STEP_ERROR);
+    assertEquals(review.signalWait, undefined);
+    assertEquals(stepOf(second, "escalate").status, "succeeded");
+    assertEquals(second.status, "succeeded");
+
+    // The first run's wait is as it was, and it is the only one.
+    assertEquals((await reload(h, first)).status, "suspended");
+    assertEquals((await h.waits.findOutcome(firstWait)).kind, "absent");
+    assertEquals(
+      (await h.waits.listRegistrations()).map((r) => r.waitId),
+      [firstWait],
+    );
+    const claim = await highestOf(h, workflow, "kitchen-verdict");
+    assert(claim.kind === "claim");
+    assertEquals(claim.generation, 1);
+    assertEquals(claim.waitId, firstWait);
+
+    // The listing carries the key.
+    const listed = await listWaits(h);
+    assertEquals(listed.waits.map((w) => [w.waitId, w.key]), [
+      [firstWait, "kitchen-verdict"],
+    ]);
+    await signalOk(h, firstWait, { verdict: "ship" });
+  });
+});
+
+for (const release_ of ["signalled", "timed out", "cancelled"] as const) {
+  Deno.test(`wait key: once the holder is ${release_}, the next run's wait claims the key`, async () => {
+    const workflow = release(`keyed-${release_.replace(" ", "-")}`, {
+      key: "verdict",
+    });
+    await withHarness([workflow], async (h) => {
+      const first = await startRun(h, workflow);
+      const firstWait = waitIdOf(first);
+      if (release_ === "signalled") {
+        // Not resumed: the outcome frees the key, not the run record.
+        await signalOk(h, firstWait, { verdict: "ship" });
+      } else if (release_ === "timed out") {
+        await expireWaits(h, first);
+        await drain(h.service.resume(workflow.name, first.id));
+        assertEquals(
+          stepOf(await reload(h, first), "review").error,
+          WAIT_TIMEOUT_STEP_ERROR,
+        );
+      } else {
+        await cancelRun(h, first);
+      }
+
+      const next = await startRun(h, workflow);
+      assertEquals(next.status, "suspended");
+      const nextWait = waitIdOf(next);
+      assertNotEquals(nextWait, firstWait);
+      const claim = await highestOf(h, workflow, "verdict");
+      assert(claim.kind === "claim");
+      assertEquals([claim.generation, claim.waitId], [2, nextWait]);
+      await signalOk(h, nextWait, { verdict: "ship" });
+    });
+  });
+}
+
+Deno.test("wait key: a step that is reset claims its key again, as a new claim with a new wait", async () => {
+  const workflow = release("keyed-retried", {
+    allowFailure: false,
+    key: "verdict",
+  });
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const firstWait = waitIdOf(run);
+    await expireWaits(h, run);
+    await drain(h.service.resume(workflow.name, run.id));
+    assertEquals((await reload(h, run)).status, "failed");
+
+    await drain(h.service.resume(workflow.name, run.id));
+    const retried = await reload(h, run);
+    assertEquals(retried.status, "suspended");
+    const secondWait = waitIdOf(retried);
+    assertNotEquals(secondWait, firstWait);
+    const claim = await highestOf(h, workflow, "verdict");
+    assert(claim.kind === "claim");
+    assertEquals([claim.generation, claim.waitId], [2, secondWait]);
+    assertEquals(stepOf(retried, "review").signalWait?.key, "verdict");
+    await signalOk(h, secondWait, { verdict: "ship" });
+  });
+});
+
+/** A claim request for a run that exists only in this test. */
+function requestFor(workflow: Workflow, key: string): WaitKeyRequest {
+  return {
+    workflowId: workflow.id,
+    key,
+    waitId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    jobName: "release",
+    stepName: "review",
+    deadline: "2999-01-01T00:00:00.000Z",
+  };
+}
+
+/**
+ * `store` as one claimant sees it, held after it has read the highest
+ * record of the key until `go` resolves: the order of two claimants' reads
+ * and creates is then the test's to decide.
+ */
+function heldAfterRead(
+  store: SignalWaitStore,
+  go: Promise<void>,
+): { store: WaitKeyRecords; read: Promise<void> } {
+  let read!: () => void;
+  const hasRead = new Promise<void>((resolve) => read = resolve);
+  let first = true;
+  return {
+    read: hasRead,
+    store: {
+      highestKeyRecord: async (workflowId, key) => {
+        const highest = await store.highestKeyRecord(workflowId, key);
+        if (first) {
+          first = false;
+          read();
+          await go;
+        }
+        return highest;
+      },
+      createKeyRecord: (r) => store.createKeyRecord(r),
+      listKeyRecords: () => store.listKeyRecords(),
+      removeKeyRecord: (at) => store.removeKeyRecord(at),
+      removeKeyRecordsOfWorkflow: (w) => store.removeKeyRecordsOfWorkflow(w),
+      findOutcome: (id) => store.findOutcome(id),
+      settle: (o) => store.settle(o),
+    },
+  };
+}
+
+Deno.test("wait key: two waits that claim a free key at the same moment get exactly one claim", async () => {
+  const workflow = release("keyed-race", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    let release!: () => void;
+    const go = new Promise<void>((resolve) => release = resolve);
+    const a = heldAfterRead(h.waits, go);
+    const b = heldAfterRead(secondContext(h).waits, go);
+    const now = new Date();
+    const claims = [
+      claimWaitKey(a.store, requestFor(workflow, "verdict"), now),
+      claimWaitKey(b.store, requestFor(workflow, "verdict"), now),
+    ];
+    // Both have read the key as free before either creates its claim.
+    await Promise.all([a.read, b.read]);
+    release();
+
+    const kinds = (await Promise.all(claims)).map((c) => c.kind).sort();
+    assertEquals(kinds, ["acquired", "held"]);
+    assertEquals((await h.waits.listKeyRecords()).length, 1);
+  });
+});
+
+Deno.test("wait key: collecting the holder's run while two waits claim leaves one holder, and the collected claim's number is not used again", async () => {
+  const workflow = release("keyed-gc-race", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const ended = await startRun(h, workflow);
+    await signalOk(h, waitIdOf(ended), { verdict: "ship" });
+    await drain(h.service.resume(workflow.name, ended.id));
+    assertEquals((await reload(h, ended)).status, "succeeded");
+
+    // One claimant reads the ended run's claim as the highest...
+    let release!: () => void;
+    const go = new Promise<void>((resolve) => release = resolve);
+    const slow = heldAfterRead(h.waits, go);
+    const now = new Date();
+    const slowClaim = claimWaitKey(
+      slow.store,
+      requestFor(workflow, "verdict"),
+      now,
+    );
+    await slow.read;
+
+    // ...the run is collected, with its claim and its outcome...
+    await createRunGcDeps(h.repoDir, undefined, undefined, {
+      supported: true,
+      store: h.waits,
+    }).gcAll({
+      workflowRunRetentionDays: 0,
+      outputRetentionDays: 0,
+      dryRun: false,
+    });
+    assertEquals(await h.runRepo.findAllByWorkflowId(workflow.id), []);
+    const released = await highestOf(h, workflow, "verdict");
+    assertEquals([released.kind, released.generation], ["release", 2]);
+    assertEquals((await h.waits.listKeyRecords()).length, 1);
+
+    // ...and another wait claims the key before the first one creates.
+    const quick = await claimWaitKey(
+      h.waits,
+      requestFor(workflow, "verdict"),
+      now,
+    );
+    assert(quick.kind === "acquired");
+    assertEquals(quick.claim.generation, 3);
+
+    release();
+    const late = await slowClaim;
+    assert(late.kind === "held");
+    assertEquals(late.claim.waitId, quick.claim.waitId);
+  });
+});
+
+Deno.test("wait key: a step whose process died between its claim and its registration takes over the wait it claimed", async () => {
+  const workflow = release("keyed-crashed", { key: "verdict" });
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const waitId = waitIdOf(run);
+    // What such a kill leaves, once recovered: the claim exists, no wait
+    // was registered, and the record shows the step not started.
+    await h.waits.removeRegistration(waitId);
+    const data = run.toData();
+    const review = data.jobs[0].steps.find((s) => s.stepName === "review")!;
+    review.status = "pending";
+    review.startedAt = undefined;
+    review.wait = undefined;
+    await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
+
+    await drain(serviceOfAnotherProcess(h).resume(workflow.name, run.id));
+
+    const again = await reload(h, run);
+    assertEquals(again.status, "suspended");
+    assertEquals(waitIdOf(again), waitId);
+    const registration = await h.waits.findRegistration(waitId);
+    assert(registration.kind === "found");
+    assertEquals(registration.record.key, "verdict");
+    assertEquals((await h.waits.listKeyRecords()).length, 1);
+    await signalOk(h, waitId, { verdict: "ship" });
+  });
+});
+
+Deno.test("wait key: deleting a workflow removes its key records and no others", async () => {
+  const doomed = release("keyed-doomed", { key: "verdict" });
+  const kept = release("keyed-kept", { key: "verdict" });
+  await withHarness([doomed, kept], async (h) => {
+    await drain(h.service.run(doomed.name));
+    await drain(h.service.run(kept.name));
+    const keptWait = waitIdOf(await only(h, kept));
+
+    for await (
+      const event of workflowDelete(
+        createLibSwampContext(),
+        createWorkflowDeleteDeps(h.repoDir, undefined, undefined, undefined, {
+          supported: true,
+          store: h.waits,
+        }),
+        { workflowIdOrName: doomed.name },
+      )
+    ) {
+      if (event.kind === "error") throw new Error(event.error.message);
+    }
+
+    const records = await h.waits.listKeyRecords();
+    assertEquals(records.map((r) => [r.workflowId, r.kind]), [
+      [kept.id, "claim"],
+    ]);
+    assertEquals((await highestOf(h, kept, "verdict")).kind, "claim");
+    await signalOk(h, keptWait, { verdict: "ship" });
+  });
+});
+
+Deno.test("wait key: a wait without a key writes no key record", async () => {
+  const workflow = release("unkeyed");
+  await withHarness([workflow], async (h) => {
+    const first = await startRun(h, workflow);
+    const second = await startRun(h, workflow);
+    assertEquals(first.status, "suspended");
+    assertEquals(second.status, "suspended");
+    assertEquals(await h.waits.listKeyRecords(), []);
+    assertEquals((await listWaits(h)).waits.map((w) => w.key), [
+      undefined,
+      undefined,
+    ]);
   });
 });

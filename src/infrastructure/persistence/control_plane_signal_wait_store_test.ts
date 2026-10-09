@@ -37,6 +37,12 @@ import {
   isAtomicControlPlaneStore,
 } from "./control_plane_signal_wait_store.ts";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
+import {
+  claimWaitKey,
+  type WaitKeyClaim,
+  waitKeyRecordKey,
+  type WaitKeyRequest,
+} from "../../domain/workflows/wait_key_claim.ts";
 
 const OPENED = new Date("2026-01-01T00:00:00.000Z");
 const SCHEMA = {
@@ -334,4 +340,127 @@ Deno.test("ControlPlaneSignalWaitStore.register: enforces the encoded byte limit
       }
     }
   }
+});
+
+// Key records (swamp-club#3209).
+
+function keyRequest(overrides: Partial<WaitKeyRequest> = {}): WaitKeyRequest {
+  return {
+    workflowId: "wf-1",
+    key: "verdict",
+    waitId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    jobName: "main",
+    stepName: "review",
+    deadline: "2026-01-01T01:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function keyClaim(generation: number, key = "verdict"): WaitKeyClaim {
+  return {
+    kind: "claim",
+    ...keyRequest({ key }),
+    generation,
+    recordedAt: OPENED.toISOString(),
+  };
+}
+
+Deno.test("ControlPlaneSignalWaitStore: a key record is created once per generation, and the create answers with what is stored", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  const first = keyClaim(1);
+  const rival = keyClaim(1);
+
+  assertEquals(await store.createKeyRecord(first), {
+    kind: "found",
+    record: first,
+  });
+  assertEquals(await store.createKeyRecord(rival), {
+    kind: "found",
+    record: first,
+  });
+  assertEquals([...backing.data.keys()], ["wait-keys/wf-1/verdict/1"]);
+});
+
+Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: reads the highest generation of one key, by number and not by name", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  assertEquals(await store.highestKeyRecord("wf-1", "verdict"), {
+    kind: "none",
+  });
+  for (const generation of [1, 2, 9, 10]) {
+    await store.createKeyRecord(keyClaim(generation));
+  }
+  await store.createKeyRecord(keyClaim(40, "other"));
+  await store.createKeyRecord({ ...keyClaim(50), workflowId: "wf-2" });
+
+  const highest = await store.highestKeyRecord("wf-1", "verdict");
+  assert(highest.kind === "found");
+  assertEquals(highest.record.generation, 10);
+
+  // A highest record that does not parse is unreadable, never passed over.
+  backing.data.set("wait-keys/wf-1/verdict/11", new TextEncoder().encode("{"));
+  assertEquals(await store.highestKeyRecord("wf-1", "verdict"), {
+    kind: "unreadable",
+    generation: 11,
+  });
+  // A key of the family that names no record is not a generation.
+  backing.data.set("wait-keys/wf-1/other/latest", new Uint8Array());
+  const other = await store.highestKeyRecord("wf-1", "other");
+  assert(other.kind === "found");
+  assertEquals(other.record.generation, 40);
+});
+
+Deno.test("ControlPlaneSignalWaitStore: lists readable key records, removes one, and removes a workflow's without touching another's", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  const a = keyClaim(1);
+  const b = keyClaim(2);
+  const elsewhere = { ...keyClaim(1), workflowId: "wf-2" };
+  for (const record of [a, b, elsewhere]) await store.createKeyRecord(record);
+  backing.data.set("wait-keys/wf-1/verdict/3", new TextEncoder().encode("{"));
+
+  assertEquals(
+    (await store.listKeyRecords()).map(waitKeyRecordKey).sort(),
+    [a, b, elsewhere].map(waitKeyRecordKey).sort(),
+  );
+
+  await store.removeKeyRecord(a);
+  assertEquals(backing.data.has(waitKeyRecordKey(a)), false);
+
+  await store.removeKeyRecordsOfWorkflow("wf-1");
+  assertEquals([...backing.data.keys()], [waitKeyRecordKey(elsewhere)]);
+  // Registrations and outcomes are another family and are left alone.
+  const reg = registration();
+  await store.register(reg);
+  await store.removeKeyRecordsOfWorkflow("wf-1");
+  assertEquals((await store.listRegistrations()).length, 1);
+});
+
+Deno.test("ControlPlaneSignalWaitStore: of many concurrent claims of a free key on a real directory exactly one is acquired", async () => {
+  await withTempDir(async (dir) => {
+    const stores = Array.from(
+      { length: 12 },
+      () =>
+        new ControlPlaneSignalWaitStore(new FileSystemControlPlaneStore(dir)),
+    );
+    const results = await Promise.all(
+      stores.map((store) => claimWaitKey(store, keyRequest(), OPENED)),
+    );
+    const acquired = results.filter((r) => r.kind === "acquired");
+    assertEquals(acquired.length, 1);
+    assertEquals(
+      results.filter((r) => r.kind === "held").length,
+      stores.length - 1,
+    );
+    assertEquals(
+      (await Deno.stat(
+        join(dir, "_control", "wait-keys", "wf-1", "verdict", "1"),
+      ))
+        .isFile,
+      true,
+    );
+    assertEquals((await stores[0].listKeyRecords()).length, 1);
+  });
 });

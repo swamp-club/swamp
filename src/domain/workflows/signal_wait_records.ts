@@ -37,6 +37,7 @@ import {
   type SignalReceipt,
   SignalReceiptSchema,
   SignalWait,
+  WAIT_KEY_PATTERN,
 } from "./signal_wait.ts";
 
 /** Key family of registrations: `waits/<waitId>`. */
@@ -118,6 +119,8 @@ export const WaitRegistrationSchema = z.object({
   deadline: z.string().datetime(),
   schema: RequiredInputsSchemaSchema,
   registeredAt: z.string().datetime(),
+  // The key the wait holds, if its step declared one (swamp-club#3209).
+  key: z.string().regex(WAIT_KEY_PATTERN).optional(),
 });
 
 export type WaitRegistration = z.infer<typeof WaitRegistrationSchema>;
@@ -245,6 +248,7 @@ export function registrationOf(
     deadline: wait.deadline.toISOString(),
     schema: structuredClone(wait.schema),
     registeredAt: now.toISOString(),
+    ...(wait.key !== undefined ? { key: wait.key } : {}),
   };
 }
 

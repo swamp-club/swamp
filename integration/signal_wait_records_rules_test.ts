@@ -21,7 +21,8 @@
  * Fitness test for the records of workflow signal waits (swamp-club#3093):
  *
  *   1. Only `signal_wait_records.ts` names the two control-plane key
- *      families, `waits/` and `wait-outcomes/`.
+ *      families, `waits/` and `wait-outcomes/`, and only
+ *      `wait_key_claim.ts` names the third, `wait-keys/` (swamp-club#3209).
  *   2. `workflow signal` never saves a run and never takes a run claim,
  *      locally or delivered through `swamp serve` (swamp-club#3094).
  *   3. A run repository's `beforeSave` hook, which closes the waits of a
@@ -52,6 +53,7 @@ import {
   WAIT_OUTCOME_PREFIX,
   WAIT_REGISTRATION_PREFIX,
 } from "../src/domain/workflows/signal_wait_records.ts";
+import { WAIT_KEY_RECORD_PREFIX } from "../src/domain/workflows/wait_key_claim.ts";
 
 /** True when a line of `source` outside a comment matches `pattern`. */
 function mentions(source: string, pattern: RegExp): boolean {
@@ -72,6 +74,9 @@ async function filesMentioning(pattern: RegExp): Promise<string[]> {
 
 /** A string literal that starts with one of the two key families. */
 const WAIT_KEY_LITERAL = /["'`](?:waits|wait-outcomes)\//;
+
+/** A string literal that starts with the family of key records. */
+const KEY_RECORD_LITERAL = /["'`]wait-keys\//;
 
 /** An assignment of a run repository's save hook. */
 const BEFORE_SAVE_ASSIGNMENT = /\.beforeSave\s*=[^=]/;
@@ -105,6 +110,29 @@ Deno.test("signal wait rules: the patterns match code and skip comments", () => 
 Deno.test("signal wait rules: the key families are what the pattern looks for", () => {
   assertEquals(WAIT_REGISTRATION_PREFIX, "waits/");
   assertEquals(WAIT_OUTCOME_PREFIX, "wait-outcomes/");
+  assertEquals(WAIT_KEY_RECORD_PREFIX, "wait-keys/");
+  assertEquals(
+    mentions('const P = "wait-keys/";', KEY_RECORD_LITERAL),
+    true,
+  );
+  assertEquals(
+    mentions("  // under wait-keys/<id>", KEY_RECORD_LITERAL),
+    false,
+  );
+  assertEquals(mentions('const P = "wait-keys/";', WAIT_KEY_LITERAL), false);
+});
+
+Deno.test("only wait_key_claim.ts names the family of key records", async () => {
+  assertPinnedSet(
+    await filesMentioning(KEY_RECORD_LITERAL),
+    ["src/domain/workflows/wait_key_claim.ts"],
+    "key record family literals",
+    "Build the store key of a key record with waitKeyRecordKey from " +
+      "src/domain/workflows/wait_key_claim.ts, and read or write the " +
+      "records through a SignalWaitStore, so every writer validates the " +
+      "workflow id and the key, and a highest claim is superseded by a " +
+      "release instead of deleted.",
+  );
 });
 
 Deno.test("only signal_wait_records.ts names the wait key families", async () => {

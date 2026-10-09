@@ -88,6 +88,9 @@ export function renderWaits(
       },
     );
     cliCtx.logger.info("  Run:      {runId}", { runId: wait.runId });
+    if (wait.key !== undefined) {
+      cliCtx.logger.info("  Key:      {key}", { key: wait.key });
+    }
     cliCtx.logger.info(
       wait.expired
         ? "  Deadline: {deadline} (expired — a resume fails the step)"

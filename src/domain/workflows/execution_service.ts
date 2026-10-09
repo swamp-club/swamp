@@ -87,9 +87,11 @@ import {
   openSignalWaitMessage,
   schemaExpressions,
   SignalWait,
+  WAIT_KEY_HELD_STEP_ERROR,
   WAIT_TIMEOUT_STEP_ERROR,
   WAIT_UNREADABLE_STEP_ERROR,
 } from "./signal_wait.ts";
+import { claimWaitKey, waitKeyRefusal } from "./wait_key_claim.ts";
 import {
   cancelAndSettle,
   failAbandonedSteps,
@@ -5276,14 +5278,70 @@ export class WorkflowExecutionService {
           };
           return;
         }
-        const wait = earlier
+        let wait = earlier
           ? SignalWait.fromData({
             kind: "signal",
             id: earlier.waitId,
             schema: earlier.schema,
             deadline: earlier.deadline,
+            ...(earlier.key !== undefined ? { key: earlier.key } : {}),
           })
-          : SignalWait.open(task.schema, task.timeout, openedAt, maxTimeout);
+          : SignalWait.open(
+            task.schema,
+            task.timeout,
+            openedAt,
+            maxTimeout,
+            task.key,
+          );
+        // A keyed wait claims its key before it is registered, so a step
+        // that finds the key held opens nothing (swamp-club#3209). A wait
+        // taken over holds its claim already.
+        if (!earlier && task.key !== undefined) {
+          const acquisition = await claimWaitKey(waits, {
+            workflowId: run.workflowId,
+            key: task.key,
+            waitId: wait.id,
+            runId: run.id,
+            jobName: job.name,
+            stepName,
+            deadline: wait.deadline.toISOString(),
+          }, openedAt);
+          if (acquisition.kind === "own") {
+            // This step claimed the key and its process stopped before the
+            // wait was registered. The claim names that wait, so the step
+            // opens it now instead of a second one.
+            wait = SignalWait.fromData({
+              kind: "signal",
+              id: acquisition.claim.waitId,
+              schema: task.schema,
+              deadline: acquisition.claim.deadline,
+              key: task.key,
+            });
+          } else if (acquisition.kind !== "acquired") {
+            getSwampLogger(["workflow", "run"]).warn(
+              "Step {stepName} of run {runId} did not open its wait: {reason}. The step failed with {error}.",
+              {
+                stepName,
+                runId: run.id,
+                reason: waitKeyRefusal(task.key, acquisition),
+                error: WAIT_KEY_HELD_STEP_ERROR,
+              },
+            );
+            stepRun.fail(WAIT_KEY_HELD_STEP_ERROR);
+            if (step.allowFailure) stepRun.markAllowedFailure();
+            yield {
+              kind: "step_failed",
+              jobId: job.name,
+              stepId: stepName,
+              runId: run.id,
+              error: WAIT_KEY_HELD_STEP_ERROR,
+              allowedFailure: step.allowFailure || undefined,
+              forEachTemplate,
+              forEachIndex,
+            };
+            return;
+          }
+        }
         // Registered before the step waits, so the wait can be signalled as
         // soon as its id is known, whatever the run record says by then.
         if (!earlier) {

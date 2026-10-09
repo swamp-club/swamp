@@ -260,3 +260,33 @@ Deno.test("decodeWaitOutcome: a payload that parsing would change is unreadable,
     "found",
   );
 });
+
+Deno.test("registrationOf: records the key of a keyed wait, and no key field for any other", () => {
+  const at = {
+    workflowId: "wf-1",
+    workflowName: "release",
+    runId: crypto.randomUUID(),
+    jobName: "main",
+    stepName: "review",
+  };
+  const keyed = registrationOf(
+    at,
+    SignalWait.open(SCHEMA, 60, OPENED, undefined, "verdict"),
+    OPENED,
+  );
+  assertEquals(keyed.key, "verdict");
+  assertEquals(
+    decodeWaitRegistration(encodeWaitRecord(keyed), keyed.waitId),
+    { kind: "found", record: keyed },
+  );
+  const plain = registrationOf(at, SignalWait.open(SCHEMA, 60, OPENED), OPENED);
+  assertEquals("key" in plain, false);
+  // A registration read back with a key no step could declare is not trusted.
+  assertEquals(
+    decodeWaitRegistration(
+      encodeWaitRecord({ ...keyed, key: "../escape" }),
+      keyed.waitId,
+    ).kind,
+    "unreadable",
+  );
+});

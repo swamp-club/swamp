@@ -49,6 +49,18 @@ export const RESERVED_PAYLOAD_KEYS: ReadonlyArray<string> = [
   "prototype",
 ];
 
+/**
+ * The form of a wait's key: 1 to 64 lowercase letters, digits, hyphens and
+ * underscores, starting with a letter or digit. A key becomes one segment
+ * of a control-plane key, so it holds no separator and no dot, and has one
+ * spelling on a filesystem that ignores case. It can hold no expression.
+ */
+export const WAIT_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** What a refused key is told the form is. */
+export const WAIT_KEY_FORM =
+  "1 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit";
+
 /** The error a step fails with when its wait passed its deadline unsignalled. */
 export const WAIT_TIMEOUT_STEP_ERROR = "wait_timeout";
 
@@ -57,6 +69,12 @@ export const WAIT_TIMEOUT_STEP_ERROR = "wait_timeout";
  * read, so it has no id to signal and no deadline to pass.
  */
 export const WAIT_UNREADABLE_STEP_ERROR = "wait_unreadable";
+
+/**
+ * The error a step fails with when another open wait holds the key its own
+ * wait declares (swamp-club#3209).
+ */
+export const WAIT_KEY_HELD_STEP_ERROR = "wait_key_held";
 
 /** Why a resume refuses a run with an open signal wait, and the next step. */
 export function openSignalWaitMessage(
@@ -90,6 +108,8 @@ export const SignalWaitSchema = z.object({
   schema: RequiredInputsSchemaSchema,
   deadline: z.string().datetime(),
   receipt: SignalReceiptSchema.optional(),
+  // The key the step declared, if any (swamp-club#3209).
+  key: z.string().regex(WAIT_KEY_PATTERN).optional(),
 });
 
 export type SignalWaitData = z.infer<typeof SignalWaitSchema>;
@@ -310,8 +330,8 @@ function structuralErrors(
 /**
  * SignalWait is a value object: one wait of a `wait_for_signal` step for a
  * JSON message. It carries the wait's id, the payload schema captured when
- * the step started waiting, its deadline and, once a signal settled it, the
- * receipt.
+ * the step started waiting, its deadline, the key the step declared, if any,
+ * and, once a signal settled it, the receipt.
  *
  * Immutable with equality based on value.
  */
@@ -321,6 +341,7 @@ export class SignalWait {
     readonly schema: InputsSchema,
     readonly deadline: Date,
     readonly receipt: SignalReceipt | undefined,
+    readonly key: string | undefined,
   ) {}
 
   /**
@@ -328,14 +349,19 @@ export class SignalWait {
    * timeout the task schema would refuse, so no wait holds a deadline that
    * cannot be stored, and for one above `maxTimeoutSeconds`, the lower
    * maximum of whoever runs the workflow (swamp-club#3109). A maximum above
-   * {@link SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} counts as that.
+   * {@link SIGNAL_WAIT_MAX_TIMEOUT_SECONDS} counts as that. Throws for a
+   * `key` that is not in the form of {@link WAIT_KEY_PATTERN}.
    */
   static open(
     schema: InputsSchema,
     timeoutSeconds: number,
     now: Date,
     maxTimeoutSeconds: number = SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
+    key?: string,
   ): SignalWait {
+    if (key !== undefined && !WAIT_KEY_PATTERN.test(key)) {
+      throw new Error(`A wait key must be ${WAIT_KEY_FORM}, got ${key}.`);
+    }
     const max = Math.min(maxTimeoutSeconds, SIGNAL_WAIT_MAX_TIMEOUT_SECONDS);
     if (!(timeoutSeconds > 0) || !(timeoutSeconds <= max)) {
       throw new Error(
@@ -347,6 +373,7 @@ export class SignalWait {
       structuredClone(schema),
       new Date(now.getTime() + timeoutSeconds * 1000),
       undefined,
+      key,
     );
   }
 
@@ -360,6 +387,7 @@ export class SignalWait {
       validated.schema,
       new Date(validated.deadline),
       validated.receipt,
+      validated.key,
     );
   }
 
@@ -435,7 +463,13 @@ export class SignalWait {
    * The wait settled by the signal `receipt` records.
    */
   settledWith(receipt: SignalReceipt): SignalWait {
-    return new SignalWait(this.id, this.schema, this.deadline, { ...receipt });
+    return new SignalWait(
+      this.id,
+      this.schema,
+      this.deadline,
+      { ...receipt },
+      this.key,
+    );
   }
 
   /**
@@ -449,6 +483,7 @@ export class SignalWait {
       deadline: this.deadline.toISOString(),
     };
     if (this.receipt) data.receipt = { ...this.receipt };
+    if (this.key !== undefined) data.key = this.key;
     return data;
   }
 

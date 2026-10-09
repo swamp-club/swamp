@@ -681,13 +681,23 @@ swamp workflow resume release           # continues the run
   with an expression still in its schema fails instead of opening a wait no
   payload could satisfy.
 
+- `key` (optional, swamp-club#3209): a name at most one open wait of the
+  workflow holds at a time. A literal of 1 to 64 lowercase letters, digits,
+  hyphens and underscores, starting with a letter or digit
+  (`WAIT_KEY_PATTERN` in `src/domain/workflows/signal_wait.ts`). It takes no
+  expression, so the workflow definition is the list of its valid keys. See
+  "Keys" below.
+
 **Terms.** A _wait_ is one pause of one step for one message. Its _wait ID_ is a
 random UUID issued when the step starts waiting. A _signal_ is the message
 delivered to a wait. The _receipt_ is what swamp records about the signal. The
 _deadline_ is when the wait stops accepting one. A wait's _registration_ is the
 record that says where it lives and what it accepts. Its _outcome_ is how it was
-settled: an accepted signal, `timed_out` or `cancelled`. These are distinct from
-an approval gate and its `waiting_approval` status.
+settled: an accepted signal, `timed_out` or `cancelled`. A wait's _key_ is the
+name its step declared, if any; a _claim_ is the record that says which wait
+holds a key, and a _release_ is the record that takes the place of a removed
+claim and leaves the key free. These are distinct from an approval gate and
+its `waiting_approval` status.
 
 **The wait is state on the step, and its outcome is a record of its own.**
 `WorkflowRun` stays the aggregate root and the run record stays the only source
@@ -704,6 +714,9 @@ control-plane store (`src/domain/workflows/signal_wait_records.ts`):
 | ------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------- |
 | `waits/<waitId>`         | The executor, before the step is marked waiting | Workflow, run, job, step, deadline, captured schema                        |
 | `wait-outcomes/<waitId>` | Whoever settles the wait first                 | An accepted signal (receipt and payload), `timed_out`, or `cancelled`      |
+
+A keyed wait has a third family,
+`wait-keys/<workflowId>/<key>/<generation>`, described under "Keys".
 
 A signal, a timeout and a cancel each try to create the same outcome key with
 `putIfAbsent`, and exactly one succeeds. Every later attempt reads what is
@@ -805,6 +818,67 @@ there by swamp-club#3068, cannot be signalled. Its resume is refused, saying so,
 while the wait is open, and past the deadline fails the step with
 `wait_timeout` so `failed` handlers run; cancel also ends it.
 
+**Keys.** A `wait_for_signal` step may declare a `key` (swamp-club#3209). It
+is a second way to name a wait, for a sender configured once with a fixed
+address; nothing can be signalled by key yet (swamp-club#3210). This part adds
+the key and the rule that keeps it unambiguous: one key, one open wait.
+
+`workflow validate` refuses the same key on two steps of one workflow, in one
+job or across jobs, and a key on a step under `forEach`, where every iteration
+would share it (`validateWaitKeys` in
+`src/domain/workflows/validation_service.ts`). Both messages name the steps.
+
+A step claims its key before it registers its wait
+(`src/domain/workflows/wait_key_claim.ts`). Claims of one key are numbered
+records, `wait-keys/<workflowId>/<key>/<generation>`, each created once with
+`putIfAbsent`, following the generation pattern of continuation claims. A
+claim holds the wait ID, the run, job and step, and the wait's deadline. The
+holder of a key is the wait of its highest claim for as long as that wait has
+no outcome (`decideKeyHolder`, a pure function over the highest record and
+that outcome). `claimWaitKey` reads the highest record, settles an overdue
+holder as timed out first, as every reader of a wait does, and creates the
+next generation. Two steps that claim a free key at the same moment create the
+same generation and exactly one succeeds; the create is read back and compared
+by wait ID, never trusted by its own answer.
+
+A step that reaches its wait while another open wait holds the key fails with
+error `wait_key_held`, so `allowFailure` and `failed` dependents apply. No wait
+is opened and nothing is registered for it. The log names the holding wait,
+step and run; the step's error is the bare `wait_key_held`. A second run does
+not replace the holder: a run never ends another run's wait. The same failure
+is given when the highest record of the key cannot be read, since its holder
+is then unknown, and when eight creates in a row were lost to other claimants.
+
+The key names the wait currently open under it, not one attempt. A step that
+is reset closes its wait as before, and its next attempt claims the key again
+as a new claim with a new wait ID. A step whose process stopped between its
+claim and its registration finds the highest claim naming its own run, job and
+step with no outcome, and opens the wait that claim names instead of a second
+one. The key is kept on the wait in the run record and on the registration, so
+a registration rebuilt from the run record keeps it.
+
+Claims live as long as outcomes, because the holder decision reads the
+outcome: nothing is removed when a run ends. They are removed with the run's
+records, by the run garbage collection, by deleting the workflow and by the
+sweep (`releaseKeyClaims`, called before the outcomes are removed). The
+highest record of a key is never deleted to be replaced. A deleted number
+would come back into use, and a claimant that read the old highest and one
+that read after the delete could both create a claim and both open a wait. A
+claim that is the highest of its key is superseded first by a _release_, the
+next generation of the same family, which names no wait and reads as free;
+then the claim is deleted. A release below the highest of its key is removed
+in the same pass, so at most one is left per key until the next claim.
+Deleting a workflow removes every record under its `wait-keys/<workflowId>/`
+prefix. A claimant that finds a key held reads the highest record once more
+before it answers: a claim whose outcome went with its run was superseded
+before that outcome was removed, so a holder that is still the highest record
+is a wait that is open.
+
+The S3 and GCS datastore extensions need no change: key records use `get`,
+`putIfAbsent`, `list` and `delete`, as wait records do.
+`integration/signal_wait_records_rules_test.ts` holds that only
+`wait_key_claim.ts` names the family.
+
 **Signalling.** `swamp workflow signal <waitId> --payload '<json>'`
 (`src/libswamp/workflows/signal.ts`) reads the wait's registration, decides the
 payload against it, and creates the outcome. It takes no run claim, asks nothing
@@ -896,6 +970,12 @@ resumes it again. Upgrade every host that resumes runs on a shared synced
 datastore, serve instances and local commands alike, before relying on the
 continuation sweep there, or keep it off with `--continuation-sweep-interval 0`
 until they are.
+
+A binary from before swamp-club#3209 does not know `key`. The task schema
+drops a field it does not know, so that binary runs the workflow and opens the
+wait with no claim: a second wait can then be open under a key another wait
+holds, and a later build's claim does not see it. Upgrade every host that runs
+a workflow before giving one of its waits a key.
 
 The `signal` access action (swamp-club#3094) has a mixed-build hazard of its
 own: a build from before it drops any stored grant that names `signal`,
@@ -1042,7 +1122,8 @@ not walked, so it is settled when its job ends: it fails with `wait_timeout`
 
 **Listing.** `swamp workflow waits` (`src/libswamp/workflows/waits.ts`) lists
 the registered waits nothing has answered, soonest deadline first, with the wait
-ID, workflow, run, job, step, deadline and schema. A registration is enough: a
+ID, workflow, run, job, step, deadline and schema, and the wait's key when its
+step declared one, in log and JSON output. A registration is enough: a
 wait is listed even when its run record has not reached this host. A wait past
 its deadline is settled as timed out and listed with `expired: true` and the
 resume command, so the run that needs a resume can be found. A wait a signal
@@ -1183,7 +1264,8 @@ outputs only, so a parent cannot read a child's signal payload.
 
 **forEach compatibility:** A `forEach` expansion of a `wait_for_signal` step
 creates one wait per iteration, each with its own wait ID. `resume()` refuses
-to start while any of them is still open.
+to start while any of them is still open. Such a step cannot declare a `key`:
+every iteration would claim it.
 
 **Limits of this version:**
 
@@ -1217,6 +1299,19 @@ to start while any of them is still open.
   suspended in is not refused: the run tracker is local to a host.
 - A run tracker row whose pid was reused by another live process keeps the
   resume refused until the run is cancelled.
+- A key cannot be signalled yet; a signal names the wait ID (swamp-club#3210).
+  Remote clients and the dashboard get the key in the waits listing's data
+  but do not show it yet (swamp-club#3214).
+- A workflow started again while its keyed wait is open fails at that step
+  with `wait_key_held` until the holder is signalled, times out or is
+  cancelled, so the `timeout` of a keyed wait bounds how long a forgotten run
+  blocks the next one.
+- A process killed between claiming a key and registering its wait leaves a
+  claim whose wait is on no run record. If that run is recovered or resumed,
+  the step takes the wait over. If it is cancelled instead, nothing settles
+  that wait and the key stays held until the claim's deadline.
+- A key record that cannot be read as the highest of its key blocks the key
+  until the workflow is deleted or the record is removed by hand.
 - The dashboard lists suspended runs as awaiting approval, expired or awaiting
   resume, and lists waits for a signal with their state and the commands to run
   next. It cannot send a signal: there is no payload form. Expired

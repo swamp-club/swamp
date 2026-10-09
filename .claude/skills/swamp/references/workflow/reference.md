@@ -882,6 +882,7 @@ it. Use it when a step needs a value, not a yes or no:
   task:
     type: wait_for_signal
     timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
+    key: release-verdict # Optional: one open wait of the workflow holds a key at a time
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -922,6 +923,15 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
 - A signal names the **wait ID**, never a workflow or step name. Get it from the
   `workflow run` output (`signalWaits[].waitId` with `--json`, which lists every
   open wait of the run) or `workflow waits`.
+- `key` is a literal (lowercase letters, digits, `-`, `_`; at most 64
+  characters; no expression). `workflow validate` refuses the same key on two
+  steps of a workflow and a key on a step under `forEach`. While one run's wait
+  holds the key, the same step of another run fails with `wait_key_held` and
+  opens no wait, so give it `allowFailure` or a `failed` dependent. The key is
+  free again once the holder is signalled, timed out or cancelled.
+  `workflow waits` shows the key. A signal cannot name a key yet. Upgrade every
+  host before adding a key: an older swamp ignores it and opens the wait
+  unclaimed.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).
