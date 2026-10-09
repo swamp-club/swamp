@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { walk } from "@std/fs/walk";
+import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { parse as parseYaml } from "@std/yaml";
 import { isIoError } from "./io_errors.ts";
+import { readDirSorted } from "./sorted_dir_entries.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import {
   createWorkflowId,
@@ -36,24 +37,32 @@ import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 const logger = getLogger(["extension-workflow-repo"]);
 
+const WORKFLOW_FILE_PATTERN = /\.ya?ml$/;
+
 /**
  * Yields the path of every file under `dir` that the extension workflow
  * loader reads: `*.yaml` and `*.yml` at any depth, except manifests. Whether
  * a file is actually a workflow (a top-level `jobs` key) is decided by the
- * caller after parsing. Walk errors, including `Deno.errors.NotFound` for a
- * missing `dir`, propagate to the caller.
+ * caller after parsing. Each level is visited in name order, so the same
+ * directory yields the same sequence on every filesystem (swamp-club#3067).
+ * Paths are yielded as they are found: a caller that stops early, or that
+ * catches an error from an unreadable subdirectory, keeps the files before
+ * it. Errors, including `Deno.errors.NotFound` for a missing `dir`,
+ * propagate to the caller.
  */
 export async function* extensionWorkflowFiles(
   dir: string,
 ): AsyncIterable<string> {
-  for await (
-    const entry of walk(dir, {
-      exts: [".yaml", ".yml"],
-      includeDirs: false,
-    })
-  ) {
-    if (MANIFEST_FILENAMES.has(entry.name)) continue;
-    yield entry.path;
+  for (const entry of await readDirSorted(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) {
+      yield* extensionWorkflowFiles(path);
+    } else if (
+      WORKFLOW_FILE_PATTERN.test(entry.name) &&
+      !MANIFEST_FILENAMES.has(entry.name)
+    ) {
+      yield path;
+    }
   }
 }
 

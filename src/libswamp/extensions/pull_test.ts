@@ -27,6 +27,7 @@ import {
   applyInstall,
   computeOrphanDiff,
   ConflictError,
+  detectConflicts,
   extensionPull,
   type ExtensionPullDeps,
   type ExtensionPullEvent,
@@ -2412,3 +2413,49 @@ Deno.test(
     }
   },
 );
+
+Deno.test("detectConflicts: lists conflicting files in per-level name order", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-conflict-order-" });
+  try {
+    const extractDir = join(dir, "extract");
+    const modelsDir = join(dir, "repo", "models");
+    const files = [
+      join("ns1", "apple.ts"),
+      "zebra.ts",
+      join("ns", "mango.ts"),
+      "apple.ts",
+      join("ns", "banana.ts"),
+    ];
+    for (const file of files) {
+      for (const root of [join(extractDir, "models"), modelsDir]) {
+        await ensureDir(dirname(join(root, file)));
+        await Deno.writeTextFile(join(root, file), "");
+      }
+    }
+
+    const conflicts = await detectConflicts(
+      extractDir,
+      modelsDir,
+      join(dir, "repo", "workflows"),
+      join(dir, "repo", "bundles"),
+      join(dir, "repo"),
+    );
+
+    assertEquals(
+      conflicts.map((c) => c.replaceAll("\\", "/")),
+      [
+        "models/apple.ts",
+        "models/ns/banana.ts",
+        "models/ns/mango.ts",
+        "models/ns1/apple.ts",
+        "models/zebra.ts",
+      ],
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

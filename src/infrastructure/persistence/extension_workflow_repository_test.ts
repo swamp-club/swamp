@@ -535,3 +535,63 @@ Deno.test("ExtensionWorkflowRepository getWorkflowDirs: reflects updateAdditiona
   repo.updateAdditionalDirs(["pulled-a", "pulled-b"]);
   assertEquals(repo.getWorkflowDirs(), ["base", "pulled-a", "pulled-b"]);
 });
+
+Deno.test("extensionWorkflowFiles: yields paths in per-level name order", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, "ns"));
+    await ensureDir(join(dir, "ns1"));
+    await Deno.writeTextFile(join(dir, "zebra.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns1", "apple.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "mango.yml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "ns", "banana.yaml"), "a: 1");
+    await Deno.writeTextFile(join(dir, "apple.yaml"), "a: 1");
+
+    const files: string[] = [];
+    for await (const path of extensionWorkflowFiles(dir)) files.push(path);
+
+    assertPathArrayEquals(files, [
+      join(dir, "apple.yaml"),
+      join(dir, "ns", "banana.yaml"),
+      join(dir, "ns", "mango.yml"),
+      join(dir, "ns1", "apple.yaml"),
+      join(dir, "zebra.yaml"),
+    ]);
+  });
+});
+
+Deno.test({
+  name:
+    "extensionWorkflowFiles: yields the files before an unreadable subdirectory, then throws",
+  // chmod does not restrict reads on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const locked = join(dir, "locked");
+      await ensureDir(locked);
+      await Deno.writeTextFile(join(dir, "apple.yaml"), "a: 1");
+      await Deno.writeTextFile(join(locked, "inside.yaml"), "a: 1");
+      await Deno.writeTextFile(join(dir, "zebra.yaml"), "a: 1");
+      await Deno.chmod(locked, 0o000);
+      try {
+        // A privileged user can still read the directory; nothing to observe.
+        try {
+          await Array.fromAsync(Deno.readDir(locked));
+          return;
+        } catch {
+          // Unreadable, as intended.
+        }
+
+        const files: string[] = [];
+        await assertRejects(async () => {
+          for await (const path of extensionWorkflowFiles(dir)) {
+            files.push(path);
+          }
+        }, Deno.errors.PermissionDenied);
+
+        assertPathArrayEquals(files, [join(dir, "apple.yaml")]);
+      } finally {
+        await Deno.chmod(locked, 0o755);
+      }
+    });
+  },
+});
