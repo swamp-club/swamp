@@ -410,11 +410,19 @@ export interface WorkflowApprovePayload {
   decidedBy?: string;
 }
 
-/** A signal for a wait. The payload is untrusted and checked by the wait. */
-export interface WorkflowSignalPayload {
-  waitId: string;
-  payload: unknown;
-}
+/**
+ * A signal for a wait, named by its ID or by a workflow and a key one of its
+ * `wait_for_signal` steps declares (swamp-club#3211). Exactly one of the two
+ * addresses is sent. The payload is untrusted and checked by the wait.
+ */
+export type WorkflowSignalPayload =
+  | { waitId: string; payload: unknown }
+  | {
+    /** The workflow's name or ID. */
+    workflow: string;
+    key: string;
+    payload: unknown;
+  };
 
 export interface WorkflowWaitsPayload {
   /**
@@ -1299,6 +1307,8 @@ export interface WorkflowSignalResponseData {
     receivedAt: string;
     submittedBy: string;
   };
+  /** The key the wait holds, when its step declared one. */
+  key?: string;
   workflowId?: string;
   workflowName?: string;
   runId?: string;

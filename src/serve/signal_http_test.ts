@@ -79,17 +79,19 @@ function request(
 Deno.test("matchSignalRoute: matches only the signal path with a UUID, lower-cased", () => {
   assertEquals(
     matchSignalRoute(`/api/v1/signal/${WAIT_ID.toUpperCase()}`),
-    WAIT_ID,
+    { waitId: WAIT_ID },
   );
   // Any UUID, whatever its version digits, as the WebSocket request accepts.
   assertEquals(
     matchSignalRoute("/api/v1/signal/00000000-0000-0000-0000-000000000001"),
-    "00000000-0000-0000-0000-000000000001",
+    { waitId: "00000000-0000-0000-0000-000000000001" },
   );
+  // With no wait ID the path is the by-key route: the address is in the body.
+  assertEquals(matchSignalRoute("/api/v1/signal"), { byKey: true });
   for (
     const path of [
-      "/api/v1/signal",
       "/api/v1/signal/",
+      "/api/v1/signal?workflow=release",
       "/api/v1/signal/not-a-uuid",
       "/api/v1/signal/------------------------------------",
       "/api/v1/signal/6f1c0a523f0e4c4b9d532f6a7c1e8b90aaaa",
@@ -108,7 +110,7 @@ Deno.test("handleSignalHttpRequest: without a token nothing is authenticated or 
   const calls: string[] = [];
   const response = await handleSignalHttpRequest(
     request(),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.1",
     deps("token", calls),
   );
@@ -121,7 +123,7 @@ Deno.test("handleSignalHttpRequest: a token that does not authenticate is refuse
   resetRateLimitState();
   const response = await handleSignalHttpRequest(
     request({ token: "bad.secret", body: "{not json" }),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.2",
     deps(),
   );
@@ -138,7 +140,7 @@ Deno.test("handleSignalHttpRequest: repeated bad tokens are rate limited without
   while (status !== 429 && attempts < 1000) {
     const response = await handleSignalHttpRequest(
       request({ token: "bad.secret" }),
-      WAIT_ID,
+      { waitId: WAIT_ID },
       "203.0.113.3",
       d,
     );
@@ -167,13 +169,87 @@ Deno.test("handleSignalHttpRequest: a malformed or oversized body is refused bef
   for (const [body, expected] of cases) {
     const response = await handleSignalHttpRequest(
       request({ token: "good.secret", body }),
-      WAIT_ID,
+      { waitId: WAIT_ID },
       "203.0.113.4",
       deps(),
     );
     assertEquals(response.status, expected, body.slice(0, 40));
     await response.body?.cancel();
   }
+});
+
+Deno.test("handleSignalHttpRequest: by key, a body that does not name a workflow and a key is refused before delivery", async () => {
+  resetRateLimitState();
+  const payload = { verdict: "ship" };
+  const bodies: unknown[] = [
+    { payload },
+    { workflow: "release", payload },
+    { key: "verdict", payload },
+    { workflow: "", key: "verdict", payload },
+    { workflow: "release", key: "", payload },
+    { workflow: ["release"], key: "verdict", payload },
+    { workflow: "release", key: 7, payload },
+    { workflow: "w".repeat(257), key: "verdict", payload },
+    { workflow: "release", key: "k".repeat(65), payload },
+    // Both addresses: which one is meant is not left to the server.
+    { workflow: "release", key: "verdict", waitId: WAIT_ID, payload },
+    { workflow: "release", key: "verdict" },
+  ];
+  for (const body of bodies) {
+    const response = await handleSignalHttpRequest(
+      new Request("http://serve.test/api/v1/signal", {
+        method: "POST",
+        headers: { authorization: "Bearer good.secret" },
+        body: JSON.stringify(body),
+      }),
+      { byKey: true },
+      "203.0.113.12",
+      deps(),
+    );
+    assertEquals(response.status, 400, JSON.stringify(body).slice(0, 60));
+    await response.body?.cancel();
+  }
+});
+
+Deno.test("handleSignalHttpRequest: the by-key route passes the token, restricted-command and audit gates of the by-ID route", async () => {
+  resetRateLimitState();
+  const byKey = (token?: string) =>
+    new Request("http://serve.test/api/v1/signal", {
+      method: "POST",
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+      body: "{not json",
+    });
+  const calls: string[] = [];
+  assertEquals(
+    (await handleSignalHttpRequest(
+      byKey(),
+      { byKey: true },
+      "203.0.113.13",
+      deps("token", calls),
+    )).status,
+    401,
+  );
+  assertEquals(calls, []);
+  assertEquals(
+    (await handleSignalHttpRequest(
+      byKey("bad.secret"),
+      { byKey: true },
+      "203.0.113.13",
+      deps(),
+    )).status,
+    401,
+  );
+  const restricted = await handleSignalHttpRequest(
+    byKey("good.secret"),
+    { byKey: true },
+    "203.0.113.13",
+    restrictedDeps([
+      callerGrant(["signal"], { kind: "workflow", pattern: "*" }),
+    ]),
+  );
+  assertEquals(restricted.status, 403);
+  await restricted.body?.cancel();
+  resetRateLimitState();
 });
 
 /** A context with a policy, and `workflow.signal` restricted to admins. */
@@ -213,7 +289,7 @@ Deno.test("handleSignalHttpRequest: a restricted workflow.signal refuses a non-a
   resetRateLimitState();
   const response = await handleSignalHttpRequest(
     request({ token: "good.secret", body: "{not json" }),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.5",
     restrictedDeps([
       callerGrant(["signal", "run", "read"], {
@@ -232,7 +308,7 @@ Deno.test("handleSignalHttpRequest: a restricted workflow.signal lets an admin t
   resetRateLimitState();
   const response = await handleSignalHttpRequest(
     request({ token: "good.secret", body: "{not json" }),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.6",
     restrictedDeps([
       callerGrant(["admin"], { kind: "access", pattern: "*" }),
@@ -248,7 +324,7 @@ Deno.test("handleSignalHttpRequest: in audit fail-secure mode a signal is refuse
   const base = deps();
   const response = await handleSignalHttpRequest(
     request({ token: "good.secret" }),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.8",
     {
       ...base,
@@ -273,7 +349,7 @@ Deno.test("handleSignalHttpRequest: the Bearer scheme is matched in any case and
         headers: { authorization: `${scheme} good.secret` },
         body: "{not json",
       }),
-      WAIT_ID,
+      { waitId: WAIT_ID },
       "203.0.113.9",
       deps("token", calls),
     );
@@ -292,7 +368,7 @@ Deno.test("handleSignalHttpRequest: the token's own case is kept", async () => {
       method: "POST",
       headers: { authorization: "bearer Good.Secret" },
     }),
-    WAIT_ID,
+    { waitId: WAIT_ID },
     "203.0.113.10",
     deps("token", calls),
   );
@@ -317,7 +393,7 @@ Deno.test("handleSignalHttpRequest: another scheme, or a Bearer header with no t
         method: "POST",
         headers: { authorization },
       }),
-      WAIT_ID,
+      { waitId: WAIT_ID },
       "203.0.113.11",
       deps("token", calls),
     );

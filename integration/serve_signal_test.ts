@@ -26,6 +26,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { dirname, join } from "@std/path";
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import type { ConnectionContext } from "../src/serve/handlers/shared.ts";
@@ -89,8 +90,10 @@ async function suspendOnWait(
   repo: ServeRepo,
   name = `signal-${crypto.randomUUID().slice(0, 8)}`,
   tags: Record<string, string> = {},
+  keyed: { key?: string; id?: string } = {},
 ): Promise<Waiting> {
   const workflow = Workflow.create({
+    ...(keyed.id !== undefined ? { id: keyed.id } : {}),
     name,
     tags,
     jobs: [
@@ -99,7 +102,7 @@ async function suspendOnWait(
         steps: [
           Step.create({
             name: "review",
-            task: StepTask.waitForSignal(3600, SCHEMA),
+            task: StepTask.waitForSignal(3600, SCHEMA, keyed.key),
           }),
         ],
       }),
@@ -1087,7 +1090,7 @@ Deno.test({
             headers: { authorization: `Bearer ${TOKEN}` },
             body: JSON.stringify({ payload: { verdict: "ship" } }),
           }),
-          w.waitId,
+          { waitId: w.waitId },
           "198.51.100.9",
           withIdentity(ctx),
         );
@@ -1110,6 +1113,581 @@ Deno.test({
         assertEquals(event.principalUsername, identity.username, event.action);
         assertEquals(event.principalEmail, identity.email, event.action);
       }
+    });
+  },
+});
+
+// --- A signal addressed by workflow and key (swamp-club#3211). ---
+
+const KEY = "verdict";
+const BY_KEY_REFUSAL = { code: "not_found", message: "Signal wait not found" };
+
+function keyed(repo: ServeRepo, name?: string, tags = {}): Promise<Waiting> {
+  return suspendOnWait(repo, name, tags, { key: KEY });
+}
+
+function signalByKey(
+  ctx: ConnectionContext,
+  workflow: string,
+  key: string,
+  payload: unknown,
+): Promise<Frame[]> {
+  return sendRequest(ctx, {
+    type: "workflow.signal",
+    id: `signal-${crypto.randomUUID()}`,
+    payload: { workflow, key, payload },
+  });
+}
+
+async function postByKey(
+  ctx: ConnectionContext,
+  body: unknown,
+): Promise<{ status: number; body: Record<string, unknown> | string }> {
+  const matched = matchSignalRoute("/api/v1/signal");
+  assert(matched, "the path is the by-key signal route");
+  const response = await handleSignalHttpRequest(
+    new Request("http://serve.test/api/v1/signal", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(body),
+    }),
+    matched,
+    "198.51.100.7",
+    httpDeps(ctx),
+  );
+  const text = await response.text();
+  try {
+    return { status: response.status, body: JSON.parse(text) };
+  } catch {
+    return { status: response.status, body: text };
+  }
+}
+
+Deno.test({
+  name:
+    "serve signal by key: a signal-only grant delivers with no earlier lookup, and the next resume applies the payload",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const audit: AuditEvent[] = [];
+      const ctx = ctxWith(repo, [workflowGrant(["signal"], w.workflow.name)], {
+        audit,
+      });
+
+      const data = dataOf(
+        await signalByKey(ctx, w.workflow.name, KEY, { verdict: "ship" }),
+      );
+
+      // The caller may not read the workflow: the wait and the receipt only.
+      assertEquals(Object.keys(data).sort(), ["signal", "waitId"]);
+      assertEquals(data.waitId, w.waitId);
+      const delivered = audit.find((e) =>
+        e.action === "workflow.signal.delivered"
+      );
+      assert(delivered, JSON.stringify(audit));
+      assertStringIncludes(delivered.detail ?? "", `key=${KEY}`);
+      assertEquals(JSON.stringify(audit).includes("ship"), false);
+
+      assertEquals(errorFrame(await resume(repo, w)), undefined);
+      const { run, step } = await stepOf(repo, w);
+      assertEquals(run.status, "succeeded");
+      assertEquals(
+        (step.output as { payload: unknown }).payload,
+        { verdict: "ship" },
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a caller who may read the workflow is told the key, the run and the step",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["signal", "read"])]);
+
+      // Named by its ID, the workflow is authorized under its name.
+      const data = dataOf(
+        await signalByKey(ctx, w.workflow.id, KEY, { verdict: "ship" }),
+      );
+
+      assertEquals(data.key, KEY);
+      assertEquals(data.workflowName, w.workflow.name);
+      assertEquals(data.runId, w.runId);
+      assertEquals(data.stepName, "review");
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: another workflow's key, an undeclared key, an unknown workflow and a malformed key get one answer",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const mine = await keyed(repo);
+      const other = await keyed(repo);
+      const audit: AuditEvent[] = [];
+      const ctx = ctxWith(repo, [
+        workflowGrant(["signal"], mine.workflow.name),
+        workflowGrant(["read"]),
+      ], { audit });
+      const payload = { verdict: "ship" };
+
+      const answers = [
+        await signalByKey(ctx, other.workflow.name, KEY, payload),
+        await signalByKey(ctx, other.workflow.id, KEY, payload),
+        await signalByKey(ctx, mine.workflow.name, "undeclared", payload),
+        await signalByKey(ctx, "no-such-workflow", KEY, payload),
+        await signalByKey(ctx, mine.workflow.name, "Not A Key", payload),
+        await signalByKey(ctx, other.workflow.name, "Not A Key", payload),
+      ].map(refusalOf);
+      for (const answer of answers) assertEquals(answer, BY_KEY_REFUSAL);
+
+      // The denial is audited with the workflow, under its name even when
+      // the request named it by ID; the reply never carried it.
+      const denied = audit.filter((e) => e.outcome === "denied").map((e) =>
+        e.resourceName
+      );
+      assert(denied.includes(other.workflow.name), JSON.stringify(denied));
+      assertEquals(denied.includes(other.workflow.id), false);
+      assert(denied.includes("no-such-workflow"));
+      // The request's own audit events name the same resource as its denial.
+      assertEquals(
+        audit.some((e) => e.resourceName === other.workflow.id),
+        false,
+        JSON.stringify(audit.map((e) => [e.action, e.resourceName])),
+      );
+
+      // Nothing was stored: both waits are open.
+      assertEquals((await stepOf(repo, other)).step.isSignalWait, true);
+      dataOf(await signalByKey(ctx, mine.workflow.name, KEY, payload));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: an unknown workflow reads as not found to a caller who may signal every workflow",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      const payload = { verdict: "ship" };
+
+      assertEquals(
+        refusalOf(await signalByKey(ctx, "no-such-workflow", KEY, payload)),
+        BY_KEY_REFUSAL,
+      );
+      assertEquals(
+        refusalOf(await signalByKey(ctx, w.workflow.name, "other", payload)),
+        BY_KEY_REFUSAL,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a key nothing has waited on is refused as no_open_wait, with nothing said of a last wait",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const workflow = Workflow.create({
+        name: `signal-${crypto.randomUUID().slice(0, 8)}`,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "review",
+                task: StepTask.waitForSignal(3600, SCHEMA, KEY),
+              }),
+            ],
+          }),
+        ],
+      });
+      await repo.repoContext.workflowRepo.save(workflow);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+
+      const early = refusalOf(
+        await signalByKey(ctx, workflow.name, KEY, { verdict: "ship" }),
+      );
+      assertEquals(early.code, "workflow_signal_refused");
+      assertEquals(early.details, { refusal: "no_open_wait" });
+      assertEquals(early.message.includes("last wait"), false);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a retry after a delivery is no_open_wait and names the wait the first signal settled",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const signalOnly = ctxWith(repo, [workflowGrant(["signal"])]);
+      const reader = ctxWith(repo, [workflowGrant(["signal", "read"])]);
+      const payload = { verdict: "ship" };
+      const first = dataOf(
+        await signalByKey(signalOnly, w.workflow.name, KEY, payload),
+      );
+      const receipt = first.signal as { id: string };
+
+      // A sender whose reply was lost can tell its signal landed: the last
+      // wait under the key is the one it settled.
+      const plain = refusalOf(
+        await signalByKey(signalOnly, w.workflow.name, KEY, payload),
+      );
+      assertEquals(plain.code, "workflow_signal_refused");
+      assertEquals(plain.details?.refusal, "no_open_wait");
+      const last = plain.details?.lastWait as Record<string, unknown>;
+      assertEquals(Object.keys(last).sort(), [
+        "settledAs",
+        "settledAt",
+        "waitId",
+      ]);
+      assertEquals(last.waitId, w.waitId);
+      assertEquals(last.settledAs, "accepted");
+      assertEquals(plain.message.includes(w.workflow.name), false);
+      assertEquals(JSON.stringify(plain).includes(receipt.id), false);
+      // The message says it too: the CLI prints the message, not the details.
+      assertStringIncludes(plain.message, "has already landed");
+
+      // A caller who may read the workflow is told which signal it was.
+      const told = refusalOf(
+        await signalByKey(reader, w.workflow.name, KEY, payload),
+      );
+      assertEquals(told.details?.refusal, "no_open_wait");
+      assertStringIncludes(told.message, w.workflow.name);
+      assertEquals(
+        ((told.details?.lastWait as Record<string, unknown>).receipt as {
+          id: string;
+        }).id,
+        receipt.id,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a run grant alone does not deliver when the server requires an explicit grant",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const grants = [workflowGrant(["run"])];
+      const payload = { verdict: "ship" };
+
+      assertEquals(
+        refusalOf(
+          await signalByKey(
+            ctxWith(repo, grants, { runImpliesSignal: false }),
+            w.workflow.name,
+            KEY,
+            payload,
+          ),
+        ),
+        BY_KEY_REFUSAL,
+      );
+      assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+      dataOf(
+        await signalByKey(ctxWith(repo, grants), w.workflow.name, KEY, payload),
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a deny by name and a deny on tags reach a request that names the workflow by ID",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const prod = await keyed(repo, undefined, { env: "prod" });
+      const named = await keyed(repo);
+      const payload = { verdict: "ship" };
+      const tags = createServeCtx(repo, TAG_GRANTS);
+      const byName = ctxWith(repo, [
+        workflowGrant(["signal", "read"]),
+        workflowGrant(["signal"], named.workflow.name, "deny"),
+      ]);
+
+      for (
+        const [ctx, w] of [[tags, prod], [byName, named]] as const
+      ) {
+        for (const workflow of [w.workflow.id, w.workflow.name]) {
+          assertEquals(
+            refusalOf(await signalByKey(ctx, workflow, KEY, payload)),
+            BY_KEY_REFUSAL,
+          );
+        }
+        assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a workflow named with another workflow's ID does not redirect the signal",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const target = await keyed(repo);
+      // A workflow whose name is the target's ID, with no such key.
+      const decoy = Workflow.create({
+        name: target.workflow.id,
+        jobs: [
+          Job.create({
+            name: "main",
+            steps: [
+              Step.create({
+                name: "review",
+                task: StepTask.waitForSignal(3600, SCHEMA, "other"),
+              }),
+            ],
+          }),
+        ],
+      });
+      await repo.repoContext.workflowRepo.save(decoy);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"], decoy.name)]);
+
+      assertEquals(
+        refusalOf(
+          await signalByKey(ctx, target.workflow.id, KEY, { verdict: "ship" }),
+        ),
+        BY_KEY_REFUSAL,
+      );
+      assertEquals((await stepOf(repo, target)).step.isSignalWait, true);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a caller allowed on a copy that shares a workflow's ID does not reach the original's wait",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const original = await keyed(repo);
+      // A copied file keeps its ID, and key claims are kept per ID. The
+      // copy is written by hand, as a copied file is: saving it through the
+      // repository would rename the original.
+      const copy = { name: `copy-${crypto.randomUUID().slice(0, 8)}` };
+      const path = repo.repoContext.workflowRepo.getPath(original.workflow.id);
+      await Deno.writeTextFile(
+        join(dirname(path), `workflow-${copy.name}.yaml`),
+        (await Deno.readTextFile(path)).replace(
+          `name: ${original.workflow.name}`,
+          `name: ${copy.name}`,
+        ),
+      );
+      const both = await repo.repoContext.workflowRepo.findAll();
+      assertEquals(
+        both.filter((w) => w.id === original.workflow.id).map((w) => w.name)
+          .sort(),
+        [copy.name, original.workflow.name].sort(),
+      );
+      const audit: AuditEvent[] = [];
+      const ctx = ctxWith(repo, [workflowGrant(["signal"], copy.name)], {
+        audit,
+      });
+
+      assertEquals(
+        refusalOf(await signalByKey(ctx, copy.name, KEY, { verdict: "ship" })),
+        BY_KEY_REFUSAL,
+      );
+      assertEquals((await stepOf(repo, original)).step.isSignalWait, true);
+      const denial = audit.find((e) => e.outcome === "denied");
+      assertEquals(denial?.resourceName, original.workflow.name);
+
+      // The answer is the same once the original's wait is settled, so the
+      // caller cannot tell whether the original has a wait open.
+      dataOf(
+        await signalByKey(
+          ctxWith(repo, [workflowGrant(["signal"])]),
+          original.workflow.name,
+          KEY,
+          { verdict: "ship" },
+        ),
+      );
+      assertEquals(
+        refusalOf(await signalByKey(ctx, copy.name, KEY, { verdict: "ship" })),
+        BY_KEY_REFUSAL,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a wait ID, when a request carries one, is the address",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const w = await keyed(repo);
+      const other = await keyed(repo);
+      const send = (ctx: ConnectionContext, payload: Record<string, unknown>) =>
+        sendRequest(ctx, {
+          type: "workflow.signal",
+          id: `signal-${crypto.randomUUID()}`,
+          payload: { ...payload, payload: { verdict: "ship" } },
+        });
+
+      // A wait ID that is not a UUID is malformed, as it always was: the
+      // request does not fall through to the key beside it.
+      const allowed = ctxWith(repo, [workflowGrant(["signal"])]);
+      const malformed = refusalOf(
+        await send(allowed, {
+          waitId: "not-a-uuid",
+          workflow: w.workflow.name,
+          key: KEY,
+        }),
+      );
+      assertEquals(malformed.code, "invalid_request");
+      // The refusal says what an address is, not only that the input is bad.
+      assertStringIncludes(malformed.message, "waitId");
+      assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+
+      // Authorized and delivered by the wait ID: a grant on the workflow
+      // named beside it does not carry the signal to another workflow's wait.
+      const onOther = ctxWith(repo, [
+        workflowGrant(["signal"], other.workflow.name),
+      ]);
+      assertEquals(
+        refusalOf(
+          await send(onOther, {
+            waitId: w.waitId,
+            workflow: other.workflow.name,
+            key: KEY,
+          }),
+        ),
+        BY_KEY_REFUSAL,
+      );
+      assertEquals((await stepOf(repo, other)).step.isSignalWait, true);
+
+      // A client that sends extra context beside a wait ID keeps working,
+      // as against a server from before the key form.
+      const data = dataOf(
+        await send(allowed, { waitId: w.waitId, workflow: "anything" }),
+      );
+      assertEquals(data.waitId, w.waitId);
+      assertEquals((await stepOf(repo, other)).step.isSignalWait, true);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key over HTTP: a signal-only token delivers, and each not-found case is the same 404",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const mine = await keyed(repo);
+      const other = await keyed(repo);
+      const ctx = ctxWith(repo, [
+        workflowGrant(["signal"], mine.workflow.name),
+      ]);
+      const payload = { verdict: "ship" };
+
+      const refused = [
+        await postByKey(ctx, {
+          workflow: other.workflow.name,
+          key: KEY,
+          payload,
+        }),
+        await postByKey(ctx, {
+          workflow: mine.workflow.name,
+          key: "nope",
+          payload,
+        }),
+        await postByKey(ctx, {
+          workflow: "no-such-workflow",
+          key: KEY,
+          payload,
+        }),
+        await postByKey(ctx, {
+          workflow: mine.workflow.name,
+          key: "No Key",
+          payload,
+        }),
+      ];
+      for (const reply of refused) {
+        assertEquals(reply, {
+          status: 404,
+          body: { status: "not_found", message: "Signal wait not found" },
+        });
+      }
+      assertEquals((await stepOf(repo, other)).step.isSignalWait, true);
+
+      const reply = await postByKey(ctx, {
+        workflow: mine.workflow.name,
+        key: KEY,
+        payload,
+      });
+      assertEquals(reply.status, 200, JSON.stringify(reply));
+      const body = reply.body as Record<string, unknown>;
+      assertEquals(body.status, "delivered");
+      const data = body.data as Record<string, unknown>;
+      assertEquals(Object.keys(data).sort(), ["signal", "waitId"]);
+      assertEquals(data.waitId, mine.waitId);
+
+      await resume(repo, mine);
+      assertEquals(
+        ((await stepOf(repo, mine)).step.output as { payload: unknown })
+          .payload,
+        payload,
+      );
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key over HTTP: no open wait is 409, and a body that does not name a workflow and a key is 400",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const w = await keyed(repo);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      const payload = { verdict: "ship" };
+      const address = { workflow: w.workflow.name, key: KEY };
+
+      for (
+        const body of [
+          { payload },
+          { workflow: w.workflow.name, payload },
+          { key: KEY, payload },
+          { workflow: 7, key: KEY, payload },
+          { ...address, key: "k".repeat(65), payload },
+          { ...address, workflow: "w".repeat(257), payload },
+          { ...address, waitId: w.waitId, payload },
+          address,
+        ]
+      ) {
+        assertEquals((await postByKey(ctx, body)).status, 400);
+      }
+      assertEquals((await stepOf(repo, w)).step.isSignalWait, true);
+
+      assertEquals((await postByKey(ctx, { ...address, payload })).status, 200);
+      const again = await postByKey(ctx, { ...address, payload });
+      assertEquals(again.status, 409);
+      const body = again.body as Record<string, unknown>;
+      assertEquals(body.status, "no_open_wait");
+      assertEquals(String(body.message).includes(w.workflow.name), false);
+      const last = body.lastWait as Record<string, unknown>;
+      assertEquals(last.waitId, w.waitId);
+      assertEquals(last.settledAs, "accepted");
+      assertEquals("receipt" in last, false);
     });
   },
 });

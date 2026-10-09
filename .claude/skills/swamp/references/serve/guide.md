@@ -75,11 +75,18 @@ workflow. A `run` grant also permits `signal` unless serve runs with
 # CLI, against a server
 swamp workflow waits --server wss://...          # needs read on the workflow
 swamp workflow signal <waitId> --payload '{"verdict":"ship"}' --server wss://...
+# By key: no wait ID and no read grant needed, only signal on the workflow
+swamp workflow signal --workflow <name> --key <key> --payload '{"verdict":"ship"}' --server wss://...
 
 # HTTP, for a system with a token and a wait ID
 curl -X POST https://<host>/api/v1/signal/<waitId> \
   -H "Authorization: Bearer <name>.<secret>" \
   -d '{"payload":{"verdict":"ship"}}'
+
+# HTTP by key: the workflow and key go in the body, never the path
+curl -X POST https://<host>/api/v1/signal \
+  -H "Authorization: Bearer <name>.<secret>" \
+  -d '{"workflow":"<name>","key":"<key>","payload":{"verdict":"ship"}}'
 ```
 
 `swamp workflow run --server` prints the wait ID and the signal command with
@@ -87,17 +94,19 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
 run's wait is named only to a caller who may read that workflow. The dashboard's
 Approvals page lists open, signalled and expired waits.
 
-| HTTP status | Meaning                                                     |
-| ----------- | ----------------------------------------------------------- |
-| 200         | Delivered; the body carries the receipt                     |
-| 404         | No such wait, or the token may not signal it (same answer)  |
-| 422         | Payload refused; `errors` lists why and the wait stays open |
-| 409         | Already settled                                             |
-| 410         | Expired, or closed before a signal arrived                  |
-| 401 / 429   | No valid token / rate limited (plain-text body)             |
-| 400 / 413   | Body is not `{"payload": ...}` JSON / body too large        |
-| 403 / 503   | `workflow.signal` is admin-only here / audit cannot record  |
-| 501 / 500   | Datastore cannot hold waits / stored record unreadable      |
+| HTTP status | Meaning                                                       |
+| ----------- | ------------------------------------------------------------- |
+| 200         | Delivered; the body carries the receipt                       |
+| 404         | No such wait, or the token may not signal it (same answer)    |
+| 404, by key | Unknown workflow, undeclared key, or not allowed (same)       |
+| 409, by key | `no_open_wait`; `lastWait.settledAs: accepted` = retry landed |
+| 422         | Payload refused; `errors` lists why and the wait stays open   |
+| 409         | Already settled                                               |
+| 410         | Expired, or closed before a signal arrived                    |
+| 401 / 429   | No valid token / rate limited (plain-text body)               |
+| 400 / 413   | Body malformed, or by key carries a `waitId` / too large      |
+| 403 / 503   | `workflow.signal` is admin-only here / audit cannot record    |
+| 501 / 500   | Datastore cannot hold waits / stored record unreadable        |
 
 The reply names the workflow, run and step only for a caller who may also `read`
 the workflow. The receipt's `submittedBy` is the token's principal. Once a run's

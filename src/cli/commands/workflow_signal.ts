@@ -45,9 +45,15 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type {
+  WorkflowSignalPayload,
   WorkflowSignalResponse,
   WorkflowSignalResponseData,
 } from "../../serve/protocol.ts";
+import {
+  isWaitKey,
+  SIGNAL_WORKFLOW_MAX_LENGTH,
+  WAIT_KEY_FORM,
+} from "../../domain/workflows/signal_wait.ts";
 import { normalizeWaitId } from "../../domain/workflows/signal_wait_records.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
@@ -136,6 +142,55 @@ export function renderSignalResult(
 }
 
 /**
+ * The `workflow.signal` payload for a signal sent through a server. The
+ * server accepts only a UUID as a wait ID, and only a bounded workflow and
+ * key; it answers anything else as a malformed request, which reads as a
+ * server that needs an upgrade. Such an address names no wait, so it is
+ * answered here as the server answers a wait it does not know.
+ */
+export function remoteSignalPayload(
+  address: WorkflowSignalAddress,
+  payload: unknown,
+): WorkflowSignalPayload {
+  if ("waitId" in address) {
+    const id = normalizeWaitId(address.waitId);
+    if (id === undefined) {
+      throw new UserError(
+        `Signal wait not found: ${address.waitId}`,
+        "not_found",
+      );
+    }
+    return { waitId: id, payload };
+  }
+  if (
+    address.workflow.length === 0 ||
+    address.workflow.length > SIGNAL_WORKFLOW_MAX_LENGTH ||
+    !isWaitKey(address.key)
+  ) {
+    // Named as the local command names a key address: quoted, with control
+    // characters replaced so typed text cannot write to the terminal.
+    const shown = (text: string) =>
+      // deno-lint-ignore no-control-regex
+      text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
+    throw new UserError(
+      `Signal wait not found: key "${shown(address.key)}" of workflow "${
+        shown(address.workflow)
+      }"` +
+        (address.workflow.length > SIGNAL_WORKFLOW_MAX_LENGTH
+          ? `. A workflow whose name is over ${SIGNAL_WORKFLOW_MAX_LENGTH} characters is signalled by its ID.`
+          : "") +
+        // The server answers a key in the wrong form as one no step
+        // declares; the command knows why, and says so.
+        (!isWaitKey(address.key)
+          ? `. No step can declare that key: a key is ${WAIT_KEY_FORM}.`
+          : ""),
+      "not_found",
+    );
+  }
+  return { workflow: address.workflow, key: address.key, payload };
+}
+
+/**
  * Renders a signal delivered through a server. The server names the
  * workflow, the run and the step only to a caller who may read the
  * workflow; one who may only signal gets the receipt.
@@ -154,6 +209,7 @@ export function renderRemoteSignalResult(
       cliCtx,
       {
         waitId: data.waitId,
+        ...(data.key !== undefined ? { key: data.key } : {}),
         workflowId: data.workflowId,
         workflowName: data.workflowName,
         runId: data.runId,
@@ -199,6 +255,10 @@ export const workflowSignalCommand = withRemoteOptions(
       "Answer a wait a server holds",
       `swamp workflow signal 6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90 --payload '{"verdict":"ship"}' --server wss://swamp.example.com`,
     )
+    .example(
+      "Answer the wait that holds a key on a server",
+      `swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}' --server wss://swamp.example.com`,
+    )
     .arguments("[wait_id:string]")
     .option(
       "--repo-dir <dir:string>",
@@ -231,31 +291,15 @@ export const workflowSignalCommand = withRemoteOptions(
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      if (!("waitId" in address)) {
-        throw new UserError(
-          `A server takes a signal by wait ID only. Find the ID with "swamp workflow waits${
-            formatCommandTarget({
-              server: options.server as string | undefined,
-            })
-          }" and signal that.`,
-        );
-      }
-      // The server accepts only a UUID, and answers anything else as a
-      // malformed request; it is answered here as the local command would.
-      const id = normalizeWaitId(address.waitId);
-      if (id === undefined) {
-        throw new UserError(
-          `Signal wait not found: ${address.waitId}`,
-          "not_found",
-        );
-      }
+      const named = remoteSignalPayload(address, payload);
       const token = await resolveServerTokenFromOptions(server, options);
       const response = await requestNewerServerResponse<
         WorkflowSignalResponse
       >(
-        "signals",
+        // A server from before swamp-club#3211 takes a wait ID only.
+        "waitId" in named ? "signals" : "signalling by workflow and key",
         { server, token },
-        { type: "workflow.signal", payload: { waitId: id, payload } },
+        { type: "workflow.signal", payload: named },
       );
       renderRemoteSignalResult(
         cliCtx,

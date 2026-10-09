@@ -17,13 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import type { WorkflowSignalData } from "../../libswamp/workflows/signal.ts";
+import type {
+  WorkflowSignalAddress,
+  WorkflowSignalData,
+} from "../../libswamp/workflows/signal.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { CommandContext } from "../context.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {
   parseSignalAddress,
   parseSignalPayload,
+  remoteSignalPayload,
   renderRemoteSignalResult,
   renderSignalResult,
 } from "./workflow_signal.ts";
@@ -197,6 +201,18 @@ Deno.test("renderRemoteSignalResult: a full reply prints the resume command with
   );
 });
 
+Deno.test("renderRemoteSignalResult: a full reply for a keyed wait names the wait, its key and the receipt", () => {
+  const data = { ...signalled(), key: "release-verdict" };
+  const json = captureStdout(() =>
+    renderRemoteSignalResult(
+      hintTestContext({ outputMode: "json" }),
+      data,
+      "http://swamp.test",
+    )
+  );
+  assertEquals(JSON.parse(json.join("")).key, "release-verdict");
+});
+
 Deno.test("parseSignalAddress: a wait ID alone, or --workflow with --key, names the wait", () => {
   assertEquals(parseSignalAddress(WAIT_ID, {}), { waitId: WAIT_ID });
   assertEquals(
@@ -248,4 +264,60 @@ Deno.test("renderSignalResult: json mode carries the key beside the wait ID and 
   assertEquals(printed.key, "release-verdict");
   assertEquals(printed.waitId, WAIT_ID);
   assertEquals(printed.signal, result.signal);
+});
+
+Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow and key as given", () => {
+  assertEquals(
+    remoteSignalPayload({ waitId: WAIT_ID.toUpperCase() }, { verdict: "ship" }),
+    { waitId: WAIT_ID, payload: { verdict: "ship" } },
+  );
+  assertEquals(
+    remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
+    { workflow: "@acme/release", key: "verdict", payload: 7 },
+  );
+});
+
+Deno.test("remoteSignalPayload: an address the server would call malformed is not found, and nothing is sent", () => {
+  const refused: WorkflowSignalAddress[] = [
+    { waitId: "not-a-uuid" },
+    { workflow: "release", key: "Not A Key" },
+    { workflow: "release", key: "" },
+    { workflow: "release", key: "k".repeat(65) },
+    { workflow: "", key: "verdict" },
+    { workflow: "w".repeat(257), key: "verdict" },
+  ];
+  for (const address of refused) {
+    const error = assertThrows(
+      () => remoteSignalPayload(address, {}),
+      UserError,
+      "Signal wait not found",
+    );
+    assertEquals(error.code, "not_found");
+  }
+});
+
+Deno.test("remoteSignalPayload: the not-found message quotes the address, hides control characters and says how to signal a long name", () => {
+  const typed = assertThrows(
+    () =>
+      remoteSignalPayload({ workflow: "rel\u001bease", key: "Not A Key" }, {}),
+    UserError,
+  );
+  assertStringIncludes(
+    typed.message,
+    'Signal wait not found: key "Not A Key" of workflow "rel?ease". No step can declare that key: a key is 1 to 64 lowercase',
+  );
+  // A well-formed address that is only too long gets no hint about keys.
+  assertEquals(
+    assertThrows(
+      () => remoteSignalPayload({ workflow: "", key: "verdict" }, {}),
+      UserError,
+    ).message,
+    'Signal wait not found: key "verdict" of workflow ""',
+  );
+  assertThrows(
+    () =>
+      remoteSignalPayload({ workflow: "w".repeat(257), key: "verdict" }, {}),
+    UserError,
+    "is signalled by its ID",
+  );
 });

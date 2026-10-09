@@ -5984,11 +5984,11 @@ export const serveCommand = new Command()
               info.remoteAddr.hostname)
             : info.remoteAddr.hostname;
           // Signal endpoint (authenticated; authorized on the wait's workflow)
-          const signalWaitId = matchSignalRoute(url.pathname);
-          if (signalWaitId !== undefined) {
+          const signalRoute = matchSignalRoute(url.pathname);
+          if (signalRoute !== undefined) {
             return await handleSignalHttpRequest(
               req,
-              signalWaitId,
+              signalRoute,
               cancelRemoteAddr,
               {
                 ctx: connectionCtx,

@@ -47,6 +47,7 @@ import { findWorkflowByIdOrName } from "../../domain/workflows/workflow_lookup.t
 import {
   declaredWaitKeyStep,
   findKeyHolder,
+  findSettledKeyHolder,
 } from "../../domain/workflows/wait_key_claim.ts";
 import {
   ensureRegistered,
@@ -141,6 +142,29 @@ export interface SignalWaitSubject {
    * whose workflow ID was altered finds no run, and this is absent.
    */
   runWorkflow?: { workflowId: string; workflowName: string };
+}
+
+/**
+ * The wait that last held a key, in the `lastWait` field of a `no_open_wait`
+ * error's details: what a sender who retries after a lost reply needs to
+ * tell "my signal landed" from "the run has not reached its wait". Present
+ * while that wait's claim is still the key's highest record, and only for a
+ * caller who may signal the wait.
+ */
+export interface SignalLastWait {
+  waitId: string;
+  /** How that wait was settled. */
+  settledAs: "accepted" | "timed_out" | "cancelled";
+  settledAt: string;
+  /** The signal that settled it, when one did. */
+  receipt?: SignalReceipt;
+}
+
+/** The `lastWait` a `no_open_wait` error carries, if it carries one. */
+export function signalLastWait(error: SwampError): SignalLastWait | undefined {
+  const details = error.details;
+  if (typeof details !== "object" || details === null) return undefined;
+  return (details as { lastWait?: SignalLastWait }).lastWait;
 }
 
 /** Why a signal was not delivered, in the `refusal` field of the error's details. */
@@ -742,6 +766,61 @@ function namedByKey(address: { workflow: string; key: string }): string {
   }"`;
 }
 
+/**
+ * The wait that last held a key no open wait holds now, for the caller to be
+ * told of. Nothing is said of a wait the caller may not signal, or of one
+ * whose outcome names another workflow than the key was resolved under.
+ */
+async function lastWaitUnder(
+  deps: WorkflowSignalDeps,
+  store: SignalWaitStore,
+  input: WorkflowSignalInput,
+  workflowId: string,
+  key: string,
+): Promise<SignalLastWait | undefined> {
+  const settled = await findSettledKeyHolder(store, workflowId, key);
+  if (!settled || settled.outcome.workflowId !== workflowId) return undefined;
+  const { outcome } = settled;
+  if (input.authorize) {
+    const run = await runOf(deps, outcome);
+    const allowed = await input.authorize({
+      waitId: outcome.waitId,
+      workflowId: outcome.workflowId,
+      runId: outcome.runId,
+      ...(run
+        ? {
+          workflowName: run.workflowName,
+          runWorkflow: {
+            workflowId: run.workflowId,
+            workflowName: run.workflowName,
+          },
+        }
+        : {}),
+    });
+    if (!allowed) return undefined;
+  }
+  return {
+    waitId: outcome.waitId,
+    settledAs: outcome.kind,
+    settledAt: outcome.settledAt,
+    ...(outcome.kind === "accepted" ? { receipt: { ...outcome.receipt } } : {}),
+  };
+}
+
+/** What a `no_open_wait` message says of the wait that last held the key. */
+function lastWaitSentence(last: SignalLastWait): string {
+  switch (last.settledAs) {
+    case "accepted":
+      return ` The last wait under the key was settled by signal ${
+        last.receipt?.id ?? "unknown"
+      }, so a signal sent again after a lost reply has already landed.`;
+    case "timed_out":
+      return " The last wait under the key expired unsignalled.";
+    case "cancelled":
+      return " The last wait under the key was closed before a signal arrived.";
+  }
+}
+
 /** Refusals after which the wait a key resolved to may still be open. */
 const LEAVES_WAIT_OPEN: ReadonlySet<SignalRefusalKind> = new Set<
   SignalRefusalKind
@@ -776,11 +855,23 @@ async function deliverByKey(
     return { error: unreadableRecord(typedId) };
   }
   if (holder.kind === "free") {
+    // A sender who retries after a lost reply gets this refusal, as does one
+    // who is early for the next run. The wait that last held the key tells
+    // the two apart.
+    const last = await lastWaitUnder(
+      deps,
+      store,
+      input,
+      workflow.id,
+      input.key,
+    );
     return {
       error: refused(
         "no_open_wait",
-        `No open wait holds ${named}, so the signal was not delivered and nothing was stored. ` +
-          `Run "swamp workflow waits" for the waits that are open.`,
+        `No open wait holds ${named}, so the signal was not delivered and nothing was stored.` +
+          (last ? lastWaitSentence(last) : "") +
+          ` Run "swamp workflow waits" for the waits that are open.`,
+        last ? { lastWait: last } : {},
       ),
     };
   }

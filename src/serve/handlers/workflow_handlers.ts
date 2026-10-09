@@ -1550,10 +1550,11 @@ export async function handleWorkflowApprove(
 }
 
 /**
- * Delivers a signal to the wait it names. The caller is authorized on the
- * wait's workflow inside {@link deliverSignalForCaller}, which the HTTP
- * signal route shares: a wait the caller may not signal is answered as one
- * that does not exist. Nothing here reserves or saves a run.
+ * Delivers a signal to the wait it names, by ID or by workflow and key. The
+ * caller is authorized on the wait's workflow inside
+ * {@link deliverSignalForCaller}, which the HTTP signal routes share: a wait
+ * the caller may not signal is answered as one that does not exist. Nothing
+ * here reserves or saves a run.
  */
 export async function handleWorkflowSignal(
   socket: WebSocket,
@@ -1565,7 +1566,18 @@ export async function handleWorkflowSignal(
   const result = await deliverSignalForCaller(
     ctx,
     accessCallerOf(socket, principal),
-    { requestId, waitId: payload.waitId, payload: payload.payload },
+    "waitId" in payload
+      ? { requestId, waitId: payload.waitId, payload: payload.payload }
+      : {
+        requestId,
+        workflow: payload.workflow,
+        key: payload.key,
+        payload: payload.payload,
+      },
+    {
+      onWorkflowResolved: (name) =>
+        recordAuditedResource(socket, requestId, "workflow", name, ctx),
+    },
   );
   switch (result.status) {
     case "delivered":
@@ -1605,6 +1617,7 @@ export async function handleWorkflowSignal(
       sendError(socket, requestId, "workflow_signal_refused", result.message, {
         refusal: result.status,
         ...(result.receipt ? { receipt: result.receipt } : {}),
+        ...(result.lastWait ? { lastWait: result.lastWait } : {}),
       });
   }
 }

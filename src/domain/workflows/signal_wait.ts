@@ -71,6 +71,16 @@ export function isWaitKey(key: string): boolean {
   return WAIT_KEY_PATTERN.test(key) && !WINDOWS_DEVICE_NAME.test(key);
 }
 
+/** The longest key a signal's address may carry; no key is longer. */
+export const SIGNAL_KEY_MAX_LENGTH = 64;
+
+/**
+ * The longest workflow name or ID a signal addressed by key may carry. It
+ * bounds client text on its way to a lookup and the audit log; a workflow
+ * with a longer name is signalled by its ID.
+ */
+export const SIGNAL_WORKFLOW_MAX_LENGTH = 256;
+
 /** What a refused key is told the form is. */
 export const WAIT_KEY_FORM =
   "1 to 64 lowercase letters, digits, hyphens or underscores, starting with a letter or digit, and not a Windows device name (con, prn, aux, nul, com0 to com9, lpt0 to lpt9)";

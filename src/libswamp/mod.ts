@@ -383,6 +383,8 @@ export {
 } from "./workflows/approvals.ts";
 export {
   createWorkflowSignalDeps,
+  type SignalLastWait,
+  signalLastWait,
   type SignalRefusalKind,
   signalRefusalKind,
   type SignalWaitSubject,

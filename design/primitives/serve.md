@@ -188,7 +188,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP | `/data/*`, `/bundle/*` | worker session bearer | Remote-execution data plane (`src/serve/data_plane.ts`); see [remote-execution §Data plane](../enablers/remote-execution.md#data-plane-two-transports) |
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
-| HTTP POST | `/api/v1/signal/{waitId}` | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
+| HTTP POST | `/api/v1/signal/{waitId}`, `/api/v1/signal` (by workflow and key, in the body) | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
 | HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and models they may `read`, decided on each resource's resolved name, tags and model type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid bearer token or dashboard session; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
@@ -581,20 +581,115 @@ transports to that. What it does, in order:
 | Outcome | WebSocket error | HTTP status |
 | --- | --- | --- |
 | delivered | — (`workflow.signal` reply) | 200 |
-| unknown wait, or not allowed | `not_found` | 404 |
+| unknown wait, unknown workflow or undeclared key, or not allowed | `not_found` | 404 |
+| by key: the key is declared and no open wait holds it (`lastWait` says how its last wait was settled) | `workflow_signal_refused`, `refusal: no_open_wait` | 409 |
 | payload refused (errors listed) | `workflow_signal_refused`, `refusal: invalid_payload` | 422 |
 | already settled | `workflow_signal_refused`, `refusal: already_settled` | 409 |
 | expired, or closed before a signal | `workflow_signal_refused`, `refusal: expired` / `closed` | 410 |
 | datastore cannot hold wait records | `workflow_signal_refused`, `refusal: unsupported` | 501 |
 | stored record unreadable, or an internal failure | `workflow_signal_refused` / `workflow_signal_failed` | 500 |
 
-The HTTP route passes the two gates every WebSocket request passes before
+**By workflow and key** (swamp-club#3211). A signal can name a workflow and a
+key one of its `wait_for_signal` steps declares, in place of the wait ID: the
+WebSocket request `workflow.signal { workflow, key, payload }`, or
+`POST /api/v1/signal` with the JSON body
+`{ "workflow": "...", "key": "...", "payload": { ... } }`. The workflow travels
+in the body, never the path, because a workflow name may hold `@` and `/`. It
+is for a caller that was never told a wait ID: a credential granted only
+`signal` cannot list waits, and a fixed key lets it signal anyway. Both forms
+reach `deliverSignalForCaller`, and so the same use case, receipt, audit event
+and continuation as a signal by ID.
+
+**A wait ID, when a request carries one, is the address.** A `workflow.signal`
+request with a `waitId` is authorized and delivered by that ID, and a
+`workflow` or `key` beside it is dropped like any unknown field, as a server
+from before the key form drops them; so a client that sends extra context with
+a wait ID keeps working. Only a request with no `waitId` is read as a key
+address, and a `waitId` that is not a UUID is malformed whatever is beside it.
+Over HTTP the path says which form a request is: `/api/v1/signal/{waitId}`
+ignores a `workflow` or `key` in the body, and `/api/v1/signal`, which has no
+earlier behaviour to keep, answers 400 to a body that carries a `waitId`.
+
+What differs by key, in order:
+
+- The workflow is at most 256 characters and the key at most 64
+  (`SIGNAL_WORKFLOW_MAX_LENGTH`, `SIGNAL_KEY_MAX_LENGTH`); the payload cap is
+  checked as by ID.
+- **Authorization comes first, on the workflow the request names.** It is
+  resolved as every request that names a workflow is (`resolveWorkflowTarget`:
+  by name, then by ID) and the caller needs `signal` on what it resolves to, so
+  a deny by name reaches a request by ID and a rule on tags sees the tags
+  (access-control.md, "Requests by id match the resource's name"). A string
+  that matches nothing is authorized as sent. Reading the workflow's definition
+  is the only lookup before the decision: no claim, registration or key
+  declaration is read for a caller who is refused.
+- **The caller also needs `signal` on every workflow that shares the named
+  one's ID.** Key claims are kept per workflow ID and IDs are not unique (a
+  copied file keeps its ID). A caller allowed on a copy and not on the original
+  would otherwise learn, from `no_open_wait` against `not_found`, whether the
+  original has a wait open under the key. This costs one listing of the
+  workflow files, made only for a caller who may signal the workflow they
+  named. The reverse holds too: a caller allowed on the original and denied on
+  a copy that shares its ID is refused by key, and signals by wait ID.
+- **A caller who may not signal the workflow, an unknown workflow, a key the
+  workflow does not declare and a string that is not in the form of a key get
+  the same answer**: the `not_found` an unknown wait ID gets, with the same
+  fixed message. The denial is audited with the workflow's canonical name, or
+  the string as sent when nothing matched; the reply never carries it.
+- The use case is then handed exactly the authorized workflow: it is found by
+  its ID and accepted only under the authorized name, so a workflow named with
+  that ID, or a copy that shares it, is not reached instead.
+- **The wait the key resolved to is authorized again, as a wait named by ID
+  is**: the caller needs `signal` on every workflow its registration belongs
+  to. This is what covers a workflow renamed since the wait was opened, whose
+  wait is still authorized under the name the run recorded. A refusal here is
+  `not_found` too.
+- A declared key that no open wait holds is refused `no_open_wait`. Only a
+  caller who may signal the workflow gets this far, and such a caller already
+  learns whether a wait is open from whether a delivery succeeds. A caller who
+  may also read the workflow gets the use case's message; one with `signal`
+  alone gets a fixed sentence.
+- **`no_open_wait` says what happened to the key's last wait**, in `lastWait`
+  (the error's details over WebSocket, the body over HTTP):
+  `{ waitId, settledAs, settledAt }`, with `settledAs` one of `accepted`,
+  `timed_out` or `cancelled`, and the earlier `receipt` for a caller who may
+  read the workflow. A sender that retries after a lost reply gets
+  `no_open_wait`, not the `already_settled` a retry by ID gets, because the key
+  is free once its wait is settled; so does a sender that is early for the next
+  run. `lastWait` tells them apart: `accepted` with a `settledAt` after the
+  first attempt means the signal landed. It is present while that wait's claim
+  is still the key's highest record (until a later wait claims the key or the
+  run's records are removed), and only when the caller may signal that wait.
+  The message says the same in words, without the receipt for a caller who
+  may not read the workflow, because the CLI prints a server's message and not
+  its details.
+  Several senders racing for one open wait can still get `already_settled`
+  instead: each resolved the key while the wait was open. Both are 409, and
+  neither makes a retry idempotent; a sender that needs that sends one signal
+  and reads `lastWait` before sending again.
+- The key is resolved from claim records only (`findKeyHolder`). Run records
+  are not scanned, as they are not for a wait ID.
+- The reply is the by-ID reply: the wait ID and the receipt, and for a caller
+  who may read the workflow the key, workflow, run, job, step, `awaitingResume`
+  and the resume command. The audit event `workflow.signal.delivered` carries
+  `key=<key>` for a wait that holds one, taken from the wait's registration.
+- The request's own audit events (`workflow.signal`, request and response) are
+  recorded under the workflow's canonical name as soon as it resolves, so they
+  name the same resource as a denial does when the workflow was named by its
+  ID. A string that matches nothing is audited as sent.
+
+A server from before swamp-club#3211 answers the WebSocket key form
+`invalid_request`, which the CLI reports as a server that needs an upgrade. It
+has no `POST /api/v1/signal` route and answers that path with a plain 404,
+which an HTTP client can tell from `not_found` only by the missing JSON body.
+
+The HTTP routes pass the two gates every WebSocket request passes before
 dispatch: with audit in fail-secure mode and the log unable to record durably
 it answers 503, and when `workflow.signal` is named in `--restricted-commands`
 it answers 403 to a caller who is not an admin. Both are decided before the
 wait is looked up, so they say nothing about a wait. The HTTP route also
 answers 401 (no token, or one that does not authenticate),
-429 (rate limited), 400 (the body is not a JSON object with a `payload` field)
+429 (rate limited), 400 (the body is not a JSON object with a `payload` field, or, by key, does not name a workflow and a key within their bounds or also carries a `waitId`)
 and 413 (the body is over `MAX_SIGNAL_BODY_BYTES`, six times the payload limit
 plus 1 KiB). That cap only bounds the read: a client may escape non-ASCII
 characters or indent its JSON, so a body is allowed to be several times its
@@ -650,10 +745,13 @@ buffered resume, and `run.attach`. For a run on a server the CLI prints the
 signal command with the `--server` it was given.
 
 `swamp workflow signal` and `swamp workflow waits` take `--server`. A signal
-through a server names a wait ID; the command refuses `--workflow` and `--key`
-with `--server` until swamp-club#3211. Against a
-server that predates these requests they report that the server needs an
-upgrade (`requestNewerServerResponse`, `src/cli/remote_run.ts`).
+through a server names a wait ID, or `--workflow` with `--key`
+(swamp-club#3211). An address the server would refuse as malformed (a wait ID
+that is not a UUID, a key not in the form of one) is answered by the command as
+a wait that is not found, so it is never mistaken for an old server. Against a
+server that predates these requests, or the key form, they report that the
+server needs an upgrade (`requestNewerServerResponse`,
+`src/cli/remote_run.ts`).
 
 **Cancel.** There are two paths:
 

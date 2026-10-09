@@ -921,9 +921,10 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   a key the schema allows without declaring (any key under a bare
   `type: object`) is unchecked and may be `null`, so declare the keys a guard
   reads and set `additionalProperties: false` to rule the rest out.
-- A signal names the **wait ID**, never a workflow or step name. Get it from the
-  `workflow run` output (`signalWaits[].waitId` with `--json`, which lists every
-  open wait of the run) or `workflow waits`.
+- A signal names the **wait ID**, or the workflow and a `key` its step declares
+  (see `key` below); never a step name. Get the wait ID from the `workflow run`
+  output (`signalWaits[].waitId` with `--json`, which lists every open wait of
+  the run) or `workflow waits`.
 - `key` is a literal (lowercase letters, digits, `-`, `_`; at most 64
   characters; no expression; not a Windows device name such as `con` or `nul`).
   `workflow validate` refuses the same key on two steps of a workflow and a key
@@ -931,12 +932,15 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   of another run fails with `wait_key_held` and opens no wait, so give it
   `allowFailure` or a `failed` dependent. The key is free again once the holder
   is signalled, timed out or cancelled. `workflow waits` shows the key. A signal
-  names the wait ID, or `--workflow <id-or-name> --key <key>` (not both, and not
-  with `--server`): the key resolves to the wait that holds it, and the result
-  names that wait ID. A key the workflow does not declare, or an unknown
+  names the wait ID, or `--workflow <id-or-name> --key <key>` (not both; either
+  works with `--server`): the key resolves to the wait that holds it, and the
+  result names that wait ID. A key the workflow does not declare, or an unknown
   workflow, is not found; a declared key with no open wait is refused
   (`no_open_wait`) and nothing is stored, so send again once the run reaches the
-  wait. Upgrade every host before adding a key: an older swamp ignores it and
+  wait. A retry after a signal that landed gets `no_open_wait` too: the message
+  says the last wait under the key was settled by a signal (and the error
+  details carry `lastWait.settledAs: accepted`), so read it before sending
+  again. Upgrade every host before adding a key: an older swamp ignores it and
   opens the wait unclaimed.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt

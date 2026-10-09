@@ -222,6 +222,21 @@ Deno.test("both serve transports deliver a signal through deliverSignalForCaller
   }
 });
 
+Deno.test("signal_delivery.ts is the only file of serve that runs the acceptance use case", async () => {
+  // A signal by wait ID and one by workflow and key (swamp-club#3211) are
+  // authorized in one place. A second caller of workflowSignal in serve
+  // would be a second place to get that right.
+  const callers = (await filesMentioning(/\bworkflowSignal\s*\(/)).filter((
+    file,
+  ) => file.startsWith("src/serve/"));
+  assertEquals(
+    callers,
+    ["src/serve/signal_delivery.ts"],
+    "only src/serve/signal_delivery.ts may call workflowSignal: every serve " +
+      "transport delivers through deliverSignalForCaller.",
+  );
+});
+
 async function assertWritesNoRun(parts: string[]): Promise<void> {
   const source = await Deno.readTextFile(join(ROOT, ...parts));
   assertEquals(

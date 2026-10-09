@@ -21,6 +21,7 @@ import { collect } from "../testing.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  signalLastWait,
   signalRefusalKind,
   type SignalWaitSubject,
   workflowSignal,
@@ -1257,6 +1258,7 @@ function refusalOf(event: WorkflowSignalEvent) {
     code: event.error.code,
     message: event.error.message,
     details: event.error.details as Record<string, unknown>,
+    lastWait: signalLastWait(event.error),
   };
 }
 
@@ -1339,6 +1341,8 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
   );
   assertEquals(first.kind, "no_open_wait");
   assertEquals(first.code, "validation_failed");
+  // Nothing ever held the key, so nothing is said of a last wait.
+  assertEquals(first.lastWait, undefined);
   assertStringIncludes(
     first.message,
     `No open wait holds key "${KEY}" of workflow "release"`,
@@ -1354,6 +1358,12 @@ Deno.test("workflowSignal: a declared key no open wait holds is refused as such 
     await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
   );
   assertEquals(second.kind, "no_open_wait");
+  // A sender who retries after a lost reply is told its signal landed: the
+  // wait that last held the key, and the signal that settled it.
+  assertEquals(second.lastWait?.waitId, fixture.waitId);
+  assertEquals(second.lastWait?.settledAs, "accepted");
+  assertEquals(second.lastWait?.receipt?.id, sent.data.signal.id);
+  assertStringIncludes(second.message, "has already landed");
   const outcome = await outcomeOf(fixture, fixture.waitId);
   assert(outcome?.kind === "accepted");
   assertEquals(outcome.payload, { verdict: "ship" });
