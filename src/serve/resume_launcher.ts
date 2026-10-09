@@ -63,6 +63,7 @@ import {
   isFinishedRun,
   NestedRunLink,
   NestedRunPendingError,
+  NestedRunUnreadableError,
 } from "../domain/workflows/nested_run_link.ts";
 import {
   createWorkflowId,
@@ -220,7 +221,10 @@ export async function startDetachedResume(
     workflowName = result.workflowName;
     workflowId = result.workflowId;
   } catch (error) {
-    if (error instanceof NestedRunPendingError) {
+    if (
+      error instanceof NestedRunPendingError ||
+      error instanceof NestedRunUnreadableError
+    ) {
       return {
         ok: false,
         code: "workflow_resume_failed",
@@ -420,7 +424,10 @@ export async function startDetachedResume(
                 code: RUN_RECORD_STALE_CODE,
                 message: error.message,
               };
-            } else if (error instanceof NestedRunPendingError) {
+            } else if (
+              error instanceof NestedRunPendingError ||
+              error instanceof NestedRunUnreadableError
+            ) {
               // The resume checks the nested runs again, and one may have
               // changed since the check above.
               terminal = {

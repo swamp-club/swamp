@@ -67,7 +67,8 @@ import type { SignalWaitSupport } from "../../domain/workflows/signal_wait_store
  * The nested runs a run waits on, each with its status as read now, and
  * whether the run can resume: suspended, no gate of its own waiting, and
  * every nested run finished. A missing nested run or broken link does not
- * hold the run back: its resume fails that step.
+ * hold the run back: its resume fails that step. A nested run whose record
+ * cannot be read does: its resume is refused.
  */
 export async function nestedWaitView(
   deps: NestedRunLinkDeps,
@@ -86,7 +87,10 @@ export async function nestedWaitView(
     const status = resolved.kind === "resolved"
       ? resolved.child.status
       : undefined;
-    if (resolved.kind === "resolved" && !isFinishedRun(resolved.child)) {
+    if (
+      resolved.kind === "unreadable" ||
+      (resolved.kind === "resolved" && !isFinishedRun(resolved.child))
+    ) {
       allFinished = false;
     }
     nestedWaits.push({

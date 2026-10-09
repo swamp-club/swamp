@@ -264,6 +264,9 @@ swamp workflow resume  <parent> --run <parent-run-id>
 
 - Resuming the parent while the child is unfinished is refused, naming what the
   child needs (approve, resume, recover or cancel).
+- Resuming the parent while the child's run record cannot be read (a garbled
+  file) is refused too, naming the child. Repair the record and resume, or
+  cancel the parent. The read error itself is in the warning log.
 - A rejected child fails the parent's step as a rejected approval; a plain retry
   of the parent then refuses, as for a gate of its own.
 - `swamp workflow approvals` lists the child's gate; its row names the parent.

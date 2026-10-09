@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { Principal } from "../../domain/access/principal.ts";
-import type { NestedRunPendingError } from "../../domain/workflows/nested_run_link.ts";
+import {
+  type NestedRunPendingError,
+  NestedRunUnreadableError,
+} from "../../domain/workflows/nested_run_link.ts";
 import {
   nestedWaitGateOf,
   orphanedNestedRunOf,
@@ -304,13 +307,21 @@ export async function readableNestedCascade(
  * The refusal to resume a run that waits on unfinished nested runs, naming
  * them only when the principal may read every run it names: each direct
  * child, and the innermost run that has to act, which can be a grandchild
- * in another workflow. Without a decider it names none.
+ * in another workflow. Without a decider it names none. The refusal over a
+ * nested run whose record cannot be read is treated the same way.
  */
 export async function nestedPendingRefusalForClient(
-  error: NestedRunPendingError,
+  error: NestedRunPendingError | NestedRunUnreadableError,
   canRead: ((workflow: NamedWorkflow) => Promise<boolean>) | undefined,
 ): Promise<string> {
   if (!canRead) return error.genericMessage;
+  if (error instanceof NestedRunUnreadableError) {
+    const readable = await canRead({
+      workflowId: error.child.workflowId,
+      workflowName: error.child.workflowName,
+    });
+    return readable ? error.message : error.genericMessage;
+  }
   for (const pending of error.pending) {
     for (const named of [pending.child, pending.action.target]) {
       const readable = await canRead({

@@ -265,6 +265,11 @@ export function createNestedCascade(deps: NestedCascadeDeps): NestedCascade {
           }
           continue;
         }
+        // Unreadable: it may still be unfinished, so it is reported.
+        if (resolved.kind === "unreadable") {
+          result.detachedNestedRuns.push(left(detached, child));
+          continue;
+        }
         child = resolved.child;
         if (isFinishedRun(child)) continue;
 

@@ -50,7 +50,11 @@ import {
   createWorkflowRunId,
 } from "../src/domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
-import { NestedRunPendingError } from "../src/domain/workflows/nested_run_link.ts";
+import {
+  NestedRunPendingError,
+  NestedRunUnreadableError,
+} from "../src/domain/workflows/nested_run_link.ts";
+import { resolveResumableRun } from "../src/domain/workflows/suspended_run_resolver.ts";
 import { UserError } from "../src/domain/errors.ts";
 import type { RunTrackerRepository } from "../src/domain/models/run_tracker_repository.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
@@ -998,5 +1002,116 @@ Deno.test("nested backstop: a child whose parent still waits is approved as befo
     );
     assertEquals(approved.approved, true);
     assertEquals((await only(h.runRepo, child)).status, "suspended");
+  });
+});
+
+Deno.test("nested approval: a child record that does not parse refuses the parent's resume by name and changes nothing (swamp-club#3202)", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    const childPath = h.runRepo.getPath(child.id, childRun.id);
+    const parentPath = h.runRepo.getPath(parent.id, parentRun.id);
+    const childRecord = await Deno.readTextFile(childPath);
+    const parentRecord = await Deno.readTextFile(parentPath);
+    await Deno.writeTextFile(childPath, "{{{ not: valid: yaml: [\n");
+
+    const refusal = await assertRejects(
+      () =>
+        resolveResumableRun(
+          h.workflowRepo,
+          h.runRepo,
+          parent.name,
+          parentRun.id,
+        ),
+      NestedRunUnreadableError,
+    );
+    assert(refusal instanceof UserError);
+    assertStringIncludes(
+      refusal.message,
+      `nested run ${childRun.id} of workflow "${child.name}"`,
+    );
+    assertStringIncludes(
+      refusal.message,
+      `swamp workflow resume ${parent.name} --run ${parentRun.id}`,
+    );
+    assertEquals(refusal.message.includes("not: valid"), false);
+    // The bare form, which finds the one suspended run, refuses the same way.
+    await assertRejects(
+      () => resolveResumableRun(h.workflowRepo, h.runRepo, parent.name),
+      NestedRunUnreadableError,
+    );
+    await assertRejects(
+      () => drain(h.service.resume(parent.name, parentRun.id)),
+      NestedRunUnreadableError,
+    );
+    assertEquals(await Deno.readTextFile(parentPath), parentRecord);
+
+    // Listed without a status, and not offered as ready to resume.
+    const view = await nestedWaitView(
+      { runRepo: h.runRepo, workflowRepo: h.workflowRepo },
+      parentRun,
+    );
+    assertEquals(view.nestedWaits?.map((w) => w.runId), [childRun.id]);
+    assertEquals(view.nestedWaits?.[0].status, undefined);
+    assertEquals(view.awaitingResume, undefined);
+
+    // Repaired, the child is an unfinished run again.
+    await Deno.writeTextFile(childPath, childRecord);
+    await assertRejects(
+      () => drain(h.service.resume(parent.name, parentRun.id)),
+      NestedRunPendingError,
+    );
+  });
+});
+
+Deno.test("nested approval: a child that turns unreadable after the resume checked it leaves the parent waiting on it (swamp-club#3202)", async () => {
+  const child = gatedChild();
+  const parent = caller("waiting-parent", child.name);
+  await withHarness([parent, child], async (h) => {
+    await drain(h.service.run(parent.name));
+    const parentRun = await only(h.runRepo, parent);
+    const childRun = await only(h.runRepo, child);
+    await completed(
+      workflowApprove(
+        createLibSwampContext(),
+        createWorkflowApproveDeps(h.workflowRepo, h.runRepo, unclaimedRuns),
+        { workflowIdOrName: child.name, stepName: "gate", runId: childRun.id },
+      ),
+    );
+    await drain(h.service.resume(child.name, childRun.id));
+
+    // The child reads until the resumed parent is first saved, then fails.
+    const findById = h.runRepo.findById.bind(h.runRepo);
+    const save = h.runRepo.save.bind(h.runRepo);
+    let parentSaved = false;
+    h.runRepo.save = async (workflowId, run) => {
+      await save(workflowId, run);
+      if (run.id === parentRun.id) parentSaved = true;
+    };
+    h.runRepo.findById = (workflowId, runId) =>
+      parentSaved && runId === childRun.id
+        ? Promise.reject(new Error("EMFILE"))
+        : findById(workflowId, runId);
+    let events: WorkflowExecutionEvent[];
+    try {
+      events = await drain(h.service.resume(parent.name, parentRun.id));
+    } finally {
+      h.runRepo.findById = findById;
+      h.runRepo.save = save;
+    }
+    assertEquals(parentSaved, true);
+    assertEquals(events.some((e) => e.kind === "step_failed"), false);
+    const waiting = await only(h.runRepo, parent);
+    assertEquals(waiting.status, "suspended");
+    assertEquals(waiting.findNestedWaits().map((w) => w.stepName), [
+      "call-nested",
+    ]);
+
+    // Readable again, the parent adopts the finished child.
+    await drain(h.service.resume(parent.name, parentRun.id));
+    assertEquals((await only(h.runRepo, parent)).status, "succeeded");
   });
 });

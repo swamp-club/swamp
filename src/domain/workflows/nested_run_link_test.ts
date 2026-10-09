@@ -23,8 +23,10 @@ import {
   assertNestedWaitsSettled,
   NestedRunLink,
   NestedRunPendingError,
+  NestedRunUnreadableError,
   nestedWaitHint,
 } from "./nested_run_link.ts";
+import { UserError } from "../errors.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { Workflow } from "./workflow.ts";
@@ -38,10 +40,15 @@ class Runs {
   add(...runs: WorkflowRun[]): void {
     for (const run of runs) this.byId.set(run.id.toLowerCase(), run);
   }
+  /** Run ids whose record fails to read, as a garbled file does. */
+  readonly unreadable = new Set<string>();
   findById(
     _workflowId: WorkflowId,
     runId: WorkflowRunId,
   ): Promise<WorkflowRun | null> {
+    if (this.unreadable.has(runId.toLowerCase())) {
+      return Promise.reject(new SyntaxError("garbled: secret-record-text"));
+    }
     return Promise.resolve(this.byId.get(runId.toLowerCase()) ?? null);
   }
 }
@@ -520,4 +527,60 @@ Deno.test("NestedRunLink.describeWait: with a wait store, the signal action carr
   if (pending.action.kind !== "signal") return;
   assertEquals(pending.action.jobName, "child-job");
   assertEquals(pending.action.deadline, wait.deadline.toISOString());
+});
+
+Deno.test("NestedRunLink.resolveChild: a child whose record cannot be read is unreadable, without the read error's text", async () => {
+  const { parent, child, runs, deps } = linkedPair();
+  runs.unreadable.add(child.id.toLowerCase());
+  const [wait] = parent.findNestedWaits();
+  const resolved = await new NestedRunLink(deps).resolveChild(parent, wait);
+  assert(resolved.kind === "unreadable");
+  assertEquals(resolved.ref.runId, child.id);
+  assert(resolved.reason.includes(child.id));
+  assert(resolved.reason.includes('workflow "child"'));
+  assertEquals(resolved.reason.includes("secret-record-text"), false);
+});
+
+Deno.test("NestedRunLink: an unreadable child refuses the resume by name and is never counted as settled", async () => {
+  const { parent, child, runs, deps } = linkedPair();
+  runs.unreadable.add(child.id.toLowerCase());
+  const link = new NestedRunLink(deps);
+  await assertRejects(
+    () => link.pendingWaits(parent),
+    NestedRunUnreadableError,
+  );
+  await assertRejects(
+    () => link.childrenSettled(parent),
+    NestedRunUnreadableError,
+  );
+  const refusal = await assertRejects(
+    () => assertNestedWaitsSettled(deps, parent),
+    NestedRunUnreadableError,
+  );
+  assert(refusal instanceof UserError);
+  assert(
+    refusal.message.includes(`nested run ${child.id} of workflow "child"`),
+  );
+  assert(
+    refusal.message.includes(
+      `'swamp workflow resume parent --run ${parent.id}'`,
+    ),
+  );
+  assert(
+    refusal.message.includes(
+      `'swamp workflow cancel parent --run ${parent.id}'`,
+    ),
+  );
+  assertEquals(refusal.message.includes("secret-record-text"), false);
+  assertEquals(refusal.genericMessage.includes(child.id), false);
+  assertEquals(refusal.genericMessage.includes("child"), false);
+  assert(refusal.genericMessage.includes(parent.id));
+});
+
+Deno.test("NestedRunLink.describeWait: an unreadable grandchild is not followed, so the child is the run to resume", async () => {
+  const { parent: child, child: grandchild, runs, deps } = linkedPair();
+  runs.unreadable.add(grandchild.id.toLowerCase());
+  const action = await new NestedRunLink(deps).describeWait(child, 1);
+  assertEquals(action.kind, "resume");
+  assertEquals(action.target.runId, child.id);
 });

@@ -477,7 +477,14 @@ resume, from any entry (CLI, serve, auto-resume, and serve's recover, which
 resumes), first checks every nested wait and refuses, changing nothing, while a
 child has not finished
 (`NestedRunPendingError`, naming what settles each child: approve, resume,
-recover, or cancel). `swamp workflow recover` never resumes: it resets an
+recover, or cancel). A child whose record cannot be read (a file that does
+not parse, or a read that fails) may or may not have finished, so the same
+check refuses with `NestedRunUnreadableError`, naming the child and the two
+ways on: repair the record and resume, or cancel the parent. The read error is
+logged as a warning and kept out of the message, since a parse error quotes
+the record. The derived `awaitingResume` stays false for such a parent, and
+serve names the child only to a principal that may read its workflow, as for
+`NestedRunPendingError`. `swamp workflow recover` never resumes: it resets an
 interrupted parent to suspended, and the resume that follows is refused until
 the children finished. Once the children finished, the resume re-enters the
 nested step without evaluating its trigger or guard again and reads the
@@ -492,6 +499,8 @@ child's outcome (`settleNestedWait`):
 - any other failure, cancelled, missing, or a broken link: the step fails.
 - running again (resumed or retried since the check): the parent suspends on
   it again.
+- unreadable since the check: the parent suspends on it again, so a record
+  that can be repaired never fails the step.
 
 Rejecting the child therefore needs a parent resume to take effect. In serve,
 once a child's resume or reject ends, the parent is resumed for the same
