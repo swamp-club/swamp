@@ -3,7 +3,15 @@
 # experiments against the file replica, printing JSON lines.
 set -u
 cd "$(dirname "$0")"
-run() { echo "## $*"; deno run -A "$@" 2> >(grep -E "ERROR|panic" | head -5 >&2) | grep '^{' || echo '{"failed":"'"$1"'"}'; }
+err="${RUNNER_TEMP:-/tmp}/spike-stderr.log"
+run() {
+  echo "## $*"
+  if ! NO_COLOR=1 deno run -A "$@" 2> "$err" | grep '^{'; then
+    echo '{"failed":"'"$1"'"}'
+    tail -20 "$err" >&2
+  fi
+  grep -E "level=ERROR|panic" "$err" | sed 's/time=[^ ]* //' | sort | uniq -c | head -5 >&2 || true
+}
 run platform_probe.ts
 run exp_compat.ts passive-default 5000
 run exp_compat.ts app-truncate 5000

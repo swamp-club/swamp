@@ -44,7 +44,7 @@ jobs:
           grep " $f\$" checksums.txt > want.txt
           if command -v sha256sum >/dev/null; then sha256sum -c want.txt; else shasum -a 256 -c want.txt; fi
           case "$f" in *.zip) unzip -q "$f" ;; *) tar -xzf "$f" ;; esac
-          bin="$PWD/litestream"; [ -f "$bin.exe" ] && bin="$bin.exe"
+          bin="$PWD/litestream"; [ -f "$bin.exe" ] && bin="$(cygpath -w "$PWD/litestream.exe")"
           "$bin" version
           echo "LITESTREAM_BIN=$bin" >> "$GITHUB_ENV"
       - name: Run spike probes
