@@ -154,7 +154,7 @@ export class ServerTokenGcService {
 
       if (attempts >= MAX_TOKENS_PER_SWEEP) {
         logger.info(
-          "Server token GC reached its per-sweep limit of {limit}; {remaining} eligible token(s) left for the next sweep",
+          "Server token GC reached its per-sweep limit of {limit}; up to {remaining} more token(s) are left for the next sweep",
           { limit: MAX_TOKENS_PER_SWEEP, remaining: ordered.length - index },
         );
         break;

@@ -374,7 +374,8 @@ key from the vault the record names, but only when that vault supports deletes
 and its listing holds the key. Anyone who can write the datastore can change
 the recorded vault, so a vault that does not hold the key is never touched. As
 in token secret migration, only a key the listing lacks counts as absent: a
-failed listing or delete keeps the token for the next sweep. The
+failed listing or delete keeps the token for the next sweep. Each such vault
+is listed at most once per sweep; a failed listing is not cached. The
 `_token-secrets` deletes do not match error messages: the control-plane
 store's delete of a missing key is a no-op, so any error is a real failure.
 

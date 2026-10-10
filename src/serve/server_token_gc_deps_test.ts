@@ -400,6 +400,52 @@ Deno.test("createServerTokenGcDeps: collectToken leaves a recorded vault alone w
   assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
+Deno.test("createServerTokenGcDeps: a recorded vault is listed once per sweep (swamp-club#2535)", async () => {
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultKeys: { legacy: ["server-token-ci"] },
+  });
+  const deps = createServerTokenGcDeps(h.input);
+  const lists = () => h.events.filter((e) => e === "list:legacy").length;
+
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 1);
+
+  // The next sweep lists again.
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 2);
+});
+
+Deno.test("createServerTokenGcDeps: a failed listing is retried within the sweep (swamp-club#2535)", async () => {
+  let failures = 1;
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+  });
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    vaultService: {
+      ...h.input.vaultService,
+      list: (vault) => {
+        h.events.push(`list:${vault}`);
+        return failures-- > 0
+          ? Promise.reject(new Error("throttled"))
+          : Promise.resolve(["server-token-ci"]);
+      },
+    },
+  });
+
+  await deps.listTokens();
+  await assertRejects(() => deps.collectToken(listed(), always));
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.filter((e) => e === "list:legacy").length, 2);
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), true);
+});
+
 Deno.test("createServerTokenGcDeps: collectToken keeps the records when a recorded vault's listing fails (swamp-club#2535)", async () => {
   const h = harness({
     stored: tokenAttrs("ci", { vaultName: "legacy" }),

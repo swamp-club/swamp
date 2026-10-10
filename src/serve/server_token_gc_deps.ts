@@ -163,6 +163,19 @@ export function createServerTokenGcDeps(
     }
   };
 
+  // Each legacy vault is listed at most once per sweep: listTokens starts a
+  // sweep and clears the cache. Tokens are no longer minted into these
+  // vaults, so a listing cannot miss a key added during the sweep. A failed
+  // listing is not cached, so the next legacy token in the sweep retries it.
+  let listings = new Map<string, Set<string>>();
+  const listVault = async (vaultName: string): Promise<Set<string>> => {
+    const cached = listings.get(vaultName);
+    if (cached) return cached;
+    const keys = new Set(await vaultService.list(vaultName));
+    listings.set(vaultName, keys);
+    return keys;
+  };
+
   const deleteSecret = async (token: TokenGcInfo): Promise<void> => {
     const key = serverTokenSecretKey(token.name);
     if (!vaultService.supportsDelete(TOKEN_SECRETS_VAULT_NAME)) {
@@ -197,8 +210,8 @@ export function createServerTokenGcDeps(
     // the key is only deleted from a vault that holds it. Only a key the
     // listing lacks counts as absent, as in token secret migration: a failed
     // listing or delete keeps the token for the next sweep.
-    const keys = await vaultService.list(token.vaultName);
-    if (!keys.includes(key)) return;
+    const keys = await listVault(token.vaultName);
+    if (!keys.has(key)) return;
     await vaultService.delete(token.vaultName, key, GC_CALLER);
   };
 
@@ -245,6 +258,7 @@ export function createServerTokenGcDeps(
     gracePeriodMs: input.gracePeriodMs,
 
     listTokens: async () => {
+      listings = new Map();
       const records = await dataQueryService.query(
         `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "${TOKEN_DATA_NAME}"`,
         { loadAttributes: true },
