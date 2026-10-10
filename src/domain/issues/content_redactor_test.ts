@@ -520,6 +520,85 @@ Deno.test("redactIssueContent: real FQDNs are still redacted", () => {
   assertEquals(result.text.includes("api.acme-corp.prod.net"), false);
 });
 
+// --- Dotted code paths in code spans (swamp-club#3228) ---
+
+Deno.test("redactIssueContent: a dotted code path in an inline code span is not a hostname", () => {
+  const input = "the field `work.workflow.name` is read, not `workflow.name`";
+  const result = redactIssueContent(input);
+  assertEquals(result.text, input);
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
+Deno.test("redactIssueContent: code paths ending in identifier-like TLDs survive in code", () => {
+  const inputs = [
+    "`config.user.id` and `step.output.info` and `job.task.run`",
+    "``a `quoted` value at config.user.id``",
+    "```yaml\nkey: step.output.info\n```",
+    "~~~\njob.task.run\n~~~",
+  ];
+  for (const input of inputs) {
+    const result = redactIssueContent(input);
+    assertEquals(result.text, input);
+    assertEquals(result.summary.totalRedactions, 0);
+  }
+});
+
+Deno.test("redactIssueContent: code paths in plain prose are still redacted", () => {
+  const result = redactIssueContent("the field work.workflow.name is read");
+  assertEquals(result.text, "the field [HOST-1] is read");
+});
+
+Deno.test("redactIssueContent: real hosts inside code spans are still redacted", () => {
+  const r1 = redactIssueContent("`db.prod.acme.com`");
+  assertEquals(r1.text, "`[HOST-1]`");
+
+  const r2 = redactIssueContent(
+    "```\ncurl https://api.acme-corp.prod.net\n```",
+  );
+  assertEquals(r2.text.includes("api.acme-corp.prod.net"), false);
+});
+
+Deno.test("redactIssueContent: an unclosed backtick does not make a code span", () => {
+  const result = redactIssueContent("the field `work.workflow.name is read");
+  assertEquals(result.text, "the field `[HOST-1] is read");
+});
+
+Deno.test("redactIssueContent: a lone backtick inside a fence does not reach prose", () => {
+  const input = "```sh\necho `date\n```\nthen work.workflow.name` broke";
+  const result = redactIssueContent(input);
+  assertEquals(
+    result.text,
+    "```sh\necho `date\n```\nthen [HOST-1]` broke",
+  );
+});
+
+Deno.test("redactIssueContent: secrets and internal hosts inside code spans are still redacted", () => {
+  const result = redactIssueContent(
+    "`API_TOKEN=abc123def456` and `db01.internal`",
+  );
+  assertEquals(result.text.includes("abc123def456"), false);
+  assertEquals(result.text.includes("db01.internal"), false);
+});
+
+Deno.test("redactIssueContent: the same path is redacted in prose and kept in a code span", () => {
+  const result = redactIssueContent(
+    "prose work.workflow.name and code `work.workflow.name`",
+  );
+  assertEquals(
+    result.text,
+    "prose [HOST-1] and code `work.workflow.name`",
+  );
+});
+
+Deno.test("redactIssueTitleAndBody: a code path in a code span survives in the title", () => {
+  const result = redactIssueTitleAndBody(
+    "`work.workflow.name` is redacted",
+    "body",
+  );
+  assertEquals(result.title.text, "`work.workflow.name` is redacted");
+  assertEquals(result.summary.totalRedactions, 0);
+});
+
 // --- Safe IP addresses ---
 
 Deno.test("redactIssueContent: loopback IPv4 is not redacted", () => {

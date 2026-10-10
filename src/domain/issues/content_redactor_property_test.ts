@@ -84,6 +84,35 @@ Deno.test("redactIssueContent: word-structured identifiers pass through untouche
   );
 });
 
+Deno.test("redactIssueContent: code paths ending in an identifier-like TLD survive in code spans", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbWord, { minLength: 2, maxLength: 5 }),
+      fc.constantFrom("name", "id", "info", "run", "is", "to", "page"),
+      (words, last) => {
+        const input = `field \`${[...words, last].join(".")}\` is read`;
+        const result = redactIssueContent(input);
+        assertEquals(result.text, input);
+        assertEquals(result.summary.totalRedactions, 0);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: real hosts never survive in code spans", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbWord, { minLength: 2, maxLength: 4 }),
+      fc.constantFrom("com", "net", "org", "io"),
+      (labels, tld) => {
+        const host = [...labels, tld].join(".");
+        const result = redactIssueContent(`connect to \`${host}\``);
+        assert(!result.text.includes(host), `host survived: ${result.text}`);
+      },
+    ),
+  );
+});
+
 Deno.test("redactIssueContent: redaction is idempotent", () => {
   fc.assert(
     fc.property(

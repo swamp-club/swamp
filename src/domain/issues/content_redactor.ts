@@ -596,6 +596,100 @@ const COMMON_TLDS = new Set([
   "zw",
 ]);
 
+// TLDs from COMMON_TLDS that are also everyday property and method names
+// (work.workflow.name, config.user.id, job.task.run). Inside markdown code an
+// FQDN match ending in one of these is read as a code path, not a host.
+// TLDs common for real infrastructure (com, net, io, dev, app, cloud, ...)
+// are deliberately absent, so hosts using them stay redacted in code too.
+const CODE_IDENTIFIER_TLDS = new Set([
+  "as",
+  "at",
+  "do",
+  "id",
+  "in",
+  "info",
+  "is",
+  "it",
+  "jobs",
+  "me",
+  "name",
+  "no",
+  "page",
+  "run",
+  "site",
+  "so",
+  "to",
+]);
+
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+interface CodeRange {
+  start: number;
+  end: number;
+}
+
+// Offset ranges of markdown code: fenced blocks first, then inline code
+// spans (a backtick run closed by a run of the same length on the same line)
+// in the text outside those fences. Unclosed fences and spans are prose.
+// Indented (four-space) code blocks are not recognised.
+function findCodeRanges(text: string): CodeRange[] {
+  const ranges: CodeRange[] = [];
+  const lines = text.split("\n");
+  const starts: number[] = [];
+  let pos = 0;
+  for (const line of lines) {
+    starts.push(pos);
+    pos += line.length + 1;
+  }
+
+  const inFence = new Array<boolean>(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    const open = FENCE_OPEN_RE.exec(lines[i]);
+    if (!open) continue;
+    const fence = open[1];
+    const close = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
+    for (let j = i + 1; j < lines.length; j++) {
+      if (!close.test(lines[j])) continue;
+      ranges.push({
+        start: starts[i],
+        end: starts[j] + lines[j].length,
+      });
+      for (let k = i; k <= j; k++) inFence[k] = true;
+      i = j;
+      break;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (inFence[i]) continue;
+    const runs = [...lines[i].matchAll(/`+/g)];
+    for (let r = 0; r < runs.length; r++) {
+      const open = runs[r];
+      const close = runs.findIndex((run, idx) =>
+        idx > r && run[0].length === open[0].length
+      );
+      if (close === -1) continue;
+      const closeRun = runs[close];
+      ranges.push({
+        start: starts[i] + open.index,
+        end: starts[i] + closeRun.index + closeRun[0].length,
+      });
+      r = close;
+    }
+  }
+  return ranges;
+}
+
+function isInsideCode(
+  ranges: CodeRange[],
+  offset: number,
+  length: number,
+): boolean {
+  return ranges.some((range) =>
+    offset >= range.start && offset + length <= range.end
+  );
+}
+
 function applyRedactions(
   text: string,
   placeholders: PlaceholderMap,
@@ -769,7 +863,9 @@ function applyRedactions(
     return placeholders.get("HOST", match);
   });
 
-  // 15. FQDNs (3+ segments)
+  // 15. FQDNs (3+ segments). A code path inside markdown code whose last
+  //     label is identifier-like (`work.workflow.name`) is not a host.
+  const codeRanges = findCodeRanges(result);
   result = result.replace(
     FQDN_RE,
     (match: string, offset: number, source: string) => {
@@ -778,6 +874,12 @@ function applyRedactions(
       if (source[offset + match.length] === "(") return match;
       const tld = match.slice(match.lastIndexOf(".") + 1).toLowerCase();
       if (!COMMON_TLDS.has(tld)) return match;
+      if (
+        CODE_IDENTIFIER_TLDS.has(tld) &&
+        isInsideCode(codeRanges, offset, match.length)
+      ) {
+        return match;
+      }
       count("hostname");
       return placeholders.get("HOST", match);
     },
