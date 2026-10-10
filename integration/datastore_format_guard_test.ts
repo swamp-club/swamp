@@ -332,6 +332,77 @@ Deno.test("datastore format guard: a marker only under one namespace is not data
   });
 });
 
+Deno.test("datastore format guard: one guarded open builds two sync services and makes one marker get", async () => {
+  await withRowRepos({ remote: { controlPlane: true } }, async (repos) => {
+    await appendToDatastoreBlock(repos.repoA, "  namespace: team");
+    const connections = repos.remote.connections();
+    const reads = repos.remote.controlPlaneReads().length;
+    await resolveDatastoreForRepo(repos.repoA);
+    assertEquals(repos.remote.connections() - connections, 2);
+    assertEquals(repos.remote.controlPlaneReads().slice(reads), [
+      { instance: "A", key: "_control/datastore-format" },
+    ]);
+  });
+});
+
+Deno.test("datastore format guard: with a datastore-wide store, one guarded open builds no sync service and makes one marker get", async () => {
+  await withRowRepos(
+    { remote: { controlPlane: true }, datastoreControlPlane: true },
+    async (repos) => {
+      await appendToDatastoreBlock(repos.repoA, "  namespace: team");
+      const connections = repos.remote.connections();
+      const reads = repos.remote.controlPlaneReads().length;
+      await resolveDatastoreForRepo(repos.repoA);
+      assertEquals(repos.remote.connections() - connections, 0);
+      assertEquals(repos.remote.controlPlaneReads().slice(reads), [
+        { instance: "datastore", key: "_control/datastore-format" },
+      ]);
+    },
+  );
+});
+
+Deno.test("datastore format guard: a namespaced repo sees the datastore-wide marker through the datastore-wide store", async () => {
+  await withRowRepos(
+    { remote: { controlPlane: true }, datastoreControlPlane: true },
+    async (repos) => {
+      await appendToDatastoreBlock(repos.repoA, "  namespace: team");
+      repos.remote.seedControlPlane(
+        DATASTORE_FORMAT_MARKER_KEY,
+        encode(FORMAT_3),
+      );
+      const before = await fingerprint(repos);
+      for (
+        const args of [
+          ["datastore", "sync", "--pull"],
+          ["model", "method", "run", "m1", "noop"],
+        ]
+      ) {
+        assertRefused(
+          await runCliRejecting({ args: [...args, ...json(repos)] }),
+          DATASTORE_FORMAT_UNSUPPORTED_CODE,
+          args.join(" "),
+        );
+      }
+      assertUnchanged(before, await fingerprint(repos), "namespaced");
+    },
+  );
+});
+
+Deno.test("datastore format guard: through the datastore-wide store, a marker only under one namespace is not read", async () => {
+  await withRowRepos(
+    { remote: { controlPlane: true }, datastoreControlPlane: true },
+    async (repos) => {
+      await appendToDatastoreBlock(repos.repoA, "  namespace: team");
+      repos.remote.seedControlPlane(
+        DATASTORE_FORMAT_MARKER_KEY,
+        encode(FORMAT_3),
+        { namespace: "team" },
+      );
+      await runCli({ args: ["datastore", "sync", "--pull", ...json(repos)] });
+    },
+  );
+});
+
 Deno.test("datastore format guard: a control-plane read failure proceeds", async () => {
   await withRowRepos({ remote: { controlPlane: true } }, async (repos) => {
     repos.remote.seedControlPlane(

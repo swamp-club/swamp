@@ -21,8 +21,11 @@
 import { assertRejects } from "jsr:@std/assert@1.0.19";
 import {
   assertControlPlaneStoreConformance,
+  assertDatastoreControlPlaneStoreConformance,
   createInMemoryControlPlaneStore,
 } from "./control_plane_conformance.ts";
+import { join } from "@std/path";
+import { createInMemoryRemote } from "./in_memory_remote.ts";
 import type { ControlPlaneStore } from "./datastore_types.ts";
 
 Deno.test("assertControlPlaneStoreConformance: the in-memory store conforms and is left empty", async () => {
@@ -110,4 +113,35 @@ Deno.test("assertControlPlaneStoreConformance: catches a list that matches by na
     Error,
     "list must return every key under the prefix",
   );
+});
+
+Deno.test("assertDatastoreControlPlaneStoreConformance: catches a store that reads under a bound namespace", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-cp-conformance-" });
+  try {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    let caches = 0;
+    const openSyncService = () =>
+      remote.connect(join(dir, `cache-${caches++}`));
+    await assertRejects(
+      () =>
+        assertDatastoreControlPlaneStoreConformance({
+          namespace: "team",
+          // A namespaced service's store, not the datastore-wide one.
+          openDatastoreStore: async () => {
+            const service = openSyncService();
+            await service.pullChanged({ namespace: "team" });
+            return service.controlPlaneStore!();
+          },
+          openSyncService,
+        }),
+      Error,
+      "datastore-wide root",
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

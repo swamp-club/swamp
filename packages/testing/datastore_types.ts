@@ -177,12 +177,49 @@ export interface ControlPlaneStore {
    * record that exists is left unchanged.
    */
   putIfAbsent?(key: string, data: Uint8Array): Promise<boolean>;
-  /** The record, or null when the key holds none. */
-  get(key: string): Promise<Uint8Array | null>;
+  /**
+   * The record, or null when the key holds none. Honour `options.signal`
+   * by stopping the request and any retry backoff when it aborts.
+   */
+  get(
+    key: string,
+    options?: ControlPlaneReadOptions,
+  ): Promise<Uint8Array | null>;
   /** Removes the record. Removing a key that holds none is not an error. */
   delete(key: string): Promise<void>;
   /** The keys under `prefix`, each in full, as passed to `put`. */
   list(prefix: string): Promise<string[]>;
+}
+
+/** Options for a control-plane read. */
+export interface ControlPlaneReadOptions {
+  /**
+   * Cancels the read: stop the request in flight and any retry backoff, and
+   * reject. Retrying until it aborts is fine.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Reads control-plane records at the datastore-wide `_control/` root,
+ * whatever namespace a repository uses. Swamp reads the datastore format
+ * marker (`datastore-format`) through it before a command opens the
+ * datastore.
+ *
+ * It must bind no namespace and share no state with any sync service the
+ * provider builds.
+ */
+export interface DatastoreControlPlaneStore {
+  /**
+   * The record at `_control/<key>`, or null only when no such record exists.
+   * Every other failure, access denied included, rejects. Must reject when
+   * `options.signal` aborts; for a sync service's `ControlPlaneStore`
+   * honouring it is recommended, not required.
+   */
+  get(
+    key: string,
+    options?: ControlPlaneReadOptions,
+  ): Promise<Uint8Array | null>;
 }
 
 /**
@@ -210,4 +247,12 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+  /**
+   * Return a read-only store for the datastore-wide control plane. Building
+   * it must be cheap: no sync service, no namespace binding and no request
+   * until `get`, and a `get` should be one request with no credentials
+   * preflight. Optional; without it swamp reads the format marker through a
+   * fresh sync service's `controlPlaneStore()`.
+   */
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
 }

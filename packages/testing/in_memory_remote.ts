@@ -115,7 +115,10 @@
  * service has bound a namespace, and a service that has not pulled or pushed
  * binds no namespace on its first control-plane call, as the S3 and GCS
  * extensions do (swamp-club#3189). Its writes are recorded as `controlPlane`
- * ops; its reads are not.
+ * ops; its reads are not, and are listed by `controlPlaneReads` instead.
+ * `datastoreControlPlaneStore` stands in for a provider's datastore-wide
+ * store. A control-plane `get` given an already aborted signal rejects with
+ * its reason; nothing else in the control plane can be in flight.
  *
  * Not modelled: namespace prefixes (a namespaced path is a plain key and a
  * push is never limited to one), lazy hydration (`hydrateFile`),
@@ -138,6 +141,7 @@
 import { dirname, join, normalize } from "@std/path";
 import type {
   ControlPlaneStore,
+  DatastoreControlPlaneStore,
   DatastoreSyncOptions,
   DatastoreSyncService,
   SyncCapabilities,
@@ -272,6 +276,14 @@ export interface InMemoryRemoteOpRecord {
   bulk?: boolean;
 }
 
+/** One control-plane read, listed by {@link InMemoryRemote.controlPlaneReads}. */
+export interface InMemoryControlPlaneRead {
+  /** The instance name given to `connect`. */
+  instance: string;
+  /** The full remote key read, `_control/<key>` or `<namespace>/_control/<key>`. */
+  key: string;
+}
+
 /** The manifest `preparePush` hands to `commitPush`. */
 export interface InMemoryPushManifest {
   readonly uploads: ReadonlyMap<string, Uint8Array>;
@@ -329,6 +341,20 @@ export interface InMemoryRemote {
   controlPlaneRecords(): ReadonlyMap<string, Uint8Array>;
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
+  /**
+   * A provider's datastore-wide store: `get` reads `_control/<key>`
+   * whatever namespace any service has bound, binds nothing, and is listed
+   * as instance `"datastore"` by `controlPlaneReads`. Present only with
+   * `controlPlane`, as a service's `controlPlaneStore` is.
+   */
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  /** How many sync services `connect` has built. */
+  connections(): number;
+  /**
+   * Every control-plane `get`, in order, including one that failed. Reads
+   * change nothing, so they are not ops.
+   */
+  controlPlaneReads(): readonly InMemoryControlPlaneRead[];
   /** Drops a cache's persisted dirty state, like a lost sidecar file. */
   resetSidecar(cacheDir: string): void;
   /**
@@ -621,6 +647,7 @@ export function createInMemoryRemote(
   // when they write it and, unlike the sidecar, `resetSidecar` keeps.
   const syncedIndexes = new Map<string, Map<string, Uint8Array>>();
   const log: InMemoryRemoteOpRecord[] = [];
+  const reads: InMemoryControlPlaneRead[] = [];
   const failures: PendingFailure[] = [];
   let isOffline = false;
   let instanceCount = 0;
@@ -1196,8 +1223,12 @@ export function createInMemoryRemote(
           deleted: [],
         });
       return {
-        get(key) {
+        get(key, readOptions) {
           try {
+            // An unbound service reads datastore-wide, so the key is the
+            // same before and after reach() binds it.
+            reads.push({ instance, key: controlKey(namespace, key) });
+            readOptions?.signal?.throwIfAborted();
             reach();
             const bytes = controlRecords.get(controlKey(namespace, key));
             return Promise.resolve(bytes ? bytes.slice() : null);
@@ -1273,6 +1304,24 @@ export function createInMemoryRemote(
     };
   }
 
+  /** A provider's datastore-wide store; see `InMemoryRemote`. */
+  function datastoreControlPlaneStore(): DatastoreControlPlaneStore {
+    return {
+      get(key, readOptions) {
+        try {
+          const fullKey = controlKey(undefined, key);
+          reads.push({ instance: "datastore", key: fullKey });
+          readOptions?.signal?.throwIfAborted();
+          checkReachable("controlPlane", "datastore");
+          const bytes = controlRecords.get(fullKey);
+          return Promise.resolve(bytes ? bytes.slice() : null);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    };
+  }
+
   return {
     connect,
     files: () => new Map(committed),
@@ -1295,6 +1344,9 @@ export function createInMemoryRemote(
     },
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
+    ...(controlPlane ? { datastoreControlPlaneStore } : {}),
+    connections: () => instanceCount,
+    controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>
       log.map((entry) => ({
         ...entry,

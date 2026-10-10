@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertInstanceOf } from "@std/assert";
+import { assert, assertEquals, assertInstanceOf } from "@std/assert";
 import { join } from "@std/path";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import {
@@ -28,7 +28,11 @@ import {
 import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
-import { readDatastoreFormatMarker } from "./datastore_format_marker_reader.ts";
+import {
+  DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS,
+  DATASTORE_FORMAT_READ_TIMEOUT_MS,
+  readDatastoreFormatMarker,
+} from "./datastore_format_marker_reader.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-format-marker-" });
@@ -59,6 +63,7 @@ function customConfig(
 
 function provider(
   createSyncService?: DatastoreProvider["createSyncService"],
+  datastoreControlPlaneStore?: DatastoreProvider["datastoreControlPlaneStore"],
 ): () => Promise<DatastoreProvider> {
   const p: DatastoreProvider = {
     createLock: () => {
@@ -69,6 +74,7 @@ function provider(
     },
     resolveDatastorePath: () => "/repo/.swamp",
     ...(createSyncService ? { createSyncService } : {}),
+    ...(datastoreControlPlaneStore ? { datastoreControlPlaneStore } : {}),
   };
   return () => Promise.resolve(p);
 }
@@ -193,6 +199,149 @@ Deno.test("readDatastoreFormatMarker: reads the datastore-wide control-plane rec
   assertEquals(new TextDecoder().decode(read.bytes), '{"format":3}');
   // A read writes nothing.
   assertEquals(remote.ops(), []);
+});
+
+Deno.test("readDatastoreFormatMarker: one read builds two sync services and makes one control-plane get", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  await readDatastoreFormatMarker("/repo", customConfig(), {
+    resolveProvider: provider((_repo, cache) =>
+      remote.connect(cache) as unknown as DatastoreSyncService
+    ),
+  });
+  assertEquals(remote.connections(), 2);
+  assertEquals(remote.controlPlaneReads().map((read) => read.key), [
+    "_control/datastore-format",
+  ]);
+});
+
+Deno.test("readDatastoreFormatMarker: a provider's datastore-wide store is read with one get and no sync service", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  remote.seedControlPlane(DATASTORE_FORMAT_MARKER_KEY, encode('{"format":3}'));
+  remote.seedControlPlane(DATASTORE_FORMAT_MARKER_KEY, encode("ns"), {
+    namespace: "infra",
+  });
+  const read = await readDatastoreFormatMarker(
+    "/repo",
+    customConfig({ namespace: "infra" }),
+    {
+      resolveProvider: provider(
+        () => {
+          throw new Error("the reader must not build a sync service");
+        },
+        () => remote.datastoreControlPlaneStore!(),
+      ),
+    },
+  );
+  assertEquals(read.kind, "present");
+  if (read.kind !== "present") return;
+  assertEquals(read.source, "_control/datastore-format on @test/store");
+  assertEquals(new TextDecoder().decode(read.bytes), '{"format":3}');
+  assertEquals(remote.connections(), 0);
+  assertEquals(remote.controlPlaneReads(), [
+    { instance: "datastore", key: "_control/datastore-format" },
+  ]);
+  assertEquals(remote.ops(), []);
+});
+
+Deno.test("readDatastoreFormatMarker: a failed datastore-wide read is unreadable, with no fallback to a sync service", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  remote.failNext("controlPlane", new Error("AccessDenied"));
+  const read = await readDatastoreFormatMarker("/repo", customConfig(), {
+    resolveProvider: provider(
+      (_repo, cache) =>
+        remote.connect(cache) as unknown as DatastoreSyncService,
+      () => remote.datastoreControlPlaneStore!(),
+    ),
+  });
+  assertEquals(read.kind, "unreadable");
+  if (read.kind !== "unreadable") return;
+  assertInstanceOf(read.error, Error);
+  assertEquals(read.error.message, "AccessDenied");
+  assertEquals(remote.connections(), 0);
+});
+
+Deno.test("readDatastoreFormatMarker: a read still pending at the deadline is abandoned and its signal aborted", async () => {
+  const signals: AbortSignal[] = [];
+  const read = await readDatastoreFormatMarker("/repo", customConfig(), {
+    timeoutMs: 1,
+    resolveProvider: provider(undefined, () => ({
+      get: (_key, options) => {
+        if (options?.signal) signals.push(options.signal);
+        return new Promise<Uint8Array | null>(() => {});
+      },
+    })),
+  });
+  assertEquals(read.kind, "unreadable");
+  if (read.kind !== "unreadable") return;
+  assertInstanceOf(read.error, Error);
+  assertEquals(read.error.message, "timed out after 1ms");
+  assertEquals(signals.length, 1);
+  assert(signals[0].aborted, "the read's signal is aborted at the deadline");
+  assertEquals(signals[0].reason, read.error);
+});
+
+Deno.test("readDatastoreFormatMarker: a read that settles in time is not aborted", async () => {
+  const signals: AbortSignal[] = [];
+  const read = await readDatastoreFormatMarker("/repo", customConfig(), {
+    resolveProvider: provider(undefined, () => ({
+      get: (_key, options) => {
+        if (options?.signal) signals.push(options.signal);
+        return Promise.resolve(null);
+      },
+    })),
+  });
+  assertEquals(read, { kind: "absent" });
+  assertEquals(signals.length, 1);
+  assertEquals(signals[0].aborted, false);
+});
+
+Deno.test("readDatastoreFormatMarker: each read path waits for its own deadline", async () => {
+  const hung = () => new Promise<Uint8Array | null>(() => {});
+  const datastoreWide = await readDatastoreFormatMarker(
+    "/repo",
+    customConfig(),
+    {
+      timeoutMs: 1,
+      fallbackTimeoutMs: 60_000,
+      resolveProvider: provider(undefined, () => ({ get: hung })),
+    },
+  );
+  assertEquals(datastoreWide.kind, "unreadable");
+  if (datastoreWide.kind !== "unreadable") return;
+  assertEquals((datastoreWide.error as Error).message, "timed out after 1ms");
+
+  const service = {
+    capabilities: () => ({ controlPlane: true }),
+    controlPlaneStore: () => ({
+      get: hung,
+      put: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      list: () => Promise.resolve([]),
+    }),
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+  };
+  const fallback = await readDatastoreFormatMarker("/repo", customConfig(), {
+    timeoutMs: 60_000,
+    fallbackTimeoutMs: 1,
+    resolveProvider: provider(() =>
+      ({ ...service }) as unknown as DatastoreSyncService
+    ),
+  });
+  assertEquals(fallback.kind, "unreadable");
+  if (fallback.kind !== "unreadable") return;
+  assertEquals((fallback.error as Error).message, "timed out after 1ms");
+});
+
+Deno.test("DATASTORE_FORMAT_READ_TIMEOUT_MS: a degraded remote costs a command at most 3 s, or 4 s on the fallback read", () => {
+  assert(DATASTORE_FORMAT_READ_TIMEOUT_MS >= 2_000);
+  assert(DATASTORE_FORMAT_READ_TIMEOUT_MS <= 3_000);
+  assert(
+    DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS >=
+      DATASTORE_FORMAT_READ_TIMEOUT_MS,
+  );
+  assert(DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS <= 4_000);
 });
 
 Deno.test("readDatastoreFormatMarker: a missing control-plane record reads absent", async () => {

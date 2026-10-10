@@ -125,6 +125,27 @@ change as those extensions change. New cases may be added, and some may skip, so
 assert on the cases you rely on and log the skips rather than pinning the exact
 skipped list.
 
+## Datastore-Wide Control-Plane Conformance
+
+For a provider that implements `datastoreControlPlaneStore()`:
+
+```typescript
+import { assertDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("datastore-wide control-plane store conformance", async () => {
+  await assertDatastoreControlPlaneStoreConformance({
+    openDatastoreStore: () => provider.datastoreControlPlaneStore!(),
+    // A fresh, never-pulled service with its own cache each call.
+    openSyncService: async () =>
+      provider.createSyncService!("/repo", await Deno.makeTempDir()),
+  });
+});
+```
+
+It checks that `get` reads the datastore-wide record, returns `null` for a
+missing key, never sees a namespace-only record, rejects on an aborted signal,
+and leaves a sync service free to bind its namespace afterwards.
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary.
