@@ -618,7 +618,32 @@ const CODE_IDENTIFIER_TLDS = new Set([
 const HOST_PREFIX_RE = /(?:\/\/|@)$/;
 const HOST_SUFFIX_RE = /^(?::\d|\/)/;
 
-const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+// Second-level labels registries put under a country TLD (db.bank.co.id,
+// api.payments.go.id). A match whose second-to-last label is one of these is
+// a host, not a code path, even when its TLD is in CODE_IDENTIFIER_TLDS.
+const SECOND_LEVEL_LABELS = new Set([
+  "ac",
+  "co",
+  "com",
+  "edu",
+  "go",
+  "gov",
+  "mil",
+  "net",
+  "or",
+  "org",
+  "sch",
+  "web",
+]);
+
+function isLikelyCodePath(match: string, tld: string): boolean {
+  if (!CODE_IDENTIFIER_TLDS.has(tld)) return false;
+  const labels = match.toLowerCase().split(".");
+  return !SECOND_LEVEL_LABELS.has(labels[labels.length - 2]);
+}
+
+// A backtick fence's info string cannot contain a backtick (CommonMark).
+const FENCE_OPEN_RE = /^ {0,3}(?:(`{3,})(?!.*`)|(~{3,}))/;
 
 interface CodeRange {
   start: number;
@@ -643,7 +668,7 @@ function findCodeRanges(text: string): CodeRange[] {
   for (let i = 0; i < lines.length; i++) {
     const open = FENCE_OPEN_RE.exec(lines[i]);
     if (!open) continue;
-    const fence = open[1];
+    const fence = open[1] ?? open[2];
     // fence[0] is a backtick or tilde, neither of which needs escaping.
     const close = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
     let closed = false;
@@ -666,7 +691,8 @@ function findCodeRanges(text: string): CodeRange[] {
 
   for (let i = 0; i < lines.length; i++) {
     if (inFence[i]) continue;
-    const runs = [...lines[i].matchAll(/`+/g)];
+    // A backslash-escaped backtick is literal text, not a span delimiter.
+    const runs = [...lines[i].matchAll(/(?<!\\)`+/g)];
     for (let r = 0; r < runs.length; r++) {
       const open = runs[r];
       const close = runs.findIndex((run, idx) =>
@@ -879,7 +905,7 @@ function applyRedactions(
       const tld = match.slice(match.lastIndexOf(".") + 1).toLowerCase();
       if (!COMMON_TLDS.has(tld)) return match;
       if (
-        CODE_IDENTIFIER_TLDS.has(tld) &&
+        isLikelyCodePath(match, tld) &&
         isInsideCode(codeRanges, offset, match.length) &&
         !HOST_PREFIX_RE.test(source.slice(Math.max(0, offset - 2), offset)) &&
         !HOST_SUFFIX_RE.test(

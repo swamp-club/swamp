@@ -584,6 +584,24 @@ Deno.test("redactIssueContent: identifier-like TLDs in host context are still re
   }
 });
 
+Deno.test("redactIssueContent: hosts under a second-level label are still redacted in code", () => {
+  const result = redactIssueContent(
+    "```yaml\ndatabase:\n  host: db.bank.co.id\n```\n`api.payments.go.id`",
+  );
+  assertEquals(result.text.includes("db.bank.co.id"), false);
+  assertEquals(result.text.includes("api.payments.go.id"), false);
+});
+
+Deno.test("redactIssueContent: escaped backticks do not make a code span", () => {
+  const result = redactIssueContent("see \\`work.workflow.name\\` here");
+  assertEquals(result.text, "see \\`[HOST-1]\\` here");
+});
+
+Deno.test("redactIssueContent: a backtick fence whose info string has a backtick is not a fence", () => {
+  const result = redactIssueContent("```foo`bar\nwork.workflow.name\n```");
+  assertEquals(result.text.includes("work.workflow.name"), false);
+});
+
 Deno.test("redactIssueContent: text after an unclosed fence is prose", () => {
   const result = redactIssueContent(
     "```\nwork.workflow.name\n```a\n~~~\nconfig.user.id\n~~~",
