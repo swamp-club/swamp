@@ -372,10 +372,13 @@ rather than treated as an orphan.
 For a token minted before swamp-club#1511, the GC also deletes the canonical
 key from the vault the record names, but only when that vault supports deletes
 and its listing holds the key. Anyone who can write the datastore can change
-the recorded vault, so a vault that does not hold the key is never touched. As
-in token secret migration, only a key the listing lacks counts as absent: a
-failed listing or delete keeps the token for the next sweep. Each such vault
-is listed at most once per sweep; a failed listing is not cached. The
+the recorded vault, so a vault that does not hold the key is never touched.
+When the listing fails, the GC leaves that vault alone, logs the vault and key
+so an operator can remove it, and still collects the token: with its records
+and `_token-secrets` copy gone, the leftover secret cannot authenticate, and a
+vault whose credentials allow deletes but not listing would otherwise keep the
+token forever. A failed delete still keeps the token for the next sweep. Each
+such vault is listed at most once per sweep; a failed listing is not cached. The
 `_token-secrets` deletes do not match error messages: the control-plane
 store's delete of a missing key is a no-op, so any error is a real failure.
 

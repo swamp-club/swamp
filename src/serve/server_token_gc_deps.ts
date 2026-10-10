@@ -207,10 +207,27 @@ export function createServerTokenGcDeps(
       return;
     }
     // Anyone who can write the datastore can change the recorded vault, so
-    // the key is only deleted from a vault that holds it. Only a key the
-    // listing lacks counts as absent, as in token secret migration: a failed
-    // listing or delete keeps the token for the next sweep.
-    const keys = await listVault(token.vaultName);
+    // the key is only deleted from a vault whose listing holds it. A vault
+    // that cannot be listed is left alone and the token is still collected:
+    // with its records and _token-secrets copy gone, the leftover secret
+    // cannot authenticate, and keeping the token would leave it listed for
+    // good when the vault's credentials allow deletes but not listing. A
+    // failed delete still keeps the token for the next sweep.
+    let keys: Set<string>;
+    try {
+      keys = await listVault(token.vaultName);
+    } catch (err) {
+      logger.warn(
+        "Cannot list vault {vault} to clear server token {name}'s legacy secret; leaving {secretKey} there: {error}",
+        {
+          vault: token.vaultName,
+          name: token.name,
+          secretKey: key,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return;
+    }
     if (!keys.has(key)) return;
     await vaultService.delete(token.vaultName, key, GC_CALLER);
   };

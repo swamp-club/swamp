@@ -440,26 +440,33 @@ Deno.test("createServerTokenGcDeps: a failed listing is retried within the sweep
   });
 
   await deps.listTokens();
-  await assertRejects(() => deps.collectToken(listed(), always));
+  // The first collection cannot list the vault, so it leaves the key there.
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  // The failure was not cached: the next one lists again and deletes it.
   assertEquals(await deps.collectToken(listed(), always), "collected");
   assertEquals(h.events.filter((e) => e === "list:legacy").length, 2);
   assertEquals(h.events.includes("secret:legacy/server-token-ci"), true);
 });
 
-Deno.test("createServerTokenGcDeps: collectToken keeps the records when a recorded vault's listing fails (swamp-club#2535)", async () => {
+Deno.test("createServerTokenGcDeps: collectToken still collects a token whose recorded vault cannot be listed (swamp-club#2535)", async () => {
+  // A vault whose credentials allow deletes but not listing must not keep
+  // the token forever. Its key is left alone, since the listing cannot show
+  // that the vault holds it.
   const h = harness({
     stored: tokenAttrs("ci", { vaultName: "legacy" }),
     deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
-    vaultListError: new Error("credentials file not found"),
+    vaultListError: new Error("Permission denied (os error 13): readdir"),
   });
   const deps = createServerTokenGcDeps(h.input);
 
-  await assertRejects(
-    () => deps.collectToken(listed(), always),
-    Error,
-    "credentials file not found",
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  assertEquals(
+    h.events.includes(`secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`),
+    true,
   );
-  assertEquals(h.events.some((e) => e.startsWith("definition:")), false);
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without delete support", async () => {
