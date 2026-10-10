@@ -227,7 +227,41 @@ Deno.test("normalizeHookInput kiro: normalizes 'execute_cmd' alias", () => {
   assertEquals(result?.isFailure, false);
 });
 
-// ---- Kiro IDE (USER_PROMPT camelCase format) normalization ----
+Deno.test("normalizeHookInput kiro: normalizes Kiro IDE 1.0 PostToolUse stdin payload", () => {
+  const result = normalizeHookInput("kiro", {
+    hook_event_name: "PostToolUse",
+    cwd: "/workspace",
+    session_id: "s-1",
+    tool_name: "execute_bash",
+    tool_input: { command: "swamp model search --json" },
+    tool_response: { success: true },
+  });
+
+  assertEquals(result, {
+    command: "swamp model search --json",
+    cwd: "/workspace",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput kiro: normalizes Kiro IDE 1.0 'execute_pwsh' tool", () => {
+  const result = normalizeHookInput("kiro", {
+    hook_event_name: "PostToolUse",
+    cwd: "C:\\workspace",
+    tool_name: "execute_pwsh",
+    tool_input: { command: "swamp model search --json" },
+    tool_response: { success: false, error: "exit 1" },
+  });
+
+  assertEquals(result, {
+    command: "swamp model search --json",
+    cwd: "C:\\workspace",
+    isFailure: true,
+    errorMessage: "exit 1",
+  });
+});
+
+// ---- Kiro IDE 0.x (USER_PROMPT camelCase format) normalization ----
 
 Deno.test("normalizeHookInput kiro: normalizes Kiro IDE camelCase successful execute_bash", () => {
   const result = normalizeHookInput("kiro", {

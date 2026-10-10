@@ -62,7 +62,7 @@ by `swamp repo init --tool <tool>` (alias `swamp init`):
 | -------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
 | Claude   | `.claude/settings.local.json`            | n/a                                                                                    |
 | Cursor   | `.cursor/hooks.json`                     | n/a                                                                                    |
-| Kiro     | `.kiro/hooks/swamp-audit.kiro.hook` + `.kiro/agents/swamp.json` | `.kiro/settings/cli.json` (default agent); `.vscode/settings.local.json` (`kiroAgent.trustedCommands: ["swamp *"]`) |
+| Kiro     | `.kiro/hooks/swamp-audit.json` (Kiro IDE) + `.kiro/agents/swamp.json` (kiro-cli) | `.kiro/settings/cli.json` (default agent) |
 | OpenCode | `.opencode/plugins/swamp-audit.ts`       | n/a                                                                                    |
 | Copilot  | `.github/hooks/swamp-audit.json`         | n/a                                                                                    |
 
@@ -70,6 +70,26 @@ The generators are in `src/domain/repo/repo_service.ts`
 (`updateClaudeSettings`, `updateCursorHooks`, `updateKiroHooks`,
 `updateKiroAgentConfig`, `ensureKiroCliDefaultAgent`, `updateOpenCodePlugin`,
 `updateCopilotHooks`, `createCopilotHooksIfNotExists`).
+
+Kiro has two hook files because its surfaces read different ones.
+`.kiro/hooks/swamp-audit.json` is a hook in Kiro's v1 hook schema
+(`PostToolUse`), which Kiro IDE 1.0 runs; the IDE no longer runs the legacy
+`.kiro.hook` files earlier versions wrote, and it ignores agent configs that
+contain `hooks`. `.kiro/agents/swamp.json` carries the hook for kiro-cli. It is
+written in kiro-cli's universal format, which both the 2.x engine (the default)
+and the opt-in 3.0 engine load: the 2.x `toolsSettings` with the 3.0
+`permissions.rules` mirroring them, and the array form of `hooks`. kiro-cli 3.0
+also runs workspace `.kiro/hooks/*.json` files, so under that engine a shell
+call can be recorded twice. Dropping the profile's hook would lose audit on
+the 2.x default, so the duplicate is accepted.
+
+Upgrade migrates Kiro repos scaffolded by earlier versions: it deletes swamp's
+`swamp-audit.kiro.hook`, and removes copies of the audit hook (post-tool
+entries whose command is exactly swamp's audit hook command, with the binary
+bare or as an absolute path) from other v1 hook files in `.kiro/hooks/`, which
+Kiro IDE writes when it auto-migrates legacy hooks. A command the user extended
+is kept. A hook file is deleted only when
+nothing else is left in it; symlinks and files that do not parse are skipped.
 
 Upgrade and `init --force` merge the audit hook into an existing Claude,
 Cursor or Copilot hook config with `mergeAuditHooks`. An event that already
