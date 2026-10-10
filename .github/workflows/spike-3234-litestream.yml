@@ -1,0 +1,56 @@
+# Throwaway job for the swamp-club#3234 Litestream spike. Lives only on the
+# spike/3234-litestream branch and is deleted with it. No secrets are used.
+name: Spike 3234 Litestream
+
+on:
+  push:
+    branches: ['spike/3234-litestream']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, asset: windows-x86_64.zip }
+          - { runner: windows-11-arm, asset: windows-arm64.zip }
+          - { runner: macos-15-intel, asset: darwin-x86_64.tar.gz }
+          - { runner: ubuntu-latest, asset: linux-x86_64.tar.gz }
+          - { runner: ubuntu-24.04-arm, asset: linux-arm64.tar.gz }
+    defaults:
+      run:
+        shell: bash
+    env:
+      LS_VERSION: '0.5.17'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: .tool-versions
+      - name: Fetch and verify litestream
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ls" && cd "$RUNNER_TEMP/ls"
+          base="https://github.com/benbjohnson/litestream/releases/download/v${LS_VERSION}"
+          f="litestream-${LS_VERSION}-${{ matrix.asset }}"
+          curl -fsSLO "$base/$f"
+          curl -fsSLO "$base/checksums.txt"
+          grep " $f\$" checksums.txt > want.txt
+          if command -v sha256sum >/dev/null; then sha256sum -c want.txt; else shasum -a 256 -c want.txt; fi
+          case "$f" in *.zip) unzip -q "$f" ;; *) tar -xzf "$f" ;; esac
+          bin="$PWD/litestream"; [ -f "$bin.exe" ] && bin="$bin.exe"
+          "$bin" version
+          echo "LITESTREAM_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Run spike probes
+        run: bash spike/ci_run.sh | tee "$RUNNER_TEMP/results.jsonl"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.runner }}
+          path: ${{ runner.temp }}/results.jsonl
