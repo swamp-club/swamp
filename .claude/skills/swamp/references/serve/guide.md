@@ -408,7 +408,10 @@ A running serve deletes revoked tokens at its next token GC sweep. It deletes
 expired tokens once a grace period has passed. Deleted tokens drop out of
 `access token list`. The sweep runs every `--token-gc-interval` (default `1h`;
 `0` disables it), and the grace period is `--token-gc-grace-period` (default
-`1h`).
+`1h`; `0` deletes at expiry). In `serve.yaml`, quote duration values such as `0`
+(`token-gc-interval: "0"`): YAML reads an unquoted `0` as a number, which serve
+rejects. A sweep collects at most 100 tokens, so a large backlog, such as the
+first sweep after an upgrade, drains over several sweeps.
 
 ### Wiring a token into an external secret store
 

@@ -25,6 +25,14 @@ const logger = getSwampLogger(["serve", "token-gc"]);
 export const DEFAULT_TOKEN_GC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 export const DEFAULT_TOKEN_GC_GRACE_PERIOD_MS = 60 * 60 * 1000; // 1 hour
 
+/**
+ * The most tokens one sweep collects or fails to collect. Each collection
+ * holds the sync gate for a remote push, so without a cap the first sweep
+ * after an upgrade (every revoked or expired token ever minted) would hold
+ * the gate for a long time. A larger backlog drains over later sweeps.
+ */
+export const MAX_TOKENS_PER_SWEEP = 100;
+
 export interface TokenGcInfo {
   readonly name: string;
   readonly definitionId: string;
@@ -61,6 +69,8 @@ export class ServerTokenGcService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #running = false;
   #disposed = false;
+  /** Definition ids of the tokens the last sweep failed to collect. */
+  #failedLastSweep = new Set<string>();
 
   constructor(deps: ServerTokenGcDeps) {
     this.#deps = deps;
@@ -127,19 +137,44 @@ export class ServerTokenGcService {
     const tokens = await this.#deps.listTokens();
     const now = Date.now();
     let gcCount = 0;
+    let attempts = 0;
+    const tried = new Set<string>();
+    const failed = new Set<string>();
 
-    for (const token of tokens) {
+    // Tokens the last sweep failed on go last, so a block of tokens that keep
+    // failing cannot use up the cap every sweep.
+    const eligible = tokens.filter((token) => this.#isGcEligible(token, now));
+    const ordered = [
+      ...eligible.filter((t) => !this.#failedLastSweep.has(t.definitionId)),
+      ...eligible.filter((t) => this.#failedLastSweep.has(t.definitionId)),
+    ];
+
+    for (const [index, token] of ordered.entries()) {
       if (this.#disposed) break;
 
-      if (!this.#isGcEligible(token, now)) continue;
+      if (attempts >= MAX_TOKENS_PER_SWEEP) {
+        logger.info(
+          "Server token GC reached its per-sweep limit of {limit}; {remaining} eligible token(s) left for the next sweep",
+          { limit: MAX_TOKENS_PER_SWEEP, remaining: ordered.length - index },
+        );
+        break;
+      }
 
+      tried.add(token.definitionId);
       try {
         const result = await this.#deps.collectToken(
           token,
           (current) => this.#isGcEligible(current, Date.now()),
         );
-        if (result === "collected") gcCount++;
+        // A skipped token was only re-read, never pushed, so it does not
+        // count toward the cap.
+        if (result === "collected") {
+          gcCount++;
+          attempts++;
+        }
       } catch (err) {
+        attempts++;
+        failed.add(token.definitionId);
         logger.warn(
           "Failed to GC server token {name}, will retry next cycle: {error}",
           {
@@ -149,6 +184,16 @@ export class ServerTokenGcService {
         );
       }
     }
+    // A failed token the cap left untried keeps its place at the back.
+    for (const token of ordered) {
+      if (
+        !tried.has(token.definitionId) &&
+        this.#failedLastSweep.has(token.definitionId)
+      ) {
+        failed.add(token.definitionId);
+      }
+    }
+    this.#failedLastSweep = failed;
 
     if (gcCount > 0) {
       logger.info("GC'd {count} expired/revoked server token(s)", {
