@@ -1839,7 +1839,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--token-gc-grace-period <duration:string>",
-    "How long expired server tokens are kept before GC (default: 1h, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
+    "How long expired server tokens are kept before GC (default: 1h, 0 deletes at expiry, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
   )
   .option(
     "--remote-only",
@@ -7329,8 +7329,10 @@ export const serveCommand = new Command()
     }
 
     // Server token GC — deletes revoked tokens, and expired ones past the
-    // grace period, in every auth mode. It starts after token secret
-    // migration so every token's secret is already where the GC looks.
+    // grace period, in every auth mode. In OAuth mode it starts after token
+    // secret migration, so every token's secret is already where the GC
+    // looks; other modes run no migration, and the GC also clears a legacy
+    // token's secret from the vault its record names.
     if (tokenGcSettings.intervalMs === 0) {
       logger.info("Server token GC disabled (token GC interval is 0)");
       if (merged.tokenGcGracePeriod !== undefined) {

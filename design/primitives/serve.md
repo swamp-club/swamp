@@ -330,10 +330,18 @@ takes neither precaution, and drops the fingerprint from a record it rewrites.
 Serve garbage-collects server tokens in every auth mode
 (`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
 `src/serve/server_token_gc_deps.ts`). The first sweep runs just after boot,
-once token secret migration is done, then one runs every `--token-gc-interval`.
-A sweep deletes revoked tokens at once, and expired tokens once
-`--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
-`access token list`.
+after token secret migration in OAuth mode (the only mode that migrates), then
+one runs every `--token-gc-interval`. A sweep deletes revoked tokens at once,
+and expired tokens once `--token-gc-grace-period` has passed since `expiresAt`,
+so both drop out of `access token list`.
+
+A sweep stops after `MAX_TOKENS_PER_SWEEP` (100) tokens that it collected or
+failed to collect; a token skipped on re-read does not count. Each collection
+holds the sync gate for a push, so without the cap the first sweep after an
+upgrade, which finds every revoked or expired token ever minted, would hold
+the gate for a long time. A larger backlog drains over later sweeps. Tokens
+that failed in the last sweep are tried after the others, so a block of tokens
+that keep failing cannot use up the cap (swamp-club#2535).
 
 Each token is collected as one unit holding the sync gate exclusively. Inside
 the unit the GC re-reads the token's `token-main` and skips the token if it is
@@ -354,6 +362,25 @@ secret.
 That key is shared by every definition that has carried the name. So when a
 record outlives its definition, and the name now belongs to another definition
 or to none, the GC deletes only that record's data and leaves the secret.
+
+The GC looks up the definition that owns the name through the shared
+definition repository, the one authentication reads through, so the two
+always agree. It searches `models/` first, then `.swamp/auto-definitions/`, so
+a server-token definition the boot migration left in `models/` is collected
+rather than treated as an orphan.
+
+For a token minted before swamp-club#1511, the GC also deletes the canonical
+key from the vault the record names, but only when that vault supports deletes
+and its listing holds the key. Anyone who can write the datastore can change
+the recorded vault, so a vault that does not hold the key is never touched.
+When the listing fails, the GC leaves that vault alone, logs the vault and key
+so an operator can remove it, and still collects the token: with its records
+and `_token-secrets` copy gone, the leftover secret cannot authenticate, and a
+vault whose credentials allow deletes but not listing would otherwise keep the
+token forever. A failed delete still keeps the token for the next sweep. Each
+such vault is listed at most once per sweep; a failed listing is not cached. The
+`_token-secrets` deletes do not match error messages: the control-plane
+store's delete of a missing key is a no-op, so any error is a real failure.
 
 Every replica sweeps on its own, and a token another replica already deleted
 is skipped.

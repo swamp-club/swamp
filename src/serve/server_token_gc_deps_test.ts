@@ -26,8 +26,11 @@ import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_mo
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import {
   createServerTokenGcDeps,
+  createServerTokenGcRepos,
   type ServerTokenGcDepsInput,
 } from "./server_token_gc_deps.ts";
+import { createRepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { TokenGcInfo } from "./server_token_gc_service.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import {
@@ -97,6 +100,9 @@ function harness(opts: {
   stored?: Record<string, unknown> | null;
   deleteVaults?: string[];
   vaultDeleteError?: Error;
+  /** Keys each vault lists; a vault not named here lists none. */
+  vaultKeys?: Record<string, string[]>;
+  vaultListError?: Error;
   /** The server-token definition that owns the name "ci"; null for none. */
   owner?: Definition | null;
 } = {}): Harness {
@@ -158,6 +164,11 @@ function harness(opts: {
       },
       vaultService: {
         supportsDelete: (vault) => deleteVaults.has(vault),
+        list: (vault) => {
+          events.push(`list:${vault}`);
+          if (opts.vaultListError) return Promise.reject(opts.vaultListError);
+          return Promise.resolve(opts.vaultKeys?.[vault] ?? []);
+        },
         delete: (vault, key) => {
           if (opts.vaultDeleteError) {
             return Promise.reject(opts.vaultDeleteError);
@@ -361,15 +372,101 @@ Deno.test("createServerTokenGcDeps: collectToken also clears a legacy token's ca
   const h = harness({
     stored: tokenAttrs("ci", { vaultName: "legacy" }),
     deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultKeys: { legacy: ["other", "server-token-ci"] },
   });
   const deps = createServerTokenGcDeps(h.input);
 
   await deps.collectToken(listed(), always);
 
-  assertEquals(h.events.slice(0, 2), [
+  assertEquals(h.events.slice(0, 3), [
     `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+    "list:legacy",
     "secret:legacy/server-token-ci",
   ]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken leaves a recorded vault alone when its listing lacks the key (swamp-club#2535)", async () => {
+  // A datastore writer can point the record at any vault; only one that
+  // actually holds the token's key is touched.
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "prod" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "prod"],
+    vaultKeys: { prod: ["db-password"] },
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:prod/server-token-ci"), false);
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
+});
+
+Deno.test("createServerTokenGcDeps: a recorded vault is listed once per sweep (swamp-club#2535)", async () => {
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultKeys: { legacy: ["server-token-ci"] },
+  });
+  const deps = createServerTokenGcDeps(h.input);
+  const lists = () => h.events.filter((e) => e === "list:legacy").length;
+
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 1);
+
+  // The next sweep lists again.
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 2);
+});
+
+Deno.test("createServerTokenGcDeps: a failed listing is retried within the sweep (swamp-club#2535)", async () => {
+  let failures = 1;
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+  });
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    vaultService: {
+      ...h.input.vaultService,
+      list: (vault) => {
+        h.events.push(`list:${vault}`);
+        return failures-- > 0
+          ? Promise.reject(new Error("throttled"))
+          : Promise.resolve(["server-token-ci"]);
+      },
+    },
+  });
+
+  await deps.listTokens();
+  // The first collection cannot list the vault, so it leaves the key there.
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  // The failure was not cached: the next one lists again and deletes it.
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.filter((e) => e === "list:legacy").length, 2);
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), true);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken still collects a token whose recorded vault cannot be listed (swamp-club#2535)", async () => {
+  // A vault whose credentials allow deletes but not listing must not keep
+  // the token forever. Its key is left alone, since the listing cannot show
+  // that the vault holds it.
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultListError: new Error("Permission denied (os error 13): readdir"),
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  assertEquals(
+    h.events.includes(`secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`),
+    true,
+  );
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without delete support", async () => {
@@ -382,6 +479,7 @@ Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without 
     `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
   );
   assertEquals(h.events.includes("secret:read-only/server-token-ci"), false);
+  assertEquals(h.events.includes("list:read-only"), false);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken keeps the records when the token secrets vault cannot delete", async () => {
@@ -396,14 +494,20 @@ Deno.test("createServerTokenGcDeps: collectToken keeps the records when the toke
   assertEquals(h.events, []);
 });
 
-Deno.test("createServerTokenGcDeps: collectToken treats a missing secret as deleted", async () => {
+Deno.test("createServerTokenGcDeps: collectToken keeps the records when a delete fails with a not-found message (swamp-club#2535)", async () => {
+  // The control-plane store deletes a missing key without error, so a
+  // not-found message is an unrelated failure, never "already deleted".
   const h = harness({
-    vaultDeleteError: new Error("Secret 'server-token-ci' not found"),
+    vaultDeleteError: new Error("credentials file not found"),
   });
   const deps = createServerTokenGcDeps(h.input);
 
-  assertEquals(await deps.collectToken(listed(), always), "collected");
-  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
+  await assertRejects(
+    () => deps.collectToken(listed(), always),
+    Error,
+    "credentials file not found",
+  );
+  assertEquals(h.events, []);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken keeps the records when the secret delete fails", async () => {
@@ -502,3 +606,77 @@ Deno.test("createServerTokenGcDeps: collectToken reads and deletes only while ho
   assertEquals(await collection, "collected");
   assertEquals(h.events.at(-1), "push");
 });
+
+// --- createServerTokenGcRepos: owner lookup (swamp-club#2535) ---
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+for (const location of ["models", "auto-definitions"] as const) {
+  Deno.test(`createServerTokenGcRepos: collectToken deletes an owning definition stored in ${location}`, async () => {
+    await withTempDir(async (repoDir) => {
+      const repoContext = createRepositoryContext({ repoDir });
+      try {
+        // A server-token definition outside auto-definitions is an older
+        // layout the boot migration missed; authentication still finds it.
+        const writer = location === "models"
+          ? new YamlDefinitionRepository(repoDir, undefined, undefined, false)
+          : new YamlDefinitionRepository(
+            repoDir,
+            undefined,
+            repoContext.autoDefinitionsDir,
+            false,
+          );
+        const owner = Definition.create({ name: "ci", version: 1 });
+        await writer.save(SERVER_TOKEN_MODEL_TYPE, owner);
+
+        const repos = createServerTokenGcRepos(repoDir, repoContext);
+        const h = harness({ stored: tokenAttrs("ci") });
+        const deps = createServerTokenGcDeps({
+          ...h.input,
+          definitionRepo: repos.definitionRepo,
+          modelDeleteDeps: repos.modelDeleteDeps,
+          dataRepo: {
+            getContent: (_type, modelId, dataName) =>
+              Promise.resolve(
+                modelId === owner.id && dataName === "token-main"
+                  ? new TextEncoder().encode(JSON.stringify(tokenAttrs("ci")))
+                  : null,
+              ),
+          },
+        });
+
+        assertEquals(
+          await deps.collectToken(listed({ definitionId: owner.id }), always),
+          "collected",
+        );
+        // The owner was resolved, so the name's secret went too.
+        assertEquals(
+          h.events.includes(
+            `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+          ),
+          true,
+        );
+        assertEquals(
+          await new YamlDefinitionRepository(repoDir).findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            "ci",
+          ),
+          null,
+        );
+      } finally {
+        repoContext.catalogStore.close();
+      }
+    });
+  });
+}

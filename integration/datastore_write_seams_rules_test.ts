@@ -616,7 +616,6 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowApprove: YamlEvaluatedWorkflowRepository",
   "src/serve/handlers/workflow_handlers.ts: handleWorkflowReject: YamlEvaluatedWorkflowRepository",
   "src/serve/nested_run_cascade.ts: serveNestedCascade: YamlEvaluatedWorkflowRepository",
-  "src/serve/server_token_gc_deps.ts: createServerTokenGcRepos: YamlDefinitionRepository",
   "src/serve/suspended_run_cancel.ts: cancelSuspendedRunAndPush: YamlEvaluatedWorkflowRepository",
 ];
 

@@ -38,6 +38,7 @@ import type {
   Definition,
   DefinitionId,
 } from "../domain/definitions/definition.ts";
+import type { DefinitionRepository } from "../domain/definitions/repositories.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
@@ -45,7 +46,6 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
-import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
@@ -57,13 +57,19 @@ const logger = getSwampLogger(["serve", "token-gc"]);
 
 const TOKEN_DATA_NAME = "token-main";
 
+/** The caller recorded in the vault audit log for the GC's deletes. */
+const GC_CALLER = "serve:token-gc";
+
 export interface ServerTokenGcDepsInput {
   readonly intervalMs: number;
   readonly gracePeriodMs: number;
   readonly dataQueryService: Pick<DataQueryService, "query">;
-  readonly definitionRepo: Pick<YamlDefinitionRepository, "findByName">;
+  readonly definitionRepo: Pick<DefinitionRepository, "findByName">;
   readonly dataRepo: Pick<FileSystemUnifiedDataRepository, "getContent">;
-  readonly vaultService: Pick<VaultService, "delete" | "supportsDelete">;
+  readonly vaultService: Pick<
+    VaultService,
+    "delete" | "supportsDelete" | "list"
+  >;
   /** Built over the process's shared repositories and `markDirty` hook. */
   readonly modelDeleteDeps: ModelDeleteDeps;
   /**
@@ -81,12 +87,12 @@ export interface ServerTokenGcDepsInput {
 /**
  * Builds the repositories the server token GC reads and deletes through.
  *
- * Server-token definitions live in the auto-definitions directory, so the
- * lookup and the delete go through a repository rooted there, as the admin
- * grant store and `access.reload` do. The shared repository treats that
- * directory as secondary: its type-scoped `findByName` does not record a
- * secondary file's path, so its `delete` would find nothing to remove. Data,
- * outputs and marks still go through the process's shared repositories.
+ * The owning definition is looked up through the process's shared definition
+ * repository, the one authentication reads through (`readServerTokenRecord`),
+ * so the GC and authentication always agree on which definition owns a name.
+ * That repository searches the primary models directory first, then the
+ * auto-definitions directory, and deletes a definition from either. Data,
+ * outputs and marks go through the process's shared repositories too.
  */
 export function createServerTokenGcRepos(
   repoDir: string,
@@ -96,22 +102,15 @@ export function createServerTokenGcRepos(
   ServerTokenGcDepsInput,
   "definitionRepo" | "dataRepo" | "modelDeleteDeps" | "markDirty"
 > {
-  const autoDefRepo = new YamlDefinitionRepository(
-    repoDir,
-    repoContext.eventBus,
-    repoContext.autoDefinitionsDir,
-    false,
-    repoContext.markDirty,
-  );
   return {
-    definitionRepo: autoDefRepo,
+    definitionRepo: repoContext.definitionRepo,
     dataRepo: repoContext.unifiedDataRepo,
     modelDeleteDeps: createModelDeleteDeps(
       repoDir,
       datastoreResolver,
       repoContext.unifiedDataRepo,
       repoContext.markDirty,
-      autoDefRepo,
+      repoContext.definitionRepo,
     ),
     markDirty: repoContext.markDirty,
   };
@@ -164,6 +163,19 @@ export function createServerTokenGcDeps(
     }
   };
 
+  // Each legacy vault is listed at most once per sweep: listTokens starts a
+  // sweep and clears the cache. Tokens are no longer minted into these
+  // vaults, so a listing cannot miss a key added during the sweep. A failed
+  // listing is not cached, so the next legacy token in the sweep retries it.
+  let listings = new Map<string, Set<string>>();
+  const listVault = async (vaultName: string): Promise<Set<string>> => {
+    const cached = listings.get(vaultName);
+    if (cached) return cached;
+    const keys = new Set(await vaultService.list(vaultName));
+    listings.set(vaultName, keys);
+    return keys;
+  };
+
   const deleteSecret = async (token: TokenGcInfo): Promise<void> => {
     const key = serverTokenSecretKey(token.name);
     if (!vaultService.supportsDelete(TOKEN_SECRETS_VAULT_NAME)) {
@@ -171,7 +183,9 @@ export function createServerTokenGcDeps(
         `Vault ${TOKEN_SECRETS_VAULT_NAME} does not support deleting secrets`,
       );
     }
-    await deleteIgnoringNotFound(vaultService, TOKEN_SECRETS_VAULT_NAME, key);
+    // The control-plane store's delete of a missing key is a no-op, so any
+    // error here is a real failure.
+    await vaultService.delete(TOKEN_SECRETS_VAULT_NAME, key, GC_CALLER);
 
     // Tokens minted before secrets moved to the control-plane store record
     // the vault that still holds their secret.
@@ -192,7 +206,30 @@ export function createServerTokenGcDeps(
       );
       return;
     }
-    await deleteIgnoringNotFound(vaultService, token.vaultName, key);
+    // Anyone who can write the datastore can change the recorded vault, so
+    // the key is only deleted from a vault whose listing holds it. A vault
+    // that cannot be listed is left alone and the token is still collected:
+    // with its records and _token-secrets copy gone, the leftover secret
+    // cannot authenticate, and keeping the token would leave it listed for
+    // good when the vault's credentials allow deletes but not listing. A
+    // failed delete still keeps the token for the next sweep.
+    let keys: Set<string>;
+    try {
+      keys = await listVault(token.vaultName);
+    } catch (err) {
+      logger.warn(
+        "Cannot list vault {vault} to clear server token {name}'s legacy secret; leaving {secretKey} there: {error}",
+        {
+          vault: token.vaultName,
+          name: token.name,
+          secretKey: key,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return;
+    }
+    if (!keys.has(key)) return;
+    await vaultService.delete(token.vaultName, key, GC_CALLER);
   };
 
   const deleteRecords = async (definition: Definition): Promise<void> => {
@@ -238,6 +275,7 @@ export function createServerTokenGcDeps(
     gracePeriodMs: input.gracePeriodMs,
 
     listTokens: async () => {
+      listings = new Map();
       const records = await dataQueryService.query(
         `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "${TOKEN_DATA_NAME}"`,
         { loadAttributes: true },
@@ -302,10 +340,10 @@ export function createServerTokenGcDeps(
           // (such as an HA peer's local cache) can authenticate.
           await deleteSecret(token);
           try {
-            await deleteIgnoringNotFound(
-              vaultService,
+            await vaultService.delete(
               TOKEN_SECRETS_VAULT_NAME,
               oauthAccessTokenKey(token.name),
+              GC_CALLER,
             );
           } catch (err) {
             logger.warn(
@@ -367,19 +405,5 @@ async function pushDeletes(
       "Failed to push server token GC deletes to the remote datastore: {error}",
       { error: err instanceof Error ? err.message : String(err) },
     );
-  }
-}
-
-async function deleteIgnoringNotFound(
-  vaultService: Pick<VaultService, "delete">,
-  vaultName: string,
-  secretKey: string,
-): Promise<void> {
-  try {
-    await vaultService.delete(vaultName, secretKey, "serve:token-gc");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/not found/i.test(message)) return;
-    throw err;
   }
 }
