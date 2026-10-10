@@ -558,6 +558,40 @@ Deno.test("redactIssueContent: real hosts inside code spans are still redacted",
   assertEquals(r2.text.includes("api.acme-corp.prod.net"), false);
 });
 
+Deno.test("redactIssueContent: hosts on country TLDs are still redacted in code", () => {
+  const input = "```\ncurl https://api.acme-corp.it/v1\n" +
+    "Error: connect ECONNREFUSED db.prod.acme.in:5432\n```\n" +
+    "`vpn.company.no` and `https://billing.acme.me/x`";
+  const result = redactIssueContent(input);
+  for (
+    const host of [
+      "api.acme-corp.it",
+      "db.prod.acme.in",
+      "vpn.company.no",
+      "billing.acme.me",
+    ]
+  ) {
+    assertEquals(result.text.includes(host), false, host);
+  }
+});
+
+Deno.test("redactIssueContent: identifier-like TLDs in host context are still redacted in code", () => {
+  const input = "```\ncurl https://api.acme.info/v1\n" +
+    "connect db.acme.name:5432\n```\n`admin@mail.acme.site`";
+  const result = redactIssueContent(input);
+  for (const host of ["api.acme.info", "db.acme.name", "mail.acme.site"]) {
+    assertEquals(result.text.includes(host), false, host);
+  }
+});
+
+Deno.test("redactIssueContent: text after an unclosed fence is prose", () => {
+  const result = redactIssueContent(
+    "```\nwork.workflow.name\n```a\n~~~\nconfig.user.id\n~~~",
+  );
+  assertEquals(result.text.includes("work.workflow.name"), false);
+  assertEquals(result.text.includes("config.user.id"), false);
+});
+
 Deno.test("redactIssueContent: an unclosed backtick does not make a code span", () => {
   const result = redactIssueContent("the field `work.workflow.name is read");
   assertEquals(result.text, "the field `[HOST-1] is read");

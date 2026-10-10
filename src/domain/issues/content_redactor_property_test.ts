@@ -88,7 +88,7 @@ Deno.test("redactIssueContent: code paths ending in an identifier-like TLD survi
   fc.assert(
     fc.property(
       fc.array(arbWord, { minLength: 2, maxLength: 5 }),
-      fc.constantFrom("name", "id", "info", "run", "is", "to", "page"),
+      fc.constantFrom("name", "id", "info", "run", "page", "site", "jobs"),
       (words, last) => {
         const input = `field \`${[...words, last].join(".")}\` is read`;
         const result = redactIssueContent(input);
@@ -103,10 +103,29 @@ Deno.test("redactIssueContent: real hosts never survive in code spans", () => {
   fc.assert(
     fc.property(
       fc.array(arbWord, { minLength: 2, maxLength: 4 }),
-      fc.constantFrom("com", "net", "org", "io"),
+      fc.constantFrom("com", "net", "org", "io", "it", "in", "no", "me"),
       (labels, tld) => {
         const host = [...labels, tld].join(".");
         const result = redactIssueContent(`connect to \`${host}\``);
+        assert(!result.text.includes(host), `host survived: ${result.text}`);
+      },
+    ),
+  );
+});
+
+Deno.test("redactIssueContent: hosts in URL or port context never survive in code", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbWord, { minLength: 2, maxLength: 4 }),
+      fc.constantFrom("name", "id", "info", "run", "page", "site", "jobs"),
+      fc.constantFrom(
+        (h: string) => `\`https://${h}/v1\``,
+        (h: string) => `\`user@${h}\``,
+        (h: string) => "```\nconnect " + h + ":5432\n```",
+      ),
+      (labels, tld, wrap) => {
+        const host = [...labels, tld].join(".");
+        const result = redactIssueContent(wrap(host));
         assert(!result.text.includes(host), `host survived: ${result.text}`);
       },
     ),

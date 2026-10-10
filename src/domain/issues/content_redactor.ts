@@ -596,30 +596,27 @@ const COMMON_TLDS = new Set([
   "zw",
 ]);
 
-// TLDs from COMMON_TLDS that are also everyday property and method names
+// TLDs from COMMON_TLDS that are also everyday property names
 // (work.workflow.name, config.user.id, job.task.run). Inside markdown code an
-// FQDN match ending in one of these is read as a code path, not a host.
-// TLDs common for real infrastructure (com, net, io, dev, app, cloud, ...)
-// are deliberately absent, so hosts using them stay redacted in code too.
+// FQDN match ending in one of these is read as a code path, not a host,
+// unless its surroundings mark it as a host (see HOST_PREFIX_RE and
+// HOST_SUFFIX_RE). Country TLDs used for real infrastructure (it, in, no,
+// me, ...) and common hosting TLDs (com, net, io, dev, app, cloud, ...) are
+// deliberately absent, so hosts using them stay redacted in code too.
 const CODE_IDENTIFIER_TLDS = new Set([
-  "as",
-  "at",
-  "do",
   "id",
-  "in",
   "info",
-  "is",
-  "it",
   "jobs",
-  "me",
   "name",
-  "no",
   "page",
   "run",
   "site",
-  "so",
-  "to",
 ]);
+
+// Context that only a host has: a URL scheme or userinfo before it, a port
+// or path after it. A dotted property path never sits in these positions.
+const HOST_PREFIX_RE = /(?:\/\/|@)$/;
+const HOST_SUFFIX_RE = /^(?::\d|\/)/;
 
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
 
@@ -647,7 +644,9 @@ function findCodeRanges(text: string): CodeRange[] {
     const open = FENCE_OPEN_RE.exec(lines[i]);
     if (!open) continue;
     const fence = open[1];
+    // fence[0] is a backtick or tilde, neither of which needs escaping.
     const close = new RegExp(`^ {0,3}${fence[0]}{${fence.length},}\\s*$`);
+    let closed = false;
     for (let j = i + 1; j < lines.length; j++) {
       if (!close.test(lines[j])) continue;
       ranges.push({
@@ -655,9 +654,14 @@ function findCodeRanges(text: string): CodeRange[] {
         end: starts[j] + lines[j].length,
       });
       for (let k = i; k <= j; k++) inFence[k] = true;
+      closed = true;
       i = j;
       break;
     }
+    // An unclosed fence runs to the end of the text. Stop scanning rather
+    // than rescan from every later opener; the rest stays prose, which
+    // redacts more, never less.
+    if (!closed) break;
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -876,7 +880,11 @@ function applyRedactions(
       if (!COMMON_TLDS.has(tld)) return match;
       if (
         CODE_IDENTIFIER_TLDS.has(tld) &&
-        isInsideCode(codeRanges, offset, match.length)
+        isInsideCode(codeRanges, offset, match.length) &&
+        !HOST_PREFIX_RE.test(source.slice(Math.max(0, offset - 2), offset)) &&
+        !HOST_SUFFIX_RE.test(
+          source.slice(offset + match.length, offset + match.length + 2),
+        )
       ) {
         return match;
       }
