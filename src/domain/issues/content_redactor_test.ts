@@ -531,8 +531,8 @@ Deno.test("redactIssueContent: a dotted code path in an inline code span is not 
 
 Deno.test("redactIssueContent: code paths ending in identifier-like TLDs survive in code", () => {
   const inputs = [
-    "`config.user.id` and `step.output.info` and `job.task.run`",
-    "``a `quoted` value at config.user.id``",
+    "`config.user.name` and `step.output.info` and `job.task.run`",
+    "``a `quoted` value at config.user.name``",
     "```yaml\nkey: step.output.info\n```",
     "~~~\njob.task.run\n~~~",
   ];
@@ -584,11 +584,13 @@ Deno.test("redactIssueContent: identifier-like TLDs in host context are still re
   }
 });
 
-Deno.test("redactIssueContent: hosts under a second-level label are still redacted in code", () => {
+Deno.test("redactIssueContent: .id is a country TLD, so .id names are still redacted in code", () => {
   const result = redactIssueContent(
     "```yaml\ndatabase:\n  host: db.bank.co.id\n```\n`api.payments.go.id`" +
-      " `kantor.desa.id` `app.shop.my.id`",
+      " `kantor.desa.id` `app.shop.my.id` `api.tokopedia.id` `config.user.id`",
   );
+  assertEquals(result.text.includes("api.tokopedia.id"), false);
+  assertEquals(result.text.includes("config.user.id"), false);
   assertEquals(result.text.includes("kantor.desa.id"), false);
   assertEquals(result.text.includes("app.shop.my.id"), false);
   assertEquals(result.text.includes("db.bank.co.id"), false);
@@ -607,10 +609,10 @@ Deno.test("redactIssueContent: a backtick fence whose info string has a backtick
 
 Deno.test("redactIssueContent: text after an unclosed fence is prose", () => {
   const result = redactIssueContent(
-    "```\nwork.workflow.name\n```a\n~~~\nconfig.user.id\n~~~",
+    "```\nwork.workflow.name\n```a\n~~~\nconfig.user.name\n~~~",
   );
   assertEquals(result.text.includes("work.workflow.name"), false);
-  assertEquals(result.text.includes("config.user.id"), false);
+  assertEquals(result.text.includes("config.user.name"), false);
 });
 
 Deno.test("redactIssueContent: an unclosed backtick does not make a code span", () => {

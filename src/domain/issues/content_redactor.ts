@@ -597,16 +597,15 @@ const COMMON_TLDS = new Set([
 ]);
 
 // TLDs from COMMON_TLDS that are also everyday property names
-// (work.workflow.name, config.user.id, job.task.run). Inside markdown code an
+// (work.workflow.name, step.output.info, job.task.run). Inside markdown code an
 // FQDN match ending in one of these is read as a code path, not a host,
 // unless its surroundings mark it as a host (see HOST_PREFIX_RE and
 // HOST_SUFFIX_RE). Country TLDs used for real infrastructure (it, in, no,
 // me, ...) and common hosting TLDs (com, net, io, dev, app, cloud, ...) are
-// deliberately absent, so hosts using them stay redacted in code too. id is
-// a country TLD (Indonesia) but is kept because .id paths are so common;
-// SECOND_LEVEL_LABELS catches its registry names (co.id, go.id, ...).
+// deliberately absent, so hosts using them stay redacted in code too. That
+// includes id: config.user.id in code is redacted rather than risk leaking
+// a real .id (Indonesia) host.
 const CODE_IDENTIFIER_TLDS = new Set([
-  "id",
   "info",
   "jobs",
   "name",
@@ -621,34 +620,6 @@ const CODE_IDENTIFIER_TLDS = new Set([
 // (host=, --host, ssh) inside code is read as a code path.
 const HOST_PREFIX_RE = /(?:\/\/|@)$/;
 const HOST_SUFFIX_RE = /^(?::\d|\/)/;
-
-// Second-level labels registries put under a country TLD (db.bank.co.id,
-// api.payments.go.id). A match whose second-to-last label is one of these is
-// a host, not a code path, even when its TLD is in CODE_IDENTIFIER_TLDS.
-const SECOND_LEVEL_LABELS = new Set([
-  "ac",
-  "biz",
-  "co",
-  "com",
-  "desa",
-  "edu",
-  "go",
-  "gov",
-  "mil",
-  "my",
-  "net",
-  "or",
-  "org",
-  "ponpes",
-  "sch",
-  "web",
-]);
-
-function isLikelyCodePath(match: string, tld: string): boolean {
-  if (!CODE_IDENTIFIER_TLDS.has(tld)) return false;
-  const labels = match.toLowerCase().split(".");
-  return !SECOND_LEVEL_LABELS.has(labels[labels.length - 2]);
-}
 
 // A backtick fence's info string cannot contain a backtick (CommonMark).
 const FENCE_OPEN_RE = /^ {0,3}(?:(`{3,})(?!.*`)|(~{3,}))/;
@@ -913,7 +884,7 @@ function applyRedactions(
       const tld = match.slice(match.lastIndexOf(".") + 1).toLowerCase();
       if (!COMMON_TLDS.has(tld)) return match;
       if (
-        isLikelyCodePath(match, tld) &&
+        CODE_IDENTIFIER_TLDS.has(tld) &&
         isInsideCode(codeRanges, offset, match.length) &&
         !HOST_PREFIX_RE.test(source.slice(Math.max(0, offset - 2), offset)) &&
         !HOST_SUFFIX_RE.test(
