@@ -602,7 +602,9 @@ const COMMON_TLDS = new Set([
 // unless its surroundings mark it as a host (see HOST_PREFIX_RE and
 // HOST_SUFFIX_RE). Country TLDs used for real infrastructure (it, in, no,
 // me, ...) and common hosting TLDs (com, net, io, dev, app, cloud, ...) are
-// deliberately absent, so hosts using them stay redacted in code too.
+// deliberately absent, so hosts using them stay redacted in code too. id is
+// a country TLD (Indonesia) but is kept because .id paths are so common;
+// SECOND_LEVEL_LABELS catches its registry names (co.id, go.id, ...).
 const CODE_IDENTIFIER_TLDS = new Set([
   "id",
   "info",
@@ -615,6 +617,8 @@ const CODE_IDENTIFIER_TLDS = new Set([
 
 // Context that only a host has: a URL scheme or userinfo before it, a port
 // or path after it. A dotted property path never sits in these positions.
+// Only the adjacent characters are checked: a host introduced by a keyword
+// (host=, --host, ssh) inside code is read as a code path.
 const HOST_PREFIX_RE = /(?:\/\/|@)$/;
 const HOST_SUFFIX_RE = /^(?::\d|\/)/;
 
@@ -623,15 +627,19 @@ const HOST_SUFFIX_RE = /^(?::\d|\/)/;
 // a host, not a code path, even when its TLD is in CODE_IDENTIFIER_TLDS.
 const SECOND_LEVEL_LABELS = new Set([
   "ac",
+  "biz",
   "co",
   "com",
+  "desa",
   "edu",
   "go",
   "gov",
   "mil",
+  "my",
   "net",
   "or",
   "org",
+  "ponpes",
   "sch",
   "web",
 ]);
@@ -683,9 +691,9 @@ function findCodeRanges(text: string): CodeRange[] {
       i = j;
       break;
     }
-    // An unclosed fence runs to the end of the text. Stop scanning rather
-    // than rescan from every later opener; the rest stays prose, which
-    // redacts more, never less.
+    // An unclosed fence runs to the end of the text. Stop scanning for
+    // fences rather than rescan from every later opener; later lines are
+    // not fenced code, though inline spans on them are still found.
     if (!closed) break;
   }
 

@@ -84,10 +84,33 @@ Deno.test("redactIssueContent: word-structured identifiers pass through untouche
   );
 });
 
+// Second-level labels the redactor reads as a host's registry name
+// (db.bank.co.id); a path whose last word is one of these is a host.
+const REGISTRY_LABELS = new Set([
+  "ac",
+  "biz",
+  "co",
+  "com",
+  "desa",
+  "edu",
+  "go",
+  "gov",
+  "mil",
+  "my",
+  "net",
+  "or",
+  "org",
+  "ponpes",
+  "sch",
+  "web",
+]);
+
 Deno.test("redactIssueContent: code paths ending in an identifier-like TLD survive in code spans", () => {
   fc.assert(
     fc.property(
-      fc.array(arbWord, { minLength: 2, maxLength: 5 }),
+      fc.array(arbWord, { minLength: 2, maxLength: 5 }).filter((words) =>
+        !REGISTRY_LABELS.has(words[words.length - 1])
+      ),
       fc.constantFrom("name", "id", "info", "run", "page", "site", "jobs"),
       (words, last) => {
         const input = `field \`${[...words, last].join(".")}\` is read`;

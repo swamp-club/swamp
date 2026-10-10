@@ -586,8 +586,11 @@ Deno.test("redactIssueContent: identifier-like TLDs in host context are still re
 
 Deno.test("redactIssueContent: hosts under a second-level label are still redacted in code", () => {
   const result = redactIssueContent(
-    "```yaml\ndatabase:\n  host: db.bank.co.id\n```\n`api.payments.go.id`",
+    "```yaml\ndatabase:\n  host: db.bank.co.id\n```\n`api.payments.go.id`" +
+      " `kantor.desa.id` `app.shop.my.id`",
   );
+  assertEquals(result.text.includes("kantor.desa.id"), false);
+  assertEquals(result.text.includes("app.shop.my.id"), false);
   assertEquals(result.text.includes("db.bank.co.id"), false);
   assertEquals(result.text.includes("api.payments.go.id"), false);
 });
