@@ -35,14 +35,27 @@
  * The mapping from each repository write to these changes is in "v3
  * repository staging", `design/enablers/datastores.md`.
  *
+ * swamp-club#3256 adds the factories of the definition, workflow and
+ * evaluated repositories: {@link ConfigChanges} for a managed-config
+ * definition (and its evaluated workflow), {@link AutoDefinitionChanges},
+ * {@link RunSnapshotChanges}, and the evaluated-definition changes of
+ * {@link ModelChanges}. Their keys are the path a repository wrote or
+ * removed, relative to the namespace root, as segments
+ * ({@link recordKeyOf}); each change takes its precondition explicitly,
+ * because the repository decides it per key.
+ *
  * @module
  */
 
 import type { ModelType } from "../models/model_type.ts";
 import type { ContentSource, TypedChange } from "./commit_log_unit_of_work.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
-import { dataVersionOp, tombstoneOp } from "./op.ts";
-import { type PartitionKey, partitionOf } from "./partition_key.ts";
+import { dataVersionOp, type PutExpect, tombstoneOp } from "./op.ts";
+import {
+  type DefinitionKind,
+  type PartitionKey,
+  partitionOf,
+} from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
 
 /** The two files a data version's directory holds. */
@@ -211,6 +224,29 @@ export class ModelChanges {
     };
   }
 
+  /** A written evaluated definition of this model (swamp-club#3256). */
+  writeEvaluatedDefinition(
+    key: RecordKey,
+    content: ContentSource,
+  ): TypedChange {
+    return this.#put(
+      this.#intent({ kind: "evaluated-definition.save" }),
+      key,
+      content,
+    );
+  }
+
+  /** A removed evaluated definition file of this model. */
+  removeEvaluatedDefinition(key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({
+        intent: this.#intent({ kind: "evaluated-definition.delete" }),
+        key,
+      }),
+    };
+  }
+
   /** The key of an output record. */
   outputKey(method: string, file: string): RecordKey {
     return this.#key("outputs", this.#type.normalized, method, file);
@@ -260,20 +296,223 @@ export class ModelChanges {
     content: ContentSource,
     expect?: { readonly sha256: string },
   ): TypedChange {
-    return {
-      partition: this.partition,
-      put: {
-        intent,
-        key,
-        content,
-        ...(expect === undefined ? {} : { expect }),
-      },
-    };
+    return putChange(this.partition, intent, key, content, expect);
   }
 
   #key(...segments: string[]): RecordKey {
     return RecordKey.create(segments.join("/"));
   }
+}
+
+/**
+ * A record key from path segments relative to the namespace root, e.g.
+ * `["config", "models", "aws", "vpc.yaml"]`. A segment holding a separator
+ * is refused, so an OS path never reaches a key unsplit.
+ */
+export function recordKeyOf(segments: readonly string[]): RecordKey {
+  for (const segment of segments) {
+    if (segment.includes("/") || segment.includes("\\")) {
+      throw new Error(
+        `A record key segment must not hold a separator: ${segment}`,
+      );
+    }
+  }
+  return RecordKey.create(segments.join("/"));
+}
+
+/** The intents a managed-config definition's own file changes carry. */
+export type ConfigWrite =
+  | "definition.create"
+  | "definition.edit"
+  | "evaluated-workflow.save";
+
+/** The intents of a removal in a managed-config definition's partition. */
+export type ConfigRemoval =
+  | "definition.create"
+  | "definition.edit"
+  | "definition.delete"
+  | "evaluated-workflow.delete";
+
+/**
+ * The typed changes of one managed-config definition, by kind and name
+ * (swamp-club#3256): its files under `config/`, and for a workflow its
+ * evaluated workflow under `workflows-evaluated/`. A rename spans two of
+ * these: {@link renameTo} in the new name's, then {@link renameFrom} in the
+ * old name's, staged as two batches so the new name lands first.
+ */
+export class ConfigChanges {
+  readonly partition: PartitionKey;
+  readonly #kind: DefinitionKind;
+  readonly #name: string;
+
+  constructor(kind: DefinitionKind, name: string) {
+    this.partition = partitionOf({
+      kind: "config",
+      definitionKind: kind,
+      name,
+    });
+    this.#kind = kind;
+    this.#name = name;
+  }
+
+  /**
+   * A written file. A create or edit of the definition carries the
+   * precondition the repository read: `absent` for a new key, the replaced
+   * bytes' digest for an edit. An evaluated workflow carries none.
+   */
+  write(
+    why: ConfigWrite,
+    key: RecordKey,
+    content: ContentSource,
+    expect?: PutExpect,
+  ): TypedChange {
+    return putChange(
+      this.partition,
+      this.#intent({ kind: why }),
+      key,
+      content,
+      expect,
+    );
+  }
+
+  /**
+   * A removed file: a delete, the old key of a move (with the move's create
+   * or edit intent, expecting the file present), or an evaluated workflow.
+   */
+  remove(why: ConfigRemoval, key: RecordKey, expect?: "present"): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({ intent: this.#intent({ kind: why }), key, expect }),
+    };
+  }
+
+  /**
+   * A rename's write under this, the new, name: a put that expects the key
+   * absent in this partition, naming the old name.
+   */
+  renameTo(from: string, key: RecordKey, content: ContentSource): TypedChange {
+    return putChange(
+      this.partition,
+      this.#intent({ kind: "definition.rename-to", from }),
+      key,
+      content,
+      "absent",
+    );
+  }
+
+  /**
+   * A rename's removal under this, the old, name: a tombstone that expects
+   * the key present, naming the new name.
+   */
+  renameFrom(to: string, key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({
+        intent: this.#intent({ kind: "definition.rename-from", to }),
+        key,
+        expect: "present",
+      }),
+    };
+  }
+
+  #intent(fields: Record<string, unknown>): Intent {
+    return createIntent({
+      ...fields,
+      definition: { kind: this.#kind, name: this.#name },
+    });
+  }
+}
+
+/**
+ * The typed changes of one auto-definition, by id (swamp-club#3256). None
+ * carries a precondition: every direct execution rewrites the file, and
+ * writers v3 never sees leave files its partition does not hold.
+ */
+export class AutoDefinitionChanges {
+  readonly partition: PartitionKey;
+  readonly #intentOf: (
+    kind: "auto-definition.save" | "auto-definition.delete",
+  ) => Intent;
+
+  constructor(id: string) {
+    this.partition = partitionOf({ kind: "definition", id });
+    this.#intentOf = (kind) => createIntent({ kind, autoDefinition: { id } });
+  }
+
+  /** A written auto-definition file. */
+  write(key: RecordKey, content: ContentSource): TypedChange {
+    return putChange(
+      this.partition,
+      this.#intentOf("auto-definition.save"),
+      key,
+      content,
+    );
+  }
+
+  /** A removed auto-definition file. */
+  remove(key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({
+        intent: this.#intentOf("auto-definition.delete"),
+        key,
+      }),
+    };
+  }
+}
+
+/**
+ * The typed changes of one workflow run's evaluated-workflow snapshot
+ * (swamp-club#3256). The snapshot is derived, so neither carries a
+ * precondition.
+ */
+export class RunSnapshotChanges {
+  readonly partition: PartitionKey;
+  readonly #intentOf: (
+    kind: "run-snapshot.save" | "run-snapshot.delete",
+  ) => Intent;
+
+  constructor(workflowId: string, runId: string) {
+    this.partition = partitionOf({ kind: "run", workflowId, runId });
+    this.#intentOf = (kind) =>
+      createIntent({ kind, run: { workflowId, runId } });
+  }
+
+  /** A written snapshot. */
+  write(key: RecordKey, content: ContentSource): TypedChange {
+    return putChange(
+      this.partition,
+      this.#intentOf("run-snapshot.save"),
+      key,
+      content,
+    );
+  }
+
+  /** A removed snapshot. */
+  remove(key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({ intent: this.#intentOf("run-snapshot.delete"), key }),
+    };
+  }
+}
+
+function putChange(
+  partition: PartitionKey,
+  intent: Intent,
+  key: RecordKey,
+  content: ContentSource,
+  expect?: PutExpect,
+): TypedChange {
+  return {
+    partition,
+    put: {
+      intent,
+      key,
+      content,
+      ...(expect === undefined ? {} : { expect }),
+    },
+  };
 }
 
 function isRemoval(

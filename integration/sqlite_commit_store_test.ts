@@ -149,10 +149,10 @@ Deno.test("SqliteCommitStore: appends commits and reads them back in seq order",
       });
     }
     const all = await store.readPartition("", modelPartition(), 1, 100);
-    assertEquals(all.map((commit) => commit.seq), [1, 2, 3, 4, 5]);
-    assert(all[2].equals(await save(3)));
+    assertEquals(all.map((change) => change.commit.seq), [1, 2, 3, 4, 5]);
+    assert(all[2].commit.equals(await save(3)));
     const tail = await store.readPartition("", modelPartition(), 3, 2);
-    assertEquals(tail.map((commit) => commit.seq), [3, 4]);
+    assertEquals(tail.map((change) => change.commit.seq), [3, 4]);
     assertEquals(await store.head("", modelPartition()), {
       seq: 5,
       highestFence: 1,
@@ -330,6 +330,35 @@ Deno.test("SqliteCommitStore: the change cursor is complete and ordered from eve
   });
 });
 
+Deno.test("SqliteCommitStore: a partition read gives each commit its change feed position", async () => {
+  await withStore(async (store) => {
+    for (let seq = 1; seq <= 3; seq++) {
+      await store.append(await save(seq));
+      await store.append(leaseCommit(otherPartition(), seq));
+      await store.append(leaseCommit(modelPartition(), seq, "team-a"));
+    }
+    const feed = await store.changesSince(0, 1000);
+    for (
+      const [namespace, partition] of [
+        ["", modelPartition()],
+        ["", otherPartition()],
+        ["team-a", modelPartition()],
+      ] as const
+    ) {
+      const read = await store.readPartition(namespace, partition, 1, 1000);
+      assertEquals(
+        read,
+        feed.filter((change) =>
+          change.commit.namespace === namespace &&
+          change.commit.partition.equals(partition)
+        ),
+      );
+      const tail = await store.readPartition(namespace, partition, 2, 1);
+      assertEquals(tail, [read[1]]);
+    }
+  });
+});
+
 Deno.test("SqliteCommitStore: namespaces with the same partition key are independent", async () => {
   await withStore(async (store) => {
     assertEquals(await store.append(await save(1)), {
@@ -347,7 +376,7 @@ Deno.test("SqliteCommitStore: namespaces with the same partition key are indepen
     assertEquals((await store.head("", modelPartition())).seq, 1);
     assertEquals((await store.head("team-a", modelPartition())).seq, 2);
     const teamA = await store.readPartition("team-a", modelPartition(), 1, 10);
-    assertEquals(teamA.map((commit) => commit.namespace), [
+    assertEquals(teamA.map((change) => change.commit.namespace), [
       "team-a",
       "team-a",
     ]);

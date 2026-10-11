@@ -21,9 +21,20 @@ import {
   type DeferredExpression,
   DeferredExpressionSchema,
 } from "../../domain/expressions/deferred_expression.ts";
-import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
-import { signalChange } from "./unit_of_work_scope.ts";
+import { ensureDir, walk } from "@std/fs";
+import { basename, join } from "@std/path";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import {
+  keyUnder,
+  readPriorFile,
+  unlessUnpartitionable,
+} from "./config_staging.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -355,7 +366,9 @@ export class YamlEvaluatedDefinitionRepository {
     writtenReferences: readonly WrittenReference[] = [],
   ): Promise<void> {
     const targetPath = this.resolveWritePath(type, definition);
-    await signalChange(this.markDirty, { kind: "write", path: targetPath });
+    await signalChange(this.markDirty, { kind: "write", path: targetPath }, {
+      typed: true,
+    });
 
     const dir = this.getTypeDir(type);
     await assertSafePath(dir, this.baseDir);
@@ -384,12 +397,15 @@ export class YamlEvaluatedDefinitionRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(targetPath, content);
+    // The paths a removal below actually removed, for their v3 tombstones.
+    const removed: string[] = [];
 
     // Clean up old file if it's at a different path
     const previousPath = this.idToActualPath.get(definition.id);
     if (previousPath && previousPath !== targetPath) {
       try {
         await Deno.remove(previousPath);
+        removed.push(previousPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -402,6 +418,7 @@ export class YamlEvaluatedDefinitionRepository {
     if (targetPath !== legacyPath && previousPath !== legacyPath) {
       try {
         await Deno.remove(legacyPath);
+        removed.push(legacyPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -410,6 +427,20 @@ export class YamlEvaluatedDefinitionRepository {
     }
 
     this.idToActualPath.set(definition.id, targetPath);
+    // On v3 (swamp-club#3256): the evaluated definition is derived, so its
+    // changes carry no precondition.
+    await stageTyped(this.markDirty, () => {
+      const changes = new ModelChanges(type, definition.id);
+      return [
+        changes.writeEvaluatedDefinition(
+          this.keyOf(targetPath),
+          new TextEncoder().encode(content),
+        ),
+        ...removed.map((path) =>
+          changes.removeEvaluatedDefinition(this.keyOf(path))
+        ),
+      ];
+    });
   }
 
   /**
@@ -431,11 +462,15 @@ export class YamlEvaluatedDefinitionRepository {
 
     const resolvedPath = this.idToActualPath.get(id) ??
       this.getLegacyPath(type, id);
-    await signalChange(this.markDirty, { kind: "remove", path: resolvedPath });
+    await signalChange(this.markDirty, { kind: "remove", path: resolvedPath }, {
+      typed: true,
+    });
 
+    const removed: string[] = [];
     for (const path of pathsToTry) {
       try {
         await Deno.remove(path);
+        removed.push(path);
 
         // Clean up empty parent directories
         const definitionsDir = swampPath(
@@ -451,6 +486,12 @@ export class YamlEvaluatedDefinitionRepository {
     }
 
     this.idToActualPath.delete(id);
+    await stageTyped(this.markDirty, () => {
+      const changes = new ModelChanges(type, id);
+      return removed.map((path) =>
+        changes.removeEvaluatedDefinition(this.keyOf(path))
+      );
+    });
   }
 
   /**
@@ -498,7 +539,14 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
-    await signalChange(this.markDirty, { kind: "remove", path: this.baseDir });
+    await signalChange(this.markDirty, { kind: "remove", path: this.baseDir }, {
+      typed: true,
+    });
+    // On v3, each file's model is read before the removal destroys it, so
+    // the directory removal stages one tombstone per file.
+    const tombstones = typedStagingActive(this.markDirty)
+      ? await this.tombstonesOfAll()
+      : [];
 
     const definitionsDir = this.baseDir;
     try {
@@ -509,5 +557,42 @@ export class YamlEvaluatedDefinitionRepository {
       }
     }
     this.idToActualPath.clear();
+    await stageTyped(this.markDirty, () => tombstones);
+  }
+
+  /**
+   * A tombstone for every evaluated definition file under the base, in its
+   * model's partition: from the raw `type` and `id` the file declares (the
+   * id of a legacy uuid-named file as a fallback), never a schema parse. A
+   * file that names no valid model stages nothing; no repository put it.
+   */
+  private async tombstonesOfAll(): Promise<TypedChange[]> {
+    const tombstones: TypedChange[] = [];
+    try {
+      for await (
+        const entry of walk(this.baseDir, {
+          includeDirs: false,
+          exts: [".yaml"],
+        })
+      ) {
+        const prior = await readPriorFile(entry.path);
+        const id = prior?.id ?? basename(entry.path, ".yaml");
+        const change = unlessUnpartitionable(() =>
+          prior?.type === undefined ? undefined : new ModelChanges(
+            ModelType.create(prior.type),
+            id,
+          ).removeEvaluatedDefinition(this.keyOf(entry.path))
+        );
+        if (change !== undefined) tombstones.push(change);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return tombstones;
+  }
+
+  /** The record key of a file under the base. */
+  private keyOf(path: string) {
+    return keyUnder(SWAMP_SUBDIRS.definitionsEvaluated, this.baseDir, path);
   }
 }

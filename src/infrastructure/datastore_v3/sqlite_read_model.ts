@@ -49,7 +49,10 @@ import {
 } from "../../domain/datastore_v3/catalog_projection.ts";
 import type { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
-import type { CommitStore } from "../../domain/datastore_v3/commit_store.ts";
+import type {
+  CommitChange,
+  CommitStore,
+} from "../../domain/datastore_v3/commit_store.ts";
 import type { PutOp } from "../../domain/datastore_v3/op.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
@@ -72,7 +75,11 @@ import {
   PathTraversalError,
 } from "../persistence/safe_path.ts";
 import { syncDirectory, writeFileDurably } from "./atomic_stream_write.ts";
-import { type AppliedRecord, ReadModelState } from "./read_model_state.ts";
+import {
+  type AppliedRecord,
+  type FileOwnership,
+  ReadModelState,
+} from "./read_model_state.ts";
 import { refusedKeyReason } from "./record_path_guard.ts";
 import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
 
@@ -172,9 +179,7 @@ export class SqliteReadModel implements ReadModel {
         );
         for (const change of page) {
           signal.throwIfAborted();
-          if (await this.#apply(change.commit, change.cursor, signal)) {
-            applied++;
-          }
+          if (await this.#apply(change, true, signal)) applied++;
         }
         if (page.length < this.#pageSize) break;
       }
@@ -203,9 +208,9 @@ export class SqliteReadModel implements ReadModel {
           from,
           this.#pageSize,
         );
-        for (const commit of page) {
+        for (const change of page) {
           signal.throwIfAborted();
-          if (await this.#apply(commit, undefined, signal)) applied++;
+          if (await this.#apply(change, false, signal)) applied++;
         }
         if (page.length < this.#pageSize) break;
       }
@@ -278,14 +283,17 @@ export class SqliteReadModel implements ReadModel {
   }
 
   /**
-   * Applies one commit; false when the partition already holds it. `cursor`
-   * is its change-feed position, absent from a partition catch-up.
+   * Applies one commit; false when the partition already holds it. A feed
+   * catch-up (`advance`) moves the store-wide cursor to the change's
+   * position; a partition catch-up leaves it alone.
    */
   async #apply(
-    commit: Commit,
-    cursor: number | undefined,
+    change: CommitChange,
+    advance: boolean,
     signal: AbortSignal,
   ): Promise<boolean> {
+    const commit = change.commit;
+    const cursor = advance ? change.cursor : undefined;
     const namespace = commit.namespace;
     const partition = commit.partition.toString();
     const appliedSeq = this.#state.appliedSeq(namespace, partition);
@@ -305,12 +313,19 @@ export class SqliteReadModel implements ReadModel {
       );
     }
     try {
-      const changes = finalKeyStates(commit);
       const records = new Map<string, AppliedRecord | null>();
-      for (const change of changes) {
+      const files = new Map<string, FileOwnership>();
+      for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
-        records.set(change.key.toString(), appliedRecord(change.put));
-        await this.#materialise(commit, change, signal);
+        const key = keyChange.key.toString();
+        records.set(key, appliedRecord(keyChange.put));
+        const file = await this.#materialise(
+          commit,
+          change.cursor,
+          keyChange,
+          signal,
+        );
+        if (file !== undefined) files.set(key, file);
       }
       const projection: CatalogProjection = projectCatalog(
         commit.ops,
@@ -324,6 +339,7 @@ export class SqliteReadModel implements ReadModel {
         cursor,
         records,
         live: projection.live,
+        files,
       });
       return true;
     } catch (error) {
@@ -333,17 +349,37 @@ export class SqliteReadModel implements ReadModel {
     }
   }
 
-  /** Writes or removes one key's file, unless the key guard refuses it. */
+  /**
+   * Writes or removes one key's file, and returns the file's new ownership;
+   * undefined when the file was left alone.
+   *
+   * The file follows the change feed, not the order commits are applied in
+   * (swamp-club#3256). Two partitions can write one key (a same-key
+   * definition rename), and a partition catch-up applies one partition's
+   * commits ahead of the feed. So a put writes only when it is newer in the
+   * feed (`position`) than the put the file shows, and a tombstone removes
+   * the file only while it shows the tombstoning partition's own put. The
+   * removed put's position stays as the mark, so an older put of another
+   * partition cannot bring the file back. A key only one partition writes
+   * behaves as before: its positions only grow and it has one owner. A key
+   * with no ownership (no put of it was applied) is removed as before.
+   *
+   * The decision reads the ownership as it was before this commit, which
+   * {@link ReadModelState.recordApplied} replaces only after every file, so a
+   * retry after a crash decides the same way.
+   */
   async #materialise(
     commit: Commit,
+    position: number,
     change: KeyChange,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<FileOwnership | undefined> {
     const root = this.#cacheRoot(commit.namespace);
     const key = change.key.toString();
-    const skip = (reason: string) => {
+    const skip = (reason: string): undefined => {
       logger
         .warn`Not materialising ${key} from commit ${commit.seq} of ${commit.partition.toString()}: ${reason}`;
+      return undefined;
     };
     const refused = refusedKeyReason(change.key, root, this.#stateDir);
     if (refused !== undefined) return skip(refused);
@@ -367,33 +403,40 @@ export class SqliteReadModel implements ReadModel {
       return skip("it resolves into the read model's state directory");
     }
 
+    const owner = commit.partition.toString();
+    const before = this.#state.fileOwnership(commit.namespace, key);
     if (change.put === null) {
+      if (before !== undefined && !(before.present && before.owner === owner)) {
+        return undefined;
+      }
       await removeRecordFile(path);
       await cleanupEmptyParentDirs(path, root);
-      return;
+      return before === undefined ? undefined : { ...before, present: false };
     }
+    if (before !== undefined && position <= before.mark) return undefined;
     const content = change.put.content;
     if ("inline" in content) {
       await writeFileDurably(path, decodeBase64(content.inline), signal);
-      return;
-    }
-    if (content.blob.legacyKey !== undefined) {
-      throw new ReadModelApplyError(
-        commit.namespace,
-        commit.partition.toString(),
-        commit.seq,
-        `the put of ${key} names a blob still in a pre-v3 layout (${content.blob.legacyKey.toString()}), which the read model cannot read`,
+    } else {
+      if (content.blob.legacyKey !== undefined) {
+        throw new ReadModelApplyError(
+          commit.namespace,
+          commit.partition.toString(),
+          commit.seq,
+          `the put of ${key} names a blob still in a pre-v3 layout (${content.blob.legacyKey.toString()}), which the read model cannot read`,
+        );
+      }
+      await writeFileDurably(
+        path,
+        this.#chunkStore.read(
+          namespaceOf(commit.namespace),
+          content.blob,
+          signal,
+        ),
+        signal,
       );
     }
-    await writeFileDurably(
-      path,
-      this.#chunkStore.read(
-        namespaceOf(commit.namespace),
-        content.blob,
-        signal,
-      ),
-      signal,
-    );
+    return { owner, mark: position, present: true };
   }
 }
 

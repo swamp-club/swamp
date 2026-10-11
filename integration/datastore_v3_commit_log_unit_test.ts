@@ -115,7 +115,10 @@ async function withV3(fn: (v3: V3) => Promise<void>): Promise<void> {
           fence: 1,
           signal: AbortSignal.timeout(30_000),
         }),
-        commits: (partition) => store.readPartition("", partition, 1, 1000),
+        commits: async (partition) =>
+          (await store.readPartition("", partition, 1, 1000)).map((change) =>
+            change.commit
+          ),
       });
     } finally {
       await store.close();

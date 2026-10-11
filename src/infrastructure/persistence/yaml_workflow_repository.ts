@@ -19,7 +19,18 @@
 
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import {
+  definitionDeleteBatches,
+  definitionSaveBatches,
+  type PriorFile,
+  readPriors,
+  stagingTierOf,
+} from "./config_staging.ts";
 import { resolveEffectiveWorkflowsDir } from "./paths.ts";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
@@ -305,11 +316,21 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
-    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
+    await signalChange(
+      this.markDirtyHook,
+      { kind: "write", path: targetPath },
+      { typed: true },
+    );
     const previousPath = this.idToActualPath.get(workflow.id);
 
     // Check if this is a new workflow or an update
     const legacyPath = this.getLegacyPath(workflow.id);
+    // On v3 (swamp-club#3256), what each file held before this save replaces
+    // or removes it: its digest for an edit's precondition, and the name it
+    // declared, which tells a rename apart.
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([targetPath, previousPath, legacyPath])
+      : new Map<string, PriorFile>();
     const isNew = !(await this.exists(targetPath)) &&
       !(previousPath && await this.exists(previousPath)) &&
       !(await this.exists(legacyPath));
@@ -319,11 +340,14 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(targetPath, content);
+    // The paths the cleanup below actually removed, for their v3 tombstones.
+    const removed: string[] = [];
 
     // Clean up old file if we wrote to a different path
     if (previousPath && previousPath !== targetPath) {
       try {
         await Deno.remove(previousPath);
+        removed.push(previousPath);
         logger.debug`Migrated workflow file from ${basename(previousPath)} to ${
           basename(targetPath)
         }`;
@@ -343,6 +367,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     ) {
       try {
         await Deno.remove(legacyPath);
+        removed.push(legacyPath);
         logger.debug`Migrated workflow file from ${basename(legacyPath)} to ${
           basename(targetPath)
         }`;
@@ -356,6 +381,23 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     }
 
     this.idToActualPath.set(workflow.id, targetPath);
+    // Staged outside the cleanup's catch blocks, so a v3 refusal surfaces.
+    for (
+      const batch of typedStagingActive(this.markDirtyHook)
+        ? definitionSaveBatches({
+          kind: "workflow",
+          id: workflow.id,
+          name: workflow.name,
+          targetPath,
+          content: new TextEncoder().encode(content),
+          removed,
+          priors,
+          tierOf: (path) => this.stagingTierOf(path),
+        })
+        : [[]]
+    ) {
+      await stageTyped(this.markDirtyHook, () => batch);
+    }
 
     // Emit event
     if (this.eventBus) {
@@ -408,9 +450,13 @@ export class YamlWorkflowRepository implements WorkflowRepository {
     await signalChange(this.markDirtyHook, {
       kind: kept ? "write" : "remove",
       path: resolvedPath,
-    });
+    }, { typed: true });
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([...pathsToTry])
+      : new Map<string, PriorFile>();
 
     let deleted = false;
+    const removed: string[] = [];
     for (const path of pathsToTry) {
       // The id-named path is also where a workflow named with this UUID
       // lives, and a copied file can share the id; never remove another
@@ -419,6 +465,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       try {
         await Deno.remove(path);
         deleted = true;
+        removed.push(path);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -434,6 +481,29 @@ export class YamlWorkflowRepository implements WorkflowRepository {
         await this.eventBus.publish(event);
       }
     }
+    for (
+      const batch of typedStagingActive(this.markDirtyHook)
+        ? definitionDeleteBatches({
+          kind: "workflow",
+          id,
+          name: workflowName,
+          removed,
+          priors,
+          tierOf: (path) => this.stagingTierOf(path),
+        })
+        : [[]]
+    ) {
+      await stageTyped(this.markDirtyHook, () => batch);
+    }
+  }
+
+  /**
+   * A managed-config workflow file's record key (swamp-club#3256); undefined
+   * for a git-tracked workflow, which stages nothing.
+   */
+  private stagingTierOf(path: string) {
+    const tier = stagingTierOf(this.repoDir, [], path);
+    return tier?.tier === "config" ? tier : undefined;
   }
 
   /**

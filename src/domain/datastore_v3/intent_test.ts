@@ -64,7 +64,7 @@ function sampleOf(kind: string): Record<string, unknown> {
   if (kind.startsWith("definition.")) {
     return { kind, definition: { kind: "model", name: "web" } };
   }
-  if (kind === "auto-definition.save") {
+  if (kind === "auto-definition.save" || kind === "auto-definition.delete") {
     return { kind, autoDefinition: { id: ID } };
   }
   if (kind === "lockfile.write") return { kind };

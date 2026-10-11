@@ -98,14 +98,16 @@ export interface CommitStore {
 
   /**
    * A partition's commits from `fromSeq` on, in seq order, at most `limit`
-   * of them.
+   * of them, each with its position in the change feed. A partition's
+   * positions grow with its seqs. The read model orders the puts of one
+   * record key from different partitions by position (swamp-club#3256).
    */
   readPartition(
     namespace: string,
     partition: PartitionKey,
     fromSeq: number,
     limit: number,
-  ): Promise<readonly Commit[]>;
+  ): Promise<readonly CommitChange[]>;
 
   /** A partition's head; seq 0 with no fence for a partition never written. */
   head(namespace: string, partition: PartitionKey): Promise<PartitionHead>;

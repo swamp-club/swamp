@@ -116,7 +116,10 @@ export interface ReadModel {
   /**
    * Applies one partition's commits after the last one this read model
    * applied, before a read of that partition. The store-wide cursor does not
-   * move; a later {@link catchUp} skips the commits applied here.
+   * move; a later {@link catchUp} skips the commits applied here. A record
+   * key another partition also writes (a same-key definition rename) keeps
+   * the file of the put latest in the change feed, so the partition's own
+   * record may not be the file there (swamp-club#3256).
    */
   catchUpPartition(
     namespace: string,

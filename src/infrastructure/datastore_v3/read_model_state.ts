@@ -20,7 +20,8 @@
 /**
  * The v3 read model's own state (swamp-club#3239), in `_read_model_v3.db`:
  * the store-wide cursor, each partition's last applied seq, the live-record
- * index and each data name's live versions. All of it is rebuilt from the
+ * index, each data name's live versions and which put each materialised file
+ * shows. All of it is rebuilt from the
  * commits, so {@link ReadModelState.reset} can always start over.
  *
  * A commit's index and version changes land with its applied seq and the
@@ -80,6 +81,21 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (namespace, partition, name, version)
   ) STRICT, WITHOUT ROWID;
   `,
+  // 1 → 2: which partition's put each materialised file shows
+  // (swamp-club#3256). Files applied under schema 1 have no ownership, so
+  // clearing meta drops the catalog generation and the next catch-up resets
+  // the state and replays every commit.
+  `
+  CREATE TABLE materialised_keys (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    mark INTEGER NOT NULL,
+    present INTEGER NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  DELETE FROM meta;
+  `,
 ];
 
 /** The schema version this state store writes. */
@@ -91,20 +107,38 @@ export interface AppliedRecord {
   readonly blob?: BlobRef;
 }
 
+/**
+ * Which put a materialised file shows (swamp-club#3256). One record key can
+ * be written by two partitions (a same-key definition rename), and a
+ * partition catch-up applies commits ahead of the change feed, so the file
+ * follows feed positions rather than application order.
+ */
+export interface FileOwnership {
+  /** The partition whose put the file shows, or showed before its removal. */
+  readonly owner: string;
+  /** The feed position of that put. */
+  readonly mark: number;
+  /** False once the owner's own tombstone removed the file. */
+  readonly present: boolean;
+}
+
 /** What one applied commit changes in the state. */
 export interface AppliedCommit {
   readonly namespace: string;
   readonly partition: string;
   readonly seq: number;
   /**
-   * The store-wide cursor of the change, when applied by a catch-up; absent
+   * The store-wide cursor to advance to, when applied by a catch-up; absent
    * when applied by a partition catch-up, which leaves the cursor alone.
+   * The commit's feed position is known either way: see {@link files}.
    */
   readonly cursor?: number;
   /** Each key the commit touched: present with its content, or null when removed. */
   readonly records: ReadonlyMap<string, AppliedRecord | null>;
   /** Each data name the commit changed, with its live versions after it. */
   readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
+  /** The new ownership of each file the commit wrote or removed; none when absent. */
+  readonly files?: ReadonlyMap<string, FileOwnership>;
 }
 
 /** The read model's state database. One connection per instance. */
@@ -121,6 +155,8 @@ export class ReadModelState {
   readonly #selectVersions: StatementSync;
   readonly #deleteVersions: StatementSync;
   readonly #insertVersion: StatementSync;
+  readonly #selectOwnership: StatementSync;
+  readonly #upsertOwnership: StatementSync;
   #closed = false;
 
   private constructor(db: DatabaseSync) {
@@ -157,6 +193,13 @@ export class ReadModelState {
     );
     this.#insertVersion = db.prepare(
       "INSERT INTO data_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+    );
+    this.#selectOwnership = db.prepare(
+      "SELECT owner, mark, present FROM materialised_keys WHERE namespace = ? AND record_key = ?",
+    );
+    this.#upsertOwnership = db.prepare(
+      "INSERT INTO materialised_keys (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?) " +
+        "ON CONFLICT (namespace, record_key) DO UPDATE SET owner = excluded.owner, mark = excluded.mark, present = excluded.present",
     );
   }
 
@@ -229,6 +272,20 @@ export class ReadModelState {
     });
   }
 
+  /** Which put a materialised file shows; undefined when none was applied. */
+  fileOwnership(
+    namespace: string,
+    recordKey: string,
+  ): FileOwnership | undefined {
+    this.#requireOpen();
+    const row = this.#selectOwnership.get(namespace, recordKey) as
+      | { owner: string; mark: number; present: number }
+      | undefined;
+    return row === undefined
+      ? undefined
+      : { owner: row.owner, mark: row.mark, present: row.present === 1 };
+  }
+
   /** The records present in a partition, by key. */
   liveRecords(namespace: string, partition: string): LiveRecord[] {
     this.#requireOpen();
@@ -283,7 +340,8 @@ export class ReadModelState {
 
   /**
    * Records an applied commit in one transaction: its records, its live data
-   * versions, the partition's applied seq and, from a catch-up, the cursor. A
+   * versions, its files' ownership, the partition's applied seq and, from a
+   * catch-up, the cursor. A
    * commit at or below the partition's applied seq changes nothing but the
    * cursor; neither the cursor nor the applied seq moves back.
    */
@@ -318,6 +376,15 @@ export class ReadModelState {
             );
           }
         }
+        for (const [key, file] of commit.files ?? []) {
+          this.#upsertOwnership.run(
+            commit.namespace,
+            key,
+            file.owner,
+            file.mark,
+            file.present ? 1 : 0,
+          );
+        }
         this.#upsertApplied.run(commit.namespace, commit.partition, commit.seq);
       }
       if (commit.cursor !== undefined) this.#advanceCursor(commit.cursor);
@@ -336,7 +403,7 @@ export class ReadModelState {
   reset(catalogGeneration: number): void {
     this.#transaction(() => {
       this.#db.exec(
-        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM meta;",
+        "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta;",
       );
       this.#upsertMeta.run("catalog_generation", catalogGeneration);
     });

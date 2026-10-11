@@ -118,6 +118,18 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
   "src/infrastructure/persistence/yaml_output_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/infrastructure/persistence/yaml_output_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  // swamp-club#3256, the definition, workflow and evaluated repositories'
+  // typed builders. config_staging.ts holds the tier rule, the record keys
+  // and the save and delete batches the definition and workflow
+  // repositories share; it runs only inside stageTyped or behind
+  // typedStagingActive, so never on v2.
+  "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/record_key.ts",
+  "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/repository_changes.ts",
+  "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
