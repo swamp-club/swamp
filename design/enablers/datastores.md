@@ -1792,7 +1792,8 @@ are later issues.
   `lease`.
 - **Record key**: the namespace-relative path an op projects to, in today's
   cache layout. It is used only to materialise real files.
-- **Blob**: content stored as a chunk, referenced by `{ sha256, size }`.
+- **Blob**: content stored as chunks, referenced by `{ sha256, size }`, plus
+  `parts` when it spans more than one chunk.
 - **Chunk**: an immutable piece of content addressed by its SHA-256.
 - **Fence**: a lease's monotonic number. A writer whose fence is stale loses.
 - **txnId**: the outbox entry id a commit carries. A retry carries the same
@@ -1990,6 +1991,120 @@ these.
   high-volume, append-only streams, not aggregate storage. They have no v3
   home yet. The opt-in issue must give them one before a v3 datastore can be
   enabled, or v3 would stop syncing them.
+
+### v3 chunk storage (`storage/1`)
+
+swamp-club#3237 adds where v3 content lives: the `storage/1` contract that a
+datastore extension implements, the core chunk store built on it, a
+filesystem reference implementation and a conformance suite. All of it is
+dormant until the v3 opt-in. `integration/datastore_v3_rules_test.ts` pins
+importers of the filesystem storage, and production calls of a provider's
+`storage()`, to empty lists. The chunk store sits in `src/domain/datastore_v3/`,
+so the rule that keeps that model dormant covers it too.
+
+**Ubiquitous language.**
+
+- **Storage**: a backend's `storage/1` implementation (`DatastoreStorage`,
+  `src/domain/datastore/datastore_storage.ts`), returned by the optional
+  `DatastoreProvider.storage()`.
+- **Chunk store**: the core domain service (`ChunkStore`,
+  `src/domain/datastore_v3/chunk_store.ts`) that cuts content into chunks,
+  uploads them, and reads them back verified.
+- **Part**: one chunk of content stored as several, listed in its `BlobRef`.
+- **Storage namespace**: the repository's namespace slug, or `_default` for an
+  unnamespaced datastore: one whose commits carry the empty namespace (`""`
+  in `commits.db`), whether a solo repository or a team datastore served with
+  no namespace. No slug can start with `_` (`NAMESPACE_PATTERN` in
+  `src/domain/data/namespace.ts`), so the two cannot collide.
+
+**The contract.** v3 keeps commits in `commits.db`, which Litestream
+replicates with its own clients, so object storage holds chunks and nothing
+else. The contract is therefore chunk-shaped, not a general byte store. An
+extension implements one small, verifiable thing, and it can batch `has`. The
+contract also leaves `list` and the refresh to the extension. Every method
+takes an `AbortSignal` and must reject when it aborts.
+
+| Member | Purpose |
+|---|---|
+| `contract` | `"storage/1"`. The chunk store refuses any other value. |
+| `capabilities()` | `{ maxChunkBytes, touch }` |
+| `has(ns, hashes)` | The subset of `hashes` stored. The chunk store checks it before uploading. |
+| `put(ns, sha256, bytes)` | Atomic, and idempotent by hash. Replaces the chunk and sets `lastModified` to now. |
+| `get(ns, sha256)` | The bytes, or null only when the chunk is absent. |
+| `touch?(ns, hashes)` | Refreshes `lastModified`, and returns the hashes it did not find. |
+| `list(ns)` | Every chunk, with its `lastModified`. |
+| `delete(ns, sha256)` | Idempotent. |
+
+`touch`, `list` and `lastModified` are the primitives a later chunk GC needs.
+GC itself needs the commit store, so it is a later issue.
+
+**What the earlier seven-method draft had, and why it was dropped.**
+
+- **Range reads.** A slice of a chunk cannot be checked against the chunk's
+  SHA-256, so a ranged read would hand on unverified bytes. Core reads whole
+  chunks, and chunking itself gives random access: a reader fetches only the
+  parts that cover the range it wants.
+- **Streaming bodies.** A chunk is at most 16 MiB, and core must hash a whole
+  chunk before it knows the chunk's key. Bodies are `Uint8Array`.
+- **`listOlderThan`.** No backend filters a listing by date on the server, so
+  `list` returns `lastModified` and core filters.
+
+**Capabilities and their fallbacks.**
+
+- **`maxChunkBytes`**: core cuts chunks of `min(16 MiB, maxChunkBytes)`. The
+  same content can therefore be cut differently on two backends. Every
+  reference stays readable on both, because its parts are listed; only dedup
+  across backends is lost.
+- **`touch`**: without it, core puts a chunk it found present again, which
+  refreshes `lastModified` just as `touch` would. The same happens with any
+  hash `touch` reports missing, which covers a chunk deleted between `has` and
+  `touch`. A chunk a commit is about to name is therefore always present and
+  fresh.
+
+**Key layout.** Chunks sit under the datastore root, beside `_control/` and
+`_litestream/`. They are namespaced, because dedup is per namespace:
+
+```
+<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>
+```
+
+**Content spanning several chunks.** `BlobRef.sha256` is always the SHA-256 of
+the whole content, so `PutOp.sha256` and a put's `expect` keep meaning "the
+record's bytes". Content stored as one chunk has no `parts`, and that chunk's
+key is `sha256`. Empty content is one empty chunk. Content stored as several
+chunks lists them in order, as `parts: [{ sha256, size }]`. JSON without parts
+is unchanged.
+
+A manifest chunk was the alternative, and it was rejected. With the parts
+listed in the reference, a later GC finds every chunk still in use from the
+commits alone, with no extra fetch. With 16 MiB parts, the list costs about
+6 KB per GiB of content.
+
+**What core verifies.** On read, the chunk store checks each chunk's length,
+then its SHA-256, before handing on any of its bytes. The length is checked
+against the size the reference records, not against this backend's
+`maxChunkBytes`, because a reference cut on another backend may hold larger
+parts. For content in several chunks, it also checks the
+SHA-256 of the whole content when the read ends. A mismatch errors the stream
+with `ChunkIntegrityError`, and a missing chunk errors it with
+`ChunkMissingError`. A consumer keeps what a read yields only once the read
+ends cleanly.
+
+**Damaged chunks are not repaired by writes.** A write trusts `has`: a chunk
+that is present is refreshed, not uploaded again, so one damaged in place after
+its put (a crash that leaves a file of the right length but wrong bytes) stays
+damaged, and every read of it fails. A `put` always replaces the chunk, so
+deleting it, or putting it again, repairs it. Finding damaged chunks belongs
+with the later GC work, which already has to walk every chunk.
+
+**For extension authors.** `FileSystemStorage`
+(`src/infrastructure/persistence/fs_datastore_storage.ts`) is the reference
+implementation. It writes a temp file and renames it into place, validates the
+namespace and hash before building any path, and uses mtime as
+`lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
+checks an implementation. `createInMemoryRemote({ storage: true })` provides a
+conforming in-memory one. The S3 and GCS implementations are a later
+swamp-extensions change.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

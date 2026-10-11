@@ -141,12 +141,15 @@ export type {
   DatastoreControlPlaneStore,
   DatastoreHealthResult,
   DatastoreProvider,
+  DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
   DatastoreVerifier,
   DistributedLock,
   LockInfo,
   LockOptions,
+  StorageCapabilities,
+  StoredChunk,
   SyncCapabilities,
   SyncContext,
 } from "./datastore_types.ts";
@@ -181,6 +184,10 @@ export type {
   ControlPlaneStoreConformanceOptions,
   DatastoreControlPlaneStoreConformanceOptions,
 } from "./control_plane_conformance.ts";
+
+export { assertStorageConformance } from "./storage_conformance.ts";
+
+export type { StorageConformanceOptions } from "./storage_conformance.ts";
 
 export {
   createInMemoryRemote,

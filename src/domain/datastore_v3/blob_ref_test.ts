@@ -81,3 +81,49 @@ Deno.test("BlobRef.fromJSON: rejects unknown fields, and a BlobRef is frozen", (
   );
   assert(Object.isFrozen(BlobRef.create({ sha256: SHA, size: 1 })));
 });
+
+Deno.test("BlobRef.create: keeps parts, and omits them from JSON when absent", () => {
+  const parts = [
+    { sha256: "b".repeat(64), size: 3 },
+    { sha256: "c".repeat(64), size: 2 },
+  ];
+  const blob = BlobRef.create({ sha256: SHA, size: 5, parts });
+  assertEquals(blob.toJSON(), { sha256: SHA, size: 5, parts });
+  assert(BlobRef.fromJSON(JSON.parse(JSON.stringify(blob))).equals(blob));
+  assert(Object.isFrozen(blob.parts) && Object.isFrozen(blob.parts![0]));
+  assertEquals(
+    JSON.stringify(BlobRef.create({ sha256: SHA, size: 5 })),
+    `{"sha256":"${SHA}","size":5}`,
+  );
+});
+
+Deno.test("BlobRef.create: rejects malformed parts", () => {
+  const part = (c: string, size: number) => ({ sha256: c.repeat(64), size });
+  const invalid: unknown[] = [
+    [],
+    [part("b", 5)],
+    [part("b", 3), part("c", 3)],
+    [part("b", 5), part("c", 0)],
+    [part("b", 2.5), part("c", 2.5)],
+    [part("B", 3), part("c", 2)],
+    [{ ...part("b", 3), extra: 1 }, part("c", 2)],
+    [null, part("c", 5)],
+    "parts",
+  ];
+  for (const parts of invalid) {
+    assertThrows(
+      () => BlobRef.fromJSON({ sha256: SHA, size: 5, parts }),
+      Error,
+    );
+  }
+});
+
+Deno.test("BlobRef.equals: compares parts", () => {
+  const p1 = { sha256: "b".repeat(64), size: 3 };
+  const p2 = { sha256: "c".repeat(64), size: 2 };
+  const a = BlobRef.create({ sha256: SHA, size: 5, parts: [p1, p2] });
+  const b = BlobRef.create({ sha256: SHA, size: 5, parts: [p2, p1] });
+  const none = BlobRef.create({ sha256: SHA, size: 5 });
+  assert(a.equals(BlobRef.create({ sha256: SHA, size: 5, parts: [p1, p2] })));
+  assert(!a.equals(b) && !a.equals(none) && !none.equals(a));
+});

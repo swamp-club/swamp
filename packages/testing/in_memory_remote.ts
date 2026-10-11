@@ -120,6 +120,11 @@
  * store. A control-plane `get` given an already aborted signal rejects with
  * its reason; nothing else in the control plane can be in flight.
  *
+ * `storage/1` chunk storage is modelled only when `storage` is set:
+ * `storage()` returns handles onto one set of chunks per remote, kept
+ * apart from the files and the control plane. It is not recorded as ops,
+ * and neither `offline` nor `failNext` reaches it.
+ *
  * Not modelled: namespace prefixes (a namespaced path is a plain key and a
  * push is never limited to one), lazy hydration (`hydrateFile`),
  * `previewPush`, model-scoped pulls through `context`, and Windows
@@ -142,8 +147,10 @@ import { dirname, join, normalize } from "@std/path";
 import type {
   ControlPlaneStore,
   DatastoreControlPlaneStore,
+  DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
+  StoredChunk,
   SyncCapabilities,
 } from "./datastore_types.ts";
 
@@ -229,6 +236,11 @@ export interface InMemoryRemoteOptions {
    * `controlPlane: true` to its capabilities. Default false.
    */
   controlPlane?: boolean;
+  /**
+   * Gives the remote a `storage()` holding `storage/1` chunks, and a
+   * `setChunkLastModified` to backdate one. Default false.
+   */
+  storage?: boolean;
 }
 
 /** A remote operation a failure can be injected into. */
@@ -348,6 +360,21 @@ export interface InMemoryRemote {
    * `controlPlane`, as a service's `controlPlaneStore` is.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  /**
+   * A provider's `storage/1` chunk storage. Every call returns a handle
+   * onto the same chunks; `touch` is implemented. Present only with
+   * `storage`.
+   */
+  storage?(): DatastoreStorage;
+  /**
+   * Sets a stored chunk's `lastModified`, as `assertStorageConformance`'s
+   * `setLastModified` option expects. Present only with `storage`.
+   */
+  setChunkLastModified?(
+    namespace: string,
+    sha256: string,
+    date: Date,
+  ): Promise<void>;
   /** How many sync services `connect` has built. */
   connections(): number;
   /**
@@ -1345,6 +1372,7 @@ export function createInMemoryRemote(
     controlPlaneRecords: () =>
       new Map([...controlRecords].map(([k, v]) => [k, v.slice()])),
     ...(controlPlane ? { datastoreControlPlaneStore } : {}),
+    ...(options?.storage ? createChunkStorage() : {}),
     connections: () => instanceCount,
     controlPlaneReads: () => reads.map((read) => ({ ...read })),
     ops: () =>
@@ -1383,5 +1411,79 @@ export function createInMemoryRemote(
         bulk,
       };
     },
+  };
+}
+
+/**
+ * The `storage/1` model behind {@link InMemoryRemoteOptions.storage}:
+ * chunks keyed `<namespace>/<sha256>`, each with its `lastModified`.
+ */
+function createChunkStorage(): Required<
+  Pick<InMemoryRemote, "storage" | "setChunkLastModified">
+> {
+  const chunks = new Map<string, { bytes: Uint8Array; lastModified: Date }>();
+  const key = (namespace: string, sha256: string) => `${namespace}/${sha256}`;
+  // Runs `fn` as a promise, so a throw (an aborted signal) rejects.
+  const settle = <T>(fn: () => T): Promise<T> =>
+    new Promise((resolve) => resolve(fn()));
+  const storage: DatastoreStorage = {
+    contract: "storage/1",
+    capabilities: () => ({ maxChunkBytes: 16 * 1024 * 1024, touch: true }),
+    has: (namespace, hashes, signal) =>
+      settle(() => {
+        signal.throwIfAborted();
+        return new Set(hashes.filter((h) => chunks.has(key(namespace, h))));
+      }),
+    put: (namespace, sha256, bytes, signal) =>
+      settle(() => {
+        signal.throwIfAborted();
+        chunks.set(key(namespace, sha256), {
+          bytes: bytes.slice(),
+          lastModified: new Date(),
+        });
+      }),
+    get: (namespace, sha256, signal) =>
+      settle(() => {
+        signal.throwIfAborted();
+        return chunks.get(key(namespace, sha256))?.bytes.slice() ?? null;
+      }),
+    touch: (namespace, hashes, signal) =>
+      settle(() => {
+        signal.throwIfAborted();
+        const missing = new Set<string>();
+        for (const sha256 of hashes) {
+          const chunk = chunks.get(key(namespace, sha256));
+          if (chunk === undefined) missing.add(sha256);
+          else chunk.lastModified = new Date();
+        }
+        return missing;
+      }),
+    async *list(namespace, signal): AsyncIterable<StoredChunk> {
+      signal.throwIfAborted();
+      for (const [k, chunk] of [...chunks]) {
+        if (k.startsWith(`${namespace}/`)) {
+          yield {
+            sha256: k.slice(namespace.length + 1),
+            lastModified: new Date(chunk.lastModified),
+          };
+        }
+      }
+    },
+    delete: (namespace, sha256, signal) =>
+      settle(() => {
+        signal.throwIfAborted();
+        chunks.delete(key(namespace, sha256));
+      }),
+  };
+  return {
+    storage: () => storage,
+    setChunkLastModified: (namespace, sha256, date) =>
+      settle(() => {
+        const chunk = chunks.get(key(namespace, sha256));
+        if (chunk === undefined) {
+          throw new Error(`No chunk ${key(namespace, sha256)}`);
+        }
+        chunk.lastModified = new Date(date);
+      }),
   };
 }

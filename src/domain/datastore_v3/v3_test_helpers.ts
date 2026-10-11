@@ -23,6 +23,10 @@
  * @module
  */
 
+import type {
+  DatastoreStorage,
+  StoredChunk,
+} from "../datastore/datastore_storage.ts";
 import { ModelType } from "../models/model_type.ts";
 import { Commit, type CommitProps } from "./commit.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
@@ -147,4 +151,116 @@ export function modelCommit(
     ops,
     ...overrides,
   });
+}
+
+/**
+ * A `storage/1` double held in memory, recording the calls the chunk store
+ * makes. `touch: false` leaves `touch` unimplemented.
+ */
+export class MemoryStorage implements DatastoreStorage {
+  readonly contract = "storage/1" as const;
+  readonly chunks = new Map<string, Uint8Array>();
+  readonly calls: string[] = [];
+  readonly touch?: DatastoreStorage["touch"];
+
+  constructor(
+    readonly options: { maxChunkBytes?: number; touch?: boolean } = {},
+  ) {
+    if (options.touch ?? true) {
+      this.touch = (namespace, hashes, signal) => {
+        signal.throwIfAborted();
+        this.calls.push(`touch ${hashes.length}`);
+        return Promise.resolve(
+          new Set(hashes.filter((h) => !this.chunks.has(`${namespace}/${h}`))),
+        );
+      };
+    }
+  }
+
+  capabilities() {
+    return {
+      maxChunkBytes: this.options.maxChunkBytes ?? 64 * 1024 * 1024,
+      touch: this.options.touch ?? true,
+    };
+  }
+
+  has(namespace: string, hashes: readonly string[], signal: AbortSignal) {
+    signal.throwIfAborted();
+    this.calls.push(`has ${hashes.length}`);
+    return Promise.resolve(
+      new Set(hashes.filter((h) => this.chunks.has(`${namespace}/${h}`))),
+    );
+  }
+
+  put(
+    namespace: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    this.calls.push(`put ${sha256.slice(0, 8)}`);
+    this.chunks.set(`${namespace}/${sha256}`, bytes.slice());
+    return Promise.resolve();
+  }
+
+  get(namespace: string, sha256: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const bytes = this.chunks.get(`${namespace}/${sha256}`);
+    return Promise.resolve(bytes === undefined ? null : bytes.slice());
+  }
+
+  async *list(namespace: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    for (const key of this.chunks.keys()) {
+      if (key.startsWith(`${namespace}/`)) {
+        yield {
+          sha256: key.slice(namespace.length + 1),
+          lastModified: new Date(0),
+        } satisfies StoredChunk;
+      }
+    }
+  }
+
+  delete(namespace: string, sha256: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    this.chunks.delete(`${namespace}/${sha256}`);
+    return Promise.resolve();
+  }
+
+  /** How many put calls the chunk store made. */
+  puts(): number {
+    return this.calls.filter((c) => c.startsWith("put ")).length;
+  }
+}
+
+/** Reads a stream to the end and joins its chunks. */
+export async function readAll(
+  stream: ReadableStream<Uint8Array>,
+): Promise<Uint8Array> {
+  const pieces: Uint8Array[] = [];
+  for await (const piece of stream) pieces.push(piece);
+  const joined = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const piece of pieces) {
+    joined.set(piece, at);
+    at += piece.length;
+  }
+  return joined;
+}
+
+/** A stream yielding `bytes` in pieces of the given sizes, then the rest. */
+export function streamOf(
+  bytes: Uint8Array,
+  pieceSizes: readonly number[] = [],
+): ReadableStream<Uint8Array> {
+  const pieces: Uint8Array[] = [];
+  let at = 0;
+  for (const size of pieceSizes) {
+    if (at >= bytes.length) break;
+    pieces.push(bytes.slice(at, at + size));
+    at += size;
+  }
+  if (at < bytes.length) pieces.push(bytes.slice(at));
+  return ReadableStream.from(pieces);
 }

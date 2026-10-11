@@ -21,6 +21,7 @@ import type { DistributedLock, LockOptions } from "./distributed_lock.ts";
 import type { DatastoreVerifier } from "./datastore_health.ts";
 import type { DatastoreSyncService } from "./datastore_sync_service.ts";
 import type { DatastoreControlPlaneStore } from "./control_plane_store.ts";
+import type { DatastoreStorage } from "./datastore_storage.ts";
 
 /**
  * Factory interface for user-defined datastores.
@@ -67,6 +68,15 @@ export interface DatastoreProvider {
    * relies on that service not having bound a namespace yet.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+
+  /**
+   * Return the `storage/1` chunk storage for a v3 datastore
+   * ({@link DatastoreStorage}), scoped to the datastore root like
+   * {@link datastoreControlPlaneStore}.
+   *
+   * Optional — swamp does not call it yet. The v3 opt-in will require it.
+   */
+  storage?(): DatastoreStorage;
 
   /**
    * Register a namespace in the datastore.

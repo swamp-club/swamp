@@ -147,6 +147,28 @@ Deno.test("BlobRef.create: round-trips, and rejects digests that are not lowerca
   );
 });
 
+Deno.test("BlobRef.create: parts round-trip, and equality is symmetric", () => {
+  const arbParts = fc.array(
+    fc.record({ sha256: arbSha, size: fc.integer({ min: 1, max: 1 << 24 }) }),
+    { minLength: 2, maxLength: 6 },
+  );
+  fc.assert(
+    fc.property(arbSha, arbParts, arbParts, (sha256, partsA, partsB) => {
+      const size = (parts: { size: number }[]) =>
+        parts.reduce((sum, p) => sum + p.size, 0);
+      const a = BlobRef.create({ sha256, size: size(partsA), parts: partsA });
+      const b = BlobRef.create({ sha256, size: size(partsB), parts: partsB });
+      assert(BlobRef.fromJSON(JSON.parse(JSON.stringify(a))).equals(a));
+      assertEquals(a.equals(b), b.equals(a));
+      assertEquals(
+        a.equals(b),
+        JSON.stringify(partsA) === JSON.stringify(partsB),
+      );
+    }),
+    { numRuns: 300 },
+  );
+});
+
 Deno.test("createIntent: round-trips through JSON and keeps its partition", () => {
   fc.assert(
     fc.property(arbIntent, (intent) => {

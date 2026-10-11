@@ -1440,3 +1440,26 @@ Deno.test("createInMemoryRemote: seedControlPlane needs the controlPlane option"
     "controlPlane option",
   );
 });
+
+Deno.test("createInMemoryRemote: storage is present only with the storage option, and handles share chunks", async () => {
+  const plain = createInMemoryRemote();
+  assertEquals(plain.storage, undefined);
+  assertEquals(plain.setChunkLastModified, undefined);
+
+  const remote = createInMemoryRemote({ storage: true });
+  const signal = new AbortController().signal;
+  const sha = "a".repeat(64);
+  await remote.storage!().put("ns", sha, new Uint8Array([1, 2]), signal);
+  assertEquals(
+    await remote.storage!().get("ns", sha, signal),
+    new Uint8Array([1, 2]),
+  );
+  await remote.setChunkLastModified!("ns", sha, new Date(0));
+  assertEquals(
+    await Array.fromAsync(remote.storage!().list("ns", signal)),
+    [{ sha256: sha, lastModified: new Date(0) }],
+  );
+  // Chunks are kept apart from files, ops and the control plane.
+  assertEquals(remote.files().size, 0);
+  assertEquals(remote.ops().length, 0);
+});
