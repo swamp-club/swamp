@@ -287,13 +287,34 @@ export function renderQueryResultsMarkdown(
 }
 
 /**
+ * Renders projected scalar values as plain text, one value per line,
+ * exactly as stored. Scalars are data, not markdown: `marked` would
+ * restyle markdown syntax in the content and overflows its stack on a
+ * multi-megabyte line (swamp-club#3253).
+ */
+function renderScalarsPlain(
+  projected: Extract<ProjectedData, { shape: "scalar" }>,
+  data: DataQueryData,
+): string {
+  let out = projected.values.map((v) => {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") return JSON.stringify(v, null, 2);
+    return String(v);
+  }).join("\n");
+  if (data.limited) {
+    out += `\n\nShowing ${data.total} results (limit reached)`;
+  }
+  return out;
+}
+
+/**
  * Renders query results as pre-formatted terminal text. The default
- * (non-projected) path uses Cliffy's Table primitive directly; the
- * projected path still flows through `marked` since its output shapes
- * (scalar/map/list) are easier to express as markdown.
+ * (non-projected) path uses Cliffy's Table primitive directly, and
+ * projected scalars are written verbatim; projected map/list tables still
+ * flow through `marked`.
  *
  * Used by both the non-interactive CLI renderer and the interactive TUI.
- * The default-table branch scales linearly in row count; the projected
+ * The default-table branch scales linearly in row count; the map/list
  * branch is bounded by the markdown parser and should only be used for
  * small result sets.
  */
@@ -301,6 +322,9 @@ export function renderQueryResultsTerminal(
   data: DataQueryData,
   showNamespace = false,
 ): string {
+  if (data.projected?.shape === "scalar") {
+    return renderScalarsPlain(data.projected, data);
+  }
   if (data.projected) {
     return renderMarkdownToTerminal(
       renderQueryResultsMarkdown(data, showNamespace),

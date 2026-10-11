@@ -847,7 +847,7 @@ The projection's result type sets the output format:
 
 | Projection returns | Log mode | JSON mode |
 | --- | --- | --- |
-| string / number / bool | One value per line | Array of values |
+| string / number / bool | One value per line, written verbatim (no markdown rendering) | Array of values |
 | map (object) | Table with map keys as headers | Array of objects |
 | list (array) | Markdown table with positional numeric headers (`1`, `2`, …) | Array of arrays |
 | null | Empty line (scalar) or empty cells (map/list) | `null` in array |
@@ -1010,7 +1010,9 @@ Projection is a domain/application concern. `DataQueryService` still returns
 in the projection step, after `include`; see [Binary content](#binary-content)). The
 libswamp generator evaluates the projection on each result, classifies the
 output shape, and yields typed events. On the `--select` path the renderer
-builds markdown from the event data and passes it through
+writes scalar projections verbatim, one per line (objects as indented JSON), so
+content such as base64 file data reaches stdout unchanged at any size; map and
+list projections become a markdown table passed through
 `renderMarkdownToTerminal()`. The default path (no `--select`) builds a Cliffy
 `Table` directly.
 
