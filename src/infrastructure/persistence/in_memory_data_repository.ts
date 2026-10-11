@@ -513,6 +513,29 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
         latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
         receipt.version,
       );
+      if (!this.enableWriteGc) continue;
+      const data = this.dataMap.get(
+        dataKey(
+          receipt.type.normalized,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        ),
+      );
+      const gc = data?.garbageCollection;
+      if (typeof gc === "number") {
+        this.pruneExcessVersions(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+          this.listVersionsSync(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          ).filter((v) => v !== receipt.version),
+          gc,
+        );
+      }
     }
     return Promise.resolve();
   }

@@ -2808,3 +2808,93 @@ function concatBytes(chunks: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+function cappedData(cap: number): Data {
+  return Data.create({
+    name: "capped",
+    contentType: "text/plain",
+    lifetime: "infinite",
+    garbageCollection: cap,
+    streaming: false,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+  });
+}
+
+async function promoteDeferred(
+  repo: FileSystemUnifiedDataRepository,
+  count: number,
+): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    const receipt = await repo.saveDeferred(
+      testType,
+      "m1",
+      cappedData(3),
+      bytes(`v${i}`),
+    );
+    await repo.advanceLatestMarkers([receipt]);
+  }
+}
+
+Deno.test("advanceLatestMarkers: prunes promoted deferred writes to the cap with enableWriteGc (swamp-club#3251)", async () => {
+  await withStepRepo(async (repo) => {
+    await promoteDeferred(repo, 6);
+
+    assertEquals(await repo.listVersions(testType, "m1", "capped"), [4, 5, 6]);
+    const latest = await repo.findByName(testType, "m1", "capped");
+    assertEquals(latest?.version, 6);
+  }, true);
+});
+
+Deno.test("advanceLatestMarkers: keeps every promoted deferred write without enableWriteGc (swamp-club#3251)", async () => {
+  await withStepRepo(async (repo) => {
+    await promoteDeferred(repo, 6);
+
+    assertEquals(
+      await repo.listVersions(testType, "m1", "capped"),
+      [1, 2, 3, 4, 5, 6],
+    );
+  });
+});
+
+Deno.test("advanceLatestMarkers: pruning on promotion neither counts nor removes an in-flight deferred write (swamp-club#3251)", async () => {
+  await withStepRepo(async (repo) => {
+    await promoteDeferred(repo, 3);
+    const inFlight = await repo.saveDeferred(
+      testType,
+      "m1",
+      cappedData(3),
+      bytes("in-flight"),
+    );
+    const promoted = await repo.saveDeferred(
+      testType,
+      "m1",
+      cappedData(3),
+      bytes("promoted"),
+    );
+    await repo.advanceLatestMarkers([promoted]);
+
+    // v4 is still pending: v1 goes so v2, v3 and v5 make the cap of 3.
+    assertEquals(await repo.listVersions(testType, "m1", "capped"), [
+      2,
+      3,
+      inFlight.version,
+      promoted.version,
+    ]);
+  }, true);
+});
+
+Deno.test("rollbackVersions: rolling back a deferred write prunes nothing with enableWriteGc (swamp-club#3251)", async () => {
+  await withStepRepo(async (repo) => {
+    await promoteDeferred(repo, 3);
+    const rolledBack = await repo.saveDeferred(
+      testType,
+      "m1",
+      cappedData(3),
+      bytes("rolled back"),
+    );
+    await repo.rollbackVersions([rolledBack]);
+
+    assertEquals(await repo.listVersions(testType, "m1", "capped"), [1, 2, 3]);
+  }, true);
+});

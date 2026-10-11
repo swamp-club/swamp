@@ -1743,10 +1743,47 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         if (data) {
           this.catalogUpsert(receipt.type, receipt.modelId, data);
         }
+        if (
+          data && this.enableWriteGc &&
+          typeof data.garbageCollection === "number"
+        ) {
+          await this.prunePromotedVersion(
+            receipt,
+            data.garbageCollection,
+          );
+        }
       } catch (error) {
         logger
           .warn`Failed to advance latest marker for ${receipt.dataName} v${receipt.version}: ${error}`;
       }
+    }
+  }
+
+  /**
+   * Enforces a version cap once a deferred write is promoted, as `save`
+   * does for a direct write. A deferred write is not pruned when it is
+   * written, since it may yet be rolled back (swamp-club#3251).
+   */
+  private async prunePromotedVersion(
+    receipt: DeferredWriteReceipt,
+    cap: number,
+  ): Promise<void> {
+    try {
+      const versions = await this.listVersions(
+        receipt.type,
+        receipt.modelId,
+        receipt.dataName,
+      );
+      await this.pruneExcessVersions(
+        receipt.type,
+        receipt.modelId,
+        receipt.dataName,
+        versions.filter((v) => v !== receipt.version),
+        cap,
+      );
+    } catch (error) {
+      logger
+        .warn`Failed to prune excess versions of ${receipt.dataName} after promoting v${receipt.version}: ${error}`;
     }
   }
 

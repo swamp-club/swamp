@@ -224,6 +224,7 @@ export async function createWorkflowRunDeps(
         repoContext.hydrateFile,
         undefined,
         resolver,
+        repoContext.autoGc,
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;
