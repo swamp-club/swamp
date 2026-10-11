@@ -1171,7 +1171,7 @@ export class WorkerGateway {
       throw new RpcError({
         code: "token_not_synced",
         message:
-          `Enrollment token '${tokenName}' has not reached this orchestrator yet; retry the connection`,
+          `Enrollment token '${tokenName}' has a record but no definition on this orchestrator yet; retry the connection`,
       });
     }
     throw new RpcError({
