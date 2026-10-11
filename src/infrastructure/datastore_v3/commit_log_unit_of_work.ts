@@ -55,7 +55,8 @@
  * **Root and child units.** A unit opened with an open commit-log unit for
  * the same hook as `parent` is its child. A child keeps its changes to
  * itself: its `commit` hands them, in order, to its nearest open ancestor,
- * and its `abandon` discards them. Only a root commits to the log, and
+ * and its `abandon` discards them. A change staged after the child committed
+ * goes to that ancestor; one staged after it was abandoned is refused. Only a root commits to the log, and
  * `checkpoint` on a child throws. A root's checkpoint commits what has been
  * handed to it so far; a child still open keeps its changes until it ends.
  *
@@ -228,8 +229,10 @@ export function createCommitLogUnitOfWork(
       next.set(key, count);
     }
     for (const [key, count] of next) counts.set(key, count);
-    staged.push(...changes);
-    all.push(...changes);
+    for (const change of changes) {
+      staged.push(change);
+      all.push(change);
+    }
   };
 
   const flush = (): Promise<void> => {
@@ -293,7 +296,12 @@ export function createCommitLogUnitOfWork(
 
   const uow: CommitLogUnitOfWork = {
     async stageOp(change: TypedChange): Promise<void> {
-      const checked = checkChange(change);
+      const checked = await checkChange(change);
+      if (ended === "abandoned") {
+        // Abandon discards: a write still landing in an abandoned unit's
+        // scope is discarded with it, not rolled into an ancestor.
+        throw new Error("unit of work already abandoned");
+      }
       if (ended !== undefined) {
         const ancestor = nearestOpenAncestor(parent);
         if (ancestor !== undefined) {
@@ -332,7 +340,7 @@ export function createCommitLogUnitOfWork(
  * Checks a typed change where it is staged, so a bad one fails at the call
  * that made it rather than at commit.
  */
-function checkChange(change: TypedChange): TypedChange {
+async function checkChange(change: TypedChange): Promise<TypedChange> {
   if (!(change.partition instanceof PartitionKey)) {
     throw new TypeError("A typed change's partition must be a PartitionKey");
   }
@@ -372,7 +380,22 @@ function checkChange(change: TypedChange): TypedChange {
       "A pending put's content must be bytes or a function returning a stream",
     );
   }
-  const frozen: PendingPut = Object.freeze({ ...put, intent });
+  // Builds the put once with empty content, so a bad key or expect fails
+  // here rather than blocking the partitions after it at commit.
+  await putOp({
+    intent,
+    key: put.key,
+    inline: "",
+    ...(put.expect === undefined ? {} : { expect: put.expect }),
+  });
+  const frozen: PendingPut = Object.freeze({
+    ...put,
+    intent,
+    // A copy, so a caller reusing its buffer cannot change what commits.
+    content: put.content instanceof Uint8Array
+      ? put.content.slice()
+      : put.content,
+  });
   return Object.freeze({ partition: change.partition, put: frozen });
 }
 
@@ -460,8 +483,9 @@ async function storePut(
 
 /**
  * Inlines content of at most {@link MAX_INLINE_BYTES}, and stores anything
- * longer through the chunk store. A stream source is read only as far as
- * the inline limit plus one byte before the choice is made.
+ * longer through the chunk store. A stream source is read, a piece at a
+ * time, until it ends or holds more than the inline limit; what was read is
+ * then handed to the chunk store ahead of the rest.
  */
 async function storeContent(
   source: ContentSource,

@@ -318,6 +318,23 @@ Deno.test("signalChange: a hook that requires a unit still stages into a unit bo
   assertEquals(calls, []);
 });
 
+Deno.test("signalChange: a legacy unit built before its hook required a unit no longer takes the hook's writes", async () => {
+  await withReports(async (reports) => {
+    const { hook, calls } = recordingHook();
+    const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+    unitOfWorkBinding.requireUnit(hook);
+    await runInUnitOfWork(uow, async () => {
+      await assertRejects(
+        () => signalChange(hook, WRITE),
+        UnscopedWriteRefusedError,
+      );
+    });
+    assertEquals(uow.staged(), []);
+    assertEquals(calls, []);
+    assertEquals(reports, []);
+  });
+});
+
 Deno.test("createLegacyUnitOfWork: refuses a hook that requires a unit, which only a commit-log unit serves", () => {
   const { hook } = recordingHook();
   unitOfWorkBinding.requireUnit(hook);

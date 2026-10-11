@@ -2280,9 +2280,12 @@ dormant v3 context. It holds two weak maps:
 - `requireUnit(hook)` / `requiresUnit(hook)`: a context that has no route 2.
   `runInCommitLogRoot` marks its context's hook. The v3 opt-in must also mark
   a v3 repository context when it builds it, so a write before any root
-  opens is refused too. The legacy adapter refuses to build a unit over a
-  marked hook: a legacy unit forwards each change to the hook, which would
-  be route 2 by another name.
+  opens is refused too. A mark is permanent for the process, so a hook
+  instance must never be shared between a v2 and a v3 context. A legacy unit
+  forwards each change to the hook, which would be route 2 by another name:
+  the legacy adapter refuses to build one over a marked hook, and
+  `signalChange` refuses to stage a marked hook's write into one built
+  before the mark.
 
 `signalChange` routes a hooked write in this order: into the ambient unit when
 it is bound to the write's hook; otherwise, when the hook requires a unit,
@@ -2300,16 +2303,19 @@ chunk is stored (`putOp` takes its `BlobRef`), so the unit stores content when
 it commits, and an abandoned unit stores nothing. A `ContentSource` is bytes,
 or a function returning a fresh stream each time it is called (a repository
 passes "open the file I just wrote"), so large content is never held in
-memory between staging and commit. The unit reads at most
-`MAX_INLINE_BYTES` + 1 bytes: content that ends within the limit is inlined,
-anything longer goes through `ChunkStore.write`. A retry calls the source
+memory between staging and commit. The unit reads a stream a piece at a
+time until it ends or holds more than `MAX_INLINE_BYTES`: content that ends
+within the limit is inlined, anything longer goes, with what was already
+read, through `ChunkStore.write`. Bytes are copied when staged. A retry calls the source
 again. A source is read at commit, so it must stay readable and unchanged
 until then: a repository that stages one key twice in a unit, or removes the
 file before the unit commits, passes bytes. `stage(StagedChange)`, the
 path-only form, is refused with `PathOnlyChangeRefusedError`: there is no
 path-to-op guessing. Changes are checked where they are staged (the
-partition matches the intent, at most `MAX_COMMIT_OPS` per partition per
-flush, no `lease` ops, which only the lease machinery writes).
+partition matches the intent, a pending put's key and `expect` build a valid
+put, at most `MAX_COMMIT_OPS` per partition per flush, no `lease` ops, which
+only the lease machinery writes), so a bad change fails at the call that
+made it rather than blocking the partitions after it at commit.
 
 **Commit order and failure.** `commit` and `checkpoint` group the changes by
 partition, in first-touched order with workflow-run partitions last
@@ -2348,7 +2354,7 @@ hook, marks the hook with `requireUnit`, and runs `fn` with the root ambient.
 Opened inside an open commit-log unit for the same hook it is a child: its
 `commit` hands its changes, in order, to the root (all of them, or none
 when they would take a partition over `MAX_COMMIT_OPS`), its `abandon`
-discards them, and `checkpoint` on it throws. A root's checkpoint commits what has
+discards them (and refuses changes staged after it), and `checkpoint` on it throws. A root's checkpoint commits what has
 been handed to it so far. The root ends as its `disposition` option decides,
 the way `pushWhen` decides a legacy root's push: by default it commits when
 `fn` resolves and discards when it throws. `runOutcomeDisposition` is

@@ -547,6 +547,55 @@ Deno.test("createCommitLogUnitOfWork: a change staged on an ended child goes to 
   assertEquals(sink.landed[0].ops.length, 1);
 });
 
+Deno.test("createCommitLogUnitOfWork: a change staged on an abandoned child is refused, not rolled up", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await child.abandon();
+  await assertRejects(
+    async () =>
+      child.stageOp({ partition: MODEL, op: await savePut("late", 1) }),
+    Error,
+    "already abandoned",
+  );
+  await root.commit();
+  assertEquals(sink.appendCalls, []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a pending put with a bad expect is refused where it is staged", async () => {
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(new MemorySink(), memory()),
+  );
+  const change = pendingPut("a", bytesOf(4));
+  await assertRejects(() =>
+    uow.stageOp({
+      ...change,
+      put: { ...change.put, expect: { sha256: "not-a-digest" } },
+    })
+  );
+  assertEquals(uow.stagedOps(), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: bytes are copied when staged, so reusing the buffer changes nothing", async () => {
+  const sink = new MemorySink();
+  const options = unitOptions(sink, memory());
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  const buffer = bytesOf(16);
+  const original = buffer.slice();
+  await uow.stageOp(pendingPut("a", buffer));
+  buffer.fill(0);
+  await uow.commit();
+  assertEquals(
+    await contentOf(sink.landed[0].ops[0] as PutOp, options.storage),
+    original,
+  );
+});
+
 Deno.test("createCommitLogUnitOfWork: a change staged on an ended root is refused", async () => {
   const uow = createCommitLogUnitOfWork(
     contextHook(),

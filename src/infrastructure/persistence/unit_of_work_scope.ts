@@ -60,6 +60,7 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
 import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
@@ -110,11 +111,17 @@ export async function signalChange(
 ): Promise<void> {
   if (markDirty === undefined) return;
   const uow = currentUnitOfWork();
-  if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
+  const requiresUnit = unitOfWorkBinding.requiresUnit(markDirty);
+  if (
+    uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty &&
+    // A legacy unit forwards to the hook, so it cannot serve a hook that
+    // requires a unit, even one built before the hook was marked.
+    !(requiresUnit && legacyUnitOfWorkTarget(uow) !== undefined)
+  ) {
     await uow.stage(change);
     return;
   }
-  if (unitOfWorkBinding.requiresUnit(markDirty)) {
+  if (requiresUnit) {
     throw new UnscopedWriteRefusedError(change, callerOfThisWrite());
   }
   await markDirty(change.kind === "bulk" ? undefined : change.path);

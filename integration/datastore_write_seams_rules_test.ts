@@ -964,11 +964,13 @@ const PINNED_REQUIRE_UNIT_CALLERS: readonly string[] = [
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
 ];
 
-// legacyUnitOfWorkTarget, the legacy-only view: its definition and the
-// legacy adapter's parent lookup. signalChange asks the registry instead.
+// legacyUnitOfWorkTarget, the legacy-only view: its definition, the legacy
+// adapter's parent lookup, and signalChange's refusal to stage a v3 hook's
+// write into a legacy unit. signalChange routes by the registry otherwise.
 const PINNED_LEGACY_TARGET_CALLS: readonly string[] = [
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyParentFor",
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
 ];
 
 const files = await sourceFiles();
