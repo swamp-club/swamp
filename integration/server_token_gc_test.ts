@@ -77,7 +77,7 @@ import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { withServerTokenLock } from "../src/infrastructure/persistence/server_token_lock.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import {
-  type DatastoreConfig,
+  type FilesystemDatastoreConfig,
   LOCK_TIMEOUT_ENV_VAR,
 } from "../src/domain/datastore/datastore_config.ts";
 
@@ -156,8 +156,8 @@ async function tokenDefinitionFiles(
 }
 
 /** The filesystem datastore serve runs on without a remote datastore. */
-function filesystemDatastore(repoDir: string): DatastoreConfig {
-  return { type: "filesystem", path: swampPath(repoDir) } as DatastoreConfig;
+function filesystemDatastore(repoDir: string): FilesystemDatastoreConfig {
+  return { type: "filesystem", path: swampPath(repoDir) };
 }
 
 function gcService(

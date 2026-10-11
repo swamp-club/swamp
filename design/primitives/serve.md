@@ -403,6 +403,12 @@ Across replicas the lock is the datastore's distributed lock, so it orders
 the GC after another replica's re-mint or rotation of the same name, and the
 pull before the re-read brings that write into the local copy the GC reads.
 
+The lock and the pull have a cost. With a remote datastore each collection
+takes a distributed lock and pulls, on top of its push, and holds the gate for
+the pull. A token whose lock another writer holds can make a sweep wait up to
+the lock timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), without holding
+the gate. `MAX_TOKENS_PER_SWEEP` bounds both.
+
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
 vault (the default, else the first) and named that vault on the token record.
