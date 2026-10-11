@@ -303,7 +303,9 @@ function requireText(value: unknown, label: string): void {
 function requireInstant(value: unknown, label: string): void {
   if (
     typeof value !== "string" || !ISO_INSTANT.test(value) ||
-    Number.isNaN(Date.parse(value))
+    Number.isNaN(Date.parse(value)) ||
+    // Reject dates the engine would roll over, such as February 30.
+    new Date(value).toISOString().slice(0, 19) !== value.slice(0, 19)
   ) {
     throw new Error(
       `Commit ${label} must be an ISO 8601 instant in UTC: ${String(value)}`,

@@ -203,3 +203,30 @@ Deno.test("modelRef: keeps only the normalized type", () => {
     TypeError,
   );
 });
+
+Deno.test("createIntent: lowercases ids, so the authorised identity is the partition's", () => {
+  const upper = createIntent({
+    kind: "grant.revoke",
+    model: { type: "swamp/grant", id: ID.toUpperCase() },
+  });
+  const lower = createIntent({
+    kind: "grant.revoke",
+    model: { type: "swamp/grant", id: ID },
+  });
+  assert(intentEquals(upper, lower));
+  assertEquals(
+    createIntent({
+      kind: "run.update",
+      run: { workflowId: ID.toUpperCase(), runId: RUN.toUpperCase() },
+    }),
+    { kind: "run.update", run: { workflowId: ID, runId: RUN } },
+  );
+  assertEquals(
+    createIntent({
+      kind: "auto-definition.save",
+      autoDefinition: { id: ID.toUpperCase() },
+    }),
+    { kind: "auto-definition.save", autoDefinition: { id: ID } },
+  );
+  assertEquals(modelRef(ModelType.create("a/b"), ID.toUpperCase()).id, ID);
+});

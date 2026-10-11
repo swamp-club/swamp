@@ -67,12 +67,15 @@ export interface AutoDefinitionRef {
   readonly id: string;
 }
 
-/** A model reference from a ModelType: only its normalized form is kept. */
+/**
+ * A model reference from a ModelType: only its normalized form is kept, and
+ * the id is lowercased.
+ */
 export function modelRef(type: ModelType, id: string): ModelRef {
   if (!(type instanceof ModelType)) {
     throw new TypeError("modelRef needs a ModelType");
   }
-  return { type: type.normalized, id };
+  return { type: type.normalized, id: id.toLowerCase() };
 }
 
 /** Intents on a model partition that name a data name and version. */
@@ -361,8 +364,8 @@ function build(
       return {
         kind,
         run: {
-          workflowId: readString(run.workflowId, "workflowId"),
-          runId: readString(run.runId, "runId"),
+          workflowId: readId(run.workflowId, "workflowId"),
+          runId: readId(run.runId, "runId"),
         },
       } as Intent;
     }
@@ -388,7 +391,7 @@ function build(
       requireOnlyFields(ref, ["id"], kind);
       return {
         kind,
-        autoDefinition: { id: readString(ref.id, "autoDefinition.id") },
+        autoDefinition: { id: readId(ref.id, "autoDefinition.id") },
       } as Intent;
     }
     case "lockfile":
@@ -417,7 +420,7 @@ function readModel(value: unknown, kind: IntentKind): ModelRef {
       `Intent ${kind} needs a model of type ${required}, not ${type}`,
     );
   }
-  return { type, id: readString(ref.id, "model.id") };
+  return { type, id: readId(ref.id, "model.id") };
 }
 
 function readDefinition(value: unknown, kind: IntentKind): DefinitionRef {
@@ -464,6 +467,14 @@ function readVersion(value: unknown): number {
     );
   }
   return value;
+}
+
+/**
+ * An aggregate id, lowercased as {@link partitionOf} lowercases it, so the
+ * identity serve authorises on is the identity the partition holds.
+ */
+function readId(value: unknown, label: string): string {
+  return readString(value, label).toLowerCase();
 }
 
 function readString(value: unknown, label: string): string {

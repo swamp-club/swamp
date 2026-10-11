@@ -181,3 +181,22 @@ Deno.test("Commit.equals: differs when any field differs", async () => {
   assert(!a.equals(modelCommit(2, ops)));
   assert(!a.equals(modelCommit(1, ops, { fence: 1 })));
 });
+
+Deno.test("Commit.create: rejects calendar dates that do not exist", async () => {
+  const ops = [await savePut("vpc", 1)];
+  for (
+    const at of [
+      "2026-02-30T00:00:00Z",
+      "2026-04-31T12:00:00Z",
+      "2026-10-11T24:00:00Z",
+    ]
+  ) {
+    assertThrows(
+      () => Commit.create({ ...props(ops), at }),
+      Error,
+      "ISO 8601",
+      at,
+    );
+  }
+  Commit.create({ ...props(ops), at: "2028-02-29T00:00:00.123Z" });
+});

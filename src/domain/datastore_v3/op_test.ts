@@ -200,3 +200,27 @@ Deno.test("opFromJSON: refuses unknown fields, so a smuggled digest never lands"
 Deno.test("isOp: rejects op-shaped literals", () => {
   assertEquals(isOp({ kind: "lease", holder: "h", fence: 1 }), false);
 });
+
+Deno.test("dataVersionOp: freezes the metadata so a built commit cannot change", () => {
+  const op = dataVersionOp({ key: KEY, metadata: metadata("vpc", 1) });
+  assert(Object.isFrozen(op.metadata));
+  assert(Object.isFrozen(op.metadata.tags));
+  assert(Object.isFrozen(op.metadata.ownerDefinition));
+  assertThrows(() => {
+    (op.metadata as { name: string }).name = "../evil";
+  }, TypeError);
+});
+
+Deno.test("dataVersionOp: orders tags by key, so equal metadata serializes equally", () => {
+  const meta = metadata("vpc", 1) as Record<string, unknown>;
+  const a = dataVersionOp({
+    key: KEY,
+    metadata: { ...meta, tags: { type: "resource", b: "2", a: "1" } },
+  });
+  const b = dataVersionOp({
+    key: KEY,
+    metadata: { ...meta, tags: { a: "1", type: "resource", b: "2" } },
+  });
+  assertEquals(JSON.stringify(a.toJSON()), JSON.stringify(b.toJSON()));
+  assertEquals(Object.keys(a.metadata.tags), ["a", "b", "type"]);
+});

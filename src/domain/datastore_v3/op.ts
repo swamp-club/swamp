@@ -314,7 +314,19 @@ export function dataVersionOp(props: {
       `A data-version op needs valid data metadata: ${parsed.error.message}`,
     );
   }
-  return DataVersionOp.build(BUILD, requireKey(props.key), parsed.data);
+  // Tags in key order, so equal metadata serializes equally; frozen, so the
+  // op cannot change after a commit holds it.
+  const tags = Object.fromEntries(
+    Object.entries(parsed.data.tags).sort((
+      [a],
+      [b],
+    ) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+  return DataVersionOp.build(
+    BUILD,
+    requireKey(props.key),
+    deepFreeze({ ...parsed.data, tags }),
+  );
 }
 
 /** Builds a lease op. `fence` is a non-negative integer. */
@@ -396,6 +408,14 @@ function readPutExpect(expect: unknown): PutExpect | undefined {
   throw new Error(
     "A put's expect must be 'absent' or { sha256 } with a lowercase hex digest",
   );
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function requireKey(key: unknown): RecordKey {
