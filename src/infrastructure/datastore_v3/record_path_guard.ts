@@ -1,0 +1,98 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * Which record keys the v3 read model may materialise (swamp-club#3239), and
+ * where its own state lives.
+ *
+ * Record keys come from commits, which in team mode other principals write,
+ * and serve does not yet bind a key to its aggregate's paths
+ * (`design/enablers/datastores.md`, "Authorisation requirements"). In solo
+ * layout the cache root is `.swamp/` itself, which also holds repo-local
+ * files. So the read model writes or removes a key only when its first
+ * segment is a datastore-synced subdirectory, it names no catalog database,
+ * and it does not land in the read model's own state directory.
+ *
+ * @module
+ */
+
+import { join, resolve, SEPARATOR } from "@std/path";
+import {
+  ALWAYS_LOCAL_SUBDIRS,
+  DEFAULT_DATASTORE_SUBDIRS,
+} from "../../domain/datastore/datastore_config.ts";
+import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import { swampPath } from "../persistence/paths.ts";
+
+/**
+ * The read model's state directory under `.swamp/`: `_catalog_v3.db`,
+ * `_read_model_v3.db` and the lock file. It is no datastore subdirectory, so
+ * it is never synced and no record key may reach it.
+ */
+export const READ_MODEL_STATE_DIR = "_read_model_v3";
+
+/**
+ * The read model's state directory for a repository: always in the
+ * checkout's own `.swamp/`, never resolved through the datastore, because
+ * the cursor records how far this checkout has caught up.
+ */
+export function readModelStateDir(repoDir: string): string {
+  return swampPath(repoDir, READ_MODEL_STATE_DIR);
+}
+
+/** The first segments a materialised key may have: the synced subdirectories. */
+export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
+  DEFAULT_DATASTORE_SUBDIRS.filter((dir) =>
+    !(ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(dir)
+  ),
+);
+
+/** A catalog database or one of its SQLite side files. */
+const CATALOG_DATABASE = /^_catalog.*\.db(?:-wal|-shm|-journal)?$/i;
+
+/**
+ * Why the read model must not write or remove `key` under `root`, or
+ * undefined when it may. `stateDir` is the read model's state directory.
+ */
+export function refusedKeyReason(
+  key: RecordKey,
+  root: string,
+  stateDir: string,
+): string | undefined {
+  const segments = key.toString().split("/");
+  if (!MATERIALISED_SUBDIRS.has(segments[0])) {
+    return `its first segment ${
+      segments[0]
+    } is not a datastore-synced directory`;
+  }
+  if (CATALOG_DATABASE.test(segments[segments.length - 1])) {
+    return "it names a catalog database";
+  }
+  // With the state directory at `.swamp/_read_model_v3` the first-segment
+  // check already refuses it; this one still holds if a caller passes a
+  // state directory inside a synced one. Compared without case, so a
+  // case-insensitive filesystem cannot alias it; on a case-sensitive one
+  // that only refuses more, never less, so keep it.
+  const path = resolve(join(root, ...segments)).toLowerCase();
+  const state = resolve(stateDir).toLowerCase();
+  if (path === state || path.startsWith(state + SEPARATOR)) {
+    return "it lands in the read model's state directory";
+  }
+  return undefined;
+}

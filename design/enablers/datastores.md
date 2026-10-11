@@ -1781,8 +1781,10 @@ importers to an empty list. It is a bounded context of its own, beside
 `workflows` contexts, and those already import `datastore`: inside it, the
 model would close three context cycles
 (`integration/architecture_boundary_test.ts`). swamp-club#3236 adds the
-commit store (see "v3 commit store" below), also dormant. The chunk store and
-the opt-in are later issues.
+commit store (see "v3 commit store" below), swamp-club#3237 the chunk store
+("v3 chunk storage"), swamp-club#3240 the commit-log unit of work ("v3
+commit-log unit of work") and swamp-club#3239 the read model ("v3 read
+model"), all dormant. The opt-in is a later issue.
 
 **Ubiquitous language.**
 
@@ -2385,6 +2387,196 @@ bound, and the lockfile root), and every existing characterization and
 root-unit suite passed unchanged after it. A temporary route recorder over
 the whole test suite gave the same set of route-1 and route-2 writes before
 and after.
+
+### v3 read model (datastore rework Phase 3)
+
+swamp-club#3239 adds the read model: it brings one checkout's local files, a
+v3 catalog and an index of live records up to date with `commits.db`. It is
+dormant: nothing in production opens it, and
+`integration/datastore_v3_rules_test.ts` keeps it inside the v3 directories.
+
+**Ubiquitous language.**
+
+- **Read model**: the local files, catalog and index that model code, CEL
+  `.path` and queries read. It is a cache of the commits, rebuilt from them.
+- **Cursor**: how far this checkout has caught up with the store-wide change
+  feed (`changesSince`).
+- **Applied seq**: the last seq of a partition this checkout applied.
+- **Live-record index**: each partition's present records, with their digest
+  and `BlobRef` (or an inline marker). Chunk GC computes the chunks still in
+  use from it (`chunksInUse`).
+
+**Port and adapter.** `ReadModel` (`src/domain/datastore_v3/read_model.ts`)
+has `catchUp`, `catchUpPartition`, `liveRecords`, `chunksInUse` and `close`.
+`SqliteReadModel` (`src/infrastructure/datastore_v3/sqlite_read_model.ts`)
+implements it. It reads commits only through the `CommitStore` port, and a
+fitness rule keeps `sqlite_commit_store.ts` the only code that writes the
+commit tables or opens `commits.db`.
+
+**Who writes local files in Phase 3.** Repositories keep writing local files
+exactly as today. The read model applies commits to the same files, and
+applying a commit twice changes nothing, so applying one this process just
+made rewrites the same bytes. Moving repositories to materialiser-only writes,
+with a fitness rule against repository file writes, is a later step. The read
+model never calls a repository, and the commit-log unit of work never calls
+the read model.
+
+**Where its state lives.** Everything the read model keeps is in
+`.swamp/_read_model_v3/`, built from the repository with
+`readModelStateDir(repoDir)` (`swampPath`), never from the datastore resolver:
+
+| File | Holds |
+|---|---|
+| `_catalog_v3.db` | The v3 catalog |
+| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata |
+| `read_model.lock` | The lock that serializes catch-ups across processes |
+
+The issue that planned this suggested `_catalog_v3.db` beside `commits.db`.
+It lives in the checkout instead, for two reasons:
+
+- **The state is per checkout.** Several repositories can share one
+  datastore. If they shared a cursor, the first to catch up would move it for
+  all of them, and the others would never apply those commits. Today's
+  `_catalog.db` is per repository for the same reason (`catalogDbPath`).
+- **Record keys cannot reach it.** In solo layout the cache root is `.swamp/`
+  itself, so a record key could name a file there. `_read_model_v3` is no
+  datastore subdirectory, and the key guard below refuses every key whose
+  first segment is not one. It is never synced: sync routes only datastore
+  subdirectories, and a fitness rule keeps `_read_model_v3` out of
+  `DEFAULT_DATASTORE_SUBDIRS` and `ALWAYS_LOCAL_SUBDIRS`. Git ignores it
+  through `repo init`'s managed `.swamp/` entry.
+
+**The v3 catalog.** `_catalog_v3.db` is opened with the existing
+`CatalogStore`, unchanged, so it has the schema and query API data query
+already uses, and no v2 code changes. Switching data query to it is the
+opt-in's job. Rows are built from a version's metadata field for field as the
+v2 repository's `catalogUpsert` builds them, with the model type and id from
+the partition key. One difference: v3 keeps a version's tags in key order
+(`dataVersionOp`), so the `tags` JSON can list keys in a different order than
+v2 wrote them, with the same meaning.
+
+**Commits to catalog changes.** `projectCatalog`
+(`src/domain/datastore_v3/catalog_projection.ts`) is a pure domain service. It
+reads names and versions from intents and metadata, never from record keys,
+and gives the catalog actions v2 takes for the same change:
+
+| Op | Catalog actions |
+|---|---|
+| `data-version` | Upsert the version's row. For a rename marker (`lifecycle: deleted` with `renamedTo`), remove the name's rows and forward it, as `rename()` does |
+| Versioned `data.delete` or `data.gc` tombstone | Remove the version's row, then reconcile the name, as `delete(version)` and `collectGarbage` do: no live version left removes the name and its forward; a rename marker on top removes the name and forwards it; otherwise the greatest live version's row is upserted again, which restores a row an earlier rename removed |
+| Version-less `data.gc` | Expiry (`removeLatestMarker`): remove the name's rows; its versions stay. An expiry after a versioned tombstone of the name in the same commit wins, as `delete(version)` then `removeLatestMarker` would; a versioned tombstone after it reconciles the name again |
+| Version-less `data.delete` | Nothing: a delete of a whole name lists each version as its own tombstone |
+
+The version-less tombstone rows are a contract with the commit-log unit of
+work, which builds the ops: v2 expiry must become a version-less `data.gc`.
+`integration/datastore_v3_read_model_v2_oracle_test.ts` holds the projection
+to v2: a v2 repository saves, deletes, renames, expires and garbage-collects,
+each step's file changes become one commit, and the read model's files and
+catalog must equal v2's.
+
+**Applying a commit.** Commits are applied in landing order. A commit at or
+below its partition's applied seq is skipped (`catchUpPartition` applied it
+already), so a catch-up never rolls a file back to an older put. A commit's
+ops see each other's effects, so only each key's last put or tombstone is
+materialised, removals before writes, so a removal can clear the path a write
+needs (a put of `data/x` beside a tombstone of `data/x/y`). Effects come in a
+fixed order:
+
+1. **Files.** A put is written under the namespace's cache root: inline
+   bytes, or streamed from `ChunkStore.read`. The content goes to a temp file
+   that is fsynced and renamed into place, and the directory is fsynced,
+   along with the parent of every directory the write created (except on
+   Windows, which cannot sync a directory). A tombstone removes the
+   file, ignores one already gone, and removes empty directories up to the
+   root. A directory at a tombstoned key (a name directory) is removed only
+   when empty. Every path passes `assertContainedPath` and `assertSafePath`.
+2. **Catalog.** The projection's actions.
+3. **State.** One transaction holds the index changes, the live versions, the
+   partition's applied seq and, from `catchUp`, the cursor. Neither the
+   cursor nor an applied seq moves back.
+
+Each effect is idempotent, so a crash anywhere is repaired by catching up
+again from the unchanged cursor. The index and the cursor are never ahead of
+the files. Calls queue in the process, and an exclusive OS lock on
+`read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
+file a faster one has removed.
+
+**The key guard.** Serve does not yet bind a record key to its aggregate's
+paths ("Authorisation requirements" above), and in team mode other
+principals write commits. The read model therefore writes or removes a key
+only when its first segment is a datastore-synced subdirectory
+(`DEFAULT_DATASTORE_SUBDIRS` without `ALWAYS_LOCAL_SUBDIRS`), it names no
+catalog database (`_catalog*.db` and its side files), and it does not land in
+the state directory (`record_path_guard.ts`). That check is lexical, so
+after `assertSafePath` the read model also refuses a key whose resolved path
+lands in the state directory: a symlink already in the cache could lead
+there. A refused key is logged and not materialised, but it is still
+indexed, so the index stays exact for chunk GC.
+
+**Path conflicts.** A file and a directory claiming one path (a put of
+`data/x` where `data/x/y` exists, or of `data/x/y` where `data/x` is a
+file) can never succeed, and in team mode another principal could cause one.
+Retrying would block every later commit, and with them chunk GC, so a put
+that conflicts is logged and skipped like a refused key, and stays indexed. A
+tombstone under a file has nothing to remove.
+
+**Failures.** Any other failure throws `ReadModelApplyError`, naming the
+namespace, partition and seq, and leaves the cursor before the commit, so the
+next catch-up tries it again. Causes include a missing or damaged chunk (it
+may not be uploaded yet), a `BlobRef` with a `legacyKey` (no migration writes
+those yet), and a write error. An
+abort stops between commits or during a chunk read, and leaves no partial
+file. Waiting for another process to release `read_model.lock` is not
+abortable: the OS lock has no abort hook.
+
+**Reading the index.** `liveRecords` and `chunksInUse` reject with
+`ReadModelIncompleteError` until a `catchUp` has reached the end of the
+change feed since the state was built or last reset. Until then the index can
+hold only part of the live records: after a reset, `catchUpPartition` fills
+one partition, and a replay cut short by an error or an abort fills the
+first commits. Chunk GC must never take such a partial set for the chunks to
+keep. Once complete, the index stays complete up to the cursor. The
+completeness check and the index read share one SQLite snapshot, so a reset
+another process commits in between cannot hand back a partial index.
+
+**Rebuilds.** The state records the catalog's generation, and the read model
+marks the catalog populated (`CatalogStore.markPopulated`) when it takes it
+over. It resets its state and replays every commit when the generation
+differs (a schema change rebuilds the file empty, and `invalidate()` advances
+it) or the catalog is not marked populated. The second check catches a
+`_catalog_v3.db` that was deleted and created afresh: a new file always
+starts at generation 1, the same as the one the state may have recorded.
+
+**Known limits.**
+
+- On a case-insensitive filesystem (macOS by default, Windows), two keys that
+  differ only in case are one file, and a tombstone of one removes the other's
+  file while the index still lists it. v2 has the same collision for data
+  names that differ in case.
+- A full replay needs every commit. Pruning commits (a later issue) must
+  give the read model another way to rebuild, such as a snapshot. A replay
+  after `invalidate()` also writes over the catalog's old rows rather than
+  clearing them; that converges only because every catalog action is
+  idempotent and the full history is replayed, so pruning must clear the
+  catalog before a rebuild.
+- A crash between creating a temp file and renaming it leaves a
+  `.<uuid>.tmp` file beside the target, inside a synced directory, which
+  sync could push. v2's `atomicWriteFile` writes the same temp files in the
+  same directories, so this is shared, not new; a sweep of orphaned temp
+  files would fix both.
+
+**Left to the opt-in.**
+
+- Wire the read model: the cache root per namespace, the state directory and
+  when to catch up.
+- Switch data query to `_catalog_v3.db`.
+- Refuse or filter a configured datastore `directories` entry named
+  `_read_model_v3`. `getDatastoreDirectories` filters only
+  `ALWAYS_LOCAL_SUBDIRS`, so such a config could route the state directory to
+  the datastore when the cache root is `.swamp/`.
+- Decide whether a repository applies every namespace in `commits.db` or only
+  its own. The read model applies each commit under `cacheRoot(namespace)`,
+  so either works.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
