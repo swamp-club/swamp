@@ -33,6 +33,7 @@ Deno.test("RegistryUnavailableError: keeps the underlying failure as its cause",
   const cause = new DOMException("Signal timed out.", "TimeoutError");
   const error = new RegistryUnavailableError("Request timed out.", { cause });
   assertEquals(error.cause, cause);
+  assertEquals(Object.keys(error).includes("cause"), false);
 });
 
 Deno.test("RegistryUnavailableError: has no cause when none is given", () => {

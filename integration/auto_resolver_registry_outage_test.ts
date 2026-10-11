@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AutoResolveOutputPort,
   ExtensionAutoResolver,
@@ -128,10 +128,7 @@ Deno.test("integration: auto-resolver reports an exhausted rate limit as a netwo
   );
   assertEquals(events.length, 2);
   assertEquals(events[0], "searching");
-  assertEquals(
-    events[1].startsWith("networkError: Rate limit exceeded."),
-    true,
-  );
+  assertStringIncludes(events[1], "networkError: Rate limit exceeded.");
 });
 
 Deno.test("integration: auto-resolver reports not-found only when the registry answers empty", async () => {

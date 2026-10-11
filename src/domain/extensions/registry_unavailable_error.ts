@@ -33,6 +33,15 @@ export class RegistryUnavailableError extends UserError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
     this.name = "UserError";
-    if (options?.cause !== undefined) this.cause = options.cause;
+    // Non-enumerable like a native Error cause, so spreading or serialising
+    // the error never carries the underlying failure into output.
+    if (options?.cause !== undefined) {
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        enumerable: false,
+        writable: true,
+        configurable: true,
+      });
+    }
   }
 }

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertFalse, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   ExtensionApiClient,
@@ -1697,6 +1697,6 @@ for (const status of [401, 403, 409, 422, 400]) {
       () => client.searchExtensions({ q: "s3" }),
       UserError,
     );
-    assertEquals(err instanceof RegistryUnavailableError, false);
+    assertFalse(err instanceof RegistryUnavailableError);
   });
 }
