@@ -26,6 +26,7 @@ import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { webhookTypeRegistry } from "../webhooks/webhook_type_registry.ts";
 import { LockTimeoutError } from "../datastore/distributed_lock.ts";
+import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
@@ -520,9 +521,13 @@ export class ExtensionAutoResolver {
   }
 
   /**
-   * Checks if an error is a network-level error.
+   * Checks if an error is a network-level error: a registry that could not
+   * answer, or a lookup that failed before reaching one.
    */
   private isNetworkError(error: unknown): boolean {
+    if (error instanceof RegistryUnavailableError) {
+      return true;
+    }
     if (error instanceof TypeError) {
       return true;
     }

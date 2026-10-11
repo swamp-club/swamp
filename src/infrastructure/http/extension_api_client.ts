@@ -20,6 +20,7 @@
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { parseRegistryAcceptances } from "../../domain/extensions/registry_acceptances.ts";
+import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
 import {
   formatArchiveBytes,
   MAX_EXTENSION_ARCHIVE_BYTES,
@@ -927,9 +928,10 @@ export class ExtensionApiClient {
     }
 
     const endpoint = res.url ? ` [${res.url}]` : "";
-    throw new UserError(
-      `Extension API error (HTTP ${res.status}): ${serverMessage}${endpoint}`,
-    );
+    const message =
+      `Extension API error (HTTP ${res.status}): ${serverMessage}${endpoint}`;
+    if (res.status >= 500) throw new RegistryUnavailableError(message);
+    throw new UserError(message);
   }
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
@@ -957,22 +959,26 @@ export class ExtensionApiClient {
         },
       );
       if (res.status === 429) {
-        throw rateLimitError({
-          ...(await readRateLimit(res)),
-          credentialed: hasCredential(headers),
-        });
+        throw new RegistryUnavailableError(
+          rateLimitError({
+            ...(await readRateLimit(res)),
+            credentialed: hasCredential(headers),
+          }).message,
+        );
       }
       return res;
     } catch (error) {
       if (error instanceof UserError) throw error;
       if (error instanceof DOMException && error.name === "TimeoutError") {
-        throw new UserError(
+        throw new RegistryUnavailableError(
           `Request to ${this.serverUrl} timed out. Is the server running?`,
+          { cause: error },
         );
       }
       const message = error instanceof Error ? error.message : String(error);
-      throw new UserError(
+      throw new RegistryUnavailableError(
         `Could not connect to ${this.serverUrl}: ${message}`,
+        { cause: error },
       );
     }
   }
