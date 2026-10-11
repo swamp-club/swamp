@@ -39,6 +39,7 @@ import type {
 } from "../../domain/models/active_run.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -301,6 +302,35 @@ export function methodRunsOfModel(
     : { runs, unattributed: legacy };
 }
 
+/**
+ * {@link methodRunsOfModel} for a resolved model, counting the definitions of
+ * its type only when a running row of the type has no definition id. The
+ * count takes every definition file that reads, auto-definitions included, so
+ * a definition deleted or left unreadable since its run started is not
+ * counted; a repository that cannot list auto-definitions gives no count, and
+ * rows with no definition id then stay unattributed.
+ */
+export async function findMethodRunsOfModel(
+  runningRows: readonly ActiveRun[],
+  model: { definitionId: string; modelType: string },
+  definitionRepo: Pick<DefinitionRepository, "findAllIncludingAutoGlobal">,
+): Promise<ModelMethodRuns> {
+  let soleDefinitionOfType = false;
+  if (
+    definitionRepo.findAllIncludingAutoGlobal &&
+    runningRows.some((r) =>
+      r.runKind === "model_method" && r.modelType === model.modelType &&
+      r.definitionId === null
+    )
+  ) {
+    const all = await definitionRepo.findAllIncludingAutoGlobal();
+    soleDefinitionOfType = all.filter((d) =>
+      d.type.normalized === model.modelType
+    ).length === 1;
+  }
+  return methodRunsOfModel(runningRows, { ...model, soleDefinitionOfType });
+}
+
 function methodRunFields(run: ActiveRun) {
   return {
     id: run.id,
@@ -472,27 +502,10 @@ export const modelCancelCommand = new Command()
       const { definition, type } = resolved;
 
       const runningRows = runTracker.findAllRunning();
-      // Only a row with no definition id needs the count, and only a
-      // repository that can list auto-definitions too can give it.
-      let soleDefinitionOfType = false;
-      if (
-        definitionRepo.findAllIncludingAutoGlobal &&
-        runningRows.some((r) =>
-          r.modelType === type.normalized && r.definitionId === null
-        )
-      ) {
-        const all = await definitionRepo.findAllIncludingAutoGlobal();
-        soleDefinitionOfType = all.filter((d) =>
-          d.type.normalized === type.normalized
-        ).length === 1;
-      }
-      const { runs: trackerRuns, unattributed } = methodRunsOfModel(
+      const { runs: trackerRuns, unattributed } = await findMethodRunsOfModel(
         runningRows,
-        {
-          definitionId: definition.id,
-          modelType: type.normalized,
-          soleDefinitionOfType,
-        },
+        { definitionId: definition.id, modelType: type.normalized },
+        definitionRepo,
       );
 
       if (trackerRuns.length === 0) {
@@ -501,7 +514,7 @@ export const modelCancelCommand = new Command()
             ? `No running method runs found for model '${definition.name}'`
             : `No running method runs found for model '${definition.name}'. ` +
               `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
-              `stop them with 'swamp model cancel --all'.`,
+              `'swamp model cancel --all' stops them, along with every other running method run a swamp serve does not own.`,
         );
       }
 

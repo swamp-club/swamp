@@ -26,6 +26,7 @@ import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_st
 import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts";
 import {
   cancelModelMethodRuns,
+  findMethodRunsOfModel,
   METHOD_OWNER_STOP_GRACE_MS,
   methodRunsOfModel,
   modelCancelCommand,
@@ -40,7 +41,10 @@ import {
   ModelOutput,
 } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  Definition,
+} from "../../domain/definitions/definition.ts";
 import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 
@@ -704,6 +708,67 @@ Deno.test("methodRunsOfModel: a row with no definition id is never selected when
   });
 
   assertEquals(methodRunsOfModel([legacy, legacyOtherType], idleModel), {
+    runs: [],
+    unattributed: [legacy],
+  });
+});
+
+/** A definition repository listing one definition per given type. */
+function definitionsOfTypes(types: string[]) {
+  const calls = { count: 0 };
+  const repo = {
+    findAllIncludingAutoGlobal: () => {
+      calls.count++;
+      return Promise.resolve(types.map((t, i) => ({
+        definition: Definition.create({ name: `model-${i}` }),
+        type: ModelType.create(t),
+      })));
+    },
+  };
+  return { repo, calls };
+}
+
+const idle = { definitionId: "def-idle", modelType: "command/shell" };
+
+Deno.test("findMethodRunsOfModel: does not list definitions when every row names its definition", async () => {
+  const { repo, calls } = definitionsOfTypes(["command/shell"]);
+  const sleeperRun = trackerRow({
+    pid: OWNER_PID,
+    definitionId: "def-sleeper",
+  });
+
+  assertEquals(await findMethodRunsOfModel([sleeperRun], idle, repo), {
+    runs: [],
+    unattributed: [],
+  });
+  assertEquals(calls.count, 0);
+});
+
+Deno.test("findMethodRunsOfModel: takes a row with no definition id for the type's only definition", async () => {
+  const { repo, calls } = definitionsOfTypes(["command/shell", "@test/other"]);
+  const legacy = trackerRow({ pid: OWNER_PID });
+
+  assertEquals(await findMethodRunsOfModel([legacy], idle, repo), {
+    runs: [legacy],
+    unattributed: [],
+  });
+  assertEquals(calls.count, 1);
+});
+
+Deno.test("findMethodRunsOfModel: leaves a row with no definition id unattributed when the type has two definitions", async () => {
+  const { repo } = definitionsOfTypes(["command/shell", "command/shell"]);
+  const legacy = trackerRow({ pid: OWNER_PID });
+
+  assertEquals(await findMethodRunsOfModel([legacy], idle, repo), {
+    runs: [],
+    unattributed: [legacy],
+  });
+});
+
+Deno.test("findMethodRunsOfModel: leaves a row with no definition id unattributed when the repository cannot list auto-definitions", async () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+
+  assertEquals(await findMethodRunsOfModel([legacy], idle, {}), {
     runs: [],
     unattributed: [legacy],
   });

@@ -24,6 +24,9 @@ import { ActiveRun } from "../src/domain/models/active_run.ts";
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
 import { methodRunsOfModel } from "../src/cli/commands/model_cancel.ts";
 
+// The unit tests build rows in memory. These read them back from the store,
+// so a NULL definition_id column has to arrive as the null the selection
+// treats as a row an older swamp registered.
 const MODEL_TYPE = "command/shell";
 
 async function withTracker(
@@ -86,7 +89,7 @@ function selectedIds(
   };
 }
 
-Deno.test("model cancel scope: an idle model selects nothing while another model of its type runs (swamp-club#3244)", async () => {
+Deno.test("methodRunsOfModel: over a real tracker, an idle model selects nothing while another model of its type runs (swamp-club#3244)", async () => {
   await withTracker((tracker) => {
     const sleeperRun = registerRun(tracker, "def-sleeper");
 
@@ -98,7 +101,7 @@ Deno.test("model cancel scope: an idle model selects nothing while another model
   });
 });
 
-Deno.test("model cancel scope: a tracker row with no definition id is selected only for the type's sole definition", async () => {
+Deno.test("methodRunsOfModel: over a real tracker, a row with no definition id is selected only for the type's sole definition", async () => {
   await withTracker((tracker, dbPath) => {
     const legacyRun = registerRun(tracker, "def-sleeper");
     forgetDefinition(dbPath, legacyRun);

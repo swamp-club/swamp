@@ -67,7 +67,8 @@ records the definition it executes in `definition_id`, and
 `swamp model cancel <model>` selects a model's runs by it, never by
 `model_type` alone. A row an older swamp registered has none: the named
 cancel takes it only when the model is the sole definition of its type, and
-otherwise leaves it to `swamp model cancel --all`. The
+otherwise leaves it to `swamp model cancel --all`. The count covers the
+definition files that read at cancel time, auto-definitions included. The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
 days are purged at startup, except a workflow or method row reaped
 `interrupted` with no reason (`cancel_reason` null): its workflow or method run
