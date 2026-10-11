@@ -26,8 +26,10 @@ import { UserError } from "../errors.ts";
  * auto-resolution can report an outage instead of "no extension publishes
  * this type" (swamp-club#3243).
  *
- * Reported under the name `UserError` so every command that surfaces it
- * prints what it printed before the type existed.
+ * Reported under the name `UserError`, with the same messages and no code,
+ * so CLI error output is what it was before the type existed. Readers of
+ * `constructor.name` (telemetry's errorType, serve's exceptionType) see
+ * `RegistryUnavailableError`.
  */
 export class RegistryUnavailableError extends UserError {
   constructor(message: string, options?: { cause?: unknown }) {

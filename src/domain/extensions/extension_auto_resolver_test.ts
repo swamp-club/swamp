@@ -370,6 +370,8 @@ async function resolveAgainstFailingLookup(
         ? Promise.reject(error)
         : Promise.resolve(null);
     },
+    // Search rejects in both cases: with "getExtension" failing, the direct
+    // lookup throws first and search is never reached.
     searchExtensions() {
       return Promise.reject(error);
     },
