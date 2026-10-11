@@ -1348,7 +1348,12 @@ connection error with two guards:
   `token_not_found`, `enrollment_allowance_exhausted`), and these plus
   `protocol_mismatch` and `invalid_token` make up
   `PERMANENT_ENROLLMENT_ERROR_CODES` (`src/domain/remote/protocol.ts`). Any
-  other coded rejection, such as `token_unreadable`, is retried. An uncoded
+  other coded rejection, such as `token_unreadable` or `token_not_synced`, is
+  retried. The gateway looks up the token's definition before `redeem` and runs
+  it pinned to that id, so enrollment never creates a token definition. Without
+  a definition it answers `token_not_synced` when the token's record is already
+  in the local cache (an HA peer minted it and this replica has not pulled the
+  definition yet), and `token_not_found` otherwise (swamp-club#3074). An uncoded
   error (from an orchestrator that predates the codes, or the transport) is
   matched against seven phrases (`revoked`, `expired`, `does not match`,
   `already bound`, `protocol version`, `does not exist` and
