@@ -44,7 +44,9 @@
  *   caller that must retry checkpoints first.
  * - A refusal (`CommitRejectedError`) surfaces unchanged, and the refused
  *   partition's changes are dropped: they can never land as they are, and
- *   keeping them would block every partition staged after them.
+ *   keeping them would block every partition staged after them. A
+ *   `seq-gap` is the exception: another append moved the head first, so the
+ *   partition stays pending and is rebuilt at the new head.
  * - `abandon` discards staged and pending changes. Chunks already stored
  *   stay unreferenced until chunk garbage collection reclaims them.
  *
@@ -115,7 +117,11 @@ export interface CommitLogUnitOptions {
   readonly writer: CommitWriter;
   /** The writer's fence (its solo writer lock's or leader lease's), if any. */
   readonly fence?: number;
-  /** Bounds content uploads; an abort rejects the commit in progress. */
+  /**
+   * Bounds content uploads for the whole operation the unit serves, every
+   * checkpoint and the final commit included; an abort rejects the commit
+   * in progress.
+   */
   readonly signal: AbortSignal;
   /** The clock a commit's `at` is read from; the system clock by default. */
   readonly clock?: () => Date;
@@ -248,8 +254,14 @@ export function createCommitLogUnitOfWork(
           await appendGroup(pending[0], options, clock);
         } catch (error) {
           // A refused commit can never land as it is: drop it, so the
-          // partitions staged after it can still commit.
-          if (error instanceof CommitRejectedError) pending = pending.slice(1);
+          // partitions staged after it can still commit. A seq gap only
+          // means another append moved the head first; the group stays
+          // pending and is rebuilt at the new head.
+          if (
+            error instanceof CommitRejectedError && error.reason !== "seq-gap"
+          ) {
+            pending = pending.slice(1);
+          }
           throw error;
         }
         pending = pending.slice(1);
@@ -310,7 +322,6 @@ export function createCommitLogUnitOfWork(
         throw new Error(`unit of work already ${ended}`);
       }
       record([checked]);
-      await Promise.resolve();
     },
     stage(change: StagedChange): Promise<void> {
       return Promise.reject(new PathOnlyChangeRefusedError(change));
@@ -393,7 +404,7 @@ async function checkChange(change: TypedChange): Promise<TypedChange> {
     intent,
     // A copy, so a caller reusing its buffer cannot change what commits.
     content: put.content instanceof Uint8Array
-      ? put.content.slice()
+      ? new Uint8Array(put.content)
       : put.content,
   });
   return Object.freeze({ partition: change.partition, put: frozen });

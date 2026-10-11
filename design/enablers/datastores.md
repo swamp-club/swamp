@@ -2338,7 +2338,9 @@ is released on every outcome and its entry dropped when its queue drains.
   durable; a caller that must retry checkpoints first.
 - **Refusals.** `CommitRejectedError` surfaces unchanged, and the refused
   partition's changes are dropped: they can never land as they are, and
-  keeping them would block every partition staged after them.
+  keeping them would block every partition staged after them. A `seq-gap`
+  is the exception: another append moved the head first, so the partition
+  stays pending and the next checkpoint rebuilds it at the new head.
 - **Abandon** discards staged and pending changes (decision 4). Chunks
   already stored stay for chunk garbage collection.
 - **Checkpoint** commits what is staged so far and keeps the unit open
