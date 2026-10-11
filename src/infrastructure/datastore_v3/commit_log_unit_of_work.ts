@@ -46,9 +46,16 @@
  *   partition's changes are dropped: they can never land as they are, and
  *   keeping them would block every partition staged after them. A
  *   `seq-gap` is the exception: another append moved the head first, so the
- *   partition stays pending and is rebuilt at the new head.
- * - `abandon` discards staged and pending changes. Chunks already stored
- *   stay unreferenced until chunk garbage collection reclaims them.
+ *   append is rebuilt at the new head once more in the same flush, and if
+ *   that also meets a gap the partition stays pending.
+ * - `abandon` discards staged and pending changes. A checkpoint already in
+ *   progress finishes first, so what it commits stays committed. Chunks
+ *   already stored stay unreferenced until chunk garbage collection
+ *   reclaims them.
+ * - Run partitions commit after the others of the same flush, but a
+ *   partition dropped as refused does not hold back a run partition a later
+ *   checkpoint commits: keeping a run record from naming refused data is
+ *   left to the issue that stages run records (decision 7).
  *
  * **The outbox seam.** The unit appends through a {@link CommitSink}. In
  * Phase 3 that is the local `CommitStore`; Phase 4 passes the outbox, which
@@ -58,7 +65,8 @@
  * the same hook as `parent` is its child. A child keeps its changes to
  * itself: its `commit` hands them, in order, to its nearest open ancestor,
  * and its `abandon` discards them. A change staged after the child committed
- * goes to that ancestor; one staged after it was abandoned is refused. Only a root commits to the log, and
+ * goes to that ancestor; one staged after it was abandoned is refused. Only
+ * a root commits to the log, and
  * `checkpoint` on a child throws. A root's checkpoint commits what has been
  * handed to it so far; a child still open keeps its changes until it ends.
  *
@@ -462,21 +470,42 @@ async function appendGroup(
     options.namespace,
     group.partition,
     async () => {
-      const head = await options.sink.head(options.namespace, group.partition);
-      const commit = Commit.create({
-        seq: head.seq + 1,
-        partition: group.partition,
-        namespace: options.namespace,
-        txnId: group.txnId,
-        writer: options.writer,
-        ...(options.fence === undefined ? {} : { fence: options.fence }),
-        at: clock().toISOString(),
-        ops,
-      });
-      await options.sink.append(commit);
+      // A seq gap means another writer moved the head between the read and
+      // the append; one rebuild at the new head usually lands it.
+      for (let attempt = 1;; attempt++) {
+        const head = await options.sink.head(
+          options.namespace,
+          group.partition,
+        );
+        const commit = Commit.create({
+          seq: head.seq + 1,
+          partition: group.partition,
+          namespace: options.namespace,
+          txnId: group.txnId,
+          writer: options.writer,
+          ...(options.fence === undefined ? {} : { fence: options.fence }),
+          at: clock().toISOString(),
+          ops,
+        });
+        try {
+          await options.sink.append(commit);
+          return;
+        } catch (error) {
+          if (
+            attempt < SEQ_GAP_ATTEMPTS &&
+            error instanceof CommitRejectedError && error.reason === "seq-gap"
+          ) {
+            continue;
+          }
+          throw error;
+        }
+      }
     },
   );
 }
+
+/** How many times one flush tries a partition's append through seq gaps. */
+const SEQ_GAP_ATTEMPTS = 2;
 
 /** Builds a pending put's op, storing its content inline or as chunks. */
 async function storePut(
@@ -605,7 +634,7 @@ async function withPartitionLock(
   }
 }
 
-/** The queue length of a sink's partition locks; for tests. */
+/** How many partitions of a sink have an append queued or running; for tests. */
 export function partitionLockCountForTesting(sink: CommitSink): number {
   return partitionLocks.get(sink)?.size ?? 0;
 }

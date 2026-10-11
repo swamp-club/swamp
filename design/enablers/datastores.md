@@ -2339,10 +2339,17 @@ is released on every outcome and its entry dropped when its queue drains.
 - **Refusals.** `CommitRejectedError` surfaces unchanged, and the refused
   partition's changes are dropped: they can never land as they are, and
   keeping them would block every partition staged after them. A `seq-gap`
-  is the exception: another append moved the head first, so the partition
-  stays pending and the next checkpoint rebuilds it at the new head.
-- **Abandon** discards staged and pending changes (decision 4). Chunks
-  already stored stay for chunk garbage collection.
+  is the exception: another append moved the head first, so the append is
+  rebuilt at the new head once more in the same flush, and if that also
+  meets a gap the partition stays pending for the next checkpoint.
+- **Abandon** discards staged and pending changes (decision 4). A
+  checkpoint already in progress finishes first, so what it commits stays
+  committed. Chunks already stored stay for chunk garbage collection.
+- **Run records and refusals.** Run partitions commit after the others of
+  the same flush, but a data partition dropped as refused does not hold back
+  a run partition that a later checkpoint commits. Keeping a run record from
+  naming refused data is left to the issue that stages run records
+  (decision 7).
 - **Checkpoint** commits what is staged so far and keeps the unit open
   (decision 6).
 

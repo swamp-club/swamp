@@ -515,29 +515,52 @@ Deno.test("createCommitLogUnitOfWork: a refused partition is dropped, so the nex
   assertEquals(sink.commitsOf(MODEL).length, 1);
 });
 
-Deno.test("createCommitLogUnitOfWork: a seq gap keeps the partition pending, and the next checkpoint lands it at the new head", async () => {
+/** Makes another writer append to MODEL before each of the next `n` appends. */
+function raceNext(sink: MemorySink, n: number): void {
+  let left = n;
+  let inside = false;
+  sink.beforeAppend = async () => {
+    if (left === 0 || inside) return;
+    left--;
+    inside = true;
+    try {
+      const head = await sink.head("", MODEL);
+      await sink.append(modelCommit(head.seq + 1, [await savePut("other", 1)], {
+        txnId: crypto.randomUUID(),
+      }));
+    } finally {
+      inside = false;
+    }
+  };
+}
+
+Deno.test("createCommitLogUnitOfWork: a seq gap is retried at the new head within the same flush", async () => {
   const sink = new MemorySink();
   const uow = createCommitLogUnitOfWork(
     contextHook(),
     unitOptions(sink, memory()),
   );
   await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
-  let raced = false;
-  sink.beforeAppend = async () => {
-    if (raced) return;
-    raced = true;
-    // Another writer appends between this unit's head read and its append.
-    await sink.append(modelCommit(1, [await savePut("other", 1)], {
-      txnId: "other-writer",
-    }));
-  };
+  raceNext(sink, 1);
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL).map((commit) => commit.seq), [1, 2]);
+});
+
+Deno.test("createCommitLogUnitOfWork: a seq gap on every attempt keeps the partition pending for the next checkpoint", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  raceNext(sink, 2);
   const error = await assertRejects(
     () => uow.checkpoint(),
     CommitRejectedError,
   );
   assertEquals(error.reason, "seq-gap");
   await uow.commit();
-  assertEquals(sink.commitsOf(MODEL).map((commit) => commit.seq), [1, 2]);
+  assertEquals(sink.commitsOf(MODEL).map((commit) => commit.seq), [1, 2, 3]);
 });
 
 Deno.test("createCommitLogUnitOfWork: a failed commit ends the unit, so retrying means checkpointing first", async () => {
