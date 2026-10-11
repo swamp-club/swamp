@@ -3948,7 +3948,11 @@ lock directly, for when a crashed process left a lock that has not expired.
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
   contamination (the last via the optional `repairNamespaceContamination?()` on
-  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`).
+  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). The
+  completeness check walks the data dir every command reads
+  (`resolvePath("data")`: the external path or the cache), not the repo's own
+  `.swamp/data`, which holds only the catalog when the datastore lives
+  elsewhere (swamp-club#3238).
 
 ## Setup and Migration
 
@@ -3966,13 +3970,28 @@ swamp datastore setup extension @swamp/s3-datastore \
 Each setup command (`src/libswamp/datastores/setup.ts`):
 
 1. Checks the target is accessible (writable directory or reachable S3 bucket).
-2. Migrates existing runtime data from `.swamp/` to the new location (skipped
-   with `--skip-migration`). A filesystem destination whose real path is the
-   migration source (for example `--path .swamp`) has nothing to move: setup
-   skips the copy, the verification and the cleanup, and only writes the
-   datastore block (swamp-club#3162). Without that, the copy fails on files
-   such as `_catalog.db`, and a copy with no failures would let cleanup delete
-   the datastore itself.
+2. Migrates existing runtime data from the current datastore to the new
+   location (skipped with `--skip-migration`). The source is the current
+   datastore's data: the outgoing extension datastore's cache, the root of a
+   filesystem datastore outside the repo (`externalFilesystemDatastoreRoot`),
+   or `.swamp/` (swamp-club#3238). A filesystem datastore root that is missing,
+   or that holds none of the datastore subdirs (an unmounted mount point),
+   stops setup before anything moves or `.swamp.yaml` changes; it is never
+   replaced by `.swamp/`. A destination whose real path is the migration
+   source (for example `--path .swamp` on a repo already there) has nothing to
+   move: setup skips the copy, the verification and the cleanup, and only
+   writes the datastore block (swamp-club#3162). A destination inside one of
+   the source's migrated subdirs is refused, since the copy would recurse into
+   it. The catalog (`data/_catalog.db` and its sidecars, `CATALOG_FILES`) is a
+   local index and is never copied. The verification checks that every source
+   file arrived (regular files with the same size, symlinks by existence), so
+   local files a `.swamp/` destination already holds, such as method-run logs,
+   do not fail it.
+   Data moved from a filesystem datastore outside the repo is copied, never
+   cleaned up from the old path, whatever the destination: other repositories
+   may share that path, and deleting it would take their data too. The
+   completed result then carries `sourceKept: true`, and log mode prints
+   "Copied from" instead of "Moved from".
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
@@ -3986,6 +4005,11 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    - **filesystem**: updates `.swamp.yaml`, then removes migrated directories.
      A crash in between leaves harmless orphaned source data, not a repo
      pointing at a cleaned-up datastore.
+
+   Once `.swamp.yaml` names a different datastore, setup removes the local
+   catalog so the next command rebuilds it from the new datastore. A kept
+   catalog would miss whatever the new datastore already held
+   (swamp-club#3238).
 
 `setup extension` also takes `--namespace <slug>` and
 `--hydration-strategy full|lazy`, both saved in the datastore block.

@@ -47,6 +47,7 @@ import {
 } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import {
   createDatastoreSetupDeps,
+  type DatastoreSetupDeps,
   datastoreSetupExtension,
 } from "../../libswamp/datastores/setup.ts";
 import {
@@ -155,6 +156,7 @@ import type { DataRecord } from "../../domain/data/data_record.ts";
 import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
   type CustomDatastoreConfig,
+  externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
@@ -200,6 +202,7 @@ import {
 } from "../../infrastructure/persistence/installed_entries.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -1223,6 +1226,25 @@ export async function handleExtensionUpdate(
   }
 }
 
+/**
+ * Datastore setup deps for serve. Serve holds the catalog open, so setup
+ * marks it for a rebuild instead of deleting its files: a delete fails on
+ * Windows after `.swamp.yaml` is already written, and on POSIX the open
+ * connection would later unlink the WAL a rebuilt catalog uses.
+ */
+export function serveDatastoreSetupDeps(
+  repoDir: string,
+  catalogStore: Pick<CatalogStore, "invalidate">,
+): DatastoreSetupDeps {
+  return {
+    ...createDatastoreSetupDeps(repoDir, resolveConfigTierPath),
+    invalidateCatalog: () => {
+      catalogStore.invalidate();
+      return Promise.resolve();
+    },
+  };
+}
+
 export async function handleDatastoreSetupExtension(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1247,7 +1269,20 @@ export async function handleDatastoreSetupExtension(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
+    const deps = serveDatastoreSetupDeps(
+      repoDir,
+      ctx.repoContext.catalogStore,
+    );
+    // A filesystem datastore outside the repo is what setup moves from
+    // (swamp-club#3238). An unresolvable one leaves setup on .swamp/.
+    const outgoingDatastorePath = await resolveDatastoreConfig(
+      marker,
+      undefined,
+      repoDir,
+    ).then(
+      (config) => externalFilesystemDatastoreRoot(config, swampPath(repoDir)),
+      () => undefined,
+    );
 
     const MAX_TIMEOUT_SECONDS = 21600;
     const syncTimeoutMsOverride = payload.timeout != null
@@ -1268,6 +1303,7 @@ export async function handleDatastoreSetupExtension(
           | undefined,
         namespace: payload.namespace,
         syncTimeoutMsOverride,
+        outgoingDatastorePath,
       }),
       {
         validating: () => {},

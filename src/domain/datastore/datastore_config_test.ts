@@ -22,12 +22,14 @@ import { withMockedEnv } from "../../infrastructure/persistence/path_test_helper
 import { join } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
+  CATALOG_FILES,
   classifyInRepoConfig,
   type CustomDatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_SYNC_TIMEOUT_MS,
+  externalFilesystemDatastoreRoot,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
@@ -462,4 +464,66 @@ Deno.test("planConfigTierMerge: no conflicts leaves everything to migrate", () =
     cleanupKeeps: [],
     keptPaths: [],
   });
+});
+
+Deno.test("externalFilesystemDatastoreRoot: is undefined for the repo's own .swamp", () => {
+  const swampDir = join("/repo", ".swamp");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: swampDir },
+      swampDir,
+    ),
+    undefined,
+  );
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: join("/repo", "sub", "..", ".swamp") },
+      swampDir,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: returns a path outside the repo", () => {
+  const external = join("/mnt", "nas", "store");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: external },
+      join("/repo", ".swamp"),
+    ),
+    external,
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: appends the namespace", () => {
+  const external = join("/mnt", "nas", "store");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: external, namespace: "team-a" },
+      join("/repo", ".swamp"),
+    ),
+    join(external, "team-a"),
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: is undefined for an extension datastore", () => {
+  const config: CustomDatastoreConfig = {
+    type: "@swamp/s3-datastore",
+    config: {},
+    datastorePath: "s3://bucket",
+    cachePath: join("/home", "u", ".swamp", "repos", "id"),
+  };
+  assertEquals(
+    externalFilesystemDatastoreRoot(config, join("/repo", ".swamp")),
+    undefined,
+  );
+});
+
+Deno.test("CATALOG_FILES: names the catalog and its sidecars under data", () => {
+  assertEquals(CATALOG_FILES, [
+    join("data", "_catalog.db"),
+    join("data", "_catalog.db-journal"),
+    join("data", "_catalog.db-wal"),
+    join("data", "_catalog.db-shm"),
+  ]);
 });
