@@ -62,12 +62,12 @@
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
 } from "../src/domain/datastore/datastore_config.ts";
-import { RESERVED_NAMESPACE_NAMES } from "../src/domain/data/namespace.ts";
+import { restoreNamespace } from "../src/domain/data/namespace.ts";
 import {
   MATERIALISED_SUBDIRS,
   READ_MODEL_STATE_DIR,
@@ -302,11 +302,10 @@ Deno.test("datastore v3: the read model's state directory is never a datastore d
     false,
     `${READ_MODEL_STATE_DIR} must stay out of DEFAULT_DATASTORE_SUBDIRS and ALWAYS_LOCAL_SUBDIRS: it holds one checkout's cursor and must never be synced`,
   );
-  // Reserved names are built from the two lists above; this pins that it
-  // stays so if a name is ever reserved on its own. A namespace named after
-  // the state directory would make it that namespace's cache root, though
-  // the guard's state-directory check would still refuse its keys.
-  assertEquals(RESERVED_NAMESPACE_NAMES.has(READ_MODEL_STATE_DIR), false);
+  // No namespace may be named after the state directory, or its cache root
+  // would be the state directory. Namespace validation refuses any name
+  // starting with `_`, which this pins for the state directory's name.
+  assertThrows(() => restoreNamespace(READ_MODEL_STATE_DIR));
   assertEquals(MATERIALISED_SUBDIRS.has(READ_MODEL_STATE_DIR), false);
   for (const dir of MATERIALISED_SUBDIRS) {
     assertEquals(

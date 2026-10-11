@@ -178,7 +178,9 @@ export class SqliteReadModel implements ReadModel {
         }
         if (page.length < this.#pageSize) break;
       }
-      // The whole feed is applied: the index holds every live record.
+      // The whole feed is applied: the index holds every live record. This is
+      // its own transaction; a crash before it leaves the index marked
+      // incomplete until the next catch-up, which only delays reads.
       this.#state.markComplete();
       return { applied, cursor: this.#state.cursor() };
     });
@@ -398,7 +400,10 @@ export class SqliteReadModel implements ReadModel {
 /**
  * Each key a commit touches, with the op that leaves it: ops in one commit
  * see each other's effects, so only the last put or tombstone of a key
- * matters. In first-touched order.
+ * matters. Removals come first, in first-touched order, then writes: each
+ * key's final state is settled, so the order only decides the filesystem
+ * path a write meets, and a removal can only clear the way for a write
+ * (a put of `data/x` needs a removed `data/x/y`'s directory gone).
  */
 function finalKeyStates(commit: Commit): KeyChange[] {
   const changes = new Map<string, KeyChange>();
@@ -410,7 +415,11 @@ function finalKeyStates(commit: Commit): KeyChange[] {
       changes.set(key, { key: op.key, put });
     }
   }
-  return [...changes.values()];
+  const all = [...changes.values()];
+  return [
+    ...all.filter((change) => change.put === null),
+    ...all.filter((change) => change.put !== null),
+  ];
 }
 
 function appliedRecord(put: PutOp | null): AppliedRecord | null {

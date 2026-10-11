@@ -605,6 +605,57 @@ Deno.test("read model: skips a put where a file and a directory claim one path, 
   });
 });
 
+Deno.test("read model: a commit's tombstones clear the way for its puts", async () => {
+  await withV3Env(async (env) => {
+    const root = swampPath(env.repoDir);
+    const intent = modelIntent({ kind: "data.save", name: "x", version: 1 });
+    const put = (key: string) =>
+      putOp({ intent, key: RecordKey.create(key), inline: base64(key) });
+    const tombstone = (key: string) =>
+      tombstoneOp({ intent, key: RecordKey.create(key) });
+    await env.store.append(commitOf({
+      seq: 1,
+      partition: PARTITION,
+      namespace: "",
+      ops: [await put("data/x/y"), await put("data/f")],
+    }));
+    // The put of data/x comes first, but data/x is free only once the
+    // tombstone of data/x/y has removed the directory under it; likewise
+    // data/f/g needs the file data/f gone.
+    await env.store.append(commitOf({
+      seq: 2,
+      partition: PARTITION,
+      namespace: "",
+      ops: [
+        await put("data/x"),
+        tombstone("data/x/y"),
+        await put("data/f/g"),
+        tombstone("data/f"),
+      ],
+    }));
+    const readModel = env.openReadModel();
+    try {
+      assertEquals(await readModel.catchUp(signal()), {
+        applied: 2,
+        cursor: 2,
+      });
+      assertEquals(await Deno.readTextFile(join(root, "data", "x")), "data/x");
+      assertEquals(
+        await Deno.readTextFile(join(root, "data", "f", "g")),
+        "data/f/g",
+      );
+      assertEquals(
+        (await readModel.liveRecords("", PARTITION)).map((r) =>
+          r.key.toString()
+        ),
+        ["data/f/g", "data/x"],
+      );
+    } finally {
+      await readModel.close();
+    }
+  });
+});
+
 Deno.test({
   name:
     "read model: refuses a key a symlink in the cache routes into the state directory",

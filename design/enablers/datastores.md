@@ -2478,7 +2478,9 @@ catalog must equal v2's.
 below its partition's applied seq is skipped (`catchUpPartition` applied it
 already), so a catch-up never rolls a file back to an older put. A commit's
 ops see each other's effects, so only each key's last put or tombstone is
-materialised. Effects come in a fixed order:
+materialised, removals before writes, so a removal can clear the path a write
+needs (a put of `data/x` beside a tombstone of `data/x/y`). Effects come in a
+fixed order:
 
 1. **Files.** A put is written under the namespace's cache root: inline
    bytes, or streamed from `ChunkStore.read`. The content goes to a temp file
