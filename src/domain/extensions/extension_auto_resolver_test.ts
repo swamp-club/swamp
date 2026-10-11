@@ -36,6 +36,7 @@ import { ModelType } from "../models/model_type.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
 import { datastoreTypeRegistry } from "../datastore/datastore_type_registry.ts";
 import { z } from "zod";
+import type { ExtensionContentMetadata } from "./extension_content.ts";
 
 /** Creates a no-op output port that records calls for assertions. */
 function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
@@ -125,7 +126,7 @@ function createMockInstaller(
   inspection: InstallationInspection = { state: "missing" },
   failedLocalSourceTypes: string[] = [],
   options: {
-    /** What providesType answers. */
+    /** What providesType answers; by default, whether install() has run. */
     providesType?: boolean;
     /** Error withInstallLock rejects with instead of running fn. */
     lockError?: Error;
@@ -153,7 +154,8 @@ function createMockInstaller(
       }
     },
     providesType() {
-      return Promise.resolve(options.providesType ?? false);
+      // By default an install provides the type and nothing else does.
+      return Promise.resolve(options.providesType ?? installCalls.length > 0);
     },
     inspectInstallation(extensionName: string) {
       inspectCalls.push(extensionName);
@@ -1435,4 +1437,256 @@ Deno.test("ExtensionAutoResolver.describeTypeInRegistry - null when the version 
   const { resolver } = createDescribeResolver(lookup);
 
   assertEquals(await resolver.describeTypeInRegistry("@swamp/1password"), null);
+});
+
+// ---------------------------------------------------------------------------
+// Search hits are checked against published metadata (swamp-club#3246)
+// ---------------------------------------------------------------------------
+
+type ProvidedKind = "models" | "vaults" | "datastores" | "webhooks";
+
+/** Content metadata whose `kind` list provides each of `types`. */
+function metadataProviding(
+  kind: ProvidedKind,
+  ...types: string[]
+): ExtensionContentMetadata {
+  const metadata: ExtensionContentMetadata = {
+    models: [],
+    extensions: [],
+    workflows: [],
+    vaults: [],
+    datastores: [],
+    reports: [],
+    webhooks: [],
+    skills: [],
+  };
+  for (const type of types) {
+    const common = { fileName: "x.ts", type, name: type, description: "" };
+    if (kind === "models") {
+      metadata.models.push({
+        fileName: "x.ts",
+        type,
+        version: "1",
+        globalArguments: [],
+        methods: [],
+        resources: [],
+        files: [],
+      });
+    } else if (kind === "webhooks") {
+      metadata.webhooks.push(common);
+    } else {
+      metadata[kind].push({
+        ...common,
+        hasConfigSchema: false,
+        configFields: [],
+      });
+    }
+  }
+  return metadata;
+}
+
+/**
+ * A lookup with no direct-name match whose search returns `hits` in rank
+ * order, each with the given published metadata (absent = no detail).
+ */
+function createSearchLookup(
+  hits: string[],
+  detail: Record<string, ExtensionContentMetadata | null>,
+  options: { detailError?: Error } = {},
+): ExtensionLookupPort & {
+  detailCalls: string[];
+  searchParams: { perPage?: number }[];
+} {
+  const detailCalls: string[] = [];
+  const searchParams: { perPage?: number }[] = [];
+  return {
+    detailCalls,
+    searchParams,
+    getExtension(name: string) {
+      if (!hits.includes(name)) return Promise.resolve(null);
+      return Promise.resolve({
+        name,
+        description: name,
+        latestVersion: "2026.03.16.1",
+      });
+    },
+    searchExtensions(params) {
+      searchParams.push({ perPage: params.perPage });
+      return Promise.resolve({ extensions: hits.map((name) => ({ name })) });
+    },
+    getLatestVersionDetail(name: string) {
+      detailCalls.push(name);
+      if (options.detailError) return Promise.reject(options.detailError);
+      if (!(name in detail)) return Promise.resolve(null);
+      return Promise.resolve({ contentMetadata: detail[name] });
+    },
+  };
+}
+
+function createSearchResolver(lookup: ExtensionLookupPort) {
+  const installer = createMockInstaller();
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: lookup,
+    extensionInstaller: installer,
+    output,
+  });
+  return { resolver, installer, output };
+}
+
+Deno.test("ExtensionAutoResolver - skips a search hit that does not provide the type", async () => {
+  const lookup = createSearchLookup(
+    ["@swamp/gcp/realtimebidding", "@swamp/aws/ec2"],
+    {
+      "@swamp/gcp/realtimebidding": metadataProviding(
+        "models",
+        "@swamp/gcp/realtimebidding/bidders",
+      ),
+      "@swamp/aws/ec2": metadataProviding("models", "@swamp/ec2-instance"),
+    },
+  );
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/ec2-instance"), true);
+  assertEquals(installer.installCalls, ["@swamp/aws/ec2"]);
+  assertEquals(lookup.detailCalls, [
+    "@swamp/gcp/realtimebidding",
+    "@swamp/aws/ec2",
+  ]);
+  assertEquals(lookup.searchParams, [{ perPage: 5 }]);
+});
+
+Deno.test("ExtensionAutoResolver - reports notFound and installs nothing when no search hit provides the type", async () => {
+  const lookup = createSearchLookup(["@swamp/gcp/realtimebidding"], {
+    "@swamp/gcp/realtimebidding": metadataProviding(
+      "models",
+      "@swamp/gcp/realtimebidding/bidders",
+    ),
+  });
+  const { resolver, installer, output } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/definitely-not-real"), false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(installer.inspectCalls, []);
+  assertEquals(output.calls, [
+    "searching:@swamp/definitely-not-real",
+    "notFound:@swamp/definitely-not-real",
+  ]);
+});
+
+for (const kind of ["vaults", "datastores", "webhooks"] as const) {
+  Deno.test(`ExtensionAutoResolver - a search hit providing the type among its ${kind} is installed`, async () => {
+    const lookup = createSearchLookup(["@swamp/provider"], {
+      "@swamp/provider": metadataProviding(kind, "@swamp/the-type"),
+    });
+    const { resolver, installer } = createSearchResolver(lookup);
+
+    assertEquals(await resolver.resolve("@swamp/the-type"), true);
+    assertEquals(installer.installCalls, ["@swamp/provider"]);
+  });
+}
+
+Deno.test("ExtensionAutoResolver - matches a search hit's published type ignoring case", async () => {
+  const lookup = createSearchLookup(["@swamp/provider"], {
+    "@swamp/provider": metadataProviding("models", "@swamp/My-Type"),
+  });
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/my-type"), true);
+  assertEquals(installer.installCalls, ["@swamp/provider"]);
+});
+
+Deno.test("ExtensionAutoResolver - matches a search hit's published type in normalized form", async () => {
+  const lookup = createSearchLookup(["@swamp/provider"], {
+    "@swamp/provider": metadataProviding(
+      "models",
+      "   ",
+      "@swamp/Azure.Firewall",
+    ),
+  });
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/azure/firewall"), true);
+  assertEquals(installer.installCalls, ["@swamp/provider"]);
+});
+
+Deno.test("ExtensionAutoResolver - skips a search hit without published detail or metadata", async () => {
+  const lookup = createSearchLookup(
+    ["@swamp/no-detail", "@swamp/no-metadata", "@swamp/provider"],
+    {
+      "@swamp/no-metadata": null,
+      "@swamp/provider": metadataProviding("models", "@swamp/the-type"),
+    },
+  );
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/the-type"), true);
+  assertEquals(installer.installCalls, ["@swamp/provider"]);
+});
+
+Deno.test("ExtensionAutoResolver - a registry outage while checking search hits is a network error", async () => {
+  const lookup = createSearchLookup(["@swamp/provider"], {}, {
+    detailError: new RegistryUnavailableError("upstream unavailable"),
+  });
+  const { resolver, installer, output } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/the-type"), false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, [
+    "searching:@swamp/the-type",
+    "networkError:@swamp/the-type",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - a direct candidate is installed without fetching its metadata", async () => {
+  const lookup = createSearchLookup(["@swamp/aws"], {});
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/aws/ec2/instance"), true);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
+  assertEquals(lookup.detailCalls, []);
+  assertEquals(lookup.searchParams, []);
+});
+
+Deno.test("ExtensionAutoResolver - reports a fresh install that does not provide the type", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.03.16.1",
+    { state: "missing" },
+    [],
+    { providesType: false },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": { description: "AWS", latestVersion: "2026.03.16.1" },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  assertEquals(await resolver.resolve("@swamp/aws/ecc2"), false);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
+  assertEquals(output.calls, [
+    "searching:@swamp/aws/ecc2",
+    "installing:@swamp/aws@2026.03.16.1",
+    "installedWithoutType:@swamp/aws:@swamp/aws/ecc2:2026.03.16.1:-",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver.describeTypeInRegistry - describes a search-found type from the hit that provides it", async () => {
+  const provider = metadataProviding("vaults", "@swamp/the-vault");
+  const lookup = createSearchLookup(["@swamp/unrelated", "@swamp/provider"], {
+    "@swamp/unrelated": metadataProviding("models", "@swamp/other"),
+    "@swamp/provider": provider,
+  });
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(
+    await resolver.describeTypeInRegistry("@swamp/the-vault"),
+    provider,
+  );
+  assertEquals(installer.installCalls, []);
 });
