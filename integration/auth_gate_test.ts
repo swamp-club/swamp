@@ -637,6 +637,7 @@ function fleetGateway(gatePass: () => string | undefined): Fleet {
       transitions.push(input.methodName);
       return Promise.resolve();
     },
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
     readTokenExpiresAt: () => Promise.resolve(null),
     readTokenRecord: (name) =>
       Promise.resolve({

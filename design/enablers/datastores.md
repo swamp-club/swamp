@@ -652,7 +652,10 @@ An idle peer sees committed output within one polling interval of it reaching
 the remote. Under steady run load it can take about four intervals: three
 skips, then an escalated cycle. The same bound applies to changes reaching the
 AccessDataPoller, and to a newly minted token being accepted by a peer: until
-the peer's next pull, it rejects the token as unknown. The query catalog is
+the peer's next pull, it rejects the token as unknown. A worker enrolling on a
+peer that already has an enrollment token's record but not its definition is
+refused as retryable (`token_not_synced`), and the peer never creates a
+definition of its own for the token. The query catalog is
 invalidated only after a successful pull that reports changes, so quiet cycles
 keep fast cached reads.
 

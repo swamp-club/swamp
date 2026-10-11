@@ -1214,6 +1214,7 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
     graceWindowMs: 60_000,
     onWorkerRemoved: (worker) => service.notifyWorkerRemoved(worker),
     runModelMethod: () => Promise.resolve(),
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
     readTokenExpiresAt: () => Promise.resolve(null),
     readTokenRecord: (name) =>
       Promise.resolve({
