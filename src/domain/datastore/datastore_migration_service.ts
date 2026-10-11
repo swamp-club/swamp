@@ -161,10 +161,18 @@ async function copyDirectory(
 }
 
 /**
- * Verifies a migration by comparing file counts between source and destination.
+ * Verifies a migration by checking that every source file arrived at the
+ * destination.
+ *
+ * A regular file must exist there with the same size. A symlink only has to
+ * exist: {@link migrateDatastore} rewrites numeric symlinks as text files.
+ * Files that only the destination holds are ignored. A `.swamp/` destination
+ * keeps local files such as method-run logs, which a datastore path never
+ * has (swamp-club#3238).
  *
  * @param skip The same relative paths passed to {@link migrateDatastore};
- *   they are left out of both counts.
+ *   they are left out of the check.
+ * @returns `sourceCount` source files, of which `destCount` arrived.
  */
 export async function verifyMigration(
   sourceDir: string,
@@ -173,40 +181,63 @@ export async function verifyMigration(
   skip: readonly string[] = [],
 ): Promise<{ valid: boolean; sourceCount: number; destCount: number }> {
   const directories = getDatastoreDirectories(config);
-  const sourceSkipped = skipSet(sourceDir, skip);
-  const destSkipped = skipSet(destDir, skip);
-  let sourceCount = 0;
-  let destCount = 0;
+  const skipped = skipSet(sourceDir, skip);
+  const tally = { sourceCount: 0, destCount: 0 };
 
   for (const subdir of directories) {
-    sourceCount += await countFiles(join(sourceDir, subdir), sourceSkipped);
-    destCount += await countFiles(join(destDir, subdir), destSkipped);
+    await countArrived(
+      join(sourceDir, subdir),
+      join(destDir, subdir),
+      skipped,
+      tally,
+    );
   }
 
   return {
-    valid: sourceCount === destCount,
-    sourceCount,
-    destCount,
+    valid: tally.sourceCount === tally.destCount,
+    ...tally,
   };
 }
 
-async function countFiles(
-  dir: string,
+async function countArrived(
+  src: string,
+  dest: string,
   skipped: ReadonlySet<string>,
-): Promise<number> {
-  if (skipped.has(resolve(dir))) return 0;
-  let count = 0;
+  tally: { sourceCount: number; destCount: number },
+): Promise<void> {
+  if (skipped.has(resolve(src))) return;
+  let entries: Deno.DirEntry[];
   try {
-    for await (const entry of Deno.readDir(dir)) {
-      if (skipped.has(resolve(dir, entry.name))) continue;
-      if (entry.isFile || entry.isSymlink) {
-        count++;
-      } else if (entry.isDirectory) {
-        count += await countFiles(join(dir, entry.name), skipped);
-      }
-    }
+    entries = await Array.fromAsync(Deno.readDir(src));
   } catch {
     // Directory doesn't exist
+    return;
   }
-  return count;
+  for (const entry of entries) {
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+    if (skipped.has(resolve(srcPath))) continue;
+    if (entry.isDirectory) {
+      await countArrived(srcPath, destPath, skipped, tally);
+    } else if (entry.isFile || entry.isSymlink) {
+      tally.sourceCount++;
+      if (await arrived(srcPath, destPath, entry.isSymlink)) {
+        tally.destCount++;
+      }
+    }
+  }
+}
+
+async function arrived(
+  srcPath: string,
+  destPath: string,
+  isSymlink: boolean,
+): Promise<boolean> {
+  try {
+    const destStat = await Deno.lstat(destPath);
+    if (isSymlink) return true;
+    return destStat.isFile && destStat.size === (await Deno.stat(srcPath)).size;
+  } catch {
+    return false;
+  }
 }

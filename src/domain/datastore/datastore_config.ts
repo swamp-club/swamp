@@ -213,6 +213,39 @@ export function getDatastoreDirectories(
 }
 
 /**
+ * The catalog database and its SQLite sidecars, relative to a datastore
+ * root. The catalog is a local index of the datastore, kept in the repo's
+ * own `.swamp/data` whatever the datastore, so datastore setup never copies
+ * it: a copy found on a datastore path is a stale leftover (swamp-club#3238).
+ */
+export const CATALOG_FILES: readonly string[] = [
+  "_catalog.db",
+  "_catalog.db-journal",
+  "_catalog.db-wal",
+  "_catalog.db-shm",
+].map((name) => join("data", name));
+
+/**
+ * The on-disk root a filesystem datastore keeps its tier under
+ * (`{path}/{namespace}` when namespaced), when that root is not the repo's
+ * own `.swamp/`. Datastore setup migrates from it (swamp-club#3238).
+ *
+ * Undefined for an extension datastore, whose data setup reads from its
+ * local cache, and for a root that resolves lexically to `repoSwampDir`.
+ * Setup compares real paths before it acts on the result.
+ */
+export function externalFilesystemDatastoreRoot(
+  config: DatastoreConfig,
+  repoSwampDir: string,
+): string | undefined {
+  if (isCustomDatastoreConfig(config)) return undefined;
+  const root = config.namespace
+    ? join(config.path, config.namespace)
+    : config.path;
+  return resolve(root) === resolve(repoSwampDir) ? undefined : root;
+}
+
+/**
  * Checks whether a subdirectory name is always local (never goes to datastore).
  */
 export function isAlwaysLocal(subdir: string): boolean {

@@ -273,3 +273,72 @@ Deno.test("verifyMigration: without the skip list the skipped files make counts 
     assertEquals(verification.valid, false);
   });
 });
+
+Deno.test("verifyMigration: passes when the destination also holds its own files", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), "{}");
+    await writeFile(join(destDir, "outputs", "run.log"), "local log");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+    await migrateDatastore(sourceDir, destDir, config);
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: true, sourceCount: 1, destCount: 1 });
+  });
+});
+
+Deno.test("verifyMigration: fails when a source file is missing at the destination", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), "{}");
+    await writeFile(join(sourceDir, "data", "b.json"), "{}");
+    await writeFile(join(destDir, "data", "a.json"), "{}");
+    await writeFile(join(destDir, "data", "other.json"), "{}");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: false, sourceCount: 2, destCount: 1 });
+  });
+});
+
+Deno.test("verifyMigration: fails when a copied file is truncated", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), '{"k":"v"}');
+    await writeFile(join(destDir, "data", "a.json"), "{");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification.valid, false);
+  });
+});
+
+Deno.test("verifyMigration: a numeric symlink rewritten as a text file counts as arrived", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    const modelDir = join(sourceDir, "data", "type", "id", "result");
+    await writeFile(join(modelDir, "3", "raw"), "data");
+    await Deno.symlink("3", join(modelDir, "latest"), { type: "dir" });
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+    await migrateDatastore(sourceDir, destDir, config);
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: true, sourceCount: 2, destCount: 2 });
+  });
+});

@@ -72,12 +72,13 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { resolveDatastoreConfig } from "../resolve_datastore.ts";
 import { RUNS_INDEX_FILENAME } from "../../infrastructure/persistence/workflow_run_index.ts";
 import {
-  catalogDbPath,
   createCatalogStore,
   createUnifiedDataRepository,
   namespaceFromResolver,
+  removeCatalogDb,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
@@ -233,6 +234,17 @@ export async function compareCatalogToDisk(
   return { diskRecords, catalogRecords, shortfalls };
 }
 
+/**
+ * The data dir the completeness check walks: the one every command reads,
+ * as the repository factory resolves it. The local `.swamp/data` holds no
+ * records when the datastore lives elsewhere (swamp-club#3238).
+ */
+export function catalogCompletenessDataDir(
+  datastoreResolver: DatastorePathResolver,
+): string {
+  return datastoreResolver.resolvePath(SWAMP_SUBDIRS.data);
+}
+
 async function checkCatalogCompleteness(
   repoDir: string,
 ): Promise<CatalogCompletenessSummary | null> {
@@ -247,7 +259,7 @@ async function checkCatalogCompleteness(
     const dataRepo = createUnifiedDataRepository(
       repoDir,
       catalogStore,
-      datastoreResolver.localPath(SWAMP_SUBDIRS.data),
+      catalogCompletenessDataDir(datastoreResolver),
       undefined,
       namespace,
     );
@@ -256,21 +268,6 @@ async function checkCatalogCompleteness(
     // Release the SQLite handle before any repair removes the file — Windows
     // refuses to delete a database that still has an open connection.
     catalogStore.close();
-  }
-}
-
-/**
- * Removes the catalog database and its SQLite sidecars, so the next data query
- * rebuilds the index from disk.
- */
-async function removeCatalogDb(repoDir: string): Promise<void> {
-  const dbPath = catalogDbPath(repoDir);
-  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
-    try {
-      await Deno.remove(dbPath + suffix);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
   }
 }
 

@@ -120,6 +120,21 @@ export function catalogDbPath(
 }
 
 /**
+ * Removes the repo's local catalog database and its SQLite sidecars, so the
+ * next data query rebuilds the index from disk.
+ */
+export async function removeCatalogDb(repoDir: string): Promise<void> {
+  const dbPath = catalogDbPath(repoDir);
+  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+    try {
+      await Deno.remove(dbPath + suffix);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+}
+
+/**
  * Derives the giga-swamp {@link Namespace} value from a datastore path
  * resolver's config.
  *

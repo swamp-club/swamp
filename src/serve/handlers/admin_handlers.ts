@@ -155,6 +155,7 @@ import type { DataRecord } from "../../domain/data/data_record.ts";
 import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
   type CustomDatastoreConfig,
+  externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
@@ -1248,6 +1249,16 @@ export async function handleDatastoreSetupExtension(
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
     const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
+    // A filesystem datastore outside the repo is what setup moves from
+    // (swamp-club#3238). An unresolvable one leaves setup on .swamp/.
+    const outgoingDatastorePath = await resolveDatastoreConfig(
+      marker,
+      undefined,
+      repoDir,
+    ).then(
+      (config) => externalFilesystemDatastoreRoot(config, swampPath(repoDir)),
+      () => undefined,
+    );
 
     const MAX_TIMEOUT_SECONDS = 21600;
     const syncTimeoutMsOverride = payload.timeout != null
@@ -1268,6 +1279,7 @@ export async function handleDatastoreSetupExtension(
           | undefined,
         namespace: payload.namespace,
         syncTimeoutMsOverride,
+        outgoingDatastorePath,
       }),
       {
         validating: () => {},
