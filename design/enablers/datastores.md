@@ -2627,11 +2627,13 @@ sweep never loads a namespace's whole reference set.
 is a domain service over the `CommitStore` and `storage/1` ports:
 
 1. Fix `now`, and the cutoff `now - grace`.
-2. Stream the namespace's `list`. A chunk modified at or after the cutoff is
-   kept unchecked.
-3. Gather older chunks in batches of `CHUNK_COLLECTION_BATCH` (256). For each
+2. When `verifyBytes` is set, verify chunks in a listing pass of their own
+   (see "Damaged chunks").
+3. Stream the namespace's `list` again. A chunk modified at or after the
+   cutoff is kept unchecked.
+4. Gather older chunks in batches of `CHUNK_COLLECTION_BATCH` (256). For each
    batch, read which are referenced, then delete the rest at once.
-4. Remove the storage's stale temp files, when it has a `TempFileSweeper`.
+5. Remove the storage's stale temp files, when it has a `TempFileSweeper`.
 
 The report counts what was scanned, kept as referenced, deleted, kept as too
 new and verified, and lists the damaged chunks and temp files removed. The
@@ -2656,14 +2658,21 @@ candidates.
 - A write whose commit lands after the listing saw the chunk, but before its
   batch's reference check, keeps it: the check finds the reference.
 - **What remains.** A write can find an old, unreferenced chunk present and
-  refresh it after its batch's reference check, then commit after the delete.
-  Its commit then names a deleted chunk. The window is one batch's deletes,
-  milliseconds. It needs content that has gone unreferenced for longer than the
-  grace period to be written again in that window. `storage/1` offers no
-  per-chunk `lastModified` read and no conditional delete, so it cannot be
-  closed without a contract change. Streaming batches keep the window to one
-  batch instead of a whole listing. A later write of the same content finds the
-  chunk absent and stores it again, which repairs it. A test pins this outcome.
+  refresh it at any point after the listing yielded the chunk, then commit
+  after its batch's reference check. The sweep already holds the old
+  `lastModified`, so the refresh does not save the chunk. It is deleted, and
+  the commit names a deleted chunk. The window runs from the listing yielding
+  the chunk to its delete: listing the rest of its batch (up to 255 more
+  entries, one or two pages on an object store), one reference query and the
+  batch's deletes. That is short, but not instant. Verification hashes chunks
+  in a pass of its own, so it never widens the window. It needs content that
+  has gone unreferenced for longer than the grace period, for example a commit
+  that failed and is retried with the same content more than a day later, to
+  be written again inside that window. `storage/1` offers no per-chunk
+  `lastModified` read and no conditional delete, so it cannot be closed
+  without a contract change. The opt-in that wires the sweep may also cap a
+  batch by time. A later write of the same content finds the chunk absent and
+  stores it again, which repairs it. A test pins this outcome.
 
 **Clock skew.** `lastModified` comes from the storage's clock (a file's mtime,
 an object store's server time), and `now` from the collector's. A skew between
@@ -2678,10 +2687,13 @@ entry must refresh its chunks through `ChunkStore` before it is sent again, or
 be refused once it is older than the grace period.
 
 **Damaged chunks.** `collect` can read and hash chunks within a byte budget
-(`verifyBytes`, 0 by default). A damaged chunk is deleted whatever its age, so
-the next write of that content finds it absent and stores it again. The report
-says whether a commit names it. If one does, its reads were already failing.
-Deleting a damaged chunk a unit has just refreshed makes that unit's commit
+(`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether
+a commit names each damaged chunk is looked up once, after the pass. A damaged chunk is
+deleted whatever its age. That relies on `storage/1` requiring an atomic
+`put`, so a reader never sees a chunk still being written. Once it is
+deleted, the next write of that content finds it absent and stores it again.
+The report says whether a commit names it. If one does, its reads were
+already failing. Deleting a damaged chunk a unit has just refreshed makes that unit's commit
 name a missing chunk instead of an unreadable one, which a later write repairs
 the same way.
 

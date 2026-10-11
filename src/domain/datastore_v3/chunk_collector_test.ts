@@ -58,6 +58,8 @@ class AgedStorage implements DatastoreStorage {
   readonly contract = "storage/1" as const;
   readonly chunks = new Map<string, { bytes: Uint8Array; at: Date }>();
   readonly deleted: string[] = [];
+  /** Each listing, read and delete, in order. */
+  readonly events: string[] = [];
   clock = () => NOW;
   onListed: (sha256: string) => Promise<void> | void = () => {};
 
@@ -108,6 +110,7 @@ class AgedStorage implements DatastoreStorage {
 
   get(namespace: string, sha256: string, signal: AbortSignal) {
     signal.throwIfAborted();
+    this.events.push("get");
     const chunk = this.chunks.get(`${namespace}/${sha256}`);
     return Promise.resolve(chunk === undefined ? null : chunk.bytes.slice());
   }
@@ -125,6 +128,7 @@ class AgedStorage implements DatastoreStorage {
 
   async *list(namespace: string, signal: AbortSignal) {
     signal.throwIfAborted();
+    this.events.push("list");
     // A snapshot of the keys, then each chunk's current state, as a real
     // listing reads a directory and then each entry.
     for (const key of [...this.chunks.keys()]) {
@@ -141,6 +145,7 @@ class AgedStorage implements DatastoreStorage {
     signal.throwIfAborted();
     this.chunks.delete(`${namespace}/${sha256}`);
     this.deleted.push(sha256);
+    this.events.push("delete");
     return Promise.resolve();
   }
 }
@@ -300,7 +305,7 @@ Deno.test("ChunkCollector.collect: a chunk whose commit lands before its batch's
   assertEquals(report.referenced, 1);
 });
 
-Deno.test("ChunkCollector.collect: a write that refreshes a chunk after its batch's reference check loses it (the documented residual case)", async () => {
+Deno.test("ChunkCollector.collect: a write that refreshes a chunk after the listing saw it and commits after its batch's reference check loses it (the documented residual case)", async () => {
   const storage = new AgedStorage();
   const refs = new FakeRefs();
   const chunk = storage.seed("acme", "reused", OLD);
@@ -368,6 +373,30 @@ Deno.test("ChunkCollector.collect: verifies chunks only until the byte budget is
   });
   // 10 + 10 leaves 5 of the budget, so the third chunk is read too.
   assertEquals(some.verified, 3);
+});
+
+Deno.test("ChunkCollector.collect: verifies in a pass of its own, so no read happens between the sweep seeing a chunk and deleting it", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  for (let i = 0; i < 4; i++) storage.seed("acme", `chunk ${i}`, OLD);
+
+  await collector(storage, refs).collect(ACME, {
+    verifyBytes: 1024,
+    signal,
+  });
+
+  assertEquals(storage.events, [
+    "list",
+    "get",
+    "get",
+    "get",
+    "get",
+    "list",
+    "delete",
+    "delete",
+    "delete",
+    "delete",
+  ]);
 });
 
 Deno.test("ChunkCollector.collect: removes stale temp files with the grace cutoff", async () => {

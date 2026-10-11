@@ -24,7 +24,7 @@
  * content later overwritten, deleted or garbage-collected.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ChunkCollector } from "../src/domain/datastore_v3/chunk_collector.ts";
 import { putOp, tombstoneOp } from "../src/domain/datastore_v3/op.ts";
@@ -185,10 +185,11 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
         ),
         content(5),
       );
-      assert(
-        (await Deno.readFile(
+      assertEquals(
+        await Deno.readFile(
           join(root, ...dataKey("a", 1).toString().split("/")),
-        )).length === content(2).length,
+        ),
+        content(2),
       );
     } finally {
       await readModel.close();

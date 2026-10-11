@@ -204,6 +204,8 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectSnapshot: StatementSync;
   readonly #upsertSnapshot: StatementSync;
   readonly #insertChunkRef: StatementSync;
+  /** `referencedChunks` for a full page of {@link REF_LOOKUP_PAGE} hashes. */
+  readonly #selectRefPage: StatementSync;
 
   private constructor(
     db: DatabaseSync,
@@ -249,6 +251,7 @@ export class SqliteCommitStore implements CommitStore {
     this.#insertChunkRef = db.prepare(
       "INSERT OR IGNORE INTO chunk_refs (namespace, sha256) VALUES (?, ?)",
     );
+    this.#selectRefPage = db.prepare(selectRefsSql(REF_LOOKUP_PAGE));
   }
 
   /**
@@ -513,11 +516,13 @@ export class SqliteCommitStore implements CommitStore {
     const found = new Set<string>();
     for (let at = 0; at < hashes.length; at += REF_LOOKUP_PAGE) {
       const page = hashes.slice(at, at + REF_LOOKUP_PAGE);
-      const rows = this.#db.prepare(
-        `SELECT sha256 FROM chunk_refs WHERE namespace = ? AND sha256 IN (${
-          page.map(() => "?").join(", ")
-        })`,
-      ).all(namespace, ...page) as unknown as { sha256: string }[];
+      // Only the last page can be short; it gets a statement of its own.
+      const statement = page.length === REF_LOOKUP_PAGE
+        ? this.#selectRefPage
+        : this.#db.prepare(selectRefsSql(page.length));
+      const rows = statement.all(namespace, ...page) as unknown as {
+        sha256: string;
+      }[];
       for (const row of rows) found.add(row.sha256);
     }
     return Promise.resolve(found);
@@ -660,6 +665,13 @@ function rollbackQuietly(db: DatabaseSync): void {
     // The caller rethrows the original error. SQLite rolls the transaction
     // back itself when the connection closes.
   }
+}
+
+/** Looks up which of `count` hashes a namespace's commits name. */
+function selectRefsSql(count: number): string {
+  return `SELECT sha256 FROM chunk_refs WHERE namespace = ? AND sha256 IN (${
+    Array.from({ length: count }, () => "?").join(", ")
+  })`;
 }
 
 function closedError(): Error {

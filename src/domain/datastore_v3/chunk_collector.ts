@@ -38,13 +38,15 @@
  * - **Streaming.** The sweep checks references and deletes one batch of
  *   candidates at a time, as the listing yields them, so the time between
  *   seeing a chunk's age and deleting it is one batch rather than the whole
- *   namespace's listing. A write that refreshes a chunk before the listing
- *   reaches it keeps it; one whose commit lands before the batch's
- *   reference check keeps it. What remains is a write that finds an old,
- *   unreferenced chunk present (and refreshes it) after the batch's
- *   reference check but before its delete: its commit then names a deleted
- *   chunk until that content is written again. `storage/1` has no
- *   conditional delete to close it. See "v3 chunk garbage collection" in
+ *   namespace's listing. Verification reads chunks in a pass of its own,
+ *   before the sweep, so hashing never widens that window. A write that
+ *   refreshes a chunk before the listing reaches it keeps it; one whose
+ *   commit lands before the batch's reference check keeps it. What remains
+ *   is a write that finds an old, unreferenced chunk present (and refreshes
+ *   it) after the listing yielded it, then commits after the batch's
+ *   reference check: the chunk is deleted and the commit names it until
+ *   that content is written again. `storage/1` has no conditional delete
+ *   to close it. See "v3 chunk garbage collection" in
  *   `design/enablers/datastores.md`.
  * - **Damaged chunks** are deleted whatever their age, so the next write of
  *   that content finds it absent and stores it again (writes trust `has`).
@@ -144,9 +146,9 @@ export class ChunkCollector {
   }
 
   /**
-   * Sweeps `namespace`'s chunks: deletes those no commit names that are
-   * past the grace period, verifies up to `verifyBytes` of them and deletes
-   * any damaged, then removes stale temp files. Rejects when `signal`
+   * Sweeps `namespace`'s chunks: verifies up to `verifyBytes` of them and
+   * deletes any damaged, then deletes those no commit names that are past
+   * the grace period, then removes stale temp files. Rejects when `signal`
    * aborts; what was deleted by then stays deleted.
    */
   async collect(
@@ -154,21 +156,24 @@ export class ChunkCollector {
     options: CollectOptions,
   ): Promise<ChunkCollectionReport> {
     const { signal } = options;
-    let verifyBudget = options.verifyBytes ?? 0;
-    requireNonNegative(verifyBudget, "verifyBytes");
+    const verifyBytes = options.verifyBytes ?? 0;
+    requireNonNegative(verifyBytes, "verifyBytes");
     signal.throwIfAborted();
 
     const ns = storageNamespaceOf(namespace);
     // Fixed before any reference is read: see the module doc.
     const cutoff = new Date(this.#clock().getTime() - this.#graceMs);
+    // A pass of its own, so reading and hashing chunks never stretches the
+    // time between the sweep seeing a chunk's age and deleting it.
+    const { verified, damaged } = verifyBytes > 0
+      ? await this.#verify(namespace, ns, verifyBytes, signal)
+      : { verified: 0, damaged: [] };
+
     let scanned = 0;
     let referenced = 0;
     let deleted = 0;
     let keptTooNew = 0;
-    let verified = 0;
-    const damaged: DamagedChunk[] = [];
     let batch: string[] = [];
-
     const flush = async () => {
       if (batch.length === 0) return;
       const names = await this.#commitStore.referencedChunks(namespace, batch);
@@ -183,28 +188,9 @@ export class ChunkCollector {
       }
       batch = [];
     };
-
     for await (const chunk of this.#storage.list(ns, signal)) {
       signal.throwIfAborted();
       scanned++;
-      if (verifyBudget > 0) {
-        const bytes = await this.#storage.get(ns, chunk.sha256, signal);
-        // Null: deleted since the listing, so nothing is left to sweep.
-        if (bytes === null) continue;
-        verifyBudget -= bytes.length;
-        verified++;
-        if (sha256Hex(bytes) !== chunk.sha256) {
-          const names = await this.#commitStore.referencedChunks(namespace, [
-            chunk.sha256,
-          ]);
-          await this.#storage.delete(ns, chunk.sha256, signal);
-          damaged.push({
-            sha256: chunk.sha256,
-            referenced: names.has(chunk.sha256),
-          });
-          continue;
-        }
-      }
       if (chunk.lastModified.getTime() >= cutoff.getTime()) {
         keptTooNew++;
         continue;
@@ -226,6 +212,43 @@ export class ChunkCollector {
       verified,
       damaged,
       tempFilesRemoved,
+    };
+  }
+
+  /**
+   * Reads and hashes chunks in listing order until `budget` bytes are spent,
+   * deleting each damaged one whatever its age (see the module doc). A
+   * chunk is read whole, so the last one may go past the budget.
+   */
+  async #verify(
+    namespace: Namespace,
+    ns: string,
+    budget: number,
+    signal: AbortSignal,
+  ): Promise<{ verified: number; damaged: DamagedChunk[] }> {
+    let verified = 0;
+    const rotten: string[] = [];
+    for await (const chunk of this.#storage.list(ns, signal)) {
+      if (budget <= 0) break;
+      signal.throwIfAborted();
+      const bytes = await this.#storage.get(ns, chunk.sha256, signal);
+      // Null: deleted since the listing, so there is nothing to check.
+      if (bytes === null) continue;
+      budget -= bytes.length;
+      verified++;
+      if (sha256Hex(bytes) === chunk.sha256) continue;
+      await this.#storage.delete(ns, chunk.sha256, signal);
+      rotten.push(chunk.sha256);
+    }
+    const names = rotten.length === 0
+      ? new Set<string>()
+      : await this.#commitStore.referencedChunks(namespace, rotten);
+    return {
+      verified,
+      damaged: rotten.map((sha256) => ({
+        sha256,
+        referenced: names.has(sha256),
+      })),
     };
   }
 }
