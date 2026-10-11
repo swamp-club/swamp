@@ -1060,7 +1060,9 @@ async function inaccessibleSourceError(
     message:
       `The current datastore at ${path} is not accessible (${reason}), ` +
       `so its data cannot be moved. Make it available and re-run, or ` +
-      `pass --skip-migration to switch without moving any data.`,
+      `switch without moving any data with 'swamp datastore setup ` +
+      `filesystem' or 'swamp datastore setup extension' and ` +
+      `--skip-migration.`,
   };
 }
 

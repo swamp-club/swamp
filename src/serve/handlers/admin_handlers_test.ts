@@ -63,6 +63,7 @@ import {
   handleRunDoctor,
   handleVaultMigrate,
   redactServeOptions,
+  serveDatastoreSetupDeps,
 } from "./admin_handlers.ts";
 
 await initializeLogging({});
@@ -1244,4 +1245,26 @@ Deno.test("handleRunDoctor: reads each instance's heartbeat once for the whole s
       "heartbeats/self",
     ]);
   });
+});
+
+Deno.test("serveDatastoreSetupDeps: marks the open catalog for rebuild instead of deleting it", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-serve-setup-" });
+  try {
+    const catalogFile = join(repoDir, ".swamp", "data", "_catalog.db");
+    await ensureDir(dirname(catalogFile));
+    await Deno.writeTextFile(catalogFile, "live");
+    let invalidations = 0;
+
+    const deps = serveDatastoreSetupDeps(repoDir, {
+      invalidate: () => {
+        invalidations++;
+      },
+    });
+    await deps.invalidateCatalog(repoDir);
+
+    assertEquals(invalidations, 1);
+    assertEquals(await Deno.readTextFile(catalogFile), "live");
+  } finally {
+    await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+  }
 });
