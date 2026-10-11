@@ -175,7 +175,9 @@ export interface AutoResolveOutputPort {
   /**
    * Emitted when auto-resolution finds an intact extension whose sources
    * all loaded, yet it does not provide the requested type — typically
-   * because the installed version predates the one that added it.
+   * because the installed version predates the one that added it. Also
+   * emitted when a fresh install does not provide the type
+   * (swamp-club#3246).
    * `newerVersion` is set when the registry has a newer version than the
    * one installed, which may provide the type. See swamp-club#2476.
    */
@@ -624,21 +626,35 @@ const SEARCH_CANDIDATE_LIMIT = 5;
 
 /**
  * Whether published content metadata lists `normalizedType` among its
- * models, vaults, datastores or webhooks, ignoring case.
+ * models, vaults, datastores or webhooks. Both sides are compared in
+ * `ModelType` normalized form: the metadata carries types as written in the
+ * extension source (`@acme/Azure.Firewall`), while the resolver receives
+ * them normalized (`@acme/azure/firewall`).
  */
 export function contentMetadataProvidesType(
   metadata: ExtensionContentMetadata,
   normalizedType: string,
 ): boolean {
-  const wanted = normalizedType.toLowerCase();
+  const wanted = normalizedTypeOrNull(normalizedType);
+  if (wanted === null) return false;
   return [
     ...metadata.models,
     ...metadata.vaults,
     ...metadata.datastores,
     ...metadata.webhooks,
   ].some((entry) =>
-    typeof entry?.type === "string" && entry.type.toLowerCase() === wanted
+    typeof entry?.type === "string" &&
+    normalizedTypeOrNull(entry.type) === wanted
   );
+}
+
+/** The `ModelType` normalized form of `type`, or null when it has none. */
+function normalizedTypeOrNull(type: string): string | null {
+  try {
+    return ModelType.create(type).normalized;
+  } catch {
+    return null;
+  }
 }
 
 /**

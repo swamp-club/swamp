@@ -1597,6 +1597,20 @@ Deno.test("ExtensionAutoResolver - matches a search hit's published type ignorin
   assertEquals(installer.installCalls, ["@swamp/provider"]);
 });
 
+Deno.test("ExtensionAutoResolver - matches a search hit's published type in normalized form", async () => {
+  const lookup = createSearchLookup(["@swamp/provider"], {
+    "@swamp/provider": metadataProviding(
+      "models",
+      "   ",
+      "@swamp/Azure.Firewall",
+    ),
+  });
+  const { resolver, installer } = createSearchResolver(lookup);
+
+  assertEquals(await resolver.resolve("@swamp/azure/firewall"), true);
+  assertEquals(installer.installCalls, ["@swamp/provider"]);
+});
+
 Deno.test("ExtensionAutoResolver - skips a search hit without published detail or metadata", async () => {
   const lookup = createSearchLookup(
     ["@swamp/no-detail", "@swamp/no-metadata", "@swamp/provider"],
