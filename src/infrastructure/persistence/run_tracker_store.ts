@@ -53,7 +53,7 @@ const RETENTION_DAYS = 7;
  * backstop for a row no path ever settles (swamp-club#2917).
  */
 const UNSETTLED_RETENTION_DAYS = 90;
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 export interface PendingRunEntry {
   id: string;
@@ -81,6 +81,7 @@ interface ActiveRunRow {
   id: string;
   run_kind: string;
   model_type: string | null;
+  definition_id: string | null;
   method_name: string | null;
   workflow_name: string | null;
   pid: number;
@@ -222,6 +223,22 @@ export class RunTrackerStore implements RunTrackerRepository {
       }
     }
 
+    if (currentVersion < 5) {
+      const tableExists = this.db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='active_runs'",
+      ).get();
+      if (tableExists) {
+        const columns = this.db.prepare(
+          "PRAGMA table_info(active_runs)",
+        ).all() as unknown as { name: string }[];
+        if (!columns.some((c) => c.name === "definition_id")) {
+          this.db.exec(
+            "ALTER TABLE active_runs ADD COLUMN definition_id TEXT",
+          );
+        }
+      }
+    }
+
     this.db.prepare(
       "INSERT OR REPLACE INTO run_tracker_meta (key, value) VALUES ('schema_version', ?)",
     ).run(String(SCHEMA_VERSION));
@@ -243,7 +260,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         completed_at  TEXT,
         cancel_reason TEXT,
         initiated_by  TEXT,
-        instance_id   TEXT
+        instance_id   TEXT,
+        definition_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -290,8 +308,9 @@ export class RunTrackerStore implements RunTrackerRepository {
     this.db.prepare(`
       INSERT INTO active_runs
         (id, run_kind, model_type, method_name, workflow_name,
-         pid, hostname, started_at, heartbeat_at, status, initiated_by, instance_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         pid, hostname, started_at, heartbeat_at, status, initiated_by, instance_id,
+         definition_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.id,
       data.runKind,
@@ -305,6 +324,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       data.status,
       data.initiatedBy ?? null,
       data.instanceId ?? null,
+      data.definitionId ?? null,
     );
   }
 
@@ -526,6 +546,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       id: row.id,
       runKind: row.run_kind as ActiveRunData["runKind"],
       modelType: row.model_type,
+      definitionId: row.definition_id,
       methodName: row.method_name,
       workflowName: row.workflow_name,
       pid: row.pid,

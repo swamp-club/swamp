@@ -27,6 +27,7 @@ import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts"
 import {
   cancelModelMethodRuns,
   METHOD_OWNER_STOP_GRACE_MS,
+  methodRunsOfModel,
   modelCancelCommand,
   type OwnerStop,
   selectMethodRunToCancel,
@@ -81,6 +82,7 @@ function methodRun(pid: number): ActiveRun {
   return ActiveRun.createModelMethodRun({
     id: crypto.randomUUID(),
     modelType: "command/shell",
+    definitionId: "def-1",
     methodName: "execute",
     pid,
     hostname: "test-host",
@@ -336,13 +338,16 @@ function trackerRow(opts: {
   pid: number;
   instanceId?: string;
   startedAt?: string;
+  modelType?: string;
+  definitionId?: string | null;
 }): ActiveRun {
   const startedAt = opts.startedAt ?? new Date().toISOString();
   const workflow = opts.runKind === "workflow";
   return ActiveRun.fromData({
     id: crypto.randomUUID(),
     runKind: opts.runKind ?? "model_method",
-    modelType: workflow ? null : "command/shell",
+    modelType: workflow ? null : opts.modelType ?? "command/shell",
+    definitionId: opts.definitionId,
     methodName: workflow ? null : "execute",
     workflowName: workflow ? "wf" : null,
     pid: opts.pid,
@@ -635,5 +640,71 @@ Deno.test("cancelModelMethodRuns: an unwritable method-run record leaves its row
       "running",
     );
     assertEquals(readCancelReason(dbPath, other.id), "Stop it");
+  });
+});
+
+const idleModel = {
+  definitionId: "def-idle",
+  modelType: "command/shell",
+  soleDefinitionOfType: false,
+};
+
+Deno.test("methodRunsOfModel: leaves another model's run of the same type unselected (swamp-club#3244)", () => {
+  const sleeperRun = trackerRow({
+    pid: OWNER_PID,
+    definitionId: "def-sleeper",
+  });
+
+  assertEquals(methodRunsOfModel([sleeperRun], idleModel), {
+    runs: [],
+    unattributed: [],
+  });
+  assertEquals(
+    methodRunsOfModel([sleeperRun], {
+      ...idleModel,
+      definitionId: "def-sleeper",
+    }).runs,
+    [sleeperRun],
+  );
+});
+
+Deno.test("methodRunsOfModel: ignores workflow rows and a same-id row of another type", () => {
+  const workflowRow = trackerRow({ runKind: "workflow", pid: OWNER_PID });
+  const otherType = trackerRow({
+    pid: OWNER_PID,
+    modelType: "@test/other",
+    definitionId: "def-idle",
+  });
+  const own = trackerRow({ pid: OWNER_PID, definitionId: "def-idle" });
+
+  assertEquals(
+    methodRunsOfModel([workflowRow, otherType, own], idleModel).runs,
+    [own],
+  );
+});
+
+Deno.test("methodRunsOfModel: a row with no definition id is the model's when it is the type's only definition", () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const own = trackerRow({ pid: OWNER_PID, definitionId: "def-idle" });
+
+  assertEquals(
+    methodRunsOfModel([legacy, own], {
+      ...idleModel,
+      soleDefinitionOfType: true,
+    }),
+    { runs: [own, legacy], unattributed: [] },
+  );
+});
+
+Deno.test("methodRunsOfModel: a row with no definition id is never selected when the type has several definitions", () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const legacyOtherType = trackerRow({
+    pid: OWNER_PID,
+    modelType: "@test/other",
+  });
+
+  assertEquals(methodRunsOfModel([legacy, legacyOtherType], idleModel), {
+    runs: [],
+    unattributed: [legacy],
   });
 });

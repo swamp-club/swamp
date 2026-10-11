@@ -153,6 +153,7 @@ async function strandedMethodRun(repos: RowRepos): Promise<string> {
     ActiveRun.createModelMethodRun({
       id: output.id,
       modelType: repos.modelType.normalized,
+      definitionId: model.id,
       methodName: "noop",
       pid: DEAD_PID,
       hostname: hostname(),

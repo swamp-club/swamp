@@ -266,6 +266,41 @@ export function selectMethodRunToCancel(
   return { run: cancellable[0], skipped: serveOwned };
 }
 
+/** The running method runs a named cancel considers for one model. */
+export interface ModelMethodRuns {
+  /** The model's running method runs. */
+  runs: ActiveRun[];
+  /**
+   * Running rows of the model's type that name no definition and that
+   * several definitions could own, so none of them is selected.
+   */
+  unattributed: ActiveRun[];
+}
+
+/**
+ * Selects a model's running method runs by definition id, never by type
+ * alone (swamp-club#3244). A row registered before the tracker recorded the
+ * definition id (schema v4 and earlier) is the model's only when
+ * `soleDefinitionOfType` says no other definition of the type could own it.
+ */
+export function methodRunsOfModel(
+  runningRows: readonly ActiveRun[],
+  model: {
+    definitionId: string;
+    modelType: string;
+    soleDefinitionOfType: boolean;
+  },
+): ModelMethodRuns {
+  const ofType = runningRows.filter((r) =>
+    r.runKind === "model_method" && r.modelType === model.modelType
+  );
+  const runs = ofType.filter((r) => r.definitionId === model.definitionId);
+  const legacy = ofType.filter((r) => r.definitionId === null);
+  return model.soleDefinitionOfType
+    ? { runs: [...runs, ...legacy], unattributed: [] }
+    : { runs, unattributed: legacy };
+}
+
 function methodRunFields(run: ActiveRun) {
   return {
     id: run.id,
@@ -437,13 +472,36 @@ export const modelCancelCommand = new Command()
       const { definition, type } = resolved;
 
       const runningRows = runTracker.findAllRunning();
-      const trackerRuns = runningRows.filter(
-        (r) => r.modelType === type.normalized,
+      // Only a row with no definition id needs the count, and only a
+      // repository that can list auto-definitions too can give it.
+      let soleDefinitionOfType = false;
+      if (
+        definitionRepo.findAllIncludingAutoGlobal &&
+        runningRows.some((r) =>
+          r.modelType === type.normalized && r.definitionId === null
+        )
+      ) {
+        const all = await definitionRepo.findAllIncludingAutoGlobal();
+        soleDefinitionOfType = all.filter((d) =>
+          d.type.normalized === type.normalized
+        ).length === 1;
+      }
+      const { runs: trackerRuns, unattributed } = methodRunsOfModel(
+        runningRows,
+        {
+          definitionId: definition.id,
+          modelType: type.normalized,
+          soleDefinitionOfType,
+        },
       );
 
       if (trackerRuns.length === 0) {
         throw new UserError(
-          `No running method runs found for model '${definition.name}'`,
+          unattributed.length === 0
+            ? `No running method runs found for model '${definition.name}'`
+            : `No running method runs found for model '${definition.name}'. ` +
+              `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
+              `stop them with 'swamp model cancel --all'.`,
         );
       }
 

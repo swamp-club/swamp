@@ -2033,6 +2033,7 @@ export class DefaultStepExecutor implements StepExecutor {
         const activeRun = ActiveRun.createModelMethodRun({
           id: output.id,
           modelType: modelType.normalized,
+          definitionId: originalDefinition.id,
           methodName: task.methodName,
           pid: Deno.pid,
           hostname: hostname(),
