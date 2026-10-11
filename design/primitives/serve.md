@@ -407,7 +407,10 @@ The lock and the pull have a cost. With a remote datastore each collection
 takes a distributed lock and pulls, on top of its push, and holds the gate for
 the pull. A token whose lock another writer holds can make a sweep wait up to
 the lock timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), without holding
-the gate. `MAX_TOKENS_PER_SWEEP` bounds both.
+the gate. `MAX_TOKENS_PER_SWEEP` caps the collections that succeed or fail,
+and a lock timeout is a failure. A token skipped on re-read still costs a lock
+and a pull but does not count toward the cap, so skips are bounded only by the
+number of tokens the sweep listed as eligible.
 
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
