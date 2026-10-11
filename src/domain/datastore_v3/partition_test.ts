@@ -111,26 +111,105 @@ Deno.test("Partition.append: refuses a commit for another partition", () => {
   assertEquals(partition.seq, 0);
 });
 
-Deno.test("Partition.append: data versions only grow and are never reused", () => {
+Deno.test("Partition.append: a live data version is never recorded twice", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [versionOp("vpc", 1), versionOp("vpc", 2)]));
   assertEquals(partition.versions("vpc"), [1, 2]);
   assertEquals(partition.latest("vpc"), 2);
   assertRejected(
     () => partition.append(modelCommit(2, [versionOp("vpc", 2)])),
-    "version-not-increasing",
+    "version-live",
   );
+  assertRejected(
+    () => partition.append(modelCommit(2, [versionOp("vpc", 1)])),
+    "version-live",
+  );
+  assertEquals(partition.seq, 1);
+});
 
+Deno.test("Partition.append: a removed version can be recorded again, as v2 reuses it (swamp-club#3250)", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1), versionOp("vpc", 2)]));
   partition.append(modelCommit(2, [deleteVersion("vpc", 2)]));
   assertEquals(partition.latest("vpc"), 1);
   assertEquals(partition.highWater("vpc"), 2);
-  // Version 2 was deleted, but its number is not handed out again.
-  assertRejected(
-    () => partition.append(modelCommit(3, [versionOp("vpc", 2)])),
-    "version-not-increasing",
+  // v2 allocates max(existing) + 1, so the next save is version 2 again.
+  partition.append(modelCommit(3, [versionOp("vpc", 2)]));
+  assertEquals(partition.versions("vpc"), [1, 2]);
+  assertEquals(partition.latest("vpc"), 2);
+  assertEquals(partition.highWater("vpc"), 2);
+});
+
+Deno.test("Partition.append: versions can arrive out of order, as parallel writers finish", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 6)]));
+  // Version 5 was allocated first but finished (or was promoted) later.
+  partition.append(modelCommit(2, [versionOp("vpc", 5)]));
+  assertEquals(partition.versions("vpc"), [5, 6]);
+  assertEquals(partition.latest("vpc"), 6);
+  assertEquals(partition.highWater("vpc"), 6);
+  // In one commit too, and the high-water mark never goes down.
+  partition.append(modelCommit(3, [versionOp("vpc", 8), versionOp("vpc", 7)]));
+  assertEquals(partition.versions("vpc"), [5, 6, 7, 8]);
+  assertEquals(partition.highWater("vpc"), 8);
+});
+
+Deno.test("Partition.append: an append re-records a live version only with its data.append put", async () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(
+    modelCommit(1, [versionOp("vpc", 1), versionOp("vpc", 2)]),
   );
-  partition.append(modelCommit(3, [versionOp("vpc", 3)]));
-  assertEquals(partition.latest("vpc"), 3);
+  partition.append(modelCommit(2, [deleteVersion("vpc", 2)]));
+  // The latest marker names version 1, below the high-water mark: an
+  // append targets it.
+  partition.append(
+    modelCommit(3, [
+      await savePut("vpc", 1, "vpc@1 more", undefined, "data.append"),
+      versionOp("vpc", 1),
+    ]),
+  );
+  assertEquals(partition.versions("vpc"), [1]);
+  assertEquals(partition.highWater("vpc"), 2);
+  // A save put does not stand in for an append, nor does an append of
+  // another version or name.
+  for (
+    const put of [
+      await savePut("vpc", 1, "again"),
+      await savePut("vpc", 3, "other", undefined, "data.append"),
+      await savePut("subnet", 1, "other", undefined, "data.append"),
+    ]
+  ) {
+    assertRejected(
+      () => partition.append(modelCommit(4, [put, versionOp("vpc", 1)])),
+      "version-live",
+    );
+  }
+  assertEquals(partition.seq, 3);
+});
+
+Deno.test("Partition.append: an append put lets through only a later data-version op, once", async () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 4)]));
+  const append = await savePut("vpc", 4, "more", undefined, "data.append");
+  // Another writer's save of the live version, ahead of an append in the
+  // same commit, is still refused.
+  assertRejected(
+    () =>
+      partition.append(
+        modelCommit(2, [versionOp("vpc", 4), append, versionOp("vpc", 4)]),
+      ),
+    "version-live",
+  );
+  // One append put lets one op through, not two.
+  assertRejected(
+    () =>
+      partition.append(
+        modelCommit(2, [append, versionOp("vpc", 4), versionOp("vpc", 4)]),
+      ),
+    "version-live",
+  );
+  partition.append(modelCommit(2, [append, versionOp("vpc", 4)]));
+  assertEquals(partition.seq, 2);
 });
 
 Deno.test("Partition.append: deleting every version leaves no latest but keeps the high-water mark", () => {
@@ -389,7 +468,7 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
   assertEquals(partition.highWater("old"), 3);
   assertEquals(partition.versions("old"), [1, 2, 3]);
 
-  // The marker must be above the old name's high-water mark.
+  // The marker must not be a live version of the old name.
   assertRejected(
     () =>
       partition.append(
@@ -397,7 +476,7 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
           fence: 1,
         }),
       ),
-    "version-not-increasing",
+    "version-live",
   );
 });
 
@@ -460,6 +539,25 @@ Deno.test("Partition.restore: an empty partition round-trips", () => {
   );
   assertEquals(restored.seq, 0);
   assertEquals(restored.highestFence, undefined);
+});
+
+Deno.test("Partition.restore: round-trips after a reused and an out-of-order version", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("a", 1), versionOp("a", 3)]));
+  partition.append(modelCommit(2, [deleteVersion("a", 3)]));
+  partition.append(modelCommit(3, [versionOp("a", 3), versionOp("a", 2)]));
+  const restored = Partition.restore(
+    modelPartition(),
+    JSON.parse(JSON.stringify(partition.snapshot())),
+    () => false,
+  );
+  assertEquals(snapshot(restored), snapshot(partition));
+  assertEquals(restored.versions("a"), [1, 2, 3]);
+  assertEquals(restored.highWater("a"), 3);
+  assertRejected(
+    () => restored.append(modelCommit(4, [versionOp("a", 2)])),
+    "version-live",
+  );
 });
 
 Deno.test("Partition.restore: refuses a damaged snapshot", async () => {

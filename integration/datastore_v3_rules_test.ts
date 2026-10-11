@@ -26,8 +26,10 @@
  *    opt-in that will use them. Until then no production code outside those
  *    two directories may import either, so they cannot change behaviour.
  *    That covers `src/cli`, `src/serve`, `src/libswamp` and the
- *    `src/domain/datastore/mod.ts` barrel. The pinned list is empty; the
- *    issue that wires them in adds its edges here.
+ *    `src/domain/datastore/mod.ts` barrel. The pinned edges are the shared
+ *    typed staging route's and the repositories' builders
+ *    (swamp-club#3250), which run only under a commit-log unit; the issue
+ *    that wires v3 in adds its edges here.
  * 2. **Partition keys come from aggregate identity.** `partitionOf()` is the
  *    only way to build a key. No string or template literal elsewhere may
  *    start with a partition-key prefix, so nobody assembles a key by hand.
@@ -100,7 +102,23 @@ function isV3File(rel: string): boolean {
 }
 
 /** The production imports of v3 code from outside it. */
-const PINNED_V3_IMPORTERS: readonly string[] = [];
+const PINNED_V3_IMPORTERS: readonly string[] = [
+  // swamp-club#3250, the shared typed staging route: type-only imports of
+  // `TypedChange`, which a repository's builder returns and the commit-log
+  // adapter's registered stager takes. Nothing runs v3 code through them
+  // until a hook requires a unit, which only a commit-log root marks.
+  "src/infrastructure/persistence/unit_of_work_binding.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/unit_of_work_scope.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  // swamp-club#3250, the data and output repositories' typed builders: the
+  // pure change factory (repository_changes.ts), the types it builds and
+  // the inline limit that decides bytes or a stream. The builders run only
+  // inside stageTyped, which returns before them on every v2 context.
+  "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/op.ts",
+  "src/infrastructure/persistence/unified_data_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  "src/infrastructure/persistence/yaml_output_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/yaml_output_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
   const edges = await collectImportEdges(

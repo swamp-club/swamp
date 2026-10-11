@@ -70,16 +70,28 @@ class MemoryCatalog {
 
 const NAMES = ["a", "b"] as const;
 
+/**
+ * Which version a save or rename records: the next above the high-water
+ * mark, or (swamp-club#3250) a version at or below it that is not live, as
+ * v2 reuses a removed number and parallel writers finish out of order.
+ */
+const arbAt = fc.oneof(
+  { weight: 3, arbitrary: fc.constant(undefined) },
+  { weight: 1, arbitrary: fc.integer({ min: 1, max: 6 }) },
+);
+
 /** One step, described relative to the state when it runs. */
 const arbStep = fc.oneof(
   fc.record({
     kind: fc.constant("save" as const),
     name: fc.constantFrom(...NAMES),
+    at: arbAt,
   }),
   fc.record({
     kind: fc.constant("rename" as const),
     name: fc.constantFrom(...NAMES),
     to: fc.constantFrom("c", "d"),
+    at: arbAt,
   }),
   fc.record({
     kind: fc.constantFrom("delete" as const, "gc" as const),
@@ -114,7 +126,11 @@ Deno.test("projectCatalog: the catalog tracks each name's top live version acros
           const ops: Op[] = [];
           const touched: Step[] = [];
           for (const step of steps) {
-            const stepOps = opsFor(step, working, highWater);
+            // A late save below the top after expiry restores no row in v2
+            // but its own, which this test's top-version rule does not model.
+            const expiredNow = expired.has(step.name) ||
+              touched.some((s) => s.kind === "expire" && s.name === step.name);
+            const stepOps = opsFor(step, working, highWater, expiredNow);
             if (stepOps.length === 0) continue;
             ops.push(...stepOps);
             touched.push(step);
@@ -170,12 +186,35 @@ function opsFor(
   step: Step,
   live: ReadonlyMap<string, readonly LiveDataVersion[]>,
   highWater: Map<string, number>,
+  expired: boolean,
 ): Op[] {
   const name = step.name;
   const next = () => {
-    const version = (highWater.get(name) ?? 0) + 1;
-    highWater.set(name, version);
-    return version;
+    const top = highWater.get(name) ?? 0;
+    const at = "at" in step ? step.at : undefined;
+    const isLive = (version: number) =>
+      (live.get(name) ?? []).some((v) => v.version === version);
+    // v2 writes a rename marker above every version on disk, so only a
+    // save lands below a live version. A late save below a rename marker
+    // follows v2's catalog rather than this test's top-version rule; the v2
+    // oracle (`datastore_v3_read_model_v2_oracle_test.ts`) covers it.
+    const versions = live.get(name) ?? [];
+    const aboveLive = (version: number) =>
+      versions.every((v) => v.version < version);
+    const topLive = versions.reduce<LiveDataVersion | undefined>(
+      (best, v) => best === undefined || v.version > best.version ? v : best,
+      undefined,
+    );
+    const belowOk = step.kind === "save" && !expired &&
+      (topLive === undefined || !isRenameMarker(topLive.metadata));
+    if (
+      at !== undefined && at <= top && !isLive(at) &&
+      (aboveLive(at) || belowOk)
+    ) {
+      return at;
+    }
+    highWater.set(name, top + 1);
+    return top + 1;
   };
   switch (step.kind) {
     case "save": {

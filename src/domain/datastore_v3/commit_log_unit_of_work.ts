@@ -43,10 +43,14 @@ import type { RecordKey } from "./record_key.ts";
  *   and commit: a repository passes "open the file I just wrote". A retry
  *   after a failed upload calls it again, so a stream is never read twice.
  *
- * A source is read when the put commits, not when it is staged. It must
- * stay readable and unchanged until the unit commits or ends: a repository
- * that stages the same key twice in one unit, or removes the file before
- * the unit commits, passes bytes instead.
+ * A source is read when the put commits, not when it is staged, and at
+ * most once: a retry of a failed commit reuses the content stored the first
+ * time. The one exception is repair after a chunk GC race (swamp-club#3249):
+ * when a landed commit's chunk is missing, the source is read again, and it
+ * must give the same content or the commit fails loudly. The unit drops a stream put before reading it when a later put or
+ * tombstone of the same key, carrying no `expect`, supersedes it in the same
+ * unit (swamp-club#3250), so a repository may rewrite or remove the file
+ * after staging it. Until then the file must stay readable and unchanged.
  */
 export type ContentSource =
   | Uint8Array
@@ -90,9 +94,19 @@ export type TypedChange =
  * - `abandon` discards the staged ops (decision 4).
  * - `checkpoint` commits each partition touched so far and keeps the unit
  *   open (decision 6).
+ * - A partition's changes past `MAX_COMMIT_OPS` commit as several commits,
+ *   split between batches (swamp-club#3250).
  */
 export interface CommitLogUnitOfWork extends UnitOfWork {
   stageOp(change: TypedChange): Promise<void>;
+  /**
+   * Records several typed changes as one batch, all or nothing. A
+   * partition's changes split into several commits when they pass
+   * `MAX_COMMIT_OPS`, but only between batches, so one batch always lands
+   * in one commit; a batch holding more than that for one partition is
+   * refused.
+   */
+  stageOps(changes: readonly TypedChange[]): Promise<void>;
   checkpoint(): Promise<void>;
   /** The typed changes staged so far, in staging order. */
   stagedOps(): readonly TypedChange[];

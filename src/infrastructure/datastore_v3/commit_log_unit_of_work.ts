@@ -57,6 +57,24 @@
  *   checkpoint commits: keeping a run record from naming refused data is
  *   left to the issue that stages run records (decision 7).
  *
+ * **Batches, splits and elision (swamp-club#3250).** `stageOps` records a
+ * batch all or nothing, and a child hands its batches to its ancestor one by
+ * one. When a flush forms groups, a partition holding more than
+ * `MAX_COMMIT_OPS` changes splits into several groups, each one commit,
+ * between batches, so one batch always lands in one commit; a single batch
+ * over the limit is refused when it is staged. A refused split drops the
+ * splits of its partition formed in the same flush, which were staged after
+ * it; a batch staged later forms its own group. Before a stream put is read,
+ * the unit drops it when a later put or tombstone of its key with no
+ * `expect` supersedes it, among the unflushed batches and the pending
+ * groups not being appended whose put is not stored yet; a group emptied so
+ * is dropped. A stored put's op is kept, so a retry never reads the stream
+ * again. The one exception is repair after a chunk GC race: every landed
+ * commit, a retry that reused a kept op included, runs the post-commit check
+ * ({@link restoreMissingChunks}), which reads the source again only when one
+ * of the commit's chunks is actually missing. A superseded put that was
+ * dropped never commits, so it needs no check.
+ *
  * **The outbox seam.** The unit appends through a {@link CommitSink}. In
  * Phase 3 that is the local `CommitStore`; Phase 4 passes the outbox, which
  * makes the pending retry durable.
@@ -107,7 +125,10 @@ import {
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
-import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
+import {
+  typedStagers,
+  unitOfWorkBinding,
+} from "../persistence/unit_of_work_binding.ts";
 
 /**
  * Where a commit-log unit appends its commits: the outbox seam. Phase 3
@@ -161,6 +182,12 @@ interface Group {
   /** Fixed when the group forms, so a retry of its commit lands once. */
   readonly txnId: string;
   readonly changes: readonly TypedChange[];
+  /**
+   * The flush that formed it. A partition's changes split into several
+   * groups when they pass MAX_COMMIT_OPS; the splits formed together share
+   * this, so a refusal of one drops the splits after it.
+   */
+  readonly formation: number;
 }
 
 /** What a commit-log unit exposes to its children. Adapter-private. */
@@ -168,8 +195,8 @@ interface CommitLogState {
   readonly hook: MarkDirtyHook;
   isOpen(): boolean;
   readonly parent: UnitOfWork | undefined;
-  /** Takes a committed child's changes, in order. */
-  adopt(changes: readonly TypedChange[]): void;
+  /** Takes a committed child's batches, in order and batch by batch. */
+  adopt(batches: readonly (readonly TypedChange[])[]): void;
 }
 
 const states = new WeakMap<UnitOfWork, CommitLogState>();
@@ -216,64 +243,118 @@ export function createCommitLogUnitOfWork(
   const clock = options.clock ?? (() => new Date());
   /** Every change staged, for `stagedOps`. */
   const all: TypedChange[] = [];
-  /** Changes not yet formed into groups, in staging order. */
-  let staged: TypedChange[] = [];
+  /**
+   * Batches not yet formed into groups, in staging order. A batch is the
+   * changes one `stageOps` call recorded; groups split only between them.
+   */
+  let staged: TypedChange[][] = [];
   /** Groups formed but not yet confirmed by the sink, in commit order. */
   let pending: Group[] = [];
-  /** How many ops each partition holds across `staged`, by key. */
-  const counts = new Map<string, number>();
+  /** The group whose commit is being built or appended, if any. */
+  let inFlight: Group | undefined;
+  /** Each pending put's op once its content is stored, for retries. */
+  const stored = new WeakMap<PendingPut, PutOp>();
+  /**
+   * Unstored stream puts of the group being appended that a later change
+   * superseded: that group cannot change under its append, so it skips them
+   * when it reaches them, and on a retry.
+   */
+  const supersededInFlight = new WeakSet<PendingPut>();
+  /** The unflushed stream puts by partition and key, where they sit. */
+  const streamPuts = new Map<
+    string,
+    { readonly batch: TypedChange[]; readonly change: TypedChange }
+  >();
+  let formations = 0;
   let ended: "committed" | "abandoned" | undefined;
   /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
 
   /**
-   * Records changes all or nothing: when any partition would go over
-   * MAX_COMMIT_OPS, none of them is recorded.
+   * Drops a stream put that `change` supersedes before its stream is read:
+   * a later put or tombstone of the same key leaves the same record, and the
+   * file behind the stream may be gone by commit (a prune, a delete or an
+   * in-place append after a save). Covers the unflushed batches and the
+   * pending groups not in flight whose put is not stored yet.
    */
-  const record = (changes: readonly TypedChange[]): void => {
-    const next = new Map(counts);
-    for (const change of changes) {
-      const key = change.partition.toString();
-      const count = (next.get(key) ?? 0) + 1;
-      if (count > MAX_COMMIT_OPS) {
-        throw new Error(
-          `Partition ${key} has more than ${MAX_COMMIT_OPS} changes staged in ` +
-            "one unit of work; checkpoint before staging more",
-        );
-      }
-      next.set(key, count);
+  const elideSupersededBy = (change: TypedChange): void => {
+    const slot = supersedingSlot(change);
+    if (slot === undefined) return;
+    const earlier = streamPuts.get(slot);
+    if (earlier !== undefined) {
+      earlier.batch.splice(earlier.batch.indexOf(earlier.change), 1);
+      streamPuts.delete(slot);
     }
-    for (const [key, count] of next) counts.set(key, count);
+    pending = pending.flatMap((group) => {
+      if (group === inFlight) {
+        for (const other of group.changes) {
+          if (
+            "put" in other && !stored.has(other.put) &&
+            streamPutSlot(other) === slot
+          ) {
+            supersededInFlight.add(other.put);
+          }
+        }
+        return [group];
+      }
+      const changes = group.changes.filter((other) =>
+        !("put" in other) || stored.has(other.put) ||
+        streamPutSlot(other) !== slot
+      );
+      if (changes.length === group.changes.length) return [group];
+      // A group left empty has nothing to commit; a commit carries an op.
+      return changes.length === 0 ? [] : [{ ...group, changes }];
+    });
+  };
+
+  /** Records one batch: refused whole when a partition passes the limit. */
+  const record = (changes: readonly TypedChange[]): void => {
+    requireBatchWithinLimit(changes);
+    if (changes.length === 0) return;
+    const batch: TypedChange[] = [];
+    staged.push(batch);
     for (const change of changes) {
-      staged.push(change);
+      elideSupersededBy(change);
+      batch.push(change);
       all.push(change);
+      const slot = streamPutSlot(change);
+      if (slot !== undefined) streamPuts.set(slot, { batch, change });
     }
   };
 
   const flush = (): Promise<void> => {
     const run = flushing.then(async () => {
-      pending = [...pending, ...formGroups(staged)];
+      pending = [...pending, ...formGroups(staged, ++formations)];
       staged = [];
-      counts.clear();
+      streamPuts.clear();
       // Run partitions last (decision 7); a stable sort keeps the rest in
-      // the order they were first touched.
+      // the order they were formed, so a partition's splits stay in order.
       pending.sort((a, b) => runRank(a) - runRank(b));
       while (pending.length > 0) {
+        const group = pending[0];
+        inFlight = group;
         try {
-          await appendGroup(pending[0], options, clock);
+          await appendGroup(group, options, clock, stored, supersededInFlight);
         } catch (error) {
-          // A refused commit can never land as it is: drop it, so the
-          // partitions staged after it can still commit. A seq gap only
-          // means another append moved the head first; the group stays
-          // pending and is rebuilt at the new head.
+          // A refused commit can never land as it is: drop it, with the
+          // splits of its partition formed with it (they were staged after
+          // it), so the partitions staged after it can still commit. A seq
+          // gap only means another append moved the head first; the group
+          // stays pending and is rebuilt at the new head.
           if (
             error instanceof CommitRejectedError && error.reason !== "seq-gap"
           ) {
-            pending = pending.slice(1);
+            pending = pending.filter((other) =>
+              other !== group &&
+              !(other.formation === group.formation &&
+                other.partition.equals(group.partition))
+            );
           }
           throw error;
+        } finally {
+          inFlight = undefined;
         }
-        pending = pending.slice(1);
+        pending = pending.filter((other) => other !== group);
       }
     });
     flushing = run.catch(() => {});
@@ -284,8 +365,8 @@ export function createCommitLogUnitOfWork(
     hook: markDirty,
     isOpen: () => ended === undefined,
     parent,
-    adopt(changes) {
-      record(changes);
+    adopt(batches) {
+      for (const batch of batches) record(batch);
     },
   };
 
@@ -295,6 +376,7 @@ export function createCommitLogUnitOfWork(
     if (as === "abandoned") {
       await flushing;
       staged = [];
+      streamPuts.clear();
       pending = [];
       return;
     }
@@ -310,14 +392,20 @@ export function createCommitLogUnitOfWork(
       }
       states.get(target)!.adopt(staged);
       staged = [];
+      streamPuts.clear();
       return;
     }
     await flush();
   };
 
   const uow: CommitLogUnitOfWork = {
-    async stageOp(change: TypedChange): Promise<void> {
-      const checked = await checkChange(change);
+    stageOp(change: TypedChange): Promise<void> {
+      return uow.stageOps([change]);
+    },
+    async stageOps(changes: readonly TypedChange[]): Promise<void> {
+      const checked: TypedChange[] = [];
+      for (const change of changes) checked.push(await checkChange(change));
+      requireBatchWithinLimit(checked);
       if (ended === "abandoned") {
         // Abandon discards: a write still landing in an abandoned unit's
         // scope is discarded with it, not rolled into an ancestor.
@@ -326,11 +414,11 @@ export function createCommitLogUnitOfWork(
       if (ended !== undefined) {
         const ancestor = nearestOpenAncestor(parent);
         if (ancestor !== undefined) {
-          return await (ancestor as CommitLogUnitOfWork).stageOp(checked);
+          return await (ancestor as CommitLogUnitOfWork).stageOps(checked);
         }
         throw new Error(`unit of work already ${ended}`);
       }
-      record([checked]);
+      record(checked);
     },
     stage(change: StagedChange): Promise<void> {
       return Promise.reject(new PathOnlyChangeRefusedError(change));
@@ -353,6 +441,7 @@ export function createCommitLogUnitOfWork(
   };
   states.set(uow, state);
   unitOfWorkBinding.bind(uow, markDirty);
+  typedStagers.register(uow, (changes) => uow.stageOps(changes));
   return uow;
 }
 
@@ -427,23 +516,98 @@ function requireSamePartition(target: PartitionKey, partition: PartitionKey) {
   }
 }
 
-/** Groups changes by partition, in the order each was first touched. */
-function formGroups(changes: readonly TypedChange[]): Group[] {
-  const groups = new Map<string, TypedChange[]>();
-  const partitions = new Map<string, PartitionKey>();
+/**
+ * Refuses a batch holding more than MAX_COMMIT_OPS changes for one
+ * partition: a batch never splits, so it could never commit.
+ */
+function requireBatchWithinLimit(changes: readonly TypedChange[]): void {
+  const counts = new Map<string, number>();
   for (const change of changes) {
     const key = change.partition.toString();
-    if (!groups.has(key)) {
-      groups.set(key, []);
-      partitions.set(key, change.partition);
+    const count = (counts.get(key) ?? 0) + 1;
+    if (count > MAX_COMMIT_OPS) {
+      throw new Error(
+        `One batch stages more than ${MAX_COMMIT_OPS} changes for partition ` +
+          `${key}; a batch commits whole, so stage it as smaller batches`,
+      );
     }
-    groups.get(key)!.push(change);
+    counts.set(key, count);
   }
-  return [...groups].map(([key, grouped]) => ({
-    partition: partitions.get(key)!,
+}
+
+/**
+ * Groups batches by partition, in the order each was first touched. A
+ * partition's group splits before a batch that would take it past
+ * MAX_COMMIT_OPS, so each split is one commit and no batch spans two.
+ */
+function formGroups(
+  batches: readonly (readonly TypedChange[])[],
+  formation: number,
+): Group[] {
+  type Forming = { partition: PartitionKey; changes: TypedChange[] };
+  const groups: Forming[] = [];
+  const open = new Map<string, Forming>();
+  for (const batch of batches) {
+    const byPartition = new Map<string, Forming>();
+    for (const change of batch) {
+      const key = change.partition.toString();
+      let part = byPartition.get(key);
+      if (part === undefined) {
+        part = { partition: change.partition, changes: [] };
+        byPartition.set(key, part);
+      }
+      part.changes.push(change);
+    }
+    for (const [key, part] of byPartition) {
+      let group = open.get(key);
+      if (
+        group === undefined ||
+        group.changes.length + part.changes.length > MAX_COMMIT_OPS
+      ) {
+        group = { partition: part.partition, changes: [] };
+        groups.push(group);
+        open.set(key, group);
+      }
+      for (const change of part.changes) group.changes.push(change);
+    }
+  }
+  return groups.map((group) => ({
+    partition: group.partition,
     txnId: crypto.randomUUID(),
-    changes: grouped,
+    changes: group.changes,
+    formation,
   }));
+}
+
+/**
+ * The partition and key a change writes when it can supersede an earlier
+ * stream put: a put or tombstone carrying no `expect` (an `expect` may rely
+ * on the earlier put).
+ */
+function supersedingSlot(change: TypedChange): string | undefined {
+  if ("put" in change) {
+    return change.put.expect === undefined
+      ? slotOf(change.partition, change.put.key)
+      : undefined;
+  }
+  const op = change.op;
+  if (op.kind !== "put" && op.kind !== "tombstone") return undefined;
+  return op.expect === undefined ? slotOf(change.partition, op.key) : undefined;
+}
+
+/** The slot of a pending put whose content is a stream, with no `expect`. */
+function streamPutSlot(change: TypedChange): string | undefined {
+  if (
+    !("put" in change) || typeof change.put.content !== "function" ||
+    change.put.expect !== undefined
+  ) {
+    return undefined;
+  }
+  return slotOf(change.partition, change.put.key);
+}
+
+function slotOf(partition: PartitionKey, key: RecordKey): string {
+  return `${partition}\u0000${key}`;
 }
 
 function runRank(group: Group): number {
@@ -461,6 +625,8 @@ async function appendGroup(
   group: Group,
   options: CommitLogUnitOptions,
   clock: () => Date,
+  storedOps: WeakMap<PendingPut, PutOp>,
+  superseded: WeakSet<PendingPut>,
 ): Promise<void> {
   const ops: Op[] = [];
   const stored: StoredContent[] = [];
@@ -469,12 +635,30 @@ async function appendGroup(
       ops.push(change.op);
       continue;
     }
-    const op = await storePut(change.put, options);
+    // A retry reuses the content stored the first time, so it never reads
+    // a stream twice or reopens a file removed since.
+    let op = storedOps.get(change.put);
+    if (op === undefined) {
+      if (superseded.has(change.put)) continue;
+      try {
+        op = await storePut(change.put, options);
+      } catch (error) {
+        // Superseded while this group was being stored: its file may be
+        // gone, and a later change records what the key ends as.
+        if (superseded.has(change.put)) continue;
+        throw error;
+      }
+      storedOps.set(change.put, op);
+    }
+    // Every blob the commit names gets the post-commit check, a reused op
+    // included: a sweep may have deleted its chunks since they were stored.
     if ("blob" in op.content) {
       stored.push({ source: change.put.content, blob: op.content.blob });
     }
     ops.push(op);
   }
+  // Every op was a superseded put: nothing to commit.
+  if (ops.length === 0) return;
   await withPartitionLock(
     options.sink,
     options.namespace,

@@ -41,7 +41,9 @@ function sampleOf(kind: string): Record<string, unknown> {
   const model = required === undefined
     ? MODEL
     : modelRef(ModelType.create(required), ID);
-  if (kind === "data.save") return { kind, model, name: "vpc", version: 1 };
+  if (kind === "data.save" || kind === "data.append") {
+    return { kind, model, name: "vpc", version: 1 };
+  }
   if (kind === "data.delete" || kind === "data.gc") {
     return { kind, model, name: "vpc", version: 2 };
   }

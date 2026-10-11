@@ -383,7 +383,8 @@ function persistenceMarksOutsideAdapters(
 }
 
 // ---------------------------------------------------------------------------
-// Rule 7: repositories reach their hook only through signalChange
+// Rule 7: repositories reach their hook only through signalChange and
+// stageTyped
 // ---------------------------------------------------------------------------
 
 // A reference to a repository's hook field. The field is markDirty or
@@ -396,7 +397,9 @@ const SIGNAL_CHANGE_LOOKBACK = 200;
 
 /**
  * One key per reference to the hook field inside a datastore-tier repository
- * class that is not the first argument of a `signalChange(...)` call, as
+ * class that is not the first argument of a `signalChange(...)` call, or of
+ * a `stageTyped(...)` call, the typed route after a write, or the only
+ * argument of `typedStagingActive(...)` (swamp-club#3250), as
  * "<file>: <class>": calling the hook, passing it elsewhere, or storing it.
  * Code before and after the reference is read across lines, so a call that
  * deno fmt wraps still counts as signalChange's argument. The constructor
@@ -427,7 +430,12 @@ function hookReferencesOutsideSignalChange(
             start,
           );
           const after = source.slice(start + match[0].length);
-          if (/\bsignalChange\(\s*$/.test(before) && /^\s*,/.test(after)) {
+          if (
+            /\b(?:signalChange|stageTyped|typedStagingActive)\(\s*$/.test(
+              before,
+            ) &&
+            /^\s*[,)]/.test(after)
+          ) {
             continue;
           }
           keys.push(`${rel}: ${owners[i]}`);
@@ -943,6 +951,10 @@ const BIND_CALL = /\bunitOfWorkBinding\.bind\s*\(/g;
 const BOUND_HOOK_CALL = /\bunitOfWorkBinding\.boundHook\s*\(/g;
 const REQUIRE_UNIT_CALL = /\bunitOfWorkBinding\.requireUnit\s*\(/g;
 const LEGACY_TARGET_CALL = /\blegacyUnitOfWorkTarget\s*\(/g;
+// The typed-stager registry beside it (swamp-club#3250): which units take a
+// repository's typed changes.
+const TYPED_STAGER_REGISTER_CALL = /\btypedStagers\.register\s*\(/g;
+const TYPED_STAGER_LOOKUP_CALL = /\btypedStagers\.stagerOf\s*\(/g;
 
 // The adapters that bind the units they build: the legacy adapter, and the
 // v3 commit-log adapter.
@@ -955,6 +967,22 @@ const PINNED_UNIT_OF_WORK_BINDERS: readonly string[] = [
 // legacy-only view of the binding.
 const PINNED_BOUND_HOOK_READERS: readonly string[] = [
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+  // swamp-club#3250: the typed route (stageTyped and typedStagingActive),
+  // which stages only into a unit bound to the repository's hook.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager",
+];
+
+// Who registers a unit as taking typed changes: only the v3 commit-log
+// adapter (swamp-club#3250).
+const PINNED_TYPED_STAGER_REGISTRARS: readonly string[] = [
+  "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: createCommitLogUnitOfWork",
+];
+
+// Who asks whether a unit takes typed changes: the routing in signalChange
+// (a typed declaration stages no path) and the typed route's lookup.
+const PINNED_TYPED_STAGER_LOOKUPS: readonly string[] = [
+  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager",
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
 ];
 
@@ -1253,13 +1281,14 @@ Deno.test("datastore write seams: the persistence mark scan reports repositories
   ]);
 });
 
-Deno.test("datastore write seams: repositories reference their hook only as signalChange's first argument (swamp-club#2996)", () => {
+Deno.test("datastore write seams: repositories reference their hook only as signalChange's or stageTyped's first argument (swamp-club#2996, swamp-club#3250)", () => {
   assertPinnedSet(
     hookReferencesOutsideSignalChange(files),
     PINNED_HOOK_MISUSES,
     "Datastore-tier repository hook references outside signalChange",
     "A repository reaches its mark hook only as the first argument of\n" +
-      "signalChange(this.<hook>, change), so the unit of work sees every change.\n" +
+      "signalChange(this.<hook>, change), stageTyped(this.<hook>, build) or\n" +
+      "typedStagingActive(this.<hook>), so the unit of work sees every change.\n" +
       "Do not call the hook, pass it on, or store it.",
   );
 });
@@ -1276,6 +1305,12 @@ Deno.test("datastore write seams: the hook reference scan catches calls and pass
     "    await signalChange(",
     "      this.markDirty,",
     '      { kind: "remove", path },',
+    "    );",
+    "    await stageTyped(this.markDirty, () => changes);",
+    "    if (typedStagingActive(this.markDirty)) read();",
+    "    await stageTyped(",
+    "      this.markDirty,",
+    "      () => changes,",
     "    );",
     "    await this.markDirty(path);",
     "    await this.markDirtyHook?.();",
@@ -1416,6 +1451,26 @@ Deno.test("datastore write seams: only the v3 commit-log root marks a context as
     "requireUnit makes a context refuse writes outside a unit: a v3\n" +
       "datastore's. A v2 context must never be marked, or its route-2\n" +
       "writes start failing.",
+  );
+});
+
+Deno.test("datastore write seams: only the v3 commit-log adapter registers typed stagers (swamp-club#3250)", () => {
+  assertPinnedSet(
+    referenceKeys(files, TYPED_STAGER_REGISTER_CALL, () => true),
+    PINNED_TYPED_STAGER_REGISTRARS,
+    "typedStagers.register calls",
+    "A unit registered as a typed stager takes a repository's typed changes\n" +
+      "instead of its path changes. Only the v3 commit-log unit does.",
+  );
+});
+
+Deno.test("datastore write seams: typed staging is looked up only by the routing (swamp-club#3250)", () => {
+  assertPinnedSet(
+    referenceKeys(files, TYPED_STAGER_LOOKUP_CALL, () => true),
+    PINNED_TYPED_STAGER_LOOKUPS,
+    "typedStagers.stagerOf calls",
+    "signalChange and stageTyped decide where a write goes. Route through\n" +
+      "them rather than asking the registry elsewhere.",
   );
 });
 
