@@ -1762,6 +1762,235 @@ a crash) can pass the fast path if the index is unchanged. Integrity is the
 verifier's job: use `DatastoreVerifier.verify()`, or `rm -rf` the cache and
 re-pull.
 
+### v3 domain model (datastore rework Phase 3)
+
+v3 replaces "write a file, mark it dirty, push later" with explicit commits. A
+single writer records each commit in `commits.db`, and content is stored as
+immutable, content-addressed chunks. The CLI's embedded datastore service is
+the writer in solo mode, and the elected `swamp serve` leader in team mode.
+swamp-club#3233 adds the domain model this builds on, in
+`src/domain/datastore_v3/`. It is pure, in-memory domain code, and nothing in
+production imports it yet: `integration/datastore_v3_rules_test.ts` pins its
+importers to an empty list. It is a bounded context of its own, beside
+`src/domain/datastore/`, because it builds on the `models`, `data` and
+`workflows` contexts, and those already import `datastore`: inside it, the
+model would close three context cycles
+(`integration/architecture_boundary_test.ts`). The commit store, the chunk store and the opt-in
+are later issues.
+
+**Ubiquitous language.**
+
+- **Partition**: the storage of one aggregate instance. Consistency between
+  partitions is eventual.
+- **Commit**: one transaction on one partition. Its ops apply together or not
+  at all.
+- **seq**: a partition's commit counter. It has no gaps: a partition accepts
+  only its current seq plus one.
+- **Intent**: the domain operation an op performs (`data.save`,
+  `grant.revoke`, …). Serve authorises on the intent, never on the path.
+- **Op**: one change in a commit: `put`, `tombstone`, `data-version` or
+  `lease`.
+- **Record key**: the namespace-relative path an op projects to, in today's
+  cache layout. It is used only to materialise real files.
+- **Blob**: content stored as a chunk, referenced by `{ sha256, size }`.
+- **Chunk**: an immutable piece of content addressed by its SHA-256.
+- **Fence**: a lease's monotonic number. A writer whose fence is stale loses.
+- **txnId**: the outbox entry id a commit carries. A retry carries the same
+  one, so the commit lands once.
+- **High-water mark**: the greatest version a data name ever had. A new
+  version must be above it.
+
+**Partitions are aggregates.** A partition key is built only by
+`partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
+stores. A fitness rule rejects partition-key literals anywhere else.
+
+| Aggregate | Partition key | Contention |
+|---|---|---|
+| `Model`: data names and versions, outputs, the evaluated definition. Grants, groups, server tokens, enrollment tokens and workers are models of their `swamp/*` types. | `model--{type}--{modelId}` | Real: a lease (Phase 5) |
+| `WorkflowRun`, with its jobs and steps | `run--{workflowId}--{runId}` | None: each run gets a new id |
+| `Definition`: a model, workflow or vault under managed config, with its evaluated workflow | `config--{model\|workflow\|vault}--{name}` | Real: optimistic concurrency (`expect`) |
+| The managed-config extension lockfile | `config--lockfile--upstream_extensions` | Real: optimistic concurrency (`expect`) |
+| `AutoDefinition` | `definition--{id}` | None: each gets a new id |
+
+Content chunks contend with nothing, because a chunk's identity is its
+SHA-256.
+
+**Ops and the commit envelope.**
+
+- **`Commit`** (`commit.ts`) carries:
+  - `v: 3`, the `seq`, the partition and the namespace;
+  - the `txnId` and the writer (`host`, `pid`, `instance`);
+  - optional `executedAt`, `clockOffsetMs`, `principal` (set by serve only)
+    and `fence`;
+  - `at`, and between 1 and `MAX_COMMIT_OPS` (10,000) ops.
+- **Ops** (`op.ts`) are built by factories, never as literals.
+  - **`put`** carries a `BlobRef` or up to 8 KiB of inline content, as
+    canonical base64. `putOp()` computes the SHA-256 of inline content. The
+    serialized form leaves that digest out, and `Commit.fromJSON` recomputes
+    it, so a stored digest can never disagree with its bytes.
+  - **`tombstone`** names one key; there are no prefix tombstones.
+  - **`data-version`** carries the version's `DataMetadata`, and is allowed
+    only in a model partition.
+  - **`lease`** carries a holder and a fence.
+- **The intent's partition.** Every `put` and `tombstone` intent must belong
+  to the commit's partition (`intentPartition`).
+
+**The partition's rules.** `Partition.append` (`partition.ts`) keeps these.
+It is synchronous, and a refused commit leaves the partition unchanged:
+
+- **Partition, then duplicate.** A commit for another partition is refused
+  first. A commit whose `txnId` the partition holds is then a no-op, checked
+  before seq, so a retry of a commit that landed is harmless even though its
+  seq is now behind. Identity is the txnId alone: the payload is not
+  compared.
+- **seq has no gaps.**
+- **Fences never go down.** A commit, or a lease op, whose fence is below the
+  partition's highest is refused (`stale-fence`). Once a partition has seen a
+  fence, a commit without one is refused too (`unfenced`), so a writer cannot
+  slip past fencing by leaving it out. Every v3 writer holds a fence: the
+  solo writer lock at `_control/writer` carries it in solo mode, and the
+  leader lease in team mode (swamp-club#3234,
+  `design/enablers/datastore-litestream.md`). Only a partition that has never
+  seen a fence accepts an unfenced commit.
+- **`expect` must hold.**
+  - `put` with `expect: "absent"` creates only.
+  - `put` with `expect: { sha256 }` edits the version it was loaded from.
+  - `tombstone` with `expect: "present"` removes only a record that exists.
+  - Ops in one commit see each other's effects in order.
+- **Data versions only grow.**
+  - A `data-version` op's version must be above its name's high-water mark.
+  - A tombstone whose intent is `data.delete` or `data.gc` with a version
+    removes that version. A delete of a whole name lists each version it has
+    seen as its own versioned tombstone, so a version written concurrently
+    survives. A version-less `data.delete` is only for keys that carry no
+    version (the latest marker, the name directory).
+  - A rename is one model-partition commit: a `data.rename` put, a
+    `data-version` op for the new name, and a `data-version` op for the old
+    name's marker version (the version carrying `renamedTo`), above the old
+    name's high-water mark.
+  - Each name's latest is its greatest live version, so exactly one latest
+    per name holds by construction. The partition reads names and versions
+    from intents and metadata, never by parsing a record key.
+
+**Decisions.** The commit store, the chunk store and the opt-in build on
+these.
+
+1. **From staged changes to commits.** A path alone cannot become a commit:
+   the commit needs the intent serve authorises on and the content the
+   partition records. Repositories on a v3 datastore stage typed changes
+   (`TypedChange`: a partition and an op) through `CommitLogUnitOfWork`
+   (`commit_log_unit_of_work.ts`). It is a sibling port that extends
+   `UnitOfWork` with `stageOp`, `stagedOps` and `checkpoint`. `StagedChange`,
+   its callers and the legacy adapter are unchanged.
+2. **How a commit-log unit claims a repository context.** Today
+   `signalChange` stages into the ambient unit only when
+   `legacyUnitOfWorkTarget(uow)` is the repository's own hook, which
+   recognises legacy units alone. A binding registry (`UnitOfWorkBinding`)
+   generalises it: each adapter binds the units it builds to the hook of the
+   context they serve, and `signalChange` asks the registry. The legacy
+   adapter becomes one registrant and the commit-log adapter another.
+3. **Unscoped writes are refused on v3.** On v2, a hooked write outside every
+   unit still marks the hook (route 2 in `signalChange`); its removal is
+   deferred. A v3 datastore has no such fallback, so the commit-log adapter
+   refuses a write outside a unit rather than drop it. That includes a hooked
+   repository write inside the CLI's managed-lockfile root, which is bound to
+   the transaction's own hook (swamp-club#3192), so such a write would count
+   as unscoped. The lockfile's own write is a typed `lockfile.write` op in
+   that root.
+4. **Abandon discards.** A legacy unit's changes have already reached the
+   hook, so it flushes on abandon. A commit-log unit discards its staged ops
+   instead. Content it already wrote as chunks stays as unreferenced chunks,
+   which chunk garbage collection reclaims; a chunk is never referenced
+   before the commit that names it lands.
+5. **Run outcomes.** A workflow run's unit commits its partitions when the
+   run ends `completed`, `failed`, `suspended` or `cancelled`:
+   - a suspended run must be durable to resume;
+   - a cancelled or failed run's record is its outcome.
+
+   A unit ended by an error or an early stop discards, except a `completed`
+   stream followed by `return()`, which counts as success.
+6. **Checkpoints.** `checkpoint()` commits each partition touched so far, in
+   the order of decision 7, and keeps the unit open. Later changes to the
+   same partitions go into later commits.
+7. **No atomicity across partitions.** Each partition commits on its own. A
+   workflow run that writes several models commits the data partitions
+   first and the run record last, so a run record never names data that has
+   not landed.
+
+**Decisions found while building the model.**
+
+- **Key encoding.** The type and name segments are percent-encoded, keeping
+  `@`: `model--swamp%2Fgrant--<id>`. Ids are lowercased, so one aggregate
+  never splits into two partitions by letter case. A normalized model type keeps `/` and
+  `@`, and a definition name may hold `/` (scoped `@collective/name`) or
+  `--`, so flattening `/` to `-` would give `a-b/c` and `a/b-c` one key.
+  `partitionOf` takes a `ModelType` and uses its normalized form, so every
+  spelling of a type gives one key. `@swamp/grant` and `swamp/grant` are
+  distinct normalized types, and so distinct partitions, as their paths are
+  today.
+- **No ULIDs.** Every id swamp generates is `crypto.randomUUID()` (UUID v4,
+  122 random bits), which already cannot collide, and the run, workflow and
+  data id schemas require a UUID. A partition orders its commits by seq, so
+  ids need not sort by time. `WorkflowRunFactory`, `DefinitionFactory` and
+  `ModelOutputFactory` (`identity_factories.ts`) reuse that generator.
+- **Version numbers are never reused.** Today the filesystem allocates
+  `max(existing) + 1`, so deleting the top version lets the next save reuse
+  its number. On v3 a name's high-water mark never decreases. That is
+  harmless for a new, empty v3 datastore. A later migration of existing data
+  must seed each name's high-water mark from its highest version.
+- **Aggregate-specific rules stay with their aggregate.**
+  - A partition sees op content as opaque bytes.
+  - `WorkflowRun` keeps its own status-transition and step-ownership rules
+    and enforces them before it builds ops.
+  - Admin-only changes to grants and groups are enforced by serve, which
+    authorises on the intent.
+- **Renames span two partitions.** A definition partition is keyed by name,
+  because the files are laid out by name and `expect: "absent"` on the name
+  catches concurrent creates. A rename (vault edit can rename) is two
+  commits, in order:
+  1. a `definition.rename-to` put with `expect: "absent"` in the new name's
+     partition;
+  2. a `definition.rename-from` tombstone with `expect: "present"` in the old
+     one.
+
+  A crash between them leaves both names until a repair. Readers resolve the
+  definition by its id.
+- **The lockfile is a partition.** The managed-config extension lockfile is
+  datastore-synced today and has real contention, so it is a single-instance
+  partition written by `lockfile.write` under optimistic concurrency.
+- **What stays outside the commit log.** These writes get no intent, because
+  the datastore never syncs them:
+  - bundles and pulled extension sources (`ALWAYS_LOCAL_SUBDIRS`,
+    swamp-club#2612);
+  - the repo marker and datastore config;
+  - sources;
+  - vault secrets, which go to the vault provider;
+  - control-plane store keys (signal waits, heartbeats, webhook state).
+- **Authorisation requirements for the serve wiring.** Serve will authorise
+  each op on its intent, and the model leaves four bindings to that issue. Each
+  needs the per-repository audit of what every write stages, so none is
+  enforced yet:
+  - **Key to aggregate.** A put's or tombstone's record key must fall under
+    the projected paths of its intent's aggregate. Otherwise a principal
+    allowed to save data on one model could write any other aggregate's
+    file, such as a grant's.
+  - **Op kind to intent kind.** Which intents may ride a tombstone, and which
+    a put, is not a simple verb split. A versioned `data.delete` rewrites the
+    name's latest marker (a put), a definition delete keeps a file that
+    another entity shares (a put), and `grant.revoke` writes a new grant
+    version (a put). The table comes from that audit.
+  - **`data-version` ops.** These carry no intent, so they must be tied to a
+    `data.save` (or rename) intent for the same name and version in the same
+    commit, or get an intent of their own.
+  - **`lease` ops.** These carry no intent either. Only the lease machinery
+    (Phase 5) may write them; a client-forwarded commit carrying one must be
+    refused.
+- **Open requirement before the opt-in.** `audit/`, `telemetry/`, `logs/` and
+  `files/` are in `DEFAULT_DATASTORE_SUBDIRS` and synced today, but they are
+  high-volume, append-only streams, not aggregate storage. They have no v3
+  home yet. The opt-in issue must give them one before a v3 datastore can be
+  enabled, or v3 would stop syncing them.
+
 ### Foreign Catalog Export/Pull (Phase 6)
 
 In a giga-swamp, each namespace publishes `.catalog-export.json` after each
@@ -3030,6 +3259,15 @@ exclude patterns.
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
 | `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
+| `src/domain/datastore_v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
+| `src/domain/datastore_v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
+| `src/domain/datastore_v3/blob_ref.ts` | v3 `BlobRef`: content stored as a chunk |
+| `src/domain/datastore_v3/intent.ts` | v3 typed intents and `intentPartition()` |
+| `src/domain/datastore_v3/op.ts` | v3 ops (`put`, `tombstone`, `data-version`, `lease`) and their factories |
+| `src/domain/datastore_v3/commit.ts` | v3 `Commit` envelope |
+| `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate and its commit rules |
+| `src/domain/datastore_v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
+| `src/domain/datastore_v3/commit_log_unit_of_work.ts` | Proposed `CommitLogUnitOfWork` and `UnitOfWorkBinding` ports (types only) |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
