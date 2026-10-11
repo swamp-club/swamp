@@ -20040,3 +20040,77 @@ Deno.test({
     assertEquals(received, [{ value: "vpc-0abc123" }]);
   },
 });
+
+for (const autoGc of [true, false]) {
+  Deno.test(`run: hands autoGc ${autoGc} to every step, including a nested workflow's (swamp-club#3251)`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const seen = new Map<string, boolean | undefined>();
+      const executor: StepExecutor = {
+        execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+          seen.set(`${ctx.workflowName}/${ctx.stepName}`, ctx.autoGc);
+          return Promise.resolve({});
+        },
+      };
+
+      await workflowRepo.save(Workflow.create({
+        name: "child",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "child-write",
+            task: StepTask.model("m", "write"),
+          })],
+        })],
+      }));
+      const parent = Workflow.create({
+        name: "parent",
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "parent-write",
+              task: StepTask.model("m", "write"),
+            }),
+            Step.create({
+              name: "nested",
+              task: StepTask.workflow("child"),
+            }),
+          ],
+        })],
+      });
+      await workflowRepo.save(parent);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        autoGc,
+      );
+
+      const run = await service.execute(parent.name);
+
+      assertEquals(run.status, "succeeded");
+      assertEquals(
+        Object.fromEntries(seen),
+        { "parent/parent-write": autoGc, "child/child-write": autoGc },
+      );
+    });
+  });
+}

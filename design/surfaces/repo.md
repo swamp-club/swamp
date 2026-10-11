@@ -131,7 +131,10 @@ options are:
   Errors are logged and never fail the run. GC runs inside the `modelMethodRun`
   stream (`src/libswamp/models/run.ts`) before the CLI releases model locks and
   flushes datastore sync, so on a synced datastore the deletions go out in the
-  same post-run push. `swamp data gc` still does repo-wide manual GC.
+  same post-run push. With `autoGc` on, every write — including a workflow
+  step's — also prunes versions beyond an integer `garbageCollection` cap; a
+  workflow step gets no post-run pass. `swamp data gc` still does repo-wide
+  manual GC.
 - `garbageCollection`: repository defaults for manual `swamp run gc` cleanup.
   `workflowRuns` and `outputs` take positive durations such as `7d` or `2w`;
   omitted values keep the 30-day default. It does not run cleanup on its own or

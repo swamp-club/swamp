@@ -744,6 +744,11 @@ export interface StepExecutionContext {
   namespace?: Namespace;
   /** Resolved vault config directory (managed config tier or local vaults/) */
   vaultsDir?: string;
+  /**
+   * The repo's `autoGc` setting: the step's data repository enforces
+   * integer `garbageCollection` caps at write time when true.
+   */
+  autoGc?: boolean;
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
@@ -1213,6 +1218,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
       vaultsDir?: string;
+      autoGc?: boolean;
     },
   ): Promise<DefaultStepExecutor> {
     return new DefaultStepExecutor(
@@ -1237,6 +1243,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile: this.hydrateFile,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
+      autoGc: ctx.autoGc,
       ephemeralRepo: ctx.ephemeralRepo,
       ephemeralCatalog: ctx.ephemeralCatalog,
     });
@@ -1259,6 +1266,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
       vaultsDir?: string;
+      autoGc?: boolean;
       ephemeralRepo?: UnifiedDataRepository;
       ephemeralCatalog?: CatalogStore;
     },
@@ -1281,6 +1289,7 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.markDirty,
       opts.hydrateFile,
       opts.namespace ?? SOLO_NAMESPACE,
+      opts.autoGc ?? false,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -2893,6 +2902,7 @@ export class WorkflowExecutionService {
     private readonly hydrateFile?: HydrateFileHook,
     private readonly vaultsDir?: string,
     private readonly datastoreResolver?: DatastorePathResolver,
+    private readonly autoGc: boolean = false,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -2932,6 +2942,7 @@ export class WorkflowExecutionService {
       markDirty,
       hydrateFile,
       namespace,
+      autoGc,
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
@@ -5715,6 +5726,7 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           namespace: this.namespace,
           vaultsDir: this.vaultsDir,
+          autoGc: this.autoGc,
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
           ephemeralCatalog: this.ephemeralCatalog,
@@ -6330,6 +6342,7 @@ export class WorkflowExecutionService {
       this.hydrateFile,
       this.vaultsDir,
       this.datastoreResolver,
+      this.autoGc,
     );
     childService.signalWaits = this.signalWaits;
 
@@ -6563,6 +6576,7 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
           datastoreResolver: this.datastoreResolver,
+          autoGc: this.autoGc,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
           sensitiveValues: options.sensitiveValues,

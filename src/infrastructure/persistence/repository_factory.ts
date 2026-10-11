@@ -420,6 +420,13 @@ export interface RepositoryContext {
   hydrateFile?: HydrateFileHook;
   autoDefinitionsDir: string;
   /**
+   * The repo's `autoGc` setting, which `unifiedDataRepo` enforces at write
+   * time. Code that builds its own data repositories for this repo, such as
+   * workflow execution, passes it on so their writes keep the same caps
+   * (swamp-club#3251).
+   */
+  autoGc?: boolean;
+  /**
    * Whether this repository's datastore supports workflow signal waits, with
    * the store for their records. Set by the code that resolves the
    * datastore; absent in a context built without one, which then refuses a
@@ -576,5 +583,6 @@ export function createRepositoryContext(
     markDirty,
     hydrateFile,
     autoDefinitionsDir: autoDefDir,
+    autoGc: config.autoGc ?? false,
   };
 }
