@@ -1160,6 +1160,11 @@ export interface StepExecutorDeps {
   methodExecutionService: MethodExecutionService;
   vaultService: VaultService;
   expressionEvaluator: ExpressionEvaluationService;
+  /**
+   * Evaluates the target of a `context.runModel` call from a step, with the
+   * data repositories and vault service a standalone run of that target uses.
+   */
+  invocationEvaluator: ExpressionEvaluationService;
   directTypeResolver?: DirectTypeResolver;
   runTracker?: RunTrackerRepository;
   /**
@@ -1292,6 +1297,9 @@ export class DefaultStepExecutor implements StepExecutor {
           new DataQueryService(opts.ephemeralCatalog, opts.ephemeralRepo),
         )
         : persistentQueryService;
+    const vaultService = await VaultService.fromRepository(repoDir, {
+      vaultsDir: opts.vaultsDir,
+    });
     return {
       definitionRepo,
       unifiedDataRepo,
@@ -1307,12 +1315,15 @@ export class DefaultStepExecutor implements StepExecutor {
         opts.markDirty,
       ),
       methodExecutionService: new DefaultMethodExecutionService(),
-      vaultService: await VaultService.fromRepository(repoDir, {
-        vaultsDir: opts.vaultsDir,
-      }),
+      vaultService,
       expressionEvaluator: new ExpressionEvaluationService(
         definitionRepo,
         repoDir,
+      ),
+      invocationEvaluator: new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo: unifiedDataRepo, dataQueryService, vaultService },
       ),
       // directTypeResolver is not available in the lazy buildDeps path.
       // It must be injected via the WorkflowExecutionService constructor.
@@ -1356,6 +1367,7 @@ export class DefaultStepExecutor implements StepExecutor {
       methodExecutionService: executionService,
       vaultService,
       expressionEvaluator,
+      invocationEvaluator,
     } = allDeps;
 
     if (
@@ -1374,6 +1386,7 @@ export class DefaultStepExecutor implements StepExecutor {
           dataQueryService,
           createCelEnvironment: createExtensionCelEnvironment,
         },
+        evaluationService: invocationEvaluator,
         repoDir: ctx.repoDir,
         pulledExtensionsRoot: ctx.pulledExtensionsRoot,
       });

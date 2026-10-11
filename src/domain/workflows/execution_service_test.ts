@@ -16112,6 +16112,10 @@ Deno.test("run(): a failed step that threw a primitive still reports its own err
           definitionRepo,
           tempDir,
         ),
+        invocationEvaluator: new ExpressionEvaluationService(
+          definitionRepo,
+          tempDir,
+        ),
       });
 
       const workflowRepo = new InMemoryWorkflowRepository();

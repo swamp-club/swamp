@@ -960,6 +960,7 @@ export async function* modelMethodRun(
                 .modelInvocationService = new ModelInvocationService({
                   executionService,
                   commonDeps,
+                  evaluationService,
                   repoDir: deps.repoDir,
                   pulledExtensionsRoot: resolvePulledExtensionsRoot(
                     deps.repoDir,

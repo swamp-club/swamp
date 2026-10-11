@@ -101,6 +101,35 @@ export function containsSwampExpression(value: unknown): boolean {
 }
 
 /**
+ * Whether evaluating a CEL expression could read anything swamp binds: some
+ * free root identifier is a swamp namespace (`vault`, `data`, `self`,
+ * `inputs`, ...). Fails closed — text the attribution grammar cannot parse
+ * (prose, a malformed expression, `inputs.?x`) counts as reading one.
+ *
+ * Unlike {@link isForeignExpression}, a single swamp root is enough, so
+ * `${{ github.sha || data.latest("x", "y") }}` reads a swamp binding even
+ * though `github` is not swamp's.
+ */
+export function readsSwampBinding(celExpression: string): boolean {
+  let ast: ASTNode;
+  try {
+    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+  } catch {
+    return true;
+  }
+  const refs: References = {
+    roots: new Set(),
+    inputs: new Set(),
+    opaqueInputs: false,
+  };
+  collectReferences(ast, new Set(), refs);
+  for (const root of refs.roots) {
+    if (SWAMP_ROOT_NAMESPACES.has(root)) return true;
+  }
+  return false;
+}
+
+/**
  * Parses with the grammar {@link isSwampExpression} uses, deliberately not
  * {@link parsesAsCel}. Text only the evaluation grammar accepts (`inputs.?x`)
  * is text `isSwampExpression` cannot attribute, so it must not count as

@@ -39,6 +39,22 @@ import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { buildMethodContext } from "./method_context.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
 import { getObjectShape, isRecordSchema } from "./zod_type_coercion.ts";
+import {
+  collectAuthoredExpressions,
+  type ExpressionEvaluationService,
+} from "../expressions/expression_evaluation_service.ts";
+import { UnresolvedExpressionError } from "../expressions/errors.ts";
+import { assertMethodArgumentsEvaluated } from "../expressions/unresolved_expression_guard.ts";
+import { extractExpressions } from "../expressions/expression_parser.ts";
+import type { ExpressionLocation } from "../expressions/expression.ts";
+import {
+  isForeignExpression,
+  readsSwampBinding,
+} from "../expressions/swamp_namespaces.ts";
+import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { InputValidationService } from "../inputs/input_validation_service.ts";
+import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
 
 const MAX_INVOCATION_DEPTH = 10;
 const MAX_INVOCATION_BREADTH = 100;
@@ -48,6 +64,17 @@ const logger = getLogger(["swamp", "model", "invocation"]);
 export interface ModelInvocationServiceDeps {
   executionService: MethodExecutionService;
   commonDeps: CommonMethodContextDeps;
+  /**
+   * Evaluates the target definition's expressions before the nested run, as
+   * a standalone run of that definition would.
+   */
+  evaluationService: Pick<
+    ExpressionEvaluationService,
+    | "hasDefinitionExpressions"
+    | "evaluateDefinition"
+    | "buildRuntimeContext"
+    | "resolveRuntimeExpressionsInDefinition"
+  >;
   repoDir: string;
   pulledExtensionsRoot?: string;
 }
@@ -142,6 +169,34 @@ function isRoutedArgs(
   r: RoutedArgs | RunModelResult,
 ): r is RoutedArgs {
   return "globalArgs" in r;
+}
+
+/**
+ * runModel arguments come from extension code at run time, never from the
+ * definition's author, so they are applied as literal values and never
+ * evaluated. Global arguments holding `${{ ... }}` text that swamp could
+ * evaluate are refused: they would reach the method unresolved, or — saved by
+ * type-mode auto-creation — be evaluated as authored on a later run. Only
+ * another templating system's text, such as `${{ github.sha }}`, passes.
+ */
+function refuseEvaluableGlobalArgs(
+  definitionName: string,
+  globalArgs: Record<string, unknown>,
+): RunModelResult | null {
+  const refused: ExpressionLocation[] = extractExpressions(globalArgs)
+    .filter((e) =>
+      readsSwampBinding(e.celExpression) ||
+      !isForeignExpression(e.celExpression)
+    );
+  if (refused.length === 0) return null;
+  const list = refused.map((e) => `  ${e.path}: ${e.raw}`).join("\n");
+  return {
+    ok: false,
+    error: {
+      message:
+        `Refusing to run '${definitionName}': the following global arguments passed to runModel hold expression text, and runModel arguments are applied as literal values, never evaluated:\n${list}\nResolve the value in the calling method and pass the result instead.`,
+    },
+  };
 }
 
 export class ModelInvocationService {
@@ -241,31 +296,56 @@ export class ModelInvocationService {
       breadthCounter: tracking.breadthCounter,
     };
 
-    let childDefinition = definition;
-    let mergedGlobalArgs = definition.globalArguments ?? {};
-
+    let routedGlobalArgs: Record<string, unknown> = {};
+    let routedMethodArgs: Record<string, unknown> = {};
     if (options.arguments && Object.keys(options.arguments).length > 0) {
       const routed = routeArguments(options.arguments, methodName, modelDef);
       if (!isRoutedArgs(routed)) return routed;
+      const refused = refuseEvaluableGlobalArgs(
+        definition.name,
+        routed.globalArgs,
+      );
+      if (refused) return refused;
+      routedGlobalArgs = routed.globalArgs;
+      routedMethodArgs = routed.methodArgs;
+    }
 
-      childDefinition = Definition.fromData(definition.toData());
-      for (const [key, value] of Object.entries(routed.methodArgs)) {
-        childDefinition.setMethodArgument(methodName, key, value);
-      }
-      mergedGlobalArgs = {
-        ...definition.globalArguments,
-        ...routed.globalArgs,
+    const redactor = callerContext.redactor ?? this.#deps.commonDeps.redactor;
+    let childDefinition: Definition;
+    let secretBag: VaultSecretBag;
+    try {
+      const resolved = await this.#resolveExpressions(
+        definition,
+        modelDef,
+        methodName,
+        routedGlobalArgs,
+        routedMethodArgs,
+        redactor,
+      );
+      childDefinition = resolved.definition;
+      secretBag = resolved.secretBag;
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error &&
+              !(error instanceof UnresolvedExpressionError)
+            ? error.stack
+            : undefined,
+        },
       };
     }
 
     const childContext = buildMethodContext(
-      this.#deps.commonDeps,
+      // buildMethodContext takes the redactor only from the common deps.
+      { ...this.#deps.commonDeps, redactor },
       {
         signal: callerContext.signal,
         repoDir: this.#deps.repoDir,
         modelType: modelDef.type,
         modelId: childDefinition.id,
-        globalArgs: mergedGlobalArgs,
+        globalArgs: childDefinition.globalArguments,
         definition: {
           id: childDefinition.id,
           name: childDefinition.name,
@@ -281,6 +361,8 @@ export class ModelInvocationService {
           methodName,
         ]),
         extensionFilesRoot: modelDef.extensionFilesRoot,
+        // The nested run's own vault values; the caller's bag is never passed.
+        vaultSecrets: secretBag,
       },
     );
     childContext._invocationTracking = childTracking;
@@ -310,6 +392,121 @@ export class ModelInvocationService {
         },
       };
     }
+  }
+
+  /**
+   * Evaluates the target definition in memory as `swamp model method run`
+   * would: the definition pass, then the runtime pass for vault and env
+   * expressions, within the caller's vault access scope. Expressions are
+   * collected from the stored definition before any caller value is set, so
+   * runModel arguments are applied literally — template-free global
+   * arguments before evaluation (so `self.globalArguments` sees them), the
+   * rest after both passes. Nothing is persisted.
+   */
+  async #resolveExpressions(
+    definition: Definition,
+    modelDef: ModelDefinition,
+    methodName: string,
+    routedGlobalArgs: Record<string, unknown>,
+    routedMethodArgs: Record<string, unknown>,
+    redactor: MethodContext["redactor"],
+  ): Promise<{ definition: Definition; secretBag: VaultSecretBag }> {
+    const evaluationService = this.#deps.evaluationService;
+    const authoredExpressions = collectAuthoredExpressions(definition.toData());
+    const sensitiveValues = new RunSensitiveValues(redactor);
+    const inputs = definition.inputs
+      ? new InputValidationService().applyDefaults({}, definition.inputs)
+      : {};
+
+    let evaluatedDefinition = Definition.fromData(definition.toData());
+    const templatedGlobalArgs: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(routedGlobalArgs)) {
+      if (extractExpressions(value).length === 0) {
+        evaluatedDefinition.setGlobalArgument(key, value);
+      } else {
+        templatedGlobalArgs[key] = value;
+      }
+    }
+
+    let executedDefinition = evaluatedDefinition;
+    const stepSecretBag = new VaultSecretBag();
+    let failedExpressions: ReadonlyMap<string, Error> = new Map();
+    if (evaluationService.hasDefinitionExpressions(evaluatedDefinition)) {
+      const evalResult = await evaluationService.evaluateDefinition(
+        evaluatedDefinition,
+        modelDef.type,
+        sensitiveValues,
+        inputs,
+        undefined,
+        stepSecretBag,
+      );
+      evaluatedDefinition = evalResult.definition;
+      executedDefinition = evalResult.sanitizedDefinition ??
+        evalResult.definition;
+      failedExpressions = evalResult.failedExpressions ?? failedExpressions;
+    }
+
+    const runtimeContext = await evaluationService.buildRuntimeContext(
+      executedDefinition,
+      sensitiveValues,
+      inputs,
+    );
+    const runtimeResult = await evaluationService
+      .resolveRuntimeExpressionsInDefinition(
+        executedDefinition,
+        redactor,
+        runtimeContext,
+        authoredExpressions,
+        {
+          secretBag: stepSecretBag,
+          rawGlobalArguments: evaluatedDefinition.globalArguments,
+        },
+      );
+    const resolvedDefinition = runtimeResult.definition;
+    // Definition tags reach data artifacts and the catalog as they are, so a
+    // sensitive value in one becomes its placeholder.
+    for (const [key, value] of Object.entries(resolvedDefinition.tags)) {
+      const placeholder = sensitiveValues.withPlaceholders(value);
+      if (placeholder !== value) resolvedDefinition.setTag(key, placeholder);
+    }
+
+    for (const [key, value] of Object.entries(templatedGlobalArgs)) {
+      resolvedDefinition.setGlobalArgument(key, value);
+    }
+    for (const [key, value] of Object.entries(routedMethodArgs)) {
+      evaluatedDefinition.setMethodArgument(methodName, key, value);
+      resolvedDefinition.setMethodArgument(methodName, key, value);
+    }
+    // Checked after the caller's arguments are applied, so one that replaces
+    // a failed expression wins, as an --input does on the CLI.
+    assertMethodArgumentsEvaluated(
+      methodName,
+      evaluatedDefinition.getMethodArguments(methodName),
+      failedExpressions,
+    );
+
+    // Register sensitive argument values with the redactor so the nested
+    // run's logs and data are scrubbed of them.
+    if (redactor) {
+      const schemas = [
+        [modelDef.globalArguments, resolvedDefinition.globalArguments],
+        [
+          modelDef.methods[methodName]?.arguments,
+          resolvedDefinition.getMethodArguments(methodName),
+        ],
+      ] as const;
+      for (const [schema, values] of schemas) {
+        if (!schema) continue;
+        for (const secret of extractSensitiveFieldValues(schema, values)) {
+          redactor.addSecret(secret);
+        }
+      }
+    }
+
+    return {
+      definition: resolvedDefinition,
+      secretBag: runtimeResult.secretBag,
+    };
   }
 
   async #resolveByDefinition(
@@ -406,6 +603,11 @@ export class ModelInvocationService {
           modelDef,
         );
         if (!isRoutedArgs(routed)) return routed;
+        const refused = refuseEvaluableGlobalArgs(
+          options.name,
+          routed.globalArgs,
+        );
+        if (refused) return refused;
         globalArgs = routed.globalArgs;
       }
       definition = Definition.create({
