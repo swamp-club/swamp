@@ -2006,7 +2006,18 @@ these.
   - **Key to aggregate.** A put's or tombstone's record key must fall under
     the projected paths of its intent's aggregate. Otherwise a principal
     allowed to save data on one model could write any other aggregate's
-    file, such as a grant's.
+    file, such as a grant's. Since swamp-club#3256 the binding also covers
+    ownership: the read model keeps a file whose newest live put is
+    another partition's (a same-key rename), so a principal who could put
+    at another aggregate's key could also stop that aggregate's tombstone
+    from removing the file in every checkout.
+  - **Definition kind and model type.** A managed-config definition intent
+    names its kind and name, not its model type
+    (`config--model--{name}`), so same-named definitions of two model
+    types share one partition. Their record keys differ by type directory,
+    so the records never collide, but serve cannot tell the two apart when
+    it authorises an intent. The binding must take the type from the key or
+    add it to the intent.
   - **Op kind to intent kind.** Which intents may ride a tombstone, and which
     a put, is not a simple verb split. A versioned `data.delete` rewrites the
     name's latest marker (a put), a definition delete keeps a file that
@@ -2560,6 +2571,120 @@ top delete, a save pruned in the same unit, and a use case's child unit. GC
 and `delete(name)` above `MAX_COMMIT_OPS` split into two commits, in a root
 and in a child.
 
+#### Definition, workflow and evaluated repositories (swamp-club#3256)
+
+The second staging group: `yaml_definition_repository.ts`,
+`yaml_workflow_repository.ts`, `yaml_evaluated_definition_repository.ts` and
+`yaml_evaluated_workflow_repository.ts` stage typed changes for every write
+they make on v3, through the same two calls. v2 does not change: every read
+a typed change needs and every builder runs only behind `typedStagingActive`
+or inside `stageTyped`.
+
+**Which writes are datastore writes.** Every one of these repositories gets
+the context's hook, including definitions and workflows without managed
+config, whose repo-local `models/` and `workflows/` paths the hook simply
+never sends. Direct execution also builds a definition repository over the
+auto-definitions directory as its primary directory. So each written or
+removed file is classified by the directory it is in, not by the
+repository's role (`config_staging.ts`):
+
+- inside the managed config base, a managed-config definition or workflow,
+  in `config--{model|workflow}--{name}`;
+- inside a directory named `auto-definitions`, an auto-definition, in
+  `definition--{id}`;
+- anywhere else, a git-tracked file, which stages nothing. Its path change
+  is declared `typed`, so a v3 unit does not refuse it either.
+
+Evaluated definitions and workflows are always datastore files. The tier
+comes from the default datastore layout (`DEFAULT_DATASTORE_SUBDIRS`);
+honouring a repository's configured `directories` and `exclude` is left to
+the opt-in. A record key is the file's path under the namespace root, from
+its own tier's base (`config/models/...`, `config/workflows/...`,
+`auto-definitions/...`, `definitions-evaluated/...`,
+`workflows-evaluated/...`), never rebuilt from a name, so a file a cached
+lookup found outside its type directory keeps its real key.
+
+**The mapping.**
+
+| Write | Typed changes |
+|---|---|
+| Definition or workflow `save`, managed config, name unchanged | `definition.create` put expecting the key absent; or `definition.edit` expecting the replaced file's digest, or absent when the file moved here from another key of the same name (a legacy uuid path), with a `definition.edit` tombstone of that key expecting it present. An unchanged save that does not write stages nothing |
+| Definition or workflow `save` that renames | Batch 1: `definition.rename-to` put in the new name's partition, always expecting the key absent. Batch 2: `definition.rename-from` tombstones, expecting present, of the keys the save removed in the old name's partition, and of the target key itself when both names are stored at the same uuid path |
+| Definition `save` into or out of auto-definitions | `auto-definition.save` put (no precondition) of the written file, `auto-definition.delete` tombstones of removed auto-definition files, and `definition.delete` tombstones (expecting present) of removed managed-config files |
+| Definition or workflow `delete` | Per partition, `definition.delete` or `auto-definition.delete` tombstones of the files it removed, without a precondition. A removed file whose name is unknown stages nothing |
+| Evaluated definition `save`, `delete` | `evaluated-definition.save` put and `.delete` tombstones in the model's partition, without a precondition |
+| Evaluated definition `clearAll` | Per file, read before the removal, an `evaluated-definition.delete` tombstone in the model its raw `type` and `id` name |
+| Evaluated workflow `save` | `evaluated-workflow.save` put in the workflow name's partition, and tombstones of removed files of that name; then, as later batches, tombstones of removed files, or of a same-key target, that declared another name, in that name's partition |
+| Evaluated workflow `delete`, `clear` | `evaluated-workflow.delete` tombstones in the partition of each file's declared name; `clear` also tombstones run snapshots |
+| `saveForRun`, `deleteForRun` | `run-snapshot.save` put and `.delete` tombstone in `run--{workflowId}--{runId}` |
+
+Before a write, the repository reads (on v3 only) the bytes and the raw
+`id`, `name` and `type` of each file the write replaces or removes: the
+digest for an edit's precondition, and the name that tells a rename apart.
+A fresh repository's id cache is cold, which is how every CLI command
+builds one, so the name never comes from the cache. The definition
+repository reads before `readMergeSource`, which removes a corrupt target.
+Definition puts pass bytes, never a stream: a put with an `expect` never
+supersedes an earlier stream put of its key, so a definition saved twice in
+one unit would otherwise read the second save's bytes for the first put.
+`cleanupOldPaths` returns the paths it removed, and staging runs outside its
+catch blocks, so a refusal surfaces and a failed removal is never
+tombstoned.
+
+**Preconditions.** Only authored managed-config definitions and workflows
+carry them, so a concurrent edit or create from another checkout is refused
+(`expect-failed`) rather than silently overwritten. The refusal surfaces
+when the root commits, as `CommitRejectedError`. Its message names the
+record key and the partition, so it is not wrapped while v3 is dormant; the
+user-facing wording belongs to the opt-in. Two limits:
+
+- A tombstone can only expect `present`, so a move from a legacy key cannot
+  detect a stale edit of the file it replaces.
+- A local file out of step with the store (an editor-mode edit, a hand
+  edit, a write by a hook-less command) makes the next save's precondition
+  fail until the read model catches the file up. A rename of a name v3
+  never saw lands its first commit and refuses its second.
+
+Auto-definitions, evaluated definitions and workflows, and run snapshots
+carry none: every direct execution rewrites an auto-definition, and the
+others are derived files that hook-less commands also write.
+
+**Renames.** A rename spans two partitions, so it is two batches, and the
+unit commits partitions in the order each was first touched, so the new
+name lands first. No use case touches the old name's partition earlier in
+the same unit, which that order relies on;
+`integration/datastore_v3_config_staging_test.ts` pins it. A crash between
+the two commits leaves both names, and the definition resolves by id. For a
+same-key rename the store holds two live records of one key, and the read
+model's ownership rule ("Keys two partitions write" in "v3 read model")
+keeps the file with the new name's bytes.
+
+**Directory removals.** `clearAll`, `clear` and `deleteForRun` remove whole
+directories. On v3 each lists its files first and stages one tombstone per
+file, finding each partition from the raw YAML fields (and a legacy file
+name's uuid), never a schema parse, so a file another swamp version wrote
+is still found. A file that names no valid aggregate (a missing or
+non-UUID id, an invalid model type), or a run directory that is not a
+UUID, stages nothing: no repository ever put it, and run GC must not abort
+on a stray directory. Neither `clearAll` nor `clear` has a production
+caller.
+
+**Writers this does not cover.** These write the same files without a hook,
+so they stage nothing on v3 until the opt-in wires them: CLI `model create`
+and `model edit` and `workflow create` (published through
+`runManagedConfigMutation`'s bulk change, which a commit-log unit refuses),
+`model evaluate` and `workflow evaluate`, editor-mode `model edit`, and
+serve's `migrateGrantDefinitions`.
+
+**The gate.** `integration/datastore_v3_config_staging_test.ts` runs the
+four repositories on v3 in a commit-log root, solo and namespaced, and
+compares a caught-up read model's files with theirs for every path above:
+including same-key renames, a cold repository's rename, a save across
+tiers, a git-tracked write that stages nothing, and run snapshot removals
+of a stray and an empty run directory. It also covers a rename's commit
+order and crash states, a stale edit, a concurrent create, and a file out
+of step. Dropping any staged change fails it.
+
 ### v3 read model (datastore rework Phase 3)
 
 swamp-club#3239 adds the read model: it brings one checkout's local files, a
@@ -2650,7 +2775,10 @@ catalog must equal v2's.
 
 **Applying a commit.** Commits are applied in landing order. A commit at or
 below its partition's applied seq is skipped (`catchUpPartition` applied it
-already), so a catch-up never rolls a file back to an older put. A commit's
+already). Within one partition, positions in the change feed grow with seqs,
+so that alone keeps a catch-up from rolling a file back to an older put of
+the same partition. Across partitions it does not: see "Keys two partitions
+write" below. A commit's
 ops see each other's effects, so only each key's last put or tombstone is
 materialised, removals before writes, so a removal can clear the path a write
 needs (a put of `data/x` beside a tombstone of `data/x/y`). Effects come in a
@@ -2666,14 +2794,55 @@ fixed order:
    when empty. Every path passes `assertContainedPath` and `assertSafePath`.
 2. **Catalog.** The projection's actions.
 3. **State.** One transaction holds the index changes, the live versions, the
-   partition's applied seq and, from `catchUp`, the cursor. Neither the
-   cursor nor an applied seq moves back.
+   ownership of each file the commit wrote or removed, the partition's
+   applied seq and, from `catchUp`, the cursor. Neither the cursor nor an
+   applied seq moves back.
 
 Each effect is idempotent, so a crash anywhere is repaired by catching up
 again from the unchanged cursor. The index and the cursor are never ahead of
 the files. Calls queue in the process, and an exclusive OS lock on
 `read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
 file a faster one has removed.
+
+**Keys two partitions write (swamp-club#3256).** A same-key definition
+rename (two names that are not filename-safe, both stored at the
+definition's uuid path) puts the new name's record at a key the old name's
+partition then tombstones. `catchUpPartition` applies one partition's
+commits ahead of the change feed, so a later `catchUp` can apply the old
+name's earlier put after the new name's, and the tombstone after both. The
+file must follow the feed, not the order commits are applied in.
+
+`readPartition` returns each commit with its feed position, as
+`changesSince` does. The state (schema 2, `materialised_keys`) records, for
+each file, the partition whose put it shows (the owner), that put's
+position (the mark), and whether it is present:
+
+- a put writes the file only when the key has no ownership or its position
+  is greater than the mark, then becomes the owner;
+- a tombstone removes the file only while it is present and owned by the
+  tombstoning partition, and keeps the mark, so an older put of another
+  partition cannot bring it back. A key with no ownership is removed as
+  before (no put of it was applied, or it is a name directory).
+
+The result is that of applying the feed in order: a file holds its latest
+put in feed order, unless a later tombstone from that put's own partition
+removed it. A key only one partition writes behaves exactly as before, as
+its positions grow and it has one owner. The decision reads the ownership
+from before the commit, and the state is replaced only after every file, so
+a retry after a crash decides the same way. Schema 2's migration clears the
+catalog generation, so a state built under schema 1, whose files have no
+ownership, is reset and replayed. A path conflict still depends on what is
+on disk, so it is not independent of order across partitions; config keys
+cannot form one. `integration/datastore_v3_read_model_shared_key_test.ts`
+checks that random mixes of store and partition catch-ups end in the state
+in-order replay gives, and in the state the rule above describes.
+
+The live-record index stays per partition, so it can hold a record whose
+file another partition owns, or an orphan: a same-key rename whose second
+commit never landed leaves the old name's record live, while the file holds
+the new name's bytes. Deleting the new name removes the file regardless.
+The orphan stays live until someone tombstones it by hand. Chunk GC is
+unaffected: definition records are small and inline.
 
 **The key guard.** Serve does not yet bind a record key to its aggregate's
 paths ("Authorisation requirements" above), and in team mode other

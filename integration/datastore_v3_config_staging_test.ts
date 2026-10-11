@@ -863,3 +863,70 @@ Deno.test({
     });
   },
 });
+
+/** Writes a definition file at `rel` under the writer's root and commits it. */
+async function seed(
+  writer: ConfigWriter,
+  rel: readonly string[],
+  def: Definition,
+): Promise<void> {
+  const yaml = stringifyYaml(
+    JSON.parse(JSON.stringify({ ...def.toData(), type: TYPE.normalized })),
+  );
+  const path = join(writer.root, ...rel);
+  await ensureDir(join(path, ".."));
+  await Deno.writeTextFile(path, yaml);
+  await writer.run(() =>
+    stageTyped(writer.hook, () => [
+      new ConfigChanges("model", def.name).write(
+        "definition.create",
+        recordKeyOf([...rel]),
+        new TextEncoder().encode(yaml),
+        "absent",
+      ),
+    ])
+  );
+}
+
+Deno.test("v3 config staging: a delete keeps a same-id file of another definition, and tombstones a cached file by its real path", async () => {
+  await withV3Env(async (env) => {
+    const writer = new ConfigWriter(env, "");
+    // Two definitions sharing an id (a copied file): one at its name path,
+    // the other at the uuid path.
+    const mine = definition("mine");
+    const copy = changed(mine, { name: "copy" });
+    await seed(
+      writer,
+      ["config", "models", "test", "example", "mine.yaml"],
+      mine,
+    );
+    await seed(writer, [
+      "config",
+      "models",
+      "test",
+      "example",
+      `${mine.id}.yaml`,
+    ], copy);
+    // A definition filed outside its type directory, found by a lookup.
+    const odd = definition("odd");
+    await seed(writer, ["config", "models", "elsewhere", "odd.yaml"], odd);
+    await assertMatches(writer);
+
+    const repo = writer.definitions();
+    await writer.run(() => repo.delete(TYPE, mine.id, "mine"));
+    await assertMatches(writer);
+    assert(
+      (await readTree(env.cacheRoot(""))).has(
+        `config/models/test/example/${mine.id}.yaml`,
+      ),
+    );
+
+    assert(await repo.findByNameGlobal("odd"));
+    await writer.run(() => repo.delete(TYPE, odd.id));
+    await assertMatches(writer);
+    const [, removed] = await commitsOf(writer, configModel("odd"));
+    const op = removed.ops[0];
+    assert(op.kind === "tombstone");
+    assertEquals(op.key.toString(), "config/models/elsewhere/odd.yaml");
+  });
+});
