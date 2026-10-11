@@ -100,3 +100,17 @@ export interface DatastoreStorage {
   /** Removes the chunk; removing a missing chunk succeeds. */
   delete(namespace: string, sha256: string, signal: AbortSignal): Promise<void>;
 }
+
+/**
+ * Removes a storage's own leftovers that are not chunks: the filesystem
+ * storage's temp files from puts that never finished. Not part of
+ * `storage/1`.
+ */
+export interface TempFileSweeper {
+  /** Removes temp files last modified before `olderThan`; returns how many. */
+  removeStaleTempFiles(
+    namespace: string,
+    olderThan: Date,
+    signal: AbortSignal,
+  ): Promise<number>;
+}

@@ -2044,8 +2044,9 @@ takes an `AbortSignal` and must reject when it aborts.
 | `list(ns)` | Every chunk, with its `lastModified`. |
 | `delete(ns, sha256)` | Idempotent. |
 
-`touch`, `list` and `lastModified` are the primitives a later chunk GC needs.
-GC itself needs the commit store, so it is a later issue.
+`touch`, `list` and `lastModified` are the primitives chunk garbage collection
+uses, with the commit store's chunk index (see "v3 chunk garbage
+collection").
 
 **What the earlier seven-method draft had, and why it was dropped.**
 
@@ -2103,8 +2104,8 @@ ends cleanly.
 that is present is refreshed, not uploaded again, so one damaged in place after
 its put (a crash that leaves a file of the right length but wrong bytes) stays
 damaged, and every read of it fails. A `put` always replaces the chunk, so
-deleting it, or putting it again, repairs it. Finding damaged chunks belongs
-with the later GC work, which already has to walk every chunk.
+deleting it, or putting it again, repairs it. Chunk garbage collection finds
+and deletes damaged chunks, since it already walks every chunk.
 
 **For extension authors.** `FileSystemStorage`
 (`src/infrastructure/persistence/fs_datastore_storage.ts`) is the reference
@@ -2403,8 +2404,10 @@ dormant: nothing in production opens it, and
   feed (`changesSince`).
 - **Applied seq**: the last seq of a partition this checkout applied.
 - **Live-record index**: each partition's present records, with their digest
-  and `BlobRef` (or an inline marker). Chunk GC computes the chunks still in
-  use from it (`chunksInUse`).
+  and `BlobRef` (or an inline marker). `chunksInUse` gives the chunks behind
+  one checkout's present records. Chunk garbage collection does not use it:
+  a checkout catching up from the start needs every chunk any commit names
+  (see "v3 chunk garbage collection").
 
 **Port and adapter.** `ReadModel` (`src/domain/datastore_v3/read_model.ts`)
 has `catchUp`, `catchUpPartition`, `liveRecords`, `chunksInUse` and `close`.
@@ -2563,7 +2566,8 @@ starts at generation 1, the same as the one the state may have recorded.
   `.<uuid>.tmp` file beside the target, inside a synced directory, which
   sync could push. v2's `atomicWriteFile` writes the same temp files in the
   same directories, so this is shared, not new; a sweep of orphaned temp
-  files would fix both.
+  files would fix both. Chunk garbage collection sweeps the filesystem
+  storage's own temp files under `_blobs/`, not these.
 
 **Left to the opt-in.**
 
@@ -2577,6 +2581,122 @@ starts at generation 1, the same as the one the state may have recorded.
 - Decide whether a repository applies every namespace in `commits.db` or only
   its own. The read model applies each commit under `cacheRoot(namespace)`,
   so either works.
+
+### v3 chunk garbage collection (datastore rework Phase 3)
+
+swamp-club#3249 reclaims chunks that no commit names: those an abandoned unit,
+a refused or failed commit, or a crash between storing chunks and committing
+left behind. It also finds damaged chunks and removes the filesystem storage's
+orphaned temp files. It is dormant: nothing in production calls it, and
+`integration/datastore_v3_rules_test.ts` (rule 8) keeps it that way until a v3
+`datastore gc` is wired in at the opt-in.
+
+**Ubiquitous language.**
+
+- **Referenced chunk**: a chunk some stored commit names. A put's `BlobRef`
+  names its `sha256` when it has no `parts`, otherwise each part
+  (`Commit.chunkRefs`). A `legacyKey` ref is indexed by the same rule, which can
+  only keep a chunk, never lose one.
+- **Grace period**: how long an unreferenced chunk is kept after it was last
+  stored or refreshed. 24 hours by default (`DEFAULT_CHUNK_GRACE_MS`).
+- **Sweep**: one `ChunkCollector.collect` over one storage namespace.
+- **Damaged chunk**: a stored chunk whose bytes do not hash to its key.
+
+**Why the reference set is the commit log.** The read model applies each commit
+in turn and reads every put's chunks as it goes, so a checkout catching up from
+cursor 0 needs every chunk any commit ever named. That includes content a later
+commit overwrote, and versions a delete, `data gc` or `prune` tombstoned.
+Deleting such a chunk would stop a fresh catch-up at that commit with
+`ChunkMissingError`. A read model's `chunksInUse` describes one checkout's
+present records at its own cursor, so it cannot be the reference set.
+
+Reclaiming superseded content (chunks only historical commits name) needs
+history compaction first and is out of scope here.
+
+**The chunk index.** `commits.db` schema version 2 adds
+`chunk_refs(namespace, sha256)`. Its namespace is the commit namespace (`""`
+when unnamespaced). Each append writes its commit's refs in the append's own
+transaction, so a refused, repeated or rolled-back append writes none. The
+migration from version 1 backfills the table from the stored commits in SQL
+(`json_each` over each body's ops) by the same rule. A property test checks the
+index against a scan of every stored commit, built both ways.
+`CommitStore.referencedChunks(namespace, hashes)` answers a batch of hashes, so a
+sweep never loads a namespace's whole reference set.
+
+**The sweep.** `ChunkCollector` (`src/domain/datastore_v3/chunk_collector.ts`)
+is a domain service over the `CommitStore` and `storage/1` ports:
+
+1. Fix `now`, and the cutoff `now - grace`.
+2. Stream the namespace's `list`. A chunk modified at or after the cutoff is
+   kept unchecked.
+3. Gather older chunks in batches of `CHUNK_COLLECTION_BATCH` (256). For each
+   batch, read which are referenced, then delete the rest at once.
+4. Remove the storage's stale temp files, when it has a `TempFileSweeper`.
+
+The report counts what was scanned, kept as referenced, deleted, kept as too
+new and verified, and lists the damaged chunks and temp files removed. The
+unnamespaced datastore's chunks live under `_default`. The collector maps it
+with `storageNamespaceOf` and queries the index with `""`.
+
+**Why 24 hours, and why the order matters.** A unit stores, or refreshes,
+every chunk it is about to name before it commits. Writes trust `has`, and a
+chunk found present is touched or put again, which moves its `lastModified`. A
+chunk no commit names yet is therefore either abandoned or younger than the
+unit holding it. The grace period sits far above the longest a unit lives
+between storing its chunks and committing.
+
+The cutoff is fixed before any reference is read. A commit that lands during
+the sweep names chunks stored or refreshed after the cutoff, so they are never
+candidates.
+
+**Races with a concurrent write.**
+
+- A write that refreshes a chunk before the listing reaches it keeps it: the
+  listing reports the new `lastModified`.
+- A write whose commit lands after the listing saw the chunk, but before its
+  batch's reference check, keeps it: the check finds the reference.
+- **What remains.** A write can find an old, unreferenced chunk present and
+  refresh it after its batch's reference check, then commit after the delete.
+  Its commit then names a deleted chunk. The window is one batch's deletes,
+  milliseconds. It needs content that has gone unreferenced for longer than the
+  grace period to be written again in that window. `storage/1` offers no
+  per-chunk `lastModified` read and no conditional delete, so it cannot be
+  closed without a contract change. Streaming batches keep the window to one
+  batch instead of a whole listing. A later write of the same content finds the
+  chunk absent and stores it again, which repairs it. A test pins this outcome.
+
+**Clock skew.** `lastModified` comes from the storage's clock (a file's mtime,
+an object store's server time), and `now` from the collector's. A skew between
+them shifts the cutoff by the same amount. Against a 24-hour grace normal skew
+does not matter. Only tests should configure a grace near zero.
+
+**The Phase 4 outbox.** A unit's pending retry rebuilds a commit with the same
+txnId and does not store its chunks again. Within one unit's life that is
+inside the grace period. The Phase 4 outbox will make a pending commit durable,
+and could retry it days later, after a sweep has removed its chunks. An outbox
+entry must refresh its chunks through `ChunkStore` before it is sent again, or
+be refused once it is older than the grace period.
+
+**Damaged chunks.** `collect` can read and hash chunks within a byte budget
+(`verifyBytes`, 0 by default). A damaged chunk is deleted whatever its age, so
+the next write of that content finds it absent and stores it again. The report
+says whether a commit names it. If one does, its reads were already failing.
+Deleting a damaged chunk a unit has just refreshed makes that unit's commit
+name a missing chunk instead of an unreadable one, which a later write repairs
+the same way.
+
+**Temp files.** `FileSystemStorage.removeStaleTempFiles` removes the
+`.<uuid>.tmp` files a put left under `_blobs/` when it died before renaming one
+into place. It removes only files older than the sweep's cutoff, so a put still
+writing keeps its file. It implements `TempFileSweeper`
+(`src/domain/datastore/datastore_storage.ts`), which is not part of
+`storage/1`, since extension backends have no such files. `list` already skips
+them. Empty shard directories are left in place. They are harmless, and
+removing one would race a concurrent put's `mkdir`.
+
+**Left to the opt-in.** Wire a v3 `datastore gc` that sweeps each namespace,
+with the default grace period. Splitting large `data gc` and `prune` tombstone
+sets across commits belongs to the data and output staging issue.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

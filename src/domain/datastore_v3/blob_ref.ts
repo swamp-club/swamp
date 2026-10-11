@@ -133,6 +133,16 @@ export class BlobRef {
     };
   }
 
+  /**
+   * The keys of the chunks holding this content: its `sha256` when stored
+   * as one chunk, otherwise each part's, in order.
+   */
+  chunkHashes(): readonly string[] {
+    return this.parts === undefined
+      ? [this.sha256]
+      : this.parts.map((part) => part.sha256);
+  }
+
   equals(other: BlobRef): boolean {
     return this.sha256 === other.sha256 && this.size === other.size &&
       partsEqual(this.parts, other.parts) &&

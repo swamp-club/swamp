@@ -117,6 +117,17 @@ export interface CommitStore {
   changesSince(cursor: number, limit: number): Promise<readonly CommitChange[]>;
 
   /**
+   * The subset of `hashes` that some stored commit of `namespace` names as a
+   * chunk (`Commit.chunkRefs`), whether or not a later commit replaced or
+   * deleted that content: a checkout catching up from the start reads every
+   * one. Chunk garbage collection keeps these.
+   */
+  referencedChunks(
+    namespace: string,
+    hashes: readonly string[],
+  ): Promise<Set<string>>;
+
+  /**
    * Waits for appends already started, then closes the store. Every other
    * call after it rejects; closing again does nothing.
    */

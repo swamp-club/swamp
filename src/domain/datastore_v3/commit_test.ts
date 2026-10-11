@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { BlobRef } from "./blob_ref.ts";
 import { Commit, type CommitProps, MAX_COMMIT_OPS } from "./commit.ts";
 import { createIntent } from "./intent.ts";
 import { leaseOp, type Op, tombstoneOp } from "./op.ts";
@@ -25,6 +26,7 @@ import { partitionOf } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
 import {
   base64,
+  blobPut,
   modelCommit,
   modelPartition,
   savePut,
@@ -199,4 +201,25 @@ Deno.test("Commit.create: rejects calendar dates that do not exist", async () =>
     );
   }
   Commit.create({ ...props(ops), at: "2028-02-29T00:00:00.123Z" });
+});
+
+Deno.test("Commit.chunkRefs: names each chunk its puts store once, and nothing for inline content or other ops", async () => {
+  const one = BlobRef.create({ sha256: "a".repeat(64), size: 1 });
+  const several = BlobRef.create({
+    sha256: "b".repeat(64),
+    size: 2,
+    parts: [
+      { sha256: "a".repeat(64), size: 1 },
+      { sha256: "c".repeat(64), size: 1 },
+    ],
+  });
+  const commit = modelCommit(1, [
+    await blobPut("x", 1, one),
+    await blobPut("y", 1, several),
+    await savePut("z", 1),
+    versionOp("z", 1),
+    leaseOp({ holder: "serve", fence: 1 }),
+  ]);
+  assertEquals(commit.chunkRefs(), ["a".repeat(64), "c".repeat(64)]);
+  assertEquals(modelCommit(2, [await savePut("z", 2)]).chunkRefs(), []);
 });

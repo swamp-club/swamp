@@ -38,7 +38,10 @@ import {
   type PartitionKey,
   partitionOf,
 } from "../src/domain/datastore_v3/partition_key.ts";
+import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import {
+  blobPut,
+  deleteVersion,
   MODEL_TYPE,
   modelCommit,
   modelPartition,
@@ -726,6 +729,182 @@ Deno.test("SqliteCommitStore: stores each commit's digest-free JSON", async () =
       assert(!(row.body as string).includes(await sha256Of("a@1")));
     } finally {
       db.close();
+    }
+  });
+});
+
+/** A 64-hex-character digest made of one repeated character. */
+function hash(char: string): string {
+  return char.repeat(64);
+}
+
+/** Content stored as one chunk, keyed by its own digest. */
+const ONE_CHUNK = BlobRef.create({ sha256: hash("a"), size: 10 });
+/** Content stored as two chunks; its whole digest names no chunk. */
+const TWO_CHUNKS = BlobRef.create({
+  sha256: hash("b"),
+  size: 3,
+  parts: [{ sha256: hash("c"), size: 1 }, { sha256: hash("d"), size: 2 }],
+});
+const EVERY_HASH = [..."abcdef"].map(hash);
+
+/** The `chunk_refs` rows, read behind the store's back. */
+function chunkRefRows(path: string): { namespace: string; sha256: string }[] {
+  const db = new DatabaseSync(path);
+  try {
+    return db.prepare(
+      "SELECT namespace, sha256 FROM chunk_refs ORDER BY namespace, sha256",
+    ).all() as unknown as { namespace: string; sha256: string }[];
+  } finally {
+    db.close();
+  }
+}
+
+Deno.test("SqliteCommitStore: indexes the chunks each put names, and no inline content", async () => {
+  await withStore(async (store) => {
+    await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+    await store.append(
+      modelCommit(2, [
+        await blobPut("y", 1, TWO_CHUNKS),
+        await savePut("z", 1),
+      ]),
+    );
+    assertEquals(
+      [...await store.referencedChunks("", EVERY_HASH)].sort(),
+      [hash("a"), hash("c"), hash("d")],
+    );
+    // The partition key is the same in another namespace; its refs are not.
+    assertEquals(await store.referencedChunks("acme", EVERY_HASH), new Set());
+    await store.append(
+      modelCommit(1, [await blobPut("w", 1, TWO_CHUNKS)], {
+        namespace: "acme",
+      }),
+    );
+    assertEquals(
+      [...await store.referencedChunks("acme", EVERY_HASH)].sort(),
+      [hash("c"), hash("d")],
+    );
+    assertEquals(await store.referencedChunks("", []), new Set());
+  });
+});
+
+Deno.test("SqliteCommitStore: a chunk stays referenced after its record is overwritten or deleted", async () => {
+  await withStore(async (store) => {
+    await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+    await store.append(modelCommit(2, [await savePut("x", 1, "replaced")]));
+    await store.append(modelCommit(3, [deleteVersion("x", 1)]));
+    assertEquals(
+      await store.referencedChunks("", [hash("a")]),
+      new Set([hash("a")]),
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore: a refused or repeated append indexes nothing", async () => {
+  await withStore(async (store, path) => {
+    await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+    const refused = modelCommit(3, [await blobPut("y", 1, TWO_CHUNKS)]);
+    await assertRejects(() => store.append(refused), CommitRejectedError);
+    const retried = modelCommit(1, [await blobPut("y", 1, TWO_CHUNKS)]);
+    assertEquals(await store.append(retried), { kind: "duplicate", seq: 1 });
+    assertEquals(chunkRefRows(path), [{ namespace: "", sha256: hash("a") }]);
+  });
+});
+
+Deno.test("SqliteCommitStore: looks up more hashes than one query takes", async () => {
+  await withStore(async (store) => {
+    await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+    const many = Array.from(
+      { length: 1200 },
+      (_, i) => i.toString(16).padStart(64, "0"),
+    );
+    many.push(hash("a"));
+    assertEquals(await store.referencedChunks("", many), new Set([hash("a")]));
+  });
+});
+
+Deno.test("SqliteCommitStore: migrating a schema-1 database backfills the same index a fresh store builds", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+      await store.append(
+        modelCommit(2, [
+          await blobPut("y", 1, TWO_CHUNKS),
+          await savePut("z", 1),
+          versionOp("z", 1),
+        ]),
+      );
+      await store.append(
+        modelCommit(1, [await blobPut("w", 1, ONE_CHUNK)], {
+          namespace: "acme",
+        }),
+      );
+      await store.append(leaseCommit(otherPartition(), 1));
+    } finally {
+      await store.close();
+    }
+    const fresh = chunkRefRows(path);
+    assertEquals(fresh.length, 4);
+
+    // Schema 1 is schema 2 without the index: take it back to version 1.
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE chunk_refs; PRAGMA user_version=1");
+    db.close();
+
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(chunkRefRows(path), fresh);
+      assertEquals(
+        [...await reopened.referencedChunks("", EVERY_HASH)].sort(),
+        [hash("a"), hash("c"), hash("d")],
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: referencedChunks rejects once the store is closed", async () => {
+  await withTempDir(async (dir) => {
+    const store = SqliteCommitStore.open(join(dir, "commits.db"));
+    await store.close();
+    await assertRejects(
+      () => store.referencedChunks("", [hash("a")]),
+      Error,
+      "closed",
+    );
+  });
+});
+
+Deno.test("SqliteCommitStore: migrating a schema-1 database skips a damaged commit body, which is still reported on rebuild", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(modelCommit(1, [await blobPut("x", 1, ONE_CHUNK)]));
+      await store.append(modelCommit(2, [await blobPut("y", 1, TWO_CHUNKS)]));
+    } finally {
+      await store.close();
+    }
+    editRow(path, 2, "{not json");
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE chunk_refs; PRAGMA user_version=1");
+    db.close();
+
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(
+        await reopened.referencedChunks("", EVERY_HASH),
+        new Set([hash("a")]),
+      );
+      await assertRejects(
+        () => reopened.readPartition("", modelPartition(), 1, 10),
+        CommitStoreCorruptError,
+      );
+    } finally {
+      await reopened.close();
     }
   });
 });

@@ -127,3 +127,17 @@ Deno.test("BlobRef.equals: compares parts", () => {
   assert(a.equals(BlobRef.create({ sha256: SHA, size: 5, parts: [p1, p2] })));
   assert(!a.equals(b) && !a.equals(none) && !none.equals(a));
 });
+
+Deno.test("BlobRef.chunkHashes: the content's own digest for one chunk, each part's in order for several", () => {
+  const one = BlobRef.create({ sha256: "a".repeat(64), size: 1 });
+  assertEquals(one.chunkHashes(), ["a".repeat(64)]);
+  const several = BlobRef.create({
+    sha256: "b".repeat(64),
+    size: 3,
+    parts: [
+      { sha256: "d".repeat(64), size: 2 },
+      { sha256: "c".repeat(64), size: 1 },
+    ],
+  });
+  assertEquals(several.chunkHashes(), ["d".repeat(64), "c".repeat(64)]);
+});

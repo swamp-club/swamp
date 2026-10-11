@@ -263,6 +263,19 @@ export class Commit {
     };
   }
 
+  /**
+   * The chunks this commit's puts name, each once: chunk garbage collection
+   * must keep every one of them for as long as the commit is stored.
+   */
+  chunkRefs(): readonly string[] {
+    const hashes = new Set<string>();
+    for (const op of this.ops) {
+      if (op.kind !== "put" || !("blob" in op.content)) continue;
+      for (const sha256 of op.content.blob.chunkHashes()) hashes.add(sha256);
+    }
+    return [...hashes];
+  }
+
   /** Commits are equal when their serialized forms are. */
   equals(other: Commit): boolean {
     return JSON.stringify(this.toJSON()) === JSON.stringify(other.toJSON());

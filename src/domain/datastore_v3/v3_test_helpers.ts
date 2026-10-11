@@ -32,6 +32,7 @@ import type {
 } from "../datastore/datastore_storage.ts";
 import fc from "fast-check";
 import { ModelType } from "../models/model_type.ts";
+import type { BlobRef } from "./blob_ref.ts";
 import { Commit, type CommitProps } from "./commit.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
 import {
@@ -115,6 +116,19 @@ export function savePut(
     key: dataKey(name, version),
     inline: base64(text),
     expect,
+  });
+}
+
+/** A put of a fixture data version whose content is stored as chunks. */
+export function blobPut(
+  name: string,
+  version: number,
+  blob: BlobRef,
+): Promise<PutOp> {
+  return putOp({
+    intent: modelIntent({ kind: "data.save", name, version }),
+    key: dataKey(name, version),
+    blob,
   });
 }
 

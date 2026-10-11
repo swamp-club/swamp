@@ -153,3 +153,62 @@ Deno.test("FileSystemStorage: refuses a namespace longer than a slug may be", as
     );
   });
 });
+
+Deno.test("FileSystemStorage.removeStaleTempFiles: removes old temp files and keeps new ones, chunks and stray files", async () => {
+  await withTempDir(async (dir) => {
+    const storage = new FileSystemStorage(dir);
+    await storage.put("acme", SHA, new Uint8Array([7]), live());
+    const shard = join(dir, "_blobs", "acme", "sha256", "ab");
+    const old = new Date("2026-01-01T00:00:00Z");
+    const cutoff = new Date("2026-06-01T00:00:00Z");
+    const staleTemp = join(shard, `.${crypto.randomUUID()}.tmp`);
+    const newTemp = join(shard, `.${crypto.randomUUID()}.tmp`);
+    const stray = join(shard, "notes.tmp");
+    for (const path of [staleTemp, newTemp, stray]) {
+      await Deno.writeFile(path, new Uint8Array([1]));
+    }
+    for (const path of [staleTemp, stray, join(shard, SHA)]) {
+      await Deno.utime(path, old, old);
+    }
+    // Another namespace's temp file is not this sweep's.
+    await storage.put("other", SHA, new Uint8Array([7]), live());
+    const otherTemp = join(
+      dir,
+      "_blobs",
+      "other",
+      "sha256",
+      "ab",
+      `.${crypto.randomUUID()}.tmp`,
+    );
+    await Deno.writeFile(otherTemp, new Uint8Array([1]));
+    await Deno.utime(otherTemp, old, old);
+
+    assertEquals(await storage.removeStaleTempFiles("acme", cutoff, live()), 1);
+
+    const left = (await Array.fromAsync(Deno.readDir(shard)))
+      .map((entry) => join(shard, entry.name)).sort();
+    assertEquals(left, [join(shard, SHA), newTemp, stray].sort());
+    await Deno.stat(otherTemp);
+    assertEquals(await storage.removeStaleTempFiles("acme", cutoff, live()), 0);
+    assertEquals(
+      await storage.removeStaleTempFiles("missing", cutoff, live()),
+      0,
+    );
+  });
+});
+
+Deno.test("FileSystemStorage.removeStaleTempFiles: refuses a namespace that is not one, and an aborted signal", async () => {
+  await withTempDir(async (dir) => {
+    const storage = new FileSystemStorage(dir);
+    await assertRejects(
+      () => storage.removeStaleTempFiles("..", new Date(), live()),
+      Error,
+      "Storage namespace",
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assertRejects(() =>
+      storage.removeStaleTempFiles("acme", new Date(), controller.signal)
+    );
+  });
+});

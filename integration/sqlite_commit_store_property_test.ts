@@ -23,12 +23,17 @@
  * results and the same partition state as the partition reference model,
  * also after the store is closed and reopened, which rebuilds the partition
  * from its snapshot and the commits after it.
+ *
+ * Also (swamp-club#3249): the referenced-chunk index is exactly the chunks
+ * the stored commits name, whether built append by append or backfilled by
+ * the schema migration.
  */
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import fc from "fast-check";
+import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import type { Op } from "../src/domain/datastore_v3/op.ts";
 import {
   CommitRejectedError,
@@ -45,8 +50,10 @@ import {
   observe,
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import {
+  blobPut,
   modelCommit,
   modelPartition,
+  savePut,
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
@@ -198,3 +205,133 @@ Deno.test("SqliteCommitStore: agrees with the partition reference model, before 
     }
   }
 });
+
+/** A small pool of chunk hashes, so content shares chunks across puts. */
+const POOL = [..."0123456789ab"].map((c) => c.repeat(64));
+
+const arbContent = fc.oneof(
+  fc.constant({ kind: "inline" as const }),
+  fc.record({
+    kind: fc.constant("one" as const),
+    chunk: fc.nat({ max: POOL.length - 1 }),
+  }),
+  fc.record({
+    kind: fc.constant("parts" as const),
+    chunks: fc.array(fc.nat({ max: POOL.length - 1 }), {
+      minLength: 2,
+      maxLength: 4,
+    }),
+    whole: fc.nat({ max: POOL.length - 1 }),
+  }),
+);
+
+/** One append: a put of each content, maybe at a refused (gapped) seq. */
+const arbChunkAppend = fc.record({
+  namespace: fc.constantFrom("", "acme", "beta"),
+  gap: fc.boolean(),
+  puts: fc.array(
+    fc.record({ name: fc.constantFrom("a", "b", "c"), content: arbContent }),
+    { minLength: 1, maxLength: 3 },
+  ),
+});
+
+Deno.test("SqliteCommitStore: the chunk index equals the chunks every stored commit names, appended or backfilled", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-chunk-refs-property-" });
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(arbChunkAppend, { minLength: 1, maxLength: 25 }),
+        async (appends) => {
+          const path = join(dir, `${crypto.randomUUID()}.db`);
+          const store = SqliteCommitStore.open(path);
+          const seqs = new Map<string, number>();
+          try {
+            for (const append of appends) {
+              const ops: Op[] = [];
+              for (const [i, put] of append.puts.entries()) {
+                const content = put.content;
+                ops.push(
+                  content.kind === "inline"
+                    ? await savePut(put.name, i + 1)
+                    : await blobPut(
+                      put.name,
+                      i + 1,
+                      content.kind === "one"
+                        ? BlobRef.create({
+                          sha256: POOL[content.chunk],
+                          size: 1,
+                        })
+                        : BlobRef.create({
+                          sha256: POOL[content.whole],
+                          size: content.chunks.length,
+                          parts: content.chunks.map((c) => ({
+                            sha256: POOL[c],
+                            size: 1,
+                          })),
+                        }),
+                    ),
+                );
+              }
+              const next = (seqs.get(append.namespace) ?? 0) + 1;
+              try {
+                await store.append(
+                  modelCommit(append.gap ? next + 1 : next, ops, {
+                    namespace: append.namespace,
+                    txnId: crypto.randomUUID(),
+                  }),
+                );
+                seqs.set(append.namespace, next);
+              } catch (error) {
+                if (!(error instanceof CommitRejectedError)) throw error;
+              }
+            }
+
+            // The oracle: every stored commit's chunks, by namespace.
+            const named = new Map<string, Set<string>>();
+            for (const change of await store.changesSince(0, 10_000)) {
+              const set = named.get(change.commit.namespace) ?? new Set();
+              for (const sha256 of change.commit.chunkRefs()) set.add(sha256);
+              named.set(change.commit.namespace, set);
+            }
+            for (const namespace of ["", "acme", "beta"]) {
+              assertEquals(
+                await store.referencedChunks(namespace, POOL),
+                named.get(namespace) ?? new Set(),
+              );
+            }
+          } finally {
+            await store.close();
+          }
+
+          const fresh = chunkRefRows(path);
+          const db = new DatabaseSync(path);
+          db.exec("DROP TABLE chunk_refs; PRAGMA user_version=1");
+          db.close();
+          await SqliteCommitStore.open(path).close();
+          assertEquals(chunkRefRows(path), fresh);
+        },
+      ),
+      { numRuns: 150 },
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** The `chunk_refs` rows, read behind the store's back. */
+function chunkRefRows(path: string): unknown[] {
+  const db = new DatabaseSync(path);
+  try {
+    return db.prepare(
+      "SELECT namespace, sha256 FROM chunk_refs ORDER BY namespace, sha256",
+    ).all();
+  } finally {
+    db.close();
+  }
+}
