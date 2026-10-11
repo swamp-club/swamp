@@ -85,21 +85,24 @@ Deno.test("SqliteCommitStore crash: a failure after the commit row leaves no par
       // Fail the head write, which the store makes after the commit row in
       // the same transaction.
       const db = new DatabaseSync(path);
-      db.exec(`
-        CREATE TRIGGER fail_head BEFORE UPDATE ON partition_heads
-        BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;
-      `);
-      const before = rows(path);
+      try {
+        db.exec(`
+          CREATE TRIGGER fail_head BEFORE UPDATE ON partition_heads
+          BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;
+        `);
+        const before = rows(path);
 
-      await assertRejects(
-        async () => await store.append(await save(2)),
-        Error,
-        "simulated crash",
-      );
-      assertEquals(rows(path), before);
+        await assertRejects(
+          async () => await store.append(await save(2)),
+          Error,
+          "simulated crash",
+        );
+        assertEquals(rows(path), before);
 
-      db.exec("DROP TRIGGER fail_head");
-      db.close();
+        db.exec("DROP TRIGGER fail_head");
+      } finally {
+        db.close();
+      }
       // The commit lands at the seq it was refused at: neither the file nor
       // the store's cached partition kept the failed attempt.
       assertEquals(await store.append(await save(2)), {

@@ -181,10 +181,13 @@ Deno.test("Partition.restore: a restored snapshot behaves exactly like the parti
           }
         }
 
-        // Through JSON, as the commit store keeps it.
+        // Through JSON, as the commit store keeps it. The txnIds landed so
+        // far are the lookup's; the after phase retries some of them.
+        const prior = new Set(used);
         const restored = Partition.restore(
           modelPartition(),
           JSON.parse(JSON.stringify(original.snapshot())),
+          (txnId) => prior.has(txnId),
         );
         assertEquals(observe(restored), observe(original));
         assertEquals(restored.leaseHolder, original.leaseHolder);

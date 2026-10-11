@@ -32,7 +32,7 @@
  *   (`Partition.snapshot`) in the same transaction. A partition is rebuilt
  *   from its latest snapshot plus the commits after it, so a rebuild replays
  *   fewer than that many commits however large the partition grows: a
- *   replay from seq 1 took about 260 ms for 11,000 commits, most of it
+ *   replay from seq 1 took about 270 ms for 11,000 commits, most of it
  *   recomputing inline digests. Rebuilt partitions stay in a bounded
  *   per-process cache. Each append checks the cached seq against the head
  *   row inside its transaction, so a write from another connection is
@@ -128,6 +128,7 @@ interface CommitRow {
   readonly namespace: string;
   readonly partition: string;
   readonly seq: number;
+  readonly txn_id: string;
   readonly body: string;
 }
 
@@ -152,6 +153,7 @@ export class SqliteCommitStore implements CommitStore {
 
   readonly #selectHead: StatementSync;
   readonly #selectTxnSeq: StatementSync;
+  readonly #selectTxnUpTo: StatementSync;
   readonly #insertCommit: StatementSync;
   readonly #upsertHead: StatementSync;
   readonly #selectPartitionPage: StatementSync;
@@ -173,6 +175,9 @@ export class SqliteCommitStore implements CommitStore {
     this.#selectTxnSeq = db.prepare(
       "SELECT seq FROM commits WHERE namespace = ? AND partition = ? AND txn_id = ?",
     );
+    this.#selectTxnUpTo = db.prepare(
+      "SELECT 1 AS found FROM commits WHERE namespace = ? AND partition = ? AND txn_id = ? AND seq <= ?",
+    );
     this.#insertCommit = db.prepare(
       "INSERT INTO commits (namespace, partition, seq, txn_id, fence, at, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
@@ -181,11 +186,11 @@ export class SqliteCommitStore implements CommitStore {
         "ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq, highest_fence = excluded.highest_fence",
     );
     this.#selectPartitionPage = db.prepare(
-      "SELECT cursor, namespace, partition, seq, body FROM commits " +
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits " +
         "WHERE namespace = ? AND partition = ? AND seq >= ? ORDER BY seq LIMIT ?",
     );
     this.#selectChanges = db.prepare(
-      "SELECT cursor, namespace, partition, seq, body FROM commits WHERE cursor > ? ORDER BY cursor LIMIT ?",
+      "SELECT cursor, namespace, partition, seq, txn_id, body FROM commits WHERE cursor > ? ORDER BY cursor LIMIT ?",
     );
     this.#selectSnapshot = db.prepare(
       "SELECT seq, body FROM partition_snapshots WHERE namespace = ? AND partition = ?",
@@ -249,7 +254,7 @@ export class SqliteCommitStore implements CommitStore {
         this.#db.exec("ROLLBACK");
       }
     } catch (error) {
-      if (this.#db.isTransaction) this.#db.exec("ROLLBACK");
+      rollbackQuietly(this.#db);
       // A refusal leaves the partition as it was. Any other failure may have
       // come after the commit was applied to the cached partition, which
       // would then be ahead of the file.
@@ -352,7 +357,17 @@ export class SqliteCommitStore implements CommitStore {
       partition = Partition.empty(key);
     } else {
       try {
-        partition = Partition.restore(key, JSON.parse(snapshot.body));
+        // The snapshot leaves out txnIds; those it covers are looked up in
+        // the commits table, only up to its seq, so the commits replayed
+        // after it are not taken for retries of themselves.
+        const upTo = snapshot.seq;
+        partition = Partition.restore(
+          key,
+          JSON.parse(snapshot.body),
+          (txnId) =>
+            this.#selectTxnUpTo.get(namespace, key.toString(), txnId, upTo) !==
+              undefined,
+        );
       } catch (error) {
         throw new CommitStoreCorruptError(
           namespace,
@@ -390,9 +405,24 @@ export class SqliteCommitStore implements CommitStore {
           throw corrupt(row, `it repeats txnId ${commit.txnId}`);
         }
       }
-      if (rows.length < REBUILD_PAGE) return partition;
+      if (rows.length < REBUILD_PAGE) break;
       fromSeq = rows[rows.length - 1].seq + 1;
     }
+    // The head row is written in the same transaction as each commit row, so
+    // it is never behind the commits. Another writer can only move it ahead,
+    // which the append's head check handles.
+    const head = this.#selectHead.get(namespace, key.toString()) as
+      | { seq: number }
+      | undefined;
+    if ((head?.seq ?? 0) < partition.seq) {
+      throw new CommitStoreCorruptError(
+        namespace,
+        key.toString(),
+        partition.seq,
+        `its head row is at seq ${head?.seq ?? 0}, behind its commits`,
+      );
+    }
+    return partition;
   }
 
   async readPartition(
@@ -515,8 +545,22 @@ function migrate(db: DatabaseSync): void {
     db.exec(`PRAGMA user_version=${COMMIT_STORE_SCHEMA_VERSION}`);
     db.exec("COMMIT");
   } catch (error) {
-    db.exec("ROLLBACK");
+    rollbackQuietly(db);
     throw error;
+  }
+}
+
+/**
+ * Rolls back an open transaction without letting a failing `ROLLBACK` hide
+ * the error that made it necessary.
+ */
+function rollbackQuietly(db: DatabaseSync): void {
+  if (!db.isTransaction) return;
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // The caller rethrows the original error. SQLite rolls the transaction
+    // back itself when the connection closes.
   }
 }
 
@@ -541,11 +585,12 @@ async function parseRow(row: CommitRow): Promise<Commit> {
   }
   if (
     commit.seq !== row.seq || commit.namespace !== row.namespace ||
-    commit.partition.toString() !== row.partition
+    commit.partition.toString() !== row.partition ||
+    commit.txnId !== row.txn_id
   ) {
     throw corrupt(
       row,
-      `its body is commit ${commit.seq} of ${commit.partition}, not this row's`,
+      `its body is commit ${commit.seq} of ${commit.partition} with txnId ${commit.txnId}, not this row's`,
     );
   }
   return commit;

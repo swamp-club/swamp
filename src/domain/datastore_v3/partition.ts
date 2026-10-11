@@ -72,9 +72,13 @@ export type AppendResult =
   | { readonly kind: "duplicate" };
 
 /**
- * A partition's whole state at one seq, as plain data: what the commit store
- * keeps so it can rebuild a partition without replaying every commit. Lists
- * are sorted, so equal states serialize equally.
+ * A partition's state at one seq, as plain data: what the commit store keeps
+ * so it can rebuild a partition without replaying every commit. Lists are
+ * sorted, so equal states serialize equally.
+ *
+ * It leaves out the txnIds applied so far. They grow with every commit the
+ * partition ever had, while the rest grows only with its live records and
+ * names, so {@link Partition.restore} takes a lookup for them instead.
  */
 export interface PartitionSnapshot {
   readonly v: 1;
@@ -82,8 +86,6 @@ export interface PartitionSnapshot {
   readonly seq: number;
   readonly highestFence?: number;
   readonly leaseHolder?: string;
-  /** Every txnId applied, one per commit. */
-  readonly txnIds: readonly string[];
   /** Each present record's key and SHA-256. */
   readonly records: readonly (readonly [string, string])[];
   readonly names: readonly {
@@ -131,6 +133,8 @@ export class Partition {
   #highestFence: number | undefined;
   #leaseHolder: string | undefined;
   readonly #txnIds = new Set<string>();
+  /** For a restored partition, whether a txnId applied before its snapshot. */
+  #priorTxn: (txnId: string) => boolean = () => false;
   readonly #records = new Map<string, string>();
   readonly #names = new Map<string, DataName>();
 
@@ -145,8 +149,16 @@ export class Partition {
    * Rebuilds a partition from {@link Partition.snapshot}'s output. Throws
    * when the value is not a snapshot of `key` or breaks the partition's
    * invariants, so a damaged snapshot is never trusted.
+   *
+   * `priorTxn` answers whether a txnId applied at or before the snapshot's
+   * seq, which the snapshot does not hold. It must be synchronous and exact:
+   * a false negative would let a retry of an earlier commit apply twice.
    */
-  static restore(key: PartitionKey, value: unknown): Partition {
+  static restore(
+    key: PartitionKey,
+    value: unknown,
+    priorTxn: (txnId: string) => boolean,
+  ): Partition {
     const fail = (detail: string): never => {
       throw new Error(`Invalid snapshot of partition ${key}: ${detail}`);
     };
@@ -160,7 +172,6 @@ export class Partition {
       "seq",
       "highestFence",
       "leaseHolder",
-      "txnIds",
       "records",
       "names",
     ];
@@ -191,17 +202,14 @@ export class Partition {
       }
       partition.#leaseHolder = json.leaseHolder as string;
     }
-    if (!Array.isArray(json.txnIds)) return fail("txnIds is not an array");
-    for (const txnId of json.txnIds) {
-      if (typeof txnId !== "string" || txnId === "") {
-        fail("a txnId is not a non-empty string");
-      }
-      partition.#txnIds.add(txnId as string);
+    // A lease op always raises the fence, so a holder implies one.
+    if (
+      partition.#leaseHolder !== undefined &&
+      partition.#highestFence === undefined
+    ) {
+      fail("it names a lease holder but no fence");
     }
-    // Every applied commit added exactly one txnId.
-    if (partition.#txnIds.size !== seq || json.txnIds.length !== seq) {
-      fail(`it holds ${json.txnIds.length} txnIds for seq ${seq}`);
-    }
+    partition.#priorTxn = priorTxn;
     if (!Array.isArray(json.records)) return fail("records is not an array");
     for (const entry of json.records) {
       if (
@@ -268,7 +276,6 @@ export class Partition {
       ...(this.#leaseHolder === undefined
         ? {}
         : { leaseHolder: this.#leaseHolder }),
-      txnIds: [...this.#txnIds].sort(),
       records: [...this.#records.entries()].sort(([a], [b]) =>
         a < b ? -1 : a > b ? 1 : 0
       ),
@@ -299,7 +306,7 @@ export class Partition {
 
   /** Whether a commit with this txnId has applied. */
   hasTxn(txnId: string): boolean {
-    return this.#txnIds.has(txnId);
+    return this.#txnIds.has(txnId) || this.#priorTxn(txnId);
   }
 
   /** The digest of the record at `key`, or undefined when it is absent. */
@@ -348,7 +355,7 @@ export class Partition {
         `Commit for ${commit.partition} sent to partition ${this.key}`,
       );
     }
-    if (this.#txnIds.has(commit.txnId)) return { kind: "duplicate" };
+    if (this.hasTxn(commit.txnId)) return { kind: "duplicate" };
     if (commit.seq !== this.#seq + 1) {
       throw new CommitRejectedError(
         "seq-gap",

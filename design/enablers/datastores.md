@@ -2134,10 +2134,12 @@ inside those two directories.
 **The rules stay in the aggregate.** An append never re-implements a rule. It
 rebuilds the `Partition` and calls `Partition.append` inside the transaction,
 so a refusal is the domain's `CommitRejectedError` and writes nothing. The
-unique keys below back the seq and txnId rules up in SQL. A stored commit that
-cannot be rebuilt (it does not parse, or it breaks a rule against the commits
-before it) raises `CommitStoreCorruptError`, naming its namespace, partition
-and seq, so a damaged store is never reported as a refusal of the new commit.
+unique keys below back the seq and txnId rules up in SQL. A damaged store
+raises `CommitStoreCorruptError`, naming the namespace, partition and seq, so
+it is never reported as a refusal of the new commit. A store is damaged when a
+stored commit does not parse, does not match its row's seq, namespace,
+partition or txnId, or breaks a rule against the commits before it; when a
+snapshot is invalid; or when a head row is behind its commits.
 Stored rows are read through `Commit.fromJSON`, so they pass the same checks
 as a commit a client sends.
 
@@ -2172,21 +2174,30 @@ queue rebuilds a partition, which is asynchronous because `Commit.fromJSON`
 recomputes inline digests, before the transaction starts. It never rebuilds
 inside one.
 
-- **From a snapshot.** `Partition.snapshot()` gives the partition's whole
-  state as plain data: seq, fence, lease holder, every txnId, record digests,
-  and each data name's live versions and high-water mark.
-  `Partition.restore()` refuses a value that breaks the partition's
-  invariants. The store writes a snapshot every 1,000 commits of a partition,
-  in the append's transaction, and rebuilds from the latest one plus the
-  commits after it.
+- **From a snapshot.** `Partition.snapshot()` gives the partition's state
+  as plain data: seq, fence, lease holder, record digests, and each data
+  name's live versions and high-water mark. `Partition.restore()` refuses a
+  value that breaks the partition's invariants. The store writes a snapshot
+  every 1,000 commits of a partition, in the append's transaction, and
+  rebuilds from the latest one plus the commits after it.
+- **No txnIds in the snapshot.** They grow with every commit the partition
+  ever had, so a snapshot holding them would rewrite more of the WAL that
+  Litestream replicates every 1,000 commits. The rest of a snapshot grows only
+  with the partition's live state. Instead, `restore` takes a synchronous,
+  exact lookup for txnIds at or before the snapshot's seq, and
+  `Partition.append` uses it in its duplicate check, so the rule stays in the
+  aggregate. The store answers the lookup from the unique `txn_id` index,
+  bounded by the snapshot's seq so that the commits it replays after the
+  snapshot are not taken for retries of themselves. A lookup that missed a
+  txnId would let a retry apply twice.
 - **Measured** on an Apple M5 Max with a model partition of 10,999 commits
   (`scripts/bench_commit_store.ts`). Each commit is an inline put and a
   data-version, plus a delete every tenth:
 
   | | Time |
   |---|---|
-  | Replay from seq 1 | 262 ms |
-  | Snapshot plus the 999 commits after it | 31 ms |
+  | Replay from seq 1 | 268 ms |
+  | Snapshot plus the 999 commits after it | 35 ms |
   | Writing a snapshot (once per 1,000 appends) | 2 ms |
   | Appending to a cached partition | 0.07 ms |
 

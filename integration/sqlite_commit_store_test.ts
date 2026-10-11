@@ -538,6 +538,51 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
+  // A body whose txnId is not the row's.
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.close();
+    editRow(
+      path,
+      2,
+      JSON.stringify((await save(2, { txnId: "other" })).toJSON()),
+    );
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      const error = await assertRejects(
+        () => reopened.readPartition("", modelPartition(), 1, 10),
+        CommitStoreCorruptError,
+      );
+      assertEquals(error.seq, 2);
+      assertStringIncludes(error.message, "txnId other");
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  // A head row behind its commits.
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.close();
+    const db = new DatabaseSync(path);
+    db.exec("DELETE FROM partition_heads");
+    db.close();
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      const error = await assertRejects(
+        async () => await reopened.append(await save(3)),
+        CommitStoreCorruptError,
+      );
+      assertStringIncludes(error.message, "head row");
+    } finally {
+      await reopened.close();
+    }
+  });
+
   // A damaged snapshot.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");

@@ -119,11 +119,15 @@ class Harness {
       db.close();
     }
     if (row === undefined) return;
-    const restored = Partition.restore(modelPartition(), JSON.parse(row.body));
+    const body = JSON.parse(row.body);
+    const covered = commits.slice(0, body.seq);
+    const restored = Partition.restore(
+      modelPartition(),
+      body,
+      (txnId) => covered.some((commit) => commit.txnId === txnId),
+    );
     const upToSnapshot = Partition.empty(modelPartition());
-    for (const commit of commits.slice(0, restored.seq)) {
-      upToSnapshot.append(commit);
-    }
+    for (const commit of covered) upToSnapshot.append(commit);
     // Compared through the partitions' getters, not snapshot(), which would
     // share any fault of the snapshot it checks.
     assertEquals(observe(restored), observe(upToSnapshot));
