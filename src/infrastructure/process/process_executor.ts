@@ -57,6 +57,11 @@ export interface ProcessExecutorOptions {
   terminateProcessTree?: boolean;
   /** Grace between SIGTERM and SIGKILL when terminating. Tests only. */
   killGraceMs?: number;
+  /** When true, a CR ending a line is dropped along with its LF, so output
+   *  from a shell that ends lines with CRLF (PowerShell) is captured and
+   *  streamed exactly as LF output is. Off by default: every CR the command
+   *  writes is kept. */
+  normalizeCrlf?: boolean;
 }
 
 /**
@@ -81,11 +86,16 @@ export interface ProcessResult {
  *
  * When an AbortSignal is provided and fires, the read loop breaks and the
  * function returns whatever output has been accumulated so far.
+ *
+ * With `normalizeCrlf`, a CR that ends an LF-terminated line is dropped, so
+ * CRLF output yields the same lines as LF output. A CR anywhere else, and
+ * an unterminated final line, are kept as written.
  */
 export async function streamLines(
   stream: ReadableStream<Uint8Array>,
   onLine?: (line: string) => void,
   signal?: AbortSignal,
+  options: { normalizeCrlf?: boolean } = {},
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -118,8 +128,11 @@ export async function streamLines(
 
       // Process all complete lines
       for (let i = 0; i < bufferLines.length - 1; i++) {
-        lines.push(bufferLines[i]);
-        onLine?.(bufferLines[i]);
+        const line = options.normalizeCrlf && bufferLines[i].endsWith("\r")
+          ? bufferLines[i].slice(0, -1)
+          : bufferLines[i];
+        lines.push(line);
+        onLine?.(line);
       }
 
       // Keep the incomplete line in the buffer
@@ -389,6 +402,7 @@ export async function executeProcess(
     ? "tree"
     : "child";
   const graceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  const lineOptions = { normalizeCrlf: options.normalizeCrlf === true };
 
   const command = new Deno.Command(options.command, commandOptions);
   const spawn = (): Deno.ChildProcess => {
@@ -452,11 +466,13 @@ export async function executeProcess(
       process.stdout,
       stdoutOnLine,
       pipeAbort.signal,
+      lineOptions,
     );
     const stderrPromise = streamLines(
       process.stderr,
       stderrOnLine,
       pipeAbort.signal,
+      lineOptions,
     );
 
     let timedOut = false;
@@ -530,16 +546,26 @@ export async function executeProcess(
         options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
       const onOutput = options.onOutput;
       const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamLines(process.stdout, (line) => {
-          const redacted = redact(line);
-          if (onOutput) onOutput(redacted, "stdout");
-          logger.info(escapeLogTemplate(redacted));
-        }, pipeAbort.signal),
-        streamLines(process.stderr, (line) => {
-          const redacted = redact(line);
-          if (onOutput) onOutput(redacted, "stderr");
-          logger.warn(escapeLogTemplate(redacted));
-        }, pipeAbort.signal),
+        streamLines(
+          process.stdout,
+          (line) => {
+            const redacted = redact(line);
+            if (onOutput) onOutput(redacted, "stdout");
+            logger.info(escapeLogTemplate(redacted));
+          },
+          pipeAbort.signal,
+          lineOptions,
+        ),
+        streamLines(
+          process.stderr,
+          (line) => {
+            const redacted = redact(line);
+            if (onOutput) onOutput(redacted, "stderr");
+            logger.warn(escapeLogTemplate(redacted));
+          },
+          pipeAbort.signal,
+          lineOptions,
+        ),
         terminator.status,
       ]);
 
@@ -568,8 +594,8 @@ export async function executeProcess(
 
     try {
       const [stdoutResult, stderrResult, status] = await Promise.all([
-        streamLines(process.stdout, undefined, pipeAbort.signal),
-        streamLines(process.stderr, undefined, pipeAbort.signal),
+        streamLines(process.stdout, undefined, pipeAbort.signal, lineOptions),
+        streamLines(process.stderr, undefined, pipeAbort.signal, lineOptions),
         terminator.status,
       ]);
       stdout = stdoutResult;
