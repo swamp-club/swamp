@@ -29,6 +29,8 @@ import {
   resolveVaultType,
 } from "./extension_auto_resolver.ts";
 import { LockTimeoutError } from "../datastore/distributed_lock.ts";
+import { UserError } from "../errors.ts";
+import { RegistryUnavailableError } from "./registry_unavailable_error.ts";
 import { modelRegistry } from "../models/model.ts";
 import { ModelType } from "../models/model_type.ts";
 import { vaultTypeRegistry } from "../vaults/vault_type_registry.ts";
@@ -348,6 +350,85 @@ Deno.test("ExtensionAutoResolver - shows networkError on fetch failure", async (
   assertEquals(result, false);
   assertEquals(output.calls[0], "searching:@swamp/aws/ec2/instance");
   assertEquals(output.calls[1], "networkError:@swamp/aws/ec2/instance");
+});
+
+/** Resolves a type against a lookup whose calls reject with `error`. */
+async function resolveAgainstFailingLookup(
+  error: Error,
+  failing: "getExtension" | "searchExtensions",
+): Promise<{ calls: string[]; messages: string[] }> {
+  const messages: string[] = [];
+  const output = createMockOutput();
+  const recordedNetworkError = output.networkError;
+  output.networkError = (type: string, message: string) => {
+    messages.push(message);
+    recordedNetworkError(type, message);
+  };
+  const lookup: ExtensionLookupPort = {
+    getExtension(_name: string) {
+      return failing === "getExtension"
+        ? Promise.reject(error)
+        : Promise.resolve(null);
+    },
+    // Search rejects in both cases: with "getExtension" failing, the direct
+    // lookup throws first and search is never reached.
+    searchExtensions() {
+      return Promise.reject(error);
+    },
+  };
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: lookup,
+    extensionInstaller: createMockInstaller(),
+    output,
+  });
+  assertEquals(await resolver.resolve("@swamp/s3-datastore"), false);
+  return { calls: output.calls, messages };
+}
+
+Deno.test("ExtensionAutoResolver - reports a registry timeout as a network error, not not-found", async () => {
+  const message =
+    "Request to https://swamp-club.com timed out. Is the server running?";
+  const { calls, messages } = await resolveAgainstFailingLookup(
+    new RegistryUnavailableError(message),
+    "getExtension",
+  );
+  assertEquals(calls, [
+    "searching:@swamp/s3-datastore",
+    "networkError:@swamp/s3-datastore",
+  ]);
+  assertEquals(messages, [message]);
+});
+
+Deno.test("ExtensionAutoResolver - reports a registry 5xx during search as a network error", async () => {
+  const message = "Extension API error (HTTP 503): upstream unavailable";
+  const { calls, messages } = await resolveAgainstFailingLookup(
+    new RegistryUnavailableError(message),
+    "searchExtensions",
+  );
+  assertEquals(calls[1], "networkError:@swamp/s3-datastore");
+  assertEquals(messages, [message]);
+});
+
+Deno.test("ExtensionAutoResolver - reports a registry rate limit as a network error", async () => {
+  const message = "Rate limit exceeded. Retry in 30s.";
+  const { calls, messages } = await resolveAgainstFailingLookup(
+    new RegistryUnavailableError(message),
+    "getExtension",
+  );
+  assertEquals(calls[1], "networkError:@swamp/s3-datastore");
+  assertEquals(messages, [message]);
+});
+
+Deno.test("ExtensionAutoResolver - a lookup failure that is not an outage still reports not-found", async () => {
+  const { calls } = await resolveAgainstFailingLookup(
+    new UserError("Extension API error (HTTP 400): bad request"),
+    "getExtension",
+  );
+  assertEquals(calls, [
+    "searching:@swamp/s3-datastore",
+    "notFound:@swamp/s3-datastore",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - re-entrancy guard prevents infinite loops", async () => {
