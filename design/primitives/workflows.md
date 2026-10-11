@@ -2620,6 +2620,13 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
+**On Windows** no signal another process can catch exists: Deno turns the
+SIGTERM into `TerminateProcess`, so the owner ends at once, saves nothing, and
+its always/completed cleanup steps do not run. Its shell steps end with it
+through their Job Objects (see [Post-Cancellation
+Cleanup](#post-cancellation-cleanup)), and cancel settles the records it left as
+for an owner killed after its grace.
+
 **Finding the run.** A local cancel looks the run up in the run store, not
 through the workflow's definition (`resolveLocalCancelTarget`,
 `src/cli/commands/workflow_cancel.ts`), so a run outlives its workflow file: a
@@ -2947,7 +2954,10 @@ workflow run, as a workflow step's method run does, gets the workflow cancel
 grace instead, so its cleanup steps can run. `--all` stops the owning
 processes together, each once. A run its owner finished another way during
 the wait keeps that status, and the command reports it as finished before the
-cancel took effect (`finished` in `--json`) rather than as cancelled.
+cancel took effect (`finished` in `--json`) rather than as cancelled. On
+Windows the owner ends at once, as for a workflow cancel (see
+[Cancellation](#cancellation)); when the owner is a workflow run, that ends
+every running step of the run, not only the cancelled method run's.
 A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
 is still recorded failed (`DefaultStepExecutor`,
@@ -3136,7 +3146,18 @@ signalled depends on whether swamp has a controlling terminal
   group, so it keeps `/dev/tty` prompts, and Ctrl-C reaches every process it
   started. A timeout or offline cancel signals only the direct child, so its
   own children can outlive the step.
-- **Windows**: `taskkill /T /F` ends the whole tree.
+- **Windows**: `taskkill /T /F` ends the whole tree. The command also runs in
+  a kill-on-close Job Object (`attachProcessJob`,
+  `src/infrastructure/process/windows_job.ts`). Windows has no signal another
+  process can catch, so every stop from outside — a service manager, Task
+  Manager, a supervisor's kill — ends swamp outright. Its job handles close
+  with it, and each job ends the command it held. An abort ends the
+  job too, reaching descendants whose parent already exited. A command that
+  exits on its own has its job released first, so what it backgrounded keeps
+  running. When a job cannot be made, the command runs without one. The job
+  is attached just after the spawn, as Deno cannot spawn suspended: a process
+  the command starts within that instant is outside it, though an abort's
+  `taskkill /T` still reaches it.
 
 A step whose command exits on its own is never signalled: anything it
 deliberately backgrounded keeps running.

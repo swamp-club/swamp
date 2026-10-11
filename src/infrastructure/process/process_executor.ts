@@ -22,6 +22,7 @@ import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { escapeLogTemplate } from "../logging/logger.ts";
 import { shouldIsolateProcessGroup } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
+import { attachProcessJob, type ProcessJob } from "./windows_job.ts";
 
 /**
  * Options for executing a process.
@@ -53,7 +54,9 @@ export interface ProcessExecutorOptions {
    *  started, not just the direct child: on POSIX by running it in its own
    *  process group (subject to `process_group_policy.ts`), on Windows with
    *  `taskkill /T`. A command that exits on its own is never signalled, so
-   *  processes it deliberately backgrounds keep running. */
+   *  processes it deliberately backgrounds keep running. On Windows the
+   *  command also runs in a kill-on-close Job Object, so it does not outlive
+   *  a swamp process that is killed outright. */
   terminateProcessTree?: boolean;
   /** Grace between SIGTERM and SIGKILL when terminating. Tests only. */
   killGraceMs?: number;
@@ -62,6 +65,8 @@ export interface ProcessExecutorOptions {
    *  streamed exactly as LF output is. Off by default: every CR the command
    *  writes is kept. */
   normalizeCrlf?: boolean;
+  /** Attaches the Job Object of a `terminateProcessTree` spawn. Tests only. */
+  attachJob?: (pid: number) => ProcessJob | undefined;
 }
 
 /**
@@ -181,6 +186,12 @@ type TerminationMode =
   /** Signal only the direct child. */
   | "child";
 
+/** A spawned command, and the Job Object holding its tree on Windows. */
+interface Spawned {
+  child: Deno.ChildProcess;
+  job?: ProcessJob;
+}
+
 /** Process groups of isolated spawns that have not settled yet. */
 const liveProcessGroups = new Set<number>();
 let unloadListenerInstalled = false;
@@ -222,7 +233,7 @@ interface Terminator {
 }
 
 function createTerminator(
-  child: Deno.ChildProcess,
+  { child, job }: Spawned,
   mode: TerminationMode,
   graceMs: number,
 ): Terminator {
@@ -232,12 +243,17 @@ function createTerminator(
     status: child.status.then((status) => {
       exited = true;
       // Exited on its own: what it backgrounded is not the exit sweep's.
-      if (!running) liveProcessGroups.delete(child.pid);
+      if (!running) {
+        liveProcessGroups.delete(child.pid);
+        try {
+          job?.release();
+        } catch { /* the job closes with swamp instead */ }
+      }
       return status;
     }),
     terminate: () => {
       if (exited) return;
-      running ??= terminateProcess(child, mode, graceMs);
+      running ??= terminateProcess(child, mode, graceMs, job);
     },
     settled: () => running ?? Promise.resolve(),
   };
@@ -268,6 +284,7 @@ async function terminateProcess(
   child: Deno.ChildProcess,
   mode: TerminationMode,
   graceMs: number,
+  job: ProcessJob | undefined,
 ): Promise<void> {
   try {
     if (mode === "group") {
@@ -279,6 +296,13 @@ async function terminateProcess(
     }
   } catch {
     // Best effort: the process may already have exited.
+  } finally {
+    // After the tree kill, which walks parent links from the live child and
+    // so reaches a process the command started before it joined the job.
+    // The job then ends descendants whose parent already exited.
+    try {
+      job?.terminate();
+    } catch { /* best effort, as above */ }
   }
 }
 
@@ -405,10 +429,14 @@ export async function executeProcess(
   const lineOptions = { normalizeCrlf: options.normalizeCrlf === true };
 
   const command = new Deno.Command(options.command, commandOptions);
-  const spawn = (): Deno.ChildProcess => {
+  const attachJob = options.attachJob ?? attachProcessJob;
+  const spawn = (): Spawned => {
     const child = command.spawn();
     if (isolated) trackProcessGroup(child.pid);
-    return child;
+    // Deno cannot spawn suspended, so a process the command starts before
+    // this line runs is outside the job; `taskkill /T` still reaches it.
+    const job = options.terminateProcessTree ? attachJob(child.pid) : undefined;
+    return { child, job };
   };
   // Waits out any termination, then stops tracking the group. A path that
   // ends while the child still runs (a throwing output callback) abandons
@@ -432,8 +460,9 @@ export async function executeProcess(
     // pipes separately.  This prevents orphaned child processes that hold
     // pipes open from causing a spurious timeout when the command itself
     // exited successfully.
-    const process = spawn();
-    const terminator = createTerminator(process, mode, graceMs);
+    const spawned = spawn();
+    const process = spawned.child;
+    const terminator = createTerminator(spawned, mode, graceMs);
     const pipeAbort = new AbortController();
     const stop = () => {
       terminator.terminate();
@@ -530,8 +559,9 @@ export async function executeProcess(
     }
   } else if (options.logger) {
     // Streaming mode without timeout
-    const process = spawn();
-    const terminator = createTerminator(process, mode, graceMs);
+    const spawned = spawn();
+    const process = spawned.child;
+    const terminator = createTerminator(spawned, mode, graceMs);
     const pipeAbort = new AbortController();
 
     // Kill subprocess when abort signal fires
@@ -583,8 +613,9 @@ export async function executeProcess(
     }
   } else {
     // Simple buffered execution
-    const process = spawn();
-    const terminator = createTerminator(process, mode, graceMs);
+    const spawned = spawn();
+    const process = spawned.child;
+    const terminator = createTerminator(spawned, mode, graceMs);
     const pipeAbort = new AbortController();
 
     const detachAbort = onSignalAbort(options.signal, () => {
