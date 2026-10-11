@@ -29,12 +29,40 @@ import type {
 import { defineModel, modelRegistry } from "./model.ts";
 import type { MethodExecutionService } from "./method_execution_service.ts";
 import type { CommonMethodContextDeps } from "./method_context.ts";
-import { ModelInvocationService } from "./model_invocation_service.ts";
+import {
+  ModelInvocationService,
+  type ModelInvocationServiceDeps,
+} from "./model_invocation_service.ts";
 import { ModelType } from "./model_type.ts";
 import { Definition } from "../definitions/definition.ts";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import { VaultService } from "../vaults/vault_service.ts";
+import { SecretRedactor } from "../secrets/secret_redactor.ts";
+import {
+  RunVaultAccess,
+  runWithVaultAccess,
+} from "../vaults/run_vault_access.ts";
+import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
+import { DefaultMethodExecutionService } from "./method_execution_service.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { z } from "zod";
 
 await initializeLogging({});
+
+type Evaluator = ModelInvocationServiceDeps["evaluationService"];
+type RuntimeContext = Awaited<ReturnType<Evaluator["buildRuntimeContext"]>>;
+
+// An evaluator for targets that hold no expressions: both passes return the
+// definition as it is.
+const passthroughEvaluator: Evaluator = {
+  hasDefinitionExpressions: () => false,
+  evaluateDefinition: () => {
+    throw new Error("no expressions to evaluate");
+  },
+  buildRuntimeContext: () => Promise.resolve({} as RuntimeContext),
+  resolveRuntimeExpressionsInDefinition: (definition) =>
+    Promise.resolve({ definition, secretBag: new VaultSecretBag() }),
+};
 
 function makeStubContext(
   overrides: Partial<MethodContext> = {},
@@ -84,6 +112,7 @@ function makeSvc(
         ...depOverrides.definitionRepo,
       },
     } as unknown as CommonMethodContextDeps,
+    evaluationService: passthroughEvaluator,
     repoDir: "/tmp/test-repo",
   });
 }
@@ -322,6 +351,7 @@ function makeProvenanceSvc(options: {
       createCelEnvironment: () =>
         ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
     } as unknown as CommonMethodContextDeps,
+    evaluationService: passthroughEvaluator,
     repoDir: "/tmp/test-repo",
   });
 }
@@ -458,6 +488,7 @@ function makeArgRoutingSvc(options: {
       createCelEnvironment: () =>
         ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
     } as unknown as CommonMethodContextDeps,
+    evaluationService: passthroughEvaluator,
     repoDir: "/tmp/test-repo",
   });
 }
@@ -724,6 +755,7 @@ function makeRecordArgRoutingSvc(options: {
       createCelEnvironment: () =>
         ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
     } as unknown as CommonMethodContextDeps,
+    evaluationService: passthroughEvaluator,
     repoDir: "/tmp/test-repo",
   });
 }
@@ -760,5 +792,392 @@ Deno.test("ModelInvocationService: z.record() method routes non-global keys to m
   assertEquals(capturedDef!.getMethodArguments("send"), {
     someKey: "someValue",
     other: "data",
+  });
+});
+
+// ── Expression resolution in the target definition (swamp-club#3227) ──
+
+// A per-run type name, so repeats register afresh in the global registry.
+const RESOLVE_TYPE = ModelType.create(
+  `test/resolve-target-${crypto.randomUUID()}`,
+);
+
+interface ResolveCall {
+  globalArgs: Record<string, unknown>;
+  args: Record<string, unknown>;
+  selfName: string;
+}
+
+const resolveCalls: ResolveCall[] = [];
+
+defineModel({
+  type: RESOLVE_TYPE,
+  version: "2026.10.11.1",
+  globalArguments: z.object({
+    url: z.string(),
+    label: z.string().optional(),
+    token: z.string().meta({ sensitive: true }).optional(),
+  }),
+  methods: {
+    show: {
+      description: "records what it received",
+      arguments: z.object({ note: z.string().optional() }),
+      execute: (args, context) => {
+        resolveCalls.push({
+          globalArgs: { ...context.globalArgs },
+          args: { ...(args as Record<string, unknown>) },
+          selfName: context.definition.name,
+        });
+        return Promise.resolve({ dataHandles: [] });
+      },
+    },
+    other: {
+      description: "an unrelated method",
+      arguments: z.object({ value: z.string().optional() }),
+      execute: () => Promise.resolve({ dataHandles: [] }),
+    },
+  },
+});
+
+async function withResolvingSvc(
+  fn: (env: {
+    svc: ModelInvocationService;
+    definitionRepo: YamlDefinitionRepository;
+    redactor: SecretRedactor;
+    save: (def: Definition) => Promise<void>;
+  }) => Promise<void>,
+): Promise<void> {
+  const tempDir = await Deno.makeTempDir({ prefix: "swamp-invoke-resolve-" });
+  try {
+    const definitionRepo = new YamlDefinitionRepository(tempDir);
+    const vaultService = new VaultService();
+    vaultService.registerVault({ name: "v", type: "mock", config: {} });
+    await vaultService.put("v", "api_url", "https://example.invalid");
+    await vaultService.put("v", "token", "s3cret-token-value");
+    const redactor = new SecretRedactor();
+    const executionService = new DefaultMethodExecutionService();
+    const svc = new ModelInvocationService({
+      executionService,
+      commonDeps: {
+        dataRepository: {
+          findAllForModel: () => Promise.resolve([]),
+          getContent: () => Promise.resolve(null),
+        },
+        definitionRepository: definitionRepo,
+        vaultService,
+        createCelEnvironment: () =>
+          ({}) as ReturnType<MethodContext["createCelEnvironment"]>,
+      } as unknown as CommonMethodContextDeps,
+      evaluationService: new ExpressionEvaluationService(
+        definitionRepo,
+        tempDir,
+        { vaultService },
+      ),
+      repoDir: tempDir,
+    });
+    resolveCalls.length = 0;
+    await fn({
+      svc,
+      definitionRepo,
+      redactor,
+      save: (def) => definitionRepo.save(RESOLVE_TYPE, def),
+    });
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+}
+
+function errorOf(result: RunModelResult): string {
+  return (result as RunModelResult & { ok: false }).error.message;
+}
+
+Deno.test("ModelInvocationService: target global arguments resolve vault.get and CEL on self", async () => {
+  await withResolvingSvc(async ({ svc, save, redactor }) => {
+    await save(Definition.create({
+      name: "target-a",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: {
+        url: "${{ vault.get(v, api_url) }}",
+        label: '${{ "label-" + self.name }}',
+        token: '${{ vault.get("v", "token") }}',
+      },
+    }));
+
+    const result = await svc.invoke(
+      { definition: "target-a", method: "show" },
+      makeStubContext({ redactor }),
+    );
+
+    assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+    assertEquals(resolveCalls.length, 1);
+    assertEquals(resolveCalls[0].globalArgs, {
+      url: "https://example.invalid",
+      label: "label-target-a",
+      token: "s3cret-token-value",
+    });
+    // The caller's redactor scrubs what the nested run resolved.
+    assertEquals(
+      redactor.redact("t=s3cret-token-value").includes("s3cret-token-value"),
+      false,
+    );
+  });
+});
+
+Deno.test("ModelInvocationService: a vault.get in the target's method arguments resolves", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    const def = Definition.create({
+      name: "target-m",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    });
+    def.setMethodArgument("show", "note", '${{ vault.get("v", "api_url") }}');
+    await save(def);
+
+    const result = await svc.invoke(
+      { definition: "target-m", method: "show" },
+      makeStubContext(),
+    );
+
+    assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+    assertEquals(resolveCalls[0].args, { note: "https://example.invalid" });
+  });
+});
+
+Deno.test("ModelInvocationService: caller arguments arrive literally, never evaluated", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    const authored = '${{ "label-" + self.name }}';
+    await save(Definition.create({
+      name: "target-lit",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid", label: authored },
+    }));
+
+    for (
+      const note of [
+        '${{ vault.get("v", "token") }}',
+        // The same text the target's author wrote is still the caller's.
+        authored,
+      ]
+    ) {
+      resolveCalls.length = 0;
+      const result = await svc.invoke(
+        { definition: "target-lit", method: "show", arguments: { note } },
+        makeStubContext(),
+      );
+      assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+      assertEquals(resolveCalls[0].args, { note });
+      assertEquals(resolveCalls[0].globalArgs.label, "label-target-lit");
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: refuses global arguments holding expression text swamp could evaluate", async () => {
+  await withResolvingSvc(async ({ svc, save, definitionRepo }) => {
+    await save(Definition.create({
+      name: "target-ref",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    }));
+
+    for (
+      const url of [
+        '${{ vault.get("v", "token") }}',
+        "${{ env.HOME }}",
+        '${{ file.contents("m", "f") }}',
+        "${{ model.other.resource.x }}",
+        '${{ data.latest("m", "d").attributes.x }}',
+        "${{ self.name }}",
+        "${{ inputs.region }}",
+        "${{ inputs.?region }}",
+        "${{ steps.build.outputs.sha }}",
+        '${{ github.sha || data.latest("m", "d") }}',
+        // Root-free text evaluates too, and would trip the execution guard.
+        "${{ 1 }}",
+        "x-${{ not valid cel !!! }}",
+      ]
+    ) {
+      resolveCalls.length = 0;
+      const byDefinition = await svc.invoke(
+        { definition: "target-ref", method: "show", arguments: { url } },
+        makeStubContext(),
+      );
+      assertEquals(byDefinition.ok, false, url);
+      assertStringIncludes(errorOf(byDefinition), "Refusing to run");
+      assertStringIncludes(
+        errorOf(byDefinition),
+        "Resolve the value in the calling method",
+      );
+      assertStringIncludes(
+        errorOf(byDefinition),
+        `url: ${url.slice(url.indexOf("${{"))}`,
+      );
+
+      const name = `auto-${crypto.randomUUID()}`;
+      const byType = await svc.invoke(
+        {
+          modelType: RESOLVE_TYPE.normalized,
+          name,
+          method: "show",
+          arguments: { url },
+        },
+        makeStubContext(),
+      );
+      assertEquals(byType.ok, false, url);
+      assertEquals(await definitionRepo.findByNameGlobal(name), null, url);
+      assertEquals(resolveCalls.length, 0, url);
+    }
+  });
+});
+
+Deno.test("ModelInvocationService: another templating system's text in a global argument arrives literally", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    await save(Definition.create({
+      name: "target-gh",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    }));
+
+    const url = "https://x.invalid/${{ github.sha }}";
+    const result = await svc.invoke(
+      { definition: "target-gh", method: "show", arguments: { url } },
+      makeStubContext(),
+    );
+
+    assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+    assertEquals(resolveCalls[0].globalArgs.url, url);
+  });
+});
+
+Deno.test("ModelInvocationService: routed global arguments reach the method without changing the stored definition", async () => {
+  await withResolvingSvc(async ({ svc, save, definitionRepo }) => {
+    await save(Definition.create({
+      name: "target-g",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: {
+        url: "https://stored.invalid",
+        label: '${{ "label-" + self.globalArguments.url }}',
+      },
+    }));
+
+    const result = await svc.invoke(
+      {
+        definition: "target-g",
+        method: "show",
+        arguments: { url: "https://caller.invalid" },
+      },
+      makeStubContext(),
+    );
+    assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+    // Set before evaluation, so self.globalArguments sees the caller's value.
+    assertEquals(resolveCalls[0].globalArgs, {
+      url: "https://caller.invalid",
+      label: "label-https://caller.invalid",
+    });
+
+    // Type mode adopting the existing definition applies them the same way.
+    const byType = await svc.invoke(
+      {
+        modelType: RESOLVE_TYPE.normalized,
+        name: "target-g",
+        method: "show",
+        arguments: { url: "https://typed.invalid" },
+      },
+      makeStubContext(),
+    );
+    assertEquals(byType.ok, true, byType.ok ? "" : errorOf(byType));
+    assertEquals(resolveCalls[1].globalArgs.url, "https://typed.invalid");
+
+    const stored = await definitionRepo.findByNameGlobal("target-g");
+    assertEquals(
+      stored!.definition.globalArguments.url,
+      "https://stored.invalid",
+    );
+  });
+});
+
+Deno.test("ModelInvocationService: a failed expression in the invoked method's arguments returns ok false", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    const def = Definition.create({
+      name: "target-fail",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    });
+    def.setMethodArgument("show", "note", "${{ self.nope.deeper }}");
+    await save(def);
+
+    const result = await svc.invoke(
+      { definition: "target-fail", method: "show" },
+      makeStubContext(),
+    );
+    assertEquals(result.ok, false);
+    assertStringIncludes(errorOf(result), "note");
+    assertEquals(resolveCalls.length, 0);
+
+    // A caller argument replacing it wins, as an --input does on the CLI.
+    const overridden = await svc.invoke(
+      {
+        definition: "target-fail",
+        method: "show",
+        arguments: { note: "replaced" },
+      },
+      makeStubContext(),
+    );
+    assertEquals(overridden.ok, true, overridden.ok ? "" : errorOf(overridden));
+    assertEquals(resolveCalls[0].args, { note: "replaced" });
+  });
+});
+
+Deno.test("ModelInvocationService: the caller's vault scope applies to the target's vault reads", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    await save(Definition.create({
+      name: "target-scoped",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: '${{ vault.get("v", "api_url") }}' },
+    }));
+    const unrelated = Definition.create({
+      name: "target-unrelated",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid" },
+    });
+    unrelated.setMethodArgument(
+      "other",
+      "value",
+      '${{ vault.get("v", "token") }}',
+    );
+    await save(unrelated);
+
+    const access = RunVaultAccess.create({
+      allowedVaults: ["some-other-vault"],
+      allowListSource: "scoped-wf",
+    });
+    for (const definition of ["target-scoped", "target-unrelated"]) {
+      const result = await runWithVaultAccess(
+        access,
+        () => svc.invoke({ definition, method: "show" }, makeStubContext()),
+      );
+      assertEquals(result.ok, false, definition);
+      assertStringIncludes(errorOf(result), "Reading vault 'v' is refused");
+    }
+    assertEquals(resolveCalls.length, 0);
+  });
+});
+
+Deno.test("ModelInvocationService: a target with no expressions runs with its stored arguments", async () => {
+  await withResolvingSvc(async ({ svc, save }) => {
+    await save(Definition.create({
+      name: "target-plain",
+      type: RESOLVE_TYPE.normalized,
+      globalArguments: { url: "https://plain.invalid", label: "l" },
+    }));
+
+    const result = await svc.invoke(
+      { definition: "target-plain", method: "show" },
+      makeStubContext(),
+    );
+    assertEquals(result.ok, true, result.ok ? "" : errorOf(result));
+    assertEquals(resolveCalls[0].globalArgs, {
+      url: "https://plain.invalid",
+      label: "l",
+    });
   });
 });
