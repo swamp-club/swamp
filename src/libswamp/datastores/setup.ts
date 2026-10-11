@@ -443,16 +443,23 @@ export async function* datastoreSetupFilesystem(
         });
       }
 
-      // Clean up migrated directories from source after config is persisted
+      // Clean up migrated directories from source after config is persisted.
+      // An external filesystem datastore is copied, never cleaned up: other
+      // repositories may share it (swamp-club#3238).
       if (
         !input.skipMigration && errors.length === 0 &&
         directoriesMigrated.length > 0
       ) {
-        await deps.cleanupSourceDirs(
-          sourceDir,
-          directoriesMigrated,
-          migrationSkips,
-        );
+        if (input.outgoingDatastorePath) {
+          ctx.logger
+            .info`Left the previous datastore's data in place at ${sourceDir}`;
+        } else {
+          await deps.cleanupSourceDirs(
+            sourceDir,
+            directoriesMigrated,
+            migrationSkips,
+          );
+        }
       }
 
       // The catalog indexes the old datastore. Drop it so the next command
@@ -874,18 +881,25 @@ export async function* datastoreSetupExtension(
 
       // Clean up migrated directories from .swamp/ only after BOTH push
       // and pull have succeeded. Pull failure must keep .swamp/ intact
-      // so the user can retry setup without losing local data.
+      // so the user can retry setup without losing local data. An external
+      // filesystem datastore is copied, never cleaned up: other
+      // repositories may share it (swamp-club#3238).
       if (
         migrationResult &&
         errors.length === 0 &&
         (migrationResult.filesCopied > 0 || skippedConfigFiles > 0) &&
         migrationResult.directoriesMigrated.length > 0
       ) {
-        await deps.cleanupSourceDirs(
-          sourceDir,
-          migrationResult.directoriesMigrated,
-          cleanupKeeps,
-        );
+        if (input.outgoingDatastorePath) {
+          ctx.logger
+            .info`Left the previous datastore's data in place at ${sourceDir}`;
+        } else {
+          await deps.cleanupSourceDirs(
+            sourceDir,
+            migrationResult.directoriesMigrated,
+            cleanupKeeps,
+          );
+        }
       }
 
       if (errors.length === 0 && keptConfigPaths.length > 0) {

@@ -3347,7 +3347,12 @@ Deno.test("datastoreSetupFilesystem: moving back to .swamp copies from the exter
       await pathExists(join(swampDir, "data", "_catalog.db-wal")),
       false,
     );
-    assertEquals(await pathExists(join(external, "data")), false);
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
     assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", swampDir);
   });
 });
@@ -3380,7 +3385,12 @@ Deno.test("datastoreSetupFilesystem: moving between external paths copies from t
       await pathExists(join(repoDir, ".swamp", "outputs", "run.log")),
       true,
     );
-    assertEquals(await pathExists(join(external, "data")), false);
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
     assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", next);
   });
 });
@@ -3634,7 +3644,12 @@ Deno.test("datastoreSetupExtension: moving to an extension datastore pushes from
       await pathExists(join(remoteDir, "data", "_catalog.db")),
       false,
     );
-    assertEquals(await pathExists(join(external, "data")), false);
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
     assertEquals(
       await pathExists(join(repoDir, ".swamp", "data", "_catalog.db")),
       false,

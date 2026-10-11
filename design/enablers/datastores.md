@@ -3986,13 +3986,16 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    file arrived (regular files with the same size, symlinks by existence), so
    local files a `.swamp/` destination already holds, such as method-run logs,
    do not fail it.
+   Data moved from a filesystem datastore outside the repo is copied, never
+   cleaned up from the old path, whatever the destination: other repositories
+   may share that path, and deleting it would take their data too.
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
    Runs regardless of `--skip-migration`, but only if no earlier step
    reported an error.
 5. Persists and cleans up, in an order that depends on the backend:
-   - **extension**: removes migrated directories from the source, only if no step
+   - **extension**: removes migrated directories from `.swamp/`, only if no step
      reported an error. It then updates `.swamp.yaml` if there were no errors,
      or only timeouts (see below). Last, it registers the namespace manifest via
      `provider.registerNamespace` if `--namespace` was given.
