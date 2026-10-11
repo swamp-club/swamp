@@ -112,3 +112,42 @@ Deno.test("FileSystemStorage: an empty or missing namespace lists nothing", asyn
     );
   });
 });
+
+Deno.test(
+  "FileSystemStorage: a failed put accepts only a chunk holding the same bytes",
+  {
+    // POSIX directory permissions make the temp-file write fail.
+    ignore: Deno.build.os === "windows",
+  },
+  async () => {
+    await withTempDir(async (dir) => {
+      const storage = new FileSystemStorage(dir);
+      const bytes = new Uint8Array([1, 2, 3]);
+      await storage.put("team", SHA, bytes, live());
+      const shard = join(dir, "_blobs", "team", "sha256", "ab");
+      const path = join(shard, SHA);
+      await Deno.chmod(shard, 0o500);
+      try {
+        // The same bytes are in place: the put is satisfied.
+        await storage.put("team", SHA, bytes, live());
+        // Damaged bytes of the same length: the put must not pretend.
+        await Deno.chmod(shard, 0o700);
+        await Deno.writeFile(path, new Uint8Array([9, 9, 9]));
+        await Deno.chmod(shard, 0o500);
+        await assertRejects(() => storage.put("team", SHA, bytes, live()));
+      } finally {
+        await Deno.chmod(shard, 0o700);
+      }
+    });
+  },
+);
+
+Deno.test("FileSystemStorage: refuses a namespace longer than a slug may be", async () => {
+  await withTempDir(async (dir) => {
+    await assertRejects(
+      () => new FileSystemStorage(dir).has("a".repeat(65), [SHA], live()),
+      Error,
+      "Storage namespace",
+    );
+  });
+});

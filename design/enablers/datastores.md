@@ -2088,6 +2088,13 @@ with `ChunkIntegrityError`, and a missing chunk errors it with
 `ChunkMissingError`. A consumer keeps what a read yields only once the read
 ends cleanly.
 
+**Damaged chunks are not repaired by writes.** A write trusts `has`: a chunk
+that is present is refreshed, not uploaded again, so one damaged in place after
+its put (a crash that leaves a file of the right length but wrong bytes) stays
+damaged, and every read of it fails. A `put` always replaces the chunk, so
+deleting it, or putting it again, repairs it. Finding damaged chunks belongs
+with the later GC work, which already has to walk every chunk.
+
 **For extension authors.** `FileSystemStorage`
 (`src/infrastructure/persistence/fs_datastore_storage.ts`) is the reference
 implementation. It writes a temp file and renames it into place, validates the

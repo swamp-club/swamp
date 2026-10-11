@@ -226,12 +226,16 @@ async function* cut(
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
   let yielded = false;
+  let drained = false;
   const reader = content.getReader();
   try {
     while (true) {
       signal.throwIfAborted();
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        drained = true;
+        break;
+      }
       pending.push(value);
       pendingBytes += value.length;
       while (pendingBytes >= size) {
@@ -243,6 +247,9 @@ async function* cut(
       }
     }
   } finally {
+    // A write that failed or aborted part-way cancels the caller's source,
+    // so a file or network stream is closed now rather than left open.
+    if (!drained) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
   if (pendingBytes > 0 || !yielded) yield concat(pending, pendingBytes);

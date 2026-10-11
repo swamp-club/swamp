@@ -289,3 +289,28 @@ Deno.test("ChunkStore.read: fetches nothing until the stream is read", async () 
   assertEquals(await readAll(stream), bytesOf(10));
   assertEquals(gets, 1);
 });
+
+Deno.test("ChunkStore.write: cancels the source stream when a write fails, and only then", async () => {
+  let cancelled = 0;
+  const source = (length: number) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytesOf(length));
+      },
+      pull() {/* never closes */},
+      cancel() {
+        cancelled++;
+      },
+    });
+  const storage = new MemoryStorage({ maxChunkBytes: 4 });
+  storage.put = () => Promise.reject(new Error("storage down"));
+  await assertRejects(
+    () => new ChunkStore(storage).write(NS, source(8), live()),
+    Error,
+    "storage down",
+  );
+  assertEquals(cancelled, 1);
+  const ok = new ChunkStore(new MemoryStorage({ maxChunkBytes: 4 }));
+  await ok.write(NS, streamOf(bytesOf(8), [3]), live());
+  assertEquals(cancelled, 1);
+});

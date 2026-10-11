@@ -246,11 +246,9 @@ that has not pulled or pushed binds none on its first control-plane call, as the
 S3 and GCS extensions do. Writes are logged as `controlPlane` ops.
 
 With `storage: true`, the remote also has a `storage()` returning `storage/1`
-chunk storage shared by every handle, and
-`setChunkLastModified(ns, sha256,
-date)` to backdate a chunk. Chunks are kept
-apart from files and the control plane, are not logged as ops, and ignore
-`offline` and `failNext`.
+chunk storage shared by every handle. Backdate a chunk with
+`setChunkLastModified(ns, sha256, date)`. Chunks are kept apart from files and
+the control plane, are not logged as ops, and ignore `offline` and `failNext`.
 
 Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows
 drive-letter joins, the gap between `preparePush` deleting objects and

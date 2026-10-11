@@ -32,6 +32,8 @@ const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 /** A namespace slug, or `_solo` for a solo-mode repository. */
 const STORAGE_NAMESPACE = /^(?:_solo|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
+/** The longest namespace slug (`NAMESPACE_MAX_LENGTH`). */
+const MAX_NAMESPACE_LENGTH = 64;
 
 /**
  * The filesystem implementation of `storage/1` (swamp-club#3237), and the
@@ -80,13 +82,12 @@ export class FileSystemStorage implements DatastoreStorage {
       // A temp file renamed into place: a reader never sees half a chunk.
       await atomicWriteFile(path, bytes);
     } catch (error) {
-      // A concurrent put of the same hash can win the rename (Windows
-      // refuses to replace a file another rename is replacing). Its bytes
-      // are these bytes, so the chunk is stored; only refresh it. This also
-      // accepts any other failure while a file of the right length is in
-      // place: chunks are content-addressed and every read verifies them,
-      // so a bad file of that length is caught on read, not served.
-      if ((await this.#size(path)) !== bytes.length) throw error;
+      // A concurrent put of the same hash can win the rename: Windows
+      // refuses to replace a file another rename is replacing. When the
+      // chunk in place holds exactly these bytes it is stored, so only
+      // refresh it. Otherwise rethrow: a put must never leave a damaged
+      // chunk in place.
+      if (!(await this.#holds(path, bytes))) throw error;
       await Deno.utime(path, new Date(), new Date());
     }
   }
@@ -166,7 +167,10 @@ export class FileSystemStorage implements DatastoreStorage {
   }
 
   #namespaceDir(namespace: string): string {
-    if (!STORAGE_NAMESPACE.test(namespace)) {
+    if (
+      namespace.length > MAX_NAMESPACE_LENGTH ||
+      !STORAGE_NAMESPACE.test(namespace)
+    ) {
       throw new Error(
         `Storage namespace must be a namespace slug or _solo: ${namespace}`,
       );
@@ -187,6 +191,12 @@ export class FileSystemStorage implements DatastoreStorage {
       sha256.slice(0, 2),
       sha256,
     );
+  }
+
+  async #holds(path: string, bytes: Uint8Array): Promise<boolean> {
+    if ((await this.#size(path)) !== bytes.length) return false;
+    const stored = await Deno.readFile(path);
+    return stored.every((byte, i) => byte === bytes[i]);
   }
 
   async #exists(path: string): Promise<boolean> {
