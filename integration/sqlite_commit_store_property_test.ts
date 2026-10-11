@@ -108,7 +108,8 @@ class Harness {
    */
   async check(store: SqliteCommitStore, path: string): Promise<void> {
     const replayed = Partition.empty(modelPartition());
-    const commits = await store.readPartition("", modelPartition(), 1, 1000);
+    const commits = (await store.readPartition("", modelPartition(), 1, 1000))
+      .map((change) => change.commit);
     for (const commit of commits) replayed.append(commit);
     assertEquals(observe(replayed), expected(this.model));
     assertEquals(await store.head("", modelPartition()), {

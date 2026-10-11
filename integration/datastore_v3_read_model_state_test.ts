@@ -174,6 +174,78 @@ Deno.test("ReadModelState: refuses a database from a newer schema", async () => 
   });
 });
 
+Deno.test("ReadModelState: records which put each file shows with its commit, and a reset clears it", async () => {
+  await withState((state) => {
+    assertEquals(state.fileOwnership("", "config/models/a.yaml"), undefined);
+    state.recordApplied(applied({
+      files: new Map([["config/models/a.yaml", {
+        owner: "p",
+        mark: 7,
+        present: true,
+      }]]),
+    }));
+    assertEquals(state.fileOwnership("", "config/models/a.yaml"), {
+      owner: "p",
+      mark: 7,
+      present: true,
+    });
+    // Namespaces are separate, and a commit at or below the applied seq
+    // changes nothing.
+    assertEquals(
+      state.fileOwnership("team", "config/models/a.yaml"),
+      undefined,
+    );
+    state.recordApplied(applied({
+      files: new Map([["config/models/a.yaml", {
+        owner: "q",
+        mark: 9,
+        present: false,
+      }]]),
+    }));
+    assertEquals(state.fileOwnership("", "config/models/a.yaml")?.owner, "p");
+    state.reset(1);
+    assertEquals(state.fileOwnership("", "config/models/a.yaml"), undefined);
+  });
+});
+
+Deno.test("ReadModelState: a schema-1 database migrates and forgets its catalog generation, so the read model replays (swamp-club#3256)", async () => {
+  await withState((state, path) => {
+    state.reset(3);
+    state.recordApplied(applied({ cursor: 4 }));
+    state.close();
+    // Roll the file back to schema 1: files applied under it have no
+    // ownership rows.
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE materialised_keys; PRAGMA user_version=1");
+    db.close();
+
+    const reopened = ReadModelState.open(path);
+    try {
+      // No catalog generation makes the read model reset and replay every
+      // commit, which rebuilds the ownership of every file.
+      assertEquals(reopened.catalogGeneration(), undefined);
+      assertEquals(reopened.cursor(), 0);
+      assertEquals(reopened.appliedSeq("", "p"), 1);
+      assertEquals(
+        reopened.fileOwnership("", "config/models/a.yaml"),
+        undefined,
+      );
+    } finally {
+      reopened.close();
+    }
+    const db2 = new DatabaseSync(path);
+    try {
+      assertEquals(
+        (db2.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version,
+        READ_MODEL_STATE_SCHEMA_VERSION,
+      );
+    } finally {
+      db2.close();
+    }
+  });
+});
+
 Deno.test("ReadModelState: every call after close throws", async () => {
   await withState((state) => {
     state.close();

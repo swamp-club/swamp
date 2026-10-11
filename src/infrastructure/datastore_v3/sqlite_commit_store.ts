@@ -533,7 +533,7 @@ export class SqliteCommitStore implements CommitStore {
     partition: PartitionKey,
     fromSeq: number,
     limit: number,
-  ): Promise<readonly Commit[]> {
+  ): Promise<readonly CommitChange[]> {
     this.#assertOpen();
     requirePositive(fromSeq, "fromSeq");
     requirePositive(limit, "limit");
@@ -543,9 +543,11 @@ export class SqliteCommitStore implements CommitStore {
       fromSeq,
       limit,
     ) as unknown as CommitRow[];
-    const commits: Commit[] = [];
-    for (const row of rows) commits.push(await parseRow(row));
-    return commits;
+    const changes: CommitChange[] = [];
+    for (const row of rows) {
+      changes.push({ cursor: row.cursor, commit: await parseRow(row) });
+    }
+    return changes;
   }
 
   head(namespace: string, partition: PartitionKey): Promise<PartitionHead> {

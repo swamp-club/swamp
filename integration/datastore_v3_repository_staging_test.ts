@@ -152,7 +152,7 @@ class V3Writer {
       1,
       1_000,
     );
-    return commits.map((commit) => commit.ops.length);
+    return commits.map((change) => change.commit.ops.length);
   }
 }
 
@@ -540,7 +540,7 @@ async function commitsAfter(writer: V3Writer, skip: number) {
     1,
     1_000,
   );
-  return commits.slice(skip);
+  return commits.slice(skip).map((change) => change.commit);
 }
 
 /** Each version's two tombstones are in the commits, with their version. */
