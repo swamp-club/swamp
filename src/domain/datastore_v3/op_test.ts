@@ -224,3 +224,14 @@ Deno.test("dataVersionOp: orders tags by key, so equal metadata serializes equal
   assertEquals(JSON.stringify(a.toJSON()), JSON.stringify(b.toJSON()));
   assertEquals(Object.keys(a.metadata.tags), ["a", "b", "type"]);
 });
+
+Deno.test("putOp: freezes the op and its content, so the digest always matches the bytes", async () => {
+  const op = await putOp({ intent: SAVE, key: KEY, inline: base64("hello") });
+  assert(Object.isFrozen(op));
+  assert(Object.isFrozen(op.content));
+  assertThrows(() => {
+    (op.content as { inline: string }).inline = base64("evil");
+  }, TypeError);
+  assert(Object.isFrozen(tombstoneOp({ intent: SAVE, key: KEY })));
+  assert(Object.isFrozen(leaseOp({ holder: "h", fence: 1 })));
+});

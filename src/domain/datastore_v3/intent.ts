@@ -21,9 +21,10 @@
  * Typed intents: the domain operation each v3 op performs (swamp-club#3233).
  *
  * An op carries both the path it projects to (a {@link RecordKey}) and the
- * operation it performs. Serve authorises on the intent, never on the path,
- * and the partition aggregate reads data versions from it. Every intent
- * belongs to exactly one partition ({@link intentPartition}).
+ * operation it performs. Serve authorises on the intent, never on the path.
+ * The partition aggregate reads a removed data version from a `data.delete`
+ * or `data.gc` intent; new versions come from `data-version` ops' metadata.
+ * Every intent belongs to exactly one partition ({@link intentPartition}).
  *
  * The list covers every write swamp makes to aggregate storage today, from
  * the libswamp use cases and the serve handlers that write outside them.

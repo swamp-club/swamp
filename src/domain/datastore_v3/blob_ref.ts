@@ -77,7 +77,9 @@ export class BlobRef {
     ) {
       throw new TypeError("Blob legacyKey must be a RecordKey");
     }
-    return new BlobRef(props.sha256, props.size, props.legacyKey);
+    return Object.freeze(
+      new BlobRef(props.sha256, props.size, props.legacyKey),
+    );
   }
 
   /** Parses the serialized form; the same rules as {@link BlobRef.create}. */
@@ -86,6 +88,11 @@ export class BlobRef {
       throw new TypeError("Blob reference must be an object");
     }
     const json = value as Record<string, unknown>;
+    for (const field of Object.keys(json)) {
+      if (!["sha256", "size", "legacyKey"].includes(field)) {
+        throw new Error(`A blob reference does not take the field '${field}'`);
+      }
+    }
     return BlobRef.create({
       sha256: json.sha256 as string,
       size: json.size as number,

@@ -48,6 +48,7 @@ export interface CommitWriter {
 export interface CommitProps {
   readonly seq: number;
   readonly partition: PartitionKey;
+  /** The datastore namespace; empty for an unnamespaced datastore. */
   readonly namespace: string;
   /** The outbox entry id. A retry carries the same one, so it lands once. */
   readonly txnId: string;

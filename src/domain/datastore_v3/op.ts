@@ -125,7 +125,9 @@ export class PutOp {
     expect: PutExpect | undefined,
   ): PutOp {
     if (token !== BUILD) throw new Error("Use putOp() to build a put");
-    return new PutOp(intent, key, content, sha256, expect);
+    return Object.freeze(
+      new PutOp(intent, key, Object.freeze({ ...content }), sha256, expect),
+    );
   }
 
   /**
@@ -166,7 +168,7 @@ export class TombstoneOp {
     if (token !== BUILD) {
       throw new Error("Use tombstoneOp() to build a tombstone");
     }
-    return new TombstoneOp(intent, key, expect);
+    return Object.freeze(new TombstoneOp(intent, key, expect));
   }
 
   toJSON(): TombstoneOpJSON {
@@ -197,7 +199,7 @@ export class DataVersionOp {
     if (token !== BUILD) {
       throw new Error("Use dataVersionOp() to build a data-version op");
     }
-    return new DataVersionOp(key, metadata);
+    return Object.freeze(new DataVersionOp(key, metadata));
   }
 
   toJSON(): DataVersionOpJSON {
@@ -221,7 +223,7 @@ export class LeaseOp {
   /** @internal Only {@link leaseOp} can supply the token. */
   static build(token: typeof BUILD, holder: string, fence: number): LeaseOp {
     if (token !== BUILD) throw new Error("Use leaseOp() to build a lease");
-    return new LeaseOp(holder, fence);
+    return Object.freeze(new LeaseOp(holder, fence));
   }
 
   toJSON(): LeaseOpJSON {

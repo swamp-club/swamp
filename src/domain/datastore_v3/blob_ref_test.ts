@@ -72,3 +72,12 @@ Deno.test("BlobRef.equals: compares every field, legacyKey included", () => {
   assert(!a.equals(b) && !b.equals(a));
   assertThrows(() => BlobRef.fromJSON(null), TypeError);
 });
+
+Deno.test("BlobRef.fromJSON: rejects unknown fields, and a BlobRef is frozen", () => {
+  assertThrows(
+    () => BlobRef.fromJSON({ sha256: SHA, size: 1, extra: true }),
+    Error,
+    "extra",
+  );
+  assert(Object.isFrozen(BlobRef.create({ sha256: SHA, size: 1 })));
+});
