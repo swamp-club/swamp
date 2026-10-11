@@ -29,6 +29,11 @@
  * 2. **Partition keys come from aggregate identity.** `partitionOf()` is the
  *    only way to build a key. No string or template literal elsewhere may
  *    start with a partition-key prefix, so nobody assembles a key by hand.
+ * 3. **Chunk storage is dormant too** (swamp-club#3237). The chunk store
+ *    lives in the v3 model, so rule 1 covers it. The filesystem `storage/1`
+ *    implementation has no production importers, and no production code
+ *    calls a provider's `storage()`. Both pinned lists are empty; the v3
+ *    opt-in adds its edges here.
  */
 
 import {
@@ -92,5 +97,54 @@ Deno.test("datastore v3: partition keys are built only by partitionOf()", async 
     "Hand-built partition keys",
     "Build partition keys with partitionOf() from the aggregate's identity\n" +
       `(${KEY_BUILDER}), not by hand.`,
+  );
+});
+
+const FS_STORAGE = "src/infrastructure/persistence/fs_datastore_storage.ts";
+
+/** Production imports of the filesystem storage. */
+const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code imports the filesystem storage", async () => {
+  const edges = await collectImportEdges(
+    SRC_DIR,
+    (filePath, importPath) =>
+      importsLayer(
+        filePath,
+        importPath,
+        "infrastructure/persistence/fs_datastore_storage.ts",
+      ),
+  );
+  assertPinnedSet(
+    edges,
+    PINNED_FS_STORAGE_IMPORTERS,
+    "Production imports of the dormant filesystem storage",
+    "Chunk storage is dormant until the v3 opt-in wires it in. Do not\n" +
+      "import it from production code before then.",
+  );
+});
+
+/** A call of a provider's `storage()`: `.storage(` or `.storage?.(`. */
+const STORAGE_CALL = /\.storage\??\.?\(/;
+
+/** Production calls of a provider's `storage()`, as `file:line`. */
+const PINNED_STORAGE_CALLS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code calls a provider's storage()", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (isUnder(rel, V3_DIR) || rel === FS_STORAGE) continue;
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (STORAGE_CALL.test(line)) found.push(`${rel}:${index + 1}`);
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_STORAGE_CALLS,
+    "Production calls of DatastoreProvider.storage()",
+    "Chunk storage is dormant until the v3 opt-in wires it in. Do not\n" +
+      "reach an extension's storage from production code before then.",
   );
 });

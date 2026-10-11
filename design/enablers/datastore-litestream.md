@@ -248,7 +248,12 @@ swamp-club#3191), not under a namespace:
 <prefix>/_control/datastore-format
 <prefix>/_control/writer              solo writer lock (carries the fence)
 <prefix>/_litestream/<fence>/<level>/<min>-<max>.ltx
+<prefix>/_blobs/<namespace>/sha256/<aa>/<sha256>   content chunks (storage/1)
 ```
+
+Content chunks are not replicated by Litestream: datastore extensions store
+them through the `storage/1` contract ("v3 chunk storage" in
+`datastores.md`).
 
 Namespaces: this record fixes only the replica layout. One `commits.db` per
 datastore gives one `_litestream/` tree. Whether namespaces get their own

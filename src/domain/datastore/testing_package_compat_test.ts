@@ -30,6 +30,11 @@ import type {
   ControlPlaneStore as CanonicalControlPlaneStore,
   DatastoreControlPlaneStore as CanonicalDatastoreControlPlaneStore,
 } from "./control_plane_store.ts";
+import type {
+  DatastoreStorage as CanonicalDatastoreStorage,
+  StorageCapabilities as CanonicalStorageCapabilities,
+  StoredChunk as CanonicalStoredChunk,
+} from "./datastore_storage.ts";
 import type { DistributedLock as CanonicalDistributedLock } from "./distributed_lock.ts";
 import type { DatastoreVerifier as CanonicalDatastoreVerifier } from "./datastore_health.ts";
 import type {
@@ -41,10 +46,13 @@ import type {
   ControlPlaneStore as TestingControlPlaneStore,
   DatastoreControlPlaneStore as TestingDatastoreControlPlaneStore,
   DatastoreProvider as TestingDatastoreProvider,
+  DatastoreStorage as TestingDatastoreStorage,
   DatastoreSyncService as TestingDatastoreSyncService,
   DatastoreVerifier as TestingDatastoreVerifier,
   DistributedLock as TestingDistributedLock,
   LockInfo as TestingLockInfo,
+  StorageCapabilities as TestingStorageCapabilities,
+  StoredChunk as TestingStoredChunk,
   SyncCapabilities as TestingSyncCapabilities,
 } from "../../../packages/testing/datastore_types.ts";
 
@@ -136,6 +144,7 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
   const _datastoreControlPlane: CanonicalDatastoreProvider[
     "datastoreControlPlaneStore"
   ] = provider.datastoreControlPlaneStore;
+  const _storage: CanonicalDatastoreProvider["storage"] = provider.storage;
 
   void [
     _lock,
@@ -144,7 +153,25 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
     _createSync,
     _resolveCachePath,
     _datastoreControlPlane,
+    _storage,
   ];
+}
+
+// Storage: the storage/1 types line up in both directions, so a storage
+// written against the testing types is one core can use and vice versa.
+function _checkDatastoreStorage(
+  storage: TestingDatastoreStorage,
+  caps: TestingStorageCapabilities,
+  chunk: TestingStoredChunk,
+) {
+  const _storage: CanonicalDatastoreStorage = storage;
+  const _back: TestingDatastoreStorage = {} as CanonicalDatastoreStorage;
+  const _caps: CanonicalStorageCapabilities = caps;
+  const _capsBack: TestingStorageCapabilities =
+    {} as CanonicalStorageCapabilities;
+  const _chunk: CanonicalStoredChunk = chunk;
+  const _chunkBack: TestingStoredChunk = {} as CanonicalStoredChunk;
+  void [_storage, _back, _caps, _capsBack, _chunk, _chunkBack];
 }
 
 // Control-plane stores: a store written against the testing types is one
@@ -190,6 +217,7 @@ Deno.test("testing package datastore types: compile-time compatibility check", (
     _checkSyncCapabilitiesFields,
     _checkDatastoreProviderFields,
     _checkControlPlaneStores,
+    _checkDatastoreStorage,
     _checkLockInfoFields,
   ];
 });
