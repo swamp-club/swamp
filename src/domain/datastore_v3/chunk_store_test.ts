@@ -271,3 +271,21 @@ Deno.test("ChunkStore: solo mode stores under the _solo namespace, apart from na
     ChunkMissingError,
   );
 });
+
+Deno.test("ChunkStore.read: fetches nothing until the stream is read", async () => {
+  const storage = new MemoryStorage();
+  const store = new ChunkStore(storage);
+  const ref = await store.write(NS, bytesOf(10), live());
+  let gets = 0;
+  const get = storage.get.bind(storage);
+  storage.get = (...args) => {
+    gets++;
+    return get(...args);
+  };
+  const stream = store.read(NS, ref, live());
+  await Promise.resolve();
+  await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+  assertEquals(gets, 0);
+  assertEquals(await readAll(stream), bytesOf(10));
+  assertEquals(gets, 1);
+});

@@ -82,7 +82,10 @@ export class FileSystemStorage implements DatastoreStorage {
     } catch (error) {
       // A concurrent put of the same hash can win the rename (Windows
       // refuses to replace a file another rename is replacing). Its bytes
-      // are these bytes, so the chunk is stored; only refresh it.
+      // are these bytes, so the chunk is stored; only refresh it. This also
+      // accepts any other failure while a file of the right length is in
+      // place: chunks are content-addressed and every read verifies them,
+      // so a bad file of that length is caught on read, not served.
       if ((await this.#size(path)) !== bytes.length) throw error;
       await Deno.utime(path, new Date(), new Date());
     }

@@ -2079,8 +2079,10 @@ commits alone, with no extra fetch. With 16 MiB parts, the list costs about
 6 KB per GiB of content.
 
 **What core verifies.** On read, the chunk store checks each chunk's length,
-then its SHA-256, before handing on any of its bytes. A chunk's length is
-bounded by `maxChunkBytes`. For content in several chunks, it also checks the
+then its SHA-256, before handing on any of its bytes. The length is checked
+against the size the reference records, not against this backend's
+`maxChunkBytes`, because a reference cut on another backend may hold larger
+parts. For content in several chunks, it also checks the
 SHA-256 of the whole content when the read ends. A mismatch errors the stream
 with `ChunkIntegrityError`, and a missing chunk errors it with
 `ChunkMissingError`. A consumer keeps what a read yields only once the read

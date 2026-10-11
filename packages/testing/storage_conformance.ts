@@ -262,7 +262,8 @@ export async function assertStorageConformance(
     }
 
     // concurrent puts of one hash
-    const racedText = "r".repeat(256 * 1024);
+    // Large enough to race, within the storage's own chunk limit.
+    const racedText = "r".repeat(Math.min(256 * 1024, caps.maxChunkBytes));
     const raced = await chunk(racedText);
     written.push([ns, raced.sha256]);
     await Promise.all(

@@ -36,6 +36,8 @@
  * @module
  */
 
+// node:crypto, not WebCrypto: the whole-content digest is computed chunk by
+// chunk, and crypto.subtle.digest cannot hash incrementally.
 import { createHash } from "node:crypto";
 import {
   type DatastoreStorage,
@@ -180,7 +182,7 @@ export class ChunkStore {
         controller.enqueue(bytes);
         if (last) controller.close();
       },
-    });
+    }, { highWaterMark: 0 }); // fetch nothing until the stream is read
   }
 
   /** Makes one chunk present and fresh: put, touched, or put again. */

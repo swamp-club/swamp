@@ -89,9 +89,14 @@ Deno.test("assertStorageConformance: the in-memory remote's storage conforms and
 Deno.test("assertStorageConformance: passes without setLastModified, and without touch", async () => {
   const { storage } = memory();
   await assertStorageConformance(() => storage);
-  const { storage: noTouch } = broken(() => ({
+  // Also enforces a small chunk limit, which the suite must stay within.
+  const { storage: noTouch } = broken((s) => ({
     touch: undefined,
     capabilities: () => ({ maxChunkBytes: 1024, touch: false }),
+    put: (ns, sha, bytes, signal) =>
+      bytes.length > 1024
+        ? Promise.reject(new Error("chunk over maxChunkBytes"))
+        : s.put(ns, sha, bytes, signal),
   }));
   await assertStorageConformance(() => noTouch);
 });
