@@ -20,7 +20,9 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
+import { getLogger } from "@logtape/logtape";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { ActiveRun } from "../../domain/models/active_run.ts";
 import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { KILL_GRACE_MS } from "../../infrastructure/process/process_executor.ts";
@@ -41,10 +43,7 @@ import {
   ModelOutput,
 } from "../../domain/models/model_output.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import {
-  createDefinitionId,
-  Definition,
-} from "../../domain/definitions/definition.ts";
+import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { OWNER_STOPPED_STEP_ERROR } from "../../domain/workflows/workflow_run.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 
@@ -344,6 +343,7 @@ function trackerRow(opts: {
   startedAt?: string;
   modelType?: string;
   definitionId?: string | null;
+  hostname?: string;
 }): ActiveRun {
   const startedAt = opts.startedAt ?? new Date().toISOString();
   const workflow = opts.runKind === "workflow";
@@ -355,7 +355,7 @@ function trackerRow(opts: {
     methodName: workflow ? null : "execute",
     workflowName: workflow ? "wf" : null,
     pid: opts.pid,
-    hostname: "test-host",
+    hostname: opts.hostname ?? "test-host",
     startedAt,
     heartbeatAt: startedAt,
     status: "running",
@@ -647,11 +647,7 @@ Deno.test("cancelModelMethodRuns: an unwritable method-run record leaves its row
   });
 });
 
-const idleModel = {
-  definitionId: "def-idle",
-  modelType: "command/shell",
-  soleDefinitionOfType: false,
-};
+const idleModel = { definitionId: "def-idle", modelType: "command/shell" };
 
 Deno.test("methodRunsOfModel: leaves another model's run of the same type unselected (swamp-club#3244)", () => {
   const sleeperRun = trackerRow({
@@ -687,89 +683,168 @@ Deno.test("methodRunsOfModel: ignores workflow rows and a same-id row of another
   );
 });
 
-Deno.test("methodRunsOfModel: a row with no definition id is the model's when it is the type's only definition", () => {
-  const legacy = trackerRow({ pid: OWNER_PID });
-  const own = trackerRow({ pid: OWNER_PID, definitionId: "def-idle" });
+Deno.test("methodRunsOfModel: a row with no definition id is unattributed until something places it", () => {
+  const mine = trackerRow({ pid: OWNER_PID });
+  const theirs = trackerRow({ pid: OWNER_PID });
+  const unknown = trackerRow({ pid: OWNER_PID });
+  const otherType = trackerRow({ pid: OWNER_PID, modelType: "@test/other" });
+  const rows = [mine, theirs, unknown, otherType];
 
+  assertEquals(methodRunsOfModel(rows, idleModel), {
+    runs: [],
+    unattributed: [mine, theirs, unknown],
+  });
   assertEquals(
-    methodRunsOfModel([legacy, own], {
-      ...idleModel,
-      soleDefinitionOfType: true,
+    methodRunsOfModel(rows, idleModel, {
+      own: new Set([mine.id]),
+      others: new Set([theirs.id]),
     }),
-    { runs: [own, legacy], unattributed: [] },
+    { runs: [mine], unattributed: [unknown] },
   );
 });
 
-Deno.test("methodRunsOfModel: a row with no definition id is never selected when the type has several definitions", () => {
-  const legacy = trackerRow({ pid: OWNER_PID });
-  const legacyOtherType = trackerRow({
-    pid: OWNER_PID,
-    modelType: "@test/other",
-  });
+// Method-run records only accept a UUID for the definition id.
+const IDLE_ID = crypto.randomUUID();
+const SLEEPER_ID = crypto.randomUUID();
 
-  assertEquals(methodRunsOfModel([legacy, legacyOtherType], idleModel), {
-    runs: [],
-    unattributed: [legacy],
-  });
-});
+const idle = {
+  definitionId: IDLE_ID,
+  type: ModelType.create("command/shell"),
+};
 
-/** A definition repository listing one definition per given type. */
-function definitionsOfTypes(types: string[]) {
-  const calls = { count: 0 };
-  const repo = {
-    findAllIncludingAutoGlobal: () => {
-      calls.count++;
-      return Promise.resolve(types.map((t, i) => ({
-        definition: Definition.create({ name: `model-${i}` }),
-        type: ModelType.create(t),
-      })));
-    },
-  };
-  return { repo, calls };
+/** A method-run record of `definitionId` under a tracker row's id. */
+function recordFor(row: ActiveRun, definitionId: string): ModelOutput {
+  return ModelOutput.fromData({
+    ...ModelOutput.create({
+      definitionId: createDefinitionId(definitionId),
+      methodName: "execute",
+      provenance: {
+        definitionHash: "abc",
+        modelVersion: "1",
+        triggeredBy: "workflow",
+      },
+    }).toData(),
+    id: row.id,
+  });
 }
 
-const idle = { definitionId: "def-idle", modelType: "command/shell" };
+/** Evidence holding the given records and lock, counting each read. */
+function evidenceOf(
+  records: ModelOutput[],
+  lock: Partial<LockInfo> | null | Error,
+) {
+  const reads = { outputs: 0, lock: 0 };
+  const evidence = {
+    outputs: {
+      findByIds: (
+        _type: ModelType,
+        _method: string,
+        ids: ReadonlySet<string>,
+      ) => {
+        reads.outputs++;
+        return Promise.resolve(
+          new Map(records.filter((r) => ids.has(r.id)).map((r) => [r.id, r])),
+        );
+      },
+    },
+    inspectModelLock: () => {
+      reads.lock++;
+      if (lock instanceof Error) return Promise.reject(lock);
+      return Promise.resolve(
+        lock && {
+          holder: "user@test-host",
+          hostname: "test-host",
+          pid: OWNER_PID,
+          acquiredAt: "2026-01-01T00:00:00.000Z",
+          ttlMs: 30_000,
+          ...lock,
+        },
+      );
+    },
+    logger: getLogger(["test"]),
+  };
+  return { evidence, reads };
+}
 
-Deno.test("findMethodRunsOfModel: does not list definitions when every row names its definition", async () => {
-  const { repo, calls } = definitionsOfTypes(["command/shell"]);
+Deno.test("findMethodRunsOfModel: reads no record and no lock when every row names its definition", async () => {
+  const { evidence, reads } = evidenceOf([], {});
   const sleeperRun = trackerRow({
     pid: OWNER_PID,
-    definitionId: "def-sleeper",
+    definitionId: SLEEPER_ID,
   });
 
-  assertEquals(await findMethodRunsOfModel([sleeperRun], idle, repo), {
+  assertEquals(await findMethodRunsOfModel([sleeperRun], idle, evidence), {
     runs: [],
     unattributed: [],
   });
-  assertEquals(calls.count, 0);
+  assertEquals(reads, { outputs: 0, lock: 0 });
 });
 
-Deno.test("findMethodRunsOfModel: takes a row with no definition id for the type's only definition", async () => {
-  const { repo, calls } = definitionsOfTypes(["command/shell", "@test/other"]);
-  const legacy = trackerRow({ pid: OWNER_PID });
+Deno.test("findMethodRunsOfModel: a row's method-run record decides whose run it is, without reading the lock", async () => {
+  const mine = trackerRow({ pid: OWNER_PID });
+  const theirs = trackerRow({ pid: OWNER_PID });
+  const { evidence, reads } = evidenceOf([
+    recordFor(mine, IDLE_ID),
+    recordFor(theirs, SLEEPER_ID),
+  ], {});
 
-  assertEquals(await findMethodRunsOfModel([legacy], idle, repo), {
+  assertEquals(await findMethodRunsOfModel([mine, theirs], idle, evidence), {
+    runs: [mine],
+    unattributed: [],
+  });
+  assertEquals(reads.lock, 0);
+});
+
+Deno.test("findMethodRunsOfModel: a row with no record is the model's when its process holds the model's lock", async () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const { evidence } = evidenceOf([], {});
+
+  assertEquals(await findMethodRunsOfModel([legacy], idle, evidence), {
     runs: [legacy],
     unattributed: [],
   });
-  assertEquals(calls.count, 1);
 });
 
-Deno.test("findMethodRunsOfModel: leaves a row with no definition id unattributed when the type has two definitions", async () => {
-  const { repo } = definitionsOfTypes(["command/shell", "command/shell"]);
+Deno.test("findMethodRunsOfModel: a row with no record stays unattributed unless its own process is known to hold the lock", async () => {
   const legacy = trackerRow({ pid: OWNER_PID });
+  const locks: (Partial<LockInfo> | null)[] = [
+    null,
+    { pid: OWNER_PID + 1 },
+    { hostname: "other-host" },
+    { holderUnknown: true },
+  ];
 
-  assertEquals(await findMethodRunsOfModel([legacy], idle, repo), {
-    runs: [],
-    unattributed: [legacy],
+  for (const lock of locks) {
+    const { evidence } = evidenceOf([], lock);
+    assertEquals(await findMethodRunsOfModel([legacy], idle, evidence), {
+      runs: [],
+      unattributed: [legacy],
+    }, JSON.stringify(lock));
+  }
+});
+
+Deno.test("findMethodRunsOfModel: a lock does not attribute a row whose process runs another method too", async () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const sibling = trackerRow({
+    pid: OWNER_PID,
+    modelType: "@test/other",
+    definitionId: "def-other",
   });
+  const { evidence } = evidenceOf([], {});
+
+  assertEquals(
+    await findMethodRunsOfModel([legacy, sibling], idle, evidence),
+    { runs: [], unattributed: [legacy] },
+  );
 });
 
-Deno.test("findMethodRunsOfModel: leaves a row with no definition id unattributed when the repository cannot list auto-definitions", async () => {
+Deno.test("findMethodRunsOfModel: a lock that cannot be read leaves the row unattributed and the model's own run selected", async () => {
   const legacy = trackerRow({ pid: OWNER_PID });
+  const own = trackerRow({ pid: OWNER_PID + 2, definitionId: IDLE_ID });
+  const { evidence } = evidenceOf([], new Error("datastore unreachable"));
 
-  assertEquals(await findMethodRunsOfModel([legacy], idle, {}), {
-    runs: [],
+  assertEquals(await findMethodRunsOfModel([legacy, own], idle, evidence), {
+    runs: [own],
     unattributed: [legacy],
   });
 });

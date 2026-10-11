@@ -2940,8 +2940,9 @@ datastore, is not covered by the reservation.
 Model method runs cancel the same way, with
 `swamp model cancel <model> [--all] [--reason <reason>]`. The named form
 considers only the named model's runs, never those of another model of the
-same type. (A run an older swamp registered without a definition id is
-the one exception; see `design/enablers/run-tracker.md`.) The command SIGTERMs
+same type. (A run an older swamp registered names no model on its tracker row and is
+matched from its method-run record or the model's lock; see
+`design/enablers/run-tracker.md`.) The command SIGTERMs
 the process that owns the method run and waits up to 10 s for it to exit
 before SIGKILL: the 3 s grace the shell step gets, plus time for the owner to
 save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,

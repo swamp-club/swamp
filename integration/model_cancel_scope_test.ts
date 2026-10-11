@@ -17,102 +17,206 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// A named `swamp model cancel` selects tracker rows by definition id. A row
+// an older swamp registered has none (swamp-club#3244), so it is attributed
+// from what its run left on disk: a workflow step's `running` method-run
+// record, or the per-model lock a direct run holds. These tests wire the real
+// run tracker, output repository and model lock together, since the unit
+// tests only build rows and evidence in memory.
+
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { getLogger } from "@logtape/logtape";
 import { ActiveRun } from "../src/domain/models/active_run.ts";
+import { ModelOutput } from "../src/domain/models/model_output.ts";
+import { ModelType } from "../src/domain/models/model_type.ts";
+import { createDefinitionId } from "../src/domain/definitions/definition.ts";
+import type { OutputRepository } from "../src/domain/models/repositories.ts";
+import {
+  createModelLock,
+  requireInitializedRepoUnlocked,
+} from "../src/cli/repo_context.ts";
+import { findMethodRunsOfModel } from "../src/cli/commands/model_cancel.ts";
 import { RunTrackerStore } from "../src/infrastructure/persistence/run_tracker_store.ts";
-import { methodRunsOfModel } from "../src/cli/commands/model_cancel.ts";
+import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import "../src/domain/models/models.ts";
+import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 
-// The unit tests build rows in memory. These read them back from the store,
-// so a NULL definition_id column has to arrive as the null the selection
-// treats as a row an older swamp registered.
-const MODEL_TYPE = "command/shell";
+await initializeLogging({});
 
-async function withTracker(
-  fn: (tracker: RunTrackerStore, dbPath: string) => void,
+const TYPE = ModelType.create("command/shell");
+
+// Far above any real pid_max, so never this process.
+const OTHER_PID = 2147483647;
+
+interface Fixture {
+  tracker: RunTrackerStore;
+  outputRepo: OutputRepository;
+  /** The running rows a cancel of `definitionId` selects, by id. */
+  select(definitionId: string): Promise<{
+    runs: string[];
+    unattributed: string[];
+  }>;
+  /** Clears a row's definition id, as a swamp before swamp-club#3244 left it. */
+  forgetDefinition(runId: string): void;
+  lockOf(definitionId: string): ReturnType<typeof createModelLock>;
+}
+
+async function withRepo(
+  fn: (fixture: Fixture) => Promise<void>,
 ): Promise<void> {
-  const dir = await Deno.makeTempDir({ prefix: "swamp-cancel-scope-" });
-  const dbPath = join(dir, "run_tracker.db");
-  const tracker = new RunTrackerStore(dbPath);
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-cancel-scope-" });
+  let tracker: RunTrackerStore | undefined;
   try {
-    fn(tracker, dbPath);
+    await Deno.writeTextFile(
+      join(repoDir, ".swamp.yaml"),
+      "swampVersion: 0.0.0\ninitializedAt: 2026-01-01T00:00:00.000Z\n",
+    );
+    const { repoContext, datastoreConfig } =
+      await requireInitializedRepoUnlocked({ repoDir, outputMode: "json" });
+    const store = tracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    const lockOf = (definitionId: string) =>
+      createModelLock(datastoreConfig, TYPE.normalized, definitionId);
+    await fn({
+      tracker: store,
+      outputRepo: repoContext.outputRepo,
+      lockOf,
+      forgetDefinition(runId) {
+        const db = new DatabaseSync(join(swampPath(repoDir), "run_tracker.db"));
+        try {
+          db.prepare("UPDATE active_runs SET definition_id = NULL WHERE id = ?")
+            .run(runId);
+        } finally {
+          db.close();
+        }
+      },
+      async select(definitionId) {
+        const { runs, unattributed } = await findMethodRunsOfModel(
+          store.findAllRunning(),
+          { definitionId, type: TYPE },
+          {
+            outputs: repoContext.outputRepo,
+            inspectModelLock: async () =>
+              (await lockOf(definitionId)).inspect(),
+            logger: getLogger(["test"]),
+          },
+        );
+        return {
+          runs: runs.map((r) => r.id),
+          unattributed: unattributed.map((r) => r.id),
+        };
+      },
+    });
   } finally {
-    tracker.close();
+    tracker?.close();
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
       // handles yet. Temp dir is ephemeral, OS reclaims.
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
     } else {
-      await Deno.remove(dir, { recursive: true });
+      await Deno.remove(repoDir, { recursive: true });
     }
   }
 }
 
-function registerRun(tracker: RunTrackerStore, definitionId: string): string {
-  const id = crypto.randomUUID();
+/** A direct method run's row: registered, with no record until it ends. */
+function registerRun(
+  { tracker }: Fixture,
+  definitionId: string,
+  pid: number,
+  id: string = crypto.randomUUID(),
+): string {
   tracker.register(ActiveRun.createModelMethodRun({
     id,
-    modelType: MODEL_TYPE,
+    modelType: TYPE.normalized,
     definitionId,
     methodName: "execute",
-    pid: Deno.pid,
-    hostname: "test-host",
+    pid,
+    hostname: hostname(),
   }));
   return id;
 }
 
-/** Clears a row's definition id, as a swamp before swamp-club#3244 left it. */
-function forgetDefinition(dbPath: string, runId: string): void {
-  const db = new DatabaseSync(dbPath);
-  try {
-    db.prepare("UPDATE active_runs SET definition_id = NULL WHERE id = ?")
-      .run(runId);
-  } finally {
-    db.close();
-  }
-}
-
-function selectedIds(
-  tracker: RunTrackerStore,
+/** A workflow step's method run: its record saved `running`, then its row. */
+async function registerStepRun(
+  fixture: Fixture,
   definitionId: string,
-  soleDefinitionOfType = false,
-) {
-  const { runs, unattributed } = methodRunsOfModel(tracker.findAllRunning(), {
-    definitionId,
-    modelType: MODEL_TYPE,
-    soleDefinitionOfType,
+  pid: number,
+): Promise<string> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(definitionId),
+    methodName: "execute",
+    provenance: {
+      definitionHash: "abc",
+      modelVersion: "1",
+      triggeredBy: "workflow",
+    },
   });
-  return {
-    runs: runs.map((r) => r.id),
-    unattributed: unattributed.map((r) => r.id),
-  };
+  output.markRunning(pid);
+  await fixture.outputRepo.save(TYPE, "execute", output);
+  return registerRun(fixture, definitionId, pid, output.id);
 }
 
-Deno.test("methodRunsOfModel: over a real tracker, an idle model selects nothing while another model of its type runs (swamp-club#3244)", async () => {
-  await withTracker((tracker) => {
-    const sleeperRun = registerRun(tracker, "def-sleeper");
+Deno.test("findMethodRunsOfModel: an idle model selects nothing while another model of its type runs (swamp-club#3244)", async () => {
+  await withRepo(async (fixture) => {
+    const idle = crypto.randomUUID();
+    const sleeper = crypto.randomUUID();
+    const sleeperRun = registerRun(fixture, sleeper, OTHER_PID);
 
-    assertEquals(selectedIds(tracker, "def-idle"), {
-      runs: [],
-      unattributed: [],
-    });
-    assertEquals(selectedIds(tracker, "def-sleeper").runs, [sleeperRun]);
+    assertEquals(await fixture.select(idle), { runs: [], unattributed: [] });
+    assertEquals((await fixture.select(sleeper)).runs, [sleeperRun]);
   });
 });
 
-Deno.test("methodRunsOfModel: over a real tracker, a row with no definition id is selected only for the type's sole definition", async () => {
-  await withTracker((tracker, dbPath) => {
-    const legacyRun = registerRun(tracker, "def-sleeper");
-    forgetDefinition(dbPath, legacyRun);
+Deno.test("findMethodRunsOfModel: a step row with no definition id goes to the model its running record names", async () => {
+  await withRepo(async (fixture) => {
+    const idle = crypto.randomUUID();
+    const sleeper = crypto.randomUUID();
+    const stepRun = await registerStepRun(fixture, sleeper, OTHER_PID);
+    fixture.forgetDefinition(stepRun);
 
-    assertEquals(selectedIds(tracker, "def-idle"), {
-      runs: [],
-      unattributed: [legacyRun],
-    });
-    assertEquals(selectedIds(tracker, "def-sleeper", true), {
-      runs: [legacyRun],
+    assertEquals(await fixture.select(sleeper), {
+      runs: [stepRun],
       unattributed: [],
+    });
+    assertEquals(await fixture.select(idle), { runs: [], unattributed: [] });
+  });
+});
+
+Deno.test("findMethodRunsOfModel: a direct row with no definition id goes to the model whose lock its process holds", async () => {
+  await withRepo(async (fixture) => {
+    const idle = crypto.randomUUID();
+    const sleeper = crypto.randomUUID();
+    const directRun = registerRun(fixture, sleeper, Deno.pid);
+    fixture.forgetDefinition(directRun);
+    const lock = await fixture.lockOf(sleeper);
+    await lock.acquire();
+    try {
+      assertEquals(await fixture.select(sleeper), {
+        runs: [directRun],
+        unattributed: [],
+      });
+      assertEquals(await fixture.select(idle), {
+        runs: [],
+        unattributed: [directRun],
+      });
+    } finally {
+      await lock.release();
+    }
+  });
+});
+
+Deno.test("findMethodRunsOfModel: a row with no definition id, record or lock is nobody's", async () => {
+  await withRepo(async (fixture) => {
+    const sleeper = crypto.randomUUID();
+    const directRun = registerRun(fixture, sleeper, OTHER_PID);
+    fixture.forgetDefinition(directRun);
+
+    assertEquals(await fixture.select(sleeper), {
+      runs: [],
+      unattributed: [directRun],
     });
   });
 });
