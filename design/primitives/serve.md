@@ -1049,8 +1049,13 @@ together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
 aborted and gets 5 s more. It marks aborted API workflow runs
 `interrupted("server_shutdown")` in the run repository (aborted webhook and cron
-runs end `cancelled`), deletes its heartbeat and exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 10 s, and
+runs end `cancelled`) and, on a remote datastore, pushes those records under the
+shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
+swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
+a push that fails or misses it is logged as a warning, and the datastore keeps
+the run's last pushed status. It then deletes its heartbeat and exits. Set the pod's
+`terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
+abort grace and the 5 s interrupt push), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. Peers see no stale heartbeat, so nothing is reaped.

@@ -313,6 +313,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // (swamp-club#3056).
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/server_token_gc_deps.ts: createServerTokenGcDeps",
+  // Serve shutdown's run interrupts: the push of the interrupted records is
+  // the root's flush, bounded by one deadline (swamp-club#3252).
+  "src/serve/shutdown_interrupt.ts: interruptShutdownRuns",
   // Writes that push nothing, in a root with no push, so they stage into it
   // rather than through signalChange's hook fallback (swamp-club#3056): boot
   // and continuous reconciliation, run.doctor's fix, and worker data-plane

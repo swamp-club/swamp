@@ -1488,12 +1488,13 @@ operation inside a unit of work:
   - `PINNED_UNSCOPED_WRITERS` in the guard module lists the production
     callers still allowed on route 2, each with a reason. It is empty: every
     route-2 caller found runs in a root. The pushing ones make their push the
-    root's flush: serve bookkeeping GC and server-token GC. The rest run in a
+    root's flush: serve bookkeeping GC, server-token GC and serve shutdown's
+    run interrupts (swamp-club#3252). The rest run in a
     root with no flush, which forwards each mark to the hook at once and
     pushes nothing, as before: the device-auth mint, `access.reload` and the
     grant commit (their writes, before the root `stageWritesThenPush` already
     opens for the push), serve boot reconciliation and its continuous tick,
-    serve shutdown's run interrupts, the OAuth collective refresh's token
+    the OAuth collective refresh's token
     updates and revokes, `model.validate` (whose model checks receive the
     hooked repositories), `run.doctor`'s fix, worker data-plane writes and
     capability deletes, and the CLI's

@@ -322,6 +322,7 @@ import {
   runShutdownDrain,
   SHUTDOWN_ABORT_GRACE_MS,
 } from "../../serve/shutdown_drain.ts";
+import { interruptShutdownRuns } from "../../serve/shutdown_interrupt.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -6765,80 +6766,20 @@ export const serveCommand = new Command()
           }
         },
       });
-      const workflowRuns = remaining.filter((r) =>
-        r.kind === "workflow-run" || r.kind === "workflow-resume"
-      );
-      if (workflowRuns.length > 0) {
-        const earliestCutoff = new Date(
-          Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
-            60_000,
-        );
-        let allRuns:
-          | Awaited<
-            ReturnType<
-              typeof repoContext.workflowRunRepo.findGlobalByStatus
-            >
-          >
-          | undefined;
-        try {
-          allRuns = await repoContext.workflowRunRepo
-            .findGlobalByStatus(
-              ["running", "cancelled"],
-              earliestCutoff,
-            );
-        } catch (err) {
-          logger.warn(
-            "Failed to load workflow runs for interrupt: {error}",
-            {
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-        if (allRuns) {
-          // The interrupts run in a root unit of work with no push, so their
-          // saves stage into it instead of reaching the hook through
-          // signalChange's fallback (swamp-club#3056). Nothing pushes here,
-          // as before.
-          await runInRootUnitOfWork(
-            repoContext,
-            { flush: undefined },
-            async () => {
-              for (const run of workflowRuns) {
-                try {
-                  const match = allRuns.find((r) => r.run.id === run.runId);
-                  if (
-                    match &&
-                    (match.run.status === "running" ||
-                      match.run.status === "cancelled")
-                  ) {
-                    match.run.interrupt("server_shutdown");
-                    await repoContext.workflowRunRepo.save(
-                      match.workflowId,
-                      match.run,
-                    );
-                    if (isJson) {
-                      console.log(JSON.stringify({
-                        status: "interrupted",
-                        runId: run.runId,
-                      }));
-                    }
-                    logger
-                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
-                  }
-                } catch (err) {
-                  logger.warn(
-                    "Failed to interrupt run {runId}: {error}",
-                    {
-                      runId: run.runId,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                }
-              }
-            },
-          );
-        }
-      }
+      // Before the pollers stop: the push of the interrupted runs takes the
+      // shared sync gate, as a run's post-run push does (swamp-club#3252).
+      await interruptShutdownRuns(remaining, {
+        repoContext,
+        syncService,
+        namespace: serveNamespace,
+        syncGate,
+        onInterrupted: (runId) => {
+          if (isJson) {
+            console.log(JSON.stringify({ status: "interrupted", runId }));
+          }
+          logger.info`Interrupted workflow run ${runId} (server shutdown)`;
+        },
+      });
       if (workerGcService) {
         await workerGcService.dispose();
       }
