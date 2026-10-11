@@ -168,11 +168,6 @@ export function commitLogParentFor(
   return state.isOpen() ? candidate : nearestOpenAncestor(state.parent);
 }
 
-/** Whether `uow` is a commit-log unit that has not ended. */
-export function isOpenCommitLogUnit(uow: UnitOfWork): boolean {
-  return states.get(uow)?.isOpen() ?? false;
-}
-
 function nearestOpenAncestor(
   parent: UnitOfWork | undefined,
 ): UnitOfWork | undefined {

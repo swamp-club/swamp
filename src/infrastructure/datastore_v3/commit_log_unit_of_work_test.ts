@@ -24,6 +24,8 @@ import {
   assertStrictEquals,
 } from "@std/assert";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
+import { createIntent } from "../../domain/datastore_v3/intent.ts";
+import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import { MAX_COMMIT_OPS } from "../../domain/datastore_v3/commit.ts";
 import {
   leaseOp,
@@ -84,7 +86,7 @@ async function contentOf(
   }
   return await readAll(
     new ChunkStore(storage).read(
-      "" as never,
+      SOLO_NAMESPACE,
       op.content.blob,
       new AbortController().signal,
     ),
@@ -146,10 +148,10 @@ Deno.test("createCommitLogUnitOfWork: the run partition commits last, the others
   await uow.stageOp({
     partition: other,
     op: tombstoneOp({
-      intent: {
+      intent: createIntent({
         kind: "definition.delete",
         definition: { kind: "workflow", name: "deploy" },
-      } as never,
+      }),
       key: dataKey("x", 1),
     }),
   });
