@@ -2884,6 +2884,24 @@ Deno.test("advanceLatestMarkers: pruning on promotion neither counts nor removes
   }, true);
 });
 
+Deno.test("advanceLatestMarkers: promoting an older deferred write keeps the newest versions (swamp-club#3251)", async () => {
+  await withStepRepo(async (repo) => {
+    const older = await repo.saveDeferred(
+      testType,
+      "m1",
+      cappedData(3),
+      bytes("older"),
+    );
+    await promoteDeferred(repo, 3);
+    await repo.advanceLatestMarkers([older]);
+
+    // v1 is promoted last but is the oldest, so it is the one that goes.
+    assertEquals(await repo.listVersions(testType, "m1", "capped"), [2, 3, 4]);
+    const latest = await repo.findByName(testType, "m1", "capped");
+    assertEquals(latest?.version, 4);
+  }, true);
+});
+
 Deno.test("rollbackVersions: rolling back a deferred write prunes nothing with enableWriteGc (swamp-club#3251)", async () => {
   await withStepRepo(async (repo) => {
     await promoteDeferred(repo, 3);

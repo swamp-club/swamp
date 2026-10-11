@@ -524,6 +524,9 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       );
       const gc = data?.garbageCollection;
       if (typeof gc === "number") {
+        // Keep the newest `gc` versions, counting the promoted one, as the
+        // filesystem repository does. This repository has no pending state,
+        // so unlike it, another in-flight deferred version counts too.
         this.pruneExcessVersions(
           receipt.type,
           receipt.modelId,
@@ -532,8 +535,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
             receipt.type,
             receipt.modelId,
             receipt.dataName,
-          ).filter((v) => v !== receipt.version),
-          gc,
+          ),
+          gc + 1,
         );
       }
     }

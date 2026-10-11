@@ -1763,6 +1763,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * Enforces a version cap once a deferred write is promoted, as `save`
    * does for a direct write. A deferred write is not pruned when it is
    * written, since it may yet be rolled back (swamp-club#3251).
+   *
+   * The promoted version need not be the newest — newer writes may have
+   * been promoted first — so it is counted with the rest and the newest
+   * `cap` are kept, which may drop the promoted version itself.
+   * `pruneExcessVersions` leaves room for one more version, hence `cap + 1`.
    */
   private async prunePromotedVersion(
     receipt: DeferredWriteReceipt,
@@ -1778,8 +1783,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         receipt.type,
         receipt.modelId,
         receipt.dataName,
-        versions.filter((v) => v !== receipt.version),
-        cap,
+        versions,
+        cap + 1,
       );
     } catch (error) {
       logger
