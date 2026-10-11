@@ -2249,6 +2249,8 @@ that.
 - The cost: restoring one namespace restores them all, and a busy namespace
   grows the shared file. Namespaces that share a datastore already share its
   bucket and its writer, so that is accepted.
+- An unnamespaced datastore's commits have namespace `""`. Its chunks live
+  under `_blobs/_default/` (swamp-club#3237, "v3 chunk storage" above).
 
 **Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops. GC
 and prune, which are later issues, must split larger tombstone sets across
