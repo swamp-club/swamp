@@ -154,6 +154,7 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectHead: StatementSync;
   readonly #selectTxnSeq: StatementSync;
   readonly #selectTxnUpTo: StatementSync;
+  readonly #selectMaxSeq: StatementSync;
   readonly #insertCommit: StatementSync;
   readonly #upsertHead: StatementSync;
   readonly #selectPartitionPage: StatementSync;
@@ -177,6 +178,9 @@ export class SqliteCommitStore implements CommitStore {
     );
     this.#selectTxnUpTo = db.prepare(
       "SELECT 1 AS found FROM commits WHERE namespace = ? AND partition = ? AND txn_id = ? AND seq <= ?",
+    );
+    this.#selectMaxSeq = db.prepare(
+      "SELECT MAX(seq) AS seq FROM commits WHERE namespace = ? AND partition = ?",
     );
     this.#insertCommit = db.prepare(
       "INSERT INTO commits (namespace, partition, seq, txn_id, fence, at, body) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -247,7 +251,7 @@ export class SqliteCommitStore implements CommitStore {
     this.#db.exec("BEGIN IMMEDIATE");
     let outcome: CommitStoreAppendResult | "stale";
     try {
-      outcome = this.#applyInTransaction(commit, partition);
+      outcome = this.#applyInTransaction(commit, partition, retried);
       if (outcome !== "stale" && outcome.kind === "appended") {
         this.#db.exec("COMMIT");
       } else {
@@ -276,13 +280,33 @@ export class SqliteCommitStore implements CommitStore {
   #applyInTransaction(
     commit: Commit,
     partition: Partition,
+    retried: boolean,
   ): CommitStoreAppendResult | "stale" {
     const namespace = commit.namespace;
     const partitionKey = commit.partition.toString();
     const head = this.#selectHead.get(namespace, partitionKey) as
       | { seq: number }
       | undefined;
-    if ((head?.seq ?? 0) !== partition.seq) return "stale";
+    const headSeq = head?.seq ?? 0;
+    if (headSeq !== partition.seq) {
+      // Stale again just after a rebuild. Under the write lock nothing else
+      // can write, so a head row that disagrees with the commits is damage,
+      // not another writer.
+      if (retried) {
+        const last = (this.#selectMaxSeq.get(namespace, partitionKey) as {
+          seq: number | null;
+        }).seq ?? 0;
+        if (last !== headSeq) {
+          throw new CommitStoreCorruptError(
+            namespace,
+            partitionKey,
+            headSeq,
+            `its head row is at seq ${headSeq} but its commits end at seq ${last}`,
+          );
+        }
+      }
+      return "stale";
+    }
 
     const applied = partition.append(commit);
     if (applied.kind === "duplicate") {
@@ -292,8 +316,11 @@ export class SqliteCommitStore implements CommitStore {
         commit.txnId,
       ) as { seq: number } | undefined;
       if (row === undefined) {
-        throw new Error(
-          `Partition ${partitionKey} holds txnId ${commit.txnId}, but commits.db has no row for it`,
+        throw new CommitStoreCorruptError(
+          namespace,
+          partitionKey,
+          partition.seq,
+          `it has applied txnId ${commit.txnId}, but no stored commit carries it`,
         );
       }
       return { kind: "duplicate", seq: row.seq };
@@ -359,7 +386,9 @@ export class SqliteCommitStore implements CommitStore {
       try {
         // The snapshot leaves out txnIds; those it covers are looked up in
         // the commits table, only up to its seq, so the commits replayed
-        // after it are not taken for retries of themselves.
+        // after it are not taken for retries of themselves. The lookup uses
+        // this store's connection, so a restored partition must not outlive
+        // the store: close() clears the cache.
         const upTo = snapshot.seq;
         partition = Partition.restore(
           key,

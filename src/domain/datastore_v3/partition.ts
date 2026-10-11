@@ -234,7 +234,13 @@ export class Partition {
       if (typeof entry !== "object" || entry === null) {
         return fail("a data name is not an object");
       }
-      const { name, live, highWater } = entry as Record<string, unknown>;
+      const fields = entry as Record<string, unknown>;
+      for (const field of Object.keys(fields)) {
+        if (!["name", "live", "highWater"].includes(field)) {
+          return fail(`a data name has the unknown field '${field}'`);
+        }
+      }
+      const { name, live, highWater } = fields;
       if (typeof name !== "string" || partition.#names.has(name)) {
         return fail("a data name is missing or appears twice");
       }

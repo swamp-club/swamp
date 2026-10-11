@@ -2139,7 +2139,8 @@ raises `CommitStoreCorruptError`, naming the namespace, partition and seq, so
 it is never reported as a refusal of the new commit. A store is damaged when a
 stored commit does not parse, does not match its row's seq, namespace,
 partition or txnId, or breaks a rule against the commits before it; when a
-snapshot is invalid; or when a head row is behind its commits.
+snapshot is invalid; when a head row disagrees with its commits; or when a
+txnId the partition has applied has no stored commit.
 Stored rows are read through `Commit.fromJSON`, so they pass the same checks
 as a commit a client sends.
 
@@ -2169,7 +2170,7 @@ failure rolls back and drops the rebuilt partition, which may be ahead of the
 file. Because the append is synchronous, it blocks the event loop for its
 `fsync`. That matters once serve writes through the store (Phase 5).
 
-**Rebuilding a partition.** Appends are queued one at a time per process. The
+**Rebuilding a partition.** Each store queues its appends one at a time. The
 queue rebuilds a partition, which is asynchronous because `Commit.fromJSON`
 recomputes inline digests, before the transaction starts. It never rebuilds
 inside one.
@@ -2204,13 +2205,19 @@ inside one.
   About 80% of a full replay is `Commit.fromJSON` recomputing inline digests.
   Replay grows with the partition, and a short-lived CLI command pays it on
   its first append to that partition, so the store snapshots.
-- **Cache.** Rebuilt partitions stay in a per-process LRU of 1,024 entries.
-  Serve is long-lived and every workflow run is a new partition, so the cache
-  is bounded.
+- **Cache.** Each store keeps rebuilt partitions in an LRU of 1,024 entries.
+  Serve is long-lived and every workflow run is a new partition, so the
+  number of cached partitions is bounded. A cached partition still collects
+  the txnIds of every commit applied since its snapshot, so a very busy
+  partition cached for a long time grows. Phase 5 should bound that, for
+  example by re-restoring a partition from its newest snapshot.
 - **Head check.** A cached partition whose seq differs from the head row was
   overtaken by another connection. The store drops it, rebuilds and retries
   once. A second writer is a bug the Phase 4 writer lock prevents, but the
-  store stays correct.
+  store stays correct. If the partition is stale again straight after the
+  rebuild, the store compares the head row with the last stored commit while
+  it holds the write lock. A mismatch means damage, and the store raises
+  `CommitStoreCorruptError`.
 
 **Change cursor.** `commits.cursor` is an `AUTOINCREMENT` key, so a value is
 never reused even after a later prune deletes rows. `changesSince(cursor)`

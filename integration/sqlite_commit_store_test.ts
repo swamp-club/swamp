@@ -583,6 +583,67 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
     }
   });
 
+  // A head row ahead of its commits.
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.close();
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE partition_heads SET seq = 5");
+    db.close();
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      const error = await assertRejects(
+        async () => await reopened.append(await save(3)),
+        CommitStoreCorruptError,
+      );
+      assertStringIncludes(error.message, "commits end at seq 2");
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  // A snapshot row whose seq is not the seq its body holds.
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path, { snapshotInterval: 2 });
+    for (let seq = 1; seq <= 2; seq++) await store.append(await save(seq));
+    await store.close();
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE partition_snapshots SET seq = 1");
+    db.close();
+    const reopened = SqliteCommitStore.open(path, { snapshotInterval: 2 });
+    try {
+      const error = await assertRejects(
+        async () => await reopened.append(await save(3)),
+        CommitStoreCorruptError,
+      );
+      assertStringIncludes(error.message, "snapshot row is for seq 1");
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  // A commit row deleted under a store that has the partition cached.
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    try {
+      await store.append(await save(1));
+      const db = new DatabaseSync(path);
+      db.exec("DELETE FROM commits");
+      db.close();
+      const error = await assertRejects(
+        async () => await store.append(await save(1)),
+        CommitStoreCorruptError,
+      );
+      assertStringIncludes(error.message, "no stored commit carries it");
+    } finally {
+      await store.close();
+    }
+  });
+
   // A damaged snapshot.
   await withTempDir(async (dir) => {
     const path = join(dir, "commits.db");

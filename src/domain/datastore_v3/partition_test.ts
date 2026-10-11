@@ -495,6 +495,10 @@ Deno.test("Partition.restore: refuses a damaged snapshot", async () => {
       ...good,
       names: [{ name: "a", live: [], highWater: 0 }],
     }],
+    ["an unknown field in a data name", {
+      ...good,
+      names: [{ ...good.names[0], extra: 1 }],
+    }],
     ["a repeated data name", {
       ...good,
       names: [good.names[0], good.names[0]],
