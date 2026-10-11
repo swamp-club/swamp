@@ -929,6 +929,7 @@ export async function* modelMethodRun(
               const activeRun = ActiveRun.createModelMethodRun({
                 id: output.id,
                 modelType: modelType.normalized,
+                definitionId: definition.id,
                 methodName: input.methodName,
                 pid: Deno.pid,
                 hostname: hostname(),

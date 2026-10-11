@@ -106,6 +106,7 @@ async function startStepMethodRun(
   tracker.register(ActiveRun.createModelMethodRun({
     id: output.id,
     modelType: modelType.normalized,
+    definitionId: output.definitionId,
     methodName: "execute",
     pid,
     hostname: host,
