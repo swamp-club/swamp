@@ -161,18 +161,20 @@ export class Partition {
 
   /**
    * Applies a commit, or refuses it with a {@link CommitRejectedError} and
-   * changes nothing. A commit whose txnId the partition already holds is a
-   * duplicate: checked first, so retrying a commit that landed is a no-op
-   * even though its seq is now behind.
+   * changes nothing. A commit for another partition is refused first. Then a
+   * commit whose txnId the partition already holds is a duplicate, checked
+   * before seq, so retrying a commit that landed is a no-op even though its
+   * seq is now behind. Retries go to the same partition, so checking the
+   * partition first never turns a retry into a refusal.
    */
   append(commit: Commit): AppendResult {
-    if (this.#txnIds.has(commit.txnId)) return { kind: "duplicate" };
     if (!commit.partition.equals(this.key)) {
       throw new CommitRejectedError(
         "partition-mismatch",
         `Commit for ${commit.partition} sent to partition ${this.key}`,
       );
     }
+    if (this.#txnIds.has(commit.txnId)) return { kind: "duplicate" };
     if (commit.seq !== this.#seq + 1) {
       throw new CommitRejectedError(
         "seq-gap",
@@ -236,7 +238,11 @@ export class Partition {
             (intent.kind === "data.delete" || intent.kind === "data.gc") &&
             intent.version !== undefined
           ) {
-            dataName(intent.name).live.delete(intent.version);
+            // A name never written has no versions to remove; leave it out
+            // rather than list it with no versions.
+            if (names.has(intent.name) || this.#names.has(intent.name)) {
+              dataName(intent.name).live.delete(intent.version);
+            }
           }
           break;
         }

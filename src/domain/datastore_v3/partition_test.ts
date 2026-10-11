@@ -286,3 +286,32 @@ Deno.test("Partition.append: a lock-file edit with a stale expect is refused", a
     await sha256Of("{a}"),
   );
 });
+
+Deno.test("Partition.append: a misrouted commit is refused even when its txnId landed here", () => {
+  const partition = Partition.empty(partitionOf({ kind: "lockfile" }));
+  const lockfileCommit = Commit.create({
+    seq: 1,
+    partition: partitionOf({ kind: "lockfile" }),
+    namespace: "",
+    txnId: "shared-txn",
+    writer: { host: "h", pid: 1, instance: "i" },
+    at: "2026-10-11T00:00:00Z",
+    ops: [leaseOp({ holder: "h", fence: 1 })],
+  });
+  partition.append(lockfileCommit);
+  assertRejected(
+    () =>
+      partition.append(
+        modelCommit(1, [versionOp("vpc", 1)], { txnId: "shared-txn" }),
+      ),
+    "partition-mismatch",
+  );
+});
+
+Deno.test("Partition.append: deleting a version of a name never written lists no name", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [deleteVersion("ghost", 3)]));
+  assertEquals(partition.dataNames(), []);
+  partition.append(modelCommit(2, [versionOp("ghost", 1)]));
+  assertEquals(partition.dataNames(), ["ghost"]);
+});

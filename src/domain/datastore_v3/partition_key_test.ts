@@ -196,3 +196,30 @@ Deno.test("PartitionKey.toJSON: serializes as the key string", () => {
   const key = partitionOf({ kind: "lockfile" });
   assertEquals(JSON.stringify({ key }), `{"key":"${key}"}`);
 });
+
+Deno.test("partitionOf: lowercases ids, so letter case never splits an aggregate", () => {
+  const upper = partitionOf({
+    kind: "model",
+    type: ModelType.create("a/b"),
+    id: ID.toUpperCase(),
+  });
+  const lower = partitionOf({
+    kind: "model",
+    type: ModelType.create("a/b"),
+    id: ID,
+  });
+  assert(upper.equals(lower));
+  assertEquals(
+    partitionOf({
+      kind: "run",
+      workflowId: ID.toUpperCase(),
+      runId: RUN.toUpperCase(),
+    }).toString(),
+    `run--${ID}--${RUN}`,
+  );
+});
+
+Deno.test("PartitionKey.parse: rejects an uppercase id", () => {
+  assertThrows(() => PartitionKey.parse(`definition--${ID.toUpperCase()}`));
+  assertThrows(() => PartitionKey.parse(`run--${ID}--${RUN.toUpperCase()}`));
+});

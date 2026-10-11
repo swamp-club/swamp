@@ -1838,10 +1838,11 @@ SHA-256.
 **The partition's rules.** `Partition.append` (`partition.ts`) keeps these.
 It is synchronous, and a refused commit leaves the partition unchanged:
 
-- **Duplicate first.** A commit whose `txnId` the partition holds is a no-op,
-  checked before anything else. A retry of a commit that landed is therefore
-  harmless even though its seq is now behind. Identity is the txnId alone:
-  the payload is not compared.
+- **Partition, then duplicate.** A commit for another partition is refused
+  first. A commit whose `txnId` the partition holds is then a no-op, checked
+  before seq, so a retry of a commit that landed is harmless even though its
+  seq is now behind. Identity is the txnId alone: the payload is not
+  compared.
 - **seq has no gaps.**
 - **Fences never go down.** A commit, or a lease op, whose fence is below the
   partition's highest is refused. A commit without a fence (solo mode) is
@@ -1910,7 +1911,8 @@ these.
 **Decisions found while building the model.**
 
 - **Key encoding.** The type and name segments are percent-encoded, keeping
-  `@`: `model--swamp%2Fgrant--<id>`. A normalized model type keeps `/` and
+  `@`: `model--swamp%2Fgrant--<id>`. Ids are lowercased, so one aggregate
+  never splits into two partitions by letter case. A normalized model type keeps `/` and
   `@`, and a definition name may hold `/` (scoped `@collective/name`) or
   `--`, so flattening `/` to `-` would give `a-b/c` and `a/b-c` one key.
   `partitionOf` takes a `ModelType` and uses its normalized form, so every
@@ -1955,6 +1957,25 @@ these.
   - sources;
   - vault secrets, which go to the vault provider;
   - control-plane store keys (signal waits, heartbeats, webhook state).
+- **Authorisation requirements for the serve wiring.** Serve will authorise
+  each op on its intent, and the model leaves four bindings to that issue. Each
+  needs the per-repository audit of what every write stages, so none is
+  enforced yet:
+  - **Key to aggregate.** A put's or tombstone's record key must fall under
+    the projected paths of its intent's aggregate. Otherwise a principal
+    allowed to save data on one model could write any other aggregate's
+    file, such as a grant's.
+  - **Op kind to intent kind.** Which intents may ride a tombstone, and which
+    a put, is not a simple verb split. A versioned `data.delete` rewrites the
+    name's latest marker (a put), a definition delete keeps a file that
+    another entity shares (a put), and `grant.revoke` writes a new grant
+    version (a put). The table comes from that audit.
+  - **`data-version` ops.** These carry no intent, so they must be tied to a
+    `data.save` (or rename) intent for the same name and version in the same
+    commit, or get an intent of their own.
+  - **`lease` ops.** These carry no intent either. Only the lease machinery
+    (Phase 5) may write them; a client-forwarded commit carrying one must be
+    refused.
 - **Open requirement before the opt-in.** `audit/`, `telemetry/`, `logs/` and
   `files/` are in `DEFAULT_DATASTORE_SUBDIRS` and synced today, but they are
   high-volume, append-only streams, not aggregate storage. They have no v3

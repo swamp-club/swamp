@@ -99,7 +99,12 @@ export type PartitionIdentity =
 /** Held only by this module, so no other code reaches the constructor. */
 const BUILD: unique symbol = Symbol("PartitionKey.build");
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * A UUID in canonical lowercase. Ids are lowercased by {@link partitionOf}, so
+ * one aggregate never splits into two partitions by letter case, and
+ * {@link PartitionKey.parse} accepts only the lowercase form.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_LENGTH = 36;
 
 /**
@@ -170,8 +175,8 @@ export class PartitionKey {
 
 /**
  * The partition that stores an aggregate: the only way to build a
- * {@link PartitionKey} from an identity. Throws when an id is not a UUID or a
- * name is empty.
+ * {@link PartitionKey} from an identity. Ids are lowercased. Throws when an
+ * id is not a UUID or a name is empty.
  */
 export function partitionOf(identity: AggregateIdentity): PartitionKey {
   switch (identity.kind) {
@@ -179,19 +184,16 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
       if (!(identity.type instanceof ModelType)) {
         throw new TypeError("A model partition needs a ModelType");
       }
-      requireUuid(identity.id, "model id");
       return PartitionKey.fromIdentity(BUILD, {
         kind: "model",
         type: identity.type.normalized,
-        id: identity.id,
+        id: canonicalUuid(identity.id, "model id"),
       });
     case "run":
-      requireUuid(identity.workflowId, "workflow id");
-      requireUuid(identity.runId, "run id");
       return PartitionKey.fromIdentity(BUILD, {
         kind: "run",
-        workflowId: identity.workflowId,
-        runId: identity.runId,
+        workflowId: canonicalUuid(identity.workflowId, "workflow id"),
+        runId: canonicalUuid(identity.runId, "run id"),
       });
     case "config":
       if (!DEFINITION_KINDS.includes(identity.definitionKind)) {
@@ -208,10 +210,9 @@ export function partitionOf(identity: AggregateIdentity): PartitionKey {
     case "lockfile":
       return PartitionKey.fromIdentity(BUILD, { kind: "lockfile" });
     case "definition":
-      requireUuid(identity.id, "auto-definition id");
       return PartitionKey.fromIdentity(BUILD, {
         kind: "definition",
-        id: identity.id,
+        id: canonicalUuid(identity.id, "auto-definition id"),
       });
     default: {
       const unknown: never = identity;
@@ -319,6 +320,13 @@ function decodeSegment(segment: string, key: string): string {
     throw new Error(`Partition key is not canonically encoded: ${key}`);
   }
   return decoded;
+}
+
+/** An id in its canonical form: lowercased, then checked to be a UUID. */
+function canonicalUuid(id: string, label: string): string {
+  const lowered = typeof id === "string" ? id.toLowerCase() : id;
+  requireUuid(lowered, label);
+  return lowered;
 }
 
 function requireUuid(id: string, label: string): void {

@@ -62,7 +62,12 @@ Deno.test("datastore v3: no production code outside the model imports it", async
   );
 });
 
-/** A string or template literal that starts with a partition-key prefix. */
+/**
+ * A string or template literal that starts with a partition-key prefix. It
+ * can also match unrelated text that happens to start that way (help text
+ * such as `"run--dry"`). For such a false positive, pin the `file:line` in
+ * PINNED_HAND_BUILT_KEYS with a comment saying it is not a key.
+ */
 const HAND_BUILT_KEY = /["'`](?:model|run|config|definition)--/;
 
 /** The one file allowed to spell partition keys. */
