@@ -22,7 +22,11 @@ import fc from "fast-check";
 import { ModelType } from "../models/model_type.ts";
 import type { TypedChange } from "./commit_log_unit_of_work.ts";
 import { intentPartition } from "./intent.ts";
-import { ModelChanges } from "./repository_changes.ts";
+import {
+  ConfigChanges,
+  ModelChanges,
+  recordKeyOf,
+} from "./repository_changes.ts";
 import { metadata } from "./v3_test_helpers.ts";
 
 const arbType = fc.constantFrom(
@@ -116,6 +120,74 @@ Deno.test("ModelChanges: every output key lies under its type's outputs director
         ) {
           assert(keyOf(change).startsWith(prefix));
           assert(change.partition.equals(changes.partition));
+        }
+      },
+    ),
+  );
+});
+
+const arbSegment = fc.string({ minLength: 1, maxLength: 12 }).filter((s) =>
+  s !== "." && s !== ".." && !s.includes("\0")
+);
+
+Deno.test("recordKeyOf: segments without a separator round-trip, and any separator is refused", () => {
+  fc.assert(
+    fc.property(
+      fc.array(arbSegment, { minLength: 1, maxLength: 6 }),
+      (segments) => {
+        const separated = segments.some((s) =>
+          s.includes("/") || s.includes("\\")
+        );
+        if (separated) {
+          let threw = false;
+          try {
+            recordKeyOf(segments);
+          } catch {
+            threw = true;
+          }
+          assert(threw);
+          return;
+        }
+        assert(
+          recordKeyOf(segments).toString().split("/").length ===
+            segments.length,
+        );
+        assert(recordKeyOf(segments).toString() === segments.join("/"));
+      },
+    ),
+  );
+});
+
+Deno.test("ConfigChanges: every change of a definition lies in its partition, under the tier prefix it was given", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom("model" as const, "workflow" as const),
+      fc.string({ minLength: 1, maxLength: 20 }),
+      fc.string({ minLength: 1, maxLength: 20 }),
+      fc.array(
+        arbSegment.filter((s) => !s.includes("/") && !s.includes("\\")),
+        {
+          minLength: 1,
+          maxLength: 3,
+        },
+      ),
+      (kind, name, other, rest) => {
+        const config = new ConfigChanges(kind, name);
+        const key = recordKeyOf(["config", ...rest]);
+        const changes: TypedChange[] = [
+          config.write("definition.create", key, new Uint8Array(), "absent"),
+          config.remove("definition.delete", key),
+          config.renameTo(other, key, new Uint8Array()),
+          config.renameFrom(other, key),
+        ];
+        for (const change of changes) {
+          assert(change.partition.equals(config.partition));
+          const intent = "put" in change
+            ? change.put.intent
+            : (change.op as { intent: Parameters<typeof intentPartition>[0] })
+              .intent;
+          assert(intentPartition(intent).equals(config.partition));
+          assert(keyOf(change).startsWith("config/"));
         }
       },
     ),

@@ -21,11 +21,27 @@ import {
   type DeferredExpression,
   DeferredExpressionSchema,
 } from "../../domain/expressions/deferred_expression.ts";
-import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { ensureDir, walk } from "@std/fs";
+import { join, relative, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import {
+  keyUnder,
+  type PriorFile,
+  readPriorFile,
+  readPriors,
+  unlessUnpartitionable,
+} from "./config_staging.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  ConfigChanges,
+  RunSnapshotChanges,
+} from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -269,7 +285,19 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(workflow);
-    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
+    await signalChange(
+      this.markDirtyHook,
+      { kind: "write", path: targetPath },
+      { typed: true },
+    );
+    const previousPath = this.idToActualPath.get(workflow.id);
+    const legacyPath = this.getLegacyPath(workflow.id);
+    // On v3, the names the files declared before this save, read before it
+    // replaces or removes them: a fresh repository's id cache is cold, so a
+    // rename is known only from them (swamp-club#3256).
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([targetPath, previousPath, legacyPath])
+      : new Map<string, PriorFile>();
     const data = {
       ...workflow.toData(),
       deferredExpressions: deferredExpressions?.length
@@ -287,12 +315,14 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(targetPath, content);
+    // The paths a removal below actually removed, for their v3 tombstones.
+    const removed: string[] = [];
 
     // Clean up old file if it's at a different path
-    const previousPath = this.idToActualPath.get(workflow.id);
     if (previousPath && previousPath !== targetPath) {
       try {
         await Deno.remove(previousPath);
+        removed.push(previousPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -301,10 +331,10 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }
 
     // Also check legacy UUID path
-    const legacyPath = this.getLegacyPath(workflow.id);
     if (targetPath !== legacyPath && previousPath !== legacyPath) {
       try {
         await Deno.remove(legacyPath);
+        removed.push(legacyPath);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -313,6 +343,60 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }
 
     this.idToActualPath.set(workflow.id, targetPath);
+    await this.stageSave(workflow.name, targetPath, content, removed, priors);
+  }
+
+  /**
+   * Stages a save on v3 (swamp-club#3256). The evaluated workflow is derived,
+   * so nothing carries a precondition. The save, and the removal of any file
+   * that declared the same name, is one batch in the workflow's partition.
+   * Each removed file that declared another name, and a target that held
+   * another name (a same-key rename between two names stored at the uuid
+   * path), is tombstoned in that name's partition in a later batch, so the
+   * new name lands first.
+   */
+  private async stageSave(
+    name: string,
+    targetPath: string,
+    content: string,
+    removed: readonly string[],
+    priors: ReadonlyMap<string, PriorFile>,
+  ): Promise<void> {
+    const elsewhere = new Map<string, string[]>();
+    const here: string[] = [];
+    for (const path of removed) {
+      const declared = priors.get(path)?.name ?? name;
+      if (declared === name) here.push(path);
+      else elsewhere.set(declared, [...(elsewhere.get(declared) ?? []), path]);
+    }
+    const targetName = priors.get(targetPath)?.name;
+    if (targetName !== undefined && targetName !== name) {
+      elsewhere.set(targetName, [
+        ...(elsewhere.get(targetName) ?? []),
+        targetPath,
+      ]);
+    }
+    await stageTyped(this.markDirtyHook, () => {
+      const changes = new ConfigChanges("workflow", name);
+      return [
+        changes.write(
+          "evaluated-workflow.save",
+          this.keyOf(targetPath),
+          new TextEncoder().encode(content),
+        ),
+        ...here.map((path) =>
+          changes.remove("evaluated-workflow.delete", this.keyOf(path))
+        ),
+      ];
+    });
+    for (const [oldName, paths] of elsewhere) {
+      await stageTyped(this.markDirtyHook, () => {
+        const changes = new ConfigChanges("workflow", oldName);
+        return paths.map((path) =>
+          changes.remove("evaluated-workflow.delete", this.keyOf(path))
+        );
+      });
+    }
   }
 
   async delete(id: WorkflowId): Promise<void> {
@@ -330,11 +414,16 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await signalChange(this.markDirtyHook, {
       kind: "remove",
       path: resolvedPath,
-    });
+    }, { typed: true });
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([...pathsToTry])
+      : new Map<string, PriorFile>();
 
+    const removed: string[] = [];
     for (const path of pathsToTry) {
       try {
         await Deno.remove(path);
+        removed.push(path);
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
           throw error;
@@ -343,6 +432,21 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     }
 
     this.idToActualPath.delete(id);
+    // On v3: a tombstone of each removed file in the partition of the name it
+    // declared; a file that names no workflow stages nothing.
+    await stageTyped(this.markDirtyHook, () =>
+      removed.flatMap((path) => {
+        const name = priors.get(path)?.name ?? workflow?.name;
+        const change = name === undefined
+          ? undefined
+          : unlessUnpartitionable(() =>
+            new ConfigChanges("workflow", name).remove(
+              "evaluated-workflow.delete",
+              this.keyOf(path),
+            )
+          );
+        return change === undefined ? [] : [change];
+      }));
   }
 
   /**
@@ -350,7 +454,14 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
    */
   async clear(): Promise<void> {
     const dir = this.getWorkflowsDir();
-    await signalChange(this.markDirtyHook, { kind: "remove", path: dir });
+    await signalChange(this.markDirtyHook, { kind: "remove", path: dir }, {
+      typed: true,
+    });
+    // On v3, each file's partition is read before the removal destroys it,
+    // so the directory removal stages one tombstone per file.
+    const tombstones = typedStagingActive(this.markDirtyHook)
+      ? await this.tombstonesOfAll()
+      : [];
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -359,6 +470,52 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
       }
     }
     this.idToActualPath.clear();
+    await stageTyped(this.markDirtyHook, () => tombstones);
+  }
+
+  /**
+   * A tombstone for every file under the base: an evaluated workflow in the
+   * partition of the name it declares, a run snapshot in its run's
+   * partition. Fields come from the raw YAML, never a schema parse; a file
+   * that names no valid aggregate stages nothing, as no repository put it.
+   */
+  private async tombstonesOfAll(): Promise<TypedChange[]> {
+    const tombstones: TypedChange[] = [];
+    try {
+      for await (
+        const entry of walk(this.baseDir, {
+          includeDirs: false,
+          exts: [".yaml"],
+        })
+      ) {
+        const prior = await readPriorFile(entry.path);
+        const segments = relative(this.baseDir, entry.path).split(SEPARATOR);
+        const change = unlessUnpartitionable(() => {
+          if (segments.length === 3 && segments[0] === "runs") {
+            return prior?.id === undefined
+              ? undefined
+              : new RunSnapshotChanges(prior.id, segments[1]).remove(
+                this.keyOf(entry.path),
+              );
+          }
+          return segments.length !== 1 || prior?.name === undefined
+            ? undefined
+            : new ConfigChanges("workflow", prior.name).remove(
+              "evaluated-workflow.delete",
+              this.keyOf(entry.path),
+            );
+        });
+        if (change !== undefined) tombstones.push(change);
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return tombstones;
+  }
+
+  /** The record key of a file under the base. */
+  private keyOf(path: string) {
+    return keyUnder(SWAMP_SUBDIRS.workflowsEvaluated, this.baseDir, path);
   }
 
   getPath(id: WorkflowId): string {
@@ -374,7 +531,11 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     await ensureDir(dir);
 
     const targetPath = join(dir, "evaluated-workflow.yaml");
-    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
+    await signalChange(
+      this.markDirtyHook,
+      { kind: "write", path: targetPath },
+      { typed: true },
+    );
     const data = {
       ...workflow.toData(),
       writtenReferences: writtenReferences.length
@@ -385,6 +546,13 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(targetPath, content);
+    // On v3, the run's snapshot, which is derived: no precondition.
+    await stageTyped(this.markDirtyHook, () => [
+      new RunSnapshotChanges(workflow.id, runId).write(
+        this.keyOf(targetPath),
+        new TextEncoder().encode(content),
+      ),
+    ]);
   }
 
   async findByRunId(runId: string): Promise<Workflow | null> {
@@ -450,7 +618,17 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
 
   async deleteForRun(runId: string): Promise<void> {
     const dir = await this.runDir(runId);
-    await signalChange(this.markDirtyHook, { kind: "remove", path: dir });
+    await signalChange(this.markDirtyHook, { kind: "remove", path: dir }, {
+      typed: true,
+    });
+    // On v3, the snapshot's workflow id, read before the removal: run GC
+    // passes directory names, so a run id that is not a UUID, or a snapshot
+    // that is missing or names no workflow, stages nothing (no repository put
+    // it) rather than abort the collection.
+    const snapshotPath = join(dir, "evaluated-workflow.yaml");
+    const snapshot = typedStagingActive(this.markDirtyHook)
+      ? await readPriorFile(snapshotPath)
+      : undefined;
     try {
       await Deno.remove(dir, { recursive: true });
     } catch (error) {
@@ -458,6 +636,17 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         throw error;
       }
     }
+    await stageTyped(this.markDirtyHook, () => {
+      const workflowId = snapshot?.id;
+      const change = workflowId === undefined
+        ? undefined
+        : unlessUnpartitionable(() =>
+          new RunSnapshotChanges(workflowId, runId).remove(
+            this.keyOf(snapshotPath),
+          )
+        );
+      return change === undefined ? [] : [change];
+    });
   }
 
   /**

@@ -187,7 +187,7 @@ export type Intent =
   | RunIntent
   | DefinitionIntent
   | {
-    readonly kind: "auto-definition.save";
+    readonly kind: "auto-definition.save" | "auto-definition.delete";
     readonly autoDefinition: AutoDefinitionRef;
   }
   | { readonly kind: "lockfile.write" };
@@ -262,6 +262,7 @@ const SHAPES: Readonly<Record<IntentKind, Shape>> = {
   "definition.rename-to": "rename-to",
   "definition.rename-from": "rename-from",
   "auto-definition.save": "auto",
+  "auto-definition.delete": "auto",
   "lockfile.write": "lockfile",
 };
 
