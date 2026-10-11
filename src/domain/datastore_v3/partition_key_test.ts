@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { ModelType } from "../../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import {
   type AggregateIdentity,
   MAX_PARTITION_KEY_LENGTH,

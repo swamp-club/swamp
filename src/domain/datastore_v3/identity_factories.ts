@@ -37,15 +37,15 @@
 import {
   createDefinitionId,
   type DefinitionId,
-} from "../../definitions/definition.ts";
+} from "../definitions/definition.ts";
 import {
   createModelOutputId,
   type ModelOutputId,
-} from "../../models/model_output.ts";
+} from "../models/model_output.ts";
 import {
   createWorkflowRunId,
   type WorkflowRunId,
-} from "../../workflows/workflow_id.ts";
+} from "../workflows/workflow_id.ts";
 
 /** Gives each new workflow run its own identity, and so its own partition. */
 export const WorkflowRunFactory = {

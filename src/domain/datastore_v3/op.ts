@@ -41,7 +41,7 @@
 import {
   type DataMetadata,
   DataMetadataSchema,
-} from "../../data/data_metadata.ts";
+} from "../data/data_metadata.ts";
 import { BlobRef, type BlobRefJSON, isSha256Hex } from "./blob_ref.ts";
 import { createIntent, type Intent } from "./intent.ts";
 import { RecordKey } from "./record_key.ts";

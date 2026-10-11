@@ -1769,9 +1769,13 @@ single writer records each commit in `commits.db`, and content is stored as
 immutable, content-addressed chunks. The CLI's embedded datastore service is
 the writer in solo mode, and the elected `swamp serve` leader in team mode.
 swamp-club#3233 adds the domain model this builds on, in
-`src/domain/datastore/v3/`. It is pure, in-memory domain code, and nothing in
+`src/domain/datastore_v3/`. It is pure, in-memory domain code, and nothing in
 production imports it yet: `integration/datastore_v3_rules_test.ts` pins its
-importers to an empty list. The commit store, the chunk store and the opt-in
+importers to an empty list. It is a bounded context of its own, beside
+`src/domain/datastore/`, because it builds on the `models`, `data` and
+`workflows` contexts, and those already import `datastore`: inside it, the
+model would close three context cycles
+(`integration/architecture_boundary_test.ts`). The commit store, the chunk store and the opt-in
 are later issues.
 
 **Ubiquitous language.**
@@ -3225,15 +3229,15 @@ exclude patterns.
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
 | `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
-| `src/domain/datastore/v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
-| `src/domain/datastore/v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
-| `src/domain/datastore/v3/blob_ref.ts` | v3 `BlobRef`: content stored as a chunk |
-| `src/domain/datastore/v3/intent.ts` | v3 typed intents and `intentPartition()` |
-| `src/domain/datastore/v3/op.ts` | v3 ops (`put`, `tombstone`, `data-version`, `lease`) and their factories |
-| `src/domain/datastore/v3/commit.ts` | v3 `Commit` envelope |
-| `src/domain/datastore/v3/partition.ts` | v3 `Partition` aggregate and its commit rules |
-| `src/domain/datastore/v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
-| `src/domain/datastore/v3/commit_log_unit_of_work.ts` | Proposed `CommitLogUnitOfWork` and `UnitOfWorkBinding` ports (types only) |
+| `src/domain/datastore_v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
+| `src/domain/datastore_v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
+| `src/domain/datastore_v3/blob_ref.ts` | v3 `BlobRef`: content stored as a chunk |
+| `src/domain/datastore_v3/intent.ts` | v3 typed intents and `intentPartition()` |
+| `src/domain/datastore_v3/op.ts` | v3 ops (`put`, `tombstone`, `data-version`, `lease`) and their factories |
+| `src/domain/datastore_v3/commit.ts` | v3 `Commit` envelope |
+| `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate and its commit rules |
+| `src/domain/datastore_v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
+| `src/domain/datastore_v3/commit_log_unit_of_work.ts` | Proposed `CommitLogUnitOfWork` and `UnitOfWorkBinding` ports (types only) |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |

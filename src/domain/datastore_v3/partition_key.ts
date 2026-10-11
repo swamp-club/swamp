@@ -45,7 +45,7 @@
  * @module
  */
 
-import { ModelType } from "../../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 
 /** The kinds of managed-config definition that are their own partition. */
 export const DEFINITION_KINDS = ["model", "workflow", "vault"] as const;

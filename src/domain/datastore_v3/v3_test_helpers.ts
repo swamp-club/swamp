@@ -23,7 +23,7 @@
  * @module
  */
 
-import { ModelType } from "../../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import { Commit, type CommitProps } from "./commit.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
 import {

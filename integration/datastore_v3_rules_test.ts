@@ -20,7 +20,7 @@
 /**
  * Fitness rules for the v3 datastore domain model (swamp-club#3233).
  *
- * 1. **Dormancy.** The model in `src/domain/datastore/v3/` is built ahead of
+ * 1. **Dormancy.** The model in `src/domain/datastore_v3/` is built ahead of
  *    the commit store, chunk store and opt-in that will use it. Until then no
  *    production code outside it may import it, so it cannot change
  *    behaviour. That covers `src/cli`, `src/serve`, `src/libswamp` and the
@@ -41,7 +41,7 @@ import {
   SRC_DIR,
 } from "./arch_fitness_helpers.ts";
 
-const V3_DIR = "src/domain/datastore/v3";
+const V3_DIR = "src/domain/datastore_v3";
 
 /** The production imports of the v3 model from outside it. */
 const PINNED_V3_IMPORTERS: readonly string[] = [];
@@ -50,7 +50,7 @@ Deno.test("datastore v3: no production code outside the model imports it", async
   const edges = await collectImportEdges(
     SRC_DIR,
     (filePath, importPath) =>
-      importsLayer(filePath, importPath, "domain/datastore/v3") &&
+      importsLayer(filePath, importPath, "domain/datastore_v3") &&
       !isUnder(repoRelative(filePath), V3_DIR),
   );
   assertPinnedSet(

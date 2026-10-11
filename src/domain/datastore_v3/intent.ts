@@ -34,8 +34,8 @@
  * @module
  */
 
-import { ModelType } from "../../models/model_type.ts";
-import { normalizeModelTypeName } from "../../models/control_plane_types.ts";
+import { ModelType } from "../models/model_type.ts";
+import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import {
   DEFINITION_KINDS,
   type DefinitionKind,

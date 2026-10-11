@@ -19,7 +19,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import fc from "fast-check";
-import { ModelType } from "../../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import { BlobRef } from "./blob_ref.ts";
 import {
   createIntent,

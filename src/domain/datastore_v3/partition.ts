@@ -27,7 +27,7 @@
  * @module
  */
 
-import { maxOf } from "../../array_extrema.ts";
+import { maxOf } from "../array_extrema.ts";
 import type { Commit } from "./commit.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";

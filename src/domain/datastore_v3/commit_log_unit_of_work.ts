@@ -28,8 +28,8 @@
  * @module
  */
 
-import type { MarkDirtyHook } from "../datastore_sync_service.ts";
-import type { UnitOfWork } from "../unit_of_work.ts";
+import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
+import type { UnitOfWork } from "../datastore/unit_of_work.ts";
 import type { Op } from "./op.ts";
 import type { PartitionKey } from "./partition_key.ts";
 
