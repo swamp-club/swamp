@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import {
   readConditionTypeLiterals,
   validateGrantCondition,
@@ -27,6 +27,7 @@ import {
 import {
   checkServeGrantFiles,
   readServeGrantFiles,
+  repoGrantFileName,
 } from "./grant_file_loader.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -126,9 +127,10 @@ Deno.test("checkServeGrantFiles: an invalid entry is an error, a misspelled type
     const check = checkServeGrantFiles(
       await readServeGrantFiles(repoDir, OPTIONS),
     );
-    assertEquals(check.errors.map((e) => e.file), [join("grants", "bad.yaml")]);
+    // Forward slashes on every platform, Windows included (swamp-club#3245).
+    assertEquals(check.errors.map((e) => e.file), ["grants/bad.yaml"]);
     assertEquals(check.warnings.length, 1);
-    assertEquals(check.warnings[0].file, join("grants", "spelled.yaml"));
+    assertEquals(check.warnings[0].file, "grants/spelled.yaml");
     assertEquals(check.warnings[0].entry, 1);
     assertStringIncludes(check.warnings[0].message, "model:aws/ec2/*");
   });
@@ -166,7 +168,16 @@ Deno.test("checkServeGrantFiles: invalid grants-file and grants-dir entries are 
       }),
     );
     assertEquals(check.errors.length, 2);
+    // External sources keep their native resolved paths.
+    assertEquals(check.errors.map((e) => e.file), [
+      resolve(repoDir, "external.yaml"),
+      join(resolve(repoDir, "extra"), "c.yaml"),
+    ]);
   });
+});
+
+Deno.test("repoGrantFileName: names a repository grant file grants/<name> with a forward slash", () => {
+  assertEquals(repoGrantFileName("bad.yaml"), "grants/bad.yaml");
 });
 
 Deno.test("checkServeGrantFiles: every finding carries a reason", async () => {

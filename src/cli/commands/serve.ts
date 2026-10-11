@@ -397,6 +397,7 @@ import {
 import {
   checkServeGrantFiles,
   readServeGrantFiles,
+  repoGrantFileName,
 } from "../../domain/access/grant_file_loader.ts";
 import {
   readConditionTypeLiterals,
@@ -3952,7 +3953,7 @@ export const serveCommand = new Command()
           formatGrantFileErrorLines(
             grantFileErrors.map((e) => ({
               ...e,
-              filename: join("grants", e.filename),
+              filename: repoGrantFileName(e.filename),
             })),
           )
         }`,
