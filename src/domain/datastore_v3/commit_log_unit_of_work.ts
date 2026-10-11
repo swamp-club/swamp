@@ -18,42 +18,73 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Proposed ports for the commit-log unit of work (swamp-club#3233,
- * decisions 1 and 2 in "v3 domain model", `design/enablers/datastores.md`).
- *
- * Types only. Nothing implements or calls them yet: `StagedChange`,
- * `signalChange` and the legacy adapter are unchanged. The commit-store
- * issue implements them.
+ * The ports of the commit-log unit of work: decision 1 of "v3 domain
+ * model" in `design/enablers/datastores.md` (swamp-club#3233, implemented
+ * by swamp-club#3240 in
+ * `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts`). How a unit
+ * claims a repository context is the generic `UnitOfWorkBinding`
+ * (`src/domain/datastore/unit_of_work.ts`).
  *
  * @module
  */
 
-import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
 import type { UnitOfWork } from "../datastore/unit_of_work.ts";
-import type { Op } from "./op.ts";
+import type { Intent } from "./intent.ts";
+import type { Op, PutExpect } from "./op.ts";
 import type { PartitionKey } from "./partition_key.ts";
+import type { RecordKey } from "./record_key.ts";
 
 /**
- * One typed change a repository stages into a commit-log unit: the op it
- * makes (with its intent, record key and content), and the partition the
- * op's intent belongs to.
+ * The content of a put the unit stores when it commits.
+ *
+ * - **Bytes**, for small records.
+ * - **A function returning a fresh stream** of the content each time it is
+ *   called, for content that should not be held in memory between staging
+ *   and commit: a repository passes "open the file I just wrote". A retry
+ *   after a failed upload calls it again, so a stream is never read twice.
+ *
+ * A source is read when the put commits, not when it is staged. It must
+ * stay readable and unchanged until the unit commits or ends: a repository
+ * that stages the same key twice in one unit, or removes the file before
+ * the unit commits, passes bytes instead.
+ */
+export type ContentSource =
+  | Uint8Array
+  | (() => ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>);
+
+/**
+ * A put whose content the unit stores at commit: inline when it is at most
+ * `MAX_INLINE_BYTES` (`op.ts`), as chunks otherwise. A put whose content
+ * needs a chunk cannot be built before the chunk is stored, because `putOp`
+ * takes the chunk's `BlobRef`; staging the content instead keeps chunk
+ * uploads at commit, so an abandoned unit uploads nothing.
+ */
+export interface PendingPut {
+  readonly intent: Intent;
+  readonly key: RecordKey;
+  readonly expect?: PutExpect;
+  readonly content: ContentSource;
+}
+
+/**
+ * One typed change a repository stages into a commit-log unit, with the
+ * partition its intent belongs to: an op built by the op factories, or a
+ * put whose content the unit stores at commit.
  *
  * Decision 1: repositories that run on a v3 datastore stage typed changes
  * through this sibling port, beside the path-only `StagedChange` they stage
  * today. A path alone cannot become a commit: the commit needs the intent
  * serve authorises on and the content the partition records.
  */
-export interface TypedChange {
-  readonly partition: PartitionKey;
-  readonly op: Op;
-}
+export type TypedChange =
+  | { readonly partition: PartitionKey; readonly op: Op }
+  | { readonly partition: PartitionKey; readonly put: PendingPut };
 
 /**
  * A unit of work that commits to the v3 commit log.
  *
- * - `stageOp` records a typed change; `stage` (path-only) stays for the
- *   changes a repository cannot type yet, and the adapter refuses those on
- *   v3 rather than guess.
+ * - `stageOp` records a typed change; `stage` (path-only) is refused on v3
+ *   rather than guessed into an op.
  * - `commit` commits each partition touched, data partitions first and a
  *   workflow run's record last (decision 7).
  * - `abandon` discards the staged ops (decision 4).
@@ -65,21 +96,4 @@ export interface CommitLogUnitOfWork extends UnitOfWork {
   checkpoint(): Promise<void>;
   /** The typed changes staged so far, in staging order. */
   stagedOps(): readonly TypedChange[];
-}
-
-/**
- * Decision 2: how any unit of work claims the repository context it serves.
- *
- * Today `signalChange` stages into the ambient unit only when
- * `legacyUnitOfWorkTarget(uow)` is the repository's own mark hook, which
- * recognises legacy units alone. A binding registry generalises that: each
- * adapter registers the units it builds against the hook of the repository
- * context they serve, and `signalChange` asks the registry. The legacy
- * adapter becomes one registrant; the commit-log adapter another.
- */
-export interface UnitOfWorkBinding {
-  /** Records that `uow` serves the repository context behind `markDirty`. */
-  bind(uow: UnitOfWork, markDirty: MarkDirtyHook): void;
-  /** The context `uow` serves, or undefined when it serves none. */
-  boundHook(uow: UnitOfWork): MarkDirtyHook | undefined;
 }

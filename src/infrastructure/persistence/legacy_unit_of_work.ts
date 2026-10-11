@@ -23,6 +23,7 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 /**
  * What a legacy unit of work does with a change staged after it ended
@@ -62,13 +63,6 @@ export interface LegacyUnitOfWorkOptions {
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
-/**
- * The hook each legacy unit of work forwards to, by unit. Kept beside the
- * adapter, not on the {@link UnitOfWork} port: which hook a unit belongs to
- * is an adapter detail, and a unit built any other way can never claim one.
- */
-const targets = new WeakMap<UnitOfWork, MarkDirtyHook>();
-
 /** What a legacy unit exposes to its children. Adapter-private. */
 interface LegacyUnitState {
   /** False once the unit has committed or been abandoned. */
@@ -99,17 +93,14 @@ const states = new WeakMap<UnitOfWork, LegacyUnitState>();
  * {@link createLegacyUnitOfWork} with a hook. Undefined for a unit created
  * without a hook and for any other {@link UnitOfWork}.
  *
- * A repository stages into an ambient unit of work only when this is its own
- * hook (`signalChange` in `unit_of_work_scope.ts`), so a unit opened for one
- * repository context never takes another context's changes.
- *
- * The binding recognises legacy units only. A Phase 3 adapter needs its own
- * way to claim a repository context.
+ * Each legacy unit built over a hook is bound to it in the binding registry
+ * (`unit_of_work_binding.ts`, swamp-club#3240), which `signalChange` asks;
+ * this is the legacy-only view of that binding.
  */
 export function legacyUnitOfWorkTarget(
   uow: UnitOfWork,
 ): MarkDirtyHook | undefined {
-  return targets.get(uow);
+  return states.has(uow) ? unitOfWorkBinding.boundHook(uow) : undefined;
 }
 
 /**
@@ -150,7 +141,7 @@ export function legacyParentFor(
   candidate: UnitOfWork | undefined,
 ): UnitOfWork | undefined {
   if (markDirty === undefined || candidate === undefined) return undefined;
-  if (targets.get(candidate) !== markDirty) return undefined;
+  if (legacyUnitOfWorkTarget(candidate) !== markDirty) return undefined;
   const state = states.get(candidate);
   if (state === undefined) return undefined;
   return state.isOpen() ? candidate : nearestOpenAncestor(state.parent);
@@ -277,7 +268,7 @@ export function createLegacyUnitOfWork(
       return Object.freeze([...changes]);
     },
   };
-  if (markDirty !== undefined) targets.set(uow, markDirty);
   states.set(uow, state);
+  if (markDirty !== undefined) unitOfWorkBinding.bind(uow, markDirty);
   return uow;
 }

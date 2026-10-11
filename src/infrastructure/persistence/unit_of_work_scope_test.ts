@@ -35,8 +35,10 @@ import {
   signalChange,
   unscopedCallerFrom,
   type UnscopedChange,
+  UnscopedWriteRefusedError,
   useUnscopedChangeReporterForTesting,
 } from "./unit_of_work_scope.ts";
+import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 /** A mark hook that records its arguments and can reject the next call. */
 function recordingHook(): {
@@ -241,6 +243,83 @@ Deno.test("signalChange: a scope bound to another hook is route 2 and reports", 
     assertEquals(own.calls, [WRITE.path]);
     assertEquals(reports.map((report) => report.change), [WRITE]);
   });
+});
+
+Deno.test("signalChange: a unit bound to the hook by another adapter is staged into, without forwarding", async () => {
+  const { hook, calls } = recordingHook();
+  const staged: StagedChange[] = [];
+  const uow: UnitOfWork = {
+    stage(change) {
+      staged.push(change);
+      return Promise.resolve();
+    },
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [...staged],
+  };
+  unitOfWorkBinding.bind(uow, hook);
+  await runInUnitOfWork(uow, () => signalChange(hook, WRITE));
+  assertEquals(staged, [WRITE]);
+  assertEquals(calls, []);
+});
+
+Deno.test("signalChange: a hook that requires a unit refuses a write outside every unit, marking and reporting nothing (swamp-club#3240)", async () => {
+  await withReports(async (reports) => {
+    const { hook, calls } = recordingHook();
+    unitOfWorkBinding.requireUnit(hook);
+    for (const change of [WRITE, REMOVE, BULK]) {
+      const error = await assertRejects(
+        () => signalChange(hook, change),
+        UnscopedWriteRefusedError,
+        "ran outside a unit of work bound to its repository",
+      );
+      assertEquals(error.change, change);
+    }
+    assertEquals(calls, []);
+    assertEquals(reports, []);
+  });
+});
+
+Deno.test("signalChange: a hook that requires a unit refuses a write inside a unit bound to another hook", async () => {
+  await withReports(async (reports) => {
+    const own = recordingHook();
+    const other = recordingHook();
+    unitOfWorkBinding.requireUnit(own.hook);
+    const uow = createLegacyUnitOfWork(other.hook, { flush: undefined });
+    await runInUnitOfWork(uow, async () => {
+      await assertRejects(
+        () => signalChange(own.hook, WRITE),
+        UnscopedWriteRefusedError,
+      );
+    });
+    assertEquals(uow.staged(), []);
+    assertEquals(own.calls, []);
+    assertEquals(other.calls, []);
+    assertEquals(reports, []);
+  });
+});
+
+Deno.test("signalChange: a hook that requires a unit still stages into a unit bound to it", async () => {
+  const { hook, calls } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+  await runInUnitOfWork(uow, () => signalChange(hook, WRITE));
+  assertEquals(uow.staged(), [WRITE]);
+  assertEquals(calls, [WRITE.path]);
+});
+
+Deno.test("UnscopedWriteRefusedError: names the change and its caller", () => {
+  const error = new UnscopedWriteRefusedError(BULK, {
+    file: "src/serve/x.ts",
+    line: 7,
+    fn: "go",
+  });
+  assertEquals(
+    error.message,
+    "A datastore bulk of test from src/serve/x.ts:7 (go) ran outside a unit " +
+      "of work bound to its repository; a v3 datastore commits only through " +
+      "one, so the write was refused",
+  );
 });
 
 Deno.test("useUnscopedChangeReporterForTesting: refuses a second reporter until the first is disposed", () => {

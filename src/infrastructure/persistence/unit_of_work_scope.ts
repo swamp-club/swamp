@@ -32,9 +32,12 @@
  *
  * **One repository context per unit.** Two repository contexts can share a
  * process (side-by-side repos, namespace migration). A repository stages into
- * the ambient unit of work only when that unit was created by
- * `createLegacyUnitOfWork` over the repository's own hook instance. Otherwise
- * it calls its hook as today, so its changes still reach its own datastore.
+ * the ambient unit of work only when that unit is bound to the repository's
+ * own hook instance in the binding registry (`unit_of_work_binding.ts`,
+ * swamp-club#3240): `createLegacyUnitOfWork` binds each unit it builds over
+ * a hook, and the v3 commit-log adapter binds its own. Otherwise it calls
+ * its hook as today, so its changes still reach its own datastore, unless
+ * the hook belongs to a v3 datastore, which refuses the write instead.
  *
  * **Scope follows the async call chain.** The scope is an `AsyncLocalStorage`
  * store: concurrent operations (serve handlers, `Promise.all`) each see their
@@ -57,7 +60,7 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
+import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
 
@@ -82,10 +85,13 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
 /**
  * Sends a repository's change signal to the right place, in order:
  *
- * 1. the ambient unit of work, when it is bound to `markDirty` (it then
- *    forwards the change to that same hook);
+ * 1. the ambient unit of work, when it is bound to `markDirty` (a legacy unit
+ *    then forwards the change to that same hook);
  * 2. otherwise `markDirty` itself: the path for `write` and `remove`, nothing
- *    for `bulk`;
+ *    for `bulk`. A hook marked with `requireUnit` (a v3 datastore's) has no
+ *    route 2: the write is refused with {@link UnscopedWriteRefusedError}
+ *    before anything is marked (decision 3 of "v3 domain model",
+ *    `design/enablers/datastores.md`);
  * 3. otherwise nowhere (filesystem datastores have no hook).
  *
  * Call it before the write, as `notifyDirty` always has. A rejected hook
@@ -104,12 +110,37 @@ export async function signalChange(
 ): Promise<void> {
   if (markDirty === undefined) return;
   const uow = currentUnitOfWork();
-  if (uow !== undefined && legacyUnitOfWorkTarget(uow) === markDirty) {
+  if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
     await uow.stage(change);
     return;
   }
+  if (unitOfWorkBinding.requiresUnit(markDirty)) {
+    throw new UnscopedWriteRefusedError(change, callerOfThisWrite());
+  }
   await markDirty(change.kind === "bulk" ? undefined : change.path);
   reportUnscopedChange(change);
+}
+
+/**
+ * A hooked write on a v3 datastore made outside every unit of work bound to
+ * its repository context (swamp-club#3240). A v3 datastore has no route 2:
+ * a write it was not told about through a unit would never be committed.
+ * Nothing was marked or written.
+ */
+export class UnscopedWriteRefusedError extends Error {
+  constructor(
+    readonly change: StagedChange,
+    readonly caller: UnscopedCaller | undefined,
+  ) {
+    const target = change.kind === "bulk" ? change.reason : change.path;
+    super(
+      `A datastore ${change.kind} of ${target} from ${
+        formatUnscopedCaller(caller)
+      } ran outside a unit of work bound to its repository; a v3 datastore ` +
+        "commits only through one, so the write was refused",
+    );
+    this.name = "UnscopedWriteRefusedError";
+  }
 }
 
 /** Where an unscoped write came from. */
@@ -212,16 +243,18 @@ function functionName(raw: string | undefined): string | undefined {
   return name === "" || name === "<anonymous>" ? undefined : name;
 }
 
-function reportUnscopedChange(change: StagedChange): void {
+/** The caller of the write `signalChange` is routing. */
+function callerOfThisWrite(): UnscopedCaller | undefined {
   // Ten frames (V8's default) can end inside the persistence layer.
   const limit = Error.stackTraceLimit;
   Error.stackTraceLimit = 50;
   const stack = new Error().stack ?? "";
   Error.stackTraceLimit = limit;
-  const report: UnscopedChange = {
-    change,
-    caller: unscopedCallerFrom(stack, SOURCE_ROOT),
-  };
+  return unscopedCallerFrom(stack, SOURCE_ROOT);
+}
+
+function reportUnscopedChange(change: StagedChange): void {
+  const report: UnscopedChange = { change, caller: callerOfThisWrite() };
   if (reporterForTesting !== undefined) {
     reporterForTesting(report);
     return;

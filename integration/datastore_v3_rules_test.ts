@@ -42,6 +42,13 @@
  *    (`design/enablers/datastore-litestream.md`). No v3 file may mention
  *    `wal_checkpoint` or `wal_autocheckpoint`. `catalog_store.ts` checkpoints
  *    `_catalog.db` on purpose, so the rule covers the v3 directories only.
+ * 5. **The commit-log unit is dormant** (swamp-club#3240). The commit-log
+ *    unit and its root (`commit_log_unit_of_work.ts`, `commit_log_root.ts`
+ *    in `src/infrastructure/datastore_v3/`) have no importers outside the v3
+ *    directories, so no command or request can open one before the opt-in.
+ *    Rule 1 already implies it; this rule names the files. The binding
+ *    registry it shares with v2 lives in persistence and is pinned in
+ *    `datastore_write_seams_rules_test.ts`.
  */
 
 import {
@@ -79,6 +86,32 @@ Deno.test("datastore v3: no production code outside v3 imports it", async () => 
     "Production imports of the dormant v3 datastore",
     "The v3 model and commit store are dormant until the opt-in wires them\n" +
       "in. Do not import them from production code before then.",
+  );
+});
+
+const COMMIT_LOG_FILES = [
+  "infrastructure/datastore_v3/commit_log_unit_of_work.ts",
+  "infrastructure/datastore_v3/commit_log_root.ts",
+];
+
+/** Production imports of the commit-log unit from outside v3. */
+const PINNED_COMMIT_LOG_IMPORTERS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code outside v3 imports the commit-log unit", async () => {
+  const edges = await collectImportEdges(
+    SRC_DIR,
+    (filePath, importPath) =>
+      COMMIT_LOG_FILES.some((file) =>
+        importsLayer(filePath, importPath, file)
+      ) && !isV3File(repoRelative(filePath)),
+  );
+  assertPinnedSet(
+    edges,
+    PINNED_COMMIT_LOG_IMPORTERS,
+    "Production imports of the dormant commit-log unit",
+    "The commit-log unit of work is dormant until the v3 opt-in opens it\n" +
+      "over a v3 repository context. Do not import it from production code\n" +
+      "before then.",
   );
 });
 

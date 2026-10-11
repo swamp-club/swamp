@@ -763,6 +763,10 @@ const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
   "src/libswamp/unit_of_work.ts: <module>",
   "src/libswamp/unit_of_work.ts: withUnitOfWork (x3)",
+  // swamp-club#3240: runInCommitLogRoot, the v3 commit-log root (dormant:
+  // only tests call it until the v3 opt-in), with its import and one call.
+  "src/infrastructure/datastore_v3/commit_log_root.ts: <module>",
+  "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
 ];
 
 // libswamp use cases that run inside a unit of work (swamp-club#3025): every
@@ -915,12 +919,56 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   "src/libswamp/extensions/managed_lockfile_transaction.ts: createRootLockfileSync",
   // The root running the checkpoint option it was given.
   "src/infrastructure/persistence/repo_unit_of_work.ts: runInRootUnitOfWork",
+  // The v3 commit-log root's view handing checkpoint to its unit, which
+  // commits the partitions touched so far (swamp-club#3240, dormant).
+  "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
   // The catalog's SQLite WAL checkpoint, which shares the name and pushes
   // nothing.
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/libswamp/data/gc.ts: createDataGcDeps",
   "src/libswamp/data/prune.ts: createDataPruneDeps",
   "src/libswamp/datastores/compact.ts: datastoreCompact",
+];
+
+// ---------------------------------------------------------------------------
+// Rule 9: the unit-of-work binding registry (swamp-club#3240)
+// ---------------------------------------------------------------------------
+
+// The registry in src/infrastructure/persistence/unit_of_work_binding.ts is
+// the one production change the v3 commit-log unit shares with v2: which
+// unit a repository stages into, and which context refuses a write outside
+// every unit. Pinning its callers keeps v2 routing where the
+// characterization suites prove it.
+const BIND_CALL = /\bunitOfWorkBinding\.bind\s*\(/g;
+const BOUND_HOOK_CALL = /\bunitOfWorkBinding\.boundHook\s*\(/g;
+const REQUIRE_UNIT_CALL = /\bunitOfWorkBinding\.requireUnit\s*\(/g;
+const LEGACY_TARGET_CALL = /\blegacyUnitOfWorkTarget\s*\(/g;
+
+// The adapters that bind the units they build: the legacy adapter, and the
+// v3 commit-log adapter.
+const PINNED_UNIT_OF_WORK_BINDERS: readonly string[] = [
+  "src/infrastructure/datastore_v3/commit_log_unit_of_work.ts: createCommitLogUnitOfWork",
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: createLegacyUnitOfWork",
+];
+
+// Who asks which hook a unit is bound to: signalChange's routing, and the
+// legacy-only view of the binding.
+const PINNED_BOUND_HOOK_READERS: readonly string[] = [
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+];
+
+// Who marks a context as one that refuses writes outside a unit: only the
+// v3 commit-log root. The v3 opt-in adds the context factory here.
+const PINNED_REQUIRE_UNIT_CALLERS: readonly string[] = [
+  "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
+];
+
+// legacyUnitOfWorkTarget, the legacy-only view: its definition and the
+// legacy adapter's parent lookup. signalChange asks the registry instead.
+const PINNED_LEGACY_TARGET_CALLS: readonly string[] = [
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyParentFor",
+  "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
 ];
 
 const files = await sourceFiles();
@@ -1336,4 +1384,46 @@ Deno.test("datastore write seams: the reference scan counts calls per owner, not
   assertEquals(referenceKeys([probe], CHECKPOINT_CALL, () => true), [
     "src/cli/commands/probe.ts: probeCommand (x2)",
   ]);
+});
+
+Deno.test("datastore write seams: only the unit-of-work adapters bind units (swamp-club#3240)", () => {
+  assertPinnedSet(
+    referenceKeys(files, BIND_CALL, () => true),
+    PINNED_UNIT_OF_WORK_BINDERS,
+    "unitOfWorkBinding.bind calls",
+    "A unit of work is bound to its repository context by the adapter that\n" +
+      "builds it. Add an adapter here only with the routing it changes.",
+  );
+});
+
+Deno.test("datastore write seams: routing reads the binding registry in pinned places (swamp-club#3240)", () => {
+  assertPinnedSet(
+    referenceKeys(files, BOUND_HOOK_CALL, () => true),
+    PINNED_BOUND_HOOK_READERS,
+    "unitOfWorkBinding.boundHook calls",
+    "signalChange decides where a write goes. Route through it rather than\n" +
+      "asking the registry elsewhere.",
+  );
+});
+
+Deno.test("datastore write seams: only the v3 commit-log root marks a context as refusing unscoped writes (swamp-club#3240)", () => {
+  assertPinnedSet(
+    referenceKeys(files, REQUIRE_UNIT_CALL, () => true),
+    PINNED_REQUIRE_UNIT_CALLERS,
+    "unitOfWorkBinding.requireUnit calls",
+    "requireUnit makes a context refuse writes outside a unit: a v3\n" +
+      "datastore's. A v2 context must never be marked, or its route-2\n" +
+      "writes start failing.",
+  );
+});
+
+Deno.test("datastore write seams: legacyUnitOfWorkTarget stays inside the legacy adapter (swamp-club#3240)", () => {
+  assertPinnedSet(
+    referenceKeys(files, LEGACY_TARGET_CALL, () => true),
+    PINNED_LEGACY_TARGET_CALLS,
+    "legacyUnitOfWorkTarget references",
+    "signalChange asks the binding registry (unit_of_work_binding.ts), which\n" +
+      "every adapter binds through. legacyUnitOfWorkTarget is the legacy-only\n" +
+      "view of it.",
+  );
 });
