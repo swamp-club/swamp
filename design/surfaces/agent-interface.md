@@ -202,8 +202,18 @@ These files stay in the project because their content is specific to the repo:
   and purpose.
 - **Settings/hooks**: `.claude/settings.local.json`, `.cursor/hooks.json`,
   `.kiro/hooks/`, `.kiro/agents/`, `.kiro/settings/cli.json`,
-  `.vscode/settings.local.json` (Kiro trusted commands), `.opencode/plugins/`,
-  `.github/hooks/`. They hold repo-specific configuration.
+  `.opencode/plugins/`, `.amp/plugins/` (the Amp plugin that asks before
+  `swamp vault read-secret`), `.github/hooks/`. They hold repo-specific
+  configuration.
+- **Agent permissions**: swamp pre-approves its own commands, except
+  `swamp vault read-secret`, where the tool reads repo-level rules. Claude Code
+  reads them from `.claude/settings.local.json` and kiro-cli from
+  `.kiro/agents/swamp.json`. Amp runs every tool without asking unless a plugin
+  intervenes, so swamp's Amp plugin only adds the read-secret prompt. Kiro IDE
+  1.0 reads permission rules only from outside the repo (user and workspace
+  `permissions.yaml`), so swamp writes none for it; upgrade removes the Kiro
+  IDE 0.x entries (`.vscode/settings.local.json`) and the Amp `amp.commands`
+  entry earlier versions wrote, keeping the user's own.
 - **Extension skills**: installed by `swamp extension install`, scoped to the
   repo.
 - **`.swamp.yaml` marker**: tracks repo version and enrolled tools.

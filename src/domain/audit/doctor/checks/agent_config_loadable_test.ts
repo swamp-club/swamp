@@ -53,10 +53,93 @@ Deno.test("agentConfigLoadable: kiro passes for a well-formed config", async () 
     await writeJson(join(repo, ".kiro/agents/swamp.json"), {
       name: "swamp",
       tools: ["read", "write", "shell"],
-      hooks: { postToolUse: [{ command: "swamp audit record --from-hook" }] },
+      hooks: {
+        postToolUse: [{
+          command: "swamp audit record --from-hook --tool kiro",
+        }],
+      },
     });
     const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
     assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: kiro passes for an object-form hook with an absolute swamp path", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".kiro/agents/swamp.json"), {
+      name: "swamp",
+      tools: ["read", "write", "shell"],
+      hooks: {
+        postToolUse: [{
+          command:
+            '"/usr/local/bin/swamp" audit record --from-hook --tool kiro',
+        }],
+      },
+    });
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
+    assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: kiro fails when object-form hooks lack the audit hook", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".kiro/agents/swamp.json"), {
+      name: "swamp",
+      tools: ["read", "write", "shell"],
+      hooks: { postToolUse: [{ command: "npm run lint" }] },
+    });
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "postToolUse");
+  });
+});
+
+Deno.test("agentConfigLoadable: kiro passes for the universal array-form hooks", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".kiro/agents/swamp.json"), {
+      name: "swamp",
+      tools: ["read", "shell", "write"],
+      hooks: [{
+        name: "swamp-audit",
+        trigger: "postToolUse",
+        action: {
+          type: "command",
+          command: "swamp audit record --from-hook --tool kiro",
+        },
+        timeout: 10,
+      }],
+    });
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
+    assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: kiro fails when array-form hooks lack the audit hook", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".kiro/agents/swamp.json"), {
+      name: "swamp",
+      tools: ["read", "shell", "write"],
+      hooks: [{
+        name: "lint",
+        trigger: "postToolUse",
+        action: { type: "command", command: "npm run lint" },
+      }],
+    });
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "postToolUse");
+  });
+});
+
+Deno.test("agentConfigLoadable: kiro fails when no hooks are configured", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".kiro/agents/swamp.json"), {
+      name: "swamp",
+      tools: ["read", "shell", "write"],
+    });
+    const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "postToolUse");
   });
 });
 
@@ -65,7 +148,11 @@ Deno.test(`agentConfigLoadable: kiro fails when tools contains "*"`, async () =>
     await writeJson(join(repo, ".kiro/agents/swamp.json"), {
       name: "swamp",
       tools: ["*"],
-      hooks: { postToolUse: [{ command: "swamp audit record --from-hook" }] },
+      hooks: {
+        postToolUse: [{
+          command: "swamp audit record --from-hook --tool kiro",
+        }],
+      },
     });
     const result = await agentConfigLoadableCheck.run(makeCtx(repo, "kiro"));
     assertEquals(result.status, "fail");
