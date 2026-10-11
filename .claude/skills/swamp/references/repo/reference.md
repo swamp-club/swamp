@@ -34,6 +34,24 @@ swamp repo init --json
 swamp repo init ./my-automation --json
 ```
 
+### The default vault
+
+Init creates a `local_encryption` vault named `default`
+(`vaults/local_encryption/<id>.yaml`, config `auto_generate: true`) and sets
+`defaultVault: default` in `.swamp.yaml`, so secrets and sensitive outputs work
+without creating a vault first. The `--json` output reports it as
+`"vault": { "name": "default", "type": "local_encryption", "created": true }`.
+
+```bash
+# Skip the default vault ("vault": null)
+swamp repo init --no-vault --json
+```
+
+`--force` keeps an existing vault named `default` (`"created": false`) and the
+`defaultVault` already in `.swamp.yaml`. `swamp repo upgrade` never adds the
+vault to an existing repo. The vault's key and secrets stay on the machine
+(`.swamp/secrets/`), so a clone starts with an empty `default` vault.
+
 ### Multi-tool repos
 
 `--tool` is repeatable to enroll multiple AI agent tools (Claude Code, Kiro,

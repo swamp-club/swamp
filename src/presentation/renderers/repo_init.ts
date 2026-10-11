@@ -195,6 +195,17 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
             dim(`(tools: ${formatToolsList(data.tools)})`)
           }`,
         );
+        if (data.vault) {
+          writeOutput(
+            data.vault.created
+              ? `Created vault ${bold(data.vault.name)} ${
+                dim(`(${data.vault.type})`)
+              } for secrets and sensitive outputs`
+              : `Kept existing vault ${bold(data.vault.name)} ${
+                dim(`(${data.vault.type})`)
+              }`,
+          );
+        }
 
         for (const removed of data.removedTools) {
           const paths = orphanedPathsFor(removed, data.tools);

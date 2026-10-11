@@ -48,6 +48,11 @@ import {
 import { assertStorableServerAddress } from "./server_address.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
+import {
+  createDefaultVaultConfig,
+  DEFAULT_VAULT_NAME,
+  type DefaultVaultStore,
+} from "../vaults/default_vault.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 import {
   BUILTIN_TOOL_SKILL_DIRS_FILE,
@@ -236,6 +241,18 @@ export interface RepoInitResult {
    * scaffolding files were left on disk. Empty for fresh inits.
    */
   removedTools: string[];
+  /** The default vault, or null when init did not set one up. */
+  vault: RepoInitVault | null;
+}
+
+/**
+ * The default vault repo init set up. `created` is false when a vault named
+ * `default` already existed and was kept.
+ */
+export interface RepoInitVault {
+  name: string;
+  type: string;
+  created: boolean;
 }
 
 /**
@@ -281,6 +298,13 @@ export interface RepoInitOptions {
   force?: boolean;
   tools?: string[];
   serverAddress?: string;
+  /**
+   * Where the repository's vault configs live. When given, init creates the
+   * `default` local_encryption vault unless a vault of that name exists, and
+   * records it as the marker's `defaultVault` (a `--force` reinit keeps the
+   * `defaultVault` already recorded). When omitted, no vault is set up.
+   */
+  defaultVaultStore?: DefaultVaultStore;
 }
 
 /**
@@ -509,9 +533,11 @@ export class RepoService {
     const isAlreadyInit = await this.isInitialized(repoPath);
 
     let removedTools: string[] = [];
+    let existingDefaultVault: string | undefined;
 
     if (isAlreadyInit) {
       const existingMarker = await this.markerRepo.read(repoPath);
+      existingDefaultVault = existingMarker?.defaultVault;
       const existingTools = existingMarker?.tools ?? [];
 
       if (!options.force) {
@@ -543,6 +569,12 @@ export class RepoService {
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
+
+    let vault: RepoInitVault | null = null;
+    if (options.defaultVaultStore) {
+      vault = await this.ensureDefaultVault(options.defaultVaultStore);
+      markerData.defaultVault = existingDefaultVault ?? vault.name;
+    }
 
     // Install skills globally (deduplicated across tools)
     let skillsCopied = await this.installGlobalSkills(tools);
@@ -597,7 +629,24 @@ export class RepoService {
       gitignoreAction,
       tools,
       removedTools,
+      vault,
     };
+  }
+
+  /**
+   * Creates the default vault unless a vault named `default` already exists,
+   * which is kept whatever its type.
+   */
+  private async ensureDefaultVault(
+    store: DefaultVaultStore,
+  ): Promise<RepoInitVault> {
+    const existing = await store.findByName(DEFAULT_VAULT_NAME);
+    if (existing) {
+      return { name: existing.name, type: existing.type, created: false };
+    }
+    const config = createDefaultVaultConfig();
+    await store.save(config);
+    return { name: config.name, type: config.type, created: true };
   }
 
   /**

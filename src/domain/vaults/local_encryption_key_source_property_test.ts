@@ -23,6 +23,7 @@ import {
   findChangedKeySourceFields,
   findNonDefaultKeySourceFields,
   LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS,
+  withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "./local_encryption_key_source.ts";
 
@@ -70,9 +71,39 @@ Deno.test("findChangedKeySourceFields: changing one key-source field reports exa
 Deno.test("withServerDefaultKeySource: its result never names a non-default key source", () => {
   fc.assert(
     fc.property(arbConfig, fc.string({ maxLength: 12 }), (config, repoDir) => {
-      const result = withServerDefaultKeySource(config, repoDir);
+      const result = withServerDefaultKeySource(config);
       assertEquals(findNonDefaultKeySourceFields(result, repoDir), []);
       assertEquals(result.note, config.note);
+    }),
+  );
+});
+
+Deno.test("withServerDefaultKeySource: its result never stores a base_dir", () => {
+  fc.assert(
+    fc.property(arbConfig, (config) => {
+      assertEquals(
+        Object.hasOwn(withServerDefaultKeySource(config), "base_dir"),
+        false,
+      );
+    }),
+  );
+});
+
+Deno.test("withRuntimeBaseDir: a local_encryption config always gets a base_dir, and a set one is kept", () => {
+  fc.assert(
+    fc.property(arbConfig, fc.string({ minLength: 1, maxLength: 12 }), (
+      config,
+      repoDir,
+    ) => {
+      const result = withRuntimeBaseDir("local_encryption", config, repoDir);
+      assertEquals(
+        result.base_dir,
+        config.base_dir ? config.base_dir : repoDir,
+      );
+      assertEquals(
+        withRuntimeBaseDir("local_encryption", result, repoDir),
+        result,
+      );
     }),
   );
 });

@@ -63,6 +63,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { isLocalEncryptionType } from "../../domain/vaults/local_encryption_key_source.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { writeNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -118,6 +120,15 @@ export type DatastoreSetupWarningData =
     /** Paths relative to `localConfigPath`. */
     keptPaths: string[];
     localConfigPath: string;
+  }
+  | {
+    /**
+     * The repo's default vault is a local_encryption vault, whose key and
+     * secrets stay on this machine (swamp-club#3259).
+     */
+    code: "local_default_vault";
+    message: string;
+    vaultName: string;
   };
 
 /**
@@ -214,6 +225,12 @@ export interface DatastoreSetupDeps {
   inspectManagedConfigTier: (
     repoDir: string,
   ) => Promise<ManagedConfigTierInspection>;
+  /**
+   * The name of the repo's `defaultVault` when it is a local_encryption
+   * vault, or undefined when there is no default vault or it is another
+   * type (swamp-club#3259).
+   */
+  findLocalDefaultVault: (repoDir: string) => Promise<string | undefined>;
   updateRepoConfig: (
     repoDir: string,
     datastoreConfig: Record<string, unknown>,
@@ -906,6 +923,13 @@ export async function* datastoreSetupExtension(
         }
       }
 
+      const vaultWarning = await localDefaultVaultWarning(
+        ctx,
+        deps,
+        input.repoDir,
+      );
+      if (vaultWarning) yield vaultWarning;
+
       const migratedDirs = migrationResult?.directoriesMigrated ?? [];
       const migratedBytes = migrationResult?.bytesCopied ?? 0;
 
@@ -951,6 +975,44 @@ async function isSamePath(a: string, b: string): Promise<boolean> {
     }
   };
   return await real(a) === await real(b);
+}
+
+/**
+ * The warning for a repo whose default vault is a local_encryption vault,
+ * or undefined when there is nothing to warn about. Its key and secrets stay
+ * on this machine, so other machines sharing the datastore cannot read the
+ * values it holds (swamp-club#3259). The check is advisory: a failed lookup
+ * is logged and skipped rather than failing setup.
+ */
+async function localDefaultVaultWarning(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  repoDir: string,
+): Promise<DatastoreSetupEvent | undefined> {
+  let vaultName: string | undefined;
+  try {
+    vaultName = await deps.findLocalDefaultVault(repoDir);
+  } catch (error) {
+    ctx.logger.debug`Could not inspect the default vault: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return undefined;
+  }
+  if (vaultName === undefined) return undefined;
+  return {
+    kind: "warning",
+    data: {
+      code: "local_default_vault",
+      message:
+        `The default vault '${vaultName}' is a local_encryption vault: its ` +
+        `key and secrets stay on this machine, so other machines using this ` +
+        `datastore cannot read secrets or sensitive outputs stored in it. ` +
+        `To share them, migrate it with 'swamp vault migrate ${vaultName}', ` +
+        `or create a vault with a shared provider and set it as ` +
+        `defaultVault in .swamp.yaml.`,
+      vaultName,
+    },
+  };
 }
 
 /**
@@ -1184,6 +1246,23 @@ export function createDatastoreSetupDeps(
         populated: tierPath !== undefined &&
           await isConfigTierPopulated(tierPath),
       };
+    },
+    findLocalDefaultVault: async (repoDir: string) => {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      if (!marker?.defaultVault) return undefined;
+      const tierPath = marker.datastore?.managedConfig === true
+        ? await resolveConfigTierPath(repoDir, marker)
+        : undefined;
+      const vault = await new YamlVaultConfigRepository(
+        repoDir,
+        undefined,
+        join(tierPath ?? repoDir, "vaults"),
+      ).findByName(marker.defaultVault, true);
+      return vault && isLocalEncryptionType(vault.type)
+        ? vault.name
+        : undefined;
     },
     collapseEnvVars,
     assertDatastoreFormat: (repoDir, config, provider) =>

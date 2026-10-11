@@ -95,21 +95,46 @@ export function findNonDefaultKeySourceFields(
 }
 
 /**
+ * The config swamp stores for a local_encryption vault whose key source
+ * nobody chose: an auto-generated key. `base_dir` is left unset so the
+ * stored config names no host path; it resolves to the repository the vault
+ * is loaded from (see {@link withRuntimeBaseDir}).
+ */
+export function defaultLocalEncryptionConfig(): Record<string, unknown> {
+  return { auto_generate: true };
+}
+
+/**
  * `config` with the server's default key source in place of whatever key
- * source it names. Unset default fields are left out.
+ * source it names, in the form it is stored: every key-source field is
+ * replaced by {@link defaultLocalEncryptionConfig}, so `base_dir` is left
+ * unset and resolves to the server's repo when the vault loads.
  */
 export function withServerDefaultKeySource(
   config: Record<string, unknown>,
-  repoDir: string,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...config };
-  for (
-    const [field, value] of Object.entries(serverDefaultKeySource(repoDir))
-  ) {
-    if (value === undefined) delete result[field];
-    else result[field] = value;
+  for (const field of LOCAL_ENCRYPTION_KEY_SOURCE_FIELDS) {
+    delete result[field];
   }
-  return result;
+  return { ...result, ...defaultLocalEncryptionConfig() };
+}
+
+/**
+ * The config a vault provider is built from: for a local_encryption vault
+ * whose `base_dir` is unset or empty, `config` with `base_dir` set to
+ * `repoDir`; otherwise `config` unchanged. Every place that builds a
+ * local_encryption provider from a stored config goes through this, so an
+ * unset `base_dir` always means the repository and never the process's
+ * working directory.
+ */
+export function withRuntimeBaseDir(
+  type: string,
+  config: Record<string, unknown>,
+  repoDir: string,
+): Record<string, unknown> {
+  if (!isLocalEncryptionType(type) || config.base_dir) return config;
+  return { ...config, base_dir: repoDir };
 }
 
 function ownValue(record: Record<string, unknown>, key: string): unknown {

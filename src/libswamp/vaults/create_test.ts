@@ -185,20 +185,16 @@ Deno.test("vaultCreate: an untrusted local_encryption config cannot name its own
 
 Deno.test("vaultCreate: an untrusted local_encryption config gets the server's key source", async () => {
   for (
-    const config of [
-      {},
-      { base_dir: "/repo", auto_generate: true },
-      { note: "kept" },
+    const [config, stored] of [
+      [{}, { auto_generate: true }],
+      [{ base_dir: "/repo", auto_generate: true }, { auto_generate: true }],
+      [{ note: "kept" }, { note: "kept", auto_generate: true }],
     ]
   ) {
     const { last, saved } = await createLocal("local_encryption", config);
 
     assertEquals(last.kind, "completed");
-    assertEquals(saved[0].config, {
-      ...config,
-      auto_generate: true,
-      base_dir: "/repo",
-    });
+    assertEquals(saved[0].config, stored);
   }
 });
 
@@ -208,10 +204,7 @@ Deno.test("vaultCreate: the key-source rule matches the local_encryption type in
   assertEquals(refused.saved, []);
 
   const defaulted = await createLocal("Local_Encryption", undefined);
-  assertEquals(defaulted.saved[0].config, {
-    auto_generate: true,
-    base_dir: "/repo",
-  });
+  assertEquals(defaulted.saved[0].config, { auto_generate: true });
 });
 
 Deno.test("vaultCreate: a trusted local_encryption config may name its own key source", async () => {
@@ -223,6 +216,32 @@ Deno.test("vaultCreate: a trusted local_encryption config may name its own key s
 
   assertEquals(last.kind, "completed");
   assertEquals(saved[0].config, { ssh_key_path: "~/.ssh/id_ed25519" });
+});
+
+Deno.test("vaultCreate: a local_encryption vault without config stores no base_dir", async () => {
+  for (const trustKeySource of [true, false]) {
+    const { last, saved } = await createLocal(
+      "local_encryption",
+      undefined,
+      trustKeySource,
+    );
+
+    assertEquals(last.kind, "completed");
+    assertEquals(saved[0].config, { auto_generate: true });
+  }
+});
+
+Deno.test("vaultCreate: a trusted base_dir given in config is stored as given", async () => {
+  const { saved } = await createLocal(
+    "local_encryption",
+    { base_dir: "/elsewhere", auto_generate: true },
+    true,
+  );
+
+  assertEquals(saved[0].config, {
+    base_dir: "/elsewhere",
+    auto_generate: true,
+  });
 });
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

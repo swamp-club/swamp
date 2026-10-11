@@ -17,6 +17,16 @@ for machine-readable output.
 Correct flow: `swamp vault create <type> <name> --json` → edit config if needed
 → store secrets.
 
+## The `default` Vault
+
+`swamp repo init` creates a `local_encryption` vault named `default` and sets
+`defaultVault: default` in `.swamp.yaml` (unless run with `--no-vault`). Check
+with `swamp vault search --json` before creating one: to store a secret in a new
+repo, use `swamp vault put default KEY` and reference it as
+`${{ vault.get(default, KEY) }}`. Create another vault only for a different
+provider or to keep secrets apart. The `default` vault's key and secrets stay on
+the machine, so a clone starts with it empty.
+
 ## Quick Reference
 
 | Task              | Command                                                                  |

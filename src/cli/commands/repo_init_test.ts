@@ -41,6 +41,12 @@ Deno.test("repoInitCommand is registered as visible subcommand", async () => {
   );
 });
 
+Deno.test("repoInitCommand offers --no-vault to skip the default vault", async () => {
+  const { repoInitCommand } = await import("./repo_init.ts");
+  const option = repoInitCommand.getOption("no-vault");
+  assertEquals(option?.flags, ["--no-vault"]);
+});
+
 Deno.test("repoUpgradeCommand is registered as subcommand", async () => {
   const { repoCommand } = await import("./repo_init.ts");
   const commands = repoCommand.getCommands();

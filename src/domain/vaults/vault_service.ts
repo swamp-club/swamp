@@ -41,7 +41,7 @@ import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
-import type { LocalEncryptionConfig } from "./local_encryption_vault_provider.ts";
+import { withRuntimeBaseDir } from "./local_encryption_key_source.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { createVaultProvider } from "./vault_provider_factory.ts";
 import {
@@ -188,18 +188,10 @@ export class VaultService {
           await resolveVaultType(vaultType, getAutoResolver());
         }
 
-        // For local_encryption vaults, inject base_dir from repoDir if not already set
-        let config = vaultConfig.config;
-        if (vaultType === "local_encryption") {
-          const localConfig = config as LocalEncryptionConfig | undefined;
-          if (!localConfig?.base_dir) {
-            config = { ...localConfig, base_dir: repoDir };
-          }
-        }
         vaultService.registerVault({
           name: vaultConfig.name,
           type: vaultType,
-          config,
+          config: withRuntimeBaseDir(vaultType, vaultConfig.config, repoDir),
           auditReads: vaultConfig.auditReads,
         });
       } catch (error) {

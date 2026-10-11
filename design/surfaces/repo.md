@@ -89,6 +89,8 @@ Source-of-truth files live in top-level directories tracked in git:
 - **`workflows/`**: workflow definitions, `workflows/workflow-{name}.yaml`
   (legacy `workflow-{uuid}.yaml` also supported).
 - **`vaults/`**: vault configurations, `vaults/{vault-type}/{id}.yaml`.
+  `swamp repo init` creates the `default` local_encryption vault here unless
+  run with `--no-vault` ([vaults](../primitives/vaults.md#the-default-vault)).
 - **`grants/`**: declarative access grant files, `grants/{name}.yaml` or
   `grants/{name}.yml`. Each holds a `grants:` array of entries (subject,
   effect, actions, resource, optional condition). They are reconciled against
@@ -117,6 +119,8 @@ key set is `RepoMarkerData` in
 options are:
 
 - `defaultVault`: the vault used when a method run or `swamp serve` names none.
+  `swamp repo init` sets it to `default`, the vault it creates; a `--force`
+  reinit keeps the value already recorded.
 - `trustedCollectives`: collectives whose extensions auto-resolve on first use.
   Default `["swamp"]`; `[]` disables it. Managed with
   `swamp extension trust list/add/rm`.

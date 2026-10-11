@@ -22,7 +22,7 @@ import { getLogger } from "@logtape/logtape";
 import { UserError } from "../domain/errors.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../infrastructure/persistence/yaml_vault_config_repository.ts";
-import type { LocalEncryptionConfig } from "../domain/vaults/local_encryption_vault_provider.ts";
+import { withRuntimeBaseDir } from "../domain/vaults/local_encryption_key_source.ts";
 import { RENAMED_VAULT_TYPES } from "../domain/vaults/vault_types.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import {
@@ -119,18 +119,10 @@ async function createEarlyVaultService(
       const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
       if (renamedTo) vaultType = renamedTo;
 
-      let config = vaultConfig.config;
-      if (vaultType === "local_encryption") {
-        const localConfig = config as LocalEncryptionConfig | undefined;
-        if (!localConfig?.base_dir) {
-          config = { ...localConfig, base_dir: repoDir };
-        }
-      }
-
       vaultService.registerVault({
         name: vaultConfig.name,
         type: vaultType,
-        config,
+        config: withRuntimeBaseDir(vaultType, vaultConfig.config, repoDir),
         auditReads: vaultConfig.auditReads,
       });
     } catch (error) {

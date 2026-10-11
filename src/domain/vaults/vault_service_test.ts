@@ -632,6 +632,42 @@ Deno.test("VaultService - fromRepository continues loading after a bad vault con
   }
 });
 
+Deno.test("VaultService - fromRepository stores a local_encryption vault without base_dir under the repo, in any type case", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const vaults = [
+      ["local_encryption", "lower-vault"],
+      ["LOCAL_ENCRYPTION", "upper-vault"],
+    ];
+    for (const [type, name] of vaults) {
+      const typeDir = join(tempDir, "vaults", type);
+      await ensureDir(typeDir);
+      await Deno.writeTextFile(
+        join(typeDir, `${name}.yaml`),
+        stringifyYaml({
+          id: name,
+          name,
+          type,
+          config: { auto_generate: true },
+          createdAt: new Date().toISOString(),
+        }),
+      );
+    }
+
+    const vaultService = await VaultService.fromRepository(tempDir);
+    for (const [, name] of vaults) {
+      await vaultService.put(name, "api", "secret");
+      assertEquals(await vaultService.get(name, "api"), "secret");
+      const stat = await Deno.stat(
+        join(tempDir, ".swamp", "secrets", "local_encryption", name, "api.enc"),
+      );
+      assertEquals(stat.isFile, true, name);
+    }
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async (t) => {
   await t.step(
     "should remap 'aws' type to '@swamp/aws-sm' when loading from repository",
