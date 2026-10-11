@@ -1320,7 +1320,7 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, "scanning dev\r");
+    assertEquals(attrs?.stdout, "scanning dev");
   },
 );
 
@@ -1334,7 +1334,22 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, "value\\@thing\r");
+    assertEquals(attrs?.stdout, "value\\@thing");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): ends captured lines with LF, not CRLF",
+  async () => {
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(
+      { run: "Write-Output one; Write-Output two" },
+      context,
+    );
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.stdout, "one\ntwo");
+    assertEquals(getOutputLogContent(getResults()).includes("\r"), false);
   },
 );
 
@@ -1379,7 +1394,7 @@ windowsOnlyTest(
     );
 
     const attrs = getResultAttributes(getResults(), "result");
-    assertEquals(attrs?.stdout, `${secret}\r`);
+    assertEquals(attrs?.stdout, secret);
   },
 );
 

@@ -164,6 +164,7 @@ async function executeCommand(
       logger: context.logger,
       redactor: context.redactor,
       terminateProcessTree: true,
+      normalizeCrlf: shellStrategy.normalizesCrlfOutput,
     });
 
     stdout = redact(result.stdout);

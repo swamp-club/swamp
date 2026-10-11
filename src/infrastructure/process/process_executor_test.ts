@@ -96,6 +96,146 @@ Deno.test("streamLines works without callback", async () => {
   assertEquals(result, "hello\nworld");
 });
 
+/** A stream that delivers each string as its own chunk. */
+function chunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
+
+Deno.test("streamLines: normalizeCrlf reads CRLF output exactly as LF output", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["goodbye\r\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "goodbye");
+  assertEquals(lines, ["goodbye"]);
+});
+
+Deno.test("streamLines: normalizeCrlf drops the CR from every CRLF line", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r\ntwo\r\nthree\r\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "one\ntwo\nthree");
+  assertEquals(lines, ["one", "two", "three"]);
+});
+
+Deno.test("streamLines: normalizeCrlf drops a CR whose LF arrives in the next chunk", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r", "\ntwo\r", "\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "one\ntwo");
+  assertEquals(lines, ["one", "two"]);
+});
+
+Deno.test("streamLines: normalizeCrlf keeps a mid-line CR and an unterminated final CR", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["10%\r50%\r\n", "done\r"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "10%\r50%\ndone\r");
+  assertEquals(lines, ["10%\r50%", "done\r"]);
+});
+
+Deno.test("streamLines: keeps every CR by default", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r\ntwo\r\n"]),
+    (line) => lines.push(line),
+  );
+
+  assertEquals(result, "one\r\ntwo\r");
+  assertEquals(lines, ["one\r", "two\r"]);
+});
+
+/** The three capture paths of executeProcess. */
+const CAPTURE_PATHS = [
+  { name: "buffered", logger: false, timeoutMs: undefined },
+  { name: "streaming", logger: true, timeoutMs: undefined },
+  { name: "streaming with timeout", logger: true, timeoutMs: 30_000 },
+] as const;
+
+for (const path of CAPTURE_PATHS) {
+  Deno.test({
+    name:
+      `executeProcess: normalizeCrlf captures CRLF output as LF (${path.name})`,
+    // printf through sh writes the CRLF bytes; POSIX only.
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const streamed: string[] = [];
+      const logged: string[] = [];
+      const logger = {
+        info: (message: string) => logged.push(message),
+        warn: (message: string) => logged.push(message),
+      } as unknown as import("@logtape/logtape").Logger;
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "printf 'one\\r\\ntwo\\r\\n'; printf 'err\\r\\n' >&2"],
+        normalizeCrlf: true,
+        timeoutMs: path.timeoutMs,
+        ...(path.logger
+          ? { logger, onOutput: (line: string) => streamed.push(line) }
+          : {}),
+      });
+
+      assertEquals(result.stdout, "one\ntwo");
+      assertEquals(result.stderr, "err");
+      if (path.logger) {
+        assertEquals(streamed.sort(), ["err", "one", "two"]);
+        assertEquals(logged.some((line) => line.includes("\r")), false);
+      }
+    },
+  });
+
+  Deno.test({
+    name:
+      `executeProcess: keeps CRLF output byte for byte by default (${path.name})`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const streamed: string[] = [];
+      const logger = {
+        info: () => {},
+        warn: () => {},
+      } as unknown as import("@logtape/logtape").Logger;
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "printf 'one\\r\\ntwo\\r\\n'"],
+        timeoutMs: path.timeoutMs,
+        ...(path.logger
+          ? { logger, onOutput: (line: string) => streamed.push(line) }
+          : {}),
+      });
+
+      assertEquals(result.stdout, "one\r\ntwo\r");
+      if (path.logger) assertEquals(streamed, ["one\r", "two\r"]);
+    },
+  });
+}
+
 Deno.test("executeProcess runs simple command", async () => {
   const result = await executeProcess({
     command: "echo",
