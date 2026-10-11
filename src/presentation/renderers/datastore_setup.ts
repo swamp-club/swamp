@@ -91,7 +91,11 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
               data.directoriesMigrated.join(", ") +
               " now resolve under " + bold(data.destinationPath),
           );
-          lines.push(`  Moved from: ${data.sourcePath}`);
+          lines.push(
+            data.sourceKept
+              ? `  Copied from: ${data.sourcePath} (left in place)`
+              : `  Moved from: ${data.sourcePath}`,
+          );
         }
 
         if (data.errors.length > 0) {

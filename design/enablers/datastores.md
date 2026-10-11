@@ -3974,7 +3974,8 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    location (skipped with `--skip-migration`). The source is the current
    datastore's data: the outgoing extension datastore's cache, the root of a
    filesystem datastore outside the repo (`externalFilesystemDatastoreRoot`),
-   or `.swamp/` (swamp-club#3238). A filesystem datastore root that is missing
+   or `.swamp/` (swamp-club#3238). A filesystem datastore root that is missing,
+   or that holds none of the datastore subdirs (an unmounted mount point),
    stops setup before anything moves or `.swamp.yaml` changes; it is never
    replaced by `.swamp/`. A destination whose real path is the migration
    source (for example `--path .swamp` on a repo already there) has nothing to
@@ -3988,7 +3989,9 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    do not fail it.
    Data moved from a filesystem datastore outside the repo is copied, never
    cleaned up from the old path, whatever the destination: other repositories
-   may share that path, and deleting it would take their data too.
+   may share that path, and deleting it would take their data too. The
+   completed result then carries `sourceKept: true`, and log mode prints
+   "Copied from" instead of "Moved from".
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).

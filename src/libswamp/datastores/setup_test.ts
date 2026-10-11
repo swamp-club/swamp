@@ -125,6 +125,7 @@ Deno.test("datastoreSetupFilesystem: completes with migration", async () => {
   assertEquals(completed.data.errors, []);
   assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
   assertEquals(completed.data.destinationPath, "/tmp/datastore");
+  assertEquals(completed.data.sourceKept, undefined);
 });
 
 Deno.test("datastoreSetupFilesystem: completes with skip migration", async () => {
@@ -3327,6 +3328,7 @@ Deno.test("datastoreSetupFilesystem: moving back to .swamp copies from the exter
     assertEquals(completed.data.errors, []);
     assertEquals(completed.data.filesCopied, 2);
     assertEquals(completed.data.sourcePath, external);
+    assertEquals(completed.data.sourceKept, true);
     assertEquals(
       await Deno.readTextFile(join(swampDir, "data", "a.json")),
       "{}",
@@ -3639,6 +3641,7 @@ Deno.test("datastoreSetupExtension: moving to an extension datastore pushes from
     const completed = events.at(-1) as CompletedEvent;
     assertEquals(completed.data.errors, []);
     assertEquals(completed.data.sourcePath, external);
+    assertEquals(completed.data.sourceKept, true);
     assertEquals(await pathExists(join(remoteDir, "data", "a.json")), true);
     assertEquals(
       await pathExists(join(remoteDir, "data", "_catalog.db")),
@@ -3676,6 +3679,69 @@ Deno.test("datastoreSetupExtension: a missing external datastore stops setup bef
           repoId: "repo-3238",
           skipMigration: false,
           outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "error");
+    assertEquals(await pathExists(remoteDir), false);
+    assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: an empty external datastore root (an unmounted mount point) stops setup", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const mountPoint = join(tmp, "Volumes", "NAS");
+    await Deno.mkdir(mountPoint, { recursive: true });
+    await writeMarker(repoDir, { type: "filesystem", path: mountPoint });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath: join(repoDir, ".swamp"),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: mountPoint,
+        },
+      ),
+    );
+
+    const last = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error");
+    assertStringIncludes(last.error.message, "holds no datastore data");
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      mountPoint,
+    );
+  });
+});
+
+Deno.test("datastoreSetupExtension: an empty external datastore root (an unmounted mount point) stops setup", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const mountPoint = join(tmp, "Volumes", "NAS");
+    await Deno.mkdir(mountPoint, { recursive: true });
+    await writeMarker(repoDir, { type: "filesystem", path: mountPoint });
+    const remoteDir = join(tmp, "remote");
+    const type = registerTempDirRemoteType(remoteDir, join(tmp, "cache"));
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3238",
+          skipMigration: false,
+          outgoingDatastorePath: mountPoint,
         },
       ),
     );

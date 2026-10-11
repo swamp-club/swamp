@@ -93,6 +93,11 @@ export interface DatastoreSetupData {
   namespace?: string;
   sourcePath?: string;
   destinationPath?: string;
+  /**
+   * True when the data was copied from an external filesystem datastore and
+   * left in place there, which setup never cleans up (swamp-club#3238).
+   */
+  sourceKept?: boolean;
 }
 
 /** A warning raised during datastore setup, keyed by `code`. */
@@ -494,6 +499,7 @@ export async function* datastoreSetupFilesystem(
             ? {
               sourcePath: sourceDir,
               destinationPath: input.datastorePath,
+              ...(input.outgoingDatastorePath ? { sourceKept: true } : {}),
             }
             : {}),
         },
@@ -1029,6 +1035,7 @@ export async function* datastoreSetupExtension(
             ? {
               sourcePath: sourceDir,
               destinationPath: cachePath,
+              ...(input.outgoingDatastorePath ? { sourceKept: true } : {}),
             }
             : {}),
         },
@@ -1068,6 +1075,13 @@ async function inaccessibleSourceError(
   } catch (error) {
     reason = error instanceof Error ? error.message : String(error);
   }
+  // Setup creates every datastore subdir when it first moves data to a
+  // path, so a root holding none of them is not a datastore: typically an
+  // unmounted mount point, whose empty directory would otherwise migrate
+  // as zero files.
+  if (!reason && !(await holdsDatastoreSubdir(path))) {
+    reason = "it holds no datastore data; if it is a mount point, mount it";
+  }
   if (!reason) return undefined;
   return {
     code: "validation_failed",
@@ -1078,6 +1092,20 @@ async function inaccessibleSourceError(
       `filesystem' or 'swamp datastore setup extension' and ` +
       `--skip-migration.`,
   };
+}
+
+/** Whether `root` holds at least one datastore subdir. */
+async function holdsDatastoreSubdir(root: string): Promise<boolean> {
+  for (
+    const subdir of getDatastoreDirectories({ type: "filesystem", path: root })
+  ) {
+    try {
+      if ((await Deno.stat(join(root, subdir))).isDirectory) return true;
+    } catch {
+      // Not there; try the next one.
+    }
+  }
+  return false;
 }
 
 /**
