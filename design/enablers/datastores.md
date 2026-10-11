@@ -1285,7 +1285,9 @@ of work whose operation failed.
 
 When an operation runs inside `runInUnitOfWork`, the
 repository stages the change into that ambient unit of work, but only when the
-unit is a legacy adapter over the repository's own hook instance. A unit belongs
+unit is bound to the repository's own hook instance in the unit-of-work binding
+registry (see "v3 commit-log unit of work" below; until swamp-club#3240 only the
+legacy adapter could bind a unit). A unit belongs
 to one repository context, so a second context in the same process (side-by-side
 repos, namespace migration) never hands it its changes. Otherwise the repository
 calls its hook as before, and with no hook (filesystem datastores) it does
@@ -1883,14 +1885,15 @@ these.
 1. **From staged changes to commits.** A path alone cannot become a commit:
    the commit needs the intent serve authorises on and the content the
    partition records. Repositories on a v3 datastore stage typed changes
-   (`TypedChange`: a partition and an op) through `CommitLogUnitOfWork`
+   (`TypedChange`: a partition and an op, or a partition and a put whose
+   content the unit stores at commit) through `CommitLogUnitOfWork`
    (`commit_log_unit_of_work.ts`). It is a sibling port that extends
    `UnitOfWork` with `stageOp`, `stagedOps` and `checkpoint`. `StagedChange`,
    its callers and the legacy adapter are unchanged.
-2. **How a commit-log unit claims a repository context.** Today
-   `signalChange` stages into the ambient unit only when
-   `legacyUnitOfWorkTarget(uow)` is the repository's own hook, which
-   recognises legacy units alone. A binding registry (`UnitOfWorkBinding`)
+2. **How a commit-log unit claims a repository context.** Before
+   swamp-club#3240 `signalChange` staged into the ambient unit only when
+   `legacyUnitOfWorkTarget(uow)` was the repository's own hook, which
+   recognised legacy units alone. A binding registry (`UnitOfWorkBinding`)
    generalises it: each adapter binds the units it builds to the hook of the
    context they serve, and `signalChange` asks the registry. The legacy
    adapter becomes one registrant and the commit-log adapter another.
@@ -2258,6 +2261,130 @@ that.
 **Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops. GC
 and prune, which are later issues, must split larger tombstone sets across
 several commits.
+
+### v3 commit-log unit of work (datastore rework Phase 3)
+
+swamp-club#3240 implements decisions 1 to 7 of "v3 domain model" above. The
+commit-log unit is dormant: `integration/datastore_v3_rules_test.ts` (rule 5)
+keeps every production file outside the v3 directories from importing it, and
+only tests open it until the v3 opt-in. The binding registry is the one change
+it shares with v2.
+
+**The binding registry.** `unitOfWorkBinding`
+(`src/infrastructure/persistence/unit_of_work_binding.ts`) implements the
+`UnitOfWorkBinding` port (`src/domain/datastore/unit_of_work.ts`). The port
+lives in the generic datastore context, because persistence may not import the
+dormant v3 context. It holds two weak maps:
+
+- `bind(uow, hook)` / `boundHook(uow)`: which repository context a unit
+  serves. The legacy adapter binds every unit it builds over a hook, and the
+  commit-log adapter binds its own. Identity decides, so a wrapper of a hook
+  never matches. `legacyUnitOfWorkTarget` stays as the legacy-only view.
+- `requireUnit(hook)` / `requiresUnit(hook)`: a context that has no route 2.
+  `runInCommitLogRoot` marks its context's hook. The v3 opt-in must also mark
+  a v3 repository context when it builds it, so a write before any root
+  opens is refused too. A mark is permanent for the process, so a hook
+  instance must never be shared between a v2 and a v3 context. A legacy unit
+  forwards each change to the hook, which would be route 2 by another name:
+  the legacy adapter refuses to build one over a marked hook, and
+  `signalChange` refuses to stage a marked hook's write into one built
+  before the mark.
+
+`signalChange` routes a hooked write in this order: into the ambient unit when
+it is bound to the write's hook; otherwise, when the hook requires a unit,
+refuse with `UnscopedWriteRefusedError` before anything is marked or written
+(decision 3); otherwise route 2, exactly as before. That covers the CLI's
+managed-lockfile root (swamp-club#3192): a v3 repository write inside it meets
+a root bound to the transaction's own hook, and is refused.
+`integration/datastore_write_seams_rules_test.ts` pins every `bind`,
+`boundHook`, `requireUnit` and `legacyUnitOfWorkTarget` caller.
+
+**Typed changes and content.** A `TypedChange` is either an op built by the
+op factories, or a pending put: intent, key, optional `expect` and a
+`ContentSource`. A put whose content needs a chunk cannot be built before the
+chunk is stored (`putOp` takes its `BlobRef`), so the unit stores content when
+it commits, and an abandoned unit stores nothing. A `ContentSource` is bytes,
+or a function returning a fresh stream each time it is called (a repository
+passes "open the file I just wrote"), so large content is never held in
+memory between staging and commit. The unit reads a stream a piece at a
+time until it ends or holds more than `MAX_INLINE_BYTES`: content that ends
+within the limit is inlined, anything longer goes, with what was already
+read, through `ChunkStore.write`. Bytes are copied when staged. A retry calls the source
+again. A source is read at commit, so it must stay readable and unchanged
+until then: a repository that stages one key twice in a unit, or removes the
+file before the unit commits, passes bytes. `stage(StagedChange)`, the
+path-only form, is refused with `PathOnlyChangeRefusedError`: there is no
+path-to-op guessing. Changes are checked where they are staged (the
+partition matches the intent, a pending put's key and `expect` build a valid
+put, at most `MAX_COMMIT_OPS` per partition per flush, no `lease` ops, which
+only the lease machinery writes), so a bad change fails at the call that
+made it rather than blocking the partitions after it at commit.
+
+**Commit order and failure.** `commit` and `checkpoint` group the changes by
+partition, in first-touched order with workflow-run partitions last
+(decision 7). For each partition the unit stores its content first, so no
+commit names a missing chunk, then builds one `Commit`: `seq` is the
+partition's head plus one, read when it appends; `txnId` is fixed when the
+group forms; plus the writer, the fence when one is given, and `at`. The head
+read and the append run under a per-partition lock keyed by sink, namespace
+and partition, so two units in one process never take the same seq; the lock
+is released on every outcome and its entry dropped when its queue drains.
+
+- **No atomicity across partitions.** When a partition fails, the partitions
+  before it stay committed and the ones after it are not tried.
+- **Pending groups.** A partition whose commit failed stays pending with its
+  txnId. The unit's next `checkpoint`, or its `commit`, rebuilds it at the
+  current head with the same txnId, so a commit that had landed is reported
+  `duplicate` and lands once. `commit` ends the unit whether or not it
+  succeeds (the `UnitOfWork` contract), so what is still pending when the
+  unit's own commit fails is lost with it until the Phase 4 outbox makes it
+  durable; a caller that must retry checkpoints first.
+- **Refusals.** `CommitRejectedError` surfaces unchanged, and the refused
+  partition's changes are dropped: they can never land as they are, and
+  keeping them would block every partition staged after them. A `seq-gap`
+  is the exception: another append moved the head first, so the append is
+  rebuilt at the new head once more in the same flush, and if that also
+  meets a gap the partition stays pending for the next checkpoint.
+- **Abandon** discards staged and pending changes (decision 4). A
+  checkpoint already in progress finishes first, so what it commits stays
+  committed. Chunks already stored stay for chunk garbage collection.
+- **Run records and refusals.** Run partitions commit after the others of
+  the same flush, but a data partition dropped as refused does not hold back
+  a run partition that a later checkpoint commits. Keeping a run record from
+  naming refused data is left to the issue that stages run records
+  (decision 7).
+- **Checkpoint** commits what is staged so far and keeps the unit open
+  (decision 6).
+
+**The outbox seam.** The unit appends through a `CommitSink`
+(`append` and `head`). Phase 3 passes the local `CommitStore`; Phase 4 passes
+the outbox, which makes pending groups durable across a crash.
+
+**Roots, children and run outcomes.** `runInCommitLogRoot(repoContext,
+options, fn)` mirrors `runInRootUnitOfWork`: it refuses a context without a
+hook, marks the hook with `requireUnit`, and runs `fn` with the root ambient.
+Opened inside an open commit-log unit for the same hook it is a child: its
+`commit` hands its changes, in order, to the root (all of them, or none
+when they would take a partition over `MAX_COMMIT_OPS`), its `abandon`
+discards them (and refuses changes staged after it), and `checkpoint` on it throws. A root's checkpoint commits what has
+been handed to it so far. The root ends as its `disposition` option decides,
+the way `pushWhen` decides a legacy root's push: by default it commits when
+`fn` resolves and discards when it throws. `runOutcomeDisposition` is
+decision 5 for a workflow run: commit when the run ends `completed`,
+`failed`, `suspended` or `cancelled`, discard on a throw. A failed or
+cancelled run must resolve with its status, not throw, or its record is
+discarded. `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) is unchanged: it
+abandons a use case's unit when the consumer stops at `completed` with
+`return()`. The issues that make repositories stage typed ops must teach it
+that this counts as success before use cases run on v3.
+
+**The v2 gate.** `integration/usecase_sync_characterization_routing_test.ts`
+recorded today's routing before the registry landed (a root, a use-case
+child, a nested root over another hook, a wrapped hook, a unit no adapter
+bound, and the lockfile root), and every existing characterization and
+root-unit suite passed unchanged after it. A temporary route recorder over
+the whole test suite gave the same set of route-1 and route-2 writes before
+and after.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -3536,7 +3663,8 @@ exclude patterns.
 | `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate, its commit rules, and its snapshot and restore |
 | `src/domain/datastore_v3/commit_store.ts` | v3 `CommitStore` port and `CommitStoreCorruptError` |
 | `src/domain/datastore_v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
-| `src/domain/datastore_v3/commit_log_unit_of_work.ts` | Proposed `CommitLogUnitOfWork` and `UnitOfWorkBinding` ports (types only) |
+| `src/domain/datastore_v3/commit_log_unit_of_work.ts` | v3 `CommitLogUnitOfWork`, `TypedChange` and `ContentSource` ports |
+| `src/domain/datastore/unit_of_work.ts` | `UnitOfWork`, `StagedChange` and the `UnitOfWorkBinding` port |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
@@ -3553,6 +3681,9 @@ exclude patterns.
 | `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
 | `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
 | `src/infrastructure/datastore_v3/sqlite_commit_store.ts` | v3 `SqliteCommitStore`: `commits.db` over `node:sqlite` (dormant) |
+| `src/infrastructure/persistence/unit_of_work_binding.ts` | The unit-of-work binding registry `signalChange` routes by |
+| `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam (dormant) |
+| `src/infrastructure/datastore_v3/commit_log_root.ts` | `runInCommitLogRoot` and the run-outcome disposition (dormant) |
 
 ### Application Layer (libswamp)
 
