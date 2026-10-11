@@ -2632,11 +2632,14 @@ is a domain service over the `CommitStore` and `storage/1` ports:
 3. Stream the namespace's `list` again. A chunk modified at or after the
    cutoff is kept unchecked.
 4. Gather older chunks in batches of `CHUNK_COLLECTION_BATCH` (256). For each
-   batch, read which are referenced, then delete the rest at once.
+   batch, read which are referenced. Read the rest, delete them, check their
+   references again, and put back any a commit landed on (see "Races with a
+   concurrent write").
 5. Remove the storage's stale temp files, when it has a `TempFileSweeper`.
 
-The report counts what was scanned, kept as referenced, deleted, kept as too
-new and verified, and lists the damaged chunks and temp files removed. The
+The report counts what was scanned, kept as referenced, deleted, restored,
+kept over the read budget, kept as too new and verified. It also lists the
+damaged chunks and counts the temp files removed. The
 unnamespaced datastore's chunks live under `_default`. The collector maps it
 with `storageNamespaceOf` and queries the index with `""`.
 
@@ -2651,51 +2654,71 @@ The cutoff is fixed before any reference is read. A commit that lands during
 the sweep names chunks stored or refreshed after the cutoff, so they are never
 candidates.
 
-**Races with a concurrent write.**
+**Races with a concurrent write.** A writer that finds a chunk present
+refreshes it (`touch`, or a put) and commits later. So a sweep can see a chunk
+unreferenced and old, and a commit can land on it before the delete. The
+refresh alone does not save it, because the sweep already holds the old
+`lastModified`. Two halves close this without changing `storage/1`:
 
-- A write that refreshes a chunk before the listing reaches it keeps it: the
-  listing reports the new `lastModified`.
-- A write whose commit lands after the listing saw the chunk, but before its
-  batch's reference check, keeps it: the check finds the reference.
-- **What remains.** A write can find an old, unreferenced chunk present and
-  refresh it at any point after the listing yielded the chunk, then commit
-  after its batch's reference check. The sweep already holds the old
-  `lastModified`, so the refresh does not save the chunk. It is deleted, and
-  the commit names a deleted chunk. The window runs from the listing yielding
-  the chunk to its delete: listing the rest of its batch (up to 255 more
-  entries, one or two pages on an object store), one reference query and the
-  batch's deletes. That is short, but not instant. Verification hashes chunks
-  in a pass of its own, so it never widens the window. It needs content that
-  has gone unreferenced for longer than the grace period, for example a commit
-  that failed and is retried with the same content more than a day later, to
-  be written again inside that window. `storage/1` offers no per-chunk
-  `lastModified` read and no conditional delete, so it cannot be closed
-  without a contract change. The opt-in that wires the sweep may also cap a
-  batch by time. A later write of the same content finds the chunk absent and
-  stores it again, which repairs it. A test pins this outcome.
+1. **The sweep re-checks and restores.** For each batch, the sweep reads each
+   unreferenced candidate's bytes and checks their SHA-256. Then it deletes
+   them and asks `referencedChunks` again for the deleted hashes. A chunk a
+   commit landed on in the meantime is put back from the bytes read, and the
+   report counts it as `restored`. Reads are bounded by `sweepReadBytes` (1 GiB
+   by default), and at most 64 MiB of candidates is held at once. A candidate
+   past the budget is kept for the next sweep, never deleted unread. A
+   candidate whose bytes are damaged is deleted and reported, never put back.
+2. **The writer checks after its commit lands.** In the commit-log unit
+   (`appendGroup`), once an append returns `appended` or `duplicate`, the
+   writer calls `has` for the chunks its commit names. It stores any missing
+   ones again from the put's content source: the bytes, or the stream
+   function, which can be called again. That is one `has` per stored blob, and
+   nothing for inline content. A source that no longer gives the same content
+   cannot repair the commit, and the unit's commit fails saying so.
+
+Take a commit that names a chunk the sweep deletes. If it lands before the
+sweep's re-check, the re-check sees the reference and puts the bytes back. If
+it lands after the re-check, it landed after the delete, so the writer's
+check, which runs after its commit lands, finds the chunk missing and stores
+it again. Either way no stored commit is left naming a missing chunk, however
+long the batch took.
+
+One case the two halves do not cover: the writer's process dies after its
+commit lands and before its check runs, while a sweep deletes one of that
+commit's chunks between its reference check and the commit landing. That needs
+a crash between an append returning and one `has` call, at the same time as a
+sweep that holds the chunk as a candidate. Phase 4's outbox, which knows which commits it
+sent, is where a recovery would re-run the check.
 
 **Clock skew.** `lastModified` comes from the storage's clock (a file's mtime,
 an object store's server time), and `now` from the collector's. A skew between
 them shifts the cutoff by the same amount. Against a 24-hour grace normal skew
 does not matter. Only tests should configure a grace near zero.
 
-**The Phase 4 outbox.** A unit's pending retry rebuilds a commit with the same
-txnId and does not store its chunks again. Within one unit's life that is
-inside the grace period. The Phase 4 outbox will make a pending commit durable,
-and could retry it days later, after a sweep has removed its chunks. An outbox
-entry must refresh its chunks through `ChunkStore` before it is sent again, or
-be refused once it is older than the grace period.
+**The Phase 4 outbox.** A unit's pending retry calls `appendGroup` again, so
+its content is stored (refreshed) again before each append, and the writer's
+check runs after the append lands. The Phase 4 outbox will make a pending
+commit durable, and could send it days later, after a sweep has removed its
+chunks. An outbox entry must do the same: keep its content sources and run the
+writer's check after it lands, or store its content again before sending.
 
 **Damaged chunks.** `collect` can read and hash chunks within a byte budget
-(`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether
-a commit names each damaged chunk is looked up once, after the pass. A damaged chunk is
-deleted whatever its age. That relies on `storage/1` requiring an atomic
-`put`, so a reader never sees a chunk still being written. Once it is
-deleted, the next write of that content finds it absent and stores it again.
-The report says whether a commit names it. If one does, its reads were
-already failing. Deleting a damaged chunk a unit has just refreshed makes that unit's commit
-name a missing chunk instead of an unreadable one, which a later write repairs
-the same way.
+(`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether a
+commit names each damaged chunk is looked up once, after the pass. The sweep's
+own reads of its candidates find damage too. A damaged chunk is deleted
+whatever its age. That relies on `storage/1` requiring an atomic `put`, so a
+reader never sees a chunk still being written. Once a damaged chunk is gone,
+the next write of that content finds it absent and stores it again. The report
+says whether a commit names it. If one does, its reads were already failing.
+
+The verify pass has a narrower form of the race. A writer that finds a chunk
+present with `touch` never replaces it, so a damaged chunk stays until the
+sweep removes it. On a backend without `touch`, though, a writer puts the
+chunk again, so a good put can replace the damaged chunk between the pass's
+read and its delete. When that writer's commit lands after the delete, its
+check stores the chunk again. When the commit lands and its check runs inside
+that window, the next writer check or the next write of that content restores
+it.
 
 **Temp files.** `FileSystemStorage.removeStaleTempFiles` removes the
 `.<uuid>.tmp` files a put left under `_blobs/` when it died before renaming one

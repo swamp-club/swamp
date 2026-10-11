@@ -192,6 +192,25 @@ export class ChunkStore {
     }, { highWaterMark: 0 }); // fetch nothing until the stream is read
   }
 
+  /**
+   * The chunks of `ref` the storage does not hold, in order. A writer
+   * checks this after its commit lands, so a chunk garbage collection
+   * deleted meanwhile is stored again (swamp-club#3249).
+   */
+  async missing(
+    namespace: Namespace,
+    ref: BlobRef,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const hashes = ref.chunkHashes();
+    const present = await this.#storage.has(
+      storageNamespaceOf(namespace),
+      hashes,
+      signal,
+    );
+    return hashes.filter((sha256) => !present.has(sha256));
+  }
+
   /** Makes one chunk present and fresh: put, touched, or put again. */
   async #store(
     ns: string,

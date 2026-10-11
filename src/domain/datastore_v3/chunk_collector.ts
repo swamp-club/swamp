@@ -35,19 +35,18 @@
  *   older than `now - grace` is a candidate. `now` is fixed before any
  *   reference is read, so a commit that lands during the sweep names a
  *   chunk stored or refreshed after `now - grace`: never a candidate.
- * - **Streaming.** The sweep checks references and deletes one batch of
- *   candidates at a time, as the listing yields them, so the time between
- *   seeing a chunk's age and deleting it is one batch rather than the whole
- *   namespace's listing. Verification reads chunks in a pass of its own,
- *   before the sweep, so hashing never widens that window. A write that
- *   refreshes a chunk before the listing reaches it keeps it; one whose
- *   commit lands before the batch's reference check keeps it. What remains
- *   is a write that finds an old, unreferenced chunk present (and refreshes
- *   it) after the listing yielded it, then commits after the batch's
- *   reference check: the chunk is deleted and the commit names it until
- *   that content is written again. `storage/1` has no conditional delete
- *   to close it. See "v3 chunk garbage collection" in
- *   `design/enablers/datastores.md`.
+ * - **Closing the race with a writer.** A writer refreshes a chunk it
+ *   finds present and commits later, so a sweep can see a chunk unreferenced
+ *   and old, and a commit can land on it before it is deleted. Each batch's
+ *   unreferenced candidates are read (and hashed) first, then deleted, then
+ *   their references are checked again: a chunk a commit landed on
+ *   meanwhile is put back from the bytes read. A commit landing after that
+ *   re-check landed after the delete, and the writer checks its chunks
+ *   after its commit lands and stores any missing ones again
+ *   (`commit_log_unit_of_work.ts`). Either way no commit is left naming a
+ *   missing chunk. Reads are bounded by a byte budget; a candidate past it
+ *   is kept for the next sweep, never deleted unread. See "v3 chunk garbage
+ *   collection" in `design/enablers/datastores.md`.
  * - **Damaged chunks** are deleted whatever their age, so the next write of
  *   that content finds it absent and stores it again (writes trust `has`).
  *   A damaged chunk a commit names already fails every read; the report
@@ -77,6 +76,16 @@ export const DEFAULT_CHUNK_GRACE_MS = 24 * 60 * 60 * 1000;
 /** Candidates checked against the commit log, then deleted, at a time. */
 export const CHUNK_COLLECTION_BATCH = 256;
 
+/**
+ * How many bytes of deletion candidates one sweep reads by default. A
+ * candidate is read before it is deleted, so it can be put back; past this
+ * budget candidates are kept for the next sweep.
+ */
+export const DEFAULT_SWEEP_READ_BYTES = 1024 * 1024 * 1024;
+
+/** The most candidate bytes held at once before they are deleted. */
+const MAX_HELD_BYTES = 64 * 1024 * 1024;
+
 /** A chunk whose bytes do not match its SHA-256. It has been deleted. */
 export interface DamagedChunk {
   readonly sha256: string;
@@ -94,6 +103,13 @@ export interface ChunkCollectionReport {
   readonly referenced: number;
   /** Unreferenced chunks past the grace period, deleted. */
   readonly deleted: number;
+  /**
+   * Chunks deleted and then put back, because a commit naming them landed
+   * during the sweep.
+   */
+  readonly restored: number;
+  /** Candidates kept unread because the sweep's read budget was spent. */
+  readonly keptOverBudget: number;
   /** Chunks stored or refreshed within the grace period, kept unchecked. */
   readonly keptTooNew: number;
   /** Chunks whose bytes were read and checked. */
@@ -123,6 +139,12 @@ export interface CollectOptions {
    * may go past the budget.
    */
   readonly verifyBytes?: number;
+  /**
+   * How many bytes of deletion candidates to read before deleting them;
+   * {@link DEFAULT_SWEEP_READ_BYTES} unless given. Candidates past it are
+   * kept for the next sweep.
+   */
+  readonly sweepReadBytes?: number;
   readonly signal: AbortSignal;
 }
 
@@ -169,25 +191,78 @@ export class ChunkCollector {
       ? await this.#verify(namespace, ns, verifyBytes, signal)
       : { verified: 0, damaged: [] };
 
+    let readBudget = options.sweepReadBytes ?? DEFAULT_SWEEP_READ_BYTES;
+    requireNonNegative(readBudget, "sweepReadBytes");
     let scanned = 0;
     let referenced = 0;
     let deleted = 0;
+    let restored = 0;
+    let keptOverBudget = 0;
     let keptTooNew = 0;
+    const damagedInSweep: string[] = [];
     let batch: string[] = [];
+
+    /**
+     * Deletes candidates already read, re-checks their references, and puts
+     * back the ones a commit landed on meanwhile.
+     */
+    const settle = async (held: { sha256: string; bytes: Uint8Array }[]) => {
+      if (held.length === 0) return;
+      for (const { sha256 } of held) {
+        signal.throwIfAborted();
+        await this.#storage.delete(ns, sha256, signal);
+      }
+      const now = await this.#commitStore.referencedChunks(
+        namespace,
+        held.map((chunk) => chunk.sha256),
+      );
+      for (const { sha256, bytes } of held) {
+        if (!now.has(sha256)) {
+          deleted++;
+          continue;
+        }
+        await this.#storage.put(ns, sha256, bytes, signal);
+        restored++;
+      }
+    };
+
     const flush = async () => {
       if (batch.length === 0) return;
       const names = await this.#commitStore.referencedChunks(namespace, batch);
+      let held: { sha256: string; bytes: Uint8Array }[] = [];
+      let heldBytes = 0;
       for (const sha256 of batch) {
         if (names.has(sha256)) {
           referenced++;
           continue;
         }
+        if (readBudget <= 0) {
+          keptOverBudget++;
+          continue;
+        }
         signal.throwIfAborted();
-        await this.#storage.delete(ns, sha256, signal);
-        deleted++;
+        const bytes = await this.#storage.get(ns, sha256, signal);
+        // Null: deleted since the listing, so nothing is left to sweep.
+        if (bytes === null) continue;
+        readBudget -= bytes.length;
+        if (sha256Hex(bytes) !== sha256) {
+          // Damaged: deleted like a verified one, never put back.
+          await this.#storage.delete(ns, sha256, signal);
+          damagedInSweep.push(sha256);
+          continue;
+        }
+        held.push({ sha256, bytes });
+        heldBytes += bytes.length;
+        if (heldBytes >= MAX_HELD_BYTES) {
+          await settle(held);
+          held = [];
+          heldBytes = 0;
+        }
       }
+      await settle(held);
       batch = [];
     };
+
     for await (const chunk of this.#storage.list(ns, signal)) {
       signal.throwIfAborted();
       scanned++;
@@ -200,6 +275,17 @@ export class ChunkCollector {
     }
     await flush();
 
+    const sweptDamage = damagedInSweep.length === 0
+      ? new Set<string>()
+      : await this.#commitStore.referencedChunks(namespace, damagedInSweep);
+    const damagedAll: DamagedChunk[] = [
+      ...damaged,
+      ...damagedInSweep.map((sha256) => ({
+        sha256,
+        referenced: sweptDamage.has(sha256),
+      })),
+    ];
+
     const tempFilesRemoved = this.#tempFiles === undefined
       ? 0
       : await this.#tempFiles.removeStaleTempFiles(ns, cutoff, signal);
@@ -208,9 +294,11 @@ export class ChunkCollector {
       scanned,
       referenced,
       deleted,
+      restored,
+      keptOverBudget,
       keptTooNew,
       verified,
-      damaged,
+      damaged: damagedAll,
       tempFilesRemoved,
     };
   }

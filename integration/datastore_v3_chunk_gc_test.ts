@@ -27,7 +27,17 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ChunkCollector } from "../src/domain/datastore_v3/chunk_collector.ts";
-import { putOp, tombstoneOp } from "../src/domain/datastore_v3/op.ts";
+import type { Commit } from "../src/domain/datastore_v3/commit.ts";
+import type { CommitStore } from "../src/domain/datastore_v3/commit_store.ts";
+import {
+  type CommitSink,
+  createCommitLogUnitOfWork,
+} from "../src/infrastructure/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  MAX_INLINE_BYTES,
+  putOp,
+  tombstoneOp,
+} from "../src/domain/datastore_v3/op.ts";
 import {
   dataKey,
   modelIntent,
@@ -196,3 +206,127 @@ Deno.test("chunk gc: reclaims abandoned chunks, and a fresh checkout still repla
     }
   });
 });
+
+/** Content above the inline limit, so a unit stores it as chunks. */
+function large(seed: number): Uint8Array {
+  return new Uint8Array(MAX_INLINE_BYTES + 3 * TEST_CHUNK_BYTES + seed).map((
+    _,
+    i,
+  ) => (i * seed + seed) % 251);
+}
+
+/** A promise and the function that resolves it. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => resolve = done);
+  return { promise, resolve };
+}
+
+/**
+ * Runs a sweep while a commit-log unit writes content whose chunks are old
+ * and unreferenced (left by an abandoned unit). The unit stores (refreshes)
+ * them after the sweep's first reference check; its commit lands either
+ * before the sweep's re-check or after it. Returns the sweep's report.
+ */
+async function sweepDuringWrite(
+  env: V3Env,
+  landing: "before re-check" | "after re-check",
+) {
+  const bytes = large(9);
+  // Left by an abandoned unit, and old by the time the sweep runs.
+  await env.chunkStore.write(SOLO_NAMESPACE, bytes, signal());
+
+  const reachedAppend = deferred();
+  const release = deferred();
+  const sink: CommitSink = {
+    head: (namespace, partition) => env.store.head(namespace, partition),
+    append: async (commit: Commit) => {
+      reachedAppend.resolve();
+      await release.promise;
+      return await env.store.append(commit);
+    },
+  };
+  const unit = createCommitLogUnitOfWork(() => Promise.resolve(), {
+    sink,
+    chunkStore: env.chunkStore,
+    namespace: SOLO_NAMESPACE,
+    writer: { host: "host-a", pid: 4242, instance: "cli-1" },
+    signal: signal(),
+  });
+  await unit.stageOp({
+    partition: PARTITION,
+    put: {
+      intent: modelIntent({ kind: "data.save", name: "late", version: 1 }),
+      key: dataKey("late", 1),
+      content: bytes,
+    },
+  });
+
+  let committing: Promise<void> | undefined;
+  let lookups = 0;
+  const commitStore: Pick<CommitStore, "referencedChunks"> = {
+    referencedChunks: async (namespace, hashes) => {
+      lookups++;
+      if (landing === "before re-check" && lookups === 2) release.resolve();
+      if (landing === "before re-check" && lookups === 2) await committing;
+      const found = await env.store.referencedChunks(namespace, hashes);
+      if (lookups === 1) {
+        // The unit stores its content (has() finds the chunks, touch()
+        // refreshes them) and waits at its append.
+        committing = unit.commit();
+        await reachedAppend.promise;
+      }
+      return found;
+    },
+  };
+  const report = await new ChunkCollector({
+    commitStore,
+    storage: env.storage,
+    graceMs: 0,
+    // The grace cutoff an hour ahead: every chunk listed is a candidate.
+    clock: () => new Date(Date.now() + 60 * 60 * 1000),
+  }).collect(SOLO_NAMESPACE, { signal: signal() });
+  release.resolve();
+  await committing;
+  return report;
+}
+
+for (const landing of ["before re-check", "after re-check"] as const) {
+  Deno.test(`chunk gc: a commit landing ${landing} during a sweep keeps every chunk it names, and a fresh checkout replays it`, async () => {
+    await withV3Env(async (env) => {
+      const report = await sweepDuringWrite(env, landing);
+      const chunks = Math.ceil(large(9).length / TEST_CHUNK_BYTES);
+      assertEquals(
+        (await env.store.referencedChunks(
+          "",
+          await storedChunks(env, "_default"),
+        ))
+          .size,
+        chunks,
+      );
+      if (landing === "before re-check") {
+        // The sweep's re-check saw the commit and put the bytes back.
+        assertEquals([report.deleted, report.restored], [0, chunks]);
+      } else {
+        // The sweep deleted them; the writer's check after its commit
+        // landed stored them again.
+        assertEquals([report.deleted, report.restored], [chunks, 0]);
+      }
+      const readModel = env.openReadModel();
+      try {
+        assertEquals((await readModel.catchUp(signal())).applied, 1);
+        assertEquals(
+          await Deno.readFile(
+            join(
+              swampPath(env.repoDir),
+              ...dataKey("late", 1).toString().split("/"),
+            ),
+          ),
+          large(9),
+        );
+      } finally {
+        await readModel.close();
+      }
+    });
+  });
+}

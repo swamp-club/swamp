@@ -208,6 +208,8 @@ Deno.test("ChunkCollector.collect: deletes old unreferenced chunks and keeps ref
     scanned: 3,
     referenced: 1,
     deleted: 1,
+    restored: 0,
+    keptOverBudget: 0,
     keptTooNew: 1,
     verified: 0,
     damaged: [],
@@ -232,7 +234,8 @@ Deno.test('ChunkCollector.collect: the unnamespaced datastore sweeps _default ag
   assertEquals(report.namespace, "_default");
   assertEquals(storage.stored("_default"), [named]);
   assertEquals(storage.stored("acme"), [other]);
-  assertEquals(refs.lookups.map((l) => l.namespace), [""]);
+  // The batch's check, then the re-check of what it deleted.
+  assertEquals(refs.lookups.map((l) => l.namespace), ["", ""]);
 });
 
 Deno.test("ChunkCollector.collect: checks references and deletes a batch at a time", async () => {
@@ -245,9 +248,13 @@ Deno.test("ChunkCollector.collect: checks references and deletes a batch at a ti
 
   assertEquals(report.deleted, total);
   assertEquals(storage.stored("acme"), []);
+  // Each batch is checked, then what it deleted is checked again.
   assertEquals(refs.lookups.map((l) => l.count), [
     CHUNK_COLLECTION_BATCH,
     CHUNK_COLLECTION_BATCH,
+    CHUNK_COLLECTION_BATCH,
+    CHUNK_COLLECTION_BATCH,
+    5,
     5,
   ]);
 });
@@ -305,27 +312,87 @@ Deno.test("ChunkCollector.collect: a chunk whose commit lands before its batch's
   assertEquals(report.referenced, 1);
 });
 
-Deno.test("ChunkCollector.collect: a write that refreshes a chunk after the listing saw it and commits after its batch's reference check loses it (the documented residual case)", async () => {
+Deno.test("ChunkCollector.collect: a commit landing between a batch's reference check and its delete is caught by the re-check, and the chunk put back", async () => {
   const storage = new AgedStorage();
   const refs = new FakeRefs();
+  const content = bytesOf("reused");
   const chunk = storage.seed("acme", "reused", OLD);
   const chunks = new ChunkStore(storage);
-  let reused = false;
+  let lookups = 0;
   refs.afterLookup = async () => {
-    // Between the reference check and the delete, a unit dedups against the
-    // old chunk: has() finds it, touch() refreshes it.
-    await chunks.write(ACME, bytesOf("reused"), signal);
-    reused = true;
+    // After the first check finds it unreferenced, a unit dedups against
+    // the old chunk (has() finds it, touch() refreshes it) and commits.
+    if (++lookups !== 1) return;
+    await chunks.write(ACME, content, signal);
+    refs.add("acme", chunk);
   };
 
-  await collector(storage, refs).collect(ACME, { signal });
+  const report = await collector(storage, refs).collect(ACME, { signal });
 
-  // storage/1 has no conditional delete, so the refresh cannot save it. A
-  // later write of the same content stores it again.
-  assertEquals(reused, true);
-  assertEquals(storage.stored("acme"), []);
-  await chunks.write(ACME, bytesOf("reused"), signal);
+  assertEquals(storage.deleted, [chunk]);
   assertEquals(storage.stored("acme"), [chunk]);
+  assertEquals(storage.chunks.get(`acme/${chunk}`)?.bytes, content);
+  assertEquals([report.deleted, report.restored], [0, 1]);
+});
+
+Deno.test("ChunkCollector.collect: a commit landing after the re-check finds its chunk deleted, and the writer's post-commit check stores it again", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const content = bytesOf("reused");
+  const chunk = storage.seed("acme", "reused", OLD);
+  const chunks = new ChunkStore(storage);
+  let ref: Awaited<ReturnType<ChunkStore["write"]>> | undefined;
+  let lookups = 0;
+  refs.afterLookup = async () => {
+    // The unit refreshes the chunk before the sweep's first check; its
+    // commit lands only after the re-check.
+    if (++lookups === 1) ref = await chunks.write(ACME, content, signal);
+  };
+
+  const report = await collector(storage, refs).collect(ACME, { signal });
+  assertEquals([report.deleted, report.restored], [1, 0]);
+  assertEquals(storage.stored("acme"), []);
+
+  // The commit lands, then the writer checks its chunks (what
+  // commit_log_unit_of_work does after every append) and stores the
+  // missing one again.
+  refs.add("acme", chunk);
+  assertEquals(await chunks.missing(ACME, ref!, signal), [chunk]);
+  await chunks.write(ACME, content, signal);
+  assertEquals(await chunks.missing(ACME, ref!, signal), []);
+});
+
+Deno.test("ChunkCollector.collect: candidates past the read budget are kept, never deleted unread", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  for (let i = 0; i < 5; i++) storage.seed("acme", `ten bytes${i}`, OLD);
+
+  const report = await collector(storage, refs).collect(ACME, {
+    sweepReadBytes: 25,
+    signal,
+  });
+
+  // 10 + 10 leaves 5 of the budget, so a third candidate is read too.
+  assertEquals([report.deleted, report.keptOverBudget], [3, 2]);
+  assertEquals(storage.stored("acme").length, 2);
+  const none = await collector(storage, refs).collect(ACME, {
+    sweepReadBytes: 0,
+    signal,
+  });
+  assertEquals([none.deleted, none.keptOverBudget], [0, 2]);
+});
+
+Deno.test("ChunkCollector.collect: a damaged candidate is deleted and reported, never put back", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const rotten = "e".repeat(64);
+  storage.seedDamaged("acme", rotten, OLD);
+
+  const report = await collector(storage, refs).collect(ACME, { signal });
+
+  assertEquals(storage.stored("acme"), []);
+  assertEquals(report.damaged, [{ sha256: rotten, referenced: false }]);
+  assertEquals([report.deleted, report.restored], [0, 0]);
 });
 
 Deno.test("ChunkCollector.collect: deletes a damaged chunk whatever its age, and a later write stores it again", async () => {
@@ -375,7 +442,7 @@ Deno.test("ChunkCollector.collect: verifies chunks only until the byte budget is
   assertEquals(some.verified, 3);
 });
 
-Deno.test("ChunkCollector.collect: verifies in a pass of its own, so no read happens between the sweep seeing a chunk and deleting it", async () => {
+Deno.test("ChunkCollector.collect: verifies in a pass of its own, before the sweep reads its candidates", async () => {
   const storage = new AgedStorage();
   const refs = new FakeRefs();
   for (let i = 0; i < 4; i++) storage.seed("acme", `chunk ${i}`, OLD);
@@ -392,6 +459,10 @@ Deno.test("ChunkCollector.collect: verifies in a pass of its own, so no read hap
     "get",
     "get",
     "list",
+    "get",
+    "get",
+    "get",
+    "get",
     "delete",
     "delete",
     "delete",
