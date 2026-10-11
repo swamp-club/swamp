@@ -42,8 +42,8 @@ and the `_control/` records this layout sits beside.
 6. **Windows: a supported target, gated on an upstream fix.** Litestream 0.5.16
    and 0.5.17 cannot replicate on Windows (litestream#1542, fixed on main by
    #1548, not yet released). Deno has no AF_UNIX client on Windows, so swamp
-   reaches the socket there through `litestream sync`. See
-   [Windows and macOS](#windows-and-macos-q7).
+   reaches the socket there through `litestream sync`. Phase 4 must not pin a
+   build from main. See [Windows and macOS](#windows-and-macos-q7).
 
 ## Why a sidecar
 
@@ -52,15 +52,18 @@ Four options were prototyped or assessed. All measurements are in
 
 | Option                                                                                               | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Sidecar binary** (chosen)                                                                          | Upstream builds it for every target swamp ships. It runs in its own process, so a Litestream crash can't take swamp down, and it uses its own copy of SQLite in its own process. It adds 36–40 MB per target. Startup to a ready socket takes 13–19 ms on Linux and Apple silicon.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Sidecar binary** (chosen)                                                                          | Upstream builds it for every target swamp ships. It runs in its own process, so a Litestream crash can't take swamp down, and it uses its own copy of SQLite in its own process. swamp writing `commits.db` through `node:sqlite` while the sidecar reads it through its own SQLite, in a separate process, is Litestream's normal, supported model. Only a second copy inside swamp's process is unsafe. It adds 36–40 MB per target. Startup to a ready socket takes 13–19 ms on Linux and Apple silicon.                                                                                                                                                                                                                                                                                                                                            |
 | **Go library, c-shared, via `Deno.dlopen`**                                                          | It works: dlopen took 4 ms, a sync 13 ms, and Deno's signal handling still worked. Rejected for three reasons. It loads a **second copy of SQLite into swamp's process**: Litestream uses `modernc.org/sqlite`, and `node:sqlite` bundles its own. Two copies on one file share POSIX advisory locks but not SQLite's bookkeeping, and closing a file in one silently drops the other's locks. That is a known way to corrupt a database ([sqlite.org/howtocorrupt §2.2.1](https://www.sqlite.org/howtocorrupt.html#_multiple_copies_of_sqlite_linked_into_the_same_application)). A Go panic would also kill swamp. And swamp would have to own a cgo cross-build for each of its five targets. `dlopen` needs a real file anyway, so it still has to be extracted like a sidecar. It saves only about 8 MB (29.5 MB stripped dylib against 37.5 MB). |
 | **TypeScript reimplementation of WAL shipping**                                                      | Rejected. Litestream's core is about 7.4k lines of Go, plus 1.9k for the LTX format and 2.6k for the S3, GCS and file clients. The hard parts are correctness under concurrent checkpoints, WAL salt changes and snapshot boundaries, and the code cites several production bugs it has fixed there. `node:sqlite` has no WAL hook, so a reimplementation would read the `-wal` file behind SQLite's back. Revisit only if the sidecar can't ship.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **LiteFS**                                                                                           | Rejected on paper. It is a FUSE filesystem, so it is Linux-only and needs mount privileges. swamp ships to macOS and Windows and runs unprivileged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **SQLite session extension** (`createSession` / `applyChangeset`, available in Deno's `node:sqlite`) | Not chosen. Changesets are logical diffs, so swamp would have to design its own log format, ordering, snapshots and restore, which amounts to writing a replicator. It stays as the fallback if Windows can't be supported (see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
-Licensing: Litestream is Apache-2.0. A separate program shipped beside an AGPLv3
-one is an aggregate. Ship its `LICENSE` with the release notes, and keep the
-upstream SHA-256 in the build script.
+Licensing: Litestream is Apache-2.0. Apache-2.0 §4 requires its licence, and any
+NOTICE file, to travel with the redistributed binary. The release notes aren't
+enough: ship them with the release artifacts, for example in a third-party
+notices file. Keep the upstream SHA-256 in the build script. Whether a binary
+embedded inside the compiled swamp executable counts as "an aggregate" next to
+AGPLv3 code is a legal question, **to be confirmed**.
 
 ## Measurements
 
@@ -342,9 +345,12 @@ child with `Deno.kill(pid, "SIGTERM")`, so on Windows the result is
 **undetermined**. Phase 4's pidfile guard covers both outcomes.
 
 **Verdict: Windows is supported from Litestream 0.5.18 on** (the first release
-with #1548). Use the `litestream sync` subprocess client there. A write command
-costs about 110–150 ms locally, against 17–30 ms on Linux and macOS arm64.
-Follow mode on Windows also needs the fixed build.
+with #1548). That version doesn't exist yet: as of 2026-10-11 the latest release
+is v0.5.17 (2026-08-31). Phase 4 must not pin a build from main. If 0.5.18 is
+still unreleased when Phase 4 ships, the fallback below applies. Use the
+`litestream sync` subprocess client there. A write command costs about 110–150
+ms locally, against 17–30 ms on Linux and macOS arm64. Follow mode on Windows
+also needs the fixed build.
 
 **Fallback, if Windows replication can't be shipped:** solo mode on Windows
 stays on the v2 datastore, with a warning when v3 is requested. Team mode
@@ -358,7 +364,9 @@ macOS.
   this one in CI on every bump, on all five release targets.
 - **Snapshot compaction errors** (`compaction failed … read page … EOF`)
   appeared under forced TRUNCATE checkpoints and once in a failover run. The
-  data stayed correct. Track it upstream before Phase 5.
+  data stayed correct. No matching upstream issue exists as of 2026-10-11 (the
+  closest is litestream#1199, a different snapshot-on-checkpoint compaction
+  failure). File one, with the `spike/` reproduction, before Phase 5.
 - **The sidecar sees bucket credentials and every commit.** Today's embedded
   Deno extraction checks only a version marker. It writes atomically (temp +
   rename, `0o755`) and runs a `--version` health check, but nothing verifies the
@@ -372,8 +380,11 @@ macOS.
   mode.
 - **GCS `apiEndpoint`** has no Litestream equivalent.
 
-## Changes to the Phase 4 and Phase 5 plan
+## Changes to the Phase 4, 5 and 7 plans
 
+- **Phase 4 entry criterion.** Before Phase 4 picks per-command or idle-sidecar
+  replication, measure a forced sync and a whole write command against real S3
+  and GCS.
 - **Phase 4 (embedded datastore service):**
   - sidecar lifecycle per write command: start, forced `/sync wait`, stop;
   - pidfile guard against orphans, and a short socket path;
@@ -381,7 +392,11 @@ macOS.
   - `commits.db` keeps SQLite's default checkpointing and never forces one;
   - the outbox rule above;
   - `litestream sync` as the client on Windows, and Windows gated on Litestream
-    0.5.18 or later.
+    0.5.18 or later. Never pin a build from main. If 0.5.18 isn't released when
+    Phase 4 ships, Windows solo stays on v2, with a warning when v3 is
+    requested.
+  - The v3 opt-in refuses v3 for a GCS datastore with a custom `apiEndpoint`,
+    until that gap is closed.
   - Read-only commands don't start a sidecar.
 - **Phase 5 (serve leader):**
   - a replica path per fence, not a generation;
@@ -389,6 +404,8 @@ macOS.
   - failover is restore and then a full first snapshot to the new fence path;
   - followers can run `restore -f` for a warm standby;
   - the serve leader keeps one long-lived sidecar.
+- **Phase 7 (default flip):** if Windows solo is still on v2, the flip to v3 by
+  default can't be universal. It has to leave Windows solo on v2.
 
 ## Reproducing
 
