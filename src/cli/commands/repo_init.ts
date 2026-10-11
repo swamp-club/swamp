@@ -124,6 +124,8 @@ export async function repoInitAction(
       tools,
       version: VERSION,
       serverAddress: options.server as string | undefined,
+      // --no-vault sets this false; it is absent otherwise.
+      vault: options.vault !== false,
     }),
     renderer.handlers(),
   );
@@ -148,12 +150,17 @@ export const repoInitCommand = new Command()
     "swamp repo init --tool claude --tool kiro",
   )
   .example("Force reinitialize", "swamp repo init --force")
+  .example("Initialize without the default vault", "swamp repo init --no-vault")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
   .type("toolName", new ToolNameType())
   .option("-t, --tool <tool:toolName>", TOOL_FLAG_DESCRIPTION, {
     collect: true,
   })
+  .option(
+    "--no-vault",
+    "Skip creating the default vault. By default init creates a local_encryption vault named `default` and records it as `defaultVault` in .swamp.yaml",
+  )
   .option(
     "--server <url:string>",
     "Default serve URL for this repository — stored in .swamp.yaml as serverAddress (env: SWAMP_SERVE_URL overrides at runtime). A URL with credentials, a query string or a fragment is refused — give remote commands the token with --token, or store it with swamp auth server-login",

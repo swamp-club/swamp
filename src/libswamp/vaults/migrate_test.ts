@@ -55,11 +55,13 @@ function makeDeps(
     isVaultTypeLoaded: () => Promise.resolve(true),
     findRegistryConfigFields: () => Promise.resolve(null),
     resolveExtensionVaultType: () => Promise.resolve(),
+    // Case-insensitive, as vaultTypeRegistry.get is.
     getVaultTypeInfo: (type) => {
-      if (type === "mock" || type === "local_encryption") {
+      const key = type.toLowerCase();
+      if (key === "mock" || key === "local_encryption") {
         return {
           type,
-          name: type === "mock" ? "Mock" : "Local Encryption",
+          name: key === "mock" ? "Mock" : "Local Encryption",
           description: `${type} vault`,
           isBuiltIn: true,
         };
@@ -538,9 +540,11 @@ Deno.test("vaultMigrate: an untrusted local_encryption target gets the server's 
   );
 
   assertEquals(events[events.length - 1].kind, "completed");
-  const expected = { auto_generate: true, base_dir: "/repo" };
-  assertEquals(createdProviderConfig, expected);
-  assertEquals(savedConfig!.config, expected);
+  assertEquals(createdProviderConfig, {
+    auto_generate: true,
+    base_dir: "/repo",
+  });
+  assertEquals(savedConfig!.config, { auto_generate: true });
 });
 
 Deno.test("vaultMigrate: a trusted local_encryption target may name its own key source", async () => {
@@ -564,6 +568,42 @@ Deno.test("vaultMigrate: a trusted local_encryption target may name its own key 
 
   assertEquals(events[events.length - 1].kind, "completed");
   assertEquals(savedConfig!.config, { key_file: "/k", auto_generate: true });
+});
+
+Deno.test("vaultMigrate: a local_encryption target writes under the repo but stores no base_dir", async () => {
+  // Any case of the type: the stored config has no base_dir, so the
+  // provider must still get the repo dir rather than the working directory.
+  for (const targetType of ["local_encryption", "LOCAL_ENCRYPTION"]) {
+    let createdProviderConfig: Record<string, unknown> | undefined;
+    let savedConfig: VaultConfig | null = null;
+    const deps = makeDeps({
+      createProvider: (_type, name, config) => {
+        createdProviderConfig = config as Record<string, unknown>;
+        return new MockVaultProvider(name);
+      },
+      saveConfig: (config) => {
+        savedConfig = config;
+        return Promise.resolve();
+      },
+    });
+
+    const events = await collect<VaultMigrateEvent>(
+      vaultMigrate(createLibSwampContext(), deps, {
+        vaultName: "my-vault",
+        targetType,
+        repoDir: "/repo",
+        trustKeySource: true,
+      }),
+    );
+
+    assertEquals(events[events.length - 1].kind, "completed", targetType);
+    assertEquals(
+      createdProviderConfig,
+      { auto_generate: true, base_dir: "/repo" },
+      targetType,
+    );
+    assertEquals(savedConfig!.config, { auto_generate: true }, targetType);
+  }
 });
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

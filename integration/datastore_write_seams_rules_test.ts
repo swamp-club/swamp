@@ -553,6 +553,8 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/data/run_gc.ts: createRunGcDeps: YamlWorkflowRunRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/data/versions.ts: createDataVersionsDeps: YamlDefinitionRepository",
+  // Built directly in src/libswamp/datastores/.
+  "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
   // Built directly in src/libswamp/extensions/.
   "src/libswamp/extensions/list.ts: createExtensionListDeps: LockfileRepository",
   "src/libswamp/extensions/managed_lockfile_transaction.ts: ManagedLockfileTransaction: LockfileRepository",
@@ -586,6 +588,8 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/reports/search.ts: createReportSearchDeps: FileSystemUnifiedDataRepository",
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlDefinitionRepository",
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlWorkflowRepository",
+  // Built directly in src/libswamp/repo/.
+  "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
   // Built directly in src/libswamp/vaults/.
   "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/audit_trail.ts: createVaultAuditTrailDeps: JsonlVaultAuditRepository",
@@ -721,6 +725,11 @@ const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   "src/libswamp/vaults/list_keys.ts: createVaultListKeysDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/put.ts: createVaultPutDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/read_secret.ts: createVaultReadSecretDeps: YamlVaultConfigRepository",
+  "src/libswamp/datastores/setup.ts: createDatastoreSetupDeps: YamlVaultConfigRepository",
+  // repo init writes the default vault (swamp-club#3259) into the new repo's
+  // own vaults/ before any datastore is configured, so there is nothing to
+  // sync it to.
+  "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
   // The CLI writes vault configs through these, then runManagedConfigMutation
   // sends a bare mark (managedConfig only); serve injects the hooked
   // repository.

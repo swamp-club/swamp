@@ -43,6 +43,8 @@ my-swamp-repo/
 
 `swamp repo init` creates this structure. Top-level directories (`models/`,
 `workflows/`, `vaults/`) hold source-of-truth YAML committed to git. `.swamp/`
-holds runtime data and can be gitignored.
+holds runtime data and can be gitignored. Init also creates a `local_encryption`
+vault named `default` and sets `defaultVault: default` in `.swamp.yaml`; pass
+`--no-vault` to skip it.
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).

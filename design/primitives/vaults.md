@@ -41,9 +41,17 @@ vaults/
       {secret-key}.enc               # Encrypted secret files
 ```
 
-The secrets path is computed at runtime by the datastore path resolver. The
-vault configuration stores `base_dir` (the repository root), and the datastore
-layer derives the full path ([datastores](../enablers/datastores.md)).
+The secrets path is computed at runtime by the datastore path resolver
+([datastores](../enablers/datastores.md)). A `local_encryption` vault config
+does not store `base_dir` unless the user set one: an unset or empty
+`base_dir` is the repository root, filled in when the vault loads by
+`withRuntimeBaseDir` (`src/domain/vaults/local_encryption_key_source.ts`).
+`VaultService`, the datastore expression resolver, `vault migrate` and
+`vault edit` all build providers through it, so an unset `base_dir` never
+falls back to the working directory, and the committed config works in every
+clone. On a remote-execution worker it is the worker's repo dir. Configs
+written before swamp-club#3259 may hold an absolute `base_dir`; it is used as
+stored and never rewritten.
 
 ### Key source over `--server`
 
@@ -59,6 +67,11 @@ the key-source fields (`src/domain/vaults/local_encryption_key_source.ts`). A
   server defaults (`auto_generate: true`, `base_dir` the serve repo).
 - `vault create` and `vault migrate` to `local_encryption` refuse any
   key-source field other than those defaults, and store the defaults.
+
+The defaults are stored as `auto_generate: true` with `base_dir` unset, which
+resolves to the serve repo when the vault loads; a `base_dir` equal to the
+serve repo is accepted and stored unset. The stored config therefore never
+shows the server's repo path to a client.
 
 Errors name the fields, never their values. The libswamp use cases apply the
 rule by default; only the local CLI passes `trustKeySource`, since a local
@@ -659,6 +672,23 @@ It applies when no field-level or spec-level `vaultName` is set. It also applies
 to `swamp serve` vault operations (OAuth credentials, device auth tokens).
 Without it, swamp falls back to the first available vault, as it did before
 this feature.
+
+### The `default` Vault
+
+`swamp repo init` creates a `local_encryption` vault named `default` with
+config `auto_generate: true` and sets `defaultVault: default`
+(`src/domain/vaults/default_vault.ts`, swamp-club#3259), so secrets and
+sensitive outputs work in a new repo without setup. No key exists until the
+first secret is written. `--no-vault` skips it. A `--force` reinit keeps an
+existing vault named `default`, whatever its type, and the `defaultVault`
+already recorded. `repo upgrade` never adds it to existing repos.
+
+The config is committed, but the key and secrets live under
+`.swamp/secrets/`, which never leaves the machine: a clone starts with an
+empty `default` vault and its own key. `swamp datastore setup extension`
+therefore warns (`local_default_vault`) when `defaultVault` names a
+`local_encryption` vault, since other machines sharing the datastore cannot
+read what it holds.
 
 ### Processing Behavior
 

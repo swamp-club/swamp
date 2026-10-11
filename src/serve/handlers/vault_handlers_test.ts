@@ -1075,7 +1075,68 @@ Deno.test("handleVaultCreate: a local_encryption config without a key source get
 
     assertEquals(frames[0].type, "vault.create");
     assertEquals(vaults.length, 1);
-    assertEquals(vaults[0].config, { auto_generate: true, base_dir: dir });
+    assertEquals(vaults[0].config, { auto_generate: true });
+  });
+});
+
+Deno.test("handleVaultGet: a remotely created local_encryption vault does not show the server's repo path", async () => {
+  await withTempDir(async (dir) => {
+    await runVaultCreateWith(dir, {
+      vaultType: "local_encryption",
+      name: "remote-vault",
+      config: {},
+    });
+
+    const repoContext = createRepositoryContext({
+      repoDir: dir,
+      enableIndexing: false,
+    });
+    try {
+      const socket = createMockSocket();
+      await handleVaultGet(
+        socket,
+        { ...createAnnotateCtx(dir), repoContext },
+        "req-get",
+        { vaultNameOrId: "remote-vault" },
+        new AbortController(),
+        null,
+      );
+      const frame = JSON.parse(socket.sent[0]);
+      assertEquals(frame.type, "vault.get");
+      assertEquals(frame.payload.data.config, { auto_generate: true });
+    } finally {
+      repoContext.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("handleVaultEdit: refuses adding a base_dir to a vault stored without one", async () => {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const vault = VaultConfig.create(
+      crypto.randomUUID(),
+      "unkeyed-vault",
+      "local_encryption",
+      { auto_generate: true },
+    );
+
+    const { frames, read } = await runVaultEdit(
+      repoDir,
+      join(dir, "cache"),
+      [vault],
+      () => ({
+        vaultNameOrId: "unkeyed-vault",
+        content: vaultYaml(vault, {
+          config: { ...vault.config, base_dir: repoDir },
+        }),
+      }),
+    );
+
+    assertEquals(frames.length, 1);
+    const error = frames[0].error as { code: string; message: string };
+    assertEquals(error.code, "vault_edit_failed");
+    assertStringIncludes(error.message, "Cannot change base_dir of vault");
+    assertEquals((await read(vault.id))?.config, { auto_generate: true });
   });
 });
 
@@ -1171,10 +1232,7 @@ Deno.test("handleVaultEdit: a repair gets the server's key source and refuses it
       { grants: [vaultGrant({}), ADMIN_GRANT], brokenIds: [BROKEN_ID] },
     );
     assertEquals(frames[0].type, "vault.edit");
-    assertEquals((await read(BROKEN_ID))?.config, {
-      auto_generate: true,
-      base_dir: repoDir,
-    });
+    assertEquals((await read(BROKEN_ID))?.config, { auto_generate: true });
   });
 });
 

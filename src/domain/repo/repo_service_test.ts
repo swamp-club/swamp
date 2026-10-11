@@ -35,6 +35,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { writeCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
+import { VaultConfig } from "../vaults/vault_config.ts";
+import type { DefaultVaultStore } from "../vaults/default_vault.ts";
 
 // init/upgrade install bundled skills into the user's home and config
 // directories. Test files share one process and one `Deno.env`, so a write
@@ -246,6 +248,151 @@ Deno.test("RepoService.init succeeds with force on existing repo", async () => {
     const result = await service.init(repoPath, { force: true });
 
     assertEquals(result.version, "0.1.0");
+  });
+});
+
+/** An in-memory DefaultVaultStore that records what init saved. */
+function memoryVaultStore(
+  initial: VaultConfig[] = [],
+): DefaultVaultStore & { saved: VaultConfig[] } {
+  const configs = [...initial];
+  const saved: VaultConfig[] = [];
+  return {
+    saved,
+    findByName: (name) =>
+      Promise.resolve(configs.find((c) => c.name === name) ?? null),
+    save: (config) => {
+      configs.push(config);
+      saved.push(config);
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("RepoService.init without a vault store sets up no vault", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tools: [] });
+
+    assertEquals(result.vault, null);
+    assertEquals((await service.getMarker(repoPath))?.defaultVault, undefined);
+  });
+});
+
+Deno.test("RepoService.init creates the default vault and makes it the default", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    const store = memoryVaultStore();
+
+    const result = await service.init(repoPath, {
+      tools: [],
+      defaultVaultStore: store,
+    });
+
+    assertEquals(result.vault, {
+      name: "default",
+      type: "local_encryption",
+      created: true,
+    });
+    assertEquals(store.saved.length, 1);
+    assertEquals(store.saved[0].name, "default");
+    assertEquals(store.saved[0].config, { auto_generate: true });
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init --force keeps an existing vault named default, whatever its type", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+    const existing = VaultConfig.create(
+      "existing-id",
+      "default",
+      "@swamp/aws-sm",
+      { region: "eu-west-1" },
+    );
+    const store = memoryVaultStore([existing]);
+
+    const result = await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: store,
+    });
+
+    assertEquals(result.vault, {
+      name: "default",
+      type: "@swamp/aws-sm",
+      created: false,
+    });
+    assertEquals(store.saved, []);
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init --force keeps the defaultVault already recorded", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "prod" });
+
+    const result = await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: memoryVaultStore(),
+    });
+
+    assertEquals(result.vault?.created, true);
+    assertEquals((await service.getMarker(repoPath))?.defaultVault, "prod");
+  });
+});
+
+Deno.test("RepoService.init --force without a recorded defaultVault records default", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+
+    await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: memoryVaultStore(),
+    });
+
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init writes no marker when the default vault cannot be saved", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    const store: DefaultVaultStore = {
+      findByName: () => Promise.resolve(null),
+      save: () => Promise.reject(new Error("disk full")),
+    };
+
+    await assertRejects(
+      () => service.init(repoPath, { tools: [], defaultVaultStore: store }),
+      Error,
+      "disk full",
+    );
+    assertEquals(await service.isInitialized(repoPath), false);
   });
 });
 

@@ -56,6 +56,8 @@ import {
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 function makeDeps(
@@ -80,6 +82,7 @@ function makeDeps(
     resolveInRepoConfigRole: () => Promise.resolve("unmanaged"),
     listConfigTierConflicts: () => Promise.resolve([]),
     inspectManagedConfigTier: () => Promise.resolve({ managed: false }),
+    findLocalDefaultVault: () => Promise.resolve(undefined),
     collapseEnvVars: (path: string) => path,
     assertDatastoreFormat: () => Promise.resolve(),
     ...overrides,
@@ -3167,4 +3170,98 @@ Deno.test("datastoreSetupExtension: tells a repo already bound to a reserved nam
   }
   assertEquals(events.some((e) => e.kind === "completed"), false);
   assertEquals(setupSyncSpyCalls, []);
+});
+
+// ============================================================================
+// Local default vault warning (swamp-club#3259)
+// ============================================================================
+
+Deno.test("datastoreSetupExtension: warns when the default vault is local_encryption", async () => {
+  ensureTestExtensionType("test-ext-setup");
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.resolve("default"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+
+  const warnings = warningsOf(events);
+  assertEquals(warnings.length, 1);
+  assertEquals(events[events.length - 1].kind, "completed");
+  const data = warnings[0].data;
+  assertEquals(data.code, "local_default_vault");
+  if (data.code !== "local_default_vault") return;
+  assertEquals(data.vaultName, "default");
+  assertStringIncludes(data.message, "'default' is a local_encryption vault");
+  assertStringIncludes(data.message, "swamp vault migrate default");
+});
+
+Deno.test("datastoreSetupExtension: a failed default vault lookup is skipped, not fatal", async () => {
+  ensureTestExtensionType("test-ext-setup");
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.reject(new Error("unreadable")),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+  assertEquals(events[events.length - 1].kind, "completed");
+});
+
+Deno.test("datastoreSetupFilesystem: does not warn about a local default vault", async () => {
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.resolve("default"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("createDatastoreSetupDeps.findLocalDefaultVault: names a local_encryption default vault only", async () => {
+  await withSetupTempDir(async (repoDir) => {
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const markerRepo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(repoDir);
+    await markerRepo.write(repoPath, {
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+      repoId: "repo-3259",
+    });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+
+    const vaults = new YamlVaultConfigRepository(repoDir);
+    await vaults.save(
+      VaultConfig.create("local-id", "default", "local_encryption", {
+        auto_generate: true,
+      }),
+    );
+    await vaults.save(VaultConfig.create("shared-id", "shared", "mock", {}));
+    const marker = await markerRepo.read(repoPath);
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "default" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), "default");
+
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "shared" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "missing" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+  });
 });

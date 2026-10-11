@@ -28,6 +28,7 @@ import { RepoService } from "../../domain/repo/repo_service.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createRepoInitDeps,
   repoInit,
   type RepoInitDeps,
   type RepoInitEvent,
@@ -36,6 +37,9 @@ import {
   type RepoUpgradeEvent,
 } from "./init.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { ManagedLockfileUnpublishedError } from "../extensions/managed_lockfile_transaction.ts";
 
 function makeInitDeps(
@@ -53,6 +57,7 @@ function makeInitDeps(
         gitignoreAction: "created",
         tools: ["claude"],
         removedTools: [],
+        vault: null,
       }),
     ...overrides,
   };
@@ -127,6 +132,7 @@ Deno.test('repoInit: legacy `tool` field returns "none" for empty tools (--tool 
         gitignoreAction: "created",
         tools: [],
         removedTools: [],
+        vault: null,
       }),
   });
 
@@ -162,6 +168,7 @@ Deno.test("repoInit: legacy `tool` field returns null for multi-tool repos", asy
         gitignoreAction: "created",
         tools: ["claude", "kiro"],
         removedTools: [],
+        vault: null,
       }),
   });
 
@@ -197,6 +204,7 @@ Deno.test("repoInit: legacy `tool` input wraps into the tools array", async () =
         gitignoreAction: "created",
         tools: ["kiro"],
         removedTools: [],
+        vault: null,
       });
     },
   });
@@ -228,6 +236,7 @@ Deno.test("repoInit: when both `tools` and `tool` are passed, `tools` wins", asy
         gitignoreAction: "created",
         tools: ["claude", "kiro"],
         removedTools: [],
+        vault: null,
       });
     },
   });
@@ -262,6 +271,7 @@ Deno.test("repoInit: serverAddress is forwarded to deps.init", async () => {
         gitignoreAction: "created",
         tools: ["claude"],
         removedTools: [],
+        vault: null,
       });
     },
   });
@@ -298,6 +308,7 @@ Deno.test("repoInit: serverAddress is undefined when not provided", async () => 
         gitignoreAction: "created",
         tools: ["claude"],
         removedTools: [],
+        vault: null,
       });
     },
   });
@@ -311,6 +322,140 @@ Deno.test("repoInit: serverAddress is undefined when not provided", async () => 
   );
 
   assertEquals(capturedOptions?.serverAddress, undefined);
+});
+
+Deno.test("repoInit: sets up the default vault unless vault is false", async () => {
+  for (
+    const [vault, expected] of [
+      [undefined, true],
+      [true, true],
+      [false, false],
+    ] as const
+  ) {
+    let received: boolean | undefined;
+    const deps = makeInitDeps({
+      init: (_repoPath, options) => {
+        received = options.defaultVault;
+        return makeInitDeps().init(_repoPath, options);
+      },
+    });
+
+    await collect<RepoInitEvent>(
+      repoInit(createLibSwampContext(), deps, {
+        path: "/repo",
+        force: false,
+        tools: [],
+        version: "1.0.0",
+        vault,
+      }),
+    );
+
+    assertEquals(received, expected, `vault: ${vault}`);
+  }
+});
+
+Deno.test("repoInit: reports the vault the init set up", async () => {
+  const vault = { name: "default", type: "local_encryption", created: true };
+  const deps = makeInitDeps({
+    init: (repoPath, options) =>
+      makeInitDeps().init(repoPath, options).then((r) => ({ ...r, vault })),
+  });
+
+  const events = await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      tools: [],
+      version: "1.0.0",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    RepoInitEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.vault, vault);
+});
+
+Deno.test("createRepoInitDeps: writes the default vault to the repo's vaults dir with no host path", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const repoDir = join(tmpDir, "repo");
+    const events = await collect<RepoInitEvent>(
+      repoInit(createLibSwampContext(), createRepoInitDeps("1.0.0"), {
+        path: repoDir,
+        force: false,
+        tools: [],
+        version: "1.0.0",
+      }),
+    );
+
+    const completed = events[1] as Extract<
+      RepoInitEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.vault, {
+      name: "default",
+      type: "local_encryption",
+      created: true,
+    });
+    const vaults = await new YamlVaultConfigRepository(repoDir).findAll();
+    assertEquals(vaults.length, 1);
+    assertEquals(vaults[0].name, "default");
+    assertEquals(vaults[0].config, { auto_generate: true });
+    const files = [];
+    for await (
+      const entry of Deno.readDir(join(repoDir, "vaults", "local_encryption"))
+    ) files.push(entry.name);
+    assertEquals(files, [`${vaults[0].id}.yaml`]);
+    const yaml = await Deno.readTextFile(
+      join(repoDir, "vaults", "local_encryption", files[0]),
+    );
+    assertEquals(yaml.includes(tmpDir), false);
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(repoDir),
+    );
+    assertEquals(marker?.defaultVault, "default");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("createRepoInitDeps: vault false writes no vault and no defaultVault", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const repoDir = join(tmpDir, "repo");
+    const events = await collect<RepoInitEvent>(
+      repoInit(createLibSwampContext(), createRepoInitDeps("1.0.0"), {
+        path: repoDir,
+        force: false,
+        tools: [],
+        version: "1.0.0",
+        vault: false,
+      }),
+    );
+
+    const completed = events[1] as Extract<
+      RepoInitEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(completed.data.vault, null);
+    assertEquals(await new YamlVaultConfigRepository(repoDir).findAll(), []);
+    const marker = await new RepoMarkerRepository().read(
+      RepoPath.create(repoDir),
+    );
+    assertEquals(marker?.defaultVault, undefined);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });
 
 Deno.test("repoInit: a credential-bearing serverAddress yields one error without the secret", async () => {
