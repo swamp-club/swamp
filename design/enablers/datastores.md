@@ -1775,8 +1775,9 @@ importers to an empty list. It is a bounded context of its own, beside
 `src/domain/datastore/`, because it builds on the `models`, `data` and
 `workflows` contexts, and those already import `datastore`: inside it, the
 model would close three context cycles
-(`integration/architecture_boundary_test.ts`). The commit store, the chunk store and the opt-in
-are later issues.
+(`integration/architecture_boundary_test.ts`). swamp-club#3236 adds the
+commit store (see "v3 commit store" below), also dormant. The chunk store and
+the opt-in are later issues.
 
 **Ubiquitous language.**
 
@@ -2105,6 +2106,155 @@ namespace and hash before building any path, and uses mtime as
 checks an implementation. `createInMemoryRemote({ storage: true })` provides a
 conforming in-memory one. The S3 and GCS implementations are a later
 swamp-extensions change.
+
+### v3 commit store (datastore rework Phase 3)
+
+swamp-club#3236 adds `commits.db`, the store that keeps every partition's
+commits and enforces the partition rules in storage. It is dormant: nothing in
+production opens it, and `integration/datastore_v3_rules_test.ts` keeps every
+importer of `src/domain/datastore_v3/` and `src/infrastructure/datastore_v3/`
+inside those two directories.
+
+**Port and adapter.**
+
+- `CommitStore` (`src/domain/datastore_v3/commit_store.ts`) is the repository
+  port for partitions:
+  - `append(commit)` returns `appended` with the commit's seq, or
+    `duplicate` with the seq an earlier commit with that txnId landed at.
+  - `readPartition(namespace, partition, fromSeq, limit)` reads commits in
+    seq order.
+  - `head(namespace, partition)` returns the seq and highest fence.
+  - `changesSince(cursor, limit)` reads the store-wide change feed.
+  - `close()` lets queued appends finish, then every other call rejects.
+- `SqliteCommitStore` (`src/infrastructure/datastore_v3/sqlite_commit_store.ts`)
+  implements it over `node:sqlite`, the binding `_catalog.db` uses.
+- It is core's own store, not an extension contract. `commits/1`, for
+  backends that are themselves the commit store, is a Phase 8 item.
+
+**The rules stay in the aggregate.** An append never re-implements a rule. It
+rebuilds the `Partition` and calls `Partition.append` inside the transaction,
+so a refusal is the domain's `CommitRejectedError` and writes nothing. The
+unique keys below back the seq and txnId rules up in SQL. A damaged store
+raises `CommitStoreCorruptError`, naming the namespace, partition and seq, so
+it is never reported as a refusal of the new commit. A store is damaged when a
+stored commit does not parse, does not match its row's seq, namespace,
+partition or txnId, or breaks a rule against the commits before it; when a
+snapshot is invalid; when a head row disagrees with its commits; or when a
+txnId the partition has applied has no stored commit.
+Stored rows are read through `Commit.fromJSON`, so they pass the same checks
+as a commit a client sends.
+
+**Schema.** Version 1, in `PRAGMA user_version`. Migrations are an ordered
+list in the store: migration `i` takes version `i` to `i + 1`, a new one is
+appended, and a shipped one is never edited. A database at a newer version is
+refused (`upgrade swamp`) rather than read with the wrong expectations.
+
+| Table | Key | Holds |
+|---|---|---|
+| `commits` | `cursor` (`AUTOINCREMENT`); unique `(namespace, partition, seq)` and `(namespace, partition, txn_id)` | The commit's JSON (`Commit.toJSON`, inline digests left out) and the lookup columns `txn_id`, `fence` and `at` |
+| `partition_heads` | `(namespace, partition)` | The seq and highest fence, so an append never scans |
+| `partition_snapshots` | `(namespace, partition)` | The partition's latest snapshot and its seq |
+
+**One transaction per commit.** An append runs synchronously from
+`BEGIN IMMEDIATE` to `COMMIT`. It takes the write lock up front, because a
+deferred `BEGIN` in WAL mode can fail on a stale snapshot even with
+`busy_timeout`, as `_catalog.db` did (swamp-club#2671). Inside it the store:
+
+1. reads the head row and compares its seq with the rebuilt partition's;
+2. applies the commit with `Partition.append`;
+3. writes the commit row, the head row (its fence read from the partition,
+   since a lease op raises it too) and, on every 1,000th commit, a snapshot.
+
+A refusal rolls back and leaves the rebuilt partition unchanged. Any other
+failure rolls back and drops the rebuilt partition, which may be ahead of the
+file. Because the append is synchronous, it blocks the event loop for its
+`fsync`. That matters once serve writes through the store (Phase 5).
+
+**Rebuilding a partition.** Each store queues its appends one at a time. The
+queue rebuilds a partition, which is asynchronous because `Commit.fromJSON`
+recomputes inline digests, before the transaction starts. It never rebuilds
+inside one.
+
+- **From a snapshot.** `Partition.snapshot()` gives the partition's state
+  as plain data: seq, fence, lease holder, record digests, and each data
+  name's live versions and high-water mark. `Partition.restore()` refuses a
+  value that breaks the partition's invariants. The store writes a snapshot
+  every 1,000 commits of a partition, in the append's transaction, and
+  rebuilds from the latest one plus the commits after it.
+- **No txnIds in the snapshot.** They grow with every commit the partition
+  ever had, so a snapshot holding them would rewrite more of the WAL that
+  Litestream replicates every 1,000 commits. The rest of a snapshot grows only
+  with the partition's live state. Instead, `restore` takes a synchronous,
+  exact lookup for txnIds at or before the snapshot's seq, and
+  `Partition.append` uses it in its duplicate check, so the rule stays in the
+  aggregate. The store answers the lookup from the unique `txn_id` index,
+  bounded by the snapshot's seq so that the commits it replays after the
+  snapshot are not taken for retries of themselves. A lookup that missed a
+  txnId would let a retry apply twice.
+- **Measured** on an Apple M5 Max with a model partition of 10,999 commits
+  (`scripts/bench_commit_store.ts`). Each commit is an inline put and a
+  data-version, plus a delete every tenth:
+
+  | | Time |
+  |---|---|
+  | Replay from seq 1 | 268 ms |
+  | Snapshot plus the 999 commits after it | 35 ms |
+  | Writing a snapshot (once per 1,000 appends) | 2 ms |
+  | Appending to a cached partition | 0.07 ms |
+
+  About 80% of a full replay is `Commit.fromJSON` recomputing inline digests.
+  Replay grows with the partition, and a short-lived CLI command pays it on
+  its first append to that partition, so the store snapshots.
+- **Cache.** Each store keeps rebuilt partitions in an LRU of 1,024 entries.
+  Serve is long-lived and every workflow run is a new partition, so the
+  number of cached partitions is bounded. A cached partition still collects
+  the txnIds of every commit applied since its snapshot, so a very busy
+  partition cached for a long time grows. Phase 5 should bound that, for
+  example by re-restoring a partition from its newest snapshot.
+- **Head check.** A cached partition whose seq differs from the head row was
+  overtaken by another connection. The store drops it, rebuilds and retries
+  once. A second writer is a bug the Phase 4 writer lock prevents, but the
+  store stays correct. If the partition is stale again straight after the
+  rebuild, the store compares the head row with the last stored commit while
+  it holds the write lock. A mismatch means damage, and the store raises
+  `CommitStoreCorruptError`.
+
+**Change cursor.** `commits.cursor` is an `AUTOINCREMENT` key, so a value is
+never reused even after a later prune deletes rows. `changesSince(cursor)`
+returns rows above it in cursor order. Rows appear in cursor order only
+because one writer serializes appends: no reader can see cursor `n + 1`
+committed before `n`. The read model and the Phase 5 commit feed rely on
+that.
+
+**SQLite settings.**
+
+- WAL, `synchronous=FULL` (a commit is durable when append returns), a
+  5-second `busy_timeout`, and no foreign keys (the schema has none).
+- SQLite's default auto-checkpoint, and never a forced checkpoint. Litestream
+  replicates the WAL, and `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made
+  the replica 11 times larger (`datastore-litestream.md`). A fitness rule
+  refuses `wal_checkpoint` and `wal_autocheckpoint` in v3 code.
+- One connection per store, and one writing process per file.
+
+**One `commits.db` per datastore.** Namespaces share one database, keyed by a
+`namespace` column, rather than one database each.
+
+- The Litestream record puts the replica beside `_control/` at
+  `_litestream/<fence>/`, and the solo writer lock at `_control/writer`
+  carries one fence per datastore. One database matches one fence and one
+  sidecar.
+- Serve handles several namespaces with one connection and one sidecar, not
+  one of each per namespace.
+- Failover restores one database.
+- The cost: restoring one namespace restores them all, and a busy namespace
+  grows the shared file. Namespaces that share a datastore already share its
+  bucket and its writer, so that is accepted.
+- An unnamespaced datastore's commits have namespace `""`. Its chunks live
+  under `_blobs/_default/` (swamp-club#3237, "v3 chunk storage" above).
+
+**Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops. GC
+and prune, which are later issues, must split larger tombstone sets across
+several commits.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -3380,7 +3530,8 @@ exclude patterns.
 | `src/domain/datastore_v3/intent.ts` | v3 typed intents and `intentPartition()` |
 | `src/domain/datastore_v3/op.ts` | v3 ops (`put`, `tombstone`, `data-version`, `lease`) and their factories |
 | `src/domain/datastore_v3/commit.ts` | v3 `Commit` envelope |
-| `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate and its commit rules |
+| `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate, its commit rules, and its snapshot and restore |
+| `src/domain/datastore_v3/commit_store.ts` | v3 `CommitStore` port and `CommitStoreCorruptError` |
 | `src/domain/datastore_v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
 | `src/domain/datastore_v3/commit_log_unit_of_work.ts` | Proposed `CommitLogUnitOfWork` and `UnitOfWorkBinding` ports (types only) |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
@@ -3398,6 +3549,7 @@ exclude patterns.
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
 | `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
 | `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
+| `src/infrastructure/datastore_v3/sqlite_commit_store.ts` | v3 `SqliteCommitStore`: `commits.db` over `node:sqlite` (dormant) |
 
 ### Application Layer (libswamp)
 

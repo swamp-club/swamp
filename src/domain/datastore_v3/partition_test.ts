@@ -400,3 +400,116 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
     "version-not-increasing",
   );
 });
+
+/** A partition with a fence, a lease holder, records and data names. */
+async function populated(): Promise<Partition> {
+  const partition = Partition.empty(modelPartition());
+  partition.append(
+    modelCommit(1, [await savePut("a", 1), versionOp("a", 1)], { fence: 2 }),
+  );
+  partition.append(
+    modelCommit(2, [leaseOp({ holder: "serve-1", fence: 3 })], { fence: 3 }),
+  );
+  return partition;
+}
+
+/** The prior-txnId lookup for {@link populated}'s two commits. */
+function populatedTxns(txnId: string): boolean {
+  return txnId === "txn-1" || txnId === "txn-2";
+}
+
+Deno.test("Partition.restore: round-trips a partition's state", async () => {
+  const partition = await populated();
+  const restored = Partition.restore(
+    modelPartition(),
+    JSON.parse(JSON.stringify(partition.snapshot())),
+    populatedTxns,
+  );
+  assertEquals(snapshot(restored), snapshot(partition));
+  assertEquals(restored.leaseHolder, "serve-1");
+  assertEquals(restored.hasTxn("txn-1"), true);
+  assertEquals(restored.hasTxn("txn-3"), false);
+  assertEquals(restored.snapshot(), partition.snapshot());
+});
+
+Deno.test("Partition.restore: the snapshot leaves txnIds out, and the lookup keeps retries no-ops", async () => {
+  const partition = await populated();
+  const value = JSON.parse(JSON.stringify(partition.snapshot()));
+  assertEquals("txnIds" in value, false);
+
+  // A retry of a commit from before the snapshot, sent with the next seq.
+  const retry = modelCommit(3, [await savePut("a", 3), versionOp("a", 3)], {
+    txnId: "txn-1",
+    fence: 3,
+  });
+  const restored = Partition.restore(modelPartition(), value, populatedTxns);
+  assertEquals(restored.append(retry), { kind: "duplicate" });
+  assertEquals(restored.seq, 2);
+
+  // Why the lookup must be exact: without it the retry would apply twice.
+  const blind = Partition.restore(modelPartition(), value, () => false);
+  assertEquals(blind.append(retry), { kind: "appended", seq: 3 });
+});
+
+Deno.test("Partition.restore: an empty partition round-trips", () => {
+  const partition = Partition.empty(modelPartition());
+  const restored = Partition.restore(
+    modelPartition(),
+    partition.snapshot(),
+    () => false,
+  );
+  assertEquals(restored.seq, 0);
+  assertEquals(restored.highestFence, undefined);
+});
+
+Deno.test("Partition.restore: refuses a damaged snapshot", async () => {
+  const good = (await populated()).snapshot();
+  const other = partitionOf({ kind: "definition", id: crypto.randomUUID() });
+  const damaged: [string, unknown][] = [
+    ["not an object", "snapshot"],
+    ["another version", { ...good, v: 2 }],
+    ["another partition", { ...good, partition: other.toString() }],
+    ["an unknown field", { ...good, extra: true }],
+    ["a negative seq", { ...good, seq: -1 }],
+    ["a negative fence", { ...good, highestFence: -1 }],
+    ["an empty lease holder", { ...good, leaseHolder: "" }],
+    ["a txnIds list", { ...good, txnIds: ["txn-1", "txn-2"] }],
+    ["a lease holder without a fence", { ...good, highestFence: undefined }],
+    ["a digest that is not SHA-256 hex", {
+      ...good,
+      records: [[good.records[0][0], "not-a-digest"]],
+    }],
+    ["an invalid record key", {
+      ...good,
+      records: [["../escape", good.records[0][1]]],
+    }],
+    ["a repeated record", {
+      ...good,
+      records: [good.records[0], good.records[0]],
+    }],
+    ["a live version above the high-water mark", {
+      ...good,
+      names: [{ name: "a", live: [2], highWater: 1 }],
+    }],
+    ["a zero high-water mark", {
+      ...good,
+      names: [{ name: "a", live: [], highWater: 0 }],
+    }],
+    ["an unknown field in a data name", {
+      ...good,
+      names: [{ ...good.names[0], extra: 1 }],
+    }],
+    ["a repeated data name", {
+      ...good,
+      names: [good.names[0], good.names[0]],
+    }],
+  ];
+  for (const [label, value] of damaged) {
+    assertThrows(
+      () => Partition.restore(modelPartition(), value, populatedTxns),
+      Error,
+      "Invalid snapshot",
+      label,
+    );
+  }
+});
