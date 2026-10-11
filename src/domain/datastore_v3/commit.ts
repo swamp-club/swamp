@@ -59,7 +59,11 @@ export interface CommitProps {
   readonly clockOffsetMs?: number;
   /** Who the commit acts for. Set by serve only. */
   readonly principal?: string;
-  /** The writer's lease fence, in team mode. */
+  /**
+   * The writer's fence: the solo writer lock's in solo mode, the leader
+   * lease's in team mode (swamp-club#3234). Once a partition has seen a fence
+   * it refuses a commit without one.
+   */
   readonly fence?: number;
   /** When the single writer accepted the commit. */
   readonly at: string;

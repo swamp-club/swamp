@@ -20,7 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { Commit } from "./commit.ts";
 import { createIntent } from "./intent.ts";
-import { leaseOp, putOp, tombstoneOp } from "./op.ts";
+import { dataVersionOp, leaseOp, putOp, tombstoneOp } from "./op.ts";
 import { CommitRejectedError, Partition } from "./partition.ts";
 import { partitionOf } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
@@ -28,6 +28,7 @@ import {
   base64,
   dataKey,
   deleteVersion,
+  metadata,
   modelCommit,
   modelIntent,
   modelPartition,
@@ -220,7 +221,7 @@ Deno.test("Partition.append: ops in one commit see each other's effects in order
   );
 });
 
-Deno.test("Partition.append: fences never go down; unfenced commits leave the fence", () => {
+Deno.test("Partition.append: fences never go down", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [versionOp("vpc", 1)], { fence: 5 }));
   assertEquals(partition.highestFence, 5);
@@ -228,22 +229,55 @@ Deno.test("Partition.append: fences never go down; unfenced commits leave the fe
     () => partition.append(modelCommit(2, [versionOp("vpc", 2)], { fence: 4 })),
     "stale-fence",
   );
-  partition.append(modelCommit(2, [versionOp("vpc", 2)]));
-  assertEquals(partition.highestFence, 5);
-  partition.append(modelCommit(3, [versionOp("vpc", 3)], { fence: 5 }));
+  partition.append(modelCommit(2, [versionOp("vpc", 2)], { fence: 5 }));
+  partition.append(modelCommit(3, [versionOp("vpc", 3)], { fence: 6 }));
+  assertEquals(partition.highestFence, 6);
   assertEquals(partition.seq, 3);
+});
+
+Deno.test("Partition.append: accepts an unfenced commit before any fence", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1)]));
+  partition.append(modelCommit(2, [versionOp("vpc", 2)]));
+  assertEquals(partition.highestFence, undefined);
+  assertEquals(partition.seq, 2);
+});
+
+Deno.test("Partition.append: refuses an unfenced commit once a fence was seen", () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(modelCommit(1, [versionOp("vpc", 1)], { fence: 1 }));
+  const before = snapshot(partition);
+  assertRejected(
+    () => partition.append(modelCommit(2, [versionOp("vpc", 2)])),
+    "unfenced",
+  );
+  assertEquals(snapshot(partition), before);
+
+  // A fence seen only through a lease op counts too.
+  const leased = Partition.empty(modelPartition());
+  leased.append(modelCommit(1, [leaseOp({ holder: "serve-a", fence: 3 })]));
+  assertRejected(
+    () => leased.append(modelCommit(2, [versionOp("vpc", 1)])),
+    "unfenced",
+  );
+  leased.append(modelCommit(2, [versionOp("vpc", 1)], { fence: 3 }));
+  assertEquals(leased.seq, 2);
 });
 
 Deno.test("Partition.append: lease ops raise the fence and name the holder", () => {
   const partition = Partition.empty(modelPartition());
   partition.append(modelCommit(1, [leaseOp({ holder: "serve-a", fence: 1 })]));
-  partition.append(modelCommit(2, [leaseOp({ holder: "serve-b", fence: 2 })]));
+  partition.append(
+    modelCommit(2, [leaseOp({ holder: "serve-b", fence: 2 })], { fence: 1 }),
+  );
   assertEquals(partition.leaseHolder, "serve-b");
   assertEquals(partition.highestFence, 2);
   assertRejected(
     () =>
       partition.append(
-        modelCommit(3, [leaseOp({ holder: "serve-a", fence: 1 })]),
+        modelCommit(3, [leaseOp({ holder: "serve-a", fence: 1 })], {
+          fence: 2,
+        }),
       ),
     "stale-fence",
   );
@@ -314,4 +348,55 @@ Deno.test("Partition.append: deleting a version of a name never written lists no
   assertEquals(partition.dataNames(), []);
   partition.append(modelCommit(2, [versionOp("ghost", 1)]));
   assertEquals(partition.dataNames(), ["ghost"]);
+});
+
+Deno.test("Partition.append: a data rename is two data-version ops in one commit", async () => {
+  const partition = Partition.empty(modelPartition());
+  partition.append(
+    modelCommit(1, [
+      await savePut("old", 1),
+      versionOp("old", 1),
+      await savePut("old", 2),
+      versionOp("old", 2),
+    ], { fence: 1 }),
+  );
+  assertEquals(partition.latest("old"), 2);
+
+  // Today's rename saves the content under the new name, then writes a
+  // marker version on the old name carrying `renamedTo`.
+  const marker = dataVersionOp({
+    key: RecordKey.create(
+      "data/@swamp/aws-ec2/6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b/old/3/metadata.yaml",
+    ),
+    metadata: { ...metadata("old", 3) as object, renamedTo: "new" },
+  });
+  partition.append(
+    modelCommit(2, [
+      await putOp({
+        intent: modelIntent({ kind: "data.rename", name: "old", to: "new" }),
+        key: dataKey("new", 1),
+        inline: base64("old@2"),
+        expect: "absent",
+      }),
+      versionOp("new", 1),
+      marker,
+    ], { fence: 1 }),
+  );
+
+  assertEquals(partition.latest("new"), 1);
+  assertEquals(partition.latest("old"), 3);
+  assertEquals(partition.highWater("new"), 1);
+  assertEquals(partition.highWater("old"), 3);
+  assertEquals(partition.versions("old"), [1, 2, 3]);
+
+  // The marker must be above the old name's high-water mark.
+  assertRejected(
+    () =>
+      partition.append(
+        modelCommit(3, [versionOp("new", 2), versionOp("old", 3)], {
+          fence: 1,
+        }),
+      ),
+    "version-not-increasing",
+  );
 });

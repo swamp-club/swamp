@@ -1845,8 +1845,13 @@ It is synchronous, and a refused commit leaves the partition unchanged:
   compared.
 - **seq has no gaps.**
 - **Fences never go down.** A commit, or a lease op, whose fence is below the
-  partition's highest is refused. A commit without a fence (solo mode) is
-  accepted and leaves the highest fence unchanged.
+  partition's highest is refused (`stale-fence`). Once a partition has seen a
+  fence, a commit without one is refused too (`unfenced`), so a writer cannot
+  slip past fencing by leaving it out. Every v3 writer holds a fence: the
+  solo writer lock at `_control/writer` carries it in solo mode, and the
+  leader lease in team mode (swamp-club#3234,
+  `design/enablers/datastore-litestream.md`). Only a partition that has never
+  seen a fence accepts an unfenced commit.
 - **`expect` must hold.**
   - `put` with `expect: "absent"` creates only.
   - `put` with `expect: { sha256 }` edits the version it was loaded from.
@@ -1859,6 +1864,10 @@ It is synchronous, and a refused commit leaves the partition unchanged:
     seen as its own versioned tombstone, so a version written concurrently
     survives. A version-less `data.delete` is only for keys that carry no
     version (the latest marker, the name directory).
+  - A rename is one model-partition commit: a `data.rename` put, a
+    `data-version` op for the new name, and a `data-version` op for the old
+    name's marker version (the version carrying `renamedTo`), above the old
+    name's high-water mark.
   - Each name's latest is its greatest live version, so exactly one latest
     per name holds by construction. The partition reads names and versions
     from intents and metadata, never by parsing a record key.

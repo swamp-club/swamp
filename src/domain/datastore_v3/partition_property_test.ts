@@ -177,7 +177,10 @@ async function modelAppend(
     next.fence = fence;
     return true;
   };
-  if (commit.fence !== undefined && !raise(commit.fence)) {
+  if (commit.fence === undefined) {
+    // Once a fence was seen, every commit must carry one.
+    if (model.fence !== undefined) return reject("unfenced");
+  } else if (!raise(commit.fence)) {
     return reject("stale-fence");
   }
   for (const spec of specs) {

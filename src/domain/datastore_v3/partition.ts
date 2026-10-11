@@ -40,6 +40,8 @@ export type CommitRejection =
   | "seq-gap"
   /** The commit's fence, or a lease op's, is below the partition's highest. */
   | "stale-fence"
+  /** The commit carries no fence, but the partition has seen one. */
+  | "unfenced"
   /** A put's or tombstone's `expect` does not hold. */
   | "expect-failed"
   /** A data-version op's version is not above its name's high-water mark. */
@@ -86,8 +88,12 @@ type RecordState = string | null;
  *   has exactly one latest, its greatest live version.
  * - A put's or tombstone's `expect` that does not hold refuses the commit.
  * - A commit carrying a fence below the highest the partition has seen is
- *   refused; so is a lease op carrying one. A commit without a fence (solo
- *   mode) is accepted and leaves the highest fence as it was.
+ *   refused; so is a lease op carrying one. Once a partition has seen a
+ *   fence, a commit without one is refused too, so a writer cannot slip past
+ *   fencing by leaving it out. Every v3 writer holds a fence, the solo writer
+ *   lock's in solo mode and the leader lease's in team mode
+ *   (swamp-club#3234), so only a partition that has never seen one accepts
+ *   an unfenced commit.
  *
  * A commit applies whole or not at all: a refused commit leaves the
  * partition exactly as it was. `append` is synchronous, so its checks and its
@@ -186,6 +192,11 @@ export class Partition {
     let fence = this.#highestFence;
     if (commit.fence !== undefined) {
       fence = this.#raiseFence(fence, commit.fence);
+    } else if (fence !== undefined) {
+      throw new CommitRejectedError(
+        "unfenced",
+        `Partition ${this.key} has seen fence ${fence}; a commit without a fence is refused`,
+      );
     }
 
     // Stage every change in overlays over the current state, so a refusal
