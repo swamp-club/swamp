@@ -49,8 +49,12 @@ import { type BlobPart, BlobRef } from "./blob_ref.ts";
 /** The largest chunk core cuts, whatever the storage allows. */
 export const CHUNK_BYTES = 16 * 1024 * 1024;
 
-/** The storage namespace of a solo-mode repository. No slug starts with `_`. */
-export const SOLO_STORAGE_NAMESPACE = "_solo";
+/**
+ * The storage namespace of an unnamespaced datastore (commit namespace `""`):
+ * a solo repository, or a team datastore served with no namespace. No slug
+ * starts with `_`, so it cannot collide with a named namespace.
+ */
+export const UNNAMESPACED_STORAGE_NAMESPACE = "_default";
 
 /** A chunk's bytes do not match its reference, or content its digest. */
 export class ChunkIntegrityError extends Error {
@@ -70,7 +74,9 @@ export class ChunkMissingError extends Error {
 
 /** The storage namespace of a repository's namespace. */
 export function storageNamespaceOf(namespace: Namespace): string {
-  return isEmptyNamespace(namespace) ? SOLO_STORAGE_NAMESPACE : namespace;
+  return isEmptyNamespace(namespace)
+    ? UNNAMESPACED_STORAGE_NAMESPACE
+    : namespace;
 }
 
 /** Stores and reads content as chunks. A domain service; holds no state. */

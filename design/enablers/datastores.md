@@ -2011,8 +2011,10 @@ so the rule that keeps that model dormant covers it too.
   `src/domain/datastore_v3/chunk_store.ts`) that cuts content into chunks,
   uploads them, and reads them back verified.
 - **Part**: one chunk of content stored as several, listed in its `BlobRef`.
-- **Storage namespace**: the repository's namespace slug, or `_solo` in solo
-  mode. No slug can start with `_` (`NAMESPACE_PATTERN` in
+- **Storage namespace**: the repository's namespace slug, or `_default` for an
+  unnamespaced datastore: one whose commits carry the empty namespace (`""`
+  in `commits.db`), whether a solo repository or a team datastore served with
+  no namespace. No slug can start with `_` (`NAMESPACE_PATTERN` in
   `src/domain/data/namespace.ts`), so the two cannot collide.
 
 **The contract.** v3 keeps commits in `commits.db`, which Litestream

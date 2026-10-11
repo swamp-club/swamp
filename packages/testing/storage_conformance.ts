@@ -69,7 +69,8 @@ async function listAll(
  * Checked: the contract string and capabilities, and that `touch` is
  * implemented exactly when declared; `put` then `get`, `get` of a missing
  * chunk, `has` on present, missing and mixed batches; a re-put leaving one
- * chunk; `delete` and its idempotence; namespace isolation; `list` reporting
+ * chunk; `delete` and its idempotence; namespace isolation, including the
+ * `_default` namespace of an unnamespaced datastore; `list` reporting
  * exactly the stored chunks; that `put` copies its input; `touch` returning
  * the hashes it did not find; that `touch` and `put` refresh
  * `lastModified` (when `setLastModified` is given); concurrent puts of one
@@ -219,6 +220,24 @@ export async function assertStorageConformance(
       a.bytes,
       "deleting a chunk in one namespace must not delete it in another",
     );
+
+    // the unnamespaced datastore's namespace, `_default`, works like any
+    // other; the chunk's content is unique to this run, so no real chunk is
+    // touched
+    const unnamespaced = await chunk(`unnamespaced ${crypto.randomUUID()}`);
+    await put("_default", unnamespaced);
+    assertEquals(
+      await storage.get("_default", unnamespaced.sha256, signal),
+      unnamespaced.bytes,
+      "the _default namespace (an unnamespaced datastore) must store chunks",
+    );
+    assert(
+      !(await listAll(storage, ns)).some((s) =>
+        s.sha256 === unnamespaced.sha256
+      ),
+      "_default must be a namespace of its own",
+    );
+    await storage.delete("_default", unnamespaced.sha256, signal);
 
     // touch
     if (storage.touch !== undefined) {

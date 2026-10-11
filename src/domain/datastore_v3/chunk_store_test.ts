@@ -27,8 +27,8 @@ import {
   ChunkIntegrityError,
   ChunkMissingError,
   ChunkStore,
-  SOLO_STORAGE_NAMESPACE,
   storageNamespaceOf,
+  UNNAMESPACED_STORAGE_NAMESPACE,
 } from "./chunk_store.ts";
 import { MAX_INLINE_BYTES } from "./op.ts";
 import { MemoryStorage, readAll, streamOf } from "./v3_test_helpers.ts";
@@ -259,13 +259,17 @@ Deno.test("ChunkStore: honours an aborted signal", async () => {
   );
 });
 
-Deno.test("ChunkStore: solo mode stores under the _solo namespace, apart from named ones", async () => {
-  assertEquals(storageNamespaceOf(SOLO_NAMESPACE), SOLO_STORAGE_NAMESPACE);
+Deno.test("ChunkStore: an unnamespaced datastore stores under _default, apart from named ones", async () => {
+  assertEquals(UNNAMESPACED_STORAGE_NAMESPACE, "_default");
+  assertEquals(
+    storageNamespaceOf(SOLO_NAMESPACE),
+    UNNAMESPACED_STORAGE_NAMESPACE,
+  );
   assertEquals(storageNamespaceOf(NS), "team-a");
   const storage = new MemoryStorage();
   const store = new ChunkStore(storage);
   const ref = await store.write(SOLO_NAMESPACE, bytesOf(3), live());
-  assertEquals([...storage.chunks.keys()], [`_solo/${ref.sha256}`]);
+  assertEquals([...storage.chunks.keys()], [`_default/${ref.sha256}`]);
   await assertRejects(
     () => readAll(store.read(NS, ref, live())),
     ChunkMissingError,

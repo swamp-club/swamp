@@ -154,7 +154,8 @@ interface DatastoreStorage {
 ```
 
 - **Key layout:** `<prefix>/_blobs/<ns>/sha256/<first two hex>/<sha256>`, beside
-  `_control/`. `ns` is the namespace slug, or `_solo` in solo mode.
+  `_control/`. `ns` is the namespace slug, or `_default` for an unnamespaced
+  datastore (solo, or a team datastore with no namespace).
 - **`put`** replaces the chunk atomically (no reader sees half of one), sets
   `lastModified` to now, and copies `bytes`. Concurrent puts of one hash must
   leave one complete chunk.

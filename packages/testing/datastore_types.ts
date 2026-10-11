@@ -289,7 +289,8 @@ export interface StoredChunk {
  * SHA-256 of their bytes, stored at
  * `<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>`.
  *
- * `namespace` is the repository's namespace slug, or `_solo` in solo mode.
+ * `namespace` is the repository's namespace slug, or `_default` for an
+ * unnamespaced datastore (solo, or a team datastore with no namespace).
  * `sha256` is 64 lowercase hex characters. Swamp verifies every chunk it
  * reads, so the storage need not hash anything. Every method must reject
  * when `signal` aborts.

@@ -76,7 +76,7 @@ Deno.test("assertStorageConformance: the in-memory remote's storage conforms and
     },
   };
   await assertStorageConformance(() => recording, { setLastModified });
-  assertEquals(namespaces.size, 2);
+  assertEquals(namespaces.size, 3);
   for (const ns of namespaces) {
     assertEquals(
       await Array.fromAsync(storage.list(ns, new AbortController().signal)),
@@ -166,6 +166,18 @@ Deno.test("assertStorageConformance: catches a get that ignores an aborted signa
       get: (ns, sha) => s.get(ns, sha, new AbortController().signal),
     })),
     "get must reject when its signal has aborted",
+  );
+});
+
+Deno.test("assertStorageConformance: catches a storage that refuses the _default namespace", async () => {
+  await assertCaught(
+    broken((s) => ({
+      put: (ns, sha, bytes, signal) =>
+        ns === "_default"
+          ? Promise.reject(new Error("not a namespace slug"))
+          : s.put(ns, sha, bytes, signal),
+    })),
+    "not a namespace slug",
   );
 });
 

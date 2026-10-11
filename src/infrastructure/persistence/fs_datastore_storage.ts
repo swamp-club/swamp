@@ -30,8 +30,8 @@ import { assertContainedPath } from "./safe_path.ts";
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-/** A namespace slug, or `_solo` for a solo-mode repository. */
-const STORAGE_NAMESPACE = /^(?:_solo|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
+/** A namespace slug, or `_default` for an unnamespaced datastore. */
+const STORAGE_NAMESPACE = /^(?:_default|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
 /** The longest namespace slug (`NAMESPACE_MAX_LENGTH`). */
 const MAX_NAMESPACE_LENGTH = 64;
 
@@ -172,7 +172,7 @@ export class FileSystemStorage implements DatastoreStorage {
       !STORAGE_NAMESPACE.test(namespace)
     ) {
       throw new Error(
-        `Storage namespace must be a namespace slug or _solo: ${namespace}`,
+        `Storage namespace must be a namespace slug or _default: ${namespace}`,
       );
     }
     assertContainedPath(namespace, this.#blobsDir);

@@ -54,9 +54,9 @@ Deno.test("FileSystemStorage: conforms to storage/1", async () => {
 Deno.test("FileSystemStorage: stores a chunk at _blobs/<namespace>/sha256/<aa>/<hash>", async () => {
   await withTempDir(async (dir) => {
     const storage = new FileSystemStorage(dir);
-    await storage.put("_solo", SHA, new Uint8Array([7]), live());
+    await storage.put("_default", SHA, new Uint8Array([7]), live());
     assertEquals(
-      await Deno.readFile(join(dir, "_blobs", "_solo", "sha256", "ab", SHA)),
+      await Deno.readFile(join(dir, "_blobs", "_default", "sha256", "ab", SHA)),
       new Uint8Array([7]),
     );
   });
@@ -66,7 +66,9 @@ Deno.test("FileSystemStorage: refuses a namespace or hash that is not one", asyn
   await withTempDir(async (dir) => {
     const storage = new FileSystemStorage(dir);
     const bytes = new Uint8Array([1]);
-    for (const namespace of ["..", "a/b", "", "_other", "A", "-a", "a\\b"]) {
+    for (
+      const namespace of ["..", "a/b", "", "_other", "_solo", "A", "-a", "a\\b"]
+    ) {
       await assertRejects(
         () => storage.put(namespace, SHA, bytes, live()),
         Error,
@@ -75,7 +77,7 @@ Deno.test("FileSystemStorage: refuses a namespace or hash that is not one", asyn
     }
     for (const sha256 of ["../" + SHA.slice(3), SHA.toUpperCase(), "ab"]) {
       await assertRejects(
-        () => storage.get("_solo", sha256, live()),
+        () => storage.get("_default", sha256, live()),
         Error,
         "Chunk hash",
       );

@@ -134,16 +134,16 @@ Deno.test("chunk store over the filesystem: a deleted chunk is reported missing"
   });
 });
 
-Deno.test("chunk store over the filesystem: namespaces are kept apart on disk", async () => {
+Deno.test("chunk store over the filesystem: an unnamespaced datastore and a named one are kept apart on disk", async () => {
   await withTempDir(async (dir) => {
     const storage = new FileSystemStorage(dir);
     const store = new ChunkStore(storage);
     const solo = await store.write(SOLO_NAMESPACE, content, live());
     const team = await store.write(NS, content, live());
     assert(solo.equals(team));
-    await Deno.stat(chunkPath(dir, "_solo", solo.sha256));
+    await Deno.stat(chunkPath(dir, "_default", solo.sha256));
     await Deno.stat(chunkPath(dir, "team-a", team.sha256));
-    await storage.delete("_solo", solo.sha256, live());
+    await storage.delete("_default", solo.sha256, live());
     assertEquals(await readAll(store.read(NS, team, live())), content);
     await assertRejects(
       () => readAll(store.read(SOLO_NAMESPACE, solo, live())),

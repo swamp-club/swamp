@@ -161,13 +161,14 @@ Deno.test("storage/1 conformance", async () => {
 });
 ```
 
-It checks the contract and capabilities, put/get/has/delete, namespace
-isolation, `list`, that `put` copies its input, `touch` reporting missing
-hashes, concurrent puts of one hash, a second handle seeing the first's writes,
-and rejection on an aborted signal. It writes under namespaces of its own and
-deletes what it wrote. Without `setLastModified` (e.g. against a real bucket)
-the refresh checks are skipped. `createInMemoryRemote({ storage: true })` gives
-a conforming in-memory `storage()` for tests.
+It checks the contract and capabilities, put/get/has/delete, namespace isolation
+(including `_default`, the namespace of an unnamespaced datastore), `list`, that
+`put` copies its input, `touch` reporting missing hashes, concurrent puts of one
+hash, a second handle seeing the first's writes, and rejection on an aborted
+signal. It writes under namespaces of its own and deletes what it wrote. Without
+`setLastModified` (e.g. against a real bucket) the refresh checks are skipped.
+`createInMemoryRemote({ storage: true })` gives a conforming in-memory
+`storage()` for tests.
 
 ## Mocking External Calls
 

@@ -19,6 +19,14 @@ and the `_control/` records this layout sits beside.
 
 ## Decision
 
+> **Superseded for shipping (2026-10-11):** Litestream is not embedded with
+> `deno compile --include`. Phase 4 downloads the pinned upstream release on
+> first v3 use, checks its SHA-256 on download and before every start, and
+> caches it per version under `~/.swamp/`, with an override path for offline
+> machines. The serve Docker image includes it. Embedding is revisited at
+> Phase 7. Everything else in this record stands: the sidecar model, the
+> `/sync` rule, checkpointing, the replica path per fence, and Windows.
+
 1. **Run the upstream `litestream` binary as a sidecar process that swamp
    supervises.** Pin one release. Embed the binary for each target in the
    compiled swamp binary with `deno compile --include`, the same way the
@@ -253,7 +261,8 @@ swamp-club#3191), not under a namespace:
 
 Content chunks are not replicated by Litestream: datastore extensions store
 them through the `storage/1` contract ("v3 chunk storage" in
-`datastores.md`).
+`datastores.md`). `<namespace>` is the namespace slug, or `_default` for an
+unnamespaced datastore.
 
 Namespaces: this record fixes only the replica layout. One `commits.db` per
 datastore gives one `_litestream/` tree. Whether namespaces get their own
