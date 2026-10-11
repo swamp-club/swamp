@@ -2280,7 +2280,9 @@ dormant v3 context. It holds two weak maps:
 - `requireUnit(hook)` / `requiresUnit(hook)`: a context that has no route 2.
   `runInCommitLogRoot` marks its context's hook. The v3 opt-in must also mark
   a v3 repository context when it builds it, so a write before any root
-  opens is refused too.
+  opens is refused too. The legacy adapter refuses to build a unit over a
+  marked hook: a legacy unit forwards each change to the hook, which would
+  be route 2 by another name.
 
 `signalChange` routes a hooked write in this order: into the ambient unit when
 it is bound to the write's hook; otherwise, when the hook requires a unit,
@@ -2322,10 +2324,15 @@ is released on every outcome and its entry dropped when its queue drains.
 - **No atomicity across partitions.** When a partition fails, the partitions
   before it stay committed and the ones after it are not tried.
 - **Pending groups.** A partition whose commit failed stays pending with its
-  txnId. The next `checkpoint` or `commit` of the unit rebuilds it at the
+  txnId. The unit's next `checkpoint`, or its `commit`, rebuilds it at the
   current head with the same txnId, so a commit that had landed is reported
-  `duplicate` and lands once.
-- **Refusals.** `CommitRejectedError` surfaces unchanged.
+  `duplicate` and lands once. `commit` ends the unit whether or not it
+  succeeds (the `UnitOfWork` contract), so what is still pending when the
+  unit's own commit fails is lost with it until the Phase 4 outbox makes it
+  durable; a caller that must retry checkpoints first.
+- **Refusals.** `CommitRejectedError` surfaces unchanged, and the refused
+  partition's changes are dropped: they can never land as they are, and
+  keeping them would block every partition staged after them.
 - **Abandon** discards staged and pending changes (decision 4). Chunks
   already stored stay for chunk garbage collection.
 - **Checkpoint** commits what is staged so far and keeps the unit open
@@ -2339,8 +2346,9 @@ the outbox, which makes pending groups durable across a crash.
 options, fn)` mirrors `runInRootUnitOfWork`: it refuses a context without a
 hook, marks the hook with `requireUnit`, and runs `fn` with the root ambient.
 Opened inside an open commit-log unit for the same hook it is a child: its
-`commit` hands its changes, in order, to the root, its `abandon` discards
-them, and `checkpoint` on it throws. A root's checkpoint commits what has
+`commit` hands its changes, in order, to the root (all of them, or none
+when they would take a partition over `MAX_COMMIT_OPS`), its `abandon`
+discards them, and `checkpoint` on it throws. A root's checkpoint commits what has
 been handed to it so far. The root ends as its `disposition` option decides,
 the way `pushWhen` decides a legacy root's push: by default it commits when
 `fn` resolves and discards when it throws. `runOutcomeDisposition` is

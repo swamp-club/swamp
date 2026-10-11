@@ -302,10 +302,30 @@ Deno.test("signalChange: a hook that requires a unit refuses a write inside a un
 Deno.test("signalChange: a hook that requires a unit still stages into a unit bound to it", async () => {
   const { hook, calls } = recordingHook();
   unitOfWorkBinding.requireUnit(hook);
-  const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+  const staged: StagedChange[] = [];
+  const uow: UnitOfWork = {
+    stage(change) {
+      staged.push(change);
+      return Promise.resolve();
+    },
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [...staged],
+  };
+  unitOfWorkBinding.bind(uow, hook);
   await runInUnitOfWork(uow, () => signalChange(hook, WRITE));
-  assertEquals(uow.staged(), [WRITE]);
-  assertEquals(calls, [WRITE.path]);
+  assertEquals(staged, [WRITE]);
+  assertEquals(calls, []);
+});
+
+Deno.test("createLegacyUnitOfWork: refuses a hook that requires a unit, which only a commit-log unit serves", () => {
+  const { hook } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  assertThrows(
+    () => createLegacyUnitOfWork(hook, { flush: undefined }),
+    Error,
+    "cannot serve a v3 repository context",
+  );
 });
 
 Deno.test("UnscopedWriteRefusedError: names the change and its caller", () => {

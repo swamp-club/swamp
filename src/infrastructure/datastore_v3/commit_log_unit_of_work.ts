@@ -35,11 +35,16 @@
  * partitions before it stay committed and the ones after it are not tried.
  *
  * - A partition whose commit failed stays **pending** with its txnId and
- *   ops. The next `checkpoint` or `commit` of the same unit rebuilds its
- *   commit at the partition's current head with the same txnId, so a commit
- *   that did land the first time is reported `duplicate` by the store and
- *   lands once.
- * - A refusal (`CommitRejectedError`) surfaces unchanged.
+ *   ops. The next `checkpoint` of the same unit, or its `commit`, rebuilds
+ *   its commit at the partition's current head with the same txnId, so a
+ *   commit that did land the first time is reported `duplicate` by the store
+ *   and lands once. `commit` ends the unit whether or not it succeeds (the
+ *   `UnitOfWork` contract), so what is still pending when the unit's own
+ *   commit fails is lost with it; the Phase 4 outbox makes it durable. A
+ *   caller that must retry checkpoints first.
+ * - A refusal (`CommitRejectedError`) surfaces unchanged, and the refused
+ *   partition's changes are dropped: they can never land as they are, and
+ *   keeping them would block every partition staged after them.
  * - `abandon` discards staged and pending changes. Chunks already stored
  *   stay unreferenced until chunk garbage collection reclaims them.
  *
@@ -87,6 +92,7 @@ import {
   type Op,
   putOp,
 } from "../../domain/datastore_v3/op.ts";
+import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
 import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
@@ -204,18 +210,26 @@ export function createCommitLogUnitOfWork(
   /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
 
-  const record = (change: TypedChange): void => {
-    const key = change.partition.toString();
-    const count = (counts.get(key) ?? 0) + 1;
-    if (count > MAX_COMMIT_OPS) {
-      throw new Error(
-        `Partition ${key} has more than ${MAX_COMMIT_OPS} changes staged in ` +
-          "one unit of work; checkpoint before staging more",
-      );
+  /**
+   * Records changes all or nothing: when any partition would go over
+   * MAX_COMMIT_OPS, none of them is recorded.
+   */
+  const record = (changes: readonly TypedChange[]): void => {
+    const next = new Map(counts);
+    for (const change of changes) {
+      const key = change.partition.toString();
+      const count = (next.get(key) ?? 0) + 1;
+      if (count > MAX_COMMIT_OPS) {
+        throw new Error(
+          `Partition ${key} has more than ${MAX_COMMIT_OPS} changes staged in ` +
+            "one unit of work; checkpoint before staging more",
+        );
+      }
+      next.set(key, count);
     }
-    counts.set(key, count);
-    staged.push(change);
-    all.push(change);
+    for (const [key, count] of next) counts.set(key, count);
+    staged.push(...changes);
+    all.push(...changes);
   };
 
   const flush = (): Promise<void> => {
@@ -227,7 +241,14 @@ export function createCommitLogUnitOfWork(
       // the order they were first touched.
       pending.sort((a, b) => runRank(a) - runRank(b));
       while (pending.length > 0) {
-        await appendGroup(pending[0], options, clock);
+        try {
+          await appendGroup(pending[0], options, clock);
+        } catch (error) {
+          // A refused commit can never land as it is: drop it, so the
+          // partitions staged after it can still commit.
+          if (error instanceof CommitRejectedError) pending = pending.slice(1);
+          throw error;
+        }
         pending = pending.slice(1);
       }
     });
@@ -240,7 +261,7 @@ export function createCommitLogUnitOfWork(
     isOpen: () => ended === undefined,
     parent,
     adopt(changes) {
-      for (const change of changes) record(change);
+      record(changes);
     },
   };
 
@@ -280,7 +301,7 @@ export function createCommitLogUnitOfWork(
         }
         throw new Error(`unit of work already ${ended}`);
       }
-      record(checked);
+      record([checked]);
       await Promise.resolve();
     },
     stage(change: StagedChange): Promise<void> {
@@ -465,6 +486,8 @@ async function storeContent(
       head.push(value);
       headBytes += value.length;
     }
+    // The chunk store now owns the stream: it cancels it, and so the
+    // source, when the write fails or aborts.
     handedOn = true;
     return {
       blob: await chunkStore.write(namespace, resume(head, reader), signal),

@@ -216,13 +216,17 @@ Deno.test("commit-log unit: multi-chunk content is stored before the commit that
         for (const op of commit.ops) {
           if (op.kind === "put" && "blob" in op.content) {
             const parts = op.content.blob.parts ?? [];
-            assertEquals(parts.length, 2);
+            assertEquals(
+              parts.length,
+              Math.ceil(content.length / v3.chunkStore.chunkBytes),
+            );
+            assert(parts.length > 1);
             const present = await v3.storage.has(
               "_default",
               parts.map((part) => part.sha256),
               AbortSignal.timeout(10_000),
             );
-            assertEquals(present.size, 2);
+            assertEquals(present.size, parts.length);
           }
         }
         return await v3.store.append(commit);

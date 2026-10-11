@@ -203,6 +203,14 @@ export function createLegacyUnitOfWork(
   markDirty: MarkDirtyHook | undefined,
   options: LegacyUnitOfWorkOptions,
 ): UnitOfWork {
+  if (markDirty !== undefined && unitOfWorkBinding.requiresUnit(markDirty)) {
+    // A legacy unit forwards each change to the hook, which is route 2 by
+    // another name; a v3 context commits only through a commit-log unit.
+    throw new Error(
+      "a legacy unit of work cannot serve a v3 repository context; open a " +
+        "commit-log unit over it",
+    );
+  }
   const parent = legacyParentFor(markDirty, options.parent);
   if (parent !== undefined && options.flush !== undefined) {
     throw new Error("a child unit of work cannot flush; its root pushes");

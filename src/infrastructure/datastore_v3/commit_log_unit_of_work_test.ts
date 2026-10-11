@@ -474,6 +474,65 @@ Deno.test("createCommitLogUnitOfWork: a unit over another hook is a root, not a 
   assertStrictEquals(commitLogParentFor(contextHook(), root), undefined);
 });
 
+Deno.test("createCommitLogUnitOfWork: a child whose changes would take the root over MAX_COMMIT_OPS hands it none of them", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  const op = tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name: "a" }),
+    key: dataKey("a", 1),
+  });
+  for (let i = 0; i < MAX_COMMIT_OPS - 2; i++) {
+    await root.stageOp({ partition: MODEL, op });
+  }
+  for (let i = 0; i < 5; i++) await child.stageOp({ partition: MODEL, op });
+  await assertRejects(
+    () => child.commit(),
+    Error,
+    "checkpoint before staging more",
+  );
+  assertEquals(root.stagedOps().length, MAX_COMMIT_OPS - 2);
+});
+
+Deno.test("createCommitLogUnitOfWork: a refused partition is dropped, so the next checkpoint commits the partitions after it", async () => {
+  const sink = new MemorySink();
+  await sink.append(
+    modelCommit(1, [await savePut("seed", 1)], { fence: 5 }),
+  );
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory(), { fence: 3 }),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), CommitRejectedError);
+  await uow.commit();
+  assertEquals(sink.commitsOf(runPartition()).length, 1);
+  assertEquals(sink.commitsOf(MODEL).length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: a failed commit ends the unit, so retrying means checkpointing first", async () => {
+  const sink = new MemorySink();
+  let fail = true;
+  sink.beforeAppend = () => {
+    if (fail) throw new Error("disk full");
+  };
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await assertRejects(() => uow.commit(), Error, "disk full");
+  fail = false;
+  await assertRejects(() => uow.commit(), Error, "already committed");
+  await assertRejects(() => uow.checkpoint(), Error, "after the unit");
+  assertEquals(sink.landed, []);
+});
+
 Deno.test("createCommitLogUnitOfWork: a change staged on an ended child goes to its open root", async () => {
   const sink = new MemorySink();
   const hook = contextHook();
