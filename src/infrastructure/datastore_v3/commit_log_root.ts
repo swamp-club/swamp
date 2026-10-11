@@ -69,7 +69,7 @@ export interface CommitLogRootOptions<T>
  */
 export type CommitLogRoot = Pick<
   CommitLogUnitOfWork,
-  "stageOp" | "stagedOps" | "checkpoint"
+  "stageOp" | "stageOps" | "stagedOps" | "checkpoint"
 >;
 
 /** Commits when `fn` resolved, discards when it threw. */
@@ -138,6 +138,7 @@ export async function runInCommitLogRoot<T>(
   });
   const view: CommitLogRoot = {
     stageOp: (change) => root.stageOp(change),
+    stageOps: (changes) => root.stageOps(changes),
     stagedOps: () => root.stagedOps(),
     checkpoint: () => root.checkpoint(),
   };

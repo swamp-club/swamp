@@ -28,6 +28,7 @@ import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
 import {
   currentUnitOfWork,
   signalChange,
+  stageTyped,
   UnscopedWriteRefusedError,
 } from "../persistence/unit_of_work_scope.ts";
 import {
@@ -301,4 +302,34 @@ Deno.test("runInCommitLogRoot: with runOutcomeDisposition, a suspended run's rec
     )
   );
   assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("runInCommitLogRoot: a repository's typed declaration and stageTyped land in stagedOps, never staged() (swamp-club#3250)", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const put = await savePut("a", 1);
+  await runInCommitLogRoot(
+    { markDirty: hook },
+    unitOptions(sink, memory()),
+    async (root) => {
+      await signalChange(hook, { kind: "write", path: "/c/a" }, {
+        typed: true,
+      });
+      await stageTyped(hook, () => [{ partition: MODEL, op: put }]);
+      assertEquals(root.stagedOps().length, 1);
+      assertEquals(currentUnitOfWork()?.staged(), []);
+      // Without the declaration the path-only change is refused.
+      await assertRejects(
+        () => signalChange(hook, { kind: "write", path: "/c/a" }),
+        PathOnlyChangeRefusedError,
+      );
+    },
+  );
+  assertEquals(sink.landed.length, 1);
+  assertEquals(sink.landed[0].ops, [put]);
+  // After the root ended, a typed write is refused, not dropped.
+  await assertRejects(
+    () => stageTyped(hook, () => [{ partition: MODEL, op: put }]),
+    UnscopedWriteRefusedError,
+  );
 });

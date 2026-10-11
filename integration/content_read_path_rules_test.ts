@@ -143,6 +143,9 @@ const PINNED_CONTENT_PATH_READERS: readonly string[] = [
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContent",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.getContentSync",
   "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.stream",
+  // swamp-club#3250, v3 only: reads back a version this repository has just
+  // written, finalized, appended to or promoted, so its content is local.
+  "src/infrastructure/persistence/unified_data_repository.ts#FileSystemUnifiedDataRepository.writtenVersionChanges",
 ];
 
 Deno.test("content readers: getContentSync callers are pinned", async () => {

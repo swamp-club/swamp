@@ -46,6 +46,7 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
+import type { ContentSource } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
 import {
   commitLogParentFor,
@@ -95,7 +96,7 @@ async function contentOf(
 
 function pendingPut(
   name: string,
-  content: Uint8Array | (() => ReadableStream<Uint8Array>),
+  content: ContentSource,
 ) {
   return {
     partition: MODEL,
@@ -474,7 +475,7 @@ Deno.test("createCommitLogUnitOfWork: a unit over another hook is a root, not a 
   assertStrictEquals(commitLogParentFor(contextHook(), root), undefined);
 });
 
-Deno.test("createCommitLogUnitOfWork: a child whose changes would take the root over MAX_COMMIT_OPS hands it none of them", async () => {
+Deno.test("createCommitLogUnitOfWork: a child that takes the root past MAX_COMMIT_OPS commits as several commits (swamp-club#3250)", async () => {
   const sink = new MemorySink();
   const hook = contextHook();
   const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
@@ -489,13 +490,44 @@ Deno.test("createCommitLogUnitOfWork: a child whose changes would take the root 
   for (let i = 0; i < MAX_COMMIT_OPS - 2; i++) {
     await root.stageOp({ partition: MODEL, op });
   }
+  // Five batches of one, handed up batch by batch.
   for (let i = 0; i < 5; i++) await child.stageOp({ partition: MODEL, op });
-  await assertRejects(
-    () => child.commit(),
-    Error,
-    "checkpoint before staging more",
+  await child.commit();
+  assertEquals(root.stagedOps().length, MAX_COMMIT_OPS + 3);
+  await root.commit();
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.length),
+    [MAX_COMMIT_OPS, 3],
   );
-  assertEquals(root.stagedOps().length, MAX_COMMIT_OPS - 2);
+  assertEquals(new Set(sink.commitsOf(MODEL).map((c) => c.txnId)).size, 2);
+});
+
+Deno.test("createCommitLogUnitOfWork: a child's batch is never split when it is handed up", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  const op = tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name: "a" }),
+    key: dataKey("a", 1),
+  });
+  for (let i = 0; i < MAX_COMMIT_OPS - 2; i++) {
+    await root.stageOp({ partition: MODEL, op });
+  }
+  await child.stageOps([
+    { partition: MODEL, op },
+    { partition: MODEL, op },
+    { partition: MODEL, op },
+  ]);
+  await child.commit();
+  await root.commit();
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.length),
+    [MAX_COMMIT_OPS - 2, 3],
+  );
 });
 
 Deno.test("createCommitLogUnitOfWork: a refused partition is dropped, so the next checkpoint commits the partitions after it", async () => {
@@ -714,10 +746,11 @@ Deno.test("createCommitLogUnitOfWork: a lease op is refused", async () => {
   );
 });
 
-Deno.test("createCommitLogUnitOfWork: more than MAX_COMMIT_OPS changes to one partition are refused at stage", async () => {
+Deno.test("createCommitLogUnitOfWork: a partition past MAX_COMMIT_OPS commits as several commits, split between batches (swamp-club#3250)", async () => {
+  const sink = new MemorySink();
   const uow = createCommitLogUnitOfWork(
     contextHook(),
-    unitOptions(new MemorySink(), memory()),
+    unitOptions(sink, memory()),
   );
   const op = tombstoneOp({
     intent: modelIntent({ kind: "data.delete", name: "a" }),
@@ -726,10 +759,242 @@ Deno.test("createCommitLogUnitOfWork: more than MAX_COMMIT_OPS changes to one pa
   for (let i = 0; i < MAX_COMMIT_OPS; i++) {
     await uow.stageOp({ partition: MODEL, op });
   }
+  await uow.stageOps([{ partition: MODEL, op }, { partition: MODEL, op }]);
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await uow.commit();
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.length),
+    [MAX_COMMIT_OPS, 2],
+  );
+  // The run partition still commits last.
+  assertEquals(sink.landed.at(-1)?.partition.kind, "run");
+});
+
+Deno.test("createCommitLogUnitOfWork: one batch over MAX_COMMIT_OPS for a partition is refused at stage", async () => {
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(new MemorySink(), memory()),
+  );
+  const op = tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name: "a" }),
+    key: dataKey("a", 1),
+  });
   await assertRejects(
-    () => uow.stageOp({ partition: MODEL, op }),
+    () =>
+      uow.stageOps(
+        Array.from({ length: MAX_COMMIT_OPS + 1 }, () => ({
+          partition: MODEL,
+          op,
+        })),
+      ),
     Error,
-    "checkpoint before staging more",
+    "stage it as smaller batches",
+  );
+  assertEquals(uow.stagedOps(), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a refused split drops the splits formed with it, not later groups", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  const op = tombstoneOp({
+    intent: modelIntent({ kind: "data.delete", name: "a" }),
+    key: dataKey("a", 1),
+  });
+  // The first split carries a put that must create a key the second
+  // batch of fillers never touches; a seeded record makes it refuse.
+  await sink.append(modelCommit(1, [await savePut("seed", 1)]));
+  await uow.stageOp({
+    partition: MODEL,
+    op: await savePut("seed", 1, "again", "absent"),
+  });
+  for (let i = 0; i < MAX_COMMIT_OPS; i++) {
+    await uow.stageOp({ partition: MODEL, op });
+  }
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), CommitRejectedError);
+  // The second split was formed with the refused one: dropped. The run
+  // partition, formed in the same flush, still commits.
+  await uow.checkpoint();
+  assertEquals(sink.commitsOf(MODEL).length, 1);
+  assertEquals(sink.commitsOf(runPartition()).length, 1);
+  // A batch staged after the refusal forms a group of its own and lands.
+  await uow.stageOp({ partition: MODEL, op: await savePut("later", 1) });
+  await uow.commit();
+  assertEquals(sink.commitsOf(MODEL).length, 2);
+});
+
+/** A stream source that counts how often it was opened. */
+function countedStream(bytes: Uint8Array) {
+  const source = Object.assign(
+    () => {
+      source.opened++;
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+    },
+    { opened: 0 },
+  );
+  return source;
+}
+
+Deno.test("createCommitLogUnitOfWork: a stream put superseded by a later tombstone of its key is never read", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  const source = countedStream(bytesOf(20_000));
+  await uow.stageOp(pendingPut("a", source));
+  await uow.stageOp({ partition: MODEL, op: versionOp("a", 1) });
+  await uow.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+    }),
+  });
+  await uow.commit();
+  assertEquals(source.opened, 0);
+  assertEquals(
+    sink.landed[0].ops.map((op) => op.kind),
+    ["data-version", "tombstone"],
+  );
+  // stagedOps still reports every change staged.
+  assertEquals(uow.stagedOps().length, 3);
+});
+
+Deno.test("createCommitLogUnitOfWork: a stream put superseded by a later put of its key, or one in a later child, is never read", async () => {
+  const sink = new MemorySink();
+  const hook = contextHook();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const first = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  const source = countedStream(bytesOf(20_000));
+  await first.stageOp(pendingPut("a", source));
+  await first.commit();
+  const second = createCommitLogUnitOfWork(
+    hook,
+    unitOptions(sink, memory(), { parent: root }),
+  );
+  await second.stageOp(pendingPut("a", new TextEncoder().encode("small")));
+  await second.commit();
+  await root.commit();
+  assertEquals(source.opened, 0);
+  assertEquals(sink.landed[0].ops.length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: a put with an expect is never elided, nor one a later expect relies on", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  const source = countedStream(new TextEncoder().encode("a"));
+  await uow.stageOp(pendingPut("a", source));
+  await uow.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.delete", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+      expect: "present",
+    }),
+  });
+  await uow.commit();
+  assertEquals(source.opened, 1);
+  assertEquals(sink.landed[0].ops.map((op) => op.kind), ["put", "tombstone"]);
+});
+
+Deno.test("createCommitLogUnitOfWork: a retry reuses the content stored the first time", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  const source = countedStream(bytesOf(20_000, 1));
+  await uow.stageOp(pendingPut("a", source));
+  let failures = 1;
+  sink.beforeAppend = () => {
+    if (failures-- > 0) throw new Error("append failed");
+  };
+  await assertRejects(() => uow.checkpoint(), Error, "append failed");
+  assertEquals(source.opened, 1);
+  await uow.commit();
+  // The file behind the stream may be gone by now; the retry never reads it.
+  assertEquals(source.opened, 1);
+  assertEquals(sink.commitsOf(MODEL).length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: a pending put superseded before it is stored is elided, and its emptied group dropped", async () => {
+  const sink = new MemorySink();
+  const storage = new FlakyStorage({ maxChunkBytes: 32 * 1024 });
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, storage),
+  );
+  const source = countedStream(bytesOf(20_000, 4));
+  await uow.stageOp(pendingPut("a", source));
+  storage.failNextPut = true;
+  await assertRejects(() => uow.checkpoint(), Error, "bucket unreachable");
+  assertEquals(source.opened, 1);
+  // A prune removes the file and stages its tombstone while the put waits.
+  await uow.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+    }),
+  });
+  await uow.commit();
+  assertEquals(source.opened, 1);
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.map((op) => op.kind)),
+    [["tombstone"]],
+  );
+});
+
+Deno.test("createCommitLogUnitOfWork: a put superseded while its group is being appended is skipped, not a wedged checkpoint", async () => {
+  const sink = new MemorySink();
+  const uow = createCommitLogUnitOfWork(
+    contextHook(),
+    unitOptions(sink, memory()),
+  );
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reading!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reading = resolve;
+  });
+  // The stream opens once the test lets it, then finds its file removed.
+  await uow.stageOp(pendingPut("a", async () => {
+    reading();
+    await opened;
+    throw new Deno.errors.NotFound("raw was pruned");
+  }));
+  const checkpoint = uow.checkpoint();
+  await started;
+  await uow.stageOp({
+    partition: MODEL,
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: dataKey("a", 1),
+    }),
+  });
+  release();
+  await checkpoint;
+  await uow.commit();
+  assertEquals(
+    sink.commitsOf(MODEL).map((commit) => commit.ops.map((op) => op.kind)),
+    [["tombstone"]],
   );
 });
 

@@ -49,8 +49,11 @@ export type CommitRejection =
   | "unfenced"
   /** A put's or tombstone's `expect` does not hold. */
   | "expect-failed"
-  /** A data-version op's version is not above its name's high-water mark. */
-  | "version-not-increasing";
+  /**
+   * A data-version op names a version its name already holds live, and the
+   * commit carries no `data.append` put for that version.
+   */
+  | "version-live";
 
 /** A commit the partition refused. The partition is unchanged. */
 export class CommitRejectedError extends Error {
@@ -103,6 +106,10 @@ interface DataName {
   highWater: number;
 }
 
+function nameVersion(name: string, version: number): string {
+  return `${version}:${name}`;
+}
+
 /** The SHA-256 of a present record; null marks a removal in a draft. */
 type RecordState = string | null;
 
@@ -112,9 +119,14 @@ type RecordState = string | null;
  *
  * - `seq` is gapless: a partition accepts only its current seq plus one.
  * - A commit whose txnId the partition holds is a no-op, not a second commit.
- * - Data versions only grow: a name's new version is above every version it
- *   ever had (its high-water mark), and versions are never reused. Each name
- *   has exactly one latest, its greatest live version.
+ * - A data version is recorded only when its name does not hold it live, so
+ *   two writers can never both claim one live version. A version removed
+ *   earlier may be recorded again, and versions may arrive out of order, as
+ *   v2 allocates them (swamp-club#3250). The one exception re-records a live
+ *   version: an append, whose `data.append` put for that name and version
+ *   comes earlier in the commit than the data-version op; each such put lets
+ *   one op through. Each name has exactly one latest, its greatest live
+ *   version.
  * - A put's or tombstone's `expect` that does not hold refuses the commit.
  * - A commit carrying a fence below the highest the partition has seen is
  *   refused; so is a lease op carrying one. Once a partition has seen a
@@ -403,9 +415,15 @@ export class Partition {
       return entry;
     };
 
+    // The name and version pairs a `data.append` put earlier in this commit
+    // lets one data-version op re-record, each used once.
+    const appended = new Set<string>();
     for (const op of commit.ops) {
       switch (op.kind) {
         case "put": {
+          if (op.intent.kind === "data.append") {
+            appended.add(nameVersion(op.intent.name, op.intent.version));
+          }
           const key = op.key.toString();
           const existing = current(key);
           if (op.expect === "absent" && existing !== undefined) {
@@ -441,14 +459,17 @@ export class Partition {
         case "data-version": {
           const { name, version } = op.metadata;
           const entry = dataName(name);
-          if (version <= entry.highWater) {
+          if (
+            entry.live.has(version) &&
+            !appended.delete(nameVersion(name, version))
+          ) {
             throw new CommitRejectedError(
-              "version-not-increasing",
-              `Data ${name} version ${version} is not above its high-water mark ${entry.highWater}`,
+              "version-live",
+              `Data ${name} version ${version} is already live; only an append re-records it`,
             );
           }
           entry.live.add(version);
-          entry.highWater = version;
+          entry.highWater = Math.max(entry.highWater, version);
           break;
         }
         case "lease":

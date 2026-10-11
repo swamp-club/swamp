@@ -33,12 +33,21 @@ import {
   currentUnitOfWork,
   runInUnitOfWork,
   signalChange,
+  stageTyped,
+  typedStagingActive,
   unscopedCallerFrom,
   type UnscopedChange,
   UnscopedWriteRefusedError,
   useUnscopedChangeReporterForTesting,
 } from "./unit_of_work_scope.ts";
-import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import { typedStagers, unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  modelIntent,
+  modelPartition,
+} from "../../domain/datastore_v3/v3_test_helpers.ts";
+import { tombstoneOp } from "../../domain/datastore_v3/op.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 
 /** A mark hook that records its arguments and can reject the next call. */
 function recordingHook(): {
@@ -493,4 +502,159 @@ Deno.test("unscopedCallerFrom: undefined when every source frame is in the persi
     ],
   ]);
   assertEquals(unscopedCallerFrom(stack, ROOT), undefined);
+});
+
+/** One typed change, as a repository's builder returns it. */
+function typedChange(): TypedChange {
+  return {
+    partition: modelPartition(),
+    op: tombstoneOp({
+      intent: modelIntent({ kind: "data.gc", name: "a", version: 1 }),
+      key: RecordKey.create("data/m/a/1/raw"),
+    }),
+  };
+}
+
+/** A builder that fails the test if it ever runs. */
+const throwingBuild = (): never => {
+  throw new Error("the typed builder ran");
+};
+
+/** A unit bound to `hook` that takes typed changes, recording both kinds. */
+function typedUnit(hook: MarkDirtyHook) {
+  const staged: StagedChange[] = [];
+  const batches: (readonly TypedChange[])[] = [];
+  const uow: UnitOfWork = {
+    stage(change) {
+      staged.push(change);
+      return Promise.resolve();
+    },
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [...staged],
+  };
+  unitOfWorkBinding.bind(uow, hook);
+  typedStagers.register(uow, (changes) => {
+    batches.push(changes);
+    return Promise.resolve();
+  });
+  return { uow, staged, batches };
+}
+
+Deno.test("stageTyped: a builder never runs on v2: no hook, route 2, or a legacy unit (swamp-club#3250)", async () => {
+  await withReports(async () => {
+    await stageTyped(undefined, throwingBuild);
+    const { hook, calls } = recordingHook();
+    await stageTyped(hook, throwingBuild);
+    const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+    await runInUnitOfWork(uow, () => stageTyped(hook, throwingBuild));
+    // A unit that takes typed changes but is bound to a v2 hook: v2 still.
+    const typed = typedUnit(hook);
+    await runInUnitOfWork(typed.uow, () => stageTyped(hook, throwingBuild));
+    assertEquals(typed.batches, []);
+    assertEquals(calls, []);
+  });
+});
+
+Deno.test("signalChange: the typed option changes nothing on v2", async () => {
+  await withReports(async (reports) => {
+    const { hook, calls } = recordingHook();
+    await signalChange(hook, WRITE, { typed: true });
+    assertEquals(calls, ["/cache/data/a/raw"]);
+    assertEquals(reports.length, 1);
+    const uow = createLegacyUnitOfWork(hook, { flush: undefined });
+    await runInUnitOfWork(
+      uow,
+      () => signalChange(hook, REMOVE, { typed: true }),
+    );
+    assertEquals(uow.staged(), [REMOVE]);
+    await signalChange(undefined, WRITE, { typed: true });
+  });
+});
+
+Deno.test("stageTyped: on a v3 hook, runs the builder only in a bound unit that takes typed changes, as one batch", async () => {
+  const { hook, calls } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const typed = typedUnit(hook);
+  const change = typedChange();
+  await runInUnitOfWork(typed.uow, async () => {
+    await stageTyped(hook, () => [change, change]);
+    // An empty batch stages nothing.
+    await stageTyped(hook, () => []);
+  });
+  assertEquals(typed.batches, [[change, change]]);
+  assertEquals(typed.staged, []);
+  assertEquals(calls, []);
+});
+
+Deno.test("stageTyped: on a v3 hook with no bound typed unit, throws before the builder runs", async () => {
+  const { hook } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const refused = async (run: () => Promise<void>) => {
+    const error = await assertRejects(run, UnscopedWriteRefusedError);
+    assertEquals(error.change, undefined);
+    assertEquals(error.message.includes("typed change"), true);
+  };
+  // Outside every unit.
+  await refused(() => stageTyped(hook, throwingBuild));
+  // In a typed unit bound to another hook.
+  const other = typedUnit(recordingHook().hook);
+  await runInUnitOfWork(
+    other.uow,
+    () => refused(() => stageTyped(hook, throwingBuild)),
+  );
+  // In a unit bound to the hook that takes no typed changes.
+  const plain: UnitOfWork = {
+    stage: () => Promise.resolve(),
+    commit: () => Promise.resolve(),
+    abandon: () => Promise.resolve(),
+    staged: () => [],
+  };
+  unitOfWorkBinding.bind(plain, hook);
+  await runInUnitOfWork(
+    plain,
+    () => refused(() => stageTyped(hook, throwingBuild)),
+  );
+});
+
+Deno.test("signalChange: a typed declaration in a typed unit checks the write but stages no path", async () => {
+  const { hook, calls } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  const typed = typedUnit(hook);
+  await runInUnitOfWork(typed.uow, async () => {
+    await signalChange(hook, WRITE, { typed: true });
+    // Without the declaration the path goes to the unit, which a commit-log
+    // unit refuses.
+    await signalChange(hook, REMOVE);
+  });
+  assertEquals(typed.staged, [REMOVE]);
+  assertEquals(calls, []);
+  // Outside the unit the declaration does not lift the refusal.
+  await assertRejects(
+    () => signalChange(hook, WRITE, { typed: true }),
+    UnscopedWriteRefusedError,
+  );
+});
+
+Deno.test("typedStagingActive: true only in a typed unit bound to a hook that requires one", async () => {
+  assertEquals(typedStagingActive(undefined), false);
+  const v2 = recordingHook();
+  const v2Typed = typedUnit(v2.hook);
+  await runInUnitOfWork(v2Typed.uow, () => {
+    assertEquals(typedStagingActive(v2.hook), false);
+    return Promise.resolve();
+  });
+  const { hook } = recordingHook();
+  unitOfWorkBinding.requireUnit(hook);
+  assertEquals(typedStagingActive(hook), false);
+  const typed = typedUnit(hook);
+  await runInUnitOfWork(typed.uow, () => {
+    assertEquals(typedStagingActive(hook), true);
+    return Promise.resolve();
+  });
+  const legacy = createLegacyUnitOfWork(v2.hook, { flush: undefined });
+  await runInUnitOfWork(legacy, () => {
+    assertEquals(typedStagingActive(hook), false);
+    return Promise.resolve();
+  });
 });

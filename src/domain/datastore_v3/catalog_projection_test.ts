@@ -104,6 +104,25 @@ Deno.test("projectCatalog: a save upserts its version's row", async () => {
   assertEquals(versions(projection.live), { a: [1] });
 });
 
+Deno.test("projectCatalog: an append replaces its live version's row, as v2 append does (swamp-club#3250)", async () => {
+  const appended = dataVersionOp({
+    key: dataKey("a", 1),
+    metadata: { ...(metadata("a", 1) as Record<string, unknown>), size: 42 },
+  });
+  const projection = projectCatalog(
+    [
+      await savePut("a", 1, "a@1 and more", undefined, "data.append"),
+      appended,
+    ],
+    () => [live("a", 1), live("a", 2)],
+  );
+  assertEquals(projection.actions, [
+    { kind: "upsert-version", metadata: appended.metadata },
+  ]);
+  assertEquals(versions(projection.live), { a: [1, 2] });
+  assertEquals(projection.live.get("a")?.[0].metadata.size, 42);
+});
+
 Deno.test("projectCatalog: a versioned delete upserts the new latest, as v2 delete(version) does", () => {
   const projection = projectCatalog(
     [deleteOp("a", 3)],

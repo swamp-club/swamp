@@ -186,7 +186,7 @@ Deno.test("SqliteCommitStore: every refusal is the domain error and writes nothi
         }),
     ],
     [
-      "version-not-increasing",
+      "version-live",
       () => Promise.resolve(modelCommit(3, [versionOp("a", 2)], { fence: 1 })),
     ],
   ];
@@ -535,7 +535,7 @@ Deno.test("SqliteCommitStore: a damaged row or snapshot is reported as corruptio
         CommitStoreCorruptError,
       );
       assertEquals(error.seq, 2);
-      assertStringIncludes(error.message, "high-water mark");
+      assertStringIncludes(error.message, "already live");
     } finally {
       await reopened.close();
     }

@@ -1807,8 +1807,9 @@ model"), all dormant. The opt-in is a later issue.
 - **Fence**: a lease's monotonic number. A writer whose fence is stale loses.
 - **txnId**: the outbox entry id a commit carries. A retry carries the same
   one, so the commit lands once.
-- **High-water mark**: the greatest version a data name ever had. A new
-  version must be above it.
+- **High-water mark**: the greatest version a data name ever had. It never
+  decreases. It is not a floor for new versions: a new version only has to be
+  not live (swamp-club#3250).
 
 **Partitions are aggregates.** A partition key is built only by
 `partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
@@ -1867,8 +1868,23 @@ It is synchronous, and a refused commit leaves the partition unchanged:
   - `put` with `expect: { sha256 }` edits the version it was loaded from.
   - `tombstone` with `expect: "present"` removes only a record that exists.
   - Ops in one commit see each other's effects in order.
-- **Data versions only grow.**
-  - A `data-version` op's version must be above its name's high-water mark.
+- **A live data version is recorded once** (swamp-club#3250; it replaced "data
+  versions only grow" from swamp-club#3233).
+  - A `data-version` op's version must not be live for its name, or the
+    commit is refused with `version-live`. A version removed earlier may be
+    recorded again, and versions may arrive out of order. This is v2 parity:
+    the filesystem allocates `max(existing) + 1`, so a save after deleting a
+    whole name or its top version reuses the number. Parallel writers of one
+    name, and deferred promotions, also finish out of order. Two writers
+    claiming the same live version are still refused.
+  - The one exception is an append: a `data-version` op may re-record a live
+    version when a `data.append` put for that name and version comes earlier
+    in the same commit. Each such put lets one op through, so a save of a
+    live version ahead of an append in the commit is still refused. Its
+    metadata (the new size) replaces the version's. The append's
+    `metadata.yaml` put carries `expect: { sha256 }` of the metadata it
+    replaces, so a version another writer recorded under the same number
+    refuses the append (`expect-failed`) instead of being overwritten.
   - A tombstone whose intent is `data.delete` or `data.gc` with a version
     removes that version. A delete of a whole name lists each version it has
     seen as its own versioned tombstone, so a version written concurrently
@@ -1876,8 +1892,8 @@ It is synchronous, and a refused commit leaves the partition unchanged:
     version (the latest marker, the name directory).
   - A rename is one model-partition commit: a `data.rename` put, a
     `data-version` op for the new name, and a `data-version` op for the old
-    name's marker version (the version carrying `renamedTo`), above the old
-    name's high-water mark.
+    name's marker version (the version carrying `renamedTo`), which is not
+    live.
   - Each name's latest is its greatest live version, so exactly one latest
     per name holds by construction. The partition reads names and versions
     from intents and metadata, never by parsing a record key.
@@ -1944,11 +1960,17 @@ these.
   data id schemas require a UUID. A partition orders its commits by seq, so
   ids need not sort by time. `WorkflowRunFactory`, `DefinitionFactory` and
   `ModelOutputFactory` (`identity_factories.ts`) reuse that generator.
-- **Version numbers are never reused.** Today the filesystem allocates
-  `max(existing) + 1`, so deleting the top version lets the next save reuse
-  its number. On v3 a name's high-water mark never decreases. That is
-  harmless for a new, empty v3 datastore. A later migration of existing data
-  must seed each name's high-water mark from its highest version.
+- **Version numbers follow v2's allocation** (swamp-club#3250). swamp-club#3233
+  decided versions are never reused and called that harmless for a new, empty
+  v3 datastore. It is not: within one datastore a save after
+  `delete(name)` (and `data prune`) or after a top-version delete reuses the
+  number, a rename marker can too, and a deferred version promoted after a
+  higher one committed arrives below it. Each would have been refused and
+  dropped its partition's whole group. v3 therefore accepts any version not
+  live. The cost is v2's: a run record that names `name@version` can point
+  at the content of a later save that reused the number, and in team mode a
+  writer behind on catch-up can re-create a deleted version number. The
+  high-water mark stays the greatest version seen.
 - **Aggregate-specific rules stay with their aggregate.**
   - A partition sees op content as opaque bytes.
   - `WorkflowRun` keeps its own status-transition and step-ownership rules
@@ -1991,8 +2013,8 @@ these.
     another entity shares (a put), and `grant.revoke` writes a new grant
     version (a put). The table comes from that audit.
   - **`data-version` ops.** These carry no intent, so they must be tied to a
-    `data.save` (or rename) intent for the same name and version in the same
-    commit, or get an intent of their own.
+    `data.save`, `data.append` (or rename) intent for the same name and
+    version in the same commit, or get an intent of their own.
   - **`lease` ops.** These carry no intent either. Only the lease machinery
     (Phase 5) may write them; a client-forwarded commit carrying one must be
     refused.
@@ -2262,9 +2284,10 @@ that.
 - An unnamespaced datastore's commits have namespace `""`. Its chunks live
   under `_blobs/_default/` (swamp-club#3237, "v3 chunk storage" above).
 
-**Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops. GC
-and prune, which are later issues, must split larger tombstone sets across
-several commits.
+**Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops.
+The commit-log unit splits a partition's larger change sets across several
+commits, between batches (swamp-club#3250, "v3 commit-log unit of work"
+below).
 
 ### v3 commit-log unit of work (datastore rework Phase 3)
 
@@ -2314,14 +2337,22 @@ memory between staging and commit. The unit reads a stream a piece at a
 time until it ends or holds more than `MAX_INLINE_BYTES`: content that ends
 within the limit is inlined, anything longer goes, with what was already
 read, through `ChunkStore.write`. Bytes are copied when staged. A retry calls the source
-again. A source is read at commit, so it must stay readable and unchanged
-until then: a repository that stages one key twice in a unit, or removes the
-file before the unit commits, passes bytes. `stage(StagedChange)`, the
+again. A source is read at commit and at most once: a retry reuses the
+content stored the first time. Before reading it, the unit drops a stream put
+that a later put or tombstone of the same key with no `expect` supersedes,
+among the unflushed batches and the pending groups not being appended whose
+put is not stored yet (swamp-club#3250); a group emptied so is dropped, since a
+commit carries an op. A stream put superseded while its group is being
+appended cannot leave that group; the append skips it, also when its stream
+fails because the file is gone, and commits nothing when no op is left. So a
+repository may rewrite or remove a file it staged
+as a stream, provided it stages the change that does so; until then the file
+must stay readable and unchanged. `stage(StagedChange)`, the
 path-only form, is refused with `PathOnlyChangeRefusedError`: there is no
 path-to-op guessing. Changes are checked where they are staged (the
 partition matches the intent, a pending put's key and `expect` build a valid
-put, at most `MAX_COMMIT_OPS` per partition per flush, no `lease` ops, which
-only the lease machinery writes), so a bad change fails at the call that
+put, at most `MAX_COMMIT_OPS` per partition in one `stageOps` batch, no
+`lease` ops, which only the lease machinery writes), so a bad change fails at the call that
 made it rather than blocking the partitions after it at commit.
 
 **Commit order and failure.** `commit` and `checkpoint` group the changes by
@@ -2349,6 +2380,22 @@ is released on every outcome and its entry dropped when its queue drains.
   is the exception: another append moved the head first, so the append is
   rebuilt at the new head once more in the same flush, and if that also
   meets a gap the partition stays pending for the next checkpoint.
+- **Splits (swamp-club#3250).** A partition holding more than
+  `MAX_COMMIT_OPS` changes in one flush forms several groups, split between
+  `stageOps` batches, so one batch always lands in one commit. Each split has
+  its own txnId and commits in order. A refused split drops the splits of its
+  partition formed in the same flush, which were staged after it; a batch
+  staged after that flush forms its own group and commits on its own. Splits
+  give up the single commit: when a later split fails, the earlier ones stay
+  landed, and between two splits a reader can see part of the operation (a
+  name's version tombstones without its latest-marker change). The final
+  state is the same. When a later split is refused, the earlier ones keep
+  what they recorded: a stream put elided because a tombstone in the refused
+  split superseded it leaves its version recorded with `metadata.yaml` and no
+  `raw`. That is v2's own failure mode for a crash between its metadata and
+  content writes; the next save or delete of the name settles it. The issue asked for the unit to refuse more changes
+  until a checkpoint; splitting at group formation keeps child units
+  all-or-nothing and needs no caller to checkpoint.
 - **Abandon** discards staged and pending changes (decision 4). A
   checkpoint already in progress finishes first, so what it commits stays
   committed. Chunks already stored stay for chunk garbage collection.
@@ -2368,8 +2415,7 @@ the outbox, which makes pending groups durable across a crash.
 options, fn)` mirrors `runInRootUnitOfWork`: it refuses a context without a
 hook, marks the hook with `requireUnit`, and runs `fn` with the root ambient.
 Opened inside an open commit-log unit for the same hook it is a child: its
-`commit` hands its changes, in order, to the root (all of them, or none
-when they would take a partition over `MAX_COMMIT_OPS`), its `abandon`
+`commit` hands its batches, in order and one by one, to the root, its `abandon`
 discards them (and refuses changes staged after it), and `checkpoint` on it throws. A root's checkpoint commits what has
 been handed to it so far. The root ends as its `disposition` option decides,
 the way `pushWhen` decides a legacy root's push: by default it commits when
@@ -2389,6 +2435,130 @@ bound, and the lockfile root), and every existing characterization and
 root-unit suite passed unchanged after it. A temporary route recorder over
 the whole test suite gave the same set of route-1 and route-2 writes before
 and after.
+
+### v3 repository staging (datastore rework Phase 3)
+
+swamp-club#3250 makes the data and output repositories stage typed changes
+when they run on v3, for every write they make. It is the first of three
+repository staging groups; definition, workflow and evaluated staging, and
+run and vault config staging, add builders to the same route. It is dormant:
+nothing reaches it until a hook requires a unit, which only a commit-log root
+marks. v2 behaviour does not change: the builders never run on v2.
+
+**The shared route: two calls.** The issue sketched one pre-write call with a
+lazy builder, `signalChange(markDirty, pathChange, () => typedChanges)`. The
+typed changes cannot be built before the write: the version is allocated by
+it, the content and metadata are written by it, and whether the latest marker
+moved is decided by it. Moving the call after the write would change v2's
+pre-write signal timing. So a repository makes two calls
+(`src/infrastructure/persistence/unit_of_work_scope.ts`):
+
+1. **Before the write**, `signalChange(markDirty, pathChange, { typed: true })`
+   as today. On v2 the option changes nothing. In a unit bound to the hook
+   that takes typed changes, the path change is checked (a write outside a
+   bound unit is still refused before anything is written) but not staged,
+   since a commit-log unit refuses path-only changes. A repository that has no
+   builders yet leaves the option out, so its path change still reaches the
+   unit and is refused there (`PathOnlyChangeRefusedError`).
+2. **After the write**, `stageTyped(markDirty, build)`, once per batch. It
+   returns at once when there is no hook or the hook does not require a unit
+   (every v2 context), so `build` never runs and nothing is read. In a bound
+   unit that takes typed changes it runs `build` and stages the result as one
+   `stageOps` batch. On a v3 hook with no such unit ambient it throws
+   `UnscopedWriteRefusedError` rather than drop the change.
+
+Which units take typed changes is a persistence-only registry beside the
+binding (`typedStagers` in `unit_of_work_binding.ts`): the commit-log adapter
+registers each unit it builds. It lives there, not in the domain port, so the
+`datastore` context never depends on `datastore_v3`, and persistence never
+imports the commit-log unit. `integration/datastore_write_seams_rules_test.ts`
+pins the registry's callers, and rule 7 accepts `stageTyped(this.markDirty,
+…)` beside `signalChange`. `integration/datastore_v3_rules_test.ts` pins the
+new imports of `src/domain/datastore_v3/` from persistence: type-only ones in
+the route, and the repositories' builders.
+
+**The change factory.** `ModelChanges` (`src/domain/datastore_v3/
+repository_changes.ts`) builds every typed change from what a repository
+already has: model type and id, data name, version, output file. It derives
+the partition with `partitionOf` and builds intents with `createIntent` and
+`modelRef`; record keys come from segments in today's layout, never from an
+OS path. After a write, the repository reads back what it wrote (on v3 only,
+inside `build`): the metadata bytes and parsed metadata, the content as bytes
+up to `MAX_INLINE_BYTES` and as a stream that opens the file at commit above
+it, and the latest marker's bytes.
+
+**Batches.** Each version is its own batch (its puts and `data-version`, or its
+two tombstones), and each latest-marker change is its own, so no write path
+builds a batch over `MAX_COMMIT_OPS` and a large removal splits between
+versions ("Splits" above). A rename is one batch, so it lands in one commit.
+
+**The mapping.** Every write of the data repository
+(`unified_data_repository.ts`), and what it stages after it:
+
+| Write | Typed changes |
+|---|---|
+| `save`, `finalizeVersion` | `data.save`: puts of `raw` and `metadata.yaml`, the `data-version` op, and a put of the latest marker when the marker now names the version. Staged before the write-time prune, so a failed prune never leaves the version local-only |
+| write-time prune (`pruneExcessVersions`) | Per pruned version, `data.gc` tombstones of `raw` and `metadata.yaml` with the version |
+| `append` | `data.append`: puts of `raw` and `metadata.yaml` (expecting the digest of the metadata it rewrote) and a `data-version` op re-recording the live version it extended |
+| `delete(version)` | `data.delete` tombstones of the version's two files, then the marker as the delete left it: a put of the lowered latest or of `NO_PROMOTED_VERSION`, or a version-less `data.delete` tombstone when the name directory went |
+| `delete(name)`, `data prune` | Per version listed before the removal, `data.delete` tombstones with its version; then a version-less `data.delete` tombstone of the marker |
+| `removeLatestMarker` (expiry) | A version-less `data.gc` tombstone of the marker: the read model drops the name's rows and keeps its versions |
+| `rename` | One batch with `data.rename` intents (naming both names): the new name's version files and `data-version`, its marker when it moved, the old name's marker version (`renamedTo`) and its marker. The inner save stages nothing of its own; its prune stages as above. A rollback stages the new name's marker as it left it |
+| `collectGarbage` | Per removed version, `data.gc` tombstones with the version, staged after the parallel removals; then the marker as GC left it |
+| `saveDeferred`, deferred `allocateVersion`, `finalizeVersionDeferred` | Nothing: a deferred version reaches v3 when it is promoted |
+| `advanceLatestMarkers` | Per promoted version, as `save`; a version whose metadata is gone stages its `raw` and marker but no `data-version`, as its catalog row is dropped |
+| `rollbackVersions` | Versioned `data.delete` tombstones (harmless for a version never promoted) and the marker as the rollback left it |
+| orphan reclaim | A version a dead process had promoted (its marker names it) stages as a promotion; a removed orphan stages `data.gc` tombstones, and an emptied name's marker as it was left |
+
+The output repository (`yaml_output_repository.ts`) stages an `output.save`
+put of a record's YAML after `save`, and an `output.delete` tombstone after
+removing one (`delete`, `deleteOlderThan`, `deleteByMethodLifetime`). A record
+that never parsed has no output id, so no repository ever put it, and its
+removal stages nothing. Run logs have no typed change: nothing puts them on
+v3 yet, and their removals inside a datastore declare `typed` so they are not
+refused. Staging run logs belongs to the run staging issue.
+
+**The `bulk` mapping.** Neither repository stages a `bulk` change on v2. Their
+directory marks (a data name's or a version's directory) become per-key
+changes: a version directory holds exactly `raw` and `metadata.yaml`, and a
+name directory those of each version plus `latest`. There are no prefix
+tombstones.
+
+**Staging errors are never only logged.** Staging runs outside the catch blocks
+that log and continue (`advanceLatestMarkers`, `rollbackVersions`, GC's
+`allSettled` batches), so a v3 refusal surfaces. `advanceLatestMarkers` and
+`rollbackVersions` collect them and throw after every receipt (one error, or
+an `AggregateError`), so one refusal stops no other promotion. Two places log
+one instead, because an earlier error is already on its way to the caller: a
+rollback inside a failed `saveDeferred` or deferred `allocateVersion`, and
+the rollback of a failed rename. That error fails the operation either way.
+The first applies on v3 only: on v2 a failed write's rollback runs exactly as
+before, and its own error still reaches the caller.
+
+An append's metadata `expect` needs the digest of the file it rewrites, read
+before the write. `typedStagingActive(markDirty)` says whether `stageTyped`
+would run its builder now, so only v3 reads it; rule 7 accepts it beside the
+other two calls.
+
+**Chunk GC's post-commit check (swamp-club#3249).** Every commit a unit lands
+runs `restoreMissingChunks` for each blob put it names, a retry that reused
+a stored op included, so no landed commit names a chunk a racing sweep
+deleted. The check reads a put's source again only when one of its chunks is
+missing: the one exception to "read at most once", for repair after a GC
+race. A file-backed source reopens the file the repository wrote; when the
+file has changed since, the content no longer gives the same `BlobRef` and
+the commit fails loudly rather than store other bytes. A superseded put that
+the unit dropped never commits, so it needs no check.
+
+**The gate.** `integration/datastore_v3_repository_staging_test.ts` runs the
+real repositories on v3 in a commit-log root over `SqliteCommitStore` and
+filesystem `storage/1`, solo and namespaced, and catches up a read model into
+a second directory. Its files and `_catalog_v3.db` must equal what the
+repositories wrote, for every path above. That includes version reuse,
+out-of-order writers, a late version below a rename marker, an append after a
+top delete, a save pruned in the same unit, and a use case's child unit. GC
+and `delete(name)` above `MAX_COMMIT_OPS` split into two commits, in a root
+and in a child.
 
 ### v3 read model (datastore rework Phase 3)
 

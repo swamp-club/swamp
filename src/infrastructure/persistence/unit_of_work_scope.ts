@@ -60,8 +60,9 @@ import type {
   UnitOfWork,
 } from "../../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { legacyUnitOfWorkTarget } from "./legacy_unit_of_work.ts";
-import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import { typedStagers, unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
 
@@ -98,6 +99,12 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
  * Call it before the write, as `notifyDirty` always has. A rejected hook
  * rejects the returned promise with the same error on either route.
  *
+ * With `options.typed`, the repository declares that it stages typed changes
+ * for this write through {@link stageTyped} once the write is done
+ * (swamp-club#3250). In a unit that takes typed changes (a v3 commit-log
+ * unit) the path change is then checked, not staged: the unit takes no
+ * path-only change. Everywhere else the option changes nothing.
+ *
  * Route 2 is the fallback for a hooked write made outside every unit bound
  * to its hook. It marks exactly as it always has, then reports the write
  * (swamp-club#3056): production logs a warning once per call site, and tests
@@ -108,6 +115,7 @@ export function currentUnitOfWork(): UnitOfWork | undefined {
 export async function signalChange(
   markDirty: MarkDirtyHook | undefined,
   change: StagedChange,
+  options: { readonly typed?: boolean } = {},
 ): Promise<void> {
   if (markDirty === undefined) return;
   const uow = currentUnitOfWork();
@@ -118,6 +126,7 @@ export async function signalChange(
     // requires a unit, even one built before the hook was marked.
     !(requiresUnit && legacyUnitOfWorkTarget(uow) !== undefined)
   ) {
+    if (options.typed && typedStagers.stagerOf(uow) !== undefined) return;
     await uow.stage(change);
     return;
   }
@@ -129,6 +138,58 @@ export async function signalChange(
 }
 
 /**
+ * Stages the typed changes a repository write made, after the write
+ * (swamp-club#3250): the version, the content and whether the latest marker
+ * moved are known only then. Call it once per batch: a batch always lands in
+ * one commit, and a partition's changes split between batches past
+ * `MAX_COMMIT_OPS`.
+ *
+ * - With no hook, or a hook that does not require a unit (every v2 context),
+ *   it returns at once and `build` never runs, so v2 pays nothing.
+ * - In a unit bound to the hook that takes typed changes, it runs `build` and
+ *   stages what it returns as one batch.
+ * - Otherwise the hook belongs to a v3 context with no bound unit ambient,
+ *   and the write would never be committed: it throws
+ *   {@link UnscopedWriteRefusedError} rather than drop it.
+ */
+export async function stageTyped(
+  markDirty: MarkDirtyHook | undefined,
+  build: () => readonly TypedChange[] | Promise<readonly TypedChange[]>,
+): Promise<void> {
+  if (markDirty === undefined) return;
+  if (!unitOfWorkBinding.requiresUnit(markDirty)) return;
+  const stage = boundTypedStager(markDirty);
+  if (stage === undefined) {
+    throw new UnscopedWriteRefusedError(undefined, callerOfThisWrite());
+  }
+  const changes = await build();
+  if (changes.length > 0) await stage(changes);
+}
+
+/**
+ * Whether {@link stageTyped} would run its builder now: true only in a unit
+ * bound to a hook that requires one and takes typed changes. A repository
+ * asks it before a write when a typed change needs something the write
+ * destroys, such as the digest of the file it replaces; on v2 it is false,
+ * so v2 reads nothing extra.
+ */
+export function typedStagingActive(
+  markDirty: MarkDirtyHook | undefined,
+): boolean {
+  return markDirty !== undefined &&
+    unitOfWorkBinding.requiresUnit(markDirty) &&
+    boundTypedStager(markDirty) !== undefined;
+}
+
+/** The ambient unit's typed stager, when that unit is bound to the hook. */
+function boundTypedStager(markDirty: MarkDirtyHook) {
+  const uow = currentUnitOfWork();
+  return uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty
+    ? typedStagers.stagerOf(uow)
+    : undefined;
+}
+
+/**
  * A hooked write on a v3 datastore made outside every unit of work bound to
  * its repository context (swamp-club#3240). A v3 datastore has no route 2:
  * a write it was not told about through a unit would never be committed.
@@ -136,12 +197,17 @@ export async function signalChange(
  */
 export class UnscopedWriteRefusedError extends Error {
   constructor(
-    readonly change: StagedChange,
+    /** The path change; undefined for typed changes ({@link stageTyped}). */
+    readonly change: StagedChange | undefined,
     readonly caller: UnscopedCaller | undefined,
   ) {
-    const target = change.kind === "bulk" ? change.reason : change.path;
+    const what = change === undefined
+      ? "typed change"
+      : `${change.kind} of ${
+        change.kind === "bulk" ? change.reason : change.path
+      }`;
     super(
-      `A datastore ${change.kind} of ${target} from ${
+      `A datastore ${what} from ${
         formatUnscopedCaller(caller)
       } ran outside a unit of work bound to its repository; a v3 datastore ` +
         "commits only through one, so the write was refused",

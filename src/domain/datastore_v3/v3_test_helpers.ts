@@ -104,15 +104,19 @@ export async function sha256Of(text: string): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** A put of a fixture data version's content, inlined. */
+/**
+ * A put of a fixture data version's content, inlined: a save, or with
+ * `kind` `data.append` an append to a live version.
+ */
 export function savePut(
   name: string,
   version: number,
   text = `${name}@${version}`,
   expect?: "absent" | { sha256: string },
+  kind: "data.save" | "data.append" = "data.save",
 ): Promise<PutOp> {
   return putOp({
-    intent: modelIntent({ kind: "data.save", name, version }),
+    intent: modelIntent({ kind, name, version }),
     key: dataKey(name, version),
     inline: base64(text),
     expect,
@@ -300,6 +304,8 @@ export const arbOpSpec = fc.oneof(
     name: arbName,
     version: arbVersion,
     content: fc.constantFrom(...CONTENTS),
+    /** A `data.append` put, which lets a live version be re-recorded. */
+    append: fc.boolean(),
     expect: fc.oneof(
       fc.constant(undefined),
       fc.constant("absent" as const),
@@ -370,6 +376,7 @@ export async function buildOp(spec: OpSpec): Promise<Op> {
         spec.expect === undefined || spec.expect === "absent"
           ? spec.expect
           : { sha256: await digest(spec.expect.content) },
+        spec.append ? "data.append" : "data.save",
       );
     case "tombstone":
       return tombstoneOp({
@@ -427,8 +434,12 @@ export async function modelAppend(
   } else if (!raise(commit.fence)) {
     return reject("stale-fence");
   }
+  // Append puts seen so far in this commit, each letting one data-version
+  // op re-record its live version.
+  const appended: string[] = [];
   for (const spec of specs) {
     if (spec.kind === "put") {
+      if (spec.append) appended.push(`${spec.version}:${spec.name}`);
       const key = dataKey(spec.name, spec.version).toString();
       const current = next.records[key];
       if (spec.expect === "absent" && current !== undefined) {
@@ -455,11 +466,19 @@ export async function modelAppend(
         );
       }
     } else if (spec.kind === "data-version") {
-      if (spec.version <= (next.highWater[spec.name] ?? 0)) {
-        return reject("version-not-increasing");
+      const live = next.live[spec.name] ?? [];
+      if (live.includes(spec.version)) {
+        // Only an append in the same commit re-records a live version.
+        const at = appended.indexOf(`${spec.version}:${spec.name}`);
+        if (at === -1) return reject("version-live");
+        appended.splice(at, 1);
+      } else {
+        next.live[spec.name] = [...live, spec.version];
       }
-      next.live[spec.name] = [...(next.live[spec.name] ?? []), spec.version];
-      next.highWater[spec.name] = spec.version;
+      next.highWater[spec.name] = Math.max(
+        next.highWater[spec.name] ?? 0,
+        spec.version,
+      );
     } else if (!raise(spec.fence)) {
       return reject("stale-fence");
     }

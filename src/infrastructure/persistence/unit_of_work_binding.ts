@@ -27,6 +27,12 @@
  * its context's hook with `requireUnit`. Both keys are held weakly, so
  * nothing here outlives the units and hooks it describes.
  *
+ * The commit-log adapter also registers each unit it builds as a typed
+ * stager (swamp-club#3250): {@link typedStagers} is how `stageTyped` hands a
+ * repository's typed changes to it, so persistence never imports the
+ * dormant commit-log unit. It lives here, not in the domain port, so the
+ * `datastore` context never depends on `datastore_v3`.
+ *
  * @module
  */
 
@@ -35,6 +41,7 @@ import type {
   UnitOfWork,
   UnitOfWorkBinding,
 } from "../../domain/datastore/unit_of_work.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 
 const hooks = new WeakMap<UnitOfWork, MarkDirtyHook>();
 const required = new WeakSet<MarkDirtyHook>();
@@ -55,4 +62,17 @@ export const unitOfWorkBinding: UnitOfWorkBinding = {
     required.add(markDirty);
   },
   requiresUnit: (markDirty) => required.has(markDirty),
+};
+
+/** Records one batch of typed changes into the unit it was registered for. */
+export type TypedStager = (changes: readonly TypedChange[]) => Promise<void>;
+
+const stagers = new WeakMap<UnitOfWork, TypedStager>();
+
+/** The units that take typed changes: the v3 commit-log adapter's. */
+export const typedStagers = {
+  register(uow: UnitOfWork, stage: TypedStager): void {
+    stagers.set(uow, stage);
+  },
+  stagerOf: (uow: UnitOfWork): TypedStager | undefined => stagers.get(uow),
 };

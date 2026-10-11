@@ -82,7 +82,11 @@ export function modelRef(type: ModelType, id: string): ModelRef {
 /** Intents on a model partition that name a data name and version. */
 type DataIntent =
   | {
-    readonly kind: "data.save";
+    /**
+     * `data.append` adds content to a live version in place: its commit
+     * re-records that version's metadata (swamp-club#3250).
+     */
+    readonly kind: "data.save" | "data.append";
     readonly model: ModelRef;
     readonly name: string;
     readonly version: number;
@@ -227,6 +231,7 @@ type Shape =
 
 const SHAPES: Readonly<Record<IntentKind, Shape>> = {
   "data.save": "data",
+  "data.append": "data",
   "data.delete": "data-opt",
   "data.gc": "data-opt",
   "data.rename": "rename",

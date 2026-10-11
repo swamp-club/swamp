@@ -20,8 +20,22 @@
 import { existsSync } from "@std/fs";
 import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
+import type {
+  ContentSource,
+  TypedChange,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { MAX_INLINE_BYTES } from "../../domain/datastore_v3/op.ts";
+import {
+  type DataRemoval,
+  type DataWrite,
+  ModelChanges,
+} from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -242,7 +256,207 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * `design/enablers/datastores.md` for the contract.
    */
   private async stage(change: StagedChange): Promise<void> {
-    await signalChange(this.markDirty, change);
+    // Every write this repository makes stages its typed changes after it
+    // (swamp-club#3250), so a v3 unit takes no path change from it.
+    await signalChange(this.markDirty, change, { typed: true });
+  }
+
+  /**
+   * Stages one batch of typed changes after a write, on v3 only
+   * (swamp-club#3250): on v2 `build` never runs, so nothing here reads a
+   * file. A batch always lands in one commit.
+   */
+  private async stageTypedChanges(
+    type: ModelType,
+    modelId: string,
+    build: (changes: ModelChanges) => Promise<readonly TypedChange[]>,
+  ): Promise<void> {
+    await stageTyped(
+      this.markDirty,
+      () => build(new ModelChanges(type, modelId)),
+    );
+  }
+
+  /**
+   * A version's files as they are on disk, as typed changes. Called only
+   * after this repository wrote, finalized, appended to or promoted the
+   * version, so its content is local and current: no ensuring step.
+   */
+  private async writtenVersionChanges(
+    changes: ModelChanges,
+    why: DataWrite,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    metadataExpect?: { readonly sha256: string },
+  ): Promise<TypedChange[]> {
+    const metadataBytes = await Deno.readFile(
+      this.getMetadataPath(type, modelId, dataName, version),
+    );
+    return changes.writeVersion(why, {
+      name: dataName,
+      version,
+      metadata: parseYaml(new TextDecoder().decode(metadataBytes)),
+      metadataBytes,
+      metadataExpect,
+      raw: await this.rawSource(
+        this.getContentPath(type, modelId, dataName, version),
+      ),
+    });
+  }
+
+  /**
+   * A content file as a put's source: its bytes when they inline, otherwise
+   * a stream that opens the file at commit, so large content is never held
+   * in memory until then.
+   */
+  private async rawSource(contentPath: string): Promise<ContentSource> {
+    const { size } = await Deno.stat(contentPath);
+    if (size <= MAX_INLINE_BYTES) return await Deno.readFile(contentPath);
+    return async () => (await Deno.open(contentPath)).readable;
+  }
+
+  /** The latest marker's bytes, or undefined when there is none. */
+  private async readLatestMarkerBytes(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<Uint8Array | undefined> {
+    try {
+      return await Deno.readFile(
+        join(this.getDataNameDir(type, modelId, dataName), "latest"),
+      );
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    }
+  }
+
+  /** The marker's put after a write, when the marker now names `version`. */
+  private async latestAfterWrite(
+    changes: ModelChanges,
+    why: DataWrite,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<TypedChange[]> {
+    const bytes = await this.readLatestMarkerBytes(type, modelId, dataName);
+    if (
+      bytes === undefined ||
+      Number(new TextDecoder().decode(bytes).trim()) !== version
+    ) {
+      return [];
+    }
+    return [changes.latestPut(why, dataName, version, bytes)];
+  }
+
+  /**
+   * The marker as a removal left it: a put of what it holds now (a lowered
+   * latest, or NO_PROMOTED_VERSION), or a tombstone when it is gone.
+   */
+  private async latestAfterRemoval(
+    changes: ModelChanges,
+    why: DataRemoval,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<TypedChange[]> {
+    const bytes = await this.readLatestMarkerBytes(type, modelId, dataName);
+    if (bytes === undefined) return [changes.removeLatest(why, dataName)];
+    return [
+      changes.latestPut(
+        { kind: why },
+        dataName,
+        Number(new TextDecoder().decode(bytes).trim()),
+        bytes,
+      ),
+    ];
+  }
+
+  /** Stages a removed version as its own batch. */
+  private async stageRemovedVersion(
+    why: DataRemoval,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<void> {
+    await this.stageTypedChanges(
+      type,
+      modelId,
+      (changes) =>
+        Promise.resolve(changes.removeVersion(why, dataName, version)),
+    );
+  }
+
+  /** Stages the latest marker as a removal left it, as its own batch. */
+  private async stageLatestAfterRemoval(
+    why: DataRemoval,
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<void> {
+    await this.stageTypedChanges(
+      type,
+      modelId,
+      (changes) =>
+        this.latestAfterRemoval(changes, why, type, modelId, dataName),
+    );
+  }
+
+  /**
+   * Stages a promoted deferred version: its files and, when the marker moved
+   * to it, the marker. A version whose metadata is gone records no version,
+   * as its catalog row is dropped.
+   */
+  private async stagePromotedVersion(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+    hasMetadata: boolean,
+  ): Promise<void> {
+    const why: DataWrite = { kind: "data.save" };
+    await this.stageTypedChanges(type, modelId, async (changes) => {
+      const contentPath = this.getContentPath(
+        type,
+        modelId,
+        dataName,
+        version,
+      );
+      const files = hasMetadata
+        ? await this.writtenVersionChanges(
+          changes,
+          why,
+          type,
+          modelId,
+          dataName,
+          version,
+        )
+        : existsSync(contentPath)
+        ? [
+          changes.writeContent(
+            why,
+            dataName,
+            version,
+            await this.rawSource(contentPath),
+          ),
+        ]
+        : [];
+      return [
+        ...files,
+        ...await this.latestAfterWrite(
+          changes,
+          why,
+          type,
+          modelId,
+          dataName,
+          version,
+        ),
+      ];
+    });
   }
 
   /**
@@ -760,11 +974,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  async save(
+  save(
     type: ModelType,
     modelId: string,
     data: Data,
     content: Uint8Array,
+  ): Promise<{ version: number }> {
+    return this.saveVersion(type, modelId, data, content, {
+      kind: "data.save",
+    });
+  }
+
+  /**
+   * Saves a new version. `stageAs` is the write its typed changes stage as;
+   * rename passes undefined and stages the version itself, with its own
+   * intent, in the rename's batch.
+   */
+  private async saveVersion(
+    type: ModelType,
+    modelId: string,
+    data: Data,
+    content: Uint8Array,
+    stageAs: DataWrite | undefined,
   ): Promise<{ version: number }> {
     // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
@@ -835,6 +1066,29 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
     // Update latest marker
     await this.advanceLatestMarker(type, modelId, data.name, newVersion);
+
+    // Staged before the prune below, so a failed prune never leaves the
+    // version local-only.
+    if (stageAs !== undefined) {
+      await this.stageTypedChanges(type, modelId, async (changes) => [
+        ...await this.writtenVersionChanges(
+          changes,
+          stageAs,
+          type,
+          modelId,
+          data.name,
+          newVersion,
+        ),
+        ...await this.latestAfterWrite(
+          changes,
+          stageAs,
+          type,
+          modelId,
+          data.name,
+          newVersion,
+        ),
+      ]);
+    }
 
     this.catalogUpsert(type, modelId, dataToSave);
 
@@ -922,7 +1176,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     } catch (error) {
       // No receipt reaches the caller, so nothing else would roll this
       // version back; its pending row would stay under this live process.
-      await this.rollbackVersions([
+      await this.rollbackKeepingError([
         { type, modelId, dataName: data.name, version: newVersion },
       ]);
       throw error;
@@ -980,6 +1234,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       latestVersion,
     );
     await assertSafePath(contentPath, this.baseDir);
+    // On v3 the append edits the version it was loaded from: its metadata
+    // put expects the digest it replaces, so a version another writer
+    // recorded under this number refuses it rather than being overwritten.
+    // Read only on v3, before the rewrite destroys it.
+    const priorMetadata = typedStagingActive(this.markDirty)
+      ? await this.computeChecksum(
+        await Deno.readFile(
+          this.getMetadataPath(type, modelId, dataName, latestVersion),
+        ),
+      )
+      : undefined;
     const file = await Deno.open(contentPath, { append: true });
     try {
       await file.write(content);
@@ -1009,6 +1274,22 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Update catalog with new size
     const updatedData = Data.fromData(metadata);
     this.catalogUpsert(type, modelId, updatedData);
+
+    // The append re-records the live version it extended.
+    await this.stageTypedChanges(
+      type,
+      modelId,
+      (changes) =>
+        this.writtenVersionChanges(
+          changes,
+          { kind: "data.append" },
+          type,
+          modelId,
+          dataName,
+          latestVersion,
+          priorMetadata === undefined ? undefined : { sha256: priorMetadata },
+        ),
+    );
   }
 
   async *stream(
@@ -1300,6 +1581,19 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
         this.catalogRemove(type, modelId, dataName);
       }
+      await this.stageRemovedVersion(
+        "data.delete",
+        type,
+        modelId,
+        dataName,
+        version,
+      );
+      await this.stageLatestAfterRemoval(
+        "data.delete",
+        type,
+        modelId,
+        dataName,
+      );
     } else {
       // Delete all versions. Emit per-version-directory signals so the
       // sync service sees individual absent paths it can match against
@@ -1307,8 +1601,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // any individual index entry and the extension skips deletion.
       // Matches the collectGarbage pattern (swamp-club#2277).
       const dataNameDir = this.getDataNameDir(type, modelId, dataName);
+      let versions: number[] = [];
       try {
-        const versions = await this.listVersions(type, modelId, dataName);
+        versions = await this.listVersions(type, modelId, dataName);
         for (const v of versions) {
           await this.stage({
             kind: "remove",
@@ -1329,6 +1624,24 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
       this.catalogRemove(type, modelId, dataName);
+      // Each version seen is its own versioned tombstone, so a version
+      // written concurrently survives; one batch each, so a name with many
+      // versions splits across commits.
+      for (const v of versions) {
+        await this.stageRemovedVersion(
+          "data.delete",
+          type,
+          modelId,
+          dataName,
+          v,
+        );
+      }
+      await this.stageTypedChanges(
+        type,
+        modelId,
+        (changes) =>
+          Promise.resolve([changes.removeLatest("data.delete", dataName)]),
+      );
     }
   }
 
@@ -1356,6 +1669,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     this.catalogRemove(type, modelId, dataName);
+    // Expiry: a version-less data.gc of the marker; the versions stay.
+    await this.stageTypedChanges(
+      type,
+      modelId,
+      (changes) => Promise.resolve([changes.removeLatest("data.gc", dataName)]),
+    );
   }
 
   async rename(
@@ -1417,13 +1736,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       ownerDefinition: { ...oldData.ownerDefinition },
     });
 
-    // Save under the new name
-    const { version: newVersion } = await this.save(
+    // Save under the new name. Its typed changes stage below, in the
+    // rename's own batch with the rename intent.
+    const { version: newVersion } = await this.saveVersion(
       type,
       modelId,
       newData,
       content,
+      undefined,
     );
+    let tombstoneVersion = 0;
 
     // Write a tombstone with forward reference on the old name.
     // If this fails, roll back the newly saved data to avoid an inconsistent
@@ -1437,11 +1759,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       });
 
       // Save tombstone metadata and content
-      const { version: tombstoneVersion } = await this.atomicAllocateVersionDir(
+      ({ version: tombstoneVersion } = await this.atomicAllocateVersionDir(
         type,
         modelId,
         oldName,
-      );
+      ));
       const tombstoneData = tombstone.withNewVersion({
         version: tombstoneVersion,
       });
@@ -1508,8 +1830,60 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           String(rollbackError)
         }. Manual cleanup may be needed.`;
       }
+      // The new version was never staged; stage the new name's marker as
+      // the rollback left it. A staging error must not hide the rename's.
+      try {
+        await this.stageLatestAfterRemoval(
+          "data.delete",
+          type,
+          modelId,
+          newName,
+        );
+      } catch (stageError) {
+        logger
+          .error`Staging the rollback of rename ${oldName} -> ${newName} failed: ${stageError}`;
+      }
       throw tombstoneError;
     }
+
+    // One batch, so the rename lands in one commit: the new name's version
+    // and the old name's marker version, both with the rename intent, and
+    // each name's latest marker.
+    const why: DataWrite = { kind: "data.rename", from: oldName, to: newName };
+    await this.stageTypedChanges(type, modelId, async (changes) => [
+      ...await this.writtenVersionChanges(
+        changes,
+        why,
+        type,
+        modelId,
+        newName,
+        newVersion,
+      ),
+      ...await this.latestAfterWrite(
+        changes,
+        why,
+        type,
+        modelId,
+        newName,
+        newVersion,
+      ),
+      ...await this.writtenVersionChanges(
+        changes,
+        why,
+        type,
+        modelId,
+        oldName,
+        tombstoneVersion,
+      ),
+      ...await this.latestAfterWrite(
+        changes,
+        why,
+        type,
+        modelId,
+        oldName,
+        tombstoneVersion,
+      ),
+    ]);
 
     // The old name is now a tombstone: drop its rows and record the forward
     // so data query can follow it. Outside the rollback above: the files are
@@ -1585,7 +1959,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       } catch (error) {
         // The writer never gets the allocation, so nothing else would roll
         // the empty version directory back.
-        await this.rollbackVersions([
+        await this.rollbackKeepingError([
           { type, modelId, dataName: data.name, version: newVersion },
         ]);
         throw error;
@@ -1650,6 +2024,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     // Update latest marker
     await this.advanceLatestMarker(type, modelId, data.name, version);
 
+    // The content was streamed in by the writer; it stages from the file.
+    const why: DataWrite = { kind: "data.save" };
+    await this.stageTypedChanges(type, modelId, async (changes) => [
+      ...await this.writtenVersionChanges(
+        changes,
+        why,
+        type,
+        modelId,
+        data.name,
+        version,
+      ),
+      ...await this.latestAfterWrite(
+        changes,
+        why,
+        type,
+        modelId,
+        data.name,
+        version,
+      ),
+    ]);
+
     this.catalogUpsert(type, modelId, dataToSave);
 
     if (
@@ -1712,7 +2107,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async advanceLatestMarkers(
     receipts: DeferredWriteReceipt[],
   ): Promise<void> {
+    const stagingErrors: unknown[] = [];
     for (const receipt of receipts) {
+      let promoted: { hasMetadata: boolean } | undefined;
       try {
         const data = await this.findByName(
           receipt.type,
@@ -1740,6 +2137,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.dataName,
           receipt.version,
         );
+        // Promoted once the marker moved, whatever fails after it.
+        promoted = { hasMetadata: data !== null };
         if (data) {
           this.catalogUpsert(receipt.type, receipt.modelId, data);
         }
@@ -1756,7 +2155,24 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         logger
           .warn`Failed to advance latest marker for ${receipt.dataName} v${receipt.version}: ${error}`;
       }
+      // A deferred version reaches v3 when it is promoted. Outside the catch
+      // above, so a v3 staging error is never only logged; collected, so
+      // the receipts after it are still promoted.
+      if (promoted !== undefined) {
+        try {
+          await this.stagePromotedVersion(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+            receipt.version,
+            promoted.hasMetadata,
+          );
+        } catch (error) {
+          stagingErrors.push(error);
+        }
+      }
     }
+    throwStagingErrors(stagingErrors);
   }
 
   /**
@@ -1795,7 +2211,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async rollbackVersions(
     receipts: DeferredWriteReceipt[],
   ): Promise<void> {
+    const stagingErrors: unknown[] = [];
     for (const receipt of receipts) {
+      let rolledBack = false;
       try {
         const versionDir = this.getPath(
           receipt.type,
@@ -1818,10 +2236,54 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           receipt.modelId,
           receipt.dataName,
         );
+        rolledBack = true;
       } catch (error) {
         logger
           .warn`Failed to rollback version ${receipt.dataName} v${receipt.version}: ${error}`;
       }
+      // An unpromoted version was never staged, so its tombstones are
+      // harmless; they keep v3 right should a rollback follow a promotion.
+      if (rolledBack) {
+        try {
+          await this.stageRemovedVersion(
+            "data.delete",
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+            receipt.version,
+          );
+          await this.stageLatestAfterRemoval(
+            "data.delete",
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          );
+        } catch (error) {
+          stagingErrors.push(error);
+        }
+      }
+    }
+    throwStagingErrors(stagingErrors);
+  }
+
+  /**
+   * Rolls back a failed write's version on the way to rethrowing the
+   * write's error. On v3 an error of the rollback (its typed staging) is
+   * logged, so it never replaces the error that caused it. On v2 the
+   * rollback runs exactly as it always has, and its error reaches the
+   * caller as before.
+   */
+  private async rollbackKeepingError(
+    receipts: DeferredWriteReceipt[],
+  ): Promise<void> {
+    if (!typedStagingActive(this.markDirty)) {
+      await this.rollbackVersions(receipts);
+      return;
+    }
+    try {
+      await this.rollbackVersions(receipts);
+    } catch (error) {
+      logger.error`Staging the rollback of a failed write failed: ${error}`;
     }
   }
 
@@ -2256,9 +2718,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
       // Build removal tasks upfront
       const removalTasks = versionsToRemove.map((version) => ({
+        version,
         contentPath: this.getContentPath(type, modelId, data.name, version),
         versionDir: this.getPath(type, modelId, data.name, version),
       }));
+      const removed: number[] = [];
 
       // Execute in parallel batches. For dry-run we still stat each path to
       // accumulate bytesReclaimed but skip the actual remove.
@@ -2285,15 +2749,27 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             return bytes;
           }),
         );
-        for (const result of results) {
+        for (const [index, result] of results.entries()) {
           if (result.status === "fulfilled") {
             bytesReclaimed += result.value;
             versionsRemoved++;
+            if (!dryRun) removed.push(batch[index].version);
           } else {
             logger
               .error`GC failed to remove version directory: ${result.reason}`;
           }
         }
+      }
+      // Staged after the parallel removals, outside allSettled, so a v3
+      // staging error surfaces; one batch per version.
+      for (const version of removed) {
+        await this.stageRemovedVersion(
+          "data.gc",
+          type,
+          modelId,
+          data.name,
+          version,
+        );
       }
 
       // Re-scan actual versions after parallel deletions to avoid stale marker.
@@ -2347,6 +2823,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
           this.catalogRemove(type, modelId, data.name);
         }
+        await this.stageLatestAfterRemoval("data.gc", type, modelId, data.name);
       }
     }
 
@@ -2441,6 +2918,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) throw error;
       }
+      await this.stageRemovedVersion(
+        "data.gc",
+        type,
+        modelId,
+        dataName,
+        version,
+      );
     }
     if (toRemove.length > 0) {
       this.catalogStore.bulkRemoveVersions(
@@ -2740,6 +3224,15 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         );
         this.catalogStore.recordLocalWrite();
         if (data) this.catalogUpsert(type, modelId, data);
+        // Promoted by a process that died before it could commit: stage it
+        // now, or v3 never gets it.
+        await this.stagePromotedVersion(
+          type,
+          modelId,
+          row.data_name,
+          row.version,
+          data !== null,
+        );
         continue;
       }
       const versionDir = this.getPath(
@@ -2770,6 +3263,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         computeLatestFlags,
       );
       this.catalogStore.recordLocalWrite();
+      await this.stageRemovedVersion(
+        "data.gc",
+        type,
+        modelId,
+        row.data_name,
+        row.version,
+      );
       versionsRemoved++;
       names.add(row.data_name);
       logger
@@ -2783,6 +3283,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       await this.stage({ kind: "remove", path: dataNameDir });
       await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
       this.catalogRemove(type, modelId, name);
+      await this.stageLatestAfterRemoval("data.gc", type, modelId, name);
     }
     return { versionsRemoved, bytesReclaimed };
   }
@@ -2816,6 +3317,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return Array.from(hashArray)
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
+  }
+}
+
+/**
+ * Throws the v3 staging errors a loop over receipts collected, after every
+ * receipt was handled: the one error, or all of them.
+ */
+function throwStagingErrors(errors: readonly unknown[]): void {
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Staging typed changes failed");
   }
 }
 
