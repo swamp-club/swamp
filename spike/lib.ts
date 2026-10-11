@@ -116,6 +116,10 @@ export async function control(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
+  // Deno has no AF_UNIX client on Windows ("op_net_connect_unix not supported
+  // on non-unix platforms"); Litestream's socket works there, so go through
+  // curl.exe (shipped with Windows 10 1803+) for the spike.
+  if (Deno.build.os === "windows") return await controlViaCurl(socket, method, path, body);
   const conn = await Deno.connect({ transport: "unix", path: socket });
   try {
     const payload = body === undefined ? "" : JSON.stringify(body);
@@ -146,6 +150,25 @@ export async function control(
       conn.close();
     } catch { /* closed */ }
   }
+}
+
+async function controlViaCurl(
+  socket: string,
+  method: string,
+  path: string,
+  body?: unknown,
+) {
+  const args = ["-s", "-o", "-", "-w", "\n%{http_code}", "--unix-socket", socket, "-X", method];
+  if (body !== undefined) args.push("-H", "Content-Type: application/json", "-d", JSON.stringify(body));
+  args.push(`http://litestream${path}`);
+  const r = await new Deno.Command("curl", { args }).output();
+  if (!r.success) throw new Error(`curl failed: ${r.code}`);
+  const text = new TextDecoder().decode(r.stdout);
+  const nl = text.lastIndexOf("\n");
+  const status = Number(text.slice(nl + 1));
+  if (!status) throw new Error("no response");
+  const b = text.slice(0, nl).trim();
+  return { status, json: b ? JSON.parse(b) : {} };
 }
 
 function dechunk(s: string): string {

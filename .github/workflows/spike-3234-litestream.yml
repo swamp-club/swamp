@@ -11,29 +11,46 @@ permissions:
 
 jobs:
   probe:
-    name: ${{ matrix.runner }}
+    name: ${{ matrix.runner }} ${{ matrix.ls }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { runner: windows-latest, asset: windows-x86_64.zip }
-          - { runner: windows-11-arm, asset: windows-arm64.zip }
-          - { runner: macos-15-intel, asset: darwin-x86_64.tar.gz }
-          - { runner: ubuntu-latest, asset: linux-x86_64.tar.gz }
-          - { runner: ubuntu-24.04-arm, asset: linux-arm64.tar.gz }
+          - { runner: windows-latest, asset: windows-x86_64.zip, ls: '0.5.15' }
+          - { runner: windows-11-arm, asset: windows-arm64.zip, ls: '0.5.15' }
+          - { runner: windows-latest, asset: source, ls: '93ba3cd76804d767095fc64475b4d1786b39d6a7' }
+          - { runner: windows-11-arm, asset: source, ls: '93ba3cd76804d767095fc64475b4d1786b39d6a7' }
+          - { runner: macos-15-intel, asset: darwin-x86_64.tar.gz, ls: '0.5.17' }
+          - { runner: ubuntu-latest, asset: linux-x86_64.tar.gz, ls: '0.5.17' }
+          - { runner: ubuntu-24.04-arm, asset: linux-arm64.tar.gz, ls: '0.5.17' }
     defaults:
       run:
         shell: bash
     env:
-      LS_VERSION: '0.5.17'
+      LS_VERSION: ${{ matrix.ls }}
     steps:
       - uses: actions/checkout@v6
       - uses: denoland/setup-deno@v2
         with:
           deno-version-file: .tool-versions
+      - uses: actions/setup-go@v5
+        if: matrix.asset == 'source'
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Build litestream from a pinned commit
+        if: matrix.asset == 'source'
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/benbjohnson/litestream "$RUNNER_TEMP/lsrc"
+          cd "$RUNNER_TEMP/lsrc" && git checkout -q "$LS_VERSION"
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/litestream.exe" ./cmd/litestream
+          "$RUNNER_TEMP/litestream.exe" version
+          echo "LITESTREAM_BIN=$(cygpath -w "$RUNNER_TEMP/litestream.exe")" >> "$GITHUB_ENV"
       - name: Fetch and verify litestream
+        if: matrix.asset != 'source'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ls" && cd "$RUNNER_TEMP/ls"
@@ -52,5 +69,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: results-${{ matrix.runner }}
+          name: results-${{ matrix.runner }}-${{ matrix.ls }}
           path: ${{ runner.temp }}/results.jsonl

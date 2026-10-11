@@ -27,6 +27,21 @@ if (out.controlSocket === "ok") {
 }
 // File locking while the replicator holds the db open.
 const tryOp = (f: () => void) => { try { f(); return "ok"; } catch (e) { return `refused: ${(e as Error).name}`; } };
+// `litestream sync -wait` as a subprocess client: the portable way to reach
+// the control socket where the runtime has no AF_UNIX client.
+if (out.controlSocket === "ok") {
+  const t: number[] = [];
+  let lastOut = "";
+  for (let i = 0; i < 10; i++) {
+    L.insertCommit(db, 1024);
+    const t0 = performance.now();
+    const r = await new Deno.Command(L.LITESTREAM, { args: ["sync", "-socket", sock, "-wait", "-json", dbPath] }).output();
+    t.push(performance.now() - t0);
+    lastOut = new TextDecoder().decode(r.success ? r.stdout : r.stderr).trim().slice(0, 200);
+  }
+  out.syncCommandMs = L.stats(t);
+  out.syncCommandLast = lastOut;
+}
 // Stop semantics after the db is initialised (past the first monitor tick).
 await new Promise((r) => setTimeout(r, 1500));
 for (let i = 0; i < 5; i++) L.insertCommit(db, 1024);
@@ -35,7 +50,7 @@ out.sigtermStop = st;
 const r1 = join(d, "r1.db");
 try {
   await L.restore(cfg, dbPath, r1);
-  out.finalSyncOnSigterm = L.verifyRestored(r1).maxSeq === 55;
+  out.finalSyncOnSigterm = L.verifyRestored(r1).maxSeq === 65;
 } catch (e) {
   out.finalSyncOnSigterm = `restore failed: ${(e as Error).message.slice(0, 120)}`;
 }
@@ -56,5 +71,5 @@ const r2 = join(d, "r2.db");
 await L.restore(cfg, dbPath, r2);
 const v = L.verifyRestored(r2);
 out.restoredAfterRestart = v;
-out.allCommitsReplicated = v.maxSeq === 55 && v.integrity === "ok";
+out.allCommitsReplicated = v.maxSeq === 65 && v.integrity === "ok";
 console.log(JSON.stringify(out));
