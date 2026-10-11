@@ -32,6 +32,7 @@ import {
 } from "./process_executor.ts";
 import { setProcessGroupIsolation } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
+import type { ProcessJob } from "./windows_job.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 Deno.test("streamLines processes complete lines", async () => {
@@ -1023,4 +1024,145 @@ Deno.test({
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     }
   },
+});
+
+/** A fake Job Object factory recording what happened to each job. */
+function recordingJobs(): {
+  attachJob: (pid: number) => ProcessJob;
+  events: string[];
+} {
+  const events: string[] = [];
+  return {
+    events,
+    attachJob: (pid) => {
+      events.push("attach");
+      assert(pid > 0);
+      return {
+        terminate: () => events.push("terminate"),
+        release: () => events.push("release"),
+      };
+    },
+  };
+}
+
+for (
+  const [label, options] of [
+    ["timeout", { timeoutMs: 60_000 }],
+    ["streaming", { logger: silentLogger }],
+    ["buffered", {}],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `executeProcess (${label}): a command that exits on its own releases its job`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const { attachJob, events } = recordingJobs();
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "exit 0"],
+        terminateProcessTree: true,
+        attachJob,
+        ...options,
+      });
+
+      assertEquals(result.exitCode, 0);
+      assertEquals(events, ["attach", "release"]);
+    },
+  });
+
+  Deno.test({
+    name: `executeProcess (${label}): an aborted command terminates its job`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const { attachJob, events } = recordingJobs();
+      const controller = new AbortController();
+      const run = executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        signal: controller.signal,
+        terminateProcessTree: true,
+        killGraceMs: 200,
+        attachJob,
+        ...options,
+      });
+      await waitFor(() => events.length > 0, "job to be attached");
+
+      controller.abort();
+
+      await assertRejects(() => run);
+      assertEquals(events, ["attach", "terminate"]);
+    },
+  });
+}
+
+Deno.test({
+  name: "executeProcess: a timed-out command terminates its job",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const { attachJob, events } = recordingJobs();
+
+    await assertRejects(() =>
+      executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        timeoutMs: 200,
+        terminateProcessTree: true,
+        killGraceMs: 200,
+        attachJob,
+      })
+    );
+
+    assertEquals(events, ["attach", "terminate"]);
+  },
+});
+
+Deno.test({
+  name: "executeProcess: attaches no job without tree termination",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const { attachJob, events } = recordingJobs();
+
+    await executeProcess({ command: "sh", args: ["-c", "exit 0"], attachJob });
+
+    assertEquals(events, []);
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: an aborted command's job is terminated after its tree is killed",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withIsolatedGroups(async () => {
+      // On Windows the tree kill walks parent links from the live child, so
+      // ending the job first would leave it nothing to walk.
+      let childPid = 0;
+      let aliveAtTerminate: boolean | undefined;
+      const controller = new AbortController();
+      const run = executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        signal: controller.signal,
+        terminateProcessTree: true,
+        attachJob: (pid) => {
+          childPid = pid;
+          return {
+            // Probes the group the child leads, as the tree kill does: the
+            // child itself can linger as an unreaped zombie.
+            terminate: () => {
+              aliveAtTerminate = isProcessAlive(-childPid);
+            },
+            release: () => {},
+          };
+        },
+      });
+      await waitFor(() => childPid > 0, "job to be attached");
+
+      controller.abort();
+
+      await assertRejects(() => run);
+      assertEquals(aliveAtTerminate, false);
+    }),
 });
