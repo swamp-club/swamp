@@ -321,11 +321,12 @@ with another mint's secret (swamp-club#2482):
   since hashing the current secret would bless a pairing that may already be
   wrong.
 
-Two writers do not take the name lock. The OAuth login mint names each token
+The token GC takes the name lock too, around each token it collects (see
+below). One writer does not. The OAuth login mint names each token
 `oauth-<random>`, so it only shares a name with another mint by chance; it
-records the fingerprint, so a collision fails closed. The token GC deletes
-under the sync gate alone, as described below. A binary from before the lock
-takes neither precaution, and drops the fingerprint from a record it rewrites.
+records the fingerprint, so a collision fails closed. A binary from before the
+lock takes neither precaution, and drops the fingerprint from a record it
+rewrites.
 
 Serve garbage-collects server tokens in every auth mode
 (`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
@@ -343,9 +344,14 @@ the gate for a long time. A larger backlog drains over later sweeps. Tokens
 that failed in the last sweep are tried after the others, so a block of tokens
 that keep failing cannot use up the cap (swamp-club#2535).
 
-Each token is collected as one unit holding the sync gate exclusively. Inside
-the unit the GC re-reads the token's `token-main` and skips the token if it is
-gone or no longer eligible. Then:
+Each token is collected as one unit holding the token's name lock and, inside
+it, the sync gate exclusively. The lock is taken first, as the token handlers
+take it, so the GC never waits on it while holding the gate; a lock it cannot
+take fails the collection, and the token is retried next sweep. Inside the
+unit the GC first pulls, when serve has a remote datastore, as the token
+handlers do before they write; a failed pull fails the collection. It then
+re-reads the token's `token-main` and skips the token if it is gone or no
+longer eligible. Then:
 
 1. It deletes the secret. A failure keeps the token for the next sweep, so a
    stale copy of the records, such as an HA peer's local cache, can never
@@ -385,18 +391,26 @@ store's delete of a missing key is a no-op, so any error is a real failure.
 Every replica sweeps on its own, and a token another replica already deleted
 is skipped.
 
-The re-read protects against token writes only where the gate covers them.
-Serve's own token mint, rotate and revoke, and the OAuth login mint, hold the
-gate while they write. So with a remote datastore, a write in the same process
-lands either before the re-read or after the unit. The gap is in two places:
+The re-read protects against token writes because the GC holds the same name
+lock as the writers. Mint, rotate and revoke, in serve and in the CLI, hold it
+across their writes, so a write lands either before the re-read or after the
+unit, with or without a remote datastore (swamp-club#2534). Serve only creates
+the sync gate with a remote datastore, so the lock, not the gate, is what
+serialises them. The OAuth login mint holds the gate but not the lock; its
+random names make a clash with a collected token a chance collision.
 
-- **No remote datastore.** Serve creates no gate at all, so a rotation or
-  re-mint can land between the re-read and the deletes (swamp-club#2534).
-- **Across replicas.** The gate is in-process only. A replica whose copy of a
-  record is older than another replica's re-mint or rotation of the same name
-  can still collect the new token.
+Across replicas the lock is the datastore's distributed lock, so it orders
+the GC after another replica's re-mint or rotation of the same name, and the
+pull before the re-read brings that write into the local copy the GC reads.
 
-Both fail closed: the token has to be minted again.
+The lock and the pull have a cost. With a remote datastore each collection
+takes a distributed lock and pulls, on top of its push, and holds the gate for
+the pull. A token whose lock another writer holds can make a sweep wait up to
+the lock timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), without holding
+the gate. `MAX_TOKENS_PER_SWEEP` caps the collections that succeed or fail,
+and a lock timeout is a failure. A token skipped on re-read still costs a lock
+and a pull but does not count toward the cap, so skips are bounded only by the
+number of tokens the sweep listed as eligible.
 
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
