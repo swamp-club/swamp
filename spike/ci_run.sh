@@ -12,6 +12,7 @@ run() {
   fi
   grep -E "level=ERROR|panic" "$err" | sed 's/time=[^ ]* //' | sort | uniq -c | head -5 >&2 || true
 }
+if [ "${OS:-}" = "Windows_NT" ]; then run win_diag.ts; fi
 run platform_probe.ts
 run exp_compat.ts passive-default 5000
 run exp_compat.ts app-truncate 5000
