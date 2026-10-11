@@ -74,18 +74,19 @@ Write in plain English:
 
 ### Enablers
 
-| Doc                                                | Enables           | Notes                                                                |
-| -------------------------------------------------- | ----------------- | -------------------------------------------------------------------- |
-| [expressions](./enablers/expressions.md)           | models, workflows | CEL surface                                                          |
-| [inputs](./enablers/inputs.md)                     | models, workflows |                                                                      |
-| [data-query](./enablers/data-query.md)             | data              | `data query`, catalog                                                |
-| [datastores](./enablers/datastores.md)             | data              | To be split: operator view / sync contract / locking                 |
-| [remote-execution](./enablers/remote-execution.md) | serve             | Workers, leases, runners, data plane; serve protocol to be extracted |
-| [reports](./enablers/reports.md)                   | models, workflows |                                                                      |
-| [run-tracker](./enablers/run-tracker.md)           | workflows, models | To fold into a workflow-execution doc                                |
-| [doctor-secrets](./enablers/doctor-secrets.md)     | models            | To fold into models.md operations section                            |
-| [doctor-vaults](./enablers/doctor-vaults.md)       | vaults            | To fold into vaults.md operations section                            |
-| [access-control](./enablers/access-control.md)     | serve             | Principals, grants, subjects, evaluation model, can-i                |
+| Doc                                                        | Enables           | Notes                                                                |
+| ---------------------------------------------------------- | ----------------- | -------------------------------------------------------------------- |
+| [expressions](./enablers/expressions.md)                   | models, workflows | CEL surface                                                          |
+| [inputs](./enablers/inputs.md)                             | models, workflows |                                                                      |
+| [data-query](./enablers/data-query.md)                     | data              | `data query`, catalog                                                |
+| [datastores](./enablers/datastores.md)                     | data              | To be split: operator view / sync contract / locking                 |
+| [datastore-litestream](./enablers/datastore-litestream.md) | data              | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
+| [remote-execution](./enablers/remote-execution.md)         | serve             | Workers, leases, runners, data plane; serve protocol to be extracted |
+| [reports](./enablers/reports.md)                           | models, workflows |                                                                      |
+| [run-tracker](./enablers/run-tracker.md)                   | workflows, models | To fold into a workflow-execution doc                                |
+| [doctor-secrets](./enablers/doctor-secrets.md)             | models            | To fold into models.md operations section                            |
+| [doctor-vaults](./enablers/doctor-vaults.md)               | vaults            | To fold into vaults.md operations section                            |
+| [access-control](./enablers/access-control.md)             | serve             | Principals, grants, subjects, evaluation model, can-i                |
 
 ### Surfaces
 

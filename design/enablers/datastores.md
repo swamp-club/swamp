@@ -399,6 +399,10 @@ Two neighbouring concepts differ:
 
 ## Remote Datastore Sync
 
+This section describes today's (v2) sync. The v3 datastore replicates its
+single-writer `commits.db` with Litestream instead; how swamp runs it is decided
+in [datastore-litestream.md](./datastore-litestream.md).
+
 With a remote datastore (e.g. S3 via `@swamp/s3-datastore`), sync is
 automatic:
 
