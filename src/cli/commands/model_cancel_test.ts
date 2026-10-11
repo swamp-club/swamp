@@ -730,7 +730,7 @@ function recordFor(row: ActiveRun, definitionId: string): ModelOutput {
 
 /** Evidence holding the given records and lock, counting each read. */
 function evidenceOf(
-  records: ModelOutput[],
+  records: ModelOutput[] | Error,
   lock: Partial<LockInfo> | null | Error,
 ) {
   const reads = { outputs: 0, lock: 0 };
@@ -742,6 +742,7 @@ function evidenceOf(
         ids: ReadonlySet<string>,
       ) => {
         reads.outputs++;
+        if (records instanceof Error) return Promise.reject(records);
         return Promise.resolve(
           new Map(records.filter((r) => ids.has(r.id)).map((r) => [r.id, r])),
         );
@@ -847,4 +848,28 @@ Deno.test("findMethodRunsOfModel: a lock that cannot be read leaves the row unat
     runs: [own],
     unattributed: [legacy],
   });
+});
+
+Deno.test("findMethodRunsOfModel: records that cannot be read leave the row to the lock and the model's own run selected", async () => {
+  const legacy = trackerRow({ pid: OWNER_PID });
+  const own = trackerRow({ pid: OWNER_PID + 2, definitionId: IDLE_ID });
+  const unreadable = new Error("EACCES");
+
+  const held = evidenceOf(unreadable, {});
+  assertEquals(
+    await findMethodRunsOfModel([legacy, own], idle, held.evidence),
+    {
+      runs: [legacy, own],
+      unattributed: [],
+    },
+  );
+
+  const free = evidenceOf(unreadable, null);
+  assertEquals(
+    await findMethodRunsOfModel([legacy, own], idle, free.evidence),
+    {
+      runs: [own],
+      unattributed: [legacy],
+    },
+  );
 });

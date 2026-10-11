@@ -346,21 +346,29 @@ export async function findMethodRunsOfModel(
     definitionId: model.definitionId,
     modelType: model.type.normalized,
   };
-  const legacyRows = methodRunsOfModel(runningRows, selector).unattributed;
-  if (legacyRows.length === 0) return methodRunsOfModel(runningRows, selector);
+  const selected = methodRunsOfModel(runningRows, selector);
+  const legacyRows = selected.unattributed;
+  if (legacyRows.length === 0) return selected;
 
   const own = new Set<string>();
   const others = new Set<string>();
-  const methods = new Set(legacyRows.map((r) => r.methodName ?? ""));
+  // Evidence that cannot be read is no evidence, not a failure: the model's
+  // own rows cancel without it.
+  const methods = new Set(
+    legacyRows.map((r) => r.methodName).filter((m) => m !== null),
+  );
   for (const method of methods) {
     const ids = new Set(
-      legacyRows.filter((r) => (r.methodName ?? "") === method).map((r) =>
-        r.id
-      ),
+      legacyRows.filter((r) => r.methodName === method).map((r) => r.id),
     );
-    const records = await evidence.outputs.findByIds(model.type, method, ids);
-    for (const [id, record] of records) {
-      (record.definitionId === model.definitionId ? own : others).add(id);
+    try {
+      const records = await evidence.outputs.findByIds(model.type, method, ids);
+      for (const [id, record] of records) {
+        (record.definitionId === model.definitionId ? own : others).add(id);
+      }
+    } catch (error) {
+      evidence.logger
+        .debug`Could not read the ${method} method-run records: ${error}`;
     }
   }
 
@@ -372,7 +380,6 @@ export async function findMethodRunsOfModel(
     try {
       lock = await evidence.inspectModelLock();
     } catch (error) {
-      // No evidence, not a failure: the model's own rows cancel without it.
       evidence.logger.debug`Could not read the model lock: ${error}`;
     }
     if (lock && !lock.holderUnknown) {
