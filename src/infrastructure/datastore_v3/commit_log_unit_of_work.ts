@@ -101,6 +101,7 @@ import {
   isOp,
   MAX_INLINE_BYTES,
   type Op,
+  type PutOp,
   putOp,
 } from "../../domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
@@ -452,7 +453,9 @@ function runRank(group: Group): number {
 /**
  * Stores the group's content, then appends its commit at the partition's
  * current head. The head read and the append run under the partition's
- * lock, so two units in one process never take the same seq.
+ * lock, so two units in one process never take the same seq. Once the
+ * commit has landed, any of its chunks that chunk garbage collection
+ * deleted meanwhile are stored again (see {@link restoreMissingChunks}).
  */
 async function appendGroup(
   group: Group,
@@ -460,10 +463,17 @@ async function appendGroup(
   clock: () => Date,
 ): Promise<void> {
   const ops: Op[] = [];
+  const stored: StoredContent[] = [];
   for (const change of group.changes) {
-    ops.push(
-      "op" in change ? change.op : await storePut(change.put, options),
-    );
+    if ("op" in change) {
+      ops.push(change.op);
+      continue;
+    }
+    const op = await storePut(change.put, options);
+    if ("blob" in op.content) {
+      stored.push({ source: change.put.content, blob: op.content.blob });
+    }
+    ops.push(op);
   }
   await withPartitionLock(
     options.sink,
@@ -502,6 +512,47 @@ async function appendGroup(
       }
     },
   );
+  await restoreMissingChunks(stored, options);
+}
+
+/** Content a landed commit names as chunks, and where it came from. */
+interface StoredContent {
+  readonly source: ContentSource;
+  readonly blob: BlobRef;
+}
+
+/**
+ * The writer's half of closing chunk garbage collection's race
+ * (swamp-club#3249). A sweep can delete a chunk this unit found present
+ * and refreshed before its commit landed; the sweep re-checks references
+ * after deleting and restores what a commit landed on meanwhile, so what is
+ * left is a commit landing after that re-check. Checked here, after the
+ * commit has landed (appended or a duplicate), any chunk of it missing is
+ * stored again from the put's content source, which stays readable until
+ * the unit ends. Content stored again must give the same reference;
+ * a source that changed cannot repair the commit, and that is an error.
+ */
+async function restoreMissingChunks(
+  stored: readonly StoredContent[],
+  options: CommitLogUnitOptions,
+): Promise<void> {
+  const { chunkStore, namespace, signal } = options;
+  for (const { source, blob } of stored) {
+    const missing = await chunkStore.missing(namespace, blob, signal);
+    if (missing.length === 0) continue;
+    const again = await chunkStore.write(
+      namespace,
+      source instanceof Uint8Array ? source : await source(),
+      signal,
+    );
+    if (!again.equals(blob)) {
+      throw new Error(
+        `A landed commit names chunk ${
+          missing[0]
+        }, which is missing, and its content source no longer gives content ${blob.sha256}`,
+      );
+    }
+  }
 }
 
 /** How many times one flush tries a partition's append through seq gaps. */
@@ -511,7 +562,7 @@ const SEQ_GAP_ATTEMPTS = 2;
 async function storePut(
   put: PendingPut,
   options: CommitLogUnitOptions,
-): Promise<Op> {
+): Promise<PutOp> {
   const content = await storeContent(put.content, options);
   return await putOp({
     intent: put.intent,

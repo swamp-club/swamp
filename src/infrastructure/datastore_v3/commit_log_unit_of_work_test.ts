@@ -771,3 +771,120 @@ Deno.test("createCommitLogUnitOfWork: an aborted signal rejects a commit that st
   await assertRejects(() => uow.commit(), Error, "timed out");
   assertEquals(sink.appendCalls, []);
 });
+
+/** Deletes every chunk a commit names, as a chunk sweep could. */
+async function deleteChunksOf(
+  commit: { ops: readonly unknown[] },
+  storage: MemoryStorage,
+): Promise<string[]> {
+  const gone: string[] = [];
+  for (const op of commit.ops as PutOp[]) {
+    if (op.kind !== "put" || !("blob" in op.content)) continue;
+    for (const sha256 of op.content.blob.chunkHashes()) {
+      await storage.delete("_default", sha256, new AbortController().signal);
+      gone.push(sha256);
+    }
+  }
+  return gone;
+}
+
+Deno.test("createCommitLogUnitOfWork: chunks a sweep deleted after they were stored but before the commit landed are stored again once it lands", async () => {
+  for (
+    const source of [
+      bytesOf(100 * 1024),
+      () => streamOf(bytesOf(100 * 1024), [5, 7000]),
+    ]
+  ) {
+    const sink = new MemorySink();
+    const options = unitOptions(sink, memory());
+    let deleted: string[] = [];
+    // Between the unit's has()/touch() and its append, a sweep deletes the
+    // chunks after its re-check, so only the writer can restore them.
+    sink.beforeAppend = async (commit) => {
+      deleted = await deleteChunksOf(commit, options.storage);
+    };
+    const uow = createCommitLogUnitOfWork(contextHook(), options);
+    await uow.stageOp(pendingPut("x", source));
+    await uow.commit();
+
+    assert(deleted.length > 1);
+    const present = await options.storage.has(
+      "_default",
+      deleted,
+      new AbortController().signal,
+    );
+    assertEquals(present.size, deleted.length);
+    assertEquals(
+      await contentOf(sink.landed[0].ops[0] as PutOp, options.storage),
+      bytesOf(100 * 1024),
+    );
+  }
+});
+
+Deno.test("createCommitLogUnitOfWork: a retried commit that lands as a duplicate also has its missing chunks stored again", async () => {
+  const sink = new MemorySink();
+  const options = unitOptions(sink, memory());
+  let fail = true;
+  sink.afterAppend = async (commit) => {
+    // The append lands but the call fails, and a sweep deletes the chunks.
+    if (!fail) return;
+    fail = false;
+    await deleteChunksOf(commit, options.storage);
+    throw new Error("lost reply");
+  };
+  // The retry re-stores content before its append; delete it again there.
+  let retried = false;
+  sink.beforeAppend = async (commit) => {
+    if (fail) return;
+    retried = true;
+    await deleteChunksOf(commit, options.storage);
+  };
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(pendingPut("x", bytesOf(100 * 1024)));
+  await assertRejects(() => uow.checkpoint(), Error, "lost reply");
+  await uow.commit();
+
+  assert(retried);
+  assertEquals(sink.landed.length, 1);
+  assertEquals(
+    await contentOf(sink.landed[0].ops[0] as PutOp, options.storage),
+    bytesOf(100 * 1024),
+  );
+});
+
+Deno.test("createCommitLogUnitOfWork: a source that changed cannot restore a deleted chunk, and says so", async () => {
+  const sink = new MemorySink();
+  const options = unitOptions(sink, memory());
+  let calls = 0;
+  sink.beforeAppend = async (commit) => {
+    await deleteChunksOf(commit, options.storage);
+  };
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(
+    pendingPut("x", () => streamOf(bytesOf(100 * 1024, ++calls))),
+  );
+  await assertRejects(
+    () => uow.commit(),
+    Error,
+    "no longer gives content",
+  );
+  assertEquals(sink.landed.length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: a commit whose chunks are all present checks them once and stores nothing again", async () => {
+  const sink = new MemorySink();
+  const storage = memory();
+  const options = unitOptions(sink, storage);
+  const uow = createCommitLogUnitOfWork(contextHook(), options);
+  await uow.stageOp(pendingPut("x", bytesOf(100 * 1024)));
+  await uow.stageOp(pendingPut("small", bytesOf(10)));
+  const putsBefore = storage.puts();
+  await uow.commit();
+  const hasCalls = storage.calls.filter((c) => c.startsWith("has "));
+  // One has() per chunk while storing, then one for the landed blob; the
+  // inline put adds none.
+  const parts = (sink.landed[0].ops[0] as PutOp).content;
+  assert("blob" in parts);
+  assertEquals(hasCalls.length, parts.blob.chunkHashes().length + 1);
+  assertEquals(storage.puts() - putsBefore, parts.blob.chunkHashes().length);
+});

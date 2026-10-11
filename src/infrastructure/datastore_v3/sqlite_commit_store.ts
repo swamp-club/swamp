@@ -98,6 +98,45 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (namespace, partition)
   ) STRICT, WITHOUT ROWID;
   `,
+  // 1 → 2: the chunks each namespace's commits name (swamp-club#3249), what
+  // chunk garbage collection must keep. Backfilled from the stored commits
+  // by the rule Commit.chunkRefs applies to each new one: a put's blob adds
+  // its sha256 when it has no parts, otherwise every part's. A body that is
+  // not JSON, or not shaped like a commit, is skipped rather than failing
+  // the migration: it is reported as corruption when its partition is
+  // rebuilt, as before. Indexing too much only keeps a chunk.
+  `
+  CREATE TABLE chunk_refs (
+    namespace TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY (namespace, sha256)
+  ) STRICT, WITHOUT ROWID;
+  INSERT OR IGNORE INTO chunk_refs (namespace, sha256)
+    SELECT namespace, sha256 FROM (
+      SELECT c.namespace AS namespace,
+        CASE WHEN part.value IS NULL
+          THEN json_extract(op.value, '$.blob.sha256')
+          ELSE json_extract(part.value, '$.sha256')
+        END AS sha256
+      FROM commits AS c,
+        json_each(CASE WHEN json_valid(c.body) THEN c.body ELSE '[]' END)
+          AS root,
+        json_each(
+          CASE WHEN root.key = 'ops' AND root.type = 'array'
+            THEN root.value ELSE '[]' END
+        ) AS op
+      LEFT JOIN json_each(
+        CASE WHEN op.type = 'object'
+            AND json_type(op.value, '$.blob.parts') = 'array'
+          THEN json_extract(op.value, '$.blob.parts') ELSE '[]' END
+      ) AS part
+      WHERE op.type = 'object'
+        AND json_extract(op.value, '$.kind') = 'put'
+        AND json_type(op.value, '$.blob') = 'object'
+        AND (part.value IS NULL OR part.type = 'object')
+    )
+    WHERE typeof(sha256) = 'text';
+  `,
 ];
 
 /** The schema version this store writes. */
@@ -111,6 +150,9 @@ export const DEFAULT_SNAPSHOT_INTERVAL = 1000;
 
 /** Rows read per query while rebuilding a partition. */
 const REBUILD_PAGE = 500;
+
+/** Hashes looked up per query by `referencedChunks`. */
+const REF_LOOKUP_PAGE = 500;
 
 /** Options for {@link SqliteCommitStore.open}. */
 export interface SqliteCommitStoreOptions {
@@ -161,6 +203,9 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectChanges: StatementSync;
   readonly #selectSnapshot: StatementSync;
   readonly #upsertSnapshot: StatementSync;
+  readonly #insertChunkRef: StatementSync;
+  /** `referencedChunks` for a full page of {@link REF_LOOKUP_PAGE} hashes. */
+  readonly #selectRefPage: StatementSync;
 
   private constructor(
     db: DatabaseSync,
@@ -203,6 +248,10 @@ export class SqliteCommitStore implements CommitStore {
       "INSERT INTO partition_snapshots (namespace, partition, seq, body) VALUES (?, ?, ?, ?) " +
         "ON CONFLICT (namespace, partition) DO UPDATE SET seq = excluded.seq, body = excluded.body",
     );
+    this.#insertChunkRef = db.prepare(
+      "INSERT OR IGNORE INTO chunk_refs (namespace, sha256) VALUES (?, ?)",
+    );
+    this.#selectRefPage = db.prepare(selectRefsSql(REF_LOOKUP_PAGE));
   }
 
   /**
@@ -334,6 +383,11 @@ export class SqliteCommitStore implements CommitStore {
       commit.at,
       JSON.stringify(commit.toJSON()),
     );
+    // In the commit's own transaction, so a refused or rolled-back append
+    // leaves no reference behind.
+    for (const sha256 of commit.chunkRefs()) {
+      this.#insertChunkRef.run(namespace, sha256);
+    }
     // A lease op can raise the fence too, so take it from the partition.
     this.#upsertHead.run(
       namespace,
@@ -452,6 +506,26 @@ export class SqliteCommitStore implements CommitStore {
       );
     }
     return partition;
+  }
+
+  referencedChunks(
+    namespace: string,
+    hashes: readonly string[],
+  ): Promise<Set<string>> {
+    if (this.#closed) return Promise.reject(closedError());
+    const found = new Set<string>();
+    for (let at = 0; at < hashes.length; at += REF_LOOKUP_PAGE) {
+      const page = hashes.slice(at, at + REF_LOOKUP_PAGE);
+      // Only the last page can be short; it gets a statement of its own.
+      const statement = page.length === REF_LOOKUP_PAGE
+        ? this.#selectRefPage
+        : this.#db.prepare(selectRefsSql(page.length));
+      const rows = statement.all(namespace, ...page) as unknown as {
+        sha256: string;
+      }[];
+      for (const row of rows) found.add(row.sha256);
+    }
+    return Promise.resolve(found);
   }
 
   async readPartition(
@@ -591,6 +665,13 @@ function rollbackQuietly(db: DatabaseSync): void {
     // The caller rethrows the original error. SQLite rolls the transaction
     // back itself when the connection closes.
   }
+}
+
+/** Looks up which of `count` hashes a namespace's commits name. */
+function selectRefsSql(count: number): string {
+  return `SELECT sha256 FROM chunk_refs WHERE namespace = ? AND sha256 IN (${
+    Array.from({ length: count }, () => "?").join(", ")
+  })`;
 }
 
 function closedError(): Error {

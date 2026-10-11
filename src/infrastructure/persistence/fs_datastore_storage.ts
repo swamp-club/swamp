@@ -22,6 +22,7 @@ import type {
   DatastoreStorage,
   StorageCapabilities,
   StoredChunk,
+  TempFileSweeper,
 } from "../../domain/datastore/datastore_storage.ts";
 import { atomicWriteFile } from "./atomic_write.ts";
 import { assertContainedPath } from "./safe_path.ts";
@@ -30,6 +31,9 @@ import { assertContainedPath } from "./safe_path.ts";
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+/** A temp file `atomicWriteFile` writes beside a chunk before renaming it. */
+const TEMP_FILE =
+  /^\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
 /** A namespace slug, or `_default` for an unnamespaced datastore. */
 const STORAGE_NAMESPACE = /^(?:_default|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
 /** The longest namespace slug (`NAMESPACE_MAX_LENGTH`). */
@@ -44,7 +48,7 @@ const MAX_NAMESPACE_LENGTH = 64;
  * `<aa>` is the first two hex characters of the hash. A chunk's mtime is
  * its `lastModified`.
  */
-export class FileSystemStorage implements DatastoreStorage {
+export class FileSystemStorage implements DatastoreStorage, TempFileSweeper {
   readonly contract = "storage/1" as const;
   readonly #blobsDir: string;
 
@@ -164,6 +168,42 @@ export class FileSystemStorage implements DatastoreStorage {
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
+  }
+
+  /**
+   * Removes the temp files a put left beside its chunk when it died before
+   * renaming one into place, if last modified before `olderThan`. Chunk
+   * garbage collection calls it with its grace cutoff, so a put still
+   * writing keeps its file. Not part of `storage/1`.
+   */
+  async removeStaleTempFiles(
+    namespace: string,
+    olderThan: Date,
+    signal: AbortSignal,
+  ): Promise<number> {
+    signal.throwIfAborted();
+    const hashDir = join(this.#namespaceDir(namespace), "sha256");
+    let removed = 0;
+    for (const shard of await this.#entries(hashDir)) {
+      if (!shard.isDirectory || !/^[0-9a-f]{2}$/.test(shard.name)) continue;
+      for (const entry of await this.#entries(join(hashDir, shard.name))) {
+        signal.throwIfAborted();
+        if (!entry.isFile || !TEMP_FILE.test(entry.name)) continue;
+        const path = join(hashDir, shard.name, entry.name);
+        try {
+          const mtime = (await Deno.stat(path)).mtime;
+          if (mtime === null || mtime.getTime() >= olderThan.getTime()) {
+            continue;
+          }
+          await Deno.remove(path);
+          removed++;
+        } catch (error) {
+          // Renamed into place or removed since the listing.
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+    }
+    return removed;
   }
 
   #namespaceDir(namespace: string): string {

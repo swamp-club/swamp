@@ -52,12 +52,20 @@
  * 6. **The commit store is the only writer of `commits.db`**
  *    (swamp-club#3239). The read model reads commits through the
  *    `CommitStore` port. No v3 file but `sqlite_commit_store.ts` may hold a
- *    statement that changes the commit tables, or import
+ *    statement that changes the commit tables, its chunk index
+ *    (`chunk_refs`, swamp-club#3249) included, or import
  *    `openCommitsDatabase`.
  * 7. **The read model's state is never synced** (swamp-club#3239).
  *    `.swamp/_read_model_v3/` holds one checkout's cursor and catalog. It is
  *    no datastore subdirectory, so sync never routes it and no record key
  *    may be materialised into it.
+ *
+ * 8. **Chunk garbage collection is dormant** (swamp-club#3249). The
+ *    collector (`chunk_collector.ts` in `src/domain/datastore_v3/`) has no
+ *    importers outside the v3 directories, and no production code but the
+ *    filesystem storage itself mentions `removeStaleTempFiles`, so nothing
+ *    deletes a chunk or a temp file before a v3 `datastore gc` is wired in
+ *    at the opt-in. Both pinned lists are empty.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -248,7 +256,7 @@ const COMMIT_STORE = "src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
 /** A statement that changes one of `commits.db`'s tables. */
 const COMMIT_TABLE_WRITE =
-  /\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(?:commits|partition_heads|partition_snapshots)\b/i;
+  /\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(?:commits|partition_heads|partition_snapshots|chunk_refs)\b/i;
 
 /** v3 files other than the commit store that write its tables, as `file:line`. */
 const PINNED_COMMIT_TABLE_WRITERS: readonly string[] = [];
@@ -314,4 +322,51 @@ Deno.test("datastore v3: the read model's state directory is never a datastore d
       `${dir} is not a datastore directory`,
     );
   }
+});
+
+const CHUNK_COLLECTOR = "domain/datastore_v3/chunk_collector.ts";
+
+/** Production imports of the chunk collector from outside v3. */
+const PINNED_CHUNK_COLLECTOR_IMPORTERS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code outside v3 imports the chunk collector", async () => {
+  const edges = await collectImportEdges(
+    SRC_DIR,
+    (filePath, importPath) =>
+      importsLayer(filePath, importPath, CHUNK_COLLECTOR) &&
+      !isV3File(repoRelative(filePath)),
+  );
+  assertPinnedSet(
+    edges,
+    PINNED_CHUNK_COLLECTOR_IMPORTERS,
+    "Production imports of the dormant chunk collector",
+    "Chunk garbage collection is dormant until a v3 datastore gc is wired\n" +
+      "in at the opt-in. Do not import it from production code before then.",
+  );
+});
+
+/** Production mentions of `removeStaleTempFiles` outside the storage. */
+const PINNED_TEMP_FILE_SWEEPS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code sweeps storage temp files", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (rel === FS_STORAGE || isV3File(rel)) continue;
+    // The port's declaration beside storage/1.
+    if (rel === "src/domain/datastore/datastore_storage.ts") continue;
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (line.includes("removeStaleTempFiles")) {
+        found.push(`${rel}:${index + 1}`);
+      }
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_TEMP_FILE_SWEEPS,
+    "Production calls of removeStaleTempFiles",
+    "Removing a storage's temp files is part of chunk garbage collection,\n" +
+      "which is dormant until the v3 opt-in wires it in.",
+  );
 });
