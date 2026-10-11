@@ -80,6 +80,12 @@ export interface ServerTokenGcDepsInput {
   readonly libCtx: LibSwampContext;
   /** Pushes local changes to the remote datastore; absent without one. */
   readonly pushChanged?: () => Promise<void>;
+  /**
+   * Pulls remote changes into the local copy; absent without a remote
+   * datastore. Each collection pulls before it re-reads, so it sees a write
+   * another replica pushed (swamp-club#2534).
+   */
+  readonly pullChanged?: () => Promise<void>;
   /** Serve's sync gate; absent without a remote datastore. */
   readonly syncGate?: SyncGate;
   /**
@@ -148,6 +154,7 @@ export function createServerTokenGcDeps(
     modelDeleteDeps,
     libCtx,
     pushChanged,
+    pullChanged,
     syncGate,
     markDirty,
     withTokenLock,
@@ -317,8 +324,14 @@ export function createServerTokenGcDeps(
       // would restore the deleted files (swamp-club#2247). The GC runs from
       // a timer, never inside a gated handler, so taking the non-reentrant
       // gate here is safe.
+      //
+      // The lock orders the GC after another replica's write, but the
+      // re-read is of the local copy, so the GC pulls first, as the token
+      // handlers do. A failed pull fails the collection: deleting on a stale
+      // record is what the lock is there to prevent.
       withTokenLock(listed.name, () =>
         withSyncGate(syncGate, async () => {
+          if (pullChanged) await pullChanged();
           const token = await readToken(listed.definitionId, listed.name);
           if (!token || !isEligible(token)) return "skipped";
 

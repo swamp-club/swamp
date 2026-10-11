@@ -166,6 +166,7 @@ function gcService(
   libCtx: LibSwampContext,
   vaultService: VaultService,
   gracePeriodMs: number,
+  pullChanged?: () => Promise<void>,
 ): ServerTokenGcService {
   const datastoreConfig = filesystemDatastore(repoDir);
   return new ServerTokenGcService(
@@ -180,6 +181,7 @@ function gcService(
       // The same lock serve passes.
       withTokenLock: (name, fn) =>
         withServerTokenLock(datastoreConfig, name, fn),
+      pullChanged,
     }),
   );
 }
@@ -540,6 +542,91 @@ Deno.test("server token GC: on a filesystem datastore, waits for a writer holdin
       (await authenticateServerToken(token.credential, repoDir, repoContext))
         .ok,
       false,
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("server token GC: pulls before it re-reads, so a rotation another replica pushed is not collected (swamp-club#2534)", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp-server-token-gc-" });
+  const repoContext = createRepositoryContext({ repoDir });
+  try {
+    const libCtx = createLibSwampContext();
+    await initTokenRepo(repoDir, libCtx);
+    const vaultService = await VaultService.fromRepository(repoDir);
+
+    await mint(libCtx, repoDir, repoContext, "ci", ONE_HOUR);
+    const revokeEvents = await collect(
+      serverTokenRevoke(
+        libCtx,
+        await createServerTokenRevokeDeps(libCtx, repoDir, repoContext),
+        { name: "ci" },
+      ),
+    );
+    assertEquals(
+      revokeEvents.some((e) => e.kind === "error"),
+      false,
+      JSON.stringify(revokeEvents),
+    );
+    const definition = await repoContext.definitionRepo.findByName(
+      SERVER_TOKEN_MODEL_TYPE,
+      "ci",
+    );
+    assertExists(definition);
+    const revokedRecord = await tokenMain(repoContext, "ci");
+    assertExists(revokedRecord);
+
+    // This replica's local copy still holds the revoked record. Another
+    // replica has since rotated the token and pushed an active record and a
+    // new secret; this replica's pull brings the record in.
+    const { writeResource } = createResourceWriter(
+      repoContext.unifiedDataRepo,
+      SERVER_TOKEN_MODEL_TYPE,
+      definition.id,
+      serverTokenModel.resources!,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "ci",
+    );
+    let pulls = 0;
+    const pullChanged = async () => {
+      pulls++;
+      await writeResource("token", "token-main", {
+        ...revokedRecord,
+        state: "active",
+        expiresAt: new Date(Date.now() + ONE_HOUR).toISOString(),
+        revokedAt: undefined,
+      });
+    };
+
+    const gc = gcService(
+      repoDir,
+      repoContext,
+      libCtx,
+      vaultService,
+      ONE_HOUR,
+      pullChanged,
+    );
+    assertEquals(await gc.runOnce(), 0);
+    assertEquals(pulls, 1);
+
+    // The rotated token survives: its record and its secret.
+    assertEquals((await tokenMain(repoContext, "ci"))?.state, "active");
+    assertExists(
+      await vaultService.get(
+        TOKEN_SECRETS_VAULT_NAME,
+        serverTokenSecretKey("ci"),
+        "test:server-token-gc",
+      ),
     );
   } finally {
     if (Deno.build.os === "windows") {

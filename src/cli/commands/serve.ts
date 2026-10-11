@@ -7362,6 +7362,14 @@ export const serveCommand = new Command()
               await tokenGcSync.pushChanged({ namespace: serveNamespace });
             }
             : undefined,
+          pullChanged: tokenGcSync
+            ? async () => {
+              const pulled = await tokenGcSync.pullChanged({
+                namespace: serveNamespace,
+              });
+              if (pulled !== 0) repoContext.catalogStore.invalidate();
+            }
+            : undefined,
           syncGate,
           withTokenLock: (name, fn) =>
             withServerTokenLock(datastoreConfig, name, fn),

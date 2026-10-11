@@ -764,6 +764,71 @@ Deno.test("createServerTokenGcDeps: collectToken deletes nothing when the name l
   assertEquals(h.events, []);
 });
 
+Deno.test("createServerTokenGcDeps: collectToken pulls under the name lock and the gate before it re-reads, so another replica's rotation is seen (swamp-club#2534)", async () => {
+  const h = harness();
+  const mutex = new NameMutex();
+  const syncGate = createSyncGate();
+  const order: string[] = [];
+  let probe: Promise<void> | undefined;
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    syncGate,
+    dataRepo: {
+      getContent: (...args) => {
+        order.push("re-read");
+        return h.input.dataRepo.getContent(...args);
+      },
+    },
+    withTokenLock: (name, fn) =>
+      mutex.run(name, () => {
+        order.push("lock");
+        return fn();
+      }),
+    pullChanged: () => {
+      // A gated request queued now runs only after the unit: the pull runs
+      // inside the gate.
+      probe = withSyncGate(syncGate, () => {
+        order.push("gated request");
+        return Promise.resolve();
+      });
+      order.push("pull");
+      // The pull brings in the active record another replica wrote.
+      h.setStored(
+        tokenAttrs("ci", {
+          state: "active",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          revokedAt: undefined,
+        }),
+      );
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(
+    await deps.collectToken(listed(), (current) => current.state === "revoked"),
+    "skipped",
+  );
+  await probe;
+  // The gated request queued during the pull runs only after the re-read.
+  assertEquals(order, ["lock", "pull", "re-read", "gated request"]);
+  assertEquals(h.events, []);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken deletes nothing when its pull fails (swamp-club#2534)", async () => {
+  const h = harness();
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    pullChanged: () => Promise.reject(new Error("remote unreachable")),
+  });
+
+  await assertRejects(
+    () => deps.collectToken(listed(), always),
+    Error,
+    "remote unreachable",
+  );
+  assertEquals(h.events, []);
+});
+
 // --- createServerTokenGcRepos: owner lookup (swamp-club#2535) ---
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {

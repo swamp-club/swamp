@@ -348,8 +348,10 @@ Each token is collected as one unit holding the token's name lock and, inside
 it, the sync gate exclusively. The lock is taken first, as the token handlers
 take it, so the GC never waits on it while holding the gate; a lock it cannot
 take fails the collection, and the token is retried next sweep. Inside the
-unit the GC re-reads the token's `token-main` and skips the token if it is
-gone or no longer eligible. Then:
+unit the GC first pulls, when serve has a remote datastore, as the token
+handlers do before they write; a failed pull fails the collection. It then
+re-reads the token's `token-main` and skips the token if it is gone or no
+longer eligible. Then:
 
 1. It deletes the secret. A failure keeps the token for the next sweep, so a
    stale copy of the records, such as an HA peer's local cache, can never
@@ -397,10 +399,9 @@ the sync gate with a remote datastore, so the lock, not the gate, is what
 serialises them. The OAuth login mint holds the gate but not the lock; its
 random names make a clash with a collected token a chance collision.
 
-The gap is across replicas. The lock orders the GC after another replica's
-re-mint or rotation of the same name, but the GC re-reads its own local copy,
-which may predate that write, so it can still collect the new token. It fails
-closed: the token has to be minted again.
+Across replicas the lock is the datastore's distributed lock, so it orders
+the GC after another replica's re-mint or rotation of the same name, and the
+pull before the re-read brings that write into the local copy the GC reads.
 
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
