@@ -207,9 +207,9 @@ export interface DefinitionSave {
  * (swamp-club#3256):
  *
  * 1. The written file, in its own tier's partition. In managed config:
- *    - a rename (the replaced or a removed file declared another name) is
- *      `definition.rename-to`, expecting the key absent in the new name's
- *      partition, even when the old name's file was at the same key;
+ *    - a rename (the replaced file, or else a removed file, declared another
+ *      name) is `definition.rename-to`, expecting the key absent in the new
+ *      name's partition, even when the old name's file was at the same key;
  *    - a file already at the key with this name is a `definition.edit`
  *      expecting that file's digest (no precondition when its name could not
  *      be read);
@@ -257,7 +257,10 @@ export function definitionSaveBatches(save: DefinitionSave): TypedChange[][] {
       ? prior.name
       : undefined;
     if (targetOld !== undefined) addOther(targetOld, target.key);
-    const renamedFrom = targetOld ?? others.keys().next().value;
+    // A target that already holds this name is an edit of it, even when a
+    // removed copy of the same id declared another name.
+    const renamedFrom = targetOld ??
+      (prior?.name === save.name ? undefined : others.keys().next().value);
     const put = renamedFrom !== undefined
       ? changes.renameTo(renamedFrom, target.key, save.content)
       : prior !== undefined

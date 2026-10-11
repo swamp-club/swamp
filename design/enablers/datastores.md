@@ -2659,6 +2659,15 @@ same-key rename the store holds two live records of one key, and the read
 model's ownership rule ("Keys two partitions write" in "v3 read model")
 keeps the file with the new name's bytes.
 
+The two commits are not atomic, so another checkout can edit the old name
+between them. Its edit expects the bytes the old partition still holds, so
+it lands. For a same-key rename the old name's edit is then the newest put
+of the key, and the rename's tombstone, which follows it, removes the file
+while the new name's record stays live. Replaying the feed gives the same
+result, so every checkout agrees, and the next save of the new name
+restores the file. This is accepted: the same race loses one of the two
+changes on v2, and closing it needs a commit spanning both partitions.
+
 **Directory removals.** `clearAll`, `clear` and `deleteForRun` remove whole
 directories. On v3 each lists its files first and stages one tombstone per
 file, finding each partition from the raw YAML fields (and a legacy file
