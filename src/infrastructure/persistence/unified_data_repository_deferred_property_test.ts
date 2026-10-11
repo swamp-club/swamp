@@ -375,7 +375,24 @@ Deno.test("property: deferred writes, removals, GC, backfill and crashes keep th
                 case "promote": {
                   const p = picked(model, ["pending"], op.pick);
                   if (!p) break;
+                  // Promotion applies the write-time cap as save does: the
+                  // oldest other promoted versions go so that, with this one,
+                  // at most GC_KEEP stay (swamp-club#3251).
+                  const otherPromoted = [...model.entries()]
+                    .filter(([, t]) => t.state === "promoted")
+                    .map(([v]) => v)
+                    .sort((a, b) => a - b);
                   await repo.advanceLatestMarkers([p[1].receipt]);
+                  if (writeGc && otherPromoted.length >= GC_KEEP) {
+                    for (
+                      const v of otherPromoted.slice(
+                        0,
+                        otherPromoted.length - GC_KEEP + 1,
+                      )
+                    ) {
+                      model.delete(v);
+                    }
+                  }
                   p[1].state = "promoted";
                   break;
                 }
