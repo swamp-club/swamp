@@ -409,6 +409,7 @@ import {
   createGrantWriteTracking,
 } from "../../serve/grant_write_tracking.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -7362,6 +7363,8 @@ export const serveCommand = new Command()
             }
             : undefined,
           syncGate,
+          withTokenLock: (name, fn) =>
+            withServerTokenLock(datastoreConfig, name, fn),
         }),
       );
       serverTokenGcService.start();
