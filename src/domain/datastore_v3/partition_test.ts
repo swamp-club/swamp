@@ -400,3 +400,82 @@ Deno.test("Partition.append: a data rename is two data-version ops in one commit
     "version-not-increasing",
   );
 });
+
+/** A partition with a fence, a lease holder, records and data names. */
+async function populated(): Promise<Partition> {
+  const partition = Partition.empty(modelPartition());
+  partition.append(
+    modelCommit(1, [await savePut("a", 1), versionOp("a", 1)], { fence: 2 }),
+  );
+  partition.append(
+    modelCommit(2, [leaseOp({ holder: "serve-1", fence: 3 })], { fence: 3 }),
+  );
+  return partition;
+}
+
+Deno.test("Partition.restore: round-trips a partition's state", async () => {
+  const partition = await populated();
+  const restored = Partition.restore(
+    modelPartition(),
+    JSON.parse(JSON.stringify(partition.snapshot())),
+  );
+  assertEquals(snapshot(restored), snapshot(partition));
+  assertEquals(restored.leaseHolder, "serve-1");
+  assertEquals(restored.hasTxn("txn-1"), true);
+  assertEquals(restored.snapshot(), partition.snapshot());
+});
+
+Deno.test("Partition.restore: an empty partition round-trips", () => {
+  const partition = Partition.empty(modelPartition());
+  const restored = Partition.restore(modelPartition(), partition.snapshot());
+  assertEquals(restored.seq, 0);
+  assertEquals(restored.highestFence, undefined);
+});
+
+Deno.test("Partition.restore: refuses a damaged snapshot", async () => {
+  const good = (await populated()).snapshot();
+  const other = partitionOf({ kind: "definition", id: crypto.randomUUID() });
+  const damaged: [string, unknown][] = [
+    ["not an object", "snapshot"],
+    ["another version", { ...good, v: 2 }],
+    ["another partition", { ...good, partition: other.toString() }],
+    ["an unknown field", { ...good, extra: true }],
+    ["a negative seq", { ...good, seq: -1 }],
+    ["a negative fence", { ...good, highestFence: -1 }],
+    ["an empty lease holder", { ...good, leaseHolder: "" }],
+    ["fewer txnIds than commits", { ...good, txnIds: ["txn-1"] }],
+    ["a repeated txnId", { ...good, txnIds: ["txn-1", "txn-1"] }],
+    ["a digest that is not SHA-256 hex", {
+      ...good,
+      records: [[good.records[0][0], "not-a-digest"]],
+    }],
+    ["an invalid record key", {
+      ...good,
+      records: [["../escape", good.records[0][1]]],
+    }],
+    ["a repeated record", {
+      ...good,
+      records: [good.records[0], good.records[0]],
+    }],
+    ["a live version above the high-water mark", {
+      ...good,
+      names: [{ name: "a", live: [2], highWater: 1 }],
+    }],
+    ["a zero high-water mark", {
+      ...good,
+      names: [{ name: "a", live: [], highWater: 0 }],
+    }],
+    ["a repeated data name", {
+      ...good,
+      names: [good.names[0], good.names[0]],
+    }],
+  ];
+  for (const [label, value] of damaged) {
+    assertThrows(
+      () => Partition.restore(modelPartition(), value),
+      Error,
+      "Invalid snapshot",
+      label,
+    );
+  }
+});

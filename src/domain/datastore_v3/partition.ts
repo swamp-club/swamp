@@ -21,16 +21,21 @@
  * The partition aggregate (swamp-club#3233): the storage of one aggregate
  * instance, and the rules every commit to it must keep.
  *
- * In memory and pure. Persisting partitions is the commit store's job; it
- * replays commits through {@link Partition.append} to enforce the same rules.
+ * In memory and pure. Persisting partitions is the commit store's job
+ * (swamp-club#3236): it applies every commit through
+ * {@link Partition.append} to enforce the same rules, and rebuilds a
+ * partition from its latest {@link Partition.snapshot} plus the commits
+ * after it.
  *
  * @module
  */
 
 import { maxOf } from "../array_extrema.ts";
+import { isSha256Hex } from "./blob_ref.ts";
 import type { Commit } from "./commit.ts";
+import { requireFence } from "./op.ts";
 import type { PartitionKey } from "./partition_key.ts";
-import type { RecordKey } from "./record_key.ts";
+import { RecordKey } from "./record_key.ts";
 
 /** Why a partition refused a commit. */
 export type CommitRejection =
@@ -65,6 +70,28 @@ export type AppendResult =
    * payload is not compared.
    */
   | { readonly kind: "duplicate" };
+
+/**
+ * A partition's whole state at one seq, as plain data: what the commit store
+ * keeps so it can rebuild a partition without replaying every commit. Lists
+ * are sorted, so equal states serialize equally.
+ */
+export interface PartitionSnapshot {
+  readonly v: 1;
+  readonly partition: string;
+  readonly seq: number;
+  readonly highestFence?: number;
+  readonly leaseHolder?: string;
+  /** Every txnId applied, one per commit. */
+  readonly txnIds: readonly string[];
+  /** Each present record's key and SHA-256. */
+  readonly records: readonly (readonly [string, string])[];
+  readonly names: readonly {
+    readonly name: string;
+    readonly live: readonly number[];
+    readonly highWater: number;
+  }[];
+}
 
 /** One data name's versions. */
 interface DataName {
@@ -112,6 +139,147 @@ export class Partition {
   /** A partition with no commits. */
   static empty(key: PartitionKey): Partition {
     return new Partition(key);
+  }
+
+  /**
+   * Rebuilds a partition from {@link Partition.snapshot}'s output. Throws
+   * when the value is not a snapshot of `key` or breaks the partition's
+   * invariants, so a damaged snapshot is never trusted.
+   */
+  static restore(key: PartitionKey, value: unknown): Partition {
+    const fail = (detail: string): never => {
+      throw new Error(`Invalid snapshot of partition ${key}: ${detail}`);
+    };
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return fail("not an object");
+    }
+    const json = value as Record<string, unknown>;
+    const allowed = [
+      "v",
+      "partition",
+      "seq",
+      "highestFence",
+      "leaseHolder",
+      "txnIds",
+      "records",
+      "names",
+    ];
+    for (const field of Object.keys(json)) {
+      if (!allowed.includes(field)) fail(`unknown field '${field}'`);
+    }
+    if (json.v !== 1) fail(`unsupported version ${String(json.v)}`);
+    if (json.partition !== key.toString()) {
+      fail(`it is a snapshot of ${String(json.partition)}`);
+    }
+    const partition = new Partition(key);
+    const seq = json.seq;
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 0) {
+      return fail("seq is not a non-negative integer");
+    }
+    partition.#seq = seq;
+    if (json.highestFence !== undefined) {
+      try {
+        requireFence(json.highestFence);
+      } catch (error) {
+        fail((error as Error).message);
+      }
+      partition.#highestFence = json.highestFence as number;
+    }
+    if (json.leaseHolder !== undefined) {
+      if (typeof json.leaseHolder !== "string" || json.leaseHolder === "") {
+        fail("leaseHolder is not a non-empty string");
+      }
+      partition.#leaseHolder = json.leaseHolder as string;
+    }
+    if (!Array.isArray(json.txnIds)) return fail("txnIds is not an array");
+    for (const txnId of json.txnIds) {
+      if (typeof txnId !== "string" || txnId === "") {
+        fail("a txnId is not a non-empty string");
+      }
+      partition.#txnIds.add(txnId as string);
+    }
+    // Every applied commit added exactly one txnId.
+    if (partition.#txnIds.size !== seq || json.txnIds.length !== seq) {
+      fail(`it holds ${json.txnIds.length} txnIds for seq ${seq}`);
+    }
+    if (!Array.isArray(json.records)) return fail("records is not an array");
+    for (const entry of json.records) {
+      if (
+        !Array.isArray(entry) || entry.length !== 2 ||
+        typeof entry[0] !== "string" || !isSha256Hex(entry[1])
+      ) {
+        return fail("a record is not a [key, sha256] pair");
+      }
+      let recordKey: string;
+      try {
+        recordKey = RecordKey.create(entry[0]).toString();
+      } catch (error) {
+        return fail((error as Error).message);
+      }
+      if (partition.#records.has(recordKey)) {
+        fail(`record ${recordKey} appears twice`);
+      }
+      partition.#records.set(recordKey, entry[1]);
+    }
+    if (!Array.isArray(json.names)) return fail("names is not an array");
+    for (const entry of json.names) {
+      if (typeof entry !== "object" || entry === null) {
+        return fail("a data name is not an object");
+      }
+      const { name, live, highWater } = entry as Record<string, unknown>;
+      if (typeof name !== "string" || partition.#names.has(name)) {
+        return fail("a data name is missing or appears twice");
+      }
+      if (
+        typeof highWater !== "number" || !Number.isSafeInteger(highWater) ||
+        highWater < 1
+      ) {
+        return fail(`data ${name}'s high-water mark is not a positive integer`);
+      }
+      if (
+        !Array.isArray(live) ||
+        !live.every((v) =>
+          typeof v === "number" && Number.isSafeInteger(v) && v >= 1 &&
+          v <= highWater
+        ) ||
+        new Set(live).size !== live.length
+      ) {
+        return fail(
+          `data ${name}'s live versions are not distinct positive integers up to its high-water mark`,
+        );
+      }
+      partition.#names.set(name, {
+        live: new Set(live as number[]),
+        highWater,
+      });
+    }
+    return partition;
+  }
+
+  /** The partition's whole state, for {@link Partition.restore}. */
+  snapshot(): PartitionSnapshot {
+    return {
+      v: 1,
+      partition: this.key.toString(),
+      seq: this.#seq,
+      ...(this.#highestFence === undefined
+        ? {}
+        : { highestFence: this.#highestFence }),
+      ...(this.#leaseHolder === undefined
+        ? {}
+        : { leaseHolder: this.#leaseHolder }),
+      txnIds: [...this.#txnIds].sort(),
+      records: [...this.#records.entries()].sort(([a], [b]) =>
+        a < b ? -1 : a > b ? 1 : 0
+      ),
+      names: [...this.#names.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([name, entry]) => ({
+          name,
+          live: [...entry.live].sort((a, b) => a - b),
+          highWater: entry.highWater,
+        })),
+    };
   }
 
   /** The seq of the last commit applied; 0 before any. */

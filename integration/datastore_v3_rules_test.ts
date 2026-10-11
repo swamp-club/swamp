@@ -18,14 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Fitness rules for the v3 datastore domain model (swamp-club#3233).
+ * Fitness rules for the v3 datastore: the domain model (swamp-club#3233), the
+ * commit store (swamp-club#3236) and chunk storage (swamp-club#3237).
  *
- * 1. **Dormancy.** The model in `src/domain/datastore_v3/` is built ahead of
- *    the commit store, chunk store and opt-in that will use it. Until then no
- *    production code outside it may import it, so it cannot change
- *    behaviour. That covers `src/cli`, `src/serve`, `src/libswamp` and the
+ * 1. **Dormancy.** The model in `src/domain/datastore_v3/` and the commit
+ *    store in `src/infrastructure/datastore_v3/` are built ahead of the
+ *    opt-in that will use them. Until then no production code outside those
+ *    two directories may import either, so they cannot change behaviour.
+ *    That covers `src/cli`, `src/serve`, `src/libswamp` and the
  *    `src/domain/datastore/mod.ts` barrel. The pinned list is empty; the
- *    issue that wires the model in adds its edges here.
+ *    issue that wires them in adds its edges here.
  * 2. **Partition keys come from aggregate identity.** `partitionOf()` is the
  *    only way to build a key. No string or template literal elsewhere may
  *    start with a partition-key prefix, so nobody assembles a key by hand.
@@ -34,6 +36,12 @@
  *    implementation has no production importers, and no production code
  *    calls a provider's `storage()`. Both pinned lists are empty; the v3
  *    opt-in adds its edges here.
+ * 4. **No forced checkpoints.** `commits.db` keeps SQLite's default
+ *    auto-checkpoint and never forces one: Litestream replicates the WAL, and
+ *    a forced `TRUNCATE` checkpoint made its replica 11 times larger
+ *    (`design/enablers/datastore-litestream.md`). No v3 file may mention
+ *    `wal_checkpoint` or `wal_autocheckpoint`. `catalog_store.ts` checkpoints
+ *    `_catalog.db` on purpose, so the rule covers the v3 directories only.
  */
 
 import {
@@ -48,22 +56,55 @@ import {
 
 const V3_DIR = "src/domain/datastore_v3";
 
-/** The production imports of the v3 model from outside it. */
+/** Every directory holding v3 code, under `src/`. */
+const V3_LAYERS = ["domain/datastore_v3", "infrastructure/datastore_v3"];
+
+function isV3File(rel: string): boolean {
+  return V3_LAYERS.some((layer) => isUnder(rel, `src/${layer}`));
+}
+
+/** The production imports of v3 code from outside it. */
 const PINNED_V3_IMPORTERS: readonly string[] = [];
 
-Deno.test("datastore v3: no production code outside the model imports it", async () => {
+Deno.test("datastore v3: no production code outside v3 imports it", async () => {
   const edges = await collectImportEdges(
     SRC_DIR,
     (filePath, importPath) =>
-      importsLayer(filePath, importPath, "domain/datastore_v3") &&
-      !isUnder(repoRelative(filePath), V3_DIR),
+      V3_LAYERS.some((layer) => importsLayer(filePath, importPath, layer)) &&
+      !isV3File(repoRelative(filePath)),
   );
   assertPinnedSet(
     edges,
     PINNED_V3_IMPORTERS,
-    "Production imports of the dormant v3 datastore model",
-    "The v3 model is dormant until the commit-store issue wires it in. Do not\n" +
-      "import it from production code before then.",
+    "Production imports of the dormant v3 datastore",
+    "The v3 model and commit store are dormant until the opt-in wires them\n" +
+      "in. Do not import them from production code before then.",
+  );
+});
+
+/** A pragma that checkpoints the WAL or changes when it is checkpointed. */
+const CHECKPOINT = /wal_(?:auto)?checkpoint/i;
+
+/** v3 files that mention a checkpoint pragma, as `file:line`. */
+const PINNED_V3_CHECKPOINTS: readonly string[] = [];
+
+Deno.test("datastore v3: no v3 code forces or tunes a WAL checkpoint", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (!isV3File(rel)) continue;
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (CHECKPOINT.test(line)) found.push(`${rel}:${index + 1}`);
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_V3_CHECKPOINTS,
+    "WAL checkpoint pragmas in v3 code",
+    "commits.db keeps SQLite's default auto-checkpoint and never forces a\n" +
+      "checkpoint: Litestream replicates the WAL. See\n" +
+      "design/enablers/datastore-litestream.md.",
   );
 });
 

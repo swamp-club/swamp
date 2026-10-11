@@ -265,9 +265,10 @@ them through the `storage/1` contract ("v3 chunk storage" in
 unnamespaced datastore.
 
 Namespaces: this record fixes only the replica layout. One `commits.db` per
-datastore gives one `_litestream/` tree. Whether namespaces get their own
-`commits.db`, and so their own `_litestream/<namespace>/<fence>/` trees, is the
-commit-store issue's call: it is a schema question.
+datastore gives one `_litestream/` tree. The commit store (swamp-club#3236)
+keeps every namespace in that one `commits.db`, keyed by a `namespace`
+column, so there are no per-namespace `_litestream/<namespace>/<fence>/`
+trees. The reasons are in `datastores.md` under "v3 commit store".
 
 ## Short-lived processes (Q8)
 

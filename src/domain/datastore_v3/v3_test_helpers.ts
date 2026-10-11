@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Builders shared by the v3 domain model's tests. Test-only.
+ * Builders shared by the v3 domain model's and commit store's tests, and a
+ * reference model of the partition rules with random command sequences to
+ * drive it: the oracle for the partition's and the commit store's property
+ * tests. Test-only.
  *
  * @module
  */
@@ -27,18 +30,21 @@ import type {
   DatastoreStorage,
   StoredChunk,
 } from "../datastore/datastore_storage.ts";
+import fc from "fast-check";
 import { ModelType } from "../models/model_type.ts";
 import { Commit, type CommitProps } from "./commit.ts";
 import { createIntent, type Intent, modelRef } from "./intent.ts";
 import {
   type DataVersionOp,
   dataVersionOp,
+  leaseOp,
   type Op,
   type PutOp,
   putOp,
   type TombstoneOp,
   tombstoneOp,
 } from "./op.ts";
+import type { AppendResult, Partition } from "./partition.ts";
 import { type PartitionKey, partitionOf } from "./partition_key.ts";
 import { RecordKey } from "./record_key.ts";
 
@@ -263,4 +269,239 @@ export function streamOf(
   }
   if (at < bytes.length) pieces.push(bytes.slice(at));
   return ReadableStream.from(pieces);
+}
+
+// The partition reference model.
+
+export const NAMES = ["a", "b"] as const;
+const CONTENTS = ["x", "y", "z"] as const;
+
+const arbName = fc.constantFrom(...NAMES);
+const arbVersion = fc.integer({ min: 1, max: 6 });
+
+/** One op, described without building it. */
+export const arbOpSpec = fc.oneof(
+  fc.record({
+    kind: fc.constant("put" as const),
+    name: arbName,
+    version: arbVersion,
+    content: fc.constantFrom(...CONTENTS),
+    expect: fc.oneof(
+      fc.constant(undefined),
+      fc.constant("absent" as const),
+      fc.constantFrom(...CONTENTS).map((c) => ({ content: c })),
+    ),
+  }),
+  fc.record({
+    kind: fc.constant("tombstone" as const),
+    name: arbName,
+    version: arbVersion,
+    versioned: fc.boolean(),
+    present: fc.boolean(),
+  }),
+  fc.record({
+    kind: fc.constant("data-version" as const),
+    name: arbName,
+    version: arbVersion,
+  }),
+  fc.record({
+    kind: fc.constant("lease" as const),
+    fence: fc.nat({ max: 6 }),
+  }),
+);
+
+export type OpSpec = typeof arbOpSpec extends fc.Arbitrary<infer T> ? T : never;
+
+/** One append, described relative to the partition's state when it runs. */
+export const arbCommand = fc.record({
+  /** 0: the next seq; otherwise an offset from it (a gap or a stale seq). */
+  seqOffset: fc.oneof(
+    { weight: 4, arbitrary: fc.constant(0) },
+    { weight: 1, arbitrary: fc.integer({ min: -2, max: 2 }) },
+  ),
+  /** Reuse an earlier commit's txnId instead of a fresh one. */
+  reuseTxn: fc.oneof(
+    { weight: 5, arbitrary: fc.constant(undefined) },
+    { weight: 1, arbitrary: fc.nat() },
+  ),
+  fence: fc.option(fc.nat({ max: 6 }), { nil: undefined }),
+  ops: fc.array(arbOpSpec, { minLength: 1, maxLength: 4 }),
+});
+
+export type Command = typeof arbCommand extends fc.Arbitrary<infer T> ? T
+  : never;
+
+/** The tombstoned key of a version-less delete: the name's latest marker. */
+function latestKey(name: string): RecordKey {
+  return RecordKey.create(`data/model/${name}/latest`);
+}
+
+const DIGESTS = new Map<string, string>();
+async function digest(content: string): Promise<string> {
+  let value = DIGESTS.get(content);
+  if (value === undefined) {
+    value = await sha256Of(content);
+    DIGESTS.set(content, value);
+  }
+  return value;
+}
+
+export async function buildOp(spec: OpSpec): Promise<Op> {
+  switch (spec.kind) {
+    case "put":
+      return await savePut(
+        spec.name,
+        spec.version,
+        spec.content,
+        spec.expect === undefined || spec.expect === "absent"
+          ? spec.expect
+          : { sha256: await digest(spec.expect.content) },
+      );
+    case "tombstone":
+      return tombstoneOp({
+        intent: modelIntent(
+          spec.versioned
+            ? { kind: "data.delete", name: spec.name, version: spec.version }
+            : { kind: "data.delete", name: spec.name },
+        ),
+        key: spec.versioned
+          ? dataKey(spec.name, spec.version)
+          : latestKey(spec.name),
+        expect: spec.present ? "present" : undefined,
+      });
+    case "data-version":
+      return versionOp(spec.name, spec.version);
+    case "lease":
+      return leaseOp({ holder: "serve", fence: spec.fence });
+  }
+}
+
+/** The reference model's state: plain data, written straight from the rules. */
+export interface Model {
+  seq: number;
+  fence: number | undefined;
+  txnIds: string[];
+  records: Record<string, string>;
+  live: Record<string, number[]>;
+  highWater: Record<string, number>;
+}
+
+export type ModelResult = AppendResult | { kind: "rejected"; reason: string };
+
+export async function modelAppend(
+  model: Model,
+  commit: Commit,
+  specs: readonly OpSpec[],
+): Promise<{ model: Model; result: ModelResult }> {
+  if (model.txnIds.includes(commit.txnId)) {
+    return { model, result: { kind: "duplicate" } };
+  }
+  const reject = (reason: string) => ({
+    model,
+    result: { kind: "rejected" as const, reason },
+  });
+  if (commit.seq !== model.seq + 1) return reject("seq-gap");
+  const next: Model = structuredClone(model);
+  const raise = (fence: number): boolean => {
+    if (next.fence !== undefined && fence < next.fence) return false;
+    next.fence = fence;
+    return true;
+  };
+  if (commit.fence === undefined) {
+    // Once a fence was seen, every commit must carry one.
+    if (model.fence !== undefined) return reject("unfenced");
+  } else if (!raise(commit.fence)) {
+    return reject("stale-fence");
+  }
+  for (const spec of specs) {
+    if (spec.kind === "put") {
+      const key = dataKey(spec.name, spec.version).toString();
+      const current = next.records[key];
+      if (spec.expect === "absent" && current !== undefined) {
+        return reject("expect-failed");
+      }
+      if (
+        typeof spec.expect === "object" &&
+        current !== await digest(spec.expect.content)
+      ) {
+        return reject("expect-failed");
+      }
+      next.records[key] = await digest(spec.content);
+    } else if (spec.kind === "tombstone") {
+      const key = (spec.versioned
+        ? dataKey(spec.name, spec.version)
+        : latestKey(spec.name)).toString();
+      if (spec.present && next.records[key] === undefined) {
+        return reject("expect-failed");
+      }
+      delete next.records[key];
+      if (spec.versioned) {
+        next.live[spec.name] = (next.live[spec.name] ?? []).filter((v) =>
+          v !== spec.version
+        );
+      }
+    } else if (spec.kind === "data-version") {
+      if (spec.version <= (next.highWater[spec.name] ?? 0)) {
+        return reject("version-not-increasing");
+      }
+      next.live[spec.name] = [...(next.live[spec.name] ?? []), spec.version];
+      next.highWater[spec.name] = spec.version;
+    } else if (!raise(spec.fence)) {
+      return reject("stale-fence");
+    }
+  }
+  next.seq = commit.seq;
+  next.txnIds.push(commit.txnId);
+  return { model: next, result: { kind: "appended", seq: commit.seq } };
+}
+
+/** The partition's observable state, in the reference model's shape. */
+export function observe(partition: Partition) {
+  return {
+    seq: partition.seq,
+    fence: partition.highestFence,
+    records: Object.fromEntries(
+      partition.recordKeys().map((key) => [
+        key,
+        partition.record(RecordKey.create(key))?.sha256,
+      ]),
+    ),
+    live: Object.fromEntries(
+      NAMES.map((name) => [name, [...partition.versions(name)]]),
+    ),
+    highWater: Object.fromEntries(
+      NAMES.map((name) => [name, partition.highWater(name)]),
+    ),
+  };
+}
+
+export function expected(model: Model) {
+  return {
+    seq: model.seq,
+    fence: model.fence,
+    records: Object.fromEntries(
+      Object.entries(model.records).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+    live: Object.fromEntries(
+      NAMES.map((name) => [
+        name,
+        [...(model.live[name] ?? [])].sort((a, b) => a - b),
+      ]),
+    ),
+    highWater: Object.fromEntries(
+      NAMES.map((name) => [name, model.highWater[name] ?? 0]),
+    ),
+  };
+}
+
+/** The reference model of a partition with no commits. */
+export function emptyModel(): Model {
+  return {
+    seq: 0,
+    fence: undefined,
+    txnIds: [],
+    records: {},
+    live: {},
+    highWater: {},
+  };
 }
