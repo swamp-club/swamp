@@ -362,6 +362,30 @@ Deno.test("ChunkCollector.collect: a commit landing after the re-check finds its
   assertEquals(await chunks.missing(ACME, ref!, signal), []);
 });
 
+Deno.test("ChunkCollector.collect: a sweep aborted between deletes still re-checks what it deleted and puts back a chunk a commit landed on", async () => {
+  const storage = new AgedStorage();
+  const refs = new FakeRefs();
+  const first = storage.seed("acme", "first", OLD);
+  const second = storage.seed("acme", "second", OLD);
+  const controller = new AbortController();
+  const del = storage.delete.bind(storage);
+  storage.delete = async (namespace, sha256, sig) => {
+    await del(namespace, sha256, sig);
+    // A commit naming the chunk landed before its delete (its writer's
+    // check saw it present), and then the sweep is aborted.
+    refs.add("acme", sha256);
+    controller.abort();
+  };
+
+  await assertRejects(() =>
+    collector(storage, refs).collect(ACME, { signal: controller.signal })
+  );
+
+  // The first chunk was deleted and put back; the second was never reached.
+  assertEquals(storage.stored("acme"), [first, second].sort());
+  assertEquals(storage.deleted.length, 1);
+});
+
 Deno.test("ChunkCollector.collect: candidates past the read budget are kept, never deleted unread", async () => {
   const storage = new AgedStorage();
   const refs = new FakeRefs();

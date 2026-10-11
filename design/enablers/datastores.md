@@ -2664,7 +2664,9 @@ refresh alone does not save it, because the sweep already holds the old
    unreferenced candidate's bytes and checks their SHA-256. Then it deletes
    them and asks `referencedChunks` again for the deleted hashes. A chunk a
    commit landed on in the meantime is put back from the bytes read, and the
-   report counts it as `restored`. Reads are bounded by `sweepReadBytes` (1 GiB
+   report counts it as `restored`. The re-check runs for every chunk a delete
+   was started for even when the sweep aborts or a delete fails part-way, with
+   a signal of its own. Reads are bounded by `sweepReadBytes` (1 GiB
    by default), and at most 64 MiB of candidates is held at once. A candidate
    past the budget is kept for the next sweep, never deleted unread. A
    candidate whose bytes are damaged is deleted and reported, never put back.

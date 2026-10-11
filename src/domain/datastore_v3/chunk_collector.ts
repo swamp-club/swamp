@@ -83,6 +83,12 @@ export const CHUNK_COLLECTION_BATCH = 256;
  */
 export const DEFAULT_SWEEP_READ_BYTES = 1024 * 1024 * 1024;
 
+/**
+ * How long putting back chunks a commit landed on may take, apart from the
+ * sweep's own signal, which may already have aborted.
+ */
+const RESTORE_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** The most candidate bytes held at once before they are deleted. */
 const MAX_HELD_BYTES = 64 * 1024 * 1024;
 
@@ -208,21 +214,21 @@ export class ChunkCollector {
      */
     const settle = async (held: { sha256: string; bytes: Uint8Array }[]) => {
       if (held.length === 0) return;
-      for (const { sha256 } of held) {
-        signal.throwIfAborted();
-        await this.#storage.delete(ns, sha256, signal);
-      }
-      const now = await this.#commitStore.referencedChunks(
-        namespace,
-        held.map((chunk) => chunk.sha256),
-      );
-      for (const { sha256, bytes } of held) {
-        if (!now.has(sha256)) {
-          deleted++;
-          continue;
+      // Every chunk a delete was started for, so the re-check covers it even
+      // when the sweep aborts or a delete throws part-way: a commit may have
+      // landed on it since the batch's reference check.
+      const started: { sha256: string; bytes: Uint8Array }[] = [];
+      try {
+        for (const chunk of held) {
+          signal.throwIfAborted();
+          started.push(chunk);
+          await this.#storage.delete(ns, chunk.sha256, signal);
         }
-        await this.#storage.put(ns, sha256, bytes, signal);
-        restored++;
+      } finally {
+        await this.#restoreReferenced(namespace, ns, started, (restoredNow) => {
+          deleted += started.length - restoredNow;
+          restored += restoredNow;
+        });
       }
     };
 
@@ -301,6 +307,35 @@ export class ChunkCollector {
       damaged: damagedAll,
       tempFilesRemoved,
     };
+  }
+
+  /**
+   * Re-checks the references of chunks just deleted and puts back the ones
+   * a commit landed on meanwhile. Runs whether or not the sweep was aborted,
+   * so it uses a signal of its own; `count` gets how many were put back.
+   */
+  async #restoreReferenced(
+    namespace: Namespace,
+    ns: string,
+    deleted: readonly { sha256: string; bytes: Uint8Array }[],
+    count: (restored: number) => void,
+  ): Promise<void> {
+    if (deleted.length === 0) return;
+    const signal = AbortSignal.timeout(RESTORE_TIMEOUT_MS);
+    const names = await this.#commitStore.referencedChunks(
+      namespace,
+      deleted.map((chunk) => chunk.sha256),
+    );
+    let restored = 0;
+    try {
+      for (const { sha256, bytes } of deleted) {
+        if (!names.has(sha256)) continue;
+        await this.#storage.put(ns, sha256, bytes, signal);
+        restored++;
+      }
+    } finally {
+      count(restored);
+    }
   }
 
   /**
