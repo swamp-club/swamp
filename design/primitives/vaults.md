@@ -49,7 +49,10 @@ does not store `base_dir` unless the user set one: an unset or empty
 `VaultService`, the datastore expression resolver, `vault migrate` and
 `vault edit` all build providers through it, so an unset `base_dir` never
 falls back to the working directory, and the committed config works in every
-clone. On a remote-execution worker it is the worker's repo dir. Configs
+clone. A remote-execution worker builds no vault provider: a dispatched step
+reads and writes secrets through the orchestrator's capability service and
+data plane, so an unset `base_dir` is the serve repo
+([remote execution](../enablers/remote-execution.md)). Configs
 written before swamp-club#3259 may hold an absolute `base_dir`; it is used as
 stored and never rewritten.
 
