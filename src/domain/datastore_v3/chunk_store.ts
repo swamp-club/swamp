@@ -140,7 +140,8 @@ export class ChunkStore {
   }
 
   /**
-   * Streams the content `ref` names. The stream errors with
+   * Streams the content `ref` names, from v3 chunks only: a `legacyKey`
+   * (content still in a pre-v3 layout) is not read here. The stream errors with
    * {@link ChunkMissingError} or {@link ChunkIntegrityError}, or with the
    * abort reason when `signal` aborts.
    */
@@ -228,10 +229,16 @@ async function* cut(
   let yielded = false;
   let drained = false;
   const reader = content.getReader();
+  // An abort cancels the source, so a read waiting on a stalled stream
+  // settles; the check after it then rejects instead of treating the
+  // cancel as the end of the content.
+  const onAbort = () => void reader.cancel(signal.reason).catch(() => {});
+  signal.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       signal.throwIfAborted();
       const { done, value } = await reader.read();
+      signal.throwIfAborted();
       if (done) {
         drained = true;
         break;
@@ -249,6 +256,7 @@ async function* cut(
   } finally {
     // A write that failed or aborted part-way cancels the caller's source,
     // so a file or network stream is closed now rather than left open.
+    signal.removeEventListener("abort", onAbort);
     if (!drained) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }

@@ -314,3 +314,17 @@ Deno.test("ChunkStore.write: cancels the source stream when a write fails, and o
   await ok.write(NS, streamOf(bytesOf(8), [3]), live());
   assertEquals(cancelled, 1);
 });
+
+Deno.test("ChunkStore.write: an abort interrupts a source stream that has stalled", async () => {
+  const controller = new AbortController();
+  const stalled = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(bytesOf(3));
+    },
+    pull: () => new Promise(() => {/* never produces or closes */}),
+  });
+  const write = new ChunkStore(new MemoryStorage({ maxChunkBytes: 4 }))
+    .write(NS, stalled, controller.signal);
+  queueMicrotask(() => controller.abort(new Error("stop")));
+  await assertRejects(() => write, Error, "stop");
+});
