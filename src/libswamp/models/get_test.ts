@@ -162,6 +162,48 @@ Deno.test("modelGet redacts sensitive global arguments when the schema is known"
   });
 });
 
+Deno.test("modelGet redacts a sensitive field inside an array element (swamp-club#3275)", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: {
+        id: "def-3",
+        name: "users-model",
+        version: 1,
+        tags: {},
+        globalArguments: {
+          users: [
+            { userId: "a", password: "${{ vault.get('creds', 'a') }}" },
+            { userId: "b", password: "SUPERSECRET123" },
+          ],
+        },
+        methodData: {},
+      },
+      type: { normalized: "acme/widget" },
+    },
+    modelDef: {
+      version: "2026.05.28.1",
+      globalArguments: z.object({
+        users: z.array(z.object({
+          userId: z.string(),
+          password: z.string().meta({ sensitive: true }),
+        })),
+      }),
+      methods: {},
+    },
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "users-model"),
+  );
+
+  assertEquals(completedData(events).globalArguments, {
+    users: [
+      { userId: "a", password: "***" },
+      { userId: "b", password: "***" },
+    ],
+  });
+});
+
 Deno.test("modelGet: exposes configured method arguments and redacts sensitive values", async () => {
   const deps = makeDeps({
     lookupResult: {

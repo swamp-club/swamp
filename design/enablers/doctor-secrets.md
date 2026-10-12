@@ -104,9 +104,23 @@ size of the value even when union members overlap in a recursive schema.
   fields that declare the same `vaultKey` share it. Keys already in the vault
   are not consulted.
 
-The redaction and vaulting primitives in the same module
-(`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)
-read the schema alone and still see object-nested fields only (swamp-club#3038).
+- **Values of the wrong shape.** A value that is not the object or array its
+  schema declares cannot be walked: `tokens: "hunter2"` for an array of
+  sensitive tokens. If that schema marks anything inside it, the whole value is
+  reported at its own path. One expression that resolves to the whole container
+  is still accepted.
+- **Pipes.** Both sides of `a.pipe(b)` are read, so a field marked on `b` is
+  found. Where a transform changes the shape between them, the wrong-shape rule
+  reports the stored value whole.
+- **Absent-only union members.** `z.null()`, `z.undefined()`, `z.void()` and
+  `z.never()` accept no present value and are dropped, so they do not make a
+  number look as if it belonged to a member other than the sensitive one.
+
+`redactSensitiveValues` (`model get`, reports) and `extractSensitiveFieldValues`
+(the values registered for masking in logs before a method runs) use the same
+walk, so a field the guard sends to a vault is masked once it is resolved.
+Vaulting of sensitive fields in resource data still reads the schema alone and
+sees object-nested fields only (swamp-club#3038).
 
 ## Out of scope
 

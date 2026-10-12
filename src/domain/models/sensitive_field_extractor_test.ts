@@ -1265,3 +1265,127 @@ Deno.test("buildSensitiveArgRemediations: a derived key steps aside for a declar
     "token",
   ]);
 });
+
+Deno.test("findLiteralSensitiveGlobalArgs: a null union member does not let a number through", () => {
+  const schema = z.object({
+    pin: z.union([z.string().meta({ sensitive: true }), z.null()]),
+  });
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { pin: 123456 }), [
+    "pin",
+  ]);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { pin: null }), []);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { pin: VAULT_REF }), []);
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags a scalar given for an array of sensitive elements", () => {
+  const schema = z.object({
+    tokens: z.array(z.string().meta({ sensitive: true })),
+  });
+  // `--global-arg tokens=hunter2`, without `:json`.
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { tokens: "hunter2" }), [
+    "tokens",
+  ]);
+  // One expression that resolves to the whole array stores no cleartext.
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { tokens: VAULT_REF }),
+    [],
+  );
+  assertEquals(
+    buildSensitiveArgRemediations(["tokens"], schema, { tokens: "hunter2" }),
+    [{
+      path: "tokens",
+      vaultName: "my-vault",
+      vaultKey: "tokens",
+      expression: "${{ vault.get('my-vault', 'tokens') }}",
+    }],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags a literal for a field marked on the output side of a pipe", () => {
+  const schema = z.object({
+    key: z.string().pipe(z.string().meta({ sensitive: true })),
+  });
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { key: "hunter2" }), [
+    "key",
+  ]);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { key: VAULT_REF }), []);
+});
+
+const nestedSecretsSchema = z.object({
+  region: z.string(),
+  apiKey: z.string().meta({ sensitive: true }).nullable().optional(),
+  users: z.array(z.object({
+    userId: z.string(),
+    password: z.string().meta({ sensitive: true }),
+  })),
+  accounts: z.record(
+    z.string(),
+    z.object({ token: z.string().meta({ sensitive: true }) }),
+  ),
+  auth: z.union([
+    z.object({
+      kind: z.literal("token"),
+      token: z.string().meta({ sensitive: true }),
+    }),
+    z.object({ kind: z.literal("none") }),
+  ]),
+});
+
+const nestedSecrets = () => ({
+  region: "us-east-1",
+  apiKey: "top-secret",
+  users: [
+    { userId: "a", password: "pw-a" },
+    { userId: "b", password: "pw-b" },
+  ],
+  accounts: { "eu.west": { token: "tok-eu" } },
+  auth: { kind: "token", token: "tok-auth" },
+});
+
+Deno.test("extractSensitiveFieldValues: collects values inside array elements, record values and union members", () => {
+  assertEquals(
+    extractSensitiveFieldValues(nestedSecretsSchema, nestedSecrets()).sort(),
+    ["pw-a", "pw-b", "tok-auth", "tok-eu", "top-secret"],
+  );
+});
+
+Deno.test("redactSensitiveValues: masks values inside array elements, record values and union members", () => {
+  const data = nestedSecrets();
+  assertEquals(redactSensitiveValues(nestedSecretsSchema, data), {
+    region: "us-east-1",
+    apiKey: "***",
+    users: [
+      { userId: "a", password: "***" },
+      { userId: "b", password: "***" },
+    ],
+    accounts: { "eu.west": { token: "***" } },
+    auth: { kind: "token", token: "***" },
+  });
+  // The input is left as it was.
+  assertEquals(data, nestedSecrets());
+});
+
+Deno.test("redactSensitiveValues: still masks a null field and returns the input when nothing is sensitive", () => {
+  const data = { ...nestedSecrets(), apiKey: null };
+  assertEquals(
+    redactSensitiveValues(nestedSecretsSchema, data).apiKey,
+    "***",
+  );
+  const plain = { users: [], accounts: {}, region: "x" };
+  assertEquals(
+    redactSensitiveValues(z.object({ region: z.string() }), plain),
+    plain,
+  );
+});
+
+Deno.test("redactSensitiveValues: masks a value of the wrong shape whole", () => {
+  const schema = z.object({
+    tokens: z.array(z.string().meta({ sensitive: true })),
+  });
+  assertEquals(redactSensitiveValues(schema, { tokens: "hunter2" }), {
+    tokens: "***",
+  });
+  assertEquals(extractSensitiveFieldValues(schema, { tokens: "hunter2" }), [
+    "hunter2",
+  ]);
+});

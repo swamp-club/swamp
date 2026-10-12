@@ -20,7 +20,11 @@
 import { assertEquals } from "@std/assert";
 import fc from "fast-check";
 import { z } from "zod";
-import { findLiteralSensitiveGlobalArgs } from "./sensitive_field_extractor.ts";
+import {
+  extractSensitiveFieldValues,
+  findLiteralSensitiveGlobalArgs,
+  redactSensitiveValues,
+} from "./sensitive_field_extractor.ts";
 
 const VAULT_REF = "${{ vault.get('my-vault', 'k') }}";
 
@@ -83,6 +87,23 @@ Deno.test("findLiteralSensitiveGlobalArgs: a vault.get expression in a sensitive
     fc.property(arbLayers, (layers) => {
       const { schema, args } = nest(layers, VAULT_REF);
       assertEquals(findLiteralSensitiveGlobalArgs(schema, args), []);
+    }),
+  );
+});
+
+Deno.test("extractSensitiveFieldValues and redactSensitiveValues: a value the guard reaches is registered and masked", () => {
+  fc.assert(
+    fc.property(arbLayers, arbLiteral, (layers, literal) => {
+      const { schema, args } = nest(layers, `secret:${literal}`);
+      assertEquals(extractSensitiveFieldValues(schema, args), [
+        `secret:${literal}`,
+      ]);
+      const redacted = redactSensitiveValues(schema, args);
+      assertEquals(
+        JSON.stringify(redacted).includes(JSON.stringify(`secret:${literal}`)),
+        false,
+      );
+      assertEquals(JSON.stringify(redacted).includes('"***"'), true);
     }),
   );
 });

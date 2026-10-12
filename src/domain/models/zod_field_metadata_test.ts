@@ -163,12 +163,14 @@ Deno.test("findValuesWithMetadata: returns top-level and object-nested values wi
     [
       {
         path: "a",
+        keys: ["a"],
         value: "1",
         meta: { marked: true, note: "x" },
         perElement: false,
       },
       {
         path: "outer.inner",
+        keys: ["outer", "inner"],
         value: "3",
         meta: { marked: true },
         perElement: false,
@@ -344,7 +346,7 @@ Deno.test("findValuesWithMetadata: reports a marked container once and still vis
   ]);
 });
 
-Deno.test("findValuesWithMetadata: skips absent values and values of the wrong shape", () => {
+Deno.test("findValuesWithMetadata: skips absent values and reports values of the wrong shape whole", () => {
   const schema = z.object({
     a: z.string().meta({ marked: true }).optional(),
     users: z.array(z.object({ password: z.string().meta({ marked: true }) })),
@@ -357,9 +359,9 @@ Deno.test("findValuesWithMetadata: skips absent values and values of the wrong s
   );
   assertEquals(
     markedPaths(schema, { users: "not-an-array", rec: ["not", "a", "record"] }),
-    [],
+    ["users", "rec"],
   );
-  assertEquals(markedPaths(schema, { users: [null, "x", {}] }), []);
+  assertEquals(markedPaths(schema, { users: [null, "x", {}] }), ["users[1]"]);
 });
 
 Deno.test("findValuesWithMetadata: does not report metadata on the root schema", () => {
@@ -627,4 +629,113 @@ Deno.test("findValuesWithMetadata: leaves printable non-ASCII characters in a ke
   assertEquals(markedPaths(schema, { rec: { "clé-日本": "v" } }), [
     'rec["clé-日本"]',
   ]);
+});
+
+Deno.test("findValuesWithMetadata: gives the keys and indexes that lead to each value", () => {
+  const schema = z.object({
+    users: z.array(z.object({ password: z.string().meta({ marked: true }) })),
+    rec: z.record(z.string(), z.string().meta({ marked: true })),
+  });
+  assertEquals(
+    findValuesWithMetadata(schema, {
+      users: [{ password: "a" }, { password: "b" }],
+      rec: { "eu.west": "c" },
+    }, isMarked).map((f) => [f.path, f.keys]),
+    [
+      ["users[0].password", ["users", 0, "password"]],
+      ["users[1].password", ["users", 1, "password"]],
+      ['rec["eu.west"]', ["rec", "eu.west"]],
+    ],
+  );
+});
+
+Deno.test("findValuesWithMetadata: a union member that accepts only an absent value does not hide a marked one", () => {
+  for (const absent of [z.null(), z.undefined(), z.void(), z.never()]) {
+    const schema = z.object({
+      pin: z.union([z.string().meta({ marked: true }), absent]),
+    });
+    assertEquals(markedPaths(schema, { pin: 123456 }), ["pin"]);
+    assertEquals(markedPaths(schema, { pin: "123456" }), ["pin"]);
+  }
+});
+
+Deno.test("findValuesWithMetadata: a date member takes a date, and a number falls to no member", () => {
+  const schema = z.object({
+    at: z.union([z.string().meta({ marked: true }), z.date()]),
+  });
+  // No member accepts a number, so every member is kept.
+  assertEquals(markedPaths(schema, { at: 5 }), ["at"]);
+  assertEquals(markedPaths(schema, { at: "text" }), ["at"]);
+});
+
+Deno.test("findValuesWithMetadata: reports a scalar stored where an array of marked elements is declared", () => {
+  const schema = z.object({
+    tokens: z.array(z.string().meta({ marked: true })),
+  });
+  assertEquals(
+    findValuesWithMetadata(schema, { tokens: "hunter2" }, isMarked),
+    [{
+      path: "tokens",
+      keys: ["tokens"],
+      value: "hunter2",
+      meta: { marked: true },
+      perElement: true,
+    }],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reports a value of the wrong shape for any container that marks something", () => {
+  const leaf = z.string().meta({ marked: true });
+  const schema = z.object({
+    obj: z.object({ deep: z.object({ leaf }) }).optional(),
+    rec: z.record(z.string(), leaf).optional(),
+    tup: z.tuple([z.string(), leaf]).optional(),
+    arr: z.array(z.object({ leaf })).optional(),
+    plain: z.array(z.string()).optional(),
+  });
+  assertEquals(markedPaths(schema, { obj: ["x"] }), ["obj"]);
+  assertEquals(markedPaths(schema, { rec: "x" }), ["rec"]);
+  assertEquals(markedPaths(schema, { tup: { a: "x" } }), ["tup"]);
+  assertEquals(markedPaths(schema, { arr: 7 }), ["arr"]);
+  // A container that marks nothing has nothing to report.
+  assertEquals(markedPaths(schema, { plain: "x" }), []);
+});
+
+Deno.test("findValuesWithMetadata: a wrong-shaped value under a recursive schema ends and is reported", () => {
+  type Node = { secret?: string; next?: Node };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      secret: z.string().meta({ marked: true }).optional(),
+      next: node.optional(),
+    })
+  );
+  const plain: z.ZodType<unknown> = z.lazy(() =>
+    z.object({ next: plain.optional() })
+  );
+  const schema = z.object({ node, plain });
+  assertEquals(markedPaths(schema, { node: { next: "x" } }), ["node.next"]);
+  assertEquals(markedPaths(schema, { plain: { next: "x" } }), []);
+});
+
+Deno.test("findValuesWithMetadata: reads metadata on the output side of a pipe", () => {
+  const schema = z.object({
+    direct: z.string().pipe(z.string().meta({ marked: true })),
+    wrapped: z.string().pipe(z.string().meta({ marked: true }).readonly()),
+    nested: z.object({ a: z.string() }).pipe(
+      z.object({ a: z.string().meta({ marked: true }) }),
+    ),
+  });
+  assertEquals(
+    markedPaths(schema, { direct: "x", wrapped: "y", nested: { a: "z" } }),
+    ["direct", "wrapped", "nested.a"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: a transform before a pipe reports the stored value whole", () => {
+  const schema = z.object({
+    csv: z.string().transform((s) => s.split(",")).pipe(
+      z.array(z.string().meta({ marked: true })),
+    ),
+  });
+  assertEquals(markedPaths(schema, { csv: "a,b" }), ["csv"]);
 });

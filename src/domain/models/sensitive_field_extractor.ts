@@ -166,9 +166,12 @@ function isLiteralSecret(value: unknown): boolean {
  * The schema and the supplied values are walked together, so a sensitive
  * field is found inside objects (`credentials.apiKey`), array elements and
  * tuple items (`users[0].password`), record values (`accounts.prod.token`),
- * `.catchall()` keys and union members. See `findValuesWithMetadata` for
- * what the walk does not reach. The redaction primitives in this
- * module read the schema alone and still see object-nested fields only.
+ * `.catchall()` keys and union members. A value that is not the array or
+ * object its schema declares (`tokens: "hunter2"` for an array of tokens) is
+ * reported whole. See `findValuesWithMetadata` for what the walk does not
+ * reach. {@link redactSensitiveValues} and {@link extractSensitiveFieldValues}
+ * walk the same way, so a field this guard sends to a vault is also masked
+ * once it is resolved.
  *
  * @param schema - The global-arguments Zod schema for the model type
  * @param args - The supplied global-argument values
@@ -421,8 +424,9 @@ export function buildSensitiveArgRemediations(
  * scrub sensitive values before display or persistence (reports, `model get`).
  * It does not mutate the input — callers receive a deep clone. Only fields that
  * are actually present in `data` are redacted; absent sensitive fields are left
- * untouched. Nested sensitive fields are handled because `extractSensitiveFields`
- * walks the schema recursively and returns dot-separated paths.
+ * untouched. The schema and the data are walked together (see
+ * `findValuesWithMetadata`), so fields inside nested objects, array elements,
+ * record values and union members are redacted too.
  *
  * @param schema - A Zod schema (typically a global-arguments or method-argument schema)
  * @param data - The data object to redact
@@ -432,15 +436,31 @@ export function redactSensitiveValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): Record<string, unknown> {
-  const fields = extractSensitiveFields(schema);
-  if (fields.length === 0) {
+  // The schema-only pass also masks a field holding null, which the walk
+  // skips as absent.
+  const fields = extractSensitiveFields(schema).filter((field) =>
+    getNestedValue(data, field.path) !== undefined
+  );
+  const found = findValuesWithMetadata(schema, data, isSensitive);
+  if (fields.length === 0 && found.length === 0) {
     return data;
   }
 
   const redacted = structuredClone(data);
   for (const field of fields) {
-    if (getNestedValue(redacted, field.path) !== undefined) {
-      setNestedValue(redacted, field.path, "***");
+    setNestedValue(redacted, field.path, "***");
+  }
+  for (const { keys } of found) {
+    let parent: unknown = redacted;
+    for (const key of keys.slice(0, -1)) {
+      // A parent already masked is a string by now, and covers this value.
+      parent = typeof parent === "object" && parent !== null
+        ? (parent as Record<string | number, unknown>)[key]
+        : undefined;
+    }
+    const last = keys.at(-1);
+    if (typeof parent === "object" && parent !== null && last !== undefined) {
+      (parent as Record<string | number, unknown>)[last] = "***";
     }
   }
   return redacted;
@@ -493,11 +513,12 @@ function collectSecretStrings(value: unknown, out: string[]): void {
 /**
  * Extracts the runtime secret values from a data object based on its Zod schema.
  *
- * For each field marked `{ sensitive: true }` in the schema:
+ * For each value under a field marked `{ sensitive: true }` in the schema,
+ * wherever the field sits (nested objects, array elements, record values,
+ * union members — see `findValuesWithMetadata`):
  * - String values are collected directly.
- * - Array values have each string element collected individually.
+ * - Array and plain-object values have each string inside them collected.
  * - Undefined or null values are skipped.
- * - Object values are skipped (nested object fields are found via recursion).
  *
  * Used to register sensitive argument values with SecretRedactor before
  * method execution so they are scrubbed from log files and result resources.
@@ -510,14 +531,16 @@ export function extractSensitiveFieldValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): string[] {
-  const fields = extractSensitiveFields(schema);
   const secrets: string[] = [];
 
-  for (const field of fields) {
+  for (const field of extractSensitiveFields(schema)) {
     collectSecretStrings(getNestedValue(data, field.path), secrets);
   }
+  for (const { value } of findValuesWithMetadata(schema, data, isSensitive)) {
+    collectSecretStrings(value, secrets);
+  }
 
-  return secrets;
+  return [...new Set(secrets)];
 }
 
 /**
