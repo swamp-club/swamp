@@ -46,6 +46,12 @@ import {
   type VersionInfo,
 } from "./data_target.ts";
 import { reportDataName } from "./report_name.ts";
+import { loadState } from "../client/load_state.ts";
+import {
+  DataDetailSkeleton,
+  VersionBadgeSkeleton,
+  VersionsPanelSkeleton,
+} from "./PageSkeletons.tsx";
 
 type ItemDetail = Extract<
   NonNullable<DetailView>,
@@ -117,7 +123,7 @@ function DataItemPage(
           detail: { kind: "data", modelName, dataName, version: item.version },
         }
         : undefined}
-      loading={itemReq.loading}
+      loading={loadState(itemReq) === "loading"}
       error={error}
       errorLinks={
         <>
@@ -160,6 +166,7 @@ function DataItemPage(
           }),
         }
         : undefined}
+      versionsLoading={loadState(versionsReq) === "loading"}
     />
   );
 }
@@ -213,7 +220,7 @@ function ModelReportPage(
           },
         }
         : undefined}
-      loading={itemReq.loading}
+      loading={loadState(itemReq) === "loading"}
       error={error}
       errorLinks={
         <RouteLink
@@ -235,6 +242,7 @@ function ModelReportPage(
           }),
         }
         : undefined}
+      versionsLoading={loadState(versionsReq) === "loading"}
     />
   );
 }
@@ -421,6 +429,11 @@ interface ItemPageProps {
     current?: number;
     linkFor: (version: number) => RouteState;
   };
+  /**
+   * The version list is still loading. Undefined for pages that have no
+   * version list (a run's report).
+   */
+  versionsLoading?: boolean;
 }
 
 function ItemPage(props: ItemPageProps) {
@@ -437,6 +450,7 @@ function ItemPage(props: ItemPageProps) {
           <h1 className="item-title">{title}</h1>
           <span className="cron-badge">{kindLabel}</span>
           {item && <span className="cron-badge">v{item.version}</span>}
+          {!item && loading && !error && <VersionBadgeSkeleton />}
         </div>
         <div className="header-right">
           <ShareBar link={props.link} permalink={props.permalink} />
@@ -455,7 +469,7 @@ function ItemPage(props: ItemPageProps) {
       )}
 
       {loading && !item && !error && (
-        <div className="loading">Loading&hellip;</div>
+        <DataDetailSkeleton versions={props.versionsLoading !== undefined} />
       )}
 
       {error && (
@@ -471,13 +485,15 @@ function ItemPage(props: ItemPageProps) {
           <ContentPanel item={item} json={props.json} />
           <div className="panels-grid">
             <MetadataPanel item={item} />
-            {props.versions && (
-              <VersionsPanel
-                versions={props.versions.list}
-                current={props.versions.current}
-                linkFor={props.versions.linkFor}
-              />
-            )}
+            {props.versions
+              ? (
+                <VersionsPanel
+                  versions={props.versions.list}
+                  current={props.versions.current}
+                  linkFor={props.versions.linkFor}
+                />
+              )
+              : props.versionsLoading && <VersionsPanelSkeleton />}
           </div>
         </>
       )}
