@@ -34,10 +34,14 @@ import {
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
   isAlwaysLocal,
+  isRepoLocalStreamSubdir,
+  isRunLogFile,
   LOCK_TIMEOUT_ENV_VAR,
+  mayHoldRunLogs,
   mergeSetupDatastoreBlock,
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
+  REPO_LOCAL_STREAM_SUBDIRS,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
@@ -526,4 +530,32 @@ Deno.test("CATALOG_FILES: names the catalog and its sidecars under data", () => 
     join("data", "_catalog.db-wal"),
     join("data", "_catalog.db-shm"),
   ]);
+});
+
+Deno.test("isRepoLocalStreamSubdir: accepts the stream directories only", () => {
+  for (const dir of REPO_LOCAL_STREAM_SUBDIRS) {
+    assertEquals(isRepoLocalStreamSubdir(dir), true, dir);
+  }
+  for (const dir of ["data", "outputs", "workflow-runs", "config"]) {
+    assertEquals(isRepoLocalStreamSubdir(dir), false, dir);
+  }
+});
+
+Deno.test("isRunLogFile: accepts .log files under outputs and workflow-runs only", () => {
+  assertEquals(
+    isRunLogFile("outputs", "def-2026-10-12T14-00-28-063Z.log"),
+    true,
+  );
+  assertEquals(isRunLogFile("workflow-runs", "workflow-run-abc.log"), true);
+  assertEquals(isRunLogFile("outputs", "def-2026-10-12.yaml"), false);
+  assertEquals(isRunLogFile("workflow-runs", "workflow-run-abc.yaml"), false);
+  assertEquals(isRunLogFile("data", "notes.log"), false);
+  assertEquals(isRunLogFile("audit", "commands.log"), false);
+});
+
+Deno.test("mayHoldRunLogs: true for outputs and workflow-runs only", () => {
+  assertEquals(mayHoldRunLogs("outputs"), true);
+  assertEquals(mayHoldRunLogs("workflow-runs"), true);
+  assertEquals(mayHoldRunLogs("data"), false);
+  assertEquals(mayHoldRunLogs("audit"), false);
 });

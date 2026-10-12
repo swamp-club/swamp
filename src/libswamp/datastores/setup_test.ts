@@ -1699,6 +1699,67 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes only the link for
   });
 });
 
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: keeps run logs and removes the records beside them", async () => {
+  await withSetupTempDir(async (dir) => {
+    const outputLog = join(dir, "outputs", "command", "shell", "r1.log");
+    const runLog = join(dir, "workflow-runs", "wf1", "workflow-run-r2.log");
+    await writeTestFile(outputLog, "method log");
+    await writeTestFile(
+      join(dir, "outputs", "command", "shell", "r1.yaml"),
+      "record",
+    );
+    await writeTestFile(runLog, "workflow log");
+    await writeTestFile(
+      join(dir, "workflow-runs", "wf1", "workflow-run-r2.yaml"),
+      "record",
+    );
+    await writeTestFile(join(dir, "workflow-runs", "wf2", "r3.yaml"), "r");
+    await writeTestFile(join(dir, "data", "notes.log"), "data");
+    const deps = createDatastoreSetupDeps(dir, noTier);
+
+    await deps.cleanupSourceDirs(dir, ["outputs", "workflow-runs", "data"]);
+
+    assertEquals(await Deno.readTextFile(outputLog), "method log");
+    assertEquals(await Deno.readTextFile(runLog), "workflow log");
+    assertEquals(
+      await pathExists(join(dir, "outputs", "command", "shell", "r1.yaml")),
+      false,
+    );
+    assertEquals(
+      await pathExists(
+        join(dir, "workflow-runs", "wf1", "workflow-run-r2.yaml"),
+      ),
+      false,
+    );
+    assertEquals(await pathExists(join(dir, "workflow-runs", "wf2")), false);
+    assertEquals(await pathExists(join(dir, "data")), false);
+  });
+});
+
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes a symlinked dir under outputs as a link, never through it", async () => {
+  await withSetupTempDir(async (dir) => {
+    const target = join(dir, "elsewhere");
+    await writeTestFile(join(target, "keep.yaml"), "outside");
+    await writeTestFile(join(target, "keep.log"), "outside log");
+    const source = join(dir, "source");
+    await writeTestFile(join(source, "outputs", "a", "r1.yaml"), "record");
+    await Deno.symlink(target, join(source, "outputs", "linked"), {
+      type: "dir",
+    });
+    const deps = createDatastoreSetupDeps(source, noTier);
+
+    await deps.cleanupSourceDirs(source, ["outputs"]);
+
+    assertEquals(await pathExists(join(source, "outputs", "linked")), false);
+    assertEquals(await Deno.readTextFile(join(target, "keep.yaml")), "outside");
+    assertEquals(
+      await Deno.readTextFile(join(target, "keep.log")),
+      "outside log",
+    );
+    assertEquals(await pathExists(join(source, "outputs")), false);
+  });
+});
+
 /**
  * Registers an extension datastore whose remote is a temp directory: push
  * copies the cache over it and pull copies it over the cache, both
@@ -3982,4 +4043,49 @@ Deno.test("datastoreSetupFilesystem: a v2 setup onto a datastore that is already
   assertEquals(error.kind, "error");
   assertStringIncludes(error.error.message, "is a v3 datastore");
   assertEquals(changed, false);
+});
+
+Deno.test("datastoreSetupExtension: leaves the audit trail and run logs in .swamp", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const type = registerTempDirRemoteType(remoteDir, cacheDir);
+    await writeMarker(repoDir, { type, config: {} });
+    const swamp = join(repoDir, ".swamp");
+    const audit = join("audit", "commands-2026-10-12.jsonl");
+    const outputLog = join("outputs", "command", "shell", "r1.log");
+    const outputRecord = join("outputs", "command", "shell", "r1.yaml");
+    const runLog = join("workflow-runs", "wf1", "workflow-run-r2.log");
+    await writeTestFile(join(swamp, audit), "{}");
+    await writeTestFile(join(swamp, outputLog), "method log");
+    await writeTestFile(join(swamp, outputRecord), "record");
+    await writeTestFile(join(swamp, runLog), "workflow log");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3281",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.directoriesMigrated.includes("audit"), false);
+    assertEquals(await Deno.readTextFile(join(swamp, audit)), "{}");
+    assertEquals(await Deno.readTextFile(join(swamp, outputLog)), "method log");
+    assertEquals(await Deno.readTextFile(join(swamp, runLog)), "workflow log");
+    assertEquals(await pathExists(join(swamp, outputRecord)), false);
+    assertEquals(await pathExists(join(remoteDir, outputRecord)), true);
+    for (const rel of [audit, outputLog, runLog]) {
+      assertEquals(await pathExists(join(remoteDir, rel)), false, rel);
+    }
+  });
 });
