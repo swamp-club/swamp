@@ -1424,20 +1424,19 @@ essential context for working with this repository.`
 matches a skill area below, read the corresponding \`SKILL.md\` file for guidance.`;
 
     const gettingStarted = useSkillNames
-      ? `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately invoke the \`swamp-getting-started\` skill before doing anything else.
-This walks new users through an interactive onboarding tutorial.
+      ? `If the user is new to swamp or asks to get started, or a swamp command you
+run shows this repository has no models yet, invoke the
+\`swamp-getting-started\` skill. It checks for existing models itself and walks
+new users through an interactive onboarding tutorial.
 
-If models already exist, start by using the \`swamp\` skill to work with
-swamp models.`
-      : `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately read \`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its
-instructions. This walks new users through an interactive onboarding tutorial.
+Otherwise, use the \`swamp\` skill to work with swamp models.`
+      : `If the user is new to swamp or asks to get started, or a swamp command you
+run shows this repository has no models yet, read
+\`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its instructions. It
+checks for existing models itself and walks new users through an interactive
+onboarding tutorial.
 
-If models already exist, start by reading \`${skillsDir}/swamp/SKILL.md\`
-to work with swamp models.`;
+Otherwise, read \`${skillsDir}/swamp/SKILL.md\` to work with swamp models.`;
 
     return `# Project
 
