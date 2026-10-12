@@ -188,6 +188,17 @@ export interface ModelOutputLogsPayload {
 
 export interface ModelOutputSearchPayload {
   query?: string;
+  /** Only outputs of this model, by exact name or id. */
+  model?: string;
+  /** Only outputs started at or after this ISO 8601 instant. */
+  since?: string;
+  /** Only outputs started at or before this ISO 8601 instant. */
+  until?: string;
+  /**
+   * At most this many results, most recent first, counted among the outputs
+   * the caller may read.
+   */
+  limit?: number;
 }
 
 export interface ModelMethodHistoryGetPayload {

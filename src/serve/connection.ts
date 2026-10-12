@@ -701,6 +701,10 @@ const ModelOutputSearchRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
+    model: z.string().optional(),
+    since: z.string().optional(),
+    until: z.string().optional(),
+    limit: z.number().int().nonnegative().optional(),
   }).optional(),
 });
 
