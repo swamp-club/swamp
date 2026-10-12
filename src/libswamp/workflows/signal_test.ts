@@ -51,6 +51,7 @@ import {
 } from "../../domain/workflows/signal_wait_store_test_helpers.ts";
 import {
   closeRunWaits,
+  takePendingSignalsOfRun,
   waitRefOf,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
 import { cancelAndSettle } from "../../domain/workflows/abort_settlement.ts";
@@ -2383,4 +2384,207 @@ Deno.test("workflowSignal: a copy that reads the key as free because its other c
     "absent",
   );
   assertEquals(again.calls, []);
+});
+
+// What a signal by key is told when its wait is opening or was open already
+// (swamp-club#3307).
+
+/** `waits`, with `hooks` run around the calls a signal by key makes of it. */
+function racingStore(
+  waits: InMemorySignalWaitStore,
+  hooks: {
+    /** Once, after the signal's pending record is created. */
+    afterStored?: () => Promise<void>;
+    /** Once, before the claims are listed to look for the signal's taker. */
+    beforeTakerLookup?: () => Promise<void>;
+  },
+): InMemorySignalWaitStore {
+  let stored = false;
+  let looked = false;
+  return new Proxy(waits, {
+    get(target, property, receiver) {
+      if (property === "createPendingRecord") {
+        return async (
+          record: Parameters<InMemorySignalWaitStore["createPendingRecord"]>[0],
+        ) => {
+          const created = await target.createPendingRecord(record);
+          if (!stored) {
+            stored = true;
+            await hooks.afterStored?.();
+          }
+          return created;
+        };
+      }
+      if (property === "listKeyRecords") {
+        return async () => {
+          if (stored && !looked) {
+            looked = true;
+            await hooks.beforeTakerLookup?.();
+          }
+          return await target.listKeyRecords();
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function registerEarlyWait(
+  waits: InMemorySignalWaitStore,
+  workflow: Workflow,
+  run: WorkflowRun,
+  at: Date,
+): Promise<void> {
+  const [ref] = run.findSignalWaits();
+  await waits.register(registrationOf(
+    {
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      runId: run.id,
+      jobName: ref.jobName,
+      stepName: ref.stepName,
+    },
+    ref.wait!,
+    at,
+  ));
+}
+
+Deno.test("workflowSignal: a signal too old for the wait that is opening is refused, not answered as held, and a retry is delivered", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  // The step claims its key eleven seconds after the signal was received,
+  // under an age limit of ten, and has not registered its wait.
+  const claimedAt = new Date(IN_TIME.getTime() + 11_000);
+  let opened: { run: WorkflowRun; waitId: string } | undefined;
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  fixture.deps.signalWaits = {
+    supported: true,
+    store: racingStore(waits, {
+      afterStored: async () => {
+        opened = await suspendedAtEarlyWait(workflow, waits, claimedAt);
+      },
+    }),
+  };
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }, "build-1"),
+  );
+  assertEquals(refusal.kind, "no_open_wait");
+  assertStringIncludes(refusal.message, "was not delivered");
+  assertStringIncludes(refusal.message, "Send it again once the wait is open");
+
+  // The step registers and reads its slot: no reader gives it the signal.
+  await registerEarlyWait(waits, workflow, opened!.run, claimedAt);
+  assertEquals(await takePendingSignalsOfRun(waits, opened!.run), 0);
+  assertEquals((await waits.findOutcome(opened!.waitId)).kind, "absent");
+
+  // The retry is not answered from the record left in the slot: it is
+  // delivered to the wait, which is open now.
+  const later = await fixtureOf([opened!.run], {
+    waits,
+    registered: false,
+    workflows: [workflow],
+    now: new Date(claimedAt.getTime() + 1_000),
+  });
+  const retry = await sendByKey(
+    later,
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "build-1",
+  );
+  assert(retry.kind === "completed", `got ${retry.kind}`);
+  assertEquals(retry.data.waitId, opened!.waitId);
+  assertEquals(retry.data.duplicate, undefined);
+  assertEquals(retry.data.taken, undefined);
+  assertEquals(retry.data.awaitingResume, true);
+});
+
+Deno.test("workflowSignal: a signal within the age limit of the wait that is opening is answered as held, and the wait takes it", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  // Claimed exactly the age limit after the signal: the edge of the window.
+  const claimedAt = new Date(IN_TIME.getTime() + 10_000);
+  let opened: { run: WorkflowRun; waitId: string } | undefined;
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  fixture.deps.signalWaits = {
+    supported: true,
+    store: racingStore(waits, {
+      afterStored: async () => {
+        opened = await suspendedAtEarlyWait(workflow, waits, claimedAt);
+      },
+    }),
+  };
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "pending", `got ${sent.kind}`);
+  await registerEarlyWait(waits, workflow, opened!.run, claimedAt);
+  assertEquals(await takePendingSignalsOfRun(waits, opened!.run), 1);
+  const outcome = await waits.findOutcome(opened!.waitId);
+  assert(outcome.kind === "found" && outcome.record.kind === "accepted");
+  assertEquals(outcome.record.receipt.id, sent.data.signal.id);
+});
+
+Deno.test("workflowSignal: a held signal another reader gave to a suspended wait is answered taken, with the resume its run needs", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const claimedAt = new Date(IN_TIME.getTime() + 1_000);
+  let opened: { run: WorkflowRun; waitId: string } | undefined;
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  fixture.deps.signalWaits = {
+    supported: true,
+    store: racingStore(waits, {
+      // The step opened its wait, read an empty slot and suspended before
+      // the signaller read the key again.
+      afterStored: async () => {
+        opened = await suspendedAtEarlyWait(workflow, waits, claimedAt);
+        await registerEarlyWait(waits, workflow, opened.run, claimedAt);
+        fixture.stored.set(opened.run.id, opened.run.toData());
+      },
+      // The sweep gives the wait its pending signal before the signaller
+      // looks for who took it.
+      beforeTakerLookup: async () => {
+        assertEquals(await takePendingSignalsOfRun(waits, opened!.run), 1);
+      },
+    }),
+  };
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "completed", `got ${sent.kind}`);
+  assertEquals(sent.data.taken, true);
+  assertEquals(sent.data.waitId, opened!.waitId);
+  assertEquals(sent.data.runRecordAvailable, true);
+  // The run is suspended and nothing resumed it.
+  assertEquals(sent.data.awaitingResume, true);
+});
+
+Deno.test("workflowSignal: a held signal the step took as it opened its wait is answered taken, with no resume", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const claimedAt = new Date(IN_TIME.getTime() + 1_000);
+  let waitId: string | undefined;
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  fixture.deps.signalWaits = {
+    supported: true,
+    store: racingStore(waits, {
+      // The step claims, registers, takes the signal and goes on: its run
+      // never suspends.
+      afterStored: async () => {
+        const opened = await suspendedAtEarlyWait(workflow, waits, claimedAt);
+        waitId = opened.waitId;
+        await registerEarlyWait(waits, workflow, opened.run, claimedAt);
+        assertEquals(await takePendingSignalsOfRun(waits, opened.run), 1);
+        const run = WorkflowRun.create(workflow);
+        run.start();
+        fixture.stored.set(opened.run.id, {
+          ...run.toData(),
+          id: opened.run.id,
+        });
+      },
+    }),
+  };
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "completed", `got ${sent.kind}`);
+  assertEquals(sent.data.taken, true);
+  assertEquals(sent.data.waitId, waitId);
+  assertEquals(sent.data.runRecordAvailable, true);
+  assertEquals(sent.data.awaitingResume, false);
 });
