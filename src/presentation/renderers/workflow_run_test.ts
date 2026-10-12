@@ -27,7 +27,10 @@ import { setColorEnabled } from "@std/fmt/colors";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
 import type { WorkflowRunView } from "../../libswamp/workflows/workflow_run_view.ts";
-import { createWorkflowRunRenderer } from "./workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  renderWorkflowRunAccepted,
+} from "./workflow_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 function makeRunView(
@@ -2468,4 +2471,49 @@ Deno.test("ConsoleWorkflowRunRenderer: a suspension whose step is not in the run
   const output = lines.join("\n");
   assertEquals(output.includes("waits on a nested run"), false);
   assertStringIncludes(output, "awaiting approval on step gone");
+});
+
+// --- renderWorkflowRunAccepted tests (swamp-club#1090) ---
+
+Deno.test("renderWorkflowRunAccepted: json mode prints the run id and that the run is detached", async () => {
+  const lines = await captureOutputAsync(() => {
+    renderWorkflowRunAccepted(
+      { runId: "run-1", workflowName: "deploy" },
+      "json",
+      " --server ws://host:9090",
+    );
+    return Promise.resolve();
+  });
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), {
+    runId: "run-1",
+    workflowName: "deploy",
+    status: "running",
+    detached: true,
+  });
+});
+
+Deno.test("renderWorkflowRunAccepted: log mode names the run and the commands that follow it up on the same server", async () => {
+  const lines = await captureOutputAsync(() => {
+    renderWorkflowRunAccepted(
+      { runId: "run-1", workflowName: "deploy" },
+      "log",
+      " --server ws://host:9090",
+    );
+    return Promise.resolve();
+  });
+  const output = lines.join("\n");
+  assertStringIncludes(output, "Accepted workflow deploy (run: run-1)");
+  assertStringIncludes(
+    output,
+    "swamp workflow history get run-1 --server ws://host:9090",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow history logs run-1 --server ws://host:9090",
+  );
+  assertStringIncludes(
+    output,
+    "swamp workflow cancel --run run-1 --server ws://host:9090",
+  );
 });

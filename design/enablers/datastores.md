@@ -4676,6 +4676,16 @@ whoever knows it can have a nested structural swamp skip that lock.
   writes a new one, and when the hop it was lent to ends, since the holder
   then re-keys the lock (see "Hand-offs and re-keying" below).
 
+A detached request (`swamp workflow run --server --detach`, swamp-club#1090)
+sends no list. Forwarding says the requested run stays under the step that
+holds the locks, and a detached run outlives that step: with the list, a nested
+swamp under it could skip a lock its step is still writing under. Without it
+the detached run waits on that lock like any other run, until the step that
+requested it ends. A step that detaches a run needing the step's own model and
+then keeps working makes that run wait, and it fails with a lock timeout if the
+step outlasts the wait; nothing is attached to see that except the run's
+record.
+
 Locally this gives a client no more than it has, since a shell method's
 explicit env already overrides `SWAMP_LOCK_HOLDER_TOKENS` for its child. What
 it adds is serve doing so on a client's behalf, which is accepted in exchange

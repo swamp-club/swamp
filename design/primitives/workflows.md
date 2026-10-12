@@ -1685,6 +1685,11 @@ resume applies the signal, and cancelling it would discard one. Such a run stays
 suspended until someone resumes it, so a workflow started repeatedly and never
 resumed accumulates suspended runs.
 
+Supersede applies to a detached run (`--detach`) as to any other: detached runs
+of one workflow started with the same inputs cancel each other's suspended
+runs. A caller that fans out runs meant to wait at a gate side by side gives
+each its own inputs or passes `--no-supersede`.
+
 **Nested workflows.** A parent waiting on a child that waits for a signal is
 told to signal the child's wait, then resume the child, then resume the parent.
 Through serve with auto-resume on, the signal continues the child, and the
@@ -2948,6 +2953,13 @@ The run record is written to the datastore at
 `.swamp/workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.log`, whichever
 datastore holds the record. The record's `logFile` names it relative to the
 repo.
+
+The record is first saved before the run's `started` event is yielded
+(`WorkflowExecutionService.run`), so a consumer that sees `started` can read
+the run by the id the event carries. `swamp workflow run --server --detach`
+relies on this: it returns that id and stops listening (swamp-club#1090; see
+[serve](serve.md#running-primitives-through-serve)). If the first save fails, the run fails
+without a `started` event.
 
 `swamp run gc` and deleting a workflow remove a run's log with its record. They
 rebuild its path from the record's directory and file names rather than reading

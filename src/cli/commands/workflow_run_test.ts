@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
+import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { Command } from "@cliffy/command";
 import { WorkflowNameType } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
@@ -121,4 +123,99 @@ Deno.test({
   fn: async () => {
     assertEquals(await runWorkflowRunAgainst({ status: "succeeded" }), 0);
   },
+});
+
+// ── --detach (swamp-club#1090) ─────────────────────────────────────────
+
+/** Parses `workflow run deploy <args>` through a root command with --json. */
+async function parseWorkflowRun(args: string[]): Promise<void> {
+  const { workflowRunCommand } = await import("./workflow_run.ts");
+  const root = new Command()
+    .globalType("workflow_name", new WorkflowNameType())
+    .globalOption("--json", "JSON output")
+    .command("run", workflowRunCommand);
+  await root.parse(["run", "deploy", ...args]);
+}
+
+Deno.test({
+  name:
+    "workflowRunCommand: --detach prints the run id and returns while the run is still going",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // Sends the run's started event and never a done frame: the run goes on.
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (message) => {
+          const request = JSON.parse(message.data as string) as { id: string };
+          socket.send(JSON.stringify({
+            type: "event",
+            id: request.id,
+            event: {
+              kind: "started",
+              runId: "run-1",
+              workflowName: "deploy",
+              jobs: [],
+            },
+          }));
+        };
+        return response;
+      },
+    );
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (msg: string) => logs.push(msg);
+    const previousExitCode = Deno.exitCode;
+    Deno.exitCode = 0;
+    try {
+      await parseWorkflowRun([
+        "--json",
+        "--detach",
+        "--server",
+        `ws://127.0.0.1:${server.addr.port}`,
+        "--token",
+        "test.token",
+      ]);
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(logs.map((line) => JSON.parse(line)), [{
+        runId: "run-1",
+        workflowName: "deploy",
+        status: "running",
+        detached: true,
+      }]);
+    } finally {
+      console.log = originalLog;
+      Deno.exitCode = previousExitCode;
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test("workflowRunCommand: --detach without a server is refused", async () => {
+  await withMockedEnv(
+    { SWAMP_SERVE_URL: undefined, SWAMP_SERVER_URL: undefined },
+    async () => {
+      await assertRejects(
+        () => parseWorkflowRun(["--detach"]),
+        UserError,
+        "--detach requires --server",
+      );
+    },
+  );
+});
+
+Deno.test("workflowRunCommand: --detach is refused with --timeout and with --junit", async () => {
+  const server = ["--server", "ws://127.0.0.1:1", "--token", "test.token"];
+  await assertRejects(
+    () => parseWorkflowRun(["--detach", "--timeout", "30s", ...server]),
+    UserError,
+    "--detach cannot be combined with --timeout",
+  );
+  await assertRejects(
+    () => parseWorkflowRun(["--detach", "--junit", ...server]),
+    UserError,
+    "--detach cannot be combined with --junit",
+  );
 });

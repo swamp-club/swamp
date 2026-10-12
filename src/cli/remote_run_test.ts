@@ -3051,3 +3051,168 @@ Deno.test("requestNewerServerResponse: any other refusal and a reply pass throug
   );
   assertEquals(sent, ["workflow.waits"]);
 });
+
+// ── detach (swamp-club#1090) ───────────────────────────────────────────
+
+/**
+ * A server that answers a `workflow.run` with the given events and then keeps
+ * the run open, as a running workflow does. `closed` settles when the client's
+ * socket closes.
+ */
+function runningWorkflowServer(events: Record<string, unknown>[]) {
+  let markClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+  const server = scriptedServer((request, reply, socket) => {
+    socket.onclose = () => markClosed();
+    if (request.type !== "workflow.run") return;
+    for (const event of events) {
+      reply({ type: "event", id: request.id, event });
+    }
+  });
+  return { ...server, closed };
+}
+
+Deno.test({
+  name:
+    "remote run: a detached run ends at its own started event, closes the socket and sends no cancel",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = runningWorkflowServer([
+      { kind: "superseded_runs", cancelledRunIds: ["old"] },
+      { kind: "started", runId: "child", parentRunId: "run-1" },
+      { kind: "started", runId: "run-1", workflowName: "wf" },
+      { kind: "job_started", jobId: "j" },
+    ]);
+    try {
+      const events: { kind: string; [key: string]: unknown }[] = [];
+      await withMockedEnv(
+        { [SWAMP_LOCK_HOLDER_TOKENS]: "100:a+b" },
+        async () => {
+          for await (
+            const event of runWorkflowOverServer({
+              server: server.url,
+              payload: { workflowIdOrName: "wf" },
+              detach: true,
+            })
+          ) {
+            events.push(event);
+          }
+        },
+      );
+      await server.closed;
+
+      assertEquals(events.map((e) => e.kind), [
+        "superseded_runs",
+        "started",
+        "started",
+      ]);
+      assertEquals(events.at(-1)?.runId, "run-1");
+      const sent = server.received as {
+        type: string;
+        payload: Record<string, unknown>;
+      }[];
+      assertEquals(sent.map((frame) => frame.type), ["workflow.run"]);
+      // A detached run outlives the step whose locks the list names.
+      assertEquals("lockHolderTokens" in sent[0].payload, false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a detached run refused before it starts fails with the server's error",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: { code: "max_concurrent", message: "Too many concurrent runs" },
+      });
+    });
+    try {
+      await assertRejects(
+        async () => {
+          for await (
+            const _ of runWorkflowOverServer({
+              server: server.url,
+              payload: { workflowIdOrName: "wf" },
+              detach: true,
+            })
+          ) {
+            // No event is expected.
+          }
+        },
+        UserError,
+        "Too many concurrent runs",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a detached run whose connection closes before started fails",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.close();
+    });
+    try {
+      await assertRejects(
+        async () => {
+          for await (
+            const _ of runWorkflowOverServer({
+              server: server.url,
+              payload: { workflowIdOrName: "wf" },
+              detach: true,
+            })
+          ) {
+            // No event is expected.
+          }
+        },
+        UserError,
+        "closed before the run completed",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: a consumer that stops reading early closes the connection",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = runningWorkflowServer([
+      { kind: "started", runId: "run-1", workflowName: "wf" },
+    ]);
+    try {
+      for await (
+        const _ of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "wf" },
+        })
+      ) {
+        break;
+      }
+      await server.closed;
+      assertEquals(
+        (server.received as { type: string }[]).map((frame) => frame.type),
+        ["workflow.run"],
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
