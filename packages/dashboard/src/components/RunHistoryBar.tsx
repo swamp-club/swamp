@@ -48,8 +48,8 @@ interface RunHistoryBarProps {
   height?: number;
   /** What the runs are, for the accessible label ("schedule runs"). */
   noun?: string;
-  /** A run to mark as the one being looked at (e.g. a table row's run). */
-  highlightRunId?: string;
+  /** The run being looked at (the run page's run, a table row's run). */
+  currentRunId?: string;
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -79,7 +79,7 @@ export function RunHistoryBar(
     slots = 20,
     height = 14,
     noun = "runs",
-    highlightRunId,
+    currentRunId,
   }: RunHistoryBarProps,
 ) {
   const shown = runs.slice(0, slots).reverse();
@@ -107,7 +107,7 @@ export function RunHistoryBar(
       ))}
       {shown.map((run) => {
         const wf = run.workflowName ?? workflowName;
-        const current = run.runId === highlightRunId;
+        const current = run.runId === currentRunId;
         const cls = `run-pip ${STATUS_CLASS[run.status] ?? "other"}${
           current ? " current" : ""
         }`;
@@ -126,11 +126,12 @@ export function RunHistoryBar(
         if (run.status === "failed") {
           return (
             <a
-              key={run.runId}
+              key={run.id ?? run.runId}
               role="listitem"
               className={cls}
               href={failureHref(wf, run.runId)}
               title={title}
+              aria-current={current ? "true" : undefined}
               aria-label={title.replace("\n", ", ")}
               onClick={openFailureOnClick(wf, run.runId)}
             />

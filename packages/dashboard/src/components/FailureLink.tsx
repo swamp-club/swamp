@@ -24,32 +24,16 @@
 // failed step's log when the URL carries ?focus=failure.
 
 import type { MouseEvent } from "react";
-import { buildPath, isPlainLeftClick, type RouteState } from "../routes.ts";
-import { navigateTo } from "../hooks/useRouter.ts";
+import { isPlainLeftClick } from "../routes.ts";
+import { failureHref, navigateToHref } from "../views/run_links.ts";
 
-export const FAILURE_FOCUS_PARAM = "focus";
-export const FAILURE_FOCUS_VALUE = "failure";
-
-function runRoute(workflowName: string, runId: string): RouteState {
-  return {
-    view: "workflows",
-    detail: { kind: "run", workflowName, runId },
-  };
-}
-
-/** `/dashboard/workflows/<wf>/runs/<run>?focus=failure`. */
-export function failureHref(workflowName: string, runId: string): string {
-  return `${
-    buildPath(runRoute(workflowName, runId))
-  }?${FAILURE_FOCUS_PARAM}=${FAILURE_FOCUS_VALUE}`;
-}
+export { failureHref };
 
 /**
  * Click handler for a link to `failureHref`: a plain left click navigates
- * in-app and then adds the focus param to the entry it pushed; modified
- * and middle clicks fall through to the browser (new tab, copy link).
- * Stops propagation so a link inside a clickable card or row opens the
- * failure, not the container.
+ * in-app with the focus param intact; modified and middle clicks fall
+ * through to the browser (new tab, copy link). Stops propagation so a link
+ * inside a clickable card or row opens the failure, not the container.
  */
 export function openFailureOnClick(
   workflowName: string,
@@ -59,16 +43,7 @@ export function openFailureOnClick(
     e.stopPropagation();
     if (!isPlainLeftClick(e)) return;
     e.preventDefault();
-    navigateTo(runRoute(workflowName, runId));
-    try {
-      history.replaceState(
-        history.state,
-        "",
-        failureHref(workflowName, runId),
-      );
-    } catch {
-      // No history API: the run opens without the focus hint.
-    }
+    navigateToHref(failureHref(workflowName, runId));
   };
 }
 

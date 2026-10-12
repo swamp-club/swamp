@@ -884,6 +884,13 @@ a.run-pip:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text-2);
 }
+/* The run being looked at: the run page's own run, a table row's run */
+.run-pip.current {
+  position: relative;
+  z-index: 1;
+  transform: scaleY(1.3);
+  box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 3px var(--text-1);
+}
 .run-pip.empty {
   background: var(--surface-inset);
 }

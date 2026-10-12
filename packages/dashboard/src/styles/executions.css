@@ -45,9 +45,6 @@
 }
 
 /* The run a row is about, among its workflow's recent runs */
-.run-pip.current {
-  box-shadow: 0 0 0 1.5px var(--surface), 0 0 0 2.5px var(--text-1);
-}
 
 .exec-toolbar {
   display: flex;

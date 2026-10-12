@@ -389,7 +389,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
                             workflowName={run.workflowName}
                             slots={HISTORY_SLOTS}
                             height={12}
-                            highlightRunId={run.runId}
+                            currentRunId={run.runId}
                             noun={`runs of ${run.workflowName}`}
                           />
                         )
