@@ -26,7 +26,7 @@ import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { errorPaths, markErrorPaths, UserError } from "../../domain/errors.ts";
 
 function makeRunView(
-  status: "succeeded" | "failed",
+  status: ModelMethodRunView["status"],
 ): ModelMethodRunView {
   return {
     modelId: "def-1",
@@ -284,7 +284,7 @@ Deno.test("ConsoleModelMethodRunRenderer: handles cancelled run", async () => {
     { kind: "validating_inputs" },
     {
       kind: "cancelled",
-      run: makeRunView("failed"),
+      run: makeRunView("cancelled"),
       reason: "user interrupt",
     },
   ];
@@ -457,6 +457,29 @@ Deno.test("JsonModelMethodRunRenderer: completed serializes ModelMethodRunView",
     assertEquals(parsed.modelId, "def-1");
     assertEquals(parsed.modelName, "test-model");
     assertEquals(parsed.dataArtifacts[0].attributes.exitCode, 0);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonModelMethodRunRenderer: cancelled run prints the run and sets runFailed() (swamp-club#3317)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    const events: ModelMethodRunEvent[] = [
+      { kind: "validating_inputs" },
+      { kind: "cancelled", run: makeRunView("cancelled"), reason: "timed out" },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(renderer.runFailed(), true);
+    assertEquals(logs.length, 1);
+    assertEquals(JSON.parse(logs[0]).status, "cancelled");
   } finally {
     console.log = originalLog;
   }

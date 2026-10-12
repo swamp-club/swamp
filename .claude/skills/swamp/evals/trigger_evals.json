@@ -218,5 +218,20 @@
     "query": "What's the best way to parse JSON in Python?",
     "should_trigger": false,
     "note": "General coding, not swamp"
+  },
+  {
+    "query": "Run swamp behavior run my-server deploy with env=prod",
+    "should_trigger": true,
+    "note": "model domain — behavior run (preferred method-run spelling)"
+  },
+  {
+    "query": "What flags does swamp behaviour run accept?",
+    "should_trigger": true,
+    "note": "model domain — behaviour alias spelling"
+  },
+  {
+    "query": "Use swamp behavior run @swamp/aws/ec2/vpc create my-vpc to make a VPC",
+    "should_trigger": true,
+    "note": "model domain — direct-type behavior run"
   }
 ]

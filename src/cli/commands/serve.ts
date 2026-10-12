@@ -483,8 +483,8 @@ import {
   ContinuationSweepService,
   decideContinuationSweepStart,
   DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
+  heldSignalSweeper,
   sweepContinuations,
-  sweepHeldSignals,
 } from "../../serve/continuation_sweep_service.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -7390,6 +7390,8 @@ export const serveCommand = new Command()
           "Continuation sweep runs once, at boot: this datastore cannot be read without replacing this instance's run records, so later passes could resume a run from a copy that is out of date. Runs are still continued when a signal arrives here",
         );
       }
+      // Built once, outside the pass: it remembers when it last swept.
+      const sweepHeldSignalsWhenDue = heldSignalSweeper();
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
@@ -7400,7 +7402,7 @@ export const serveCommand = new Command()
             takeover: !synced || boot,
             isStopping,
           });
-          if (!isStopping()) await sweepHeldSignals(connectionCtx);
+          if (!isStopping()) await sweepHeldSignalsWhenDue(connectionCtx);
           return result;
         },
       });

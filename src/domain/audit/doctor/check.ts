@@ -121,11 +121,12 @@ export interface AuditDoctorReport {
  * (no stack trace) — this is expected first-run UX, not a bug.
  */
 export class NoToolConfiguredError extends UserError {
-  constructor() {
+  /** @param tools the auditable tool names to list in the hint */
+  constructor(tools: readonly string[]) {
     super(
       "No AI tool enrolled in .swamp.yaml (`tools` is empty) and no " +
         "--tool flag provided. Pass --tool <name> to audit a specific " +
-        "tool (claude | cursor | kiro | opencode | codex | copilot), or " +
+        `tool (${tools.join(" | ")}), or ` +
         "enroll a tool with `swamp repo upgrade --tool <name>` and try " +
         "again. Repos initialized with `--tool none` are not auditable " +
         "until a tool is enrolled.",

@@ -67,7 +67,7 @@ findings:
 Then record them:
 
 ```
-swamp model @swamp/issue-lifecycle method run adversarial_review issue-<N> \
+swamp behavior run @swamp/issue-lifecycle adversarial_review issue-<N> \
   --input-file /tmp/findings-issue-<N>.yaml
 ```
 
@@ -111,7 +111,7 @@ When the human gives feedback OR adversarial findings need addressing:
    if you want to diff between iterations), then run:
 
    ```
-   swamp model @swamp/issue-lifecycle method run iterate issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle iterate issue-<N> \
      --input feedback="<human's feedback or adversarial findings>" \
      --input summary="..." \
      --input dddAnalysis="..." \
@@ -132,7 +132,7 @@ When the human gives feedback OR adversarial findings need addressing:
    ```
 
    ```
-   swamp model @swamp/issue-lifecycle method run resolve_findings issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle resolve_findings issue-<N> \
      --input-file /tmp/resolutions-issue-<N>.yaml
    ```
 
@@ -151,7 +151,7 @@ When the human gives feedback OR adversarial findings need addressing:
 
 6. Only then call `approve`:
    ```
-   swamp model @swamp/issue-lifecycle method run approve issue-<N>
+   swamp behavior run @swamp/issue-lifecycle approve issue-<N>
    ```
 
 **The `approve` method will fail** if critical/high findings are unresolved or

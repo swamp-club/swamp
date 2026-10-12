@@ -59,6 +59,21 @@ function buildTree() {
     )
     .command("method", method);
 
+  // `swamp behavior run` (alias `behaviour`) declares the run leaf's
+  // positionals directly under a two-word path (swamp-club#3265).
+  const behavior = new Command()
+    .alias("behaviour")
+    .command(
+      "run",
+      new Command()
+        .arguments(
+          "<model_or_type:string> <method_name:string> [definition_name:string]",
+        )
+        .option("--input <value:string>", "input", { collect: true })
+        .option("--token <token:string>", "token")
+        .action(noop),
+    );
+
   return new Command()
     .name("swamp")
     .globalOption("--json", "json")
@@ -67,6 +82,7 @@ function buildTree() {
     .globalOption("-q, --quiet", "quiet")
     .globalOption("--no-color", "color")
     .command("model", model)
+    .command("behavior", behavior)
     .command("init", new Command().arguments("[path:string]").action(noop))
     .command(
       "data",
@@ -141,6 +157,48 @@ Deno.test("resolveTelemetryInvocation: keeps the historical args shape for metho
   ]);
   assertEquals(result.args, ["run", "acme-prod", "deploy"]);
   assertEquals(result.optionKeys, ["--input", "--last-evaluated"]);
+});
+
+Deno.test("resolveTelemetryInvocation: behavior run sends both names and redacts option values (swamp-club#3265)", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "behavior",
+    "run",
+    "acme-prod",
+    "deploy",
+    "--input",
+    "token=s3cr3t",
+  ]);
+  assertEquals(result.command, "behavior");
+  assertEquals(result.subcommand, "run");
+  assertEquals(result.commandPath, ["behavior", "run"]);
+  assertEquals(result.args, ["acme-prod", "deploy"]);
+  assertEquals(result.optionKeys, ["--input"]);
+});
+
+Deno.test("resolveTelemetryInvocation: direct-type behavior run sends the type, method and definition name", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "behavior",
+    "run",
+    "@swamp/echo",
+    "echo",
+    "my-def",
+    "--token",
+    "name.s3cr3t",
+  ]);
+  assertEquals(result.args, ["@swamp/echo", "echo", "my-def"]);
+  assertEquals(result.optionKeys, ["--token"]);
+});
+
+Deno.test("resolveTelemetryInvocation: the behaviour alias resolves to the canonical path and keeps the typed spelling", () => {
+  const result = resolveTelemetryInvocation(buildTree(), [
+    "behaviour",
+    "run",
+    "acme-prod",
+    "deploy",
+  ]);
+  assertEquals(result.command, "behaviour");
+  assertEquals(result.commandPath, ["behavior", "run"]);
+  assertEquals(result.args, ["acme-prod", "deploy"]);
 });
 
 Deno.test("resolveTelemetryInvocation: canonicalises aliases in commandPath only", () => {

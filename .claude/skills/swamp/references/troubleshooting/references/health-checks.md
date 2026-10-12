@@ -42,7 +42,8 @@ swamp doctor audit --tool kiro      # override
 swamp doctor audit --json           # machine-readable
 ```
 
-Supported tools: `claude | cursor | kiro | opencode | codex | copilot | none`.
+Supported tools:
+`amp | claude | cursor | kiro | opencode | codex | copilot | pi | antigravity | none`.
 
 ### Preflight checks
 
@@ -111,13 +112,15 @@ otherwise. Exit code mirrors `fail` only.
 If neither `--tool` nor `.swamp.yaml` declares a tool, the command exits with:
 
 ```
-No AI tool configured in .swamp.yaml and no --tool flag provided.
-Pass --tool <name> (claude | cursor | kiro | opencode | codex | copilot | none)
-or run `swamp init --tool <name>`.
+No AI tool enrolled in .swamp.yaml (`tools` is empty) and no --tool flag
+provided. Pass --tool <name> to audit a specific tool (amp | claude | cursor |
+kiro | opencode | codex | copilot | pi | antigravity), or enroll a tool with
+`swamp repo upgrade --tool <name>` and try again. Repos initialized with
+`--tool none` are not auditable until a tool is enrolled.
 ```
 
-This is expected first-run UX, not a bug. Either pass `--tool` or set the tool
-in `.swamp.yaml` via `swamp init --tool <name>`.
+This is expected first-run UX, not a bug. Either pass `--tool` or enroll a tool
+with `swamp repo upgrade --tool <name>`.
 
 ## `swamp doctor extensions`
 

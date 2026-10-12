@@ -21,7 +21,10 @@ import { dirname, join } from "@std/path";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
-import { DEFAULT_DATASTORE_SUBDIRS } from "../../domain/datastore/datastore_config.ts";
+import {
+  CATALOG_FILE_NAMES,
+  DEFAULT_DATASTORE_SUBDIRS,
+} from "../../domain/datastore/datastore_config.ts";
 import { namespaceCollidesWithLayout } from "../../domain/data/namespace.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 
@@ -95,11 +98,21 @@ export interface MergeDirResult {
   skippedPaths: string[];
 }
 
-export const INFRASTRUCTURE_FILES = new Set([
-  "_catalog.db",
-  "_catalog.db-journal",
-  "_catalog.db-wal",
-]);
+/** What a directory holds at its top level. */
+export interface DirContents {
+  /** Catalog database files, which are repo-local and never migrated. */
+  catalogFiles: number;
+  otherEntries: number;
+}
+
+/**
+ * The catalog and its SQLite sidecars. The catalog is repo-local at the
+ * un-namespaced `data` path whatever the namespace, so migration never
+ * moves, compares or counts these as data (swamp-club#3316).
+ */
+export const INFRASTRUCTURE_FILES: ReadonlySet<string> = new Set(
+  CATALOG_FILE_NAMES,
+);
 
 const MERGEABLE_ON_REVERSE = new Set([
   "bundles",
@@ -134,6 +147,7 @@ export interface NamespaceMigrateDeps {
   getDatastoreDirectories: () => readonly string[];
   dirExists: (path: string) => Promise<boolean>;
   dirHasDataFiles: (path: string) => Promise<boolean>;
+  dirContents: (path: string) => Promise<DirContents>;
   dirSize: (path: string) => Promise<DirSize>;
   renameDir: (source: string, destination: string) => Promise<void>;
   mergeDirInto: (
@@ -147,6 +161,12 @@ export interface NamespaceMigrateDeps {
   compareFiles: (a: string, b: string) => Promise<boolean>;
   removeFile: (path: string) => Promise<void>;
   ensureDir: (path: string) => Promise<void>;
+  /**
+   * Deletes stale catalog copies an earlier migration moved into a
+   * namespace `data` directory, and the directory if that empties it.
+   * Returns the number of files deleted. Must never touch the live catalog.
+   */
+  removeOrphanedCatalogFiles: (namespaceDataDir: string) => Promise<number>;
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;
   removeNamespaceManifest: (namespace: string) => Promise<void>;
@@ -209,7 +229,24 @@ export async function* datastoreNamespaceMigrate(
         }
       }
 
+      const removeOrphanedCatalog = async (): Promise<void> => {
+        try {
+          const removed = await deps.removeOrphanedCatalogFiles(
+            join(datastorePath, namespace, "data"),
+          );
+          if (removed > 0) {
+            ctx.logger
+              .info`Removed ${removed} stale catalog file(s) from the namespace data directory`;
+          }
+        } catch (err) {
+          ctx.logger.warn`Failed to remove stale catalog files: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        }
+      };
+
       const directories: SubdirPreview[] = [];
+      const sourcesHoldingCatalog = new Set<string>();
       const allCollisions: Array<{ subdir: string; paths: string[] }> = [];
       const identicalCollisions: Array<{
         subdir: string;
@@ -229,6 +266,15 @@ export async function* datastoreNamespaceMigrate(
         if (!(await deps.dirExists(source))) {
           ctx.logger.debug`Skipping ${subdir}: source does not exist`;
           continue;
+        }
+
+        const contents = await deps.dirContents(source);
+        if (contents.catalogFiles > 0) {
+          if (contents.otherEntries === 0) {
+            ctx.logger.debug`Skipping ${subdir}: source holds only the catalog`;
+            continue;
+          }
+          sourcesHoldingCatalog.add(subdir);
         }
 
         if (
@@ -304,6 +350,7 @@ export async function* datastoreNamespaceMigrate(
       }
 
       if (directories.length === 0) {
+        if (input.confirm) await removeOrphanedCatalog();
         yield {
           kind: "preview",
           data: {
@@ -385,7 +432,11 @@ export async function* datastoreNamespaceMigrate(
       for (const dir of directories) {
         try {
           await deps.ensureDir(dirname(dir.destination));
-          if (await deps.dirExists(dir.destination)) {
+          // A source holding the catalog is merged, never renamed whole, so
+          // the catalog stays where it is.
+          const leaveCatalog = sourcesHoldingCatalog.has(dir.subdir);
+          if (leaveCatalog) await deps.ensureDir(dir.destination);
+          if (leaveCatalog || await deps.dirExists(dir.destination)) {
             const result = await deps.mergeDirInto(
               dir.source,
               dir.destination,
@@ -434,6 +485,8 @@ export async function* datastoreNamespaceMigrate(
           return;
         }
       }
+
+      await removeOrphanedCatalog();
 
       deps.invalidateCatalog();
       ctx.logger.info("Catalog invalidated — will rebuild on next access");

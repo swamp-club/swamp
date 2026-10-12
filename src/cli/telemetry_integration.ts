@@ -149,6 +149,11 @@ export function getActiveTelemetryContext(): TelemetryContext | null {
 const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
   "model create": ["categorical", "redact"], // type, name
   "model method": ["categorical", "redact", "categorical"], // "run", name, method
+  // `swamp behavior run <model|@type> <method> [name]` (swamp-club#3265). This
+  // runs before the command tree exists, so the alias spelling cannot be
+  // canonicalised here and needs its own entry.
+  "behavior run": ["redact", "categorical", "redact"], // name or @type, method, name
+  "behaviour run": ["redact", "categorical", "redact"],
   "model output": ["categorical", "redact"], // sub-subcmd, id/query
   "vault create": ["categorical", "redact"], // type, name
   "type describe": ["categorical"], // type
@@ -322,6 +327,13 @@ function isKnownFlag(option: string): boolean {
     "--prune",
     "--streaming",
     "--last-evaluated",
+    // Boolean flags of a method run: without these, `--skip-checks create
+    // my-def` would shift the definition name into the categorical method
+    // slot and record it (swamp-club#3265).
+    "--skip-checks",
+    "--skip-reports",
+    "--stdin",
+    "--literal-inputs",
   ]);
   return flags.has(option);
 }

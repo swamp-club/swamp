@@ -86,6 +86,7 @@ export {
 export { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 import { promptConfirmation } from "../prompt_helpers.ts";
+import { overwritePrompt } from "../../presentation/renderers/extension_pull_prompts.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -134,6 +135,15 @@ export interface PullContext {
    */
   denoRuntime?: DenoRuntime;
   repository?: ExtensionRepository;
+  /** See {@link ExtensionPullDeps.getVersionChannels}. */
+  getVersionChannels?: ExtensionPullDeps["getVersionChannels"];
+  /**
+   * Asks the overwrite question. Defaults to {@link promptConfirmation};
+   * tests pass an answer.
+   */
+  confirm?: (question: string, details: string[]) => Promise<boolean>;
+  /** Test seam; see {@link ExtensionPullDeps.installExtensionFn}. */
+  installExtensionFn?: ExtensionPullDeps["installExtensionFn"];
 }
 
 /**
@@ -157,8 +167,25 @@ export async function pullExtension(
     depth: ctx.depth,
     denoRuntime: ctx.denoRuntime,
     repository: ctx.repository,
+    getVersionChannels: ctx.getVersionChannels,
+    installExtensionFn: ctx.installExtensionFn,
   };
   const renderer = createExtensionPullRenderer(outputMode);
+  // The forced retry after a conflict reaches the same extensions again;
+  // each summary and warning is stated once.
+  const replacementsShown = new Set<string>();
+  const noticesShown = new Set<string>();
+  deps.onReplacing = (r) => {
+    if (replacementsShown.has(r.name)) return;
+    replacementsShown.add(r.name);
+    renderer.renderReplacement(r);
+  };
+  deps.onUnoptedPrerelease = (n) => {
+    const key = `${n.name}@${n.version}`;
+    if (noticesShown.has(key)) return;
+    noticesShown.add(key);
+    renderer.renderUnoptedPrerelease(n);
+  };
 
   try {
     await consumeStream(
@@ -171,16 +198,24 @@ export async function pullExtension(
     );
   } catch (error) {
     if (error instanceof ConflictError) {
-      renderer.renderConflicts(error.conflicts, error.skillDirs);
+      if (error.replacement) replacementsShown.add(error.replacement.name);
+      renderer.renderConflicts(
+        error.conflicts,
+        error.skillDirs,
+        error.replacement,
+      );
       if (outputMode === "json") {
         throw new UserError(
           "Files already exist. Use --force to overwrite.",
         );
       }
-      const confirmed = await promptConfirmation(
-        error.skillDirs.length > 0
-          ? "Write into the existing paths, overwriting same-named files?"
-          : "Overwrite existing files?",
+      const prompt = overwritePrompt(
+        error.replacement,
+        error.skillDirs.length > 0,
+      );
+      const confirmed = await (ctx.confirm ?? promptConfirmation)(
+        prompt.question,
+        prompt.details,
       );
       if (!confirmed) {
         renderExtensionPullCancelled(outputMode);
@@ -348,6 +383,7 @@ export const extensionPullCommand = withRemoteOptions(
           channel,
           denoRuntime,
           repository,
+          getVersionChannels: deps.getVersionChannels,
         }),
     );
   } finally {

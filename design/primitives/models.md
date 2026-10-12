@@ -235,6 +235,12 @@ hand, which never passes through `save()` at all. `model edit` checks after a
 blocking editor exits and after a stdin write. A non-blocking editor returns
 before the person has typed anything, so there is nothing to check yet.
 
+A stdin write does not rename. The piped body carries a `name`, and a body
+written for one model is easily piped at another, so `model edit` refuses a
+stdin update whose `name` differs from the stored one unless `--allow-rename`
+is passed, and refuses a name another model holds even then.
+`workflow edit` applies the same rule.
+
 There is no pre-CalVer compatibility path. `typeVersion` was a number for three
 days in February 2026, between `#203` and `#230`, and the persistence restamp
 removed in swamp-club#900 stamped any such definition to current CalVer on its
@@ -267,9 +273,17 @@ one-shot CLI calls, and workflow steps where all values are dynamic.
 **CLI syntax:**
 
 ```sh
-swamp model @swamp/aws/ec2/vpc method run create my-vpc \
+swamp behavior run @swamp/aws/ec2/vpc create my-vpc \
   --input region=us-east-1 --input cidr=10.0.0.0/16
 ```
+
+`swamp behavior run` (alias `behaviour`) is the preferred spelling of a method
+invocation; `swamp model @swamp/aws/ec2/vpc method run create my-vpc` is the
+equivalent legacy form and stays supported. _Behavior_ is an agent-facing name
+for running a model method, not a primitive: both spellings are built by one
+command factory and share one application path, so the serve protocol, the
+audit action `model.method.run` and every persisted contract keep the model
+vocabulary (swamp-club#3265).
 
 **First run:** `my-vpc` does not exist yet. Swamp creates it with type
 `@swamp/aws/ec2/vpc` and runs `create`. The type's schemas route the `--input`
@@ -291,7 +305,7 @@ way parameterized workflows that vary inputs per run always use current values.
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/`, not
 `models/`. They give model data an ownership boundary without a hand-written
 definition file. They are local runtime state, are not tracked in git, and do
-not appear in `swamp model search` results. `model get`, `model method run`
+not appear in `swamp model search` results. `model get`, `behavior run`
 and workflow references can find them by name. `model get` shows
 `Auto-created: yes` for them. Saving an existing auto-definition, whether a lazy
 `typeVersion` upgrade or `model edit`, writes it back to
@@ -584,7 +598,8 @@ appliesTo: ["create"],
 
 ### Skip Options
 
-Users can bypass checks at runtime with these `model method run` flags:
+Users can bypass checks at runtime with these run flags (`swamp behavior run`
+and `swamp model method run` take the same set):
 
 | Flag                         | Behavior                                   |
 | ---------------------------- | ------------------------------------------ |

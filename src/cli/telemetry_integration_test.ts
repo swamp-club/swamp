@@ -216,6 +216,77 @@ Deno.test("extractCommandInfo records categorical args for model method", () => 
   assertEquals(info.args, ["run", "<REDACTED>", "train"]);
 });
 
+Deno.test("extractCommandInfo records categorical args for behavior run (swamp-club#3265)", () => {
+  const info = extractCommandInfo(["behavior", "run", "my-model", "train"]);
+
+  assertEquals(info.command, "behavior");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.args, ["<REDACTED>", "train"]);
+});
+
+Deno.test("extractCommandInfo classifies the behaviour alias spelling the same way", () => {
+  const info = extractCommandInfo(["behaviour", "run", "my-model", "train"]);
+
+  assertEquals(info.command, "behaviour");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.args, ["<REDACTED>", "train"]);
+});
+
+Deno.test("extractCommandInfo redacts the type and definition name of a direct-type behavior run", () => {
+  const info = extractCommandInfo([
+    "behavior",
+    "run",
+    "@swamp/echo",
+    "echo",
+    "my-def",
+    "--input",
+    "k=v",
+  ]);
+
+  assertEquals(info.args, ["<REDACTED>", "echo", "<REDACTED>"]);
+  assertEquals(info.optionKeys, ["--input"]);
+});
+
+Deno.test("extractCommandInfo: a boolean run flag before the method does not shift the definition name into the categorical slot", () => {
+  for (const command of ["behavior", "behaviour"]) {
+    const info = extractCommandInfo([
+      command,
+      "run",
+      "@acme/t",
+      "--skip-checks",
+      "create",
+      "my-secret-def",
+    ]);
+    assertEquals(info.args, ["<REDACTED>", "create", "<REDACTED>"]);
+  }
+  const legacy = extractCommandInfo([
+    "model",
+    "method",
+    "run",
+    "my-secret-model",
+    "--skip-reports",
+    "create",
+  ]);
+  assertEquals(legacy.args, ["run", "<REDACTED>", "create"]);
+  const stdin = extractCommandInfo([
+    "behavior",
+    "run",
+    "my-model",
+    "--stdin",
+    "deploy",
+  ]);
+  assertEquals(stdin.args, ["<REDACTED>", "deploy"]);
+  const literal = extractCommandInfo([
+    "behavior",
+    "run",
+    "@acme/t",
+    "--literal-inputs",
+    "create",
+    "my-secret-def",
+  ]);
+  assertEquals(literal.args, ["<REDACTED>", "create", "<REDACTED>"]);
+});
+
 Deno.test("extractCommandInfo redacts all args for commands without schema", () => {
   const info = extractCommandInfo(["model", "get", "my-model"]);
 

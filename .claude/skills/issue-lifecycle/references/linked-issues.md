@@ -38,7 +38,7 @@ If `results` has an entry whose `phase` is anything other than `done`, ask the
 human which lifecycle should carry the work. Do not link it.
 
 ```
-swamp model @swamp/issue-lifecycle method run link_issue issue-<N> \
+swamp behavior run @swamp/issue-lifecycle link_issue issue-<N> \
   --input issueNumber=<M> \
   --input relationship=related_to \
   --input reason="<why the same work fixes it>"
@@ -87,7 +87,7 @@ ripple only warns.
 exactly once:
 
 ```
-swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
+swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
   --input originalProblem="<problem>" \
   --input deliveredOutcome="<outcome>" \
   --input outcomeMet=true \
@@ -99,7 +99,7 @@ Set `outcomeMet=false` for an issue the work only partly fixed.
 ## Unlinking
 
 ```
-swamp model @swamp/issue-lifecycle method run unlink_issue issue-<N> \
+swamp behavior run @swamp/issue-lifecycle unlink_issue issue-<N> \
   --input issueNumber=<M> --input reason="<why>"
 ```
 
@@ -112,8 +112,8 @@ the human if M should be closed or re-triaged by hand.
 When N has already shipped, M gets a lifecycle of its own:
 
 ```
-swamp model @swamp/issue-lifecycle method run start issue-<M> --input issueNumber=<M>
-swamp model @swamp/issue-lifecycle method run mark_duplicate issue-<M> \
+swamp behavior run @swamp/issue-lifecycle start issue-<M> --input issueNumber=<M>
+swamp behavior run @swamp/issue-lifecycle mark_duplicate issue-<M> \
   --input of=<N> --input reason="<why it is the same problem>"
 ```
 

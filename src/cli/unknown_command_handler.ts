@@ -51,6 +51,7 @@ export function getSubcommandNames(cmd: Command): string[] {
 export function buildUnknownCommandMessage(
   unknownName: string,
   cmd: Command,
+  rawArgs: string[] = [],
 ): string {
   const subcommands = getSubcommandNames(cmd);
   const commandPath = cmd.getPath();
@@ -63,7 +64,7 @@ export function buildUnknownCommandMessage(
   }
 
   // Not a typo — build context-aware suggestions based on the command context
-  const suggestions = buildContextSuggestions(unknownName, cmd);
+  const suggestions = buildContextSuggestions(unknownName, cmd, rawArgs);
 
   if (suggestions.length > 0) {
     const lines = [
@@ -89,27 +90,67 @@ export function buildUnknownCommandMessage(
 function buildContextSuggestions(
   unknownName: string,
   cmd: Command,
+  rawArgs: string[] = [],
 ): string[] {
   const suggestions: string[] = [];
   const parentName = cmd.getName();
 
-  // Collect remaining args from the command path onward
-  // (we don't have access to original args here, so use the unknown name itself)
+  // A legacy word under the new group, or the new word under the old one:
+  // `swamp behavior method run p1 ping`, `swamp model run p1 ping`. The
+  // positionals that follow are the model and method the user meant
+  // (swamp-club#3265).
+  if (
+    (parentName === "behavior" && unknownName === "method") ||
+    (parentName === "model" && unknownName === "run")
+  ) {
+    const trailing = extractPositionalArgs(
+      rawArgs,
+      `${cmd.getPath()} ${unknownName}`,
+      [...pathSpellings(cmd), new Set([unknownName])],
+    );
+    const rest = trailing[0] === "run" ? trailing.slice(1) : trailing;
+    suggestions.push(runSuggestionFor(rest[0] ?? "<model>", rest.slice(1)));
+    return suggestions;
+  }
+
+  // `swamp behavior my-server deploy` — `run` left out. The positionals after
+  // the unknown word are the method (and, for an `@type`, the name) the user
+  // meant.
+  const trailing = extractPositionalArgs(
+    rawArgs,
+    `${cmd.getPath()} ${unknownName}`,
+    [...pathSpellings(cmd), new Set([unknownName])],
+  );
+  // `swamp model my-model method run create`, or `swamp model @type method
+  // ping name` with `run` left out, which `rewriteDirectTypeArgs` does not
+  // rewrite — the legacy model-first order. `method` (and a `run` after it)
+  // is the command word, not the method the user meant.
+  const legacyModelFirst = parentName === "model" && trailing[0] === "method";
+  // `swamp behavior my-server run deploy` — `run` after the model instead of
+  // before it. Here too `run` is the command word, not the method.
+  const misorderedRun = parentName === "behavior" && trailing[0] === "run";
+  let afterCommandWords = trailing;
+  if (legacyModelFirst) {
+    afterCommandWords = trailing.slice(trailing[1] === "run" ? 2 : 1);
+  } else if (misorderedRun) {
+    afterCommandWords = trailing.slice(1);
+  }
+  const runSuggestion = runSuggestionFor(unknownName, afterCommandWords);
 
   if (parentName === "model") {
-    suggestions.push(
-      `swamp model get ${unknownName}`,
-    );
-    suggestions.push(
-      `swamp model method run ${unknownName} <method>`,
-    );
-    suggestions.push(
-      `swamp model validate ${unknownName}`,
-    );
-  } else if (parentName === "method") {
-    suggestions.push(
-      `swamp model method run ${unknownName} <method>`,
-    );
+    if (!unknownName.startsWith("@")) {
+      suggestions.push(
+        `swamp model get ${unknownName}`,
+      );
+    }
+    suggestions.push(runSuggestion);
+    if (!unknownName.startsWith("@")) {
+      suggestions.push(
+        `swamp model validate ${unknownName}`,
+      );
+    }
+  } else if (parentName === "method" || parentName === "behavior") {
+    suggestions.push(runSuggestion);
   } else if (parentName === "workflow") {
     suggestions.push(
       `swamp workflow get ${unknownName}`,
@@ -184,6 +225,17 @@ function buildContextSuggestions(
 }
 
 /**
+ * `swamp behavior run <model> <method>`, filled from what the user typed
+ * after the model. An `@type` can only be run directly, and that form also
+ * needs a definition name (swamp-club#3265).
+ */
+function runSuggestionFor(model: string, rest: string[]): string {
+  const method = rest[0] ?? "<method>";
+  if (!model.startsWith("@")) return `swamp behavior run ${model} ${method}`;
+  return `swamp behavior run ${model} ${method} ${rest[1] ?? "<name>"}`;
+}
+
+/**
  * Extracts positional arguments from the raw CLI args for a given command path.
  *
  * Walks past the command-path segments, then collects non-flag tokens
@@ -194,17 +246,21 @@ function buildContextSuggestions(
 export function extractPositionalArgs(
   rawArgs: string[],
   commandPath: string,
+  spellings: ReadonlyArray<ReadonlySet<string>> = [],
 ): string[] {
   const pathSegments = commandPath.split(" ");
   let i = 0;
-  for (const segment of pathSegments) {
+  for (const [index, segment] of pathSegments.entries()) {
     while (i < rawArgs.length && rawArgs[i].startsWith("-")) {
       i++;
       if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
         i++;
       }
     }
-    if (i < rawArgs.length && rawArgs[i] === segment) {
+    if (
+      i < rawArgs.length &&
+      (rawArgs[i] === segment || spellings[index]?.has(rawArgs[i]))
+    ) {
       i++;
     }
   }
@@ -228,6 +284,24 @@ export function extractPositionalArgs(
 }
 
 /**
+ * The spellings each segment of `cmd`'s path may have been typed as — the
+ * command's name and its aliases, root first. `cmd.getPath()` is the
+ * canonical spelling, so without these an alias (`behaviour` for `behavior`)
+ * would be taken for a positional (swamp-club#3265).
+ */
+function pathSpellings(cmd: Command): ReadonlySet<string>[] {
+  const chain: Command[] = [];
+  for (
+    let current: Command | undefined = cmd;
+    current;
+    current = current.getParent()
+  ) {
+    chain.unshift(current);
+  }
+  return chain.map((c) => new Set([c.getName(), ...c.getAliases()]));
+}
+
+/**
  * Builds a helpful error message when a command receives too many positional
  * arguments — typically because the user passed an unquoted multi-word value.
  */
@@ -236,7 +310,11 @@ export function buildTooManyArgumentsMessage(
   rawArgs: string[],
 ): string {
   const commandPath = cmd.getPath();
-  const positional = extractPositionalArgs(rawArgs, commandPath);
+  const positional = extractPositionalArgs(
+    rawArgs,
+    commandPath,
+    pathSpellings(cmd),
+  );
   const quoted = positional.join(" ");
 
   if (positional.length >= 2) {
@@ -250,7 +328,60 @@ export function buildTooManyArgumentsMessage(
 }
 
 /**
- * Cliffy error handler that intercepts "Unknown command" and "Too many
+ * When a group command is handed a positional that is not one of its
+ * subcommands together with an option it does not declare — `swamp behavior
+ * @acme/t run ping name --input k=v`, `swamp model p1 --input k=v` — Cliffy
+ * reports the option before the command, so the user sees `Unknown option
+ * "--input"` instead of the unknown-command suggestions. This finds that
+ * positional so the handler can report it as the unknown command it is.
+ *
+ * Returns undefined, leaving Cliffy's message to stand, when the option
+ * really is the problem: `cmd` has no subcommands; it declares positionals of
+ * its own (`model output <id>`, `workflow history <name>`), so the positional
+ * is legitimate; no positional was typed, or it is one of the subcommands; or
+ * the option came before the positional (`behavior --skip-checks run …`),
+ * where a flag read as taking a value would have swallowed the subcommand.
+ */
+export function unknownSubcommandBehindOption(
+  cmd: Command,
+  rawArgs: string[],
+  errorMessage: string,
+): string | undefined {
+  if (cmd.getCommands(true).length === 0) return undefined;
+  if (cmd.getArguments().length > 0) return undefined;
+  const [first] = extractPositionalArgs(
+    rawArgs,
+    cmd.getPath(),
+    pathSpellings(cmd),
+  );
+  if (first === undefined || cmd.getCommand(first, true)) return undefined;
+  const option = errorMessage.match(/^Unknown option "([^"]+)"/)?.[1];
+  const optionIndex = option === undefined
+    ? -1
+    : rawArgs.findIndex((arg) =>
+      arg === option || arg.startsWith(`${option}=`)
+    );
+  if (optionIndex !== -1 && optionIndex < rawArgs.indexOf(first)) {
+    return undefined;
+  }
+  return first;
+}
+
+function exitWithMessage(message: string): never {
+  if (getOutputModeFromArgs(Deno.args) === "json") {
+    const jsonError = buildErrorJson(new Error(message));
+    Object.assign(jsonError, takeAuthGateWarning());
+    // deno-lint-ignore no-console
+    console.error(JSON.stringify(jsonError, null, 2));
+    Deno.exit(2);
+  }
+  console.error(red(`error: ${message}`));
+  Deno.exit(2);
+}
+
+/**
+ * Cliffy error handler that intercepts "Unknown command", "Unknown option"
+ * on a group that was really given an unknown command, and "Too many
  * arguments" errors and provides context-aware suggestions.
  *
  * Cliffy's `getErrorHandler()` only checks the current command and its
@@ -262,30 +393,27 @@ export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
     if (error.message.startsWith("Unknown command")) {
       const unknownName = extractUnknownName(error.message);
       if (unknownName) {
-        const message = buildUnknownCommandMessage(unknownName, cmd);
-        if (getOutputModeFromArgs(Deno.args) === "json") {
-          const jsonError = buildErrorJson(new Error(message));
-          Object.assign(jsonError, takeAuthGateWarning());
-          // deno-lint-ignore no-console
-          console.error(JSON.stringify(jsonError, null, 2));
-          Deno.exit(2);
-        }
-        console.error(red(`error: ${message}`));
-        Deno.exit(2);
+        exitWithMessage(
+          buildUnknownCommandMessage(unknownName, cmd, Deno.args),
+        );
+      }
+    }
+
+    if (error.message.startsWith("Unknown option")) {
+      const unknownName = unknownSubcommandBehindOption(
+        cmd,
+        Deno.args,
+        error.message,
+      );
+      if (unknownName) {
+        exitWithMessage(
+          buildUnknownCommandMessage(unknownName, cmd, Deno.args),
+        );
       }
     }
 
     if (error.message.startsWith("Too many arguments")) {
-      const message = buildTooManyArgumentsMessage(cmd, Deno.args);
-      if (getOutputModeFromArgs(Deno.args) === "json") {
-        const jsonError = buildErrorJson(new Error(message));
-        Object.assign(jsonError, takeAuthGateWarning());
-        // deno-lint-ignore no-console
-        console.error(JSON.stringify(jsonError, null, 2));
-        Deno.exit(2);
-      }
-      console.error(red(`error: ${message}`));
-      Deno.exit(2);
+      exitWithMessage(buildTooManyArgumentsMessage(cmd, Deno.args));
     }
   }
   throw error;

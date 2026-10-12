@@ -1149,8 +1149,18 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
    - a claim holds the key and reads this slot: the pending signal is taken
      for that wait (below), and the answer is the one a delivered signal gets.
      If the wait is not registered yet its captured schema cannot be read, so
-     nothing is taken and the answer is pending: the step registers before it
-     reads the slot, and so has not read it yet;
+     nothing is taken: the step registers before it reads the slot, and so
+     has not read it yet. The claim keeps the wait's `early` and deadline, so
+     the signaller applies the part of the taking rule they decide
+     (`isReceivedForWait`, which `pendingOutcome` calls too). A signal
+     received inside that window is answered pending. One received before it
+     is refused `no_open_wait` and told to send again once the wait is open:
+     every reader of that wait refuses the stored record the same way, so
+     nothing takes it afterwards, and the record stays in a slot no later
+     claim reads (swamp-club#3307). The workflow name the run recorded and
+     the schema it captured are not on the claim. A signal the wait will
+     refuse for either one is still answered pending here, and the wait runs
+     to its deadline unless it is signalled again;
    - a claim holds the key and reads another slot, which takes a claim made
      and settled some other way than by this signal, and a second claim
      made: the signal is delivered to that open wait as a signal by key is
@@ -1158,7 +1168,8 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      with that slot;
    - the key's highest generation has reached the slot, and a claim that
      reads the slot was settled by this very signal: a step took it on
-     opening its wait and its run went on. This is looked for among every
+     opening its wait and its run went on, or another reader gave it to a
+     wait that was open already. This is looked for among every
      claim of the key and not only the highest (`findTakerOf`), because the
      key may have been claimed again since: a signal a wait took is never
      delivered to another wait or stored a second time. The key's holder is
@@ -1167,8 +1178,10 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      slot written already, so a step cannot take the signal between the two
      reads and be missed by both. The answer
      is the one a delivered signal gets, built from the claim, since the run
-     may have ended and its registration with it. The result says `taken`,
-     and the command suggests no resume;
+     may have ended and its registration with it. The result says `taken`.
+     Its `awaitingResume` is read from the run as for any delivered signal:
+     false for a step that took the signal and went on, true for a wait
+     whose run is suspended still, and the command then prints the resume;
    - the key is free and its highest generation has reached the slot some
      other way: the arrival runs again from 2 at the new slot, with the same
      receipt ID and received time, at most eight times
@@ -1294,16 +1307,34 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
 - A slot the key has passed, with no claim left that reads it, is removed
   whole. A build from before pending signals leaves such slots when it
   collects a run. A slot whose claim still exists is left for that claim's
-  removal. The claims are listed once, before the slots are looked at, so a
-  claim made after the listing is checked for at each slot: when the key's
-  highest record is a claim that reads the slot, the slot is left, because
-  its step may be about to take the signal.
+  removal. The claims that read a slot are two records of its own key at most
+  (`claimsReadingSlot`): the claim of the slot's generation, with or without
+  `acceptEarly`, and the claim one generation up when it was created over a
+  release. Generations only grow and a claim reads no further than one below
+  its own, so a claim made after the key's highest record was read cannot
+  read a slot the key had passed by then. A slot is left as it is when either
+  record cannot be read: a damaged claim keeps its slot's pending records
+  until the workflow is deleted.
+
+_What a sweep reads._ One listing of `wait-pending/`, then for each slot that
+holds a record: the highest record of the slot's key, and either the slot's
+highest pending record (a live slot) or the one or two key records that could
+read it (a slot the key has passed). It never lists the key records of other
+workflows (swamp-club#3308), so its cost follows the number of slots holding a
+pending record, not the number of keyed workflows. A lapse stays until its
+slot is claimed, so a key that lapsed once and is not waited on again is read
+on every sweep from then on.
 
 This part of the sweep reads key records and never a run record, so unlike
-the rest it runs on every datastore. `swamp serve` runs it with each
-continuation pass (`sweepHeldSignals`), since a signal by key is held through
-serve and nothing else there sweeps wait records; where the continuation sweep
-does not start, it is left to `workflow waits` and the run garbage collection.
+the rest it runs on every datastore. `swamp serve` runs it from the
+continuation sweep (`heldSignalSweeper`), since a signal by key is held through
+serve and nothing else there sweeps wait records: with the boot pass, and then
+with the first pass after ten minutes have gone by since it last ran
+(`HELD_SIGNAL_SWEEP_INTERVAL_MS`), not with every pass. Nothing waits on it
+being prompt: a signal lapses a day after its age limit, and a signaller
+removes the signal it stores over. The time of the last sweep is kept in the
+process, so each instance keeps its own. Where the continuation sweep does not
+start, it is left to `workflow waits` and the run garbage collection.
 Nothing is audited: it reports a count (`WaitRecordSweep.pendingSignals`).
 
 _Idempotency keys._ A sender may name a signal with an idempotency key

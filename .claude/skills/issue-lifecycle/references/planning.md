@@ -38,7 +38,7 @@ Then run the method. The `--input` flags handle scalar values, and
 `--input-file` handles the structured data:
 
 ```
-swamp model @swamp/issue-lifecycle method run plan issue-<N> \
+swamp behavior run @swamp/issue-lifecycle plan issue-<N> \
   --input summary="..." \
   --input dddAnalysis="..." \
   --input testingStrategy="..." \

@@ -67,9 +67,17 @@ export const workflowEditCommand = withRemoteOptions(
       "cat deploy.yaml | swamp workflow edit deploy",
     )
     .arguments("[workflow_id_or_name:workflow_name]")
+    .example(
+      "Rename from stdin",
+      "cat renamed.yaml | swamp workflow edit deploy --allow-rename",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--allow-rename",
+      "Allow a stdin update to change the workflow's name; refused otherwise",
     ),
 ).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -95,7 +103,11 @@ export const workflowEditCommand = withRemoteOptions(
         { server, token },
         {
           type: "workflow.edit",
-          payload: { workflowIdOrName, content },
+          payload: {
+            workflowIdOrName,
+            content,
+            allowRename: options.allowRename === true,
+          },
         },
       );
       const renderer = createWorkflowEditRenderer(cliCtx.outputMode);
@@ -163,6 +175,7 @@ export const workflowEditCommand = withRemoteOptions(
           workflowEdit(libCtx, deps, {
             workflowIdOrName,
             stdinContent,
+            allowRename: options.allowRename === true,
           }),
           renderer.handlers(),
         ),

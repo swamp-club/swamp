@@ -49,8 +49,8 @@ If any mismatch is found, fix the model source **before** proceeding to Phase 1.
 - Connection errors or 500s = **stop**, API config is broken
 
 ```bash
-swamp model method run <name> list
-swamp model method run <name> list --arg resource_type=<type>
+swamp behavior run <name> list
+swamp behavior run <name> list --arg resource_type=<type>
 ```
 
 ### Phase 2: Read methods
@@ -59,7 +59,7 @@ swamp model method run <name> list --arg resource_type=<type>
 - Verify response matches declared schema
 
 ```bash
-swamp model method run <name> get --arg id=<id-from-list>
+swamp behavior run <name> get --arg id=<id-from-list>
 ```
 
 ### Phase 3: Create lifecycle
@@ -73,7 +73,7 @@ For each resource type supporting create:
 4. **Track every created resource for cleanup**
 
 ```bash
-swamp model method run <name> create \
+swamp behavior run <name> create \
   --arg name=smoke-test-widget-1711100000 \
   --arg <other-required-fields>
 ```
@@ -84,7 +84,7 @@ swamp model method run <name> create \
 - Make a small change to verify the update path works
 
 ```bash
-swamp model method run <name> update \
+swamp behavior run <name> update \
   --arg id=<created-id> \
   --arg description="smoke test update"
 ```
@@ -97,9 +97,9 @@ swamp model method run <name> update \
 - Verify deletion via read returning 404/not-found
 
 ```bash
-swamp model method run <name> delete --arg id=<created-id>
+swamp behavior run <name> delete --arg id=<created-id>
 # Verify deletion
-swamp model method run <name> get --arg id=<created-id>
+swamp behavior run <name> get --arg id=<created-id>
 ```
 
 ### Phase 6: Report
@@ -206,8 +206,8 @@ or invalid fields. Update the model's create/update method to include them.
 delete:
 
 ```bash
-swamp model method run <name> update --arg id=<id> --arg delete_protected=false
-swamp model method run <name> delete --arg id=<id>
+swamp behavior run <name> update --arg id=<id> --arg delete_protected=false
+swamp behavior run <name> delete --arg id=<id>
 ```
 
 ### Read-only resource guards (HTTP 405)

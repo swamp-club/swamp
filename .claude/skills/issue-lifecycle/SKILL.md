@@ -41,6 +41,9 @@ If `which swamp` fails (binary not found), **stop immediately** and tell the
 human: "The `swamp` binary is not installed or not on your PATH. Install it
 before continuing." Do not fall back to `deno run dev`.
 
+The commands below use `swamp behavior run`, which needs a current binary. If it
+reports an unknown command, run `swamp update` first.
+
 **Never auto-approve.** Always stop and show the plan to the human. Always ask
 for feedback. Only call `approve` when the human explicitly says to proceed.
 
@@ -94,13 +97,13 @@ attestation to flow through.
 3. **Start the lifecycle:**
 
    ```
-   swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
+   swamp behavior run @swamp/issue-lifecycle start issue-<N> --input issueNumber=<N>
    ```
 
 4. **Fast-forward to implementing:**
 
    ```
-   swamp model @swamp/issue-lifecycle method run fast_forward issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle fast_forward issue-<N> \
      --input summary="<summary>" \
      --input steps='<JSON array of plan steps>' \
      --input testingStrategy="<testing approach>"
@@ -115,7 +118,7 @@ attestation to flow through.
    this transition is required, not optional:
 
    ```
-   swamp model @swamp/issue-lifecycle method run verify issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle verify issue-<N> \
      --input commit=$(git rev-parse HEAD) \
      --input branch=$(git branch --show-current)
    ```
@@ -140,12 +143,12 @@ Agent:
 1. git log main..HEAD → "Add retry logic to HTTP client"
 2. swamp issue feature --title "Add retry logic to HTTP client" --body "..." --json
    → {"number": 247, ...}
-3. swamp model @swamp/issue-lifecycle method run start issue-247 --input issueNumber=247
-4. swamp model @swamp/issue-lifecycle method run fast_forward issue-247 \
+3. swamp behavior run @swamp/issue-lifecycle start issue-247 --input issueNumber=247
+4. swamp behavior run @swamp/issue-lifecycle fast_forward issue-247 \
      --input summary="Add exponential backoff retry to HTTP client" \
      --input steps='[{"order":1,"description":"Add retry wrapper","files":["src/http/client.ts"]}]' \
      --input testingStrategy="Unit tests for retry logic added in client_test.ts"
-5. swamp model @swamp/issue-lifecycle method run verify issue-247 \
+5. swamp behavior run @swamp/issue-lifecycle verify issue-247 \
      --input commit=$(git rev-parse HEAD) --input branch=$(git branch --show-current)
 6. Proceed to verification (references/verification.md, from step 2)...
 ```
@@ -203,7 +206,7 @@ swamp data query 'modelName == "issue-<N>" && name == "state-main"' --select con
 - If `results` is **empty** (model or data not found), the issue is new — run:
 
 ```
-swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
+swamp behavior run @swamp/issue-lifecycle start issue-<N> --input issueNumber=<N>
 ```
 
 This fetches the issue from swamp-club and writes context automatically — do NOT
@@ -251,7 +254,7 @@ with a ripple. Never check membership with GitHub — swamp-club handles are not
 GitHub logins.
 
 ```
-swamp model @swamp/issue-lifecycle method run notify issue-<N>
+swamp behavior run @swamp/issue-lifecycle notify issue-<N>
 ```
 
 If the lookup fails, `notify` posts nothing and stays in `notify`. Ask the
@@ -270,7 +273,7 @@ the issue. All three inputs are required — `summarize` fails validation withou
 them:
 
 ```
-swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
+swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
   --input originalProblem="<problem>" \
   --input deliveredOutcome="<outcome>" \
   --input outcomeMet=true
@@ -310,7 +313,7 @@ but do NOT map to separate swamp-club types:
 To review a specific plan version:
 
 ```
-swamp model @swamp/issue-lifecycle method run review issue-<N> --input version=<V>
+swamp behavior run @swamp/issue-lifecycle review issue-<N> --input version=<V>
 ```
 
 To see all model data:
@@ -361,20 +364,20 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    The phase is `results[0].phase`.
 2. If the phase is `implementing`, link the PR first:
    ```
-   swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
+   swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
    ```
 3. If the phase is `pr_open`, record the merge:
    ```
-   swamp model @swamp/issue-lifecycle method run pr_merged issue-<N>
+   swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
    ```
 4. If the phase is `releasing`, ship it:
    ```
-   swamp model @swamp/issue-lifecycle method run ship issue-<N>
+   swamp behavior run @swamp/issue-lifecycle ship issue-<N>
    ```
 5. If the phase is `notify`, run `notify` (see Phase 5).
 6. If the phase is `summarizing`, record the summary:
    ```
-   swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
      --input originalProblem="<problem>" --input deliveredOutcome="<outcome>" --input outcomeMet=true
    ```
 7. For quick close-out, `complete` still works from `implementing`, `pr_open`,

@@ -1133,6 +1133,7 @@ Deno.test("handleWorkflowEdit: an allowed rename saves the edited workflow", asy
       {
         workflowIdOrName: "old-name",
         content: workflowYaml(workflow, { name: "new-name" }),
+        allowRename: true,
       },
       new AbortController(),
       WORKFLOW_EDITOR,
@@ -1475,4 +1476,58 @@ Deno.test("handleWorkflowCancel: a run id that is not a UUID gets the not-found 
       });
     }
   }
+});
+
+Deno.test("handleWorkflowEdit: a rename without allowRename is refused and writes nothing", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const workflow = await saveEditWorkflow(repo, "keep-wf");
+    const ctx = workflowEditCtx(dir, repo, [workflowGrant({})]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-rename-unasked",
+      {
+        workflowIdOrName: "keep-wf",
+        content: workflowYaml(workflow, { name: "keep-wf-template" }),
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals((await repo.findByName("keep-wf"))?.id, workflow.id);
+    assertEquals(await repo.findByName("keep-wf-template"), null);
+  });
+});
+
+Deno.test("handleWorkflowEdit: an allowed rename onto another workflow's name leaves both intact", async () => {
+  await withWorkflowRepo(async (dir, repo) => {
+    const mover = await saveEditWorkflow(repo, "mover-wf");
+    const holder = await saveEditWorkflow(repo, "holder-wf");
+    const ctx = workflowEditCtx(dir, repo, [workflowGrant({})]);
+    const socket = editSocket();
+
+    await handleWorkflowEdit(
+      socket,
+      ctx,
+      "req-rename-taken",
+      {
+        workflowIdOrName: "mover-wf",
+        content: workflowYaml(mover, { name: "holder-wf" }),
+        allowRename: true,
+      },
+      new AbortController(),
+      WORKFLOW_EDITOR,
+    );
+
+    const sent = sentFrames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertEquals((await repo.findByName("mover-wf"))?.id, mover.id);
+    assertEquals((await repo.findByName("holder-wf"))?.id, holder.id);
+  });
 });

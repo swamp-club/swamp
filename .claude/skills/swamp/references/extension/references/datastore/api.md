@@ -46,7 +46,7 @@ explicit to readers.
 ### `createLock(datastorePath, options?)`
 
 Returns a `DistributedLock` for serializing write access. Called by every write
-command (`model create`, `model method run`, `workflow run`, `data gc`, etc.).
+command (`model create`, `behavior run`, `workflow run`, `data gc`, etc.).
 
 - `datastorePath` — the resolved datastore path from `resolveDatastorePath`
 - `options` — optional lock configuration (see `LockOptions` below)

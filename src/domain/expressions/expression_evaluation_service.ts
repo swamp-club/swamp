@@ -276,9 +276,8 @@ export function partitionAuthored(
       allowed.push(expr);
       continue;
     }
-    getLogger(["swamp", "expressions"]).warn(
-      `Refusing to evaluate expression at ${expr.path}: it was not written in the definition or workflow source, so it arrived as data content. Left as literal text. Raw: ${expr.raw}`,
-    );
+    getLogger(["swamp", "expressions"])
+      .warn`Refusing to evaluate expression at ${expr.path}: it was not written in the definition or workflow source, so it arrived as data content. Left as literal text. Raw: ${expr.raw}`;
   }
   return allowed;
 }
@@ -301,9 +300,8 @@ export function partitionAuthoredAt(
       ? provenance.hasDataAtOrBelow(expr.path)
       : provenance.overlapsData(expr.path, expr.start, expr.end);
     if (inData) {
-      getLogger(["swamp", "expressions"]).warn(
-        `Refusing to evaluate expression at ${expr.path}: it sits in data content, not in the definition or workflow source. Left as literal text. Raw: ${expr.raw}`,
-      );
+      getLogger(["swamp", "expressions"])
+        .warn`Refusing to evaluate expression at ${expr.path}: it sits in data content, not in the definition or workflow source. Left as literal text. Raw: ${expr.raw}`;
     }
     return !inData;
   });
@@ -1275,9 +1273,8 @@ export class ExpressionEvaluationService {
       const validation = this.celEvaluator.validate(cel);
       if (!validation.valid) {
         if (containsVaultExpression(expr.celExpression)) {
-          getLogger(["swamp", "expressions"]).warn(
-            `Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`,
-          );
+          getLogger(["swamp", "expressions"])
+            .warn`Skipped vault expression at ${expr.path} because its CEL is syntactically invalid after vault resolution: ${validation.error}. Raw: ${expr.raw}`;
         }
         return expr.raw;
       }

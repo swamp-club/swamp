@@ -31,6 +31,23 @@ import { getTerminalColumns } from "../output/terminal_size.ts";
 const logger = getSwampLogger(["extension", "list"]);
 
 /**
+ * The channel tag after a version. The channel the version is published on
+ * leads, with the followed channel added when it differs, so a beta pulled
+ * by exact version reads "[beta, following stable]". With no published
+ * channel recorded, only a non-stable followed channel is shown.
+ */
+function channelTag(
+  ext: Pick<ExtensionListEntry, "channel" | "publishedChannel">,
+): string {
+  const followed = ext.channel ?? "stable";
+  const published = ext.publishedChannel;
+  if (published && published !== followed) {
+    return ` [${published}, following ${followed}]`;
+  }
+  return followed !== "stable" ? ` [${followed}]` : "";
+}
+
+/**
  * Presentation-layer extension entry that may carry freshness data.
  *
  * Extends the libswamp ExtensionListEntry with optional fields populated
@@ -77,12 +94,7 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
           Math.floor(cols * 0.4),
         );
         const maxVersion = Math.max(
-          ...exts.map((ext) => {
-            const tag = ext.channel && ext.channel !== "stable"
-              ? ` [${ext.channel}]`
-              : "";
-            return ext.version.length + 1 + tag.length;
-          }),
+          ...exts.map((ext) => ext.version.length + 1 + channelTag(ext).length),
         );
         const maxLatest = enriched
           ? Math.max(
@@ -97,10 +109,7 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             ? ext.name.substring(0, maxName - 1) + "…"
             : ext.name;
           const paddedName = name.padEnd(maxName);
-          const channelTag = ext.channel && ext.channel !== "stable"
-            ? ` [${ext.channel}]`
-            : "";
-          const paddedVersion = `v${ext.version}${channelTag}`.padEnd(
+          const paddedVersion = `v${ext.version}${channelTag(ext)}`.padEnd(
             maxVersion,
           );
           let line = `${paddedName}  ${paddedVersion}`;

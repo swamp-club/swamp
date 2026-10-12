@@ -338,6 +338,20 @@ namespaced one. Each `DEFAULT_DATASTORE_SUBDIRS` directory found at
 `Deno.rename()`. The catalog is then invalidated so backfill rebuilds it from
 the new paths.
 
+Migration never treats the catalog as datastore content (swamp-club#3316). On a
+repo-local datastore `{base}/data/` is also where the catalog lives, so that
+directory is merged entry by entry rather than renamed whole, and `_catalog.db`
+and its SQLite sidecars (`CATALOG_FILE_NAMES` in
+`src/domain/datastore/datastore_config.ts`) stay where they are. They are not
+moved, not compared in the collision check below, and not counted as data by
+the reverse check. A directory holding only the catalog is nothing to move, so
+the command is safe to re-run: after a complete migration it reports nothing to
+migrate, and after one that stopped part-way it moves the directories the
+earlier run did not reach. A confirmed run in either direction also deletes any
+stale catalog copy from `{base}/{namespace}/data/`, which earlier versions left
+there by moving the catalog along with the data. It never deletes from the
+directory holding the live catalog.
+
 If a file exists at both the root and namespace paths, forward migration
 compares them byte by byte. Identical copies (e.g. left by a buggy pull that
 wrote namespace-stripped files to the cache root) are resolved by deleting the
@@ -3739,12 +3753,13 @@ model, catalog), catches the read model up whenever a context opens, and
   publishes too. It abandons on a throw or a stop before any outcome. This
   changes decision 5's ending of #3257, which abandoned on a reported
   `error`, so a failed run's records reach the commit log as v2 publishes
-  them. A use case that reaches an outcome its stream reports through no
-  event calls `markOutcomeReported()`, which the v3 unit counts as one: a
-  method run cancelled by its signal saves its `cancelled` record and ends
-  without an event, so its record and the outputs it wrote commit
-  (swamp-club#3299). The stream is unchanged, so v2 and the CLI's and serve's
-  output are too. Every root settles refusals with `reconcileRefusedRuns`;
+  them. A use case that reaches an outcome before its stream reports it
+  calls `markOutcomeReported()`, which the v3 unit counts as one: a method
+  run cancelled by its signal saves its `cancelled` record and marks the
+  outcome, so its record and the outputs it wrote commit (swamp-club#3299).
+  It then yields a `cancelled` event, so the CLI and serve report the
+  cancellation and the command exits 1 (swamp-club#3317). Every root settles
+  refusals with `reconcileRefusedRuns`;
   only a root holding a run record has anything to reconcile.
 - The managed extension lockfile is committed as a typed `lockfile.write` put
   in `config--lockfile--upstream_extensions` at its transaction root's

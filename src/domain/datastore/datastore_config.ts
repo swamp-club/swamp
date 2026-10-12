@@ -252,18 +252,28 @@ export function getDatastoreDirectories(
   return dirs.filter((d) => !localSet.has(d));
 }
 
+/** File names of the catalog database and its SQLite sidecars. */
+export const CATALOG_FILE_NAMES: readonly string[] = [
+  "_catalog.db",
+  "_catalog.db-journal",
+  "_catalog.db-wal",
+  "_catalog.db-shm",
+];
+
+/** True for the catalog database or one of its SQLite sidecars. */
+export function isCatalogFileName(name: string): boolean {
+  return CATALOG_FILE_NAMES.includes(name);
+}
+
 /**
  * The catalog database and its SQLite sidecars, relative to a datastore
  * root. The catalog is a local index of the datastore, kept in the repo's
  * own `.swamp/data` whatever the datastore, so datastore setup never copies
  * it: a copy found on a datastore path is a stale leftover (swamp-club#3238).
  */
-export const CATALOG_FILES: readonly string[] = [
-  "_catalog.db",
-  "_catalog.db-journal",
-  "_catalog.db-wal",
-  "_catalog.db-shm",
-].map((name) => join("data", name));
+export const CATALOG_FILES: readonly string[] = CATALOG_FILE_NAMES.map(
+  (name) => join("data", name),
+);
 
 /**
  * Datastore subdirectories that have no v3 home because nothing writes them

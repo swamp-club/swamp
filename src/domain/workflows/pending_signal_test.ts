@@ -26,6 +26,7 @@ import {
   encodePendingRecord,
   heldUntil,
   isPendingHeld,
+  isReceivedForWait,
   PENDING_SIGNAL_MAX_BYTES,
   pendingAddressFromKey,
   pendingOutcome,
@@ -253,6 +254,26 @@ Deno.test("pendingOutcome: the window runs from the claim minus the age limit to
   assertEquals(at("2026-01-01T00:00:20.000Z"), true);
   assertEquals(at(DEADLINE), true);
   assertEquals(at("2026-01-01T00:00:40.001Z"), false);
+});
+
+Deno.test("isReceivedForWait: a claim decides the slot and the window as its wait does, both edges included", () => {
+  // What a claim keeps of its wait: `early` and the deadline.
+  const claim = { early: ref().early, deadline: DEADLINE };
+  const at = (receivedAt: string) =>
+    isReceivedForWait(pending({ receivedAt }), claim);
+  assertEquals(at("2026-01-01T00:00:00.000Z"), true);
+  assertEquals(at("2025-12-31T23:59:59.999Z"), false);
+  assertEquals(at(DEADLINE), true);
+  assertEquals(at("2026-01-01T00:00:40.001Z"), false);
+  // A slot the claim does not read, and the one below it over a release.
+  assertEquals(isReceivedForWait(pending({ slot: 2 }), claim), false);
+  const overRelease = {
+    early: { ...claim.early, generation: 2, overRelease: true },
+    deadline: DEADLINE,
+  };
+  assertEquals(isReceivedForWait(pending({ slot: 1 }), overRelease), true);
+  assertEquals(isReceivedForWait(pending({ slot: 2 }), overRelease), true);
+  assertEquals(isReceivedForWait(pending({ slot: 3 }), overRelease), false);
 });
 
 Deno.test("pendingOutcome: a payload the captured schema refuses is not taken", () => {

@@ -21,8 +21,10 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, exists } from "@std/fs";
 import {
+  dirContents,
   findFileCollisions,
   mergeDirInto,
+  removeCatalogFiles,
   removeEmptyDirs,
 } from "./directory_merge.ts";
 
@@ -357,6 +359,128 @@ Deno.test("mergeDirInto: leaves install staging in the source", async () => {
     assertEquals(
       await findFileCollisions(src, dst),
       [],
+    );
+  });
+});
+
+// --- catalog files (swamp-club#3316) ---
+
+const CATALOG_NAMES = [
+  "_catalog.db",
+  "_catalog.db-journal",
+  "_catalog.db-wal",
+  "_catalog.db-shm",
+];
+
+Deno.test("findFileCollisions: ignores top-level catalog files", async () => {
+  await withTempDir(async (root) => {
+    const src = join(root, "src");
+    const dst = join(root, "dst");
+    await ensureDir(join(src, "model"));
+    await ensureDir(join(dst, "model"));
+    for (const name of CATALOG_NAMES) {
+      await Deno.writeTextFile(join(src, name), "live");
+      await Deno.writeTextFile(join(dst, name), "stale");
+    }
+    // The same name below the top level is an ordinary file.
+    await Deno.writeTextFile(join(src, "model", "_catalog.db"), "a");
+    await Deno.writeTextFile(join(dst, "model", "_catalog.db"), "b");
+
+    assertEquals(await findFileCollisions(src, dst), ["model/_catalog.db"]);
+  });
+});
+
+Deno.test("mergeDirInto: leaves top-level catalog files in the source", async () => {
+  await withTempDir(async (root) => {
+    const src = join(root, "src");
+    const dst = join(root, "dst");
+    await ensureDir(join(src, "model"));
+    await ensureDir(dst);
+    for (const name of CATALOG_NAMES) {
+      await Deno.writeTextFile(join(src, name), "live");
+    }
+    await Deno.writeTextFile(join(src, "model", "a.yaml"), "a");
+    await Deno.writeTextFile(join(src, "model", "_catalog.db"), "nested");
+
+    const result = await mergeDirInto(src, dst);
+
+    assertEquals(result.moved, 1);
+    assertEquals(result.skippedPaths, []);
+    for (const name of CATALOG_NAMES) {
+      assertEquals(await exists(join(src, name)), true, name);
+      assertEquals(await exists(join(dst, name)), false, name);
+    }
+    assertEquals(await exists(join(src, "model")), false);
+    assertEquals(await exists(join(dst, "model", "a.yaml")), true);
+    assertEquals(await exists(join(dst, "model", "_catalog.db")), true);
+  });
+});
+
+Deno.test("dirContents: counts top-level catalog files apart from other entries", async () => {
+  await withTempDir(async (root) => {
+    await ensureDir(join(root, "model"));
+    await Deno.writeTextFile(join(root, "_catalog.db"), "c");
+    await Deno.writeTextFile(join(root, "_catalog.db-shm"), "s");
+    await Deno.writeTextFile(join(root, "other.yaml"), "o");
+
+    assertEquals(await dirContents(root), { catalogFiles: 2, otherEntries: 2 });
+    assertEquals(await dirContents(join(root, "missing")), {
+      catalogFiles: 0,
+      otherEntries: 0,
+    });
+  });
+});
+
+Deno.test("removeCatalogFiles: deletes catalog files and the directory they emptied", async () => {
+  await withTempDir(async (root) => {
+    const orphanDir = join(root, "ns", "data");
+    const liveDir = join(root, "data");
+    await ensureDir(orphanDir);
+    await ensureDir(liveDir);
+    for (const name of CATALOG_NAMES) {
+      await Deno.writeTextFile(join(orphanDir, name), "stale");
+    }
+    await Deno.writeTextFile(join(liveDir, "_catalog.db"), "live");
+
+    assertEquals(await removeCatalogFiles(orphanDir, liveDir), 4);
+    assertEquals(await exists(orphanDir), false);
+    assertEquals(await exists(join(liveDir, "_catalog.db")), true);
+  });
+});
+
+Deno.test("removeCatalogFiles: keeps other entries and the directory holding them", async () => {
+  await withTempDir(async (root) => {
+    const orphanDir = join(root, "ns", "data");
+    await ensureDir(join(orphanDir, "model"));
+    await Deno.writeTextFile(join(orphanDir, "_catalog.db"), "stale");
+    await Deno.writeTextFile(join(orphanDir, "model", "_catalog.db"), "kept");
+
+    assertEquals(await removeCatalogFiles(orphanDir, join(root, "data")), 1);
+    assertEquals(await exists(join(orphanDir, "_catalog.db")), false);
+    assertEquals(await exists(join(orphanDir, "model", "_catalog.db")), true);
+  });
+});
+
+Deno.test("removeCatalogFiles: never touches the live catalog directory", async () => {
+  await withTempDir(async (root) => {
+    const liveDir = join(root, "data");
+    await ensureDir(liveDir);
+    await Deno.writeTextFile(join(liveDir, "_catalog.db"), "live");
+    const alias = join(root, "alias");
+    await Deno.symlink(liveDir, alias, { type: "dir" });
+
+    assertEquals(await removeCatalogFiles(liveDir, liveDir), 0);
+    assertEquals(await removeCatalogFiles(alias, liveDir), 0);
+    assertEquals(await removeCatalogFiles(join(liveDir, "."), liveDir), 0);
+    assertEquals(await exists(join(liveDir, "_catalog.db")), true);
+  });
+});
+
+Deno.test("removeCatalogFiles: a missing directory removes nothing", async () => {
+  await withTempDir(async (root) => {
+    assertEquals(
+      await removeCatalogFiles(join(root, "ns", "data"), join(root, "data")),
+      0,
     );
   });
 });

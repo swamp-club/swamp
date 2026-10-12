@@ -44,6 +44,7 @@ import {
   earliestReceipt,
   earlyWaitRef,
   type PendingSignalRecords,
+  type PendingSlot,
   takePendingSignal,
 } from "./pending_signal.ts";
 import type {
@@ -267,6 +268,42 @@ export function declaredWaitKeyStep(
     }
   }
   return undefined;
+}
+
+/**
+ * The claims that read the pending signals of a slot: the claim of the
+ * slot's own generation, and the claim one generation up when it was created
+ * over a release (see `claimWaitKey`). Generations only grow and each is
+ * written once, so no other record of the key reads the slot, and two reads
+ * answer what a listing of every key record would (swamp-club#3308).
+ *
+ * `unreadable` is true when either record is stored and cannot be read: the
+ * caller then knows nothing about who reads the slot. `known` is a record of
+ * the key the caller already holds, which is not read again.
+ */
+export async function claimsReadingSlot(
+  store: Pick<WaitKeyRecords, "findKeyRecord">,
+  at: PendingSlot,
+  known?: WaitKeyRecord,
+): Promise<{ claims: WaitKeyClaim[]; unreadable: boolean }> {
+  const claims: WaitKeyClaim[] = [];
+  let unreadable = false;
+  for (const generation of [at.slot, at.slot + 1]) {
+    const stored: StoredWaitRecord<WaitKeyRecord> =
+      known?.generation === generation
+        ? { kind: "found", record: known }
+        : await store.findKeyRecord({
+          workflowId: at.workflowId,
+          key: at.key,
+          generation,
+        });
+    if (stored.kind === "unreadable") unreadable = true;
+    if (stored.kind !== "found" || stored.record.kind !== "claim") continue;
+    if (generation === at.slot || stored.record.early?.overRelease === true) {
+      claims.push(stored.record);
+    }
+  }
+  return { claims, unreadable };
 }
 
 /** The highest record of a key as read back. */

@@ -45,3 +45,11 @@ Deno.test("modelEditCommand is registered as subcommand of modelCommand", async 
   const editCmd = commands.find((c) => c.getName() === "edit");
   assertEquals(editCmd !== undefined, true);
 });
+
+Deno.test("modelEditCommand offers --allow-rename", async () => {
+  const { modelEditCommand } = await import("./model_edit.ts");
+  assertEquals(
+    modelEditCommand.getOption("allow-rename")?.name,
+    "allow-rename",
+  );
+});

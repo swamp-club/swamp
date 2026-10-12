@@ -470,6 +470,7 @@ Deno.test("modelEdit: stdin rename asks authorizeUpdate with the edited name, ty
     modelEdit(createLibSwampContext(), deps, {
       modelIdOrName: "my-model",
       stdinContent: "name: renamed-model\n",
+      allowRename: true,
       authorizeUpdate: (before, after) => {
         asked.push({ before, after });
         return true;
@@ -575,4 +576,124 @@ Deno.test("modelEdit: byId looks the definition up by id only", async () => {
 
   assertEquals(lookups, [`id:${testDefinition.id}`]);
   assertEquals(events[events.length - 1].kind, "completed");
+});
+
+function renamedCandidate(): TestDefinition {
+  return {
+    ...testDefinition,
+    name: "renamed-model",
+  } as unknown as TestDefinition;
+}
+
+function lastError(events: ModelEditEvent[]) {
+  const last = events[events.length - 1] as Extract<
+    ModelEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  return last.error;
+}
+
+Deno.test("modelEdit: stdin update with a different name is refused without allowRename", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  let asked = 0;
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: renamed-model\n",
+      authorizeUpdate: () => {
+        asked++;
+        return true;
+      },
+    }),
+  );
+
+  const error = lastError(events);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "'my-model'");
+  assertStringIncludes(error.message, "'renamed-model'");
+  assertStringIncludes(error.message, "--allow-rename");
+  assertEquals(saved, []);
+  assertEquals(asked, 0);
+});
+
+Deno.test("modelEdit: a model addressed by id is not renamed by the piped name either", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: testDefinition.id,
+      stdinContent: "name: renamed-model\n",
+    }),
+  );
+
+  assertEquals(lastError(events).code, "validation_failed");
+  assertEquals(saved, []);
+});
+
+Deno.test("modelEdit: allowRename renames when the new name is free", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  deps.lookupDefinition = (idOrName) =>
+    Promise.resolve(
+      idOrName === "my-model"
+        ? { definition: testDefinition, type: testModelType }
+        : null,
+    );
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: renamed-model\n",
+      allowRename: true,
+    }),
+  );
+
+  assertEquals(completedData(events).name, "renamed-model");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("modelEdit: allowRename refuses a name another model holds", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  const other = {
+    ...testDefinition,
+    id: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    name: "renamed-model",
+  } as unknown as TestDefinition;
+  deps.lookupDefinition = (idOrName) =>
+    Promise.resolve({
+      definition: idOrName === "renamed-model" ? other : testDefinition,
+      type: testModelType,
+    });
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "name: renamed-model\n",
+      allowRename: true,
+    }),
+  );
+
+  const error = lastError(events);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "already has that name");
+  assertEquals(saved, []);
+});
+
+Deno.test("modelEdit: stdin update that keeps the name needs no allowRename", async () => {
+  const candidate = {
+    ...testDefinition,
+    tags: { env: "dev" },
+  } as unknown as TestDefinition;
+  const { deps, saved } = makeAuthorizeDeps(candidate);
+
+  const events = await collect<ModelEditEvent>(
+    modelEdit(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      stdinContent: "tags:\n  env: dev\n",
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(saved.length, 1);
 });

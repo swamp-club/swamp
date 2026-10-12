@@ -659,6 +659,11 @@ export interface AccessTokenMintPayload {
 export interface ModelEditPayload {
   modelIdOrName: string;
   content?: string;
+  /**
+   * States that a `name` differing from the stored one is an intended
+   * rename. It grants nothing: the edited name is still authorized.
+   */
+  allowRename?: boolean;
 }
 
 export interface ModelTypeDescribePayload {
@@ -682,6 +687,11 @@ export interface WorkflowDeletePayload {
 export interface WorkflowEditPayload {
   workflowIdOrName: string;
   content?: string;
+  /**
+   * States that a `name` differing from the stored one is an intended
+   * rename. It grants nothing: the edited name is still authorized.
+   */
+  allowRename?: boolean;
 }
 
 export interface WorkflowValidatePayload {
@@ -1478,7 +1488,10 @@ export interface WorkflowSignalResponseData {
   awaitingResume?: boolean;
   runRecordAvailable?: boolean;
   resumeCommand?: string;
-  /** True when the step took the signal as it opened its wait. */
+  /**
+   * True when a wait took the signal from where it was held. `awaitingResume`
+   * says whether its run went on from there or is suspended still.
+   */
   taken?: true;
 }
 

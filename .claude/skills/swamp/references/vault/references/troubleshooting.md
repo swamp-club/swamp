@@ -230,7 +230,7 @@ on `access:*` plus `write` on the name.
    # Use the swamp/lets-get-sensitive model to test
    swamp model create swamp/lets-get-sensitive test-get --json
    # Edit to set operation: get, vaultName, secretKey
-   swamp model method run test-get get
+   swamp behavior run test-get get
    ```
 
 ## Vault Name Validation

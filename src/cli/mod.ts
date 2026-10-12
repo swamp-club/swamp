@@ -70,6 +70,7 @@ import { accessCommand } from "./commands/access.ts";
 import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
+import { behaviorCommand } from "./commands/behavior.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { reportCommand } from "./commands/report.ts";
@@ -1999,6 +2000,7 @@ export function registerCommands(cli: AnyCommand): void {
     .command("access", accessCommand)
     .command("version", versionCommand)
     .command("model", modelCommand)
+    .command("behavior", behaviorCommand)
     .command("init", repoInitCommand)
     .command("repo", repoCommand)
     .command("workflow", workflowCommand)

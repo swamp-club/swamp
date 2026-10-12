@@ -1126,6 +1126,7 @@ export {
   parseExtensionRef,
   resolveServerUrl,
   type ShadowedTypeInfo,
+  type UnoptedPrereleaseNotice,
   validateExtensionName,
 } from "./extensions/pull.ts";
 export {
