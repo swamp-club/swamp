@@ -45,24 +45,15 @@ import { createManagedLockfileTransaction } from "../managed_config_sync.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { VERSION } from "./version.ts";
+import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-class ToolNameType extends StringType {
+/** Cliffy type for `--tool`; completes the built-in tools. Exported for testing. */
+export class ToolNameType extends StringType {
   override complete(): string[] {
-    return [
-      "amp",
-      "claude",
-      "cursor",
-      "opencode",
-      "codex",
-      "copilot",
-      "kiro",
-      "pi",
-      "antigravity",
-      "none",
-    ];
+    return [...VALID_AI_TOOLS];
   }
 
   override parse(type: ArgumentValue): string {
@@ -137,9 +128,8 @@ const TOOL_FLAG_DESCRIPTION =
   "AI coding tool to configure for. Repeat to enroll multiple tools " +
   "(e.g. `--tool claude --tool kiro`). Duplicates are collapsed. " +
   "Use `--tool none` (alone) to skip tool scaffolding. Defaults to " +
-  "`claude` when omitted. Built-in: amp, claude, cursor, opencode, codex, " +
-  "copilot, kiro, none. Custom tools defined via `swamp agent setup` " +
-  "are also accepted.";
+  `\`claude\` when omitted. Built-in: ${VALID_AI_TOOLS.join(", ")}. ` +
+  "Custom tools defined via `swamp agent setup` are also accepted.";
 
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
