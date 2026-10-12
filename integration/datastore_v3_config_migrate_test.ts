@@ -53,6 +53,7 @@ import {
 import { holdsV3WriterLock } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
+import { LockfileRepository } from "../src/infrastructure/persistence/lockfile_repository.ts";
 import { runCli, runCliRejecting, UNSET_ENV } from "./usecase_sync_fixtures.ts";
 import { assertCheckoutsAgree, withV3RowRepos } from "./usecase_v3_fixtures.ts";
 import type { RowRepos } from "./usecase_sync_fixtures.ts";
@@ -620,5 +621,168 @@ Deno.test("v3 config migrate: namespaced checkouts commit into their namespace",
     assertEquals(migrated.committed, 4);
     assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
     await assertCheckoutsAgree(repos, datastorePath, "namespaced", "team");
+  });
+});
+
+/** A repo-local lockfile naming one pulled extension, and its sources. */
+async function seedPulledExtension(repoDir: string): Promise<void> {
+  const lockfile = join(
+    repoDir,
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  await Deno.mkdir(join(lockfile, ".."), { recursive: true });
+  await Deno.writeTextFile(
+    lockfile,
+    JSON.stringify(
+      {
+        "@test/ext": {
+          version: "2026.01.01.1",
+          pulledAt: "2026-01-01T00:00:00.000Z",
+          files: [],
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  const manifest = swampPath(
+    repoDir,
+    "pulled-extensions",
+    "@test",
+    "ext",
+    "manifest.yaml",
+  );
+  await Deno.mkdir(join(manifest, ".."), { recursive: true });
+  await Deno.writeTextFile(
+    manifest,
+    'name: "@test/ext"\nversion: 2026.01.01.1\n',
+  );
+}
+
+async function lockfileEntries(repoDir: string): Promise<string[]> {
+  const { lockfilePath } = await requireInitializedRepoReadOnly({
+    repoDir,
+    outputMode: "json",
+  });
+  return Object.keys(
+    (await LockfileRepository.create(lockfilePath)).getAllEntries(),
+  );
+}
+
+Deno.test("v3 config migrate: the repo's extension lockfile is committed and its pulled extensions move with it", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    await seedRepoLocalConfig(repos.repoA);
+    await seedPulledExtension(repos.repoA);
+    assertEquals(await lockfileEntries(repos.repoA), ["@test/ext"]);
+
+    const migrated = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(migrated.copiedLockfile, true);
+    assertEquals(migrated.copiedPulledExtensions, true);
+
+    // Managed config reads the lockfile and pulled sources from the tier.
+    assertEquals(await lockfileEntries(repos.repoA), ["@test/ext"]);
+    assert(
+      (await Deno.stat(
+        swampPath(
+          repos.repoA,
+          "config",
+          "pulled-extensions",
+          "@test",
+          "ext",
+          "manifest.yaml",
+        ),
+      )).isFile,
+    );
+    // The lockfile is committed: a second checkout catches it up. Pulled
+    // sources are never committed (they have no v3 intent), so they stay in
+    // this checkout, as an `extension pull` on v3 leaves them.
+    await Deno.remove(swampPath(repos.repoA, "config", "pulled-extensions"), {
+      recursive: true,
+    });
+    await assertCheckoutsAgree(repos, datastorePath, "lockfile adopted");
+    await assertRejects(() =>
+      Deno.stat(swampPath(repos.repoB, "config", "pulled-extensions"))
+    );
+    assert(
+      (await Deno.stat(
+        swampPath(repos.repoB, "config", "upstream_extensions.json"),
+      ))
+        .isFile,
+    );
+
+    const again = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(again.alreadyMigrated, true);
+  });
+});
+
+Deno.test("v3 managedConfig by hand: the first writing command adopts the extension lockfile too", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedPulledExtension(repos.repoA);
+    await turnOnManagedConfigByHand(repos.repoA);
+    await cli(repos.repoA, "model", "create", "command/shell", "m1");
+    assertEquals(await lockfileEntries(repos.repoA), ["@test/ext"]);
+  });
+});
+
+Deno.test("v3 managedConfig by hand: an unreadable leftover neither fails a command nor stops the rest", async () => {
+  if (Deno.build.os === "windows") return;
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    const locked = join(repos.repoA, "workflows", "workflow-locked.yaml");
+    await Deno.writeTextFile(
+      locked,
+      "id: 6f1d2c1e-8f4a-4c7e-9d55-0b3f3f6f0a11\nname: locked\n",
+    );
+    await Deno.chmod(locked, 0o000);
+    try {
+      await turnOnManagedConfigByHand(repos.repoA);
+      // Read-only and writing commands both still run.
+      assertEquals(await vaultNames(repos.repoA), []);
+      await cli(repos.repoA, "model", "create", "command/shell", "m2");
+      assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
+      const migrated = await cli(
+        repos.repoA,
+        "datastore",
+        "config",
+        "migrate",
+      ) as { skipped: { path: string; reason: string }[] };
+      assertEquals(
+        migrated.skipped.map((s) => s.reason),
+        ["unreadable"],
+      );
+    } finally {
+      await Deno.chmod(locked, 0o644);
+    }
+  });
+});
+
+Deno.test("v3 config migrate: a tier copy the commit log never held does not stop its name being committed", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    await seedRepoLocalConfig(repos.repoA);
+    // A tier left behind by an earlier setup: files, but no commits.
+    await copy(
+      join(repos.repoA, "vaults"),
+      swampPath(repos.repoA, "config", "vaults"),
+    );
+    const migrated = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(migrated.committed, 4);
+    await assertCheckoutsAgree(repos, datastorePath, "stray tier copy");
   });
 });

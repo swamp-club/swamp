@@ -204,7 +204,10 @@ export async function isConfigTierPopulated(
  * overwritten (swamp-club#3117). Only this repo's extensions are replaced;
  * others in the same `@scope` directory are left as they are.
  */
-async function copyPulledExtensions(src: string, dest: string): Promise<void> {
+export async function copyPulledExtensions(
+  src: string,
+  dest: string,
+): Promise<void> {
   await ensureDir(dest);
   for await (const entry of Deno.readDir(src)) {
     if (isStagingEntryName(entry.name)) continue;

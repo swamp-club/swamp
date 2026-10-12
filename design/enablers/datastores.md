@@ -3731,22 +3731,34 @@ path under the config base, so a later save of it stages the same key.
   root included, are neither read nor followed, so a repo-controlled link never commits bytes from
   outside the repo, and every target is checked to stay in the config base.
   Secrets are never read: only vault configs are committed.
+- **The extension lockfile moves too.** Turning managedConfig on moves the
+  lockfile from the repo's extension models directory to the config tier, so
+  adoption commits the repo's own lockfile into the lockfile partition (a
+  `lockfile.write` put, as `v3_lockfile_sync.ts` stages) while that partition
+  has no commit, and writes it to `upstream_extensions.json` in the tier after
+  the commit. With it, `.swamp/pulled-extensions` is copied into the managed
+  root `.swamp/config/pulled-extensions` in this checkout only: pulled sources
+  have no v3 intent, as after an `extension pull` on v3.
 - **`datastore config migrate` on v3** runs adoption, then sets
-  `managedConfig: true`. Its JSON keeps the v2 shape: `copiedLockfile` and
-  `copiedPulledExtensions` are always false (the lockfile is committed by its
-  own transaction, and pulled extensions stay in the checkout), `pushed` is
-  false, and it adds `committed` and `skipped` (files declaring no name, a
-  name an earlier file of their kind declares, or a path no record key can
-  name).
+  `managedConfig: true`. It confirms each config-tier copy against the commit
+  log instead of trusting it, so a copy the log never held (left by an
+  earlier setup, or placed by hand) does not stop its name being committed.
+  Its JSON keeps the v2 shape (`copiedLockfile`, `copiedPulledExtensions`;
+  `pushed` is false) and adds `committed` and `skipped`: files declaring no
+  name, a name an earlier file of their kind declares, a path no record key
+  can name, a file or directory that could not be read, or a name the commit
+  log already holds with no tier copy at the file's path (another checkout's
+  definition of it, or one renamed or deleted since).
 - **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
   command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
   adoption in a root of their own, with no flush (on v3 a root's flush
   releases the command's locks), before the command's own root. Adopt rather
   than refuse, because the user asked to keep what they have, and the hand
-  path and `config migrate` then share one implementation. A refused
-  adoption there is a warning and the command goes on; the next one adopts
-  nothing for those names. A read-only context cannot commit, so it warns
-  that the config is not in the tier yet. Serve opens its context once, so a
+  path and `config migrate` then share one implementation. Anything that
+  stops adoption there (a refusal, an unreadable file) is a warning and the
+  command goes on; `config migrate` surfaces the cause. A read-only context
+  cannot commit, so it warns that the config is not in the tier yet, and
+  never fails the command over that check. Serve opens its context once, so a
   by-hand change made while serve runs is adopted at its next start (a CLI
   write is refused while serve holds the writer lock anyway).
 

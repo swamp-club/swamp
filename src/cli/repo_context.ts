@@ -212,7 +212,6 @@ import {
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   adoptV3Config,
-  ConfigAdoptionRefusedError,
   planV3ConfigAdoption,
 } from "../infrastructure/datastore_v3/v3_config_adoption.ts";
 import {
@@ -1063,6 +1062,7 @@ export async function requireInitializedRepoReadOnly(
       repoPath.value,
       datastoreConfig,
       configBase,
+      marker,
     );
   }
 
@@ -1092,6 +1092,7 @@ async function adoptManagedConfigOnV3(
   repoDir: string,
   config: FilesystemDatastoreConfig,
   configBase: string,
+  marker: RepoMarkerData | null,
 ): Promise<void> {
   const logger = getSwampLogger(["cli", "managed-config"]);
   try {
@@ -1100,36 +1101,70 @@ async function adoptManagedConfigOnV3(
       repoDir,
       config,
       configBase,
+      lockfileSource: repoLocalLockfilePath(repoDir, marker),
     });
-    if (plan.adoptions.length > 0) {
+    if (plan.adoptions.length > 0 || plan.lockfile !== undefined) {
       logger
-        .info`Committed ${plan.adoptions.length} existing definition(s), workflow(s) and vault config(s) into the datastore config tier`;
+        .info`Committed ${plan.adoptions.length} existing definition(s), workflow(s) and vault config(s)${
+        plan.lockfile !== undefined ? " and the extension lockfile" : ""
+      } into the datastore config tier`;
     }
     // Reported with the adoption that left them out, not on every command.
-    if (plan.adoptions.length > 0 && plan.skipped.length > 0) {
+    if (
+      (plan.adoptions.length > 0 || plan.lockfile !== undefined) &&
+      plan.skipped.length > 0
+    ) {
       logger
-        .warn`${plan.skipped.length} existing config file(s) were not committed: they declare no usable name, repeat another file's name, or have a path the datastore cannot store. Run 'swamp datastore config migrate' to list them`;
+        .warn`${plan.skipped.length} existing config file(s) were not committed. Run 'swamp datastore config migrate' to list them and why`;
     }
   } catch (error) {
-    if (!(error instanceof ConfigAdoptionRefusedError)) throw error;
-    logger.warn`${error.message}`;
+    // Adoption is the context's own errand: whatever stops it, the command
+    // goes on, and `config migrate` surfaces the cause.
+    logger
+      .warn`Could not commit this repo's existing config into the datastore config tier: ${
+      error instanceof Error ? error.message : String(error)
+    }. Run 'swamp datastore config migrate' to retry`;
   }
 }
 
 /**
  * Warns a read-only command that managedConfig hides repo config the v3
  * commit log has never held: it cannot commit, so it says what will
- * (swamp-club#3300).
+ * (swamp-club#3300). It only warns, so nothing it meets fails the command.
  */
 async function warnUnadoptedManagedConfig(
   repoDir: string,
   config: FilesystemDatastoreConfig,
   configBase: string,
+  marker: RepoMarkerData | null,
 ): Promise<void> {
-  const plan = await planV3ConfigAdoption(repoDir, config, configBase);
-  if (plan.adoptions.length === 0) return;
-  getSwampLogger(["cli", "managed-config"])
-    .warn`${plan.adoptions.length} existing definition(s), workflow(s) or vault config(s) in this repo are not in the datastore config tier yet. The next writing command, or 'swamp datastore config migrate', commits them`;
+  const logger = getSwampLogger(["cli", "managed-config"]);
+  try {
+    const plan = await planV3ConfigAdoption(repoDir, config, configBase, {
+      lockfileSource: repoLocalLockfilePath(repoDir, marker),
+    });
+    const pending = plan.adoptions.length +
+      (plan.lockfile !== undefined ? 1 : 0);
+    if (pending === 0) return;
+    logger
+      .warn`${pending} existing definition(s), workflow(s), vault config(s) or extension lockfile in this repo are not in the datastore config tier yet. The next writing command, or 'swamp datastore config migrate', commits them`;
+  } catch (error) {
+    logger.debug`Could not check for unadopted config: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+/** The repo's own extension lockfile, where it lives without managedConfig. */
+function repoLocalLockfilePath(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+): string {
+  const raw = resolveModelsDir(marker);
+  return join(
+    isAbsolute(raw) ? raw : resolve(repoDir, raw),
+    "upstream_extensions.json",
+  );
 }
 
 /**
@@ -1409,6 +1444,7 @@ export function requireInitializedRepo(
         repoPath.value,
         datastoreConfig,
         configBase,
+        marker,
       );
     }
 
@@ -1607,6 +1643,7 @@ export async function requireInitializedRepoUnlocked(
       repoPath.value,
       datastoreConfig,
       configBase,
+      marker,
     );
   }
 

@@ -51,6 +51,7 @@ import { ManagedConfigUnpublishedError } from "../managed_config_sync.ts";
 import {
   adoptV3Config,
   type ConfigAdoptionPlan,
+  type ConfigAdoptionSkipReason,
 } from "../../infrastructure/datastore_v3/v3_config_adoption.ts";
 
 /**
@@ -110,9 +111,9 @@ export async function ensureManagedConfig(
 
 /**
  * Reports a v3 migration (swamp-club#3300) in the v2 output's shape: the
- * lockfile is committed by its own transaction on v3, and pulled extensions
- * stay in the checkout, so neither is ever copied here. `skipped` names the
- * repo-local files that were not committed and why.
+ * lockfile is committed into its partition, and pulled extension sources
+ * are copied into the managed root in this checkout only. `skipped` names
+ * the repo-local files that were not committed and why.
  */
 function renderV3Migration(
   ctx: CommandContext,
@@ -128,7 +129,8 @@ function renderV3Migration(
     name: s.name ?? null,
     reason: s.reason,
   }));
-  const alreadyMigrated = plan.adoptions.length === 0;
+  const alreadyMigrated = plan.adoptions.length === 0 &&
+    plan.lockfile === undefined;
   if (ctx.outputMode === "json") {
     writeOutput(JSON.stringify(
       alreadyMigrated ? { alreadyMigrated: true, managedConfigSet, skipped } : {
@@ -136,8 +138,8 @@ function renderV3Migration(
         copiedModels: adopted("model") > 0,
         copiedWorkflows: adopted("workflow") > 0,
         copiedVaults: adopted("vault") > 0,
-        copiedLockfile: false,
-        copiedPulledExtensions: false,
+        copiedLockfile: plan.lockfile !== undefined,
+        copiedPulledExtensions: plan.lockfile?.pulledExtensions !== undefined,
         managedConfigSet,
         configRoot,
         pushed: false,
@@ -151,13 +153,7 @@ function renderV3Migration(
     ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
   }
   for (const s of plan.skipped) {
-    ctx.logger.warn`Skipped ${s.path}: ${
-      s.reason === "duplicate-name"
-        ? "another file declares the same name"
-        : s.reason === "invalid-path"
-        ? "its path cannot be stored in the datastore"
-        : "it declares no usable name"
-    }`;
+    ctx.logger.warn`Skipped ${s.path}: ${SKIP_REASON_TEXT[s.reason]}`;
   }
   if (alreadyMigrated) {
     if (plan.alreadyCommitted === 0) {
@@ -170,7 +166,25 @@ function renderV3Migration(
   ctx.logger.info`Committed ${adopted("model")} model(s), ${
     adopted("workflow")
   } workflow(s) and ${adopted("vault")} vault(s) into datastore config tier`;
+  if (plan.lockfile !== undefined) {
+    ctx.logger
+      .info`Committed the extension lockfile into datastore config tier`;
+  }
+  if (plan.lockfile?.pulledExtensions !== undefined) {
+    ctx.logger
+      .info`Copied pulled extensions into ${plan.lockfile.pulledExtensions.target}`;
+  }
 }
+
+/** Why `config migrate` left a repo-local file out, in words. */
+const SKIP_REASON_TEXT: Record<ConfigAdoptionSkipReason, string> = {
+  "unnamed": "it declares no usable name",
+  "unreadable": "it could not be read",
+  "name-committed":
+    "the datastore already holds this name (another checkout's, or renamed or deleted since)",
+  "invalid-path": "its path cannot be stored in the datastore",
+  "duplicate-name": "another file declares the same name",
+};
 
 export const datastoreConfigMigrateCommand = new Command()
   .description(
@@ -184,8 +198,8 @@ export const datastoreConfigMigrateCommand = new Command()
       "the migration.\n\n" +
       "On a v3 datastore it commits the model definitions, workflow\n" +
       "definitions and vault configs not already in the datastore; a\n" +
-      "re-run commits nothing. The lockfile is committed by its own\n" +
-      "transaction there, and pulled extensions stay in the checkout.",
+      "re-run commits nothing. The extension lockfile is committed with\n" +
+      "them, and pulled extensions are copied in this checkout only.",
   )
   .option("--repo-dir <dir:string>", "Path to the swamp repository")
   // deno-lint-ignore no-explicit-any
@@ -221,11 +235,17 @@ export const datastoreConfigMigrateCommand = new Command()
       !isCustomDatastoreConfig(datastoreConfig)
     ) {
       const configBase = datastoreResolver.resolvePath("config");
+      const v3ModelsDir = resolveModelsDir(marker);
       const plan = await adoptV3Config({
         repoContext,
         repoDir,
         config: datastoreConfig,
         configBase,
+        lockfileSource: join(
+          isAbsolute(v3ModelsDir) ? v3ModelsDir : resolve(repoDir, v3ModelsDir),
+          "upstream_extensions.json",
+        ),
+        verifyTierCopies: true,
       });
       const managedConfigSet = await ensureManagedConfig(
         markerRepo,

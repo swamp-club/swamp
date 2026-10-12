@@ -48,12 +48,17 @@ import { ensureDir } from "@std/fs";
 import { dirname, extname, join, relative, SEPARATOR } from "@std/path";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { FilesystemDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
-import type {
-  DefinitionKind,
-  PartitionKey,
+import { copyPulledExtensions } from "../../domain/datastore/managed_config_migration.ts";
+import {
+  type DefinitionKind,
+  type PartitionKey,
+  partitionOf,
 } from "../../domain/datastore_v3/partition_key.ts";
 import { CommitRejectedError } from "../../domain/datastore_v3/partition.ts";
-import { ConfigChanges } from "../../domain/datastore_v3/repository_changes.ts";
+import {
+  ConfigChanges,
+  LockfileChanges,
+} from "../../domain/datastore_v3/repository_changes.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   definitionSaveBatches,
@@ -93,6 +98,14 @@ export interface ConfigAdoption {
 export type ConfigAdoptionSkipReason =
   /** The file declares no name, or one no partition can be formed from. */
   | "unnamed"
+  /** The file, or a directory holding it, could not be read. */
+  | "unreadable"
+  /**
+   * The commit log already holds the name, and this checkout's config tier
+   * has no copy at the file's path: another checkout's definition of it, or
+   * one renamed or deleted since it was adopted.
+   */
+  | "name-committed"
   /** No record key can name the file's path in the config tier. */
   | "invalid-path"
   /** An earlier file of the same kind declares the same name. */
@@ -100,15 +113,35 @@ export type ConfigAdoptionSkipReason =
 
 /** A repo-local file adoption skipped, and why. */
 export interface SkippedConfigFile {
-  readonly kind: DefinitionKind;
+  readonly kind: DefinitionKind | "lockfile";
   readonly path: string;
   readonly name: string | undefined;
   readonly reason: ConfigAdoptionSkipReason;
 }
 
+/** The repo-local extension lockfile, adopted with the config. */
+export interface LockfileAdoption {
+  readonly sourcePath: string;
+  /** `upstream_extensions.json` in the config tier. */
+  readonly targetPath: string;
+  readonly content: Uint8Array;
+  /**
+   * The repo's pulled extension sources and the managed root a managed repo
+   * reads them from, when the repo has any. They are never committed (they
+   * have no v3 intent), so they are copied in this checkout only, as v2's
+   * migration copies them.
+   */
+  readonly pulledExtensions?: {
+    readonly source: string;
+    readonly target: string;
+  };
+}
+
 /** What adoption found in the repo. */
 export interface ConfigAdoptionPlan {
   readonly adoptions: readonly ConfigAdoption[];
+  /** The extension lockfile, when the commit log has never held one. */
+  readonly lockfile?: LockfileAdoption;
   /**
    * Files with nothing to do: the commit log already holds their name, or
    * the config tier already holds their bytes at their path.
@@ -124,6 +157,20 @@ export interface PlanConfigAdoptionOptions {
   readonly configBase: string;
   /** Whether the commit log holds any commit of `partition`. */
   readonly partitionHasCommits: (partition: PartitionKey) => Promise<boolean>;
+  /**
+   * The repo-local extension lockfile (`upstream_extensions.json` in the
+   * repo's extension models directory). Turning managedConfig on moves the
+   * lockfile into the config tier, so it is adopted with the config, and
+   * the repo's pulled extension sources move with it.
+   */
+  readonly lockfileSource?: string;
+  /**
+   * Confirm a config-tier copy against the commit log rather than trust it.
+   * `datastore config migrate` sets it: it is not on every command's path,
+   * and a copy the commit log never held (one left by an earlier setup, or
+   * placed by hand) must not stop its name being committed.
+   */
+  readonly verifyTierCopies?: boolean;
 }
 
 /**
@@ -140,7 +187,11 @@ export async function planConfigAdoption(
     const sourceRoot = join(options.repoDir, dir);
     const targetRoot = join(options.configBase, dir);
     const seen = new Set<string>();
-    for (const sourcePath of await regularYamlFiles(sourceRoot)) {
+    const { files, unreadable } = await regularYamlFiles(sourceRoot);
+    for (const path of unreadable) {
+      skipped.push({ kind, path, name: undefined, reason: "unreadable" });
+    }
+    for (const sourcePath of files) {
       const rel = relative(sourceRoot, sourcePath);
       assertContainedPath(rel, targetRoot);
       const targetPath = join(targetRoot, rel);
@@ -149,11 +200,24 @@ export async function planConfigAdoption(
       // committed name (a copy placed there by hand aside), whatever bytes
       // an edit has since given it. Skip it before parsing it or reading the
       // commit log: a repo adopted long ago pays one lstat per file.
-      if (await isFile(targetPath)) {
+      const hasTierCopy = await isFile(targetPath);
+      if (hasTierCopy && options.verifyTierCopies !== true) {
         alreadyCommitted++;
         continue;
       }
-      const prior = await readPriorFile(sourcePath);
+      let prior: Awaited<ReturnType<typeof readPriorFile>>;
+      try {
+        prior = await readPriorFile(sourcePath);
+      } catch {
+        // An unreadable leftover must not fail every command.
+        skipped.push({
+          kind,
+          path: sourcePath,
+          name: undefined,
+          reason: "unreadable",
+        });
+        continue;
+      }
       if (prior === undefined) continue;
       const name = prior.name;
       const changes = name === undefined
@@ -184,7 +248,16 @@ export async function planConfigAdoption(
       }
       seen.add(name);
       if (await options.partitionHasCommits(changes.partition)) {
-        alreadyCommitted++;
+        if (hasTierCopy) {
+          alreadyCommitted++;
+        } else {
+          skipped.push({
+            kind,
+            path: sourcePath,
+            name,
+            reason: "name-committed",
+          });
+        }
         continue;
       }
       adoptions.push({
@@ -197,7 +270,69 @@ export async function planConfigAdoption(
       });
     }
   }
-  return { adoptions, alreadyCommitted, skipped };
+  const lockfile = options.lockfileSource === undefined
+    ? undefined
+    : await planLockfileAdoption(options, options.lockfileSource, skipped);
+  return {
+    adoptions,
+    ...(lockfile !== undefined ? { lockfile } : {}),
+    alreadyCommitted,
+    skipped,
+  };
+}
+
+/**
+ * The lockfile adoption, when the repo has a lockfile of its own and the
+ * commit log has never held one. Its partition has no precondition (a
+ * lockfile put carries none), so the commit log's head is what keeps a
+ * second checkout from replacing a lockfile another one committed.
+ */
+async function planLockfileAdoption(
+  options: PlanConfigAdoptionOptions,
+  sourcePath: string,
+  skipped: SkippedConfigFile[],
+): Promise<LockfileAdoption | undefined> {
+  const targetPath = join(options.configBase, "upstream_extensions.json");
+  if (options.verifyTierCopies !== true && await isFile(targetPath)) {
+    return undefined;
+  }
+  let content: Uint8Array;
+  try {
+    if (!await isFile(sourcePath)) return undefined;
+    content = await Deno.readFile(sourcePath);
+  } catch {
+    skipped.push({
+      kind: "lockfile",
+      path: sourcePath,
+      name: undefined,
+      reason: "unreadable",
+    });
+    return undefined;
+  }
+  if (await options.partitionHasCommits(partitionOf({ kind: "lockfile" }))) {
+    return undefined;
+  }
+  const pulledSource = join(options.repoDir, ".swamp", "pulled-extensions");
+  const pulledTarget = join(
+    options.repoDir,
+    ".swamp",
+    "config",
+    "pulled-extensions",
+  );
+  let hasPulled = false;
+  try {
+    hasPulled = (await Deno.lstat(pulledSource)).isDirectory;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return {
+    sourcePath,
+    targetPath,
+    content,
+    ...(hasPulled
+      ? { pulledExtensions: { source: pulledSource, target: pulledTarget } }
+      : {}),
+  };
 }
 
 /**
@@ -231,6 +366,14 @@ export async function stageConfigAdoption(
       await stageTyped(markDirty, () => batch);
     }
   }
+  if (plan.lockfile !== undefined) {
+    const key = keyUnder("config", configBase, plan.lockfile.targetPath);
+    const content = plan.lockfile.content;
+    await stageTyped(
+      markDirty,
+      () => [new LockfileChanges().write(key, content)],
+    );
+  }
 }
 
 /**
@@ -242,6 +385,10 @@ export async function planV3ConfigAdoption(
   repoDir: string,
   config: FilesystemDatastoreConfig,
   configBase: string,
+  options: Pick<
+    PlanConfigAdoptionOptions,
+    "lockfileSource" | "verifyTierCopies"
+  > = {},
 ): Promise<ConfigAdoptionPlan> {
   const handle = v3DatastoreFor(repoDir, config);
   return await planConfigAdoption({
@@ -249,6 +396,7 @@ export async function planV3ConfigAdoption(
     configBase,
     partitionHasCommits: async (partition) =>
       (await handle.commitStore.head(handle.namespace, partition)).seq > 0,
+    ...options,
   });
 }
 
@@ -278,6 +426,10 @@ export interface AdoptV3ConfigOptions {
   readonly config: FilesystemDatastoreConfig;
   /** The checkout's managed config base, `.swamp[/<namespace>]/config`. */
   readonly configBase: string;
+  /** See {@link PlanConfigAdoptionOptions.lockfileSource}. */
+  readonly lockfileSource?: string;
+  /** See {@link PlanConfigAdoptionOptions.verifyTierCopies}. */
+  readonly verifyTierCopies?: boolean;
 }
 
 /**
@@ -294,6 +446,14 @@ export async function adoptV3Config(
     options.repoDir,
     options.config,
     options.configBase,
+    {
+      ...(options.lockfileSource !== undefined
+        ? { lockfileSource: options.lockfileSource }
+        : {}),
+      ...(options.verifyTierCopies !== undefined
+        ? { verifyTierCopies: options.verifyTierCopies }
+        : {}),
+    },
   );
   await commitConfigAdoption(options.repoContext, options.configBase, plan);
   return plan;
@@ -315,7 +475,7 @@ export async function commitConfigAdoption(
   configBase: string,
   plan: ConfigAdoptionPlan,
 ): Promise<void> {
-  if (plan.adoptions.length === 0) return;
+  if (plan.adoptions.length === 0 && plan.lockfile === undefined) return;
   const markDirty = repoContext.markDirty;
   if (markDirty === undefined) {
     throw new Error("adopting config needs a v3 context's hook");
@@ -340,6 +500,14 @@ export async function commitConfigAdoption(
     await ensureDir(dirname(adoption.targetPath));
     await Deno.writeFile(adoption.targetPath, adoption.content);
   }
+  if (plan.lockfile !== undefined) {
+    await ensureDir(dirname(plan.lockfile.targetPath));
+    await Deno.writeFile(plan.lockfile.targetPath, plan.lockfile.content);
+    const pulled = plan.lockfile.pulledExtensions;
+    if (pulled !== undefined) {
+      await copyPulledExtensions(pulled.source, pulled.target);
+    }
+  }
 }
 
 /** Whether `path` is a regular file, without following a symlink. */
@@ -358,13 +526,17 @@ async function isFile(path: string): Promise<boolean> {
  * files or directories and `root` itself, are skipped and never followed. A
  * missing root has none.
  */
-async function regularYamlFiles(root: string): Promise<string[]> {
+async function regularYamlFiles(
+  root: string,
+): Promise<{ files: string[]; unreadable: string[] }> {
   const files: string[] = [];
+  const unreadable: string[] = [];
   try {
-    if ((await Deno.lstat(root)).isSymlink) return [];
+    if ((await Deno.lstat(root)).isSymlink) return { files, unreadable };
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return [];
-    throw error;
+    if (error instanceof Deno.errors.NotFound) return { files, unreadable };
+    unreadable.push(root);
+    return { files, unreadable };
   }
   const walk = async (dir: string): Promise<void> => {
     let entries: Deno.DirEntry[];
@@ -377,7 +549,9 @@ async function regularYamlFiles(root: string): Promise<string[]> {
       ) {
         return;
       }
-      throw error;
+      // An unreadable directory is reported, not a failure of the command.
+      unreadable.push(dir);
+      return;
     }
     for (const entry of entries) {
       if (entry.isSymlink) continue;
@@ -395,5 +569,6 @@ async function regularYamlFiles(root: string): Promise<string[]> {
   // Code-unit order, not the host locale's, so every machine picks the same
   // first file of a repeated name.
   const key = (path: string) => path.split(SEPARATOR).join("/");
-  return files.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+  files.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+  return { files, unreadable };
 }

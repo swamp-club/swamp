@@ -108,7 +108,13 @@ Deno.test("planConfigAdoption: a name whose partition has commits is not adopted
         Promise.resolve(partition.equals(committed)),
     });
     assertEquals(plan.adoptions.map((a) => a.name), ["other"]);
-    assertEquals(plan.alreadyCommitted, 1);
+    // No tier copy at its path: another checkout's, or since renamed or
+    // deleted, so it is reported rather than counted as done.
+    assertEquals(plan.alreadyCommitted, 0);
+    assertEquals(
+      plan.skipped.map((s) => [s.name, s.reason]),
+      [["default", "name-committed"]],
+    );
   });
 });
 
@@ -237,5 +243,95 @@ Deno.test("planConfigAdoption: a tree whose root is a symlink is not read", asyn
       partitionHasCommits: () => Promise.resolve(false),
     });
     assertEquals(plan.adoptions, []);
+  });
+});
+
+Deno.test("planConfigAdoption: an unreadable file or directory is reported, not thrown", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (repoDir) => {
+    const file = join(repoDir, "workflows", "workflow-locked.yaml");
+    await writeFile(file, `id: ${ID_1}\nname: locked\n`);
+    const dir = join(repoDir, "models", "sealed");
+    await writeFile(join(dir, "m.yaml"), `id: ${ID_2}\nname: m\n`);
+    await Deno.chmod(file, 0o000);
+    await Deno.chmod(dir, 0o000);
+    try {
+      const plan = await planConfigAdoption({
+        repoDir,
+        configBase: join(repoDir, ".swamp", "config"),
+        partitionHasCommits: () => Promise.resolve(false),
+      });
+      assertEquals(plan.adoptions, []);
+      assertEquals(
+        plan.skipped.map((s) => [s.path, s.reason]).sort(),
+        [[dir, "unreadable"], [file, "unreadable"]].sort(),
+      );
+    } finally {
+      await Deno.chmod(file, 0o644);
+      await Deno.chmod(dir, 0o755);
+    }
+  });
+});
+
+Deno.test("planConfigAdoption: verifyTierCopies adopts a tier copy the commit log never held", async () => {
+  await withTempDir(async (repoDir) => {
+    const configBase = join(repoDir, ".swamp", "config");
+    const text = `id: ${ID_1}\nname: w1\n`;
+    await writeFile(join(repoDir, "workflows", "workflow-w1.yaml"), text);
+    await writeFile(join(configBase, "workflows", "workflow-w1.yaml"), text);
+    const trusted = await planConfigAdoption({
+      repoDir,
+      configBase,
+      partitionHasCommits: () => Promise.resolve(false),
+    });
+    assertEquals(trusted.adoptions, []);
+    const verified = await planConfigAdoption({
+      repoDir,
+      configBase,
+      partitionHasCommits: () => Promise.resolve(false),
+      verifyTierCopies: true,
+    });
+    assertEquals(verified.adoptions.map((a) => a.name), ["w1"]);
+  });
+});
+
+Deno.test("planConfigAdoption: the repo's lockfile is adopted with its pulled extensions while the commit log has none", async () => {
+  await withTempDir(async (repoDir) => {
+    const configBase = join(repoDir, ".swamp", "config");
+    const lockfileSource = join(
+      repoDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    await writeFile(lockfileSource, "{}\n");
+    await writeFile(
+      join(repoDir, ".swamp", "pulled-extensions", "@t", "x", "manifest.yaml"),
+      'name: "@t/x"\n',
+    );
+    const plan = await planConfigAdoption({
+      repoDir,
+      configBase,
+      partitionHasCommits: () => Promise.resolve(false),
+      lockfileSource,
+    });
+    assertPathEquals(
+      plan.lockfile!.targetPath,
+      join(configBase, "upstream_extensions.json"),
+    );
+    assertPathEquals(
+      plan.lockfile!.pulledExtensions!.target,
+      join(repoDir, ".swamp", "config", "pulled-extensions"),
+    );
+    const committed = await planConfigAdoption({
+      repoDir,
+      configBase,
+      partitionHasCommits: (partition) =>
+        Promise.resolve(
+          partition.toString() === "config--lockfile--upstream_extensions",
+        ),
+      lockfileSource,
+    });
+    assertEquals(committed.lockfile, undefined);
   });
 });
