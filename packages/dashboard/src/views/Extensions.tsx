@@ -20,6 +20,15 @@
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
+import { EmptyState } from "../components/EmptyState";
+import { LoadError } from "../components/LoadError";
+import { Skeleton } from "../components/Skeleton";
+import { loadState } from "../client/load_state.ts";
+import { formatCount } from "../lib/format.ts";
+import {
+  EXTENSION_COLUMNS,
+  ExtensionsTableSkeleton,
+} from "./PageSkeletons.tsx";
 
 interface ExtensionEntry {
   name: string;
@@ -29,66 +38,83 @@ interface ExtensionEntry {
 }
 
 export function Extensions() {
-  const { data } = useRequest("extension.list");
-  const extensions = extractArray<ExtensionEntry>(data);
+  const req = useRequest("extension.list");
+  const extensions = extractArray<ExtensionEntry>(req.data);
+  const state = loadState(req, () => extensions.length === 0);
 
   return (
     <>
       <div className="page-header">
         <h1>Extensions</h1>
         <div className="header-right">
-          <div
-            className="health-pill"
-            style={{
-              background: "var(--surface)",
-              color: "var(--text-2)",
-              border: "1px solid var(--border)",
-            }}
-          >
-            {extensions.length} installed
-          </div>
+          {state === "loading"
+            ? <Skeleton width={92} height={28} radius={20} />
+            : (
+              <div
+                className="health-pill"
+                style={{
+                  background: "var(--surface)",
+                  color: "var(--text-2)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                {formatCount(extensions.length)} installed
+              </div>
+            )}
         </div>
       </div>
 
       <div className="panel">
-        {extensions.length === 0
-          ? <div className="loading">No extensions installed</div>
-          : (
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Extension</th>
-                    <th>Version</th>
-                    <th>Channel</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {extensions.map((ext) => (
-                    <tr key={ext.name}>
-                      <td style={{ fontWeight: 500 }}>{ext.name}</td>
-                      <td>
-                        <span className="cron-badge">{ext.version}</span>
-                      </td>
-                      <td
-                        style={{ fontSize: "0.82rem", color: "var(--text-3)" }}
-                      >
-                        {ext.channel ?? "stable"}
-                      </td>
-                      <td>
-                        <StatusPill
-                          status={ext.updateStatus === "update_available"
-                            ? "suspended"
-                            : "succeeded"}
-                        />
-                      </td>
-                    </tr>
+        {state === "loading" && <ExtensionsTableSkeleton />}
+        {state === "error" && (
+          <LoadError
+            subject="extensions"
+            message={req.error}
+            onRetry={req.refetch}
+            inset
+          />
+        )}
+        {state === "empty" && (
+          <EmptyState title="No extensions installed">
+            Extensions add model types, vaults and datastores to this repo.
+            Install one with <code>swamp extension pull @collective/name</code>.
+          </EmptyState>
+        )}
+        {state === "ready" && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  {EXTENSION_COLUMNS.map((c) => (
+                    <th key={c.header}>{c.header}</th>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                </tr>
+              </thead>
+              <tbody>
+                {extensions.map((ext) => (
+                  <tr key={ext.name}>
+                    <td style={{ fontWeight: 500 }}>{ext.name}</td>
+                    <td>
+                      <span className="cron-badge">{ext.version}</span>
+                    </td>
+                    <td
+                      style={{ fontSize: "0.82rem", color: "var(--text-3)" }}
+                    >
+                      {ext.channel ?? "stable"}
+                    </td>
+                    <td>
+                      <StatusPill
+                        status={ext.updateStatus === "update_available"
+                          ? "suspended"
+                          : "succeeded"}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </>
   );

@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { pluralize } from "../lib/format.ts";
+
 export interface ServeConfigRow {
   label: string;
   value: string;
@@ -53,7 +55,7 @@ export function serveConfigRows(payload: unknown): ServeConfigRow[] | null {
   if (Array.isArray(config.webhooks) && config.webhooks.length > 0) {
     rows.push({
       label: "Webhooks",
-      value: `${config.webhooks.length} endpoints`,
+      value: pluralize(config.webhooks.length, "endpoint"),
       ok: false,
     });
   }

@@ -17,15 +17,33 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
+import type { ReactNode } from "react";
+import { SkeletonList, SkeletonRegion } from "./Skeleton.tsx";
+
 /**
  * Stands in for a health-backed panel while there is no snapshot to show, so
  * a refused or pending stream never reads as "nothing configured".
+ *
+ * While the stream has not delivered (`state="loading"`) it renders a
+ * skeleton announced as "Loading <subject>": `skeleton` when given — pass
+ * placeholders shaped like the panel's loaded rows — otherwise generic list
+ * rows. `denied` renders the access notice.
  */
 export function HealthUnavailable(
-  { state, subject }: { state: "denied" | "loading"; subject: string },
+  { state, subject, skeleton }: {
+    state: "denied" | "loading";
+    subject: string;
+    /** Decorative placeholders shaped like the loaded content. */
+    skeleton?: ReactNode;
+  },
 ) {
   if (state === "loading") {
-    return <div className="loading">Loading {subject}…</div>;
+    const label = `Loading ${subject}`;
+    return skeleton === undefined
+      ? <SkeletonList rows={3} label={label} />
+      : <SkeletonRegion label={label}>{skeleton}</SkeletonRegion>;
   }
   return (
     <div className="notice notice-danger" role="alert">

@@ -32,6 +32,23 @@ import { totalQueued } from "./schedule_queue.ts";
 import { activeRunIds } from "../client/resume_state";
 import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import { HealthUnavailable } from "../components/HealthUnavailable";
+import { EmptyState } from "../components/EmptyState";
+import { LoadError } from "../components/LoadError";
+import { Skeleton, SkeletonList } from "../components/Skeleton";
+import { loadState } from "../client/load_state.ts";
+import {
+  formatCount,
+  formatDuration,
+  formatRelativeTime,
+  pluralize,
+} from "../lib/format.ts";
+import {
+  CountSkeleton,
+  ExecutionChartFrame,
+  ExecutionChartSkeleton,
+  ScheduleRowsSkeleton,
+  StatValueSkeleton,
+} from "./PageSkeletons.tsx";
 
 interface WorkflowRunSearchItem {
   runId: string;
@@ -64,22 +81,23 @@ export function Overview(
   const queuedFires = totalQueued(health?.scheduling?.schedules ?? []);
   const { request } = useSwamp();
 
-  const { data: runsData, refetch: refetchRuns } = useRequest(
-    "workflow.run.search",
-    { limit: 500 },
-  );
-  const { data: approvalsData, refetch: refetchApprovals } = useRequest(
-    "workflow.approvals",
-  );
+  const runsReq = useRequest("workflow.run.search", { limit: 500 });
+  const approvalsReq = useRequest("workflow.approvals");
+  const { data: runsData, refetch: refetchRuns } = runsReq;
+  const { data: approvalsData, refetch: refetchApprovals } = approvalsReq;
 
   const runs = extractArray<WorkflowRunSearchItem>(runsData);
   const approvals = pendingApprovals(approvalsData);
+  const runsState = loadState(runsReq, () => runs.length === 0);
+  const approvalsState = loadState(approvalsReq, () => approvals.length === 0);
+  const runsLoading = runsState === "loading";
+  const healthLoading = healthState === "loading";
 
   const totalRuns = runs.length;
   const succeededRuns = runs.filter((r) => r.status === "succeeded").length;
   const successRate = totalRuns > 0
-    ? ((succeededRuns / totalRuns) * 100).toFixed(1)
-    : "0";
+    ? `${((succeededRuns / totalRuns) * 100).toFixed(1)}%`
+    : "—";
   const failedRuns = runs.filter((r) => r.status === "failed").slice(0, 4);
   const liveRuns = runs.filter(
     (r) => r.status === "running" || r.status === "suspended",
@@ -147,51 +165,101 @@ export function Overview(
               {health.ready ? "Healthy" : "Degraded"}
             </div>
           )}
+          {healthLoading && <Skeleton width={84} height={26} radius={20} />}
         </div>
       </div>
 
-      <div className="stats-grid">
+      <div
+        className="stats-grid"
+        aria-busy={runsLoading || healthLoading || undefined}
+      >
         <div className="stat-card">
           <div className="stat-label">Total Runs</div>
-          <div className="stat-value">{totalRuns.toLocaleString()}</div>
+          <div className="stat-value">
+            {runsLoading ? <StatValueSkeleton /> : formatCount(totalRuns)}
+          </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Success Rate</div>
-          <div className="stat-value" style={{ color: "var(--success)" }}>
-            {successRate}%
+          <div
+            className="stat-value"
+            style={totalRuns > 0 ? { color: "var(--success)" } : undefined}
+          >
+            {runsLoading ? <StatValueSkeleton width={96} /> : successRate}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Throughput</div>
           <div className="stat-value">
-            {health?.metrics?.throughputPerMinute?.toFixed(1) ?? "—"}
-            <span style={{ fontSize: "0.9rem", color: "var(--text-3)" }}>
-              /min
-            </span>
+            {healthLoading ? <StatValueSkeleton width={72} /> : (
+              <>
+                {health?.metrics?.throughputPerMinute?.toFixed(1) ?? "—"}
+                <span style={{ fontSize: "0.9rem", color: "var(--text-3)" }}>
+                  /min
+                </span>
+              </>
+            )}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">P95 Latency</div>
           <div className="stat-value">
-            {health?.metrics?.latency?.p95
+            {healthLoading
+              ? <StatValueSkeleton width={64} />
+              : health?.metrics?.latency?.p95
               ? `${(health.metrics.latency.p95 / 1000).toFixed(1)}s`
               : "—"}
           </div>
         </div>
       </div>
 
-      <ExecutionChart runs={runs} />
+      {runsState === "loading" && <ExecutionChartSkeleton />}
+      {runsState === "error" && (
+        <ExecutionChartFrame>
+          <LoadError
+            subject="runs"
+            message={runsReq.error}
+            onRetry={refetchRuns}
+            style={{ marginBottom: 0 }}
+          />
+        </ExecutionChartFrame>
+      )}
+      {runsState === "empty" && (
+        <ExecutionChartFrame>
+          <EmptyState title="No runs yet">
+            Runs started by a schedule, a webhook or{" "}
+            <code>swamp workflow run</code> are charted here by day.
+          </EmptyState>
+        </ExecutionChartFrame>
+      )}
+      {runsState === "ready" && <ExecutionChart runs={runs} />}
 
       <div className="panels-grid">
         <div className="panel">
           <div className="panel-header">
             <div className="panel-title">
-              Live Runs <span className="panel-count">{liveRuns.length}</span>
+              Live Runs {runsLoading
+                ? <CountSkeleton />
+                : <span className="panel-count">{liveRuns.length}</span>}
             </div>
           </div>
           <div>
-            {liveRuns.length === 0 && (
-              <div className="loading">No active runs</div>
+            {runsState === "loading" && (
+              <SkeletonList rows={3} label="Loading live runs" />
+            )}
+            {runsState === "error" && (
+              <LoadError
+                subject="runs"
+                message={runsReq.error}
+                onRetry={refetchRuns}
+                inset
+              />
+            )}
+            {(runsState === "empty" || runsState === "ready") &&
+              liveRuns.length === 0 && (
+              <EmptyState title="No active runs">
+                Running and suspended runs show here with their step progress.
+              </EmptyState>
             )}
             {liveRuns.map((run) => (
               <div
@@ -262,8 +330,22 @@ export function Overview(
                 {decisionError}
               </div>
             )}
-            {approvals.length === 0 && (
-              <div className="loading">No pending approvals</div>
+            {approvalsState === "loading" && (
+              <SkeletonList rows={2} label="Loading pending approvals" />
+            )}
+            {approvalsState === "error" && (
+              <LoadError
+                subject="approvals"
+                message={approvalsReq.error}
+                onRetry={refetchApprovals}
+                inset
+              />
+            )}
+            {approvalsState === "empty" && (
+              <EmptyState title="No pending approvals">
+                Workflow steps waiting for a manual approval show here, ready to
+                approve or reject.
+              </EmptyState>
             )}
             {approvals.map((a) => (
               <div className="approval-row" key={`${a.runId}-${a.stepName}`}>
@@ -331,11 +413,18 @@ export function Overview(
           </div>
           <div>
             {healthState !== "ready" && (
-              <HealthUnavailable state={healthState} subject="schedules" />
+              <HealthUnavailable
+                state={healthState}
+                subject="schedules"
+                skeleton={<ScheduleRowsSkeleton />}
+              />
             )}
             {healthState === "ready" &&
               !health?.scheduling?.schedules?.length && (
-              <div className="loading">No schedules visible to this token</div>
+              <EmptyState title="No upcoming schedules">
+                Workflows with a cron trigger show here with their next run.
+                None are visible to this token.
+              </EmptyState>
             )}
             {(health?.scheduling?.schedules ?? []).map((s) => (
               <div className="schedule-row" key={s.workflowId}>
@@ -354,13 +443,29 @@ export function Overview(
         <div className="panel">
           <div className="panel-header">
             <div className="panel-title">
-              Recent Failures{" "}
-              <span className="panel-count">{failedRuns.length}</span>
+              Recent Failures {runsLoading
+                ? <CountSkeleton />
+                : <span className="panel-count">{failedRuns.length}</span>}
             </div>
           </div>
           <div>
-            {failedRuns.length === 0 && (
-              <div className="loading">No recent failures</div>
+            {runsState === "loading" && (
+              <SkeletonList rows={4} label="Loading recent failures" />
+            )}
+            {runsState === "error" && (
+              <LoadError
+                subject="runs"
+                message={runsReq.error}
+                onRetry={refetchRuns}
+                inset
+              />
+            )}
+            {(runsState === "empty" || runsState === "ready") &&
+              failedRuns.length === 0 && (
+              <EmptyState title="No recent failures">
+                None of the latest runs failed. Failed runs show here with the
+                step that failed and why.
+              </EmptyState>
             )}
             {failedRuns.map((run) => (
               <div
@@ -561,33 +666,7 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
     : 0;
 
   return (
-    <div className="chart-section">
-      <div className="chart-header">
-        <span className="chart-title">Executions</span>
-        <div className="chart-legend">
-          <span>
-            <span
-              className="legend-dot"
-              style={{ background: "var(--chart-bar-1)" }}
-            />
-            Succeeded
-          </span>
-          <span>
-            <span
-              className="legend-dot"
-              style={{ background: "var(--chart-bar-2)" }}
-            />
-            Failed
-          </span>
-          <span>
-            <span
-              className="legend-dot"
-              style={{ background: "var(--chart-bar-3)" }}
-            />
-            Suspended
-          </span>
-        </div>
-      </div>
+    <ExecutionChartFrame>
       <div className="chart-area" style={{ position: "relative" }}>
         <canvas
           ref={canvasRef}
@@ -616,7 +695,7 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              {tooltip.day} &middot; {total} runs
+              {tooltip.day} &middot; {pluralize(total, "run")}
             </div>
             {tooltip.data.succeeded > 0 && (
               <div style={{ color: "var(--success)" }}>
@@ -646,29 +725,6 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
           </div>
         )}
       </div>
-    </div>
+    </ExecutionChartFrame>
   );
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "—";
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem = secs % 60;
-  return `${mins}m ${rem.toString().padStart(2, "0")}s`;
-}
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 0) {
-    const absDiff = Math.abs(diff);
-    if (absDiff < 3600000) return `in ${Math.floor(absDiff / 60000)}m`;
-    if (absDiff < 86400000) return `in ${Math.floor(absDiff / 3600000)}h`;
-    return `in ${Math.floor(absDiff / 86400000)}d`;
-  }
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
 }
