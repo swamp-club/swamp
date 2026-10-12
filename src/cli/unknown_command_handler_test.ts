@@ -25,6 +25,7 @@ import {
   extractPositionalArgs,
   extractUnknownName,
   getSubcommandNames,
+  unknownSubcommandBehindOption,
 } from "./unknown_command_handler.ts";
 
 // Helper to build a command with subcommands for testing.
@@ -129,6 +130,89 @@ Deno.test("buildUnknownCommandMessage - behavior context suggestions (swamp-club
   const cmd = buildCommand("behavior", ["run"]);
   const msg = buildUnknownCommandMessage("my-server", cmd);
   assertStringIncludes(msg, "swamp behavior run my-server <method>");
+});
+
+Deno.test("buildUnknownCommandMessage - the legacy word under behavior suggests the run the user meant", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("method", cmd, [
+    "behavior",
+    "method",
+    "run",
+    "p1",
+    "ping",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run p1 ping");
+  assertEquals(msg.includes("run method"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - run under model suggests behavior run with the typed model and method", () => {
+  const cmd = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("run", cmd, [
+    "--json",
+    "model",
+    "run",
+    "p1",
+    "ping",
+    "--input",
+    "k=v",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run p1 ping");
+  assertEquals(msg.includes("swamp model get run"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - the hybrid without raw args falls back to placeholders", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("method", cmd);
+  assertStringIncludes(msg, "swamp behavior run <model> <method>");
+});
+
+Deno.test("unknownSubcommandBehindOption - finds the unknown positional a group was given alongside an option", () => {
+  const behavior = new Command()
+    .name("behavior")
+    .alias("behaviour")
+    .command("run", new Command().name("run"));
+  const root = new Command().name("swamp").command("behavior", behavior);
+  const group = root.getCommand("behavior")!;
+  assertEquals(
+    unknownSubcommandBehindOption(group, [
+      "behavior",
+      "@acme/t",
+      "run",
+      "ping",
+      "name",
+      "--input",
+      "k=v",
+    ]),
+    "@acme/t",
+  );
+  assertEquals(
+    unknownSubcommandBehindOption(group, [
+      "behaviour",
+      "run",
+      "p1",
+      "ping",
+      "--input",
+      "k=v",
+    ]),
+    undefined,
+  );
+  assertEquals(
+    unknownSubcommandBehindOption(group, ["behavior", "--input", "k=v"]),
+    undefined,
+  );
+  const model = buildCommand("model", ["create", "get", "method"]);
+  assertEquals(
+    unknownSubcommandBehindOption(model, ["model", "p1", "--input", "k=v"]),
+    "p1",
+  );
+  assertEquals(
+    unknownSubcommandBehindOption(new Command().name("leaf"), [
+      "leaf",
+      "x",
+      "--bogus",
+    ]),
+    undefined,
+  );
 });
 
 Deno.test("buildUnknownCommandMessage - an @type under behavior suggests the direct-type form", () => {
