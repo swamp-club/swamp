@@ -21,7 +21,7 @@
 /** @jsxImportSource react */
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ScheduleControls } from "./ScheduleControls.tsx";
+import { resetConfirmText, ScheduleControls } from "./ScheduleControls.tsx";
 import { ScheduleEditorForm } from "./ScheduleEditorForm.tsx";
 
 const noop = () => {};
@@ -179,4 +179,10 @@ Deno.test("ScheduleEditorForm: shows a save error and the saving state", () => {
   assertStringIncludes(html, 'role="alert"');
   assertStringIncludes(html, "Couldn&#x27;t change the schedule: boom");
   assertStringIncludes(html, "Saving…");
+});
+
+Deno.test("resetConfirmText: says a paused schedule stays paused", () => {
+  assertStringIncludes(resetConfirmText(true), "It stays paused.");
+  assertEquals(resetConfirmText(false).includes("paused"), false);
+  assertEquals(resetConfirmText(undefined).includes("paused"), false);
 });

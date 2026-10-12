@@ -46,6 +46,13 @@ const PENDING_TEXT: Record<ScheduleAction, string> = {
   reset: "Resetting…",
 };
 
+/** The question Reset asks, saying what happens to a pause. */
+export function resetConfirmText(paused: boolean | undefined): string {
+  return paused
+    ? "Drop the override and use the workflow file's schedule? It stays paused."
+    : "Drop the override and use the workflow file's schedule?";
+}
+
 /**
  * Pause/Resume, Edit and Reset for one schedule. Reset removes the serve
  * override, so it asks for a second click; every control is disabled while
@@ -79,7 +86,7 @@ export function ScheduleControls(
           ? (
             <>
               <span className="sched-confirm-text">
-                Drop the override and use the workflow file's schedule?
+                {resetConfirmText(paused)}
               </span>
               <button
                 type="button"

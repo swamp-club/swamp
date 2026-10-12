@@ -46,7 +46,13 @@ export interface ScheduleMutations {
     schedule: string,
     inputs: Record<string, unknown>,
   ) => Promise<string | null>;
-  reset: (workflowName: string) => Promise<boolean>;
+  /**
+   * Removes the serve override so the workflow file's schedule applies.
+   * `workflow.trigger.remove` drops the whole override, pause included (as
+   * `swamp workflow trigger remove` does), so a paused schedule is paused
+   * again right after: Reset never silently resumes it.
+   */
+  reset: (workflowName: string, paused: boolean) => Promise<boolean>;
   dismiss: (workflowName: string) => void;
   /** Drops unconfirmed pause states the health stream now agrees with. */
   sync: (
@@ -81,11 +87,13 @@ export function useScheduleMutations(
       action: ScheduleAction,
       type: string,
       payload: Record<string, unknown>,
+      followUp?: { type: string; payload: Record<string, unknown> },
     ): Promise<string | null> => {
       setPending((m) => withEntry(m, workflowName, action));
       setFeedback((m) => withEntry(m, workflowName, null));
       try {
         await request(type, payload);
+        if (followUp) await request(followUp.type, followUp.payload);
         setFeedback((m) =>
           withEntry(m, workflowName, {
             tone: "success",
@@ -137,15 +145,21 @@ export function useScheduleMutations(
   );
 
   const reset = useCallback(
-    async (workflowName: string) => {
+    async (workflowName: string, paused: boolean) => {
       const error = await run(
         workflowName,
         "reset",
         "workflow.trigger.remove",
         { workflowName },
+        paused
+          ? {
+            type: "workflow.trigger.set",
+            payload: { workflowName, paused: true },
+          }
+          : undefined,
       );
       if (error === null) {
-        setOptimistic((m) => withEntry(m, workflowName, false));
+        setOptimistic((m) => withEntry(m, workflowName, paused));
       }
       return error === null;
     },

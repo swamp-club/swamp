@@ -195,7 +195,7 @@ export function ScheduleDetail(
             onPause={() => void mutations.setPaused(workflowName, true)}
             onResume={() => void mutations.setPaused(workflowName, false)}
             onEdit={() => setEditing(true)}
-            onReset={() => void mutations.reset(workflowName)}
+            onReset={() => void mutations.reset(workflowName, paused === true)}
             layout="header"
           />
         )}

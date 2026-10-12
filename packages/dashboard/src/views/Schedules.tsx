@@ -283,7 +283,8 @@ export function Schedules(
                   onResume={() =>
                     void mutations.setPaused(row.workflowName, false)}
                   onEdit={() => setEditing(row.workflowName)}
-                  onReset={() => void mutations.reset(row.workflowName)}
+                  onReset={() =>
+                    void mutations.reset(row.workflowName, row.paused === true)}
                 />
               )}
             />
