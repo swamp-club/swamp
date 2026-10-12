@@ -35,7 +35,11 @@ import {
   takePendingSignal,
 } from "./pending_signal.ts";
 import { SignalWait } from "./signal_wait.ts";
-import { cancelledOutcome, registrationOf } from "./signal_wait_records.ts";
+import {
+  cancelledOutcome,
+  decideSignal,
+  registrationOf,
+} from "./signal_wait_records.ts";
 import { InMemorySignalWaitStore } from "./signal_wait_store_test_helpers.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -685,4 +689,63 @@ Deno.test("findSignalByIdempotencyKey: a key names a signal of its sender only",
     ),
     undefined,
   );
+});
+
+Deno.test("holdEarlySignal: a signal whose other copy settled the wait that reads its slot is not stored again for the next claim", async () => {
+  // A copy of the signal, from the same sender under the same key, is
+  // delivered to the step's wait while this one arrives: the slot is
+  // claimed and settled, by a receipt that is not this signal's.
+  const settledBy = async (
+    store: InMemorySignalWaitStore,
+    sender: string,
+    idempotencyKey: string,
+  ) => {
+    const step = await claim(store, NOW);
+    const registration = await store.findRegistration(step.claim.waitId);
+    assert(registration.kind === "found");
+    const decision = decideSignal(
+      registration.record,
+      { verdict: "known" },
+      sender,
+      NOW,
+      idempotencyKey,
+    );
+    assert(decision.accepted);
+    await store.settle(decision.outcome);
+    return { claim: step.claim, receipt: decision.outcome.receipt };
+  };
+
+  const store = new InMemorySignalWaitStore();
+  let other: Awaited<ReturnType<typeof settledBy>> | undefined;
+  const arrival = await holdEarlySignal(
+    afterFirstCreate(store, async () => {
+      other = await settledBy(store, "camera", "order-1");
+    }),
+    signal({ idempotencyKey: "order-1" }),
+    NOW,
+  );
+  assert(arrival.kind === "duplicate", `got ${arrival.kind}`);
+  assertEquals(arrival.claim, other?.claim);
+  assertEquals(arrival.outcome.receipt, other?.receipt);
+  // Only the record it stored before it found out; none in the next slot.
+  assertEquals(
+    (await store.listPendingAddresses()).map((at) => at.slot),
+    [1],
+  );
+
+  // Another sender's signal, or another key, is a signal of its own.
+  for (
+    const [sender, key] of [["doorbell", "order-1"], ["camera", "order-2"]]
+  ) {
+    const separate = new InMemorySignalWaitStore();
+    const held = await holdEarlySignal(
+      afterFirstCreate(separate, async () => {
+        await settledBy(separate, sender, key);
+      }),
+      signal({ idempotencyKey: "order-1" }),
+      NOW,
+    );
+    assert(held.kind === "pending", `got ${held.kind}`);
+    assertEquals(held.record.slot, 2);
+  }
 });

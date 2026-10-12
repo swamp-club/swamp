@@ -849,14 +849,17 @@ async function deliver(
     stored.record.receipt.id === pendingReceiptId
   ) {
     delivered = stored.record;
-  } else if (
+  }
+  // The wait was settled by another copy of this signal, from the same
+  // sender under the same idempotency key: an earlier attempt, or one that
+  // won the create at the same moment. Answered with that one.
+  if (
     input.idempotencyKey !== undefined && stored.kind === "found" &&
     stored.record.kind === "accepted" &&
+    !(delivered && settledBy(stored, delivered)) &&
     stored.record.receipt.idempotencyKey === input.idempotencyKey &&
     stored.record.receipt.submittedBy === senderOf(input)
   ) {
-    // The sender's retry of the signal that settled the wait: answered
-    // with that one.
     delivered = stored.record;
     duplicate = true;
   }
@@ -1324,6 +1327,15 @@ async function arriveEarly(
         record?.receiptId,
       );
     }
+    case "duplicate":
+      return await landedAnswer(
+        deps,
+        input,
+        workflow,
+        arrival.claim,
+        { ...arrival.outcome.receipt },
+        { duplicate: true, store },
+      );
     case "taken":
       return await landedAnswer(
         deps,

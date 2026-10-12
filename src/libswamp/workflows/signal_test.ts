@@ -2204,3 +2204,106 @@ Deno.test("workflowSignal: a caller that cannot be told a signal is held is not 
   assertEquals(refusalOf(events.at(-1)!).kind, "no_open_wait");
   assertEquals(waits.pendingRecords.size, 1);
 });
+
+Deno.test("workflowSignal: of two copies of a signal sent to an open wait at the same moment, the one that loses is answered with the other", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const opened = await suspendedAtEarlyWait(workflow, waits, OPENED);
+  const fixture = await fixtureOf([opened.run], {
+    waits,
+    workflows: [workflow],
+  });
+  const payload = { verdict: "ship" };
+  // The other copy settles the wait between this one's read and its create.
+  let winner: WorkflowSignalEvent | undefined;
+  let first = true;
+  const racing = new Proxy(waits, {
+    get(target, property, receiver) {
+      if (property !== "settle") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (
+        outcome: Parameters<InMemorySignalWaitStore["settle"]>[0],
+      ) => {
+        if (first) {
+          first = false;
+          winner = await send(fixture, opened.waitId, payload, "order-1");
+        }
+        return await target.settle(outcome);
+      };
+    },
+  });
+  const loser = await send(
+    {
+      deps: {
+        ...fixture.deps,
+        signalWaits: { supported: true, store: racing },
+      },
+    },
+    opened.waitId,
+    payload,
+    "order-1",
+  );
+  assert(winner?.kind === "completed", `got ${winner?.kind}`);
+  assertEquals(winner.data.duplicate, undefined);
+  assert(loser.kind === "completed", `got ${loser.kind}`);
+  assertEquals(loser.data.duplicate, true);
+  assertEquals(loser.data.signal, winner.data.signal);
+});
+
+Deno.test("workflowSignal: an early signal whose other copy was delivered to the wait that opened is answered with it, and nothing is held for the next run", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const payload = { verdict: "ship" };
+  // The step opens its wait and the other copy is delivered to it, between
+  // this copy's create and its second read of the key.
+  let opened: { run: WorkflowRun; waitId: string } | undefined;
+  let delivered: WorkflowSignalEvent | undefined;
+  let first = true;
+  const racing = new Proxy(waits, {
+    get(target, property, receiver) {
+      if (property !== "createPendingRecord") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (
+        record: Parameters<InMemorySignalWaitStore["createPendingRecord"]>[0],
+      ) => {
+        if (!first) return await target.createPendingRecord(record);
+        first = false;
+        // The step claimed and read its slot before this record existed.
+        opened = await suspendedAtEarlyWait(workflow, target, IN_TIME);
+        const during = await fixtureOf([opened.run], {
+          waits: target,
+          workflows: [workflow],
+        });
+        delivered = await send(during, opened.waitId, payload, "order-1");
+        return await target.createPendingRecord(record);
+      };
+    },
+  });
+  const empty = await fixtureOf([], { waits, workflows: [workflow] });
+  const early = await sendByKey(
+    {
+      deps: {
+        ...empty.deps,
+        signalWaits: { supported: true, store: racing },
+      },
+    },
+    "release",
+    KEY,
+    payload,
+    "order-1",
+  );
+  assert(delivered?.kind === "completed", `got ${delivered?.kind}`);
+  assert(early.kind === "completed", `got ${early.kind}`);
+  assertEquals(early.data.duplicate, true);
+  assertEquals(early.data.waitId, opened?.waitId);
+  assertEquals(early.data.signal, delivered.data.signal);
+  // Nothing waits in the next claim's slot.
+  assertEquals(
+    (await waits.listPendingAddresses()).map((at) => at.slot),
+    [1],
+  );
+});

@@ -202,6 +202,18 @@ export type EarlyArrival =
     readonly claim: WaitKeyClaim;
     readonly record: PendingSignal;
   }
+  /**
+   * A wait that reads the stored signal's slot was settled by another copy
+   * of this signal: one from the same sender under the same idempotency
+   * key, delivered to the wait while this one arrived. `outcome` holds that
+   * copy's receipt. This one is not stored again for the next claim.
+   */
+  | {
+    readonly kind: "duplicate";
+    readonly claim: WaitKeyClaim;
+    readonly outcome: AcceptedWaitOutcome;
+    readonly record: PendingSignal;
+  }
   /** A record of the key cannot be read, so nothing can be decided. */
   | { readonly kind: "unreadable" }
   /** The key changed hands on every attempt. */
@@ -213,11 +225,17 @@ export type EarlyArrival =
  * over a release) and whose outcome is this signal's receipt. It is looked
  * for among every claim of the key, not only the highest, because the key
  * may have been claimed again since.
+ *
+ * A signal sent under an idempotency key has a second way to have landed
+ * there: another copy of it, from the same sender under the same key, was
+ * delivered to that wait while this one arrived. That outcome holds the
+ * other copy's receipt, and is returned as it is.
  */
 async function findTakerOf(
   store: Pick<WaitKeyRecords, "listKeyRecords" | "findOutcome">,
   stored: PendingSignal,
-): Promise<WaitKeyClaim | undefined> {
+): Promise<{ claim: WaitKeyClaim; outcome: AcceptedWaitOutcome } | undefined> {
+  let copy: { claim: WaitKeyClaim; outcome: AcceptedWaitOutcome } | undefined;
   for (const record of await store.listKeyRecords()) {
     if (
       record.kind !== "claim" || record.workflowId !== stored.workflowId ||
@@ -226,12 +244,20 @@ async function findTakerOf(
     ) continue;
     const outcome = await store.findOutcome(record.waitId);
     if (
-      outcome.kind === "found" && outcome.record.runId === record.runId &&
-      outcome.record.kind === "accepted" &&
-      outcome.record.receipt.id === stored.receiptId
-    ) return record;
+      outcome.kind !== "found" || outcome.record.runId !== record.runId ||
+      outcome.record.kind !== "accepted"
+    ) continue;
+    const { receipt } = outcome.record;
+    if (receipt.id === stored.receiptId) {
+      return { claim: record, outcome: outcome.record };
+    }
+    if (
+      stored.idempotencyKey !== undefined &&
+      receipt.idempotencyKey === stored.idempotencyKey &&
+      receipt.submittedBy === stored.submittedBy
+    ) copy = { claim: record, outcome: outcome.record };
   }
-  return undefined;
+  return copy;
 }
 
 /**
@@ -336,7 +362,11 @@ export async function holdEarlySignal(
     // held or settled again since: a signal a wait took is never delivered
     // or stored a second time.
     const taker = await findTakerOf(store, stored);
-    if (taker) return { kind: "taken", claim: taker, record: stored };
+    if (taker) {
+      return taker.outcome.receipt.id === stored.receiptId
+        ? { kind: "taken", claim: taker.claim, record: stored }
+        : { kind: "duplicate", ...taker, record: stored };
+    }
     if (holding.kind === "held") {
       return { kind: "held", claim: holding.claim, record: stored };
     }

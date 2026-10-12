@@ -1330,6 +1330,10 @@ for a key someone else used. It is looked for:
   gone still answers already settled, with the receipt in the details.
 - Two copies that both arrive early: one is stored, and the other is answered
   with it instead of `already_pending`.
+- A copy that arrives early while another is delivered to the wait that
+  opens: the early one finds its slot claimed and settled by a receipt that
+  is not its own, under its key and sender (`findTakerOf`), and is answered
+  with that one instead of arriving again for the next claim.
 
 The answer is the first signal's: `pending` with its `heldUntil` while it is
 held, or the wait and run that took it. A key is remembered until the run that
