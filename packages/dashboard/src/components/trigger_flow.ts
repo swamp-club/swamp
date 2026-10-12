@@ -242,9 +242,12 @@ export function layoutFlow(spec: FlowSpec): FlowLayout {
   link("trigger", "inputs", spec.trigger.paused);
   link("inputs", "workflow");
   for (const job of spec.jobs) {
-    const deps = job.dependsOn.filter((d) =>
-      jobsByName.has(d) && d !== job.name
-    );
+    // A dependency listed twice still draws one edge.
+    const deps = [
+      ...new Set(
+        job.dependsOn.filter((d) => jobsByName.has(d) && d !== job.name),
+      ),
+    ];
     if (deps.length === 0) link("workflow", `job:${job.name}`);
     for (const dep of deps) link(`job:${dep}`, `job:${job.name}`);
   }
