@@ -34,6 +34,7 @@ import {
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
   isAlwaysLocal,
+  isCatalogFileName,
   isRepoLocalStreamSubdir,
   isRunLogFile,
   LOCK_TIMEOUT_ENV_VAR,
@@ -530,6 +531,24 @@ Deno.test("CATALOG_FILES: names the catalog and its sidecars under data", () => 
     join("data", "_catalog.db-wal"),
     join("data", "_catalog.db-shm"),
   ]);
+});
+
+Deno.test("isCatalogFileName: accepts the catalog and its sidecars only", () => {
+  for (
+    const name of [
+      "_catalog.db",
+      "_catalog.db-journal",
+      "_catalog.db-wal",
+      "_catalog.db-shm",
+    ]
+  ) {
+    assertEquals(isCatalogFileName(name), true, name);
+  }
+  for (
+    const name of ["_catalog.db.bak", "catalog.db", "_extension_catalog.db"]
+  ) {
+    assertEquals(isCatalogFileName(name), false, name);
+  }
 });
 
 Deno.test("isRepoLocalStreamSubdir: accepts the stream directories only", () => {

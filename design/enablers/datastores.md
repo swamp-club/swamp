@@ -338,6 +338,20 @@ namespaced one. Each `DEFAULT_DATASTORE_SUBDIRS` directory found at
 `Deno.rename()`. The catalog is then invalidated so backfill rebuilds it from
 the new paths.
 
+Migration never treats the catalog as datastore content (swamp-club#3316). On a
+repo-local datastore `{base}/data/` is also where the catalog lives, so that
+directory is merged entry by entry rather than renamed whole, and `_catalog.db`
+and its SQLite sidecars (`CATALOG_FILE_NAMES` in
+`src/domain/datastore/datastore_config.ts`) stay where they are. They are not
+moved, not compared in the collision check below, and not counted as data by
+the reverse check. A directory holding only the catalog is nothing to move, so
+the command is safe to re-run: after a complete migration it reports nothing to
+migrate, and after one that stopped part-way it moves the directories the
+earlier run did not reach. A confirmed run in either direction also deletes any
+stale catalog copy from `{base}/{namespace}/data/`, which earlier versions left
+there by moving the catalog along with the data. It never deletes from the
+directory holding the live catalog.
+
 If a file exists at both the root and namespace paths, forward migration
 compares them byte by byte. Identical copies (e.g. left by a buggy pull that
 wrote namespace-stripped files to the cache root) are resolved by deleting the
