@@ -1108,7 +1108,7 @@ async function adoptManagedConfigOnV3(
     // Reported with the adoption that left them out, not on every command.
     if (plan.adoptions.length > 0 && plan.skipped.length > 0) {
       logger
-        .warn`${plan.skipped.length} existing config file(s) were not committed: they declare no usable name, or a name another file declares. Run 'swamp datastore config migrate' to list them`;
+        .warn`${plan.skipped.length} existing config file(s) were not committed: they declare no usable name, repeat another file's name, or have a path the datastore cannot store. Run 'swamp datastore config migrate' to list them`;
     }
   } catch (error) {
     if (!(error instanceof ConfigAdoptionRefusedError)) throw error;

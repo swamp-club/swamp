@@ -154,6 +154,8 @@ function renderV3Migration(
     ctx.logger.warn`Skipped ${s.path}: ${
       s.reason === "duplicate-name"
         ? "another file declares the same name"
+        : s.reason === "invalid-path"
+        ? "its path cannot be stored in the datastore"
         : "it declares no usable name"
     }`;
   }

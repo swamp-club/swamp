@@ -93,6 +93,8 @@ export interface ConfigAdoption {
 export type ConfigAdoptionSkipReason =
   /** The file declares no name, or one no partition can be formed from. */
   | "unnamed"
+  /** No record key can name the file's path in the config tier. */
+  | "invalid-path"
   /** An earlier file of the same kind declares the same name. */
   | "duplicate-name";
 
@@ -142,12 +144,12 @@ export async function planConfigAdoption(
       const rel = relative(sourceRoot, sourcePath);
       assertContainedPath(rel, targetRoot);
       const targetPath = join(targetRoot, rel);
-      // Once adopted, the config tier holds the same bytes at the same
-      // path: skip it before parsing it or reading the commit log, so a
-      // repo whose config was adopted long ago pays one read per file.
-      // Adoption writes a tier copy only after its commit lands, so a copy
-      // means a committed name (a copy placed there by hand aside).
-      if (await sameBytes(sourcePath, targetPath)) {
+      // Adoption writes a tier copy only after its commit lands, and every
+      // later write there commits too, so a file at the target path means a
+      // committed name (a copy placed there by hand aside), whatever bytes
+      // an edit has since given it. Skip it before parsing it or reading the
+      // commit log: a repo adopted long ago pays one lstat per file.
+      if (await isFile(targetPath)) {
         alreadyCommitted++;
         continue;
       }
@@ -159,6 +161,16 @@ export async function planConfigAdoption(
         : unlessUnpartitionable(() => new ConfigChanges(kind, name));
       if (name === undefined || changes === undefined) {
         skipped.push({ kind, path: sourcePath, name, reason: "unnamed" });
+        continue;
+      }
+      // A path no record key can name (a backslash in a file name, say)
+      // would throw when staged and fail every writing command.
+      if (
+        unlessUnpartitionable(() =>
+          keyUnder("config", options.configBase, targetPath)
+        ) === undefined
+      ) {
+        skipped.push({ kind, path: sourcePath, name, reason: "invalid-path" });
         continue;
       }
       if (seen.has(name)) {
@@ -330,20 +342,14 @@ export async function commitConfigAdoption(
   }
 }
 
-/** Whether `target` is a file holding exactly the bytes `source` holds. */
-async function sameBytes(source: string, target: string): Promise<boolean> {
-  let targetBytes: Uint8Array;
+/** Whether `path` is a regular file, without following a symlink. */
+async function isFile(path: string): Promise<boolean> {
   try {
-    const info = await Deno.lstat(target);
-    if (!info.isFile) return false;
-    targetBytes = await Deno.readFile(target);
+    return (await Deno.lstat(path)).isFile;
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return false;
     throw error;
   }
-  const sourceBytes = await Deno.readFile(source);
-  return sourceBytes.length === targetBytes.length &&
-    sourceBytes.every((byte, index) => byte === targetBytes[index]);
 }
 
 /**

@@ -372,6 +372,8 @@ Deno.test("v3 config migrate: a stale clone's create of a committed key is refus
       outputMode: "json",
     });
     const configBase = b.datastoreResolver.resolvePath("config");
+    // A stale checkout has not materialised A's commits yet.
+    await Deno.remove(configBase, { recursive: true });
     const stale = await planConfigAdoption({
       repoDir: repos.repoB,
       configBase,
@@ -491,6 +493,10 @@ Deno.test("v3 managedConfig by hand: a refused adoption warns and the writing co
       }
       return realHead(namespace, partition);
     };
+    // Nor has it caught up: the context opens over a checkout that has not
+    // materialised A's commits.
+    const realCatchUp = handle.catchUp;
+    handle.catchUp = () => Promise.resolve();
     const commits = await commitCount(repos);
     try {
       const warnings = await managedConfigWarnings(async () => {
@@ -505,8 +511,11 @@ Deno.test("v3 managedConfig by hand: a refused adoption warns and the writing co
       assertEquals(await commitCount(repos), commits, "nothing landed");
     } finally {
       store.head = realHead;
+      handle.catchUp = realCatchUp;
     }
-    // B's config tier still holds what the commit log says: A's bytes.
+    // The refused adoption wrote nothing; catching up gives B's config tier
+    // what the commit log says: A's bytes.
+    await handle.catchUp();
     const tierFile = (repoDir: string) =>
       Deno.readTextFile(
         swampPath(repoDir, "config", "models", "command", "shell", "m1.yaml"),

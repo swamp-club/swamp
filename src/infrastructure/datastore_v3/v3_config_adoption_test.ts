@@ -173,7 +173,7 @@ Deno.test("planConfigAdoption: a repo with no config trees adopts nothing", asyn
   });
 });
 
-Deno.test("planConfigAdoption: a file the config tier already holds byte for byte is skipped without reading the commit log", async () => {
+Deno.test("planConfigAdoption: a file the config tier already holds, edited or not, is skipped without reading the commit log", async () => {
   await withTempDir(async (repoDir) => {
     const configBase = join(repoDir, ".swamp", "config");
     const text = `id: ${ID_1}\nname: w1\n`;
@@ -193,12 +193,30 @@ Deno.test("planConfigAdoption: a file the config tier already holds byte for byt
       configBase,
       partitionHasCommits: (partition) => {
         asked.push(partition.toString());
-        return Promise.resolve(true);
+        return Promise.resolve(false);
       },
     });
     assertEquals(plan.adoptions, []);
     assertEquals(plan.alreadyCommitted, 2);
-    assertEquals(asked, ["config--workflow--w2"]);
+    assertEquals(asked, []);
+  });
+});
+
+Deno.test("planConfigAdoption: a path no record key can name is skipped, not thrown at staging", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (repoDir) => {
+    const odd = join(repoDir, "workflows", "workflow-a\\b.yaml");
+    await writeFile(odd, `id: ${ID_1}\nname: odd\n`);
+    const plan = await planConfigAdoption({
+      repoDir,
+      configBase: join(repoDir, ".swamp", "config"),
+      partitionHasCommits: () => Promise.resolve(false),
+    });
+    assertEquals(plan.adoptions, []);
+    assertEquals(
+      plan.skipped.map((s) => [s.path, s.reason]),
+      [[odd, "invalid-path"]],
+    );
   });
 });
 

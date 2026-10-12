@@ -3711,9 +3711,9 @@ path under the config base, so a later save of it stages the same key.
   (`CommitStore.head`, whose rows compaction never deletes). So a re-run
   adopts nothing, a name deleted from the tier after adoption is never
   brought back, and a name another checkout committed is never overwritten.
-  A file whose config-tier copy already holds the same bytes is skipped
-  before it is parsed or the commit log read, so a repo adopted long ago pays
-  one read per file.
+  A file with a config-tier copy at its path is skipped before it is parsed
+  or the commit log read, whatever bytes an edit has since given that copy,
+  so a repo adopted long ago pays one `lstat` per file.
 - **Files follow the commit.** Adoption stages its puts in a root of its own
   and writes the config-tier files only once that root has committed, so a
   tier copy always means a committed name (a copy placed there by hand
@@ -3735,8 +3735,9 @@ path under the config base, so a later save of it stages the same key.
   `managedConfig: true`. Its JSON keeps the v2 shape: `copiedLockfile` and
   `copiedPulledExtensions` are always false (the lockfile is committed by its
   own transaction, and pulled extensions stay in the checkout), `pushed` is
-  false, and it adds `committed` and `skipped` (files declaring no name, or a
-  name an earlier file of their kind declares).
+  false, and it adds `committed` and `skipped` (files declaring no name, a
+  name an earlier file of their kind declares, or a path no record key can
+  name).
 - **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
   command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
   adoption in a root of their own, with no flush (on v3 a root's flush
