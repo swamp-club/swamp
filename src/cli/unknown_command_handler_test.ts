@@ -166,6 +166,8 @@ Deno.test("buildUnknownCommandMessage - the hybrid without raw args falls back t
   assertStringIncludes(msg, "swamp behavior run <model> <method>");
 });
 
+const UNKNOWN_INPUT = 'Unknown option "--input".';
+
 Deno.test("unknownSubcommandBehindOption - finds the unknown positional a group was given alongside an option", () => {
   const behavior = new Command()
     .name("behavior")
@@ -174,45 +176,124 @@ Deno.test("unknownSubcommandBehindOption - finds the unknown positional a group 
   const root = new Command().name("swamp").command("behavior", behavior);
   const group = root.getCommand("behavior")!;
   assertEquals(
-    unknownSubcommandBehindOption(group, [
-      "behavior",
-      "@acme/t",
-      "run",
-      "ping",
-      "name",
-      "--input",
-      "k=v",
-    ]),
+    unknownSubcommandBehindOption(
+      group,
+      ["behavior", "@acme/t", "run", "ping", "name", "--input", "k=v"],
+      UNKNOWN_INPUT,
+    ),
     "@acme/t",
   );
   assertEquals(
-    unknownSubcommandBehindOption(group, [
-      "behaviour",
-      "run",
-      "p1",
-      "ping",
-      "--input",
-      "k=v",
-    ]),
+    unknownSubcommandBehindOption(
+      group,
+      ["behaviour", "run", "p1", "ping", "--input", "k=v"],
+      UNKNOWN_INPUT,
+    ),
     undefined,
   );
   assertEquals(
-    unknownSubcommandBehindOption(group, ["behavior", "--input", "k=v"]),
+    unknownSubcommandBehindOption(
+      group,
+      ["behavior", "--input", "k=v"],
+      UNKNOWN_INPUT,
+    ),
     undefined,
   );
   const model = buildCommand("model", ["create", "get", "method"]);
   assertEquals(
-    unknownSubcommandBehindOption(model, ["model", "p1", "--input", "k=v"]),
+    unknownSubcommandBehindOption(
+      model,
+      ["model", "p1", "--input", "k=v"],
+      UNKNOWN_INPUT,
+    ),
     "p1",
   );
   assertEquals(
-    unknownSubcommandBehindOption(new Command().name("leaf"), [
-      "leaf",
-      "x",
-      "--bogus",
-    ]),
+    unknownSubcommandBehindOption(
+      new Command().name("leaf"),
+      ["leaf", "x", "--bogus"],
+      'Unknown option "--bogus".',
+    ),
     undefined,
   );
+});
+
+Deno.test("unknownSubcommandBehindOption - leaves a group that takes its own positional alone", () => {
+  // Shaped like `swamp model output <output_id_or_model_name>`: subcommands
+  // plus an argument of its own, so the positional is legitimate.
+  const output = new Command()
+    .name("output")
+    .arguments("<output_id_or_model_name:string>")
+    .command("get", new Command().name("get"))
+    .command("search", new Command().name("search"));
+  const root = new Command().name("swamp").command("output", output);
+  const group = root.getCommand("output")!;
+  assertEquals(
+    unknownSubcommandBehindOption(
+      group,
+      ["output", "my-server", "--bogus"],
+      'Unknown option "--bogus".',
+    ),
+    undefined,
+  );
+});
+
+Deno.test("unknownSubcommandBehindOption - leaves an option typed before the subcommand alone", () => {
+  const behavior = new Command()
+    .name("behavior")
+    .command("run", new Command().name("run"));
+  const root = new Command().name("swamp").command("behavior", behavior);
+  const group = root.getCommand("behavior")!;
+  // A flag-agnostic scan reads `run` as the value of `--skip-checks`; the
+  // flag is the real problem, so Cliffy's message must stand.
+  assertEquals(
+    unknownSubcommandBehindOption(
+      group,
+      ["behavior", "--skip-checks", "run", "@t", "ping", "name"],
+      'Unknown option "--skip-checks".',
+    ),
+    undefined,
+  );
+  assertEquals(
+    unknownSubcommandBehindOption(
+      group,
+      ["behavior", "@t", "ping", "name", "--input=k=v"],
+      UNKNOWN_INPUT,
+    ),
+    "@t",
+  );
+});
+
+Deno.test("buildUnknownCommandMessage - the hybrid keeps the definition name of a direct-type run", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("method", cmd, [
+    "behavior",
+    "method",
+    "run",
+    "@t",
+    "ping",
+    "name",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run @t ping name");
+});
+
+Deno.test("buildUnknownCommandMessage - run left out echoes the method the user typed", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("my-server", cmd, [
+    "behavior",
+    "my-server",
+    "deploy",
+    "--input",
+    "k=v",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run my-server deploy");
+  const typed = buildUnknownCommandMessage("@acme/t", cmd, [
+    "behavior",
+    "@acme/t",
+    "ping",
+    "name",
+  ]);
+  assertStringIncludes(typed, "swamp behavior run @acme/t ping name");
 });
 
 Deno.test("buildUnknownCommandMessage - an @type under behavior suggests the direct-type form", () => {

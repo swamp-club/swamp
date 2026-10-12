@@ -109,17 +109,21 @@ function buildContextSuggestions(
       [...pathSpellings(cmd), new Set([unknownName])],
     );
     const rest = trailing[0] === "run" ? trailing.slice(1) : trailing;
-    suggestions.push(
-      `swamp behavior run ${rest[0] ?? "<model>"} ${rest[1] ?? "<method>"}`,
-    );
+    suggestions.push(runSuggestionFor(rest[0] ?? "<model>", rest.slice(1)));
     return suggestions;
   }
 
-  // An `@type` can only be run directly, and that form needs both a method
-  // and a definition name (swamp-club#3265).
-  const runSuggestion = unknownName.startsWith("@")
-    ? `swamp behavior run ${unknownName} <method> <name>`
-    : `swamp behavior run ${unknownName} <method>`;
+  // `swamp behavior my-server deploy` — `run` left out. The positionals after
+  // the unknown word are the method (and, for an `@type`, the name) the user
+  // meant.
+  const runSuggestion = runSuggestionFor(
+    unknownName,
+    extractPositionalArgs(
+      rawArgs,
+      `${cmd.getPath()} ${unknownName}`,
+      [...pathSpellings(cmd), new Set([unknownName])],
+    ),
+  );
 
   if (parentName === "model") {
     if (!unknownName.startsWith("@")) {
@@ -206,6 +210,17 @@ function buildContextSuggestions(
   }
 
   return suggestions;
+}
+
+/**
+ * `swamp behavior run <model> <method>`, filled from what the user typed
+ * after the model. An `@type` can only be run directly, and that form also
+ * needs a definition name (swamp-club#3265).
+ */
+function runSuggestionFor(model: string, rest: string[]): string {
+  const method = rest[0] ?? "<method>";
+  if (!model.startsWith("@")) return `swamp behavior run ${model} ${method}`;
+  return `swamp behavior run ${model} ${method} ${rest[1] ?? "<name>"}`;
 }
 
 /**
@@ -308,21 +323,35 @@ export function buildTooManyArgumentsMessage(
  * "--input"` instead of the unknown-command suggestions. This finds that
  * positional so the handler can report it as the unknown command it is.
  *
- * Returns the positional, or undefined when `cmd` has no subcommands, took no
- * positional, or the positional is one of its subcommands (then the option
- * really is the problem).
+ * Returns undefined, leaving Cliffy's message to stand, when the option
+ * really is the problem: `cmd` has no subcommands; it declares positionals of
+ * its own (`model output <id>`, `workflow history <name>`), so the positional
+ * is legitimate; no positional was typed, or it is one of the subcommands; or
+ * the option came before the positional (`behavior --skip-checks run …`),
+ * where a flag read as taking a value would have swallowed the subcommand.
  */
 export function unknownSubcommandBehindOption(
   cmd: Command,
   rawArgs: string[],
+  errorMessage: string,
 ): string | undefined {
   if (cmd.getCommands(true).length === 0) return undefined;
+  if (cmd.getArguments().length > 0) return undefined;
   const [first] = extractPositionalArgs(
     rawArgs,
     cmd.getPath(),
     pathSpellings(cmd),
   );
   if (first === undefined || cmd.getCommand(first, true)) return undefined;
+  const option = errorMessage.match(/^Unknown option "([^"]+)"/)?.[1];
+  const optionIndex = option === undefined
+    ? -1
+    : rawArgs.findIndex((arg) =>
+      arg === option || arg.startsWith(`${option}=`)
+    );
+  if (optionIndex !== -1 && optionIndex < rawArgs.indexOf(first)) {
+    return undefined;
+  }
   return first;
 }
 
@@ -359,7 +388,11 @@ export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
     }
 
     if (error.message.startsWith("Unknown option")) {
-      const unknownName = unknownSubcommandBehindOption(cmd, Deno.args);
+      const unknownName = unknownSubcommandBehindOption(
+        cmd,
+        Deno.args,
+        error.message,
+      );
       if (unknownName) {
         exitWithMessage(
           buildUnknownCommandMessage(unknownName, cmd, Deno.args),
