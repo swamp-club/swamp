@@ -331,7 +331,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // push per outermost run, whose checkpoint publishes the lockfile under
   // the global lock (swamp-club#3192). The four extension handlers call it
   // outside any root.
-  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
+  // Two roots since swamp-club#3279: the v2 publish's over the hook alone,
+  // and the v3 publish's over the repository context.
+  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction (x2)",
   // The token secret migration, one root per token under that token's name
   // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
   // commands before or after their own root, never inside one.

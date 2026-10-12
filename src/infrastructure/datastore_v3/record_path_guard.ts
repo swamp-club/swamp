@@ -58,6 +58,17 @@ export function readModelStateDir(repoDir: string): string {
   return swampPath(repoDir, READ_MODEL_STATE_DIR);
 }
 
+/** The v3 catalog's file in the state directory. */
+export const CATALOG_V3_FILE = "_catalog_v3.db";
+
+/**
+ * Where a checkout keeps the v3 catalog: its read model's state directory
+ * (swamp-club#3279). `catalogDbPath` returns it on a v3 datastore.
+ */
+export function v3CatalogPath(repoDir: string): string {
+  return join(readModelStateDir(repoDir), CATALOG_V3_FILE);
+}
+
 /**
  * Datastore subdirectories that have no v3 home because nothing writes them
  * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry

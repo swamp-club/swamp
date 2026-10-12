@@ -40,6 +40,14 @@ class LogDatastoreStatusRenderer implements Renderer<DatastoreStatusEvent> {
         if (data.path) {
           lines.push(`  Path:    ${data.path}`);
         }
+        if (data.format !== undefined) {
+          lines.push(`  Format:  ${data.format} (v3 commit log)`);
+        }
+        if (data.commitLog !== undefined) {
+          lines.push(
+            `  Commits: ${data.commitLog.storedCommits} stored, compacted through ${data.commitLog.compactedThrough}`,
+          );
+        }
         lines.push(
           `  Health:  ${healthIcon} ${healthText} (${
             Math.round(data.latencyMs)

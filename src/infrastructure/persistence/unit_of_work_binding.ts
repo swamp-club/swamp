@@ -69,10 +69,27 @@ export type TypedStager = (changes: readonly TypedChange[]) => Promise<void>;
 
 const stagers = new WeakMap<UnitOfWork, TypedStager>();
 
+/**
+ * For each unit that takes typed changes, the open unit a write made in its
+ * scope belongs to: itself while open, else its nearest open ancestor.
+ */
+const openTargets = new WeakMap<UnitOfWork, () => UnitOfWork | undefined>();
+
 /** The units that take typed changes: the v3 commit-log adapter's. */
 export const typedStagers = {
-  register(uow: UnitOfWork, stage: TypedStager): void {
+  register(
+    uow: UnitOfWork,
+    stage: TypedStager,
+    openTarget?: () => UnitOfWork | undefined,
+  ): void {
     stagers.set(uow, stage);
+    if (openTarget !== undefined) openTargets.set(uow, openTarget);
   },
   stagerOf: (uow: UnitOfWork): TypedStager | undefined => stagers.get(uow),
+  /**
+   * The open unit a write in `uow`'s scope belongs to (swamp-club#3279):
+   * `uow` while it is open, else its nearest open ancestor, else undefined.
+   */
+  openTargetOf: (uow: UnitOfWork): UnitOfWork | undefined =>
+    openTargets.get(uow)?.(),
 };

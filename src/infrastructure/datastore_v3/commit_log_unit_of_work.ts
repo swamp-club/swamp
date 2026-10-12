@@ -172,6 +172,13 @@ export interface CommitLogUnitOptions {
    * child of its nearest open ancestor when it has ended; otherwise a root.
    */
   readonly parent?: UnitOfWork;
+  /**
+   * Whether a change to a record key belongs to the datastore: false for a
+   * key the repository's configured `directories` leave out or its
+   * `exclude` patterns match, which stays in the checkout and is never
+   * committed (swamp-club#3279). Every key belongs when absent.
+   */
+  readonly admits?: (key: string) => boolean;
 }
 
 /** A path-only change staged into a commit-log unit, which takes typed ones. */
@@ -474,7 +481,12 @@ export function createCommitLogUnitOfWork(
     },
     async stageOps(changes: readonly TypedChange[]): Promise<void> {
       const checked: TypedChange[] = [];
-      for (const change of changes) checked.push(await checkChange(change));
+      for (const change of changes) {
+        const key = keyOfChange(change);
+        if (key !== undefined && options.admits?.(key) === false) continue;
+        checked.push(await checkChange(change));
+      }
+      if (checked.length === 0) return;
       requireBatchWithinLimit(checked);
       if (ended === "abandoned") {
         // Abandon discards: a write still landing in an abandoned unit's
@@ -520,8 +532,19 @@ export function createCommitLogUnitOfWork(
   };
   states.set(uow, state);
   unitOfWorkBinding.bind(uow, markDirty);
-  typedStagers.register(uow, (changes) => uow.stageOps(changes));
+  typedStagers.register(
+    uow,
+    (changes) => uow.stageOps(changes),
+    () => state.isOpen() ? uow : nearestOpenAncestor(parent),
+  );
   return uow;
+}
+
+/** The record key a typed change writes, when it writes one. */
+function keyOfChange(change: TypedChange): string | undefined {
+  if ("put" in change) return change.put.key.toString();
+  const op = change.op;
+  return "key" in op ? op.key.toString() : undefined;
 }
 
 /**

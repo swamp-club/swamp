@@ -39,6 +39,7 @@ import {
   DEFAULT_DATASTORE_SUBDIRS,
   externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
+  readDatastoreFormatKey,
 } from "../../domain/datastore/datastore_config.ts";
 import { expandEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import {
@@ -72,6 +73,7 @@ import {
   promptLine,
   promptLineWithDefault,
 } from "../prompt_helpers.ts";
+import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -161,6 +163,19 @@ async function nudgeVaultMigration(repoDir: string): Promise<void> {
   }
 }
 
+/**
+ * Reads `--format` for setup (swamp-club#3279): 2 or 3 on a filesystem
+ * datastore, 2 on any other type. The same rule `.swamp.yaml` follows
+ * (`readDatastoreFormatKey`), so the flag and the file refuse alike.
+ */
+function parseSetupFormat(
+  value: unknown,
+  type: string,
+): 2 | 3 | undefined {
+  const format = readDatastoreFormatKey(type, value);
+  return format === 2 ? undefined : format;
+}
+
 const datastoreSetupFilesystemCommand = new Command()
   .description("Set up a filesystem datastore")
   .example(
@@ -186,12 +201,22 @@ const datastoreSetupFilesystemCommand = new Command()
     "--skip-migration",
     "Skip copying existing data into the target path",
   )
+  .option(
+    "--format <format:integer>",
+    "Datastore format: 2 (files, default) or 3 (v3 commit log; needs a new, " +
+      "empty path and a repository with no data; one writer at a time)",
+  )
+  .example(
+    "Set up a v3 datastore",
+    "swamp datastore setup filesystem --path ~/swamp-v3 --format 3",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "setup",
       "filesystem",
     ]);
+    const format = parseSetupFormat(options.format, "filesystem");
 
     const {
       resolvedRepoDir: repoDir,
@@ -206,7 +231,9 @@ const datastoreSetupFilesystemCommand = new Command()
       : resolve(repoDir, expandedPath);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
+    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath, {
+      swampVersion: VERSION,
+    });
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
     await consumeStream(
@@ -218,6 +245,7 @@ const datastoreSetupFilesystemCommand = new Command()
         skipMigration: !!options.skipMigration,
         outgoingCachePath,
         outgoingDatastorePath,
+        ...(format !== undefined ? { format } : {}),
       }),
       renderer.handlers(),
     );
@@ -263,6 +291,11 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
       "Override the sync timeout for the initial push and hydration pull (seconds, " +
         "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS. " +
         "Preferred escape hatch for large first-time setups.",
+    )
+    .option(
+      "--format <format:integer>",
+      "Datastore format: 2 only; format 3 is not supported yet for " +
+        "extension datastores",
     ),
 ).action(async function (options: AnyOptions, type: string) {
   const cliCtx = createContext(options as GlobalOptions, [
@@ -270,6 +303,7 @@ const datastoreSetupExtensionCommand = withRemoteOptions(
     "setup",
     "extension",
   ]);
+  parseSetupFormat(options.format, type);
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {

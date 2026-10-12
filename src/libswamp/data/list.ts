@@ -42,6 +42,7 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { v3RunArtifactCheck } from "./run_artifact_check.ts";
 /** Data item in the list. */
 export interface DataListItem {
   id: string;
@@ -234,6 +235,7 @@ export function createDataListDeps(
   const workflowDataService = new WorkflowDataService(
     definitionRepo,
     dataRepo,
+    v3RunArtifactCheck(datastoreResolver, dataRepo),
   );
   return {
     namespace,

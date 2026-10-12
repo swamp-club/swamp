@@ -207,7 +207,7 @@ export interface UnifiedDataRepository {
     modelId: string,
     data: Data,
     content: Uint8Array,
-  ): Promise<{ version: number }>;
+  ): Promise<{ version: number; checksum?: string }>;
 
   /**
    * Appends content to streaming data.

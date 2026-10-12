@@ -71,9 +71,26 @@ import {
   findFileCollisions,
   mergeDirInto,
 } from "../../infrastructure/persistence/directory_merge.ts";
+import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Refuses a namespace change on a v3 datastore (swamp-club#3279): its
+ * commits are recorded per namespace, so moving a checkout to another one
+ * would leave every commit it made behind. Migrating v3 data is Phase 6.
+ */
+function refuseNamespaceChangeOnV3(engine: DatastoreEngine): void {
+  if (engine === "v3") {
+    throw new UserError(
+      "Changing the namespace of a v3 datastore is not supported yet: its " +
+        "commits are recorded per namespace. To use a namespace, run " +
+        "`swamp datastore namespace set <name>` before " +
+        "`swamp datastore setup filesystem --format 3`.",
+    );
+  }
+}
 
 export const datastoreNamespaceSetCommand = new Command()
   .description("Assign a namespace to this repository")
@@ -92,7 +109,10 @@ export const datastoreNamespaceSetCommand = new Command()
     cliCtx.logger.debug("Executing datastore namespace set command");
 
     const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig, marker } = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig, marker, engine } = await resolveDatastoreForRepo(
+      repoDir,
+    );
+    refuseNamespaceChangeOnV3(engine);
     const dsBasePath = datastoreBasePath(datastoreConfig);
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
@@ -212,7 +232,8 @@ export const datastoreNamespaceUnsetCommand = new Command()
     cliCtx.logger.debug("Executing datastore namespace unset command");
 
     const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
+    refuseNamespaceChangeOnV3(engine);
     const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
       ? datastoreConfig.cachePath
@@ -446,7 +467,8 @@ export const datastoreNamespaceMigrateCommand = new Command()
     cliCtx.logger.debug("Executing datastore namespace migrate command");
 
     const repoDir = resolveRepoDir(options.repoDir);
-    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    const { datastoreConfig, engine } = await resolveDatastoreForRepo(repoDir);
+    refuseNamespaceChangeOnV3(engine);
     const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
       ? datastoreConfig.cachePath

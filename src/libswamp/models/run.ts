@@ -1207,6 +1207,9 @@ export async function* modelMethodRun(
                   name: handle.name,
                   version: handle.version,
                   tags: handle.tags,
+                  ...(handle.sha256 !== undefined
+                    ? { sha256: handle.sha256 }
+                    : {}),
                 });
 
                 // Parse content if JSON for display

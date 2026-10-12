@@ -244,6 +244,9 @@ import {
 } from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { createV3LockfileSync } from "../../infrastructure/datastore_v3/v3_lockfile_sync.ts";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 /**
  * Derives the extension lockfile path from the connection context's
@@ -296,10 +299,41 @@ function extensionLockfileTransaction(
 ): LockfileTransaction | undefined {
   const { syncService, datastoreConfig } = ctx;
   const markDirty = ctx.repoContext.markDirty;
+  const logger = getSwampLogger(["serve", "extension", "lockfile"]);
+  // A v3 repo commits its managed lockfile through the commit log
+  // (swamp-club#3279); serve holds the writer lock for its lifetime.
+  if (
+    markDirty && ctx.repoContext.commitLog !== undefined &&
+    marker?.datastore?.managedConfig === true
+  ) {
+    return new ManagedLockfileTransaction({
+      lockfilePath,
+      inRoot: (fn) =>
+        runInRootUnitOfWork(
+          ctx.repoContext,
+          { flush: undefined, checkpoint: () => Promise.resolve() },
+          () => fn(),
+        ),
+      // The global lock serialises concurrent extension changes in serve,
+      // as on v2.
+      lock: datastoreGlobalLock(datastoreConfig),
+      sync: createV3LockfileSync({
+        markDirty,
+        lockfilePath,
+        configBase: ctx.datastoreResolver.resolvePath("config"),
+      }),
+      pending: createRepoPendingLockfileStore(ctx.repoDir),
+      publishFailure: "defer",
+      onWarning: (message, error) =>
+        error === undefined ? logger.warn(message) : logger.warn(
+          `${message}: {error}`,
+          { error: error instanceof Error ? error.message : String(error) },
+        ),
+    });
+  }
   if (!syncService || !markDirty || !isExtensionBackedDatastore(marker)) {
     return undefined;
   }
-  const logger = getSwampLogger(["serve", "extension", "lockfile"]);
   const namespace = isCustomDatastoreConfig(datastoreConfig)
     ? datastoreConfig.namespace
     : undefined;
@@ -539,7 +573,16 @@ export async function handleDatastoreStatus(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createDatastoreStatusDeps(ctx.datastoreResolver);
+    const config = ctx.datastoreResolver.config();
+    const deps = await createDatastoreStatusDeps(ctx.datastoreResolver, {
+      ...(resolverEngine(ctx.datastoreResolver) === "v3" &&
+          !isCustomDatastoreConfig(config)
+        ? {
+          describeCommitLog: () =>
+            v3DatastoreFor(ctx.repoDir, config).describe(),
+        }
+        : {}),
+    });
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

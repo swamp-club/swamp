@@ -21,15 +21,55 @@ import { maxOf } from "../array_extrema.ts";
 import { UserError } from "../errors.ts";
 
 /**
- * Datastore formats this binary reads and writes. Format 2 is today's layout:
+ * Datastore formats this binary reads and writes. Format 2 is the v2 layout:
  * an `_index/` sharded index, `_meta.json` and `.datastore.lock` on S3/GCS,
  * plain files on a filesystem datastore. A datastore without a format marker
- * is format 2.
+ * is format 2. Format 3 is the v3 commit log (`commits.db` and content
+ * chunks), which this binary reads only on a filesystem datastore; see
+ * {@link supportedDatastoreFormatsFor}.
  */
-export const SUPPORTED_DATASTORE_FORMATS: readonly number[] = [2];
+export const SUPPORTED_DATASTORE_FORMATS: readonly number[] = [2, 3];
+
+/**
+ * The formats this binary reads on S3, GCS and extension datastores. v3
+ * there needs Litestream and the extensions' `storage/1` (Phase 4), so a
+ * format-3 marker on one is refused like any newer format.
+ */
+export const SUPPORTED_CUSTOM_DATASTORE_FORMATS: readonly number[] = [2];
 
 /** The format assumed for a datastore that carries no format marker. */
 export const UNMARKED_DATASTORE_FORMAT = 2;
+
+/** The v3 commit-log format (datastore rework Phase 3). */
+export const V3_DATASTORE_FORMAT = 3;
+
+/**
+ * The storage engine a datastore is opened with: `v2` writes files and
+ * syncs them, `v3` commits every change to the commit log. Chosen once per
+ * datastore from its format marker (swamp-club#3279).
+ */
+export type DatastoreEngine = "v2" | "v3";
+
+/**
+ * The engine for a format this binary accepted. Formats from 3 up are read
+ * by the v3 engine, since the guard has already refused any whose
+ * `minReaderFormat` is above what this binary reads.
+ */
+export function engineForFormat(format: number): DatastoreEngine {
+  return format >= V3_DATASTORE_FORMAT ? "v3" : "v2";
+}
+
+/**
+ * The formats this binary reads on a datastore of the given kind: v3 only on
+ * a filesystem datastore until Phase 4.
+ */
+export function supportedDatastoreFormatsFor(
+  kind: "filesystem" | "custom",
+): readonly number[] {
+  return kind === "filesystem"
+    ? SUPPORTED_DATASTORE_FORMATS
+    : SUPPORTED_CUSTOM_DATASTORE_FORMATS;
+}
 
 /**
  * Control-plane key of the format marker on datastores whose sync service
@@ -149,6 +189,59 @@ export class InvalidDatastoreFormatMarkerError extends UserError {
       DATASTORE_FORMAT_MARKER_INVALID_CODE,
     );
     this.name = "InvalidDatastoreFormatMarkerError";
+    this.source = source;
+  }
+}
+
+/** Error code for a datastore config whose `format` its marker contradicts. */
+export const DATASTORE_FORMAT_MISMATCH_CODE = "datastore_format_mismatch";
+
+/**
+ * Thrown when a filesystem datastore's config asks for one format and its
+ * marker records another. The marker is what a datastore is written in; a
+ * config that disagrees was edited by hand or points at the wrong path, and
+ * opening either engine over it could write the wrong layout.
+ */
+export class DatastoreFormatMismatchError extends UserError {
+  readonly configured: number;
+  readonly marked?: number;
+
+  constructor(configured: number, marked: number | undefined) {
+    super(
+      `The datastore config in .swamp.yaml says format ${configured}, but ` +
+        (marked === undefined
+          ? "the datastore has no readable format marker"
+          : `the datastore's format marker says format ${marked}`) +
+        ". Check that the datastore path is the one setup created, or run " +
+        "`swamp datastore setup` again. Nothing was changed.",
+      DATASTORE_FORMAT_MISMATCH_CODE,
+    );
+    this.name = "DatastoreFormatMismatchError";
+    this.configured = configured;
+    if (marked !== undefined) this.marked = marked;
+  }
+}
+
+/** Error code for a filesystem datastore whose marker cannot be read. */
+export const DATASTORE_FORMAT_MARKER_UNREADABLE_CODE =
+  "datastore_format_marker_unreadable";
+
+/**
+ * Thrown when a filesystem datastore's format marker exists but cannot be
+ * read (swamp-club#3279). The marker chooses the engine, so a datastore whose
+ * marker cannot be read could be v3 and must not be opened as v2.
+ */
+export class UnreadableDatastoreFormatMarkerError extends UserError {
+  readonly source: string;
+
+  constructor(source: string, reason: string) {
+    super(
+      `The datastore format marker ${source} exists but could not be read ` +
+        `(${reason}). swamp will not open a datastore whose format it cannot ` +
+        "determine. Check the file's permissions. Nothing was changed.",
+      DATASTORE_FORMAT_MARKER_UNREADABLE_CODE,
+    );
+    this.name = "UnreadableDatastoreFormatMarkerError";
     this.source = source;
   }
 }

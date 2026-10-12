@@ -44,6 +44,7 @@ import {
   type RowRepos,
   runCli,
 } from "./usecase_sync_fixtures.ts";
+import { checkRowsOnV3 } from "./usecase_v3_fixtures.ts";
 
 await initializeLogging({});
 
@@ -880,4 +881,26 @@ const EXPECTED: Record<string, PinnedRow> = {
 
 Deno.test("use case sync characterization: access, token, worker and datastore use cases mark and push today's paths", async (t) => {
   await checkRows(t, ROWS, EXPECTED);
+});
+
+Deno.test("use-case sync characterization: on a v3 datastore every access row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS, {
+    "datastore config migrate":
+      "migrating existing config into a v3 datastore is Phase 6; refused " +
+      "on v3 (datastore_v3_opt_in_test.ts)",
+    "datastore config migrate (no configRefresh)":
+      "migrating existing config into a v3 datastore is Phase 6; refused " +
+      "on v3 (datastore_v3_opt_in_test.ts)",
+  });
+});
+
+Deno.test("use-case sync characterization: on a namespaced v3 datastore every access row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS, {
+    "datastore config migrate":
+      "migrating existing config into a v3 datastore is Phase 6; refused " +
+      "on v3 (datastore_v3_opt_in_test.ts)",
+    "datastore config migrate (no configRefresh)":
+      "migrating existing config into a v3 datastore is Phase 6; refused " +
+      "on v3 (datastore_v3_opt_in_test.ts)",
+  }, { namespace: "team" });
 });

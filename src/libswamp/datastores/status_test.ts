@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertCompletes } from "../testing.ts";
+import { assertEquals } from "@std/assert";
+import { assertCompletes, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   datastoreStatus,
@@ -114,4 +115,35 @@ Deno.test("datastoreStatus: includes exclude patterns", async () => {
       },
     },
   );
+});
+
+Deno.test("datastoreStatus: a v3 datastore reports its format and commit log", async () => {
+  const deps = makeDeps({
+    describeCommitLog: () =>
+      Promise.resolve({ storedCommits: 7, compactedThrough: 2 }),
+  });
+  const events = await collect<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), deps),
+  );
+  const completed = events[0] as Extract<
+    DatastoreStatusEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.format, 3);
+  assertEquals(completed.data.commitLog, {
+    storedCommits: 7,
+    compactedThrough: 2,
+  });
+});
+
+Deno.test("datastoreStatus: a v2 datastore reports no format or commit log", async () => {
+  const events = await collect<DatastoreStatusEvent>(
+    datastoreStatus(createLibSwampContext(), makeDeps()),
+  );
+  const completed = events[0] as Extract<
+    DatastoreStatusEvent,
+    { kind: "completed" }
+  >;
+  assertEquals("format" in completed.data, false);
+  assertEquals("commitLog" in completed.data, false);
 });

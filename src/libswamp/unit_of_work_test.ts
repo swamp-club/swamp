@@ -372,14 +372,15 @@ Deno.test("withUnitOfWork: a v3 unit commits on a terminal outcome, including co
   assertEquals([units[0].commits, units[0].abandons], [1, 0]);
 });
 
-Deno.test("withUnitOfWork: a v3 unit abandons on an error event, a throw, or a stop before any terminal outcome (swamp-club#3257)", async () => {
+Deno.test("withUnitOfWork: a v3 unit commits a reported error, and abandons on a throw or a stop before any outcome (swamp-club#3257, swamp-club#3279)", async () => {
+  // A reported error is an outcome: a failed method run reports one, and
+  // its record is what v2 publishes too (swamp-club#3279).
   const errored = countingContext({ typed: true });
   async function* failing(): AsyncGenerator<Event> {
-    yield { kind: "completed" };
     yield { kind: "error", message: "failed" };
   }
   await drain(withUnitOfWork(errored.ctx, failing));
-  assertEquals([errored.units[0].commits, errored.units[0].abandons], [0, 1]);
+  assertEquals([errored.units[0].commits, errored.units[0].abandons], [1, 0]);
 
   const thrown = countingContext({ typed: true });
   async function* throwing(): AsyncGenerator<Event> {

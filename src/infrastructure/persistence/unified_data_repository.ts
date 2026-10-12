@@ -979,7 +979,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     data: Data,
     content: Uint8Array,
-  ): Promise<{ version: number }> {
+  ): Promise<{ version: number; checksum?: string }> {
     return this.saveVersion(type, modelId, data, content, {
       kind: "data.save",
     });
@@ -996,7 +996,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     content: Uint8Array,
     stageAs: DataWrite | undefined,
-  ): Promise<{ version: number }> {
+  ): Promise<{ version: number; checksum?: string }> {
     // Reject reserved data names that collide with internal markers
     if (isReservedDataName(data.name)) {
       throw new Error(
@@ -1033,10 +1033,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
 
     // Create the data with updated version and size
+    const checksum = await this.computeChecksum(content);
     const dataToSave = data.withNewVersion({
       version: newVersion,
       size: content.length,
-      checksum: await this.computeChecksum(content),
+      checksum,
     });
 
     // Save metadata
@@ -1102,7 +1103,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
-    return { version: newVersion };
+    // Reported only on v3, where a run record keeps it (swamp-club#3279);
+    // nothing about a v2 save changes.
+    return typedStagingActive(this.markDirty)
+      ? { version: newVersion, checksum }
+      : { version: newVersion };
   }
 
   async saveDeferred(

@@ -24,8 +24,11 @@ import {
   DATASTORE_FORMAT_MARKER_MAX_BYTES,
   DATASTORE_FORMAT_UNSUPPORTED_CODE,
   type DatastoreFormatMarkerRead,
+  DatastoreFormatMismatchError,
+  engineForFormat,
   InvalidDatastoreFormatMarkerError,
   parseDatastoreFormatMarker,
+  supportedDatastoreFormatsFor,
   UnsupportedDatastoreFormatError,
 } from "./datastore_format.ts";
 import { UserError } from "../errors.ts";
@@ -63,6 +66,7 @@ Deno.test("assertSupportedDatastoreFormat: format 3 refuses with the stable code
     () =>
       assertSupportedDatastoreFormat(
         present({ format: 3, minReaderFormat: 3, writtenBy: "2027.01.01.1" }),
+        [2],
       ),
     UnsupportedDatastoreFormatError,
   );
@@ -81,7 +85,7 @@ Deno.test("assertSupportedDatastoreFormat: format 3 refuses with the stable code
 
 Deno.test("assertSupportedDatastoreFormat: format 3 without minReaderFormat refuses", () => {
   assertThrows(
-    () => assertSupportedDatastoreFormat(present({ format: 3 })),
+    () => assertSupportedDatastoreFormat(present({ format: 3 }), [2]),
     UnsupportedDatastoreFormatError,
     "This datastore uses format 3. This version",
   );
@@ -92,6 +96,7 @@ Deno.test("assertSupportedDatastoreFormat: minReaderFormat 3 refuses even when f
     () =>
       assertSupportedDatastoreFormat(
         present({ format: 2, minReaderFormat: 3 }),
+        [2],
       ),
     UnsupportedDatastoreFormatError,
   );
@@ -230,5 +235,44 @@ Deno.test("InvalidDatastoreFormatMarkerError: ends with a next step", () => {
   assertStringIncludes(
     new InvalidDatastoreFormatMarkerError(SOURCE, "not valid JSON").message,
     "Check who wrote it; if swamp did, report it with `swamp issue bug`.",
+  );
+});
+
+Deno.test("assertSupportedDatastoreFormat: this binary reads format 3 on a filesystem datastore", () => {
+  assertEquals(
+    assertSupportedDatastoreFormat(
+      present({ format: 3, minReaderFormat: 3 }),
+      supportedDatastoreFormatsFor("filesystem"),
+    ),
+    { kind: "supported", format: 3 },
+  );
+});
+
+Deno.test("assertSupportedDatastoreFormat: S3, GCS and extension datastores still refuse format 3", () => {
+  assertThrows(
+    () =>
+      assertSupportedDatastoreFormat(
+        present({ format: 3, minReaderFormat: 3 }),
+        supportedDatastoreFormatsFor("custom"),
+      ),
+    UnsupportedDatastoreFormatError,
+    "supports format 2 only",
+  );
+});
+
+Deno.test("engineForFormat: format 2 opens v2 and format 3 opens v3", () => {
+  assertEquals(engineForFormat(2), "v2");
+  assertEquals(engineForFormat(3), "v3");
+});
+
+Deno.test("DatastoreFormatMismatchError: names both formats, or the missing marker", () => {
+  const both = new DatastoreFormatMismatchError(2, 3);
+  assertStringIncludes(both.message, "says format 2");
+  assertStringIncludes(both.message, "marker says format 3");
+  assertEquals(both.code, "datastore_format_mismatch");
+  assertEquals(both instanceof UserError, true);
+  assertStringIncludes(
+    new DatastoreFormatMismatchError(3, undefined).message,
+    "no readable format marker",
   );
 });

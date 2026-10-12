@@ -47,6 +47,7 @@ import {
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import {
   bufferStartupWarnings,
+  getSwampLogger,
   initializeLogging,
 } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
@@ -111,6 +112,7 @@ import { setConsoleGuardJsonMode } from "../domain/models/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
+import { closeV3Datastores } from "../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
@@ -2704,6 +2706,14 @@ async function runInvocation(
     // Flush datastore sync (push to S3 + release lock)
     await withSpan("swamp.cli.teardown", {}, async () => {
       await flushDatastoreSync();
+      try {
+        await closeV3Datastores();
+      } catch (error) {
+        // The command's work is committed; the writer lock's TTL expires if
+        // its release failed.
+        getSwampLogger(["datastore", "v3"])
+          .warn`Closing the v3 datastore failed: ${error}`;
+      }
       await runGateRefresh(gateOutcome);
 
       // Record successful invocation
@@ -2913,6 +2923,11 @@ async function runInvocation(
       await flushDatastoreSync();
     } catch {
       // Best effort — don't shadow the original error.
+    }
+    try {
+      await closeV3Datastores();
+    } catch {
+      // Best effort: the writer lock's TTL expires if its release failed.
     }
 
     // The command already ran, so a proof due its weekly refresh still

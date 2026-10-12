@@ -138,6 +138,18 @@ export const datastoreConfigMigrateCommand = new Command()
       );
     }
 
+    // Moving existing definitions into a v3 datastore's config tier would
+    // need each one committed; migrating existing data to v3 is Phase 6 of
+    // the datastore rework (swamp-club#3279).
+    if (repoContext.commitLog !== undefined) {
+      throw new UserError(
+        "Migrating existing config into a v3 datastore is not supported " +
+          "yet. Set managedConfig: true in .swamp.yaml before creating " +
+          "models, workflows and vaults, and they are committed as they are " +
+          "created.",
+      );
+    }
+
     if (
       isCustomDatastoreConfig(datastoreConfig) && syncService &&
       !syncService.capabilities?.().configRefresh

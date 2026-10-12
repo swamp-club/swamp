@@ -71,6 +71,9 @@ await initializeLogging({});
 const encode = (value: unknown) =>
   new TextEncoder().encode(JSON.stringify(value));
 const FORMAT_3 = { format: 3, minReaderFormat: 3, writtenBy: "2027.01.01.1" };
+// A filesystem datastore reads format 3 (swamp-club#3279), so its newer
+// format is 4. Remote datastores still read format 2 only.
+const FORMAT_4 = { format: 4, minReaderFormat: 4, writtenBy: "2028.01.01.1" };
 
 type Snapshot = Map<string, string>;
 
@@ -547,7 +550,7 @@ for (const namespace of [undefined, "infra"]) {
         { namespace },
         async ({ repoDir, datastore }) => {
           const markerPath = join(datastore, DATASTORE_FORMAT_MARKER_FILE);
-          await Deno.writeFile(markerPath, encode(FORMAT_3));
+          await Deno.writeFile(markerPath, encode(FORMAT_4));
           const fingerprintFs = async () => ({
             datastore: await snapshotDir(datastore),
             marker: await Deno.readTextFile(join(repoDir, ".swamp.yaml")),
@@ -598,7 +601,7 @@ Deno.test("datastore format guard: setup filesystem onto a directory with a newe
     await Deno.mkdir(target);
     await Deno.writeFile(
       join(target, DATASTORE_FORMAT_MARKER_FILE),
-      encode(FORMAT_3),
+      encode(FORMAT_4),
     );
     const before = await snapshotDir(target);
     const yaml = await Deno.readTextFile(join(repoDir, ".swamp.yaml"));

@@ -87,7 +87,7 @@ import {
   type FileOwnership,
   ReadModelState,
 } from "./read_model_state.ts";
-import { refusedKeyReason } from "./record_path_guard.ts";
+import { CATALOG_V3_FILE, refusedKeyReason } from "./record_path_guard.ts";
 import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
 
 const logger = getLogger(["swamp", "datastore", "read-model"]);
@@ -95,8 +95,7 @@ const logger = getLogger(["swamp", "datastore", "read-model"]);
 /** Commits read per page by default. */
 export const DEFAULT_READ_MODEL_PAGE_SIZE = 500;
 
-/** The v3 catalog's file in the state directory. */
-export const CATALOG_V3_FILE = "_catalog_v3.db";
+export { CATALOG_V3_FILE };
 
 /** The state database's file in the state directory. */
 export const READ_MODEL_STATE_FILE = "_read_model_v3.db";
