@@ -7,8 +7,9 @@ last-verified: 2026-10-08 @ 03ca42ca
 # Datastores
 
 A datastore is where swamp keeps runtime data: versioned model data, workflow
-runs, method outputs, audit logs, telemetry, encrypted secrets and cached
-bundles.
+runs, method outputs, encrypted secrets and cached bundles. Audit logs,
+telemetry and run logs stay with the checkout that wrote them, whatever the
+datastore (see "v3 stream directories").
 
 Source-of-truth files (model definitions, workflow definitions, vault configs)
 are never in the datastore. They live in the repo's top-level
@@ -214,7 +215,9 @@ Two optional fields decide which data goes to the datastore:
   `DEFAULT_DATASTORE_SUBDIRS` (`datastore_config.ts`): `auto-definitions`,
   `definitions-evaluated`, `workflows-evaluated`, `config`, `data`, `outputs`,
   `workflow-runs`, `audit`, `telemetry`, `logs`, `files`, plus the bundle
-  directories. Anything unlisted stays in local `.swamp/`. The
+  directories. Anything unlisted stays in local `.swamp/`. Nothing writes
+  `audit`, `telemetry`, `logs` or `files` through the datastore, so listing
+  them moves no data (see "v3 stream directories"). The
   `ALWAYS_LOCAL_SUBDIRS` (`secrets`, `bundles`, `vault-bundles`,
   `report-bundles`) always stay local.
   `swamp datastore setup filesystem --directories` sets the list at setup.
@@ -2004,7 +2007,11 @@ these.
   - the repo marker and datastore config;
   - sources;
   - vault secrets, which go to the vault provider;
-  - control-plane store keys (signal waits, heartbeats, webhook state).
+  - control-plane store keys (signal waits, heartbeats, webhook state, and
+    serve's audit events);
+  - the stream directories `audit/`, `telemetry/`, `logs/` and `files/`, and
+    run logs, which stay repo-local (swamp-club#3278, "v3 stream
+    directories").
 - **Authorisation requirements for the serve wiring.** Serve will authorise
   each op on its intent, and the model leaves four bindings to that issue. Each
   needs the per-repository audit of what every write stages, so none is
@@ -2035,11 +2042,11 @@ these.
   - **`lease` ops.** These carry no intent either. Only the lease machinery
     (Phase 5) may write them; a client-forwarded commit carrying one must be
     refused.
-- **Open requirement before the opt-in.** `audit/`, `telemetry/`, `logs/` and
-  `files/` are in `DEFAULT_DATASTORE_SUBDIRS` and synced today, but they are
-  high-volume, append-only streams, not aggregate storage. They have no v3
-  home yet. The opt-in issue must give them one before a v3 datastore can be
-  enabled, or v3 would stop syncing them.
+- **The stream directories.** `audit/`, `telemetry/`, `logs/` and `files/`
+  are in `DEFAULT_DATASTORE_SUBDIRS`, which swamp-club#3233 read as "synced
+  today", with an open requirement that the opt-in give them a v3 home.
+  swamp-club#3278 found that nothing writes them through the datastore, so
+  they stay repo-local on v3, as on v2 ("v3 stream directories").
 
 ### v3 chunk storage (`storage/1`)
 
@@ -3430,6 +3437,106 @@ costs O(live state), not O(history).
 - Resolve run-record artifacts through `resolveRunArtifact`, and add
   `sha256` to new `DataArtifactRef`s.
 - Prune `compacted_txns` once the Phase 4 outbox bounds retry age.
+
+### v3 stream directories (datastore rework Phase 3)
+
+swamp-club#3278 answers where `audit/`, `telemetry/`, `logs/` and `files/`
+live on v3. swamp-club#3233 recorded them as synced, append-only streams with
+no v3 home. A trace of every writer and reader in `src/` shows that none of
+them is written through the datastore on any backend, so the answer is that
+they stay repo-local, on v3 as on v2. No v2 behaviour changes.
+
+**Ubiquitous language.**
+
+- **Stream directory**: one of `REPO_LOCAL_STREAM_SUBDIRS`
+  (`record_path_guard.ts`): `audit`, `telemetry`, `logs` and `files`. Each is
+  a datastore directory by name, in `DEFAULT_DATASTORE_SUBDIRS`, with no
+  writer that resolves it through the datastore.
+- **Run log**: the plain-text `.log` file beside a run or output record. It is
+  not in `logs/`.
+
+**What each directory holds, and who reads it.**
+
+| Directory | Writers | Readers | Other checkouts or nodes |
+|---|---|---|---|
+| `audit/` | Agent-hook command audit (`JsonlAuditRepository`, `commands-YYYY-MM-DD.jsonl`, 7-day retention) and vault audit (`JsonlVaultAuditRepository`, `vault-audit-YYYY-MM-DD.jsonl`, no retention). Both build `swampPath(repoDir, "audit")`, the checkout's own `.swamp`. | `swamp audit`, `swamp doctor audit`, `swamp vault audit-trail`, serve's `audit.timeline` and `vault.audit-trail`, all on the node's own disk. | Never shared: each serve node shows only what it recorded. |
+| `telemetry/` | None in the repository. The spool is user-global (`globalTelemetryDir()`), uploaded over HTTP. `migrateRepoTelemetryToGlobal` drains a legacy repo-local spool. | `swamp telemetry stats`, over the user-global spool. | Not a datastore concern. |
+| `logs/` | None. | None. | Nothing to share. |
+| `files/` | None. `repo init` stopped creating it as unused (commit `b703d746`), and `DEFAULT_DATASTORE_SUBDIRS` copied it from the old subdirectory list (`153e19a5`). | None. | Nothing to share. |
+
+Two neighbours complete the picture:
+
+- **Run logs.** `RunFileSink` writes them under the checkout's own
+  `.swamp/outputs/` and `.swamp/workflow-runs/`, beside records that do go
+  to the datastore. Records store `logFile` relative to the repository. The
+  logs were already local-only, by swamp-club#3257 and #3266, so another
+  checkout reads the record and finds no log. Workers send their output back
+  to serve, which writes it into its own run log.
+- **Method file outputs** are data records under `data/` (`createFileWriterFactory`,
+  `.../<version>/raw`). Their paths are never stored: CEL's `.path` is
+  derived on each checkout. v3 already commits them as data, with the rule
+  that chunks land before commits.
+
+Serve's tamper-evident audit log is not in `audit/` either. `StoreSink`
+writes `events/<date>/<uuid>.jsonl` objects to a control-plane store: a
+dedicated audit datastore's store at `audit/<target>/`, or the main
+datastore's at `_audit/<target>/`. Control-plane keys are already outside the
+commit log, and `audit-wal` is always-local.
+
+**Decisions.**
+
+1. **The model is repo-local (option (c) of the issue) for all four.** This
+   is v2 parity, not a change: a v2 datastore never holds them either.
+   Neither the commit log (a) nor a separate stream area (b) has a writer to
+   serve. A wish to share one, such as a cluster-wide vault audit trail, is a
+   new feature with its own design, built against a real writer.
+2. **No commit may materialise into a stream directory.** They are left out of
+   `MATERIALISED_SUBDIRS`, so the read model's key guard and history
+   compaction's fold both index such a key but never write it. In solo layout
+   the cache root is `.swamp/` itself, so a key at
+   `audit/commands-<date>.jsonl` would otherwise overwrite a checkout's own
+   audit trail.
+3. **Ordering.** No commit names a stream file, so there is nothing to order.
+   Method file outputs keep data's rule.
+4. **GC and compaction.** None of the four enters the commit log or
+   `storage/1`, so chunk GC and compaction never touch them. Their own
+   retention is unchanged: the command audit's 7 days, run GC's log sweeps,
+   and serve's `retention.days`.
+5. **Every backend.** The answer is the same on filesystem, S3 and GCS, so
+   there is no storage format to carry into Phase 4. The S3 and GCS
+   extensions' `resolveCachePath` returns `undefined`, so their sync cache is
+   core's `~/.swamp/repos/<repoId>` (`resolve_datastore.ts`), never a
+   checkout's `.swamp`. An extension that pointed its cache at the checkout's
+   `.swamp` would be the one way v2 could sync these directories.
+
+**Fitness rules** (`integration/datastore_v3_rules_test.ts`, rule 10):
+
+- every stream directory is a datastore directory, not always-local, and not
+  materialised;
+- no production call of `resolvePath` or `dsPath` names a stream directory
+  (the pinned list is empty);
+- every production file that uses a stream directory's `SWAMP_SUBDIRS` name is
+  pinned, so a resolver call through a variable is still reviewed.
+
+**Left to the opt-in.**
+
+- A writer that needs a stream directory synced gives it a v3 home first. The
+  rules above fail until it does.
+- v3 `datastore setup` should not create or migrate the stream directories.
+  On v2 setup moves them, and the run logs, into the new datastore, where
+  their readers never look (swamp-club#3281).
+- A v3 provider used as serve's dedicated audit datastore must still offer a
+  control-plane store.
+
+**Tests.** `integration/datastore_v3_stream_dirs_test.ts` runs two checkouts
+on one datastore with the production writers, on v3 and on v2. The second
+checkout reads none of the first's audit, vault audit or run log, and on v3
+no commit names a stream key. After compaction and chunk GC the writer's files
+are unchanged, and a checkout rebuilt from the compacted base holds none of
+them. A commit keyed into each stream directory is indexed but never
+materialised. `record_path_guard_property_test.ts` checks that every key under
+a stream directory is refused, and that every other key gets the same answer
+as before.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

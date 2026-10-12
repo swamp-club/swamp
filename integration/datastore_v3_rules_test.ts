@@ -75,6 +75,16 @@
  *    `compactHistory`, so no commit is folded away before the opt-in wires
  *    compaction in. Rule 6 covers the compacted base's tables: only the
  *    commit store writes them. Both pinned lists are empty.
+ * 10. **The stream directories stay repo-local** (swamp-club#3278).
+ *    `audit`, `telemetry`, `logs` and `files` are datastore directories, but
+ *    nothing writes them through the datastore: audit and telemetry files go
+ *    to the checkout's own `.swamp` or the user-global spool, and nothing
+ *    writes the other two. They have no v3 home, so no record key may be
+ *    materialised into them, no production code may resolve one through a
+ *    datastore resolver, and every production use of their `SWAMP_SUBDIRS`
+ *    names is pinned. A writer that needs one of them synced must first give
+ *    it a v3 home ("v3 stream directories" in
+ *    `design/enablers/datastores.md`).
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -88,6 +98,7 @@ import { restoreNamespace } from "../src/domain/data/namespace.ts";
 import {
   MATERIALISED_SUBDIRS,
   READ_MODEL_STATE_DIR,
+  REPO_LOCAL_STREAM_SUBDIRS,
 } from "../src/infrastructure/datastore_v3/record_path_guard.ts";
 import {
   assertPinnedSet,
@@ -366,6 +377,96 @@ Deno.test("datastore v3: the read model's state directory is never a datastore d
       `${dir} is not a datastore directory`,
     );
   }
+});
+
+Deno.test("datastore v3: the stream directories are datastore directories no key materialises into", () => {
+  const always: readonly string[] = ALWAYS_LOCAL_SUBDIRS;
+  const defaults: readonly string[] = DEFAULT_DATASTORE_SUBDIRS;
+  for (const dir of REPO_LOCAL_STREAM_SUBDIRS) {
+    assertEquals(
+      defaults.includes(dir),
+      true,
+      `${dir} is not a datastore directory`,
+    );
+    assertEquals(always.includes(dir), false, `${dir} is always-local`);
+    assertEquals(
+      MATERIALISED_SUBDIRS.has(dir),
+      false,
+      `${dir} has no v3 home, so no record key may be materialised into it`,
+    );
+  }
+});
+
+/**
+ * A datastore-resolver call naming a stream directory, by `SWAMP_SUBDIRS`
+ * member or literal.
+ */
+const STREAM_DIR_RESOLVE =
+  /\b(?:resolvePath|dsPath)\(\s*(?:SWAMP_SUBDIRS\.(?:audit|telemetry|logs|files)\b|["'`](?:audit|telemetry|logs|files)(?:["'`/]))/;
+
+/** Production resolver calls naming a stream directory, as `file:line`. */
+const PINNED_STREAM_DIR_RESOLVES: readonly string[] = [];
+
+Deno.test("datastore v3: no production code resolves a stream directory through the datastore", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (STREAM_DIR_RESOLVE.test(line)) found.push(`${rel}:${index + 1}`);
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_STREAM_DIR_RESOLVES,
+    "Datastore-resolved stream directories",
+    "audit, telemetry, logs and files have no v3 home: a write through the\n" +
+      "datastore would sync on v2 and silently stop on v3. Give the directory\n" +
+      "a v3 home first (design/enablers/datastores.md, v3 stream directories).",
+  );
+});
+
+/** A use of a stream directory's `SWAMP_SUBDIRS` name. */
+const STREAM_DIR_NAME = /\bSWAMP_SUBDIRS\.(?:audit|telemetry|logs|files)\b/;
+
+/**
+ * Production files using a stream directory's `SWAMP_SUBDIRS` name. Each
+ * builds a repo-local or user-global path, never a datastore one, so a
+ * resolver call through a variable cannot slip past the rule above
+ * unreviewed.
+ */
+const PINNED_STREAM_DIR_USERS: readonly string[] = [
+  // swampPath(repoDir, audit): the doctor's write probe.
+  "src/cli/commands/doctor_audit.ts",
+  // .gitignore entries and the user-global telemetry spool.
+  "src/domain/repo/repo_service.ts",
+  // swampPath(repoDir, telemetry): the default, overridden by every caller.
+  "src/infrastructure/persistence/json_telemetry_repository.ts",
+  // swampPath(repoDir, audit): command audit.
+  "src/infrastructure/persistence/jsonl_audit_repository.ts",
+  // swampPath(repoDir, audit): vault audit.
+  "src/infrastructure/persistence/jsonl_vault_audit_repository.ts",
+  // globalTelemetryDir: the user-global spool.
+  "src/infrastructure/persistence/paths.ts",
+  // swampPath(repoDir, telemetry): drains the legacy repo-local spool.
+  "src/infrastructure/persistence/telemetry_spool_migration.ts",
+];
+
+Deno.test("datastore v3: every use of a stream directory's name is reviewed", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    if (STREAM_DIR_NAME.test(await Deno.readTextFile(filePath))) {
+      found.push(repoRelative(filePath));
+    }
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_STREAM_DIR_USERS,
+    "Production uses of a stream directory's SWAMP_SUBDIRS name",
+    "audit, telemetry, logs and files stay repo-local on v3. Build their\n" +
+      "paths with swampPath (or the user-global config dir), never through a\n" +
+      "datastore resolver, then pin the file here.",
+  );
 });
 
 const CHUNK_COLLECTOR = "domain/datastore_v3/chunk_collector.ts";
