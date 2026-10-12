@@ -164,6 +164,10 @@ export function Webhooks(
     query,
   );
   const facets = rowSearchFacets(rows, WEBHOOK_FACETS, selected, select);
+  const clearFilters = () => {
+    setQuery("");
+    for (const key of WEBHOOK_FACET_KEYS) select(key, []);
+  };
 
   const rangeLabel = describeTimeRange(range);
   const stats: Stat[] = [
@@ -203,10 +207,7 @@ export function Webhooks(
           total={rows.length}
           noun="webhooks"
           facets={facets}
-          onClear={() => {
-            setQuery("");
-            for (const key of WEBHOOK_FACET_KEYS) select(key, []);
-          }}
+          onClear={clearFilters}
         />
       )}
 
@@ -248,7 +249,7 @@ export function Webhooks(
                 <button
                   type="button"
                   className="trig-btn"
-                  onClick={() => setQuery("")}
+                  onClick={clearFilters}
                 >
                   Clear filters
                 </button>
