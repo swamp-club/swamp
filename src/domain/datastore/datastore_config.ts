@@ -266,6 +266,57 @@ export const CATALOG_FILES: readonly string[] = [
 ].map((name) => join("data", name));
 
 /**
+ * Datastore subdirectories that have no v3 home because nothing writes them
+ * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry
+ * files are written to the checkout's own `.swamp`, or the user-global
+ * telemetry spool, whatever the datastore, and nothing writes `logs/` or
+ * `files/`. They stay repo-local on v3, so no commit may materialise into
+ * them: a key there could overwrite a checkout's own audit trail in solo
+ * layout. Datastore setup leaves them in `.swamp` for the same reason
+ * (swamp-club#3281). See "v3 stream directories" in
+ * `design/enablers/datastores.md`.
+ */
+export const REPO_LOCAL_STREAM_SUBDIRS = [
+  "audit",
+  "telemetry",
+  "logs",
+  "files",
+] as const;
+
+/**
+ * Datastore subdirectories whose run and output records sit beside a run
+ * log: the plain-text `.log` file a run writes into the checkout's own
+ * `.swamp`, whatever the datastore. Records store its path relative to the
+ * repository, so the log stays local when its record moves.
+ */
+const RUN_LOG_SUBDIRS: readonly string[] = ["outputs", "workflow-runs"];
+
+/**
+ * Whether `subdir`, a top-level datastore subdirectory, is a repo-local
+ * stream directory that datastore setup leaves in `.swamp`.
+ */
+export function isRepoLocalStreamSubdir(subdir: string): boolean {
+  return (REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir);
+}
+
+/**
+ * Whether a file named `fileName`, anywhere under the top-level datastore
+ * subdirectory `subdir`, is a run log that datastore setup leaves in
+ * `.swamp` (swamp-club#3281).
+ */
+export function isRunLogFile(subdir: string, fileName: string): boolean {
+  return RUN_LOG_SUBDIRS.includes(subdir) && fileName.endsWith(".log");
+}
+
+/**
+ * Whether the subdirectory `subdir` can hold a run log, so removing it
+ * must walk it rather than delete it whole.
+ */
+export function mayHoldRunLogs(subdir: string): boolean {
+  return RUN_LOG_SUBDIRS.includes(subdir);
+}
+
+/**
  * The on-disk root a filesystem datastore keeps its tier under
  * (`{path}/{namespace}` when namespaced), when that root is not the repo's
  * own `.swamp/`. Datastore setup migrates from it (swamp-club#3238).

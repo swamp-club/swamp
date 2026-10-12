@@ -19,7 +19,11 @@
 
 import { ensureDir } from "@std/fs";
 import { join, relative, resolve } from "@std/path";
-import { getDatastoreDirectories } from "./datastore_config.ts";
+import {
+  getDatastoreDirectories,
+  isRepoLocalStreamSubdir,
+  isRunLogFile,
+} from "./datastore_config.ts";
 import type { DatastoreConfig } from "./datastore_config.ts";
 
 /**
@@ -40,7 +44,9 @@ export interface MigrationResult {
  * Migrates datastore-tier files from source to destination.
  *
  * Copies all files from the source directories (based on the
- * datastore config's directory list) to the destination path.
+ * datastore config's directory list) to the destination path. Repo-local
+ * stream directories and run logs are left behind: their writers and
+ * readers only use the checkout's own `.swamp` (swamp-club#3281).
  *
  * @param skip Paths relative to `sourceDir` that are left behind: a
  *   skipped top-level subdir is not copied or reported as migrated, and a
@@ -66,6 +72,7 @@ export async function migrateDatastore(
     const srcPath = join(sourceDir, subdir);
     const destPath = join(destDir, subdir);
     if (skipped.has(resolve(srcPath))) continue;
+    if (isRepoLocalStreamSubdir(subdir)) continue;
 
     try {
       const stat = await Deno.stat(srcPath);
@@ -76,7 +83,7 @@ export async function migrateDatastore(
     }
 
     try {
-      await copyDirectory(srcPath, destPath, result, skipped);
+      await copyDirectory(subdir, srcPath, destPath, result, skipped);
       result.directoriesMigrated.push(subdir);
     } catch (error) {
       result.errors.push(
@@ -96,9 +103,11 @@ function skipSet(root: string, skip: readonly string[]): Set<string> {
 }
 
 /**
- * Recursively copies a directory.
+ * Recursively copies a directory under the top-level datastore subdirectory
+ * `subdir`, leaving its run logs behind.
  */
 async function copyDirectory(
+  subdir: string,
   src: string,
   dest: string,
   result: MigrationResult,
@@ -112,8 +121,9 @@ async function copyDirectory(
     if (skipped.has(resolve(srcPath))) continue;
 
     if (entry.isDirectory) {
-      await copyDirectory(srcPath, destPath, result, skipped);
+      await copyDirectory(subdir, srcPath, destPath, result, skipped);
     } else if (entry.isFile) {
+      if (isRunLogFile(subdir, entry.name)) continue;
       try {
         await Deno.copyFile(srcPath, destPath);
         const stat = await Deno.stat(srcPath);
@@ -171,7 +181,8 @@ async function copyDirectory(
  * has (swamp-club#3238).
  *
  * @param skip The same relative paths passed to {@link migrateDatastore};
- *   they are left out of the check.
+ *   they are left out of the check, as are the repo-local stream
+ *   directories and run logs it leaves behind.
  * @returns `sourceCount` source files, of which `destCount` arrived.
  */
 export async function verifyMigration(
@@ -185,7 +196,9 @@ export async function verifyMigration(
   const tally = { sourceCount: 0, destCount: 0 };
 
   for (const subdir of directories) {
+    if (isRepoLocalStreamSubdir(subdir)) continue;
     await countArrived(
+      subdir,
       join(sourceDir, subdir),
       join(destDir, subdir),
       skipped,
@@ -200,6 +213,7 @@ export async function verifyMigration(
 }
 
 async function countArrived(
+  subdir: string,
   src: string,
   dest: string,
   skipped: ReadonlySet<string>,
@@ -218,8 +232,9 @@ async function countArrived(
     const destPath = join(dest, entry.name);
     if (skipped.has(resolve(srcPath))) continue;
     if (entry.isDirectory) {
-      await countArrived(srcPath, destPath, skipped, tally);
+      await countArrived(subdir, srcPath, destPath, skipped, tally);
     } else if (entry.isFile || entry.isSymlink) {
+      if (entry.isFile && isRunLogFile(subdir, entry.name)) continue;
       tally.sourceCount++;
       if (await arrived(srcPath, destPath, entry.isSymlink)) {
         tally.destCount++;

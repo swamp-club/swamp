@@ -3534,8 +3534,9 @@ commit log, and `audit-wal` is always-local.
 - A writer that needs a stream directory synced gives it a v3 home first. The
   rules above fail until it does.
 - v3 `datastore setup` creates and migrates nothing, the stream directories
-  included (swamp-club#3279). v2 setup still moves them, and the run logs,
-  into the new datastore, where their readers never look (swamp-club#3281).
+  included (swamp-club#3279). v2 setup leaves them, and the run logs, in
+  `.swamp` on every backend (swamp-club#3281); it still creates the empty
+  stream directories at a new filesystem path.
 - A v3 provider used as serve's dedicated audit datastore must still offer a
   control-plane store.
 
@@ -4825,7 +4826,12 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    writes the datastore block (swamp-club#3162). A destination inside one of
    the source's migrated subdirs is refused, since the copy would recurse into
    it. The catalog (`data/_catalog.db` and its sidecars, `CATALOG_FILES`) is a
-   local index and is never copied. The verification checks that every source
+   local index and is never copied. Neither are the stream directories
+   (`REPO_LOCAL_STREAM_SUBDIRS`: `audit`, `telemetry`, `logs`, `files`) or the
+   run logs (`.log` files under `outputs/` and `workflow-runs/`): their
+   writers and readers only use the checkout's own `.swamp`, so setup leaves
+   them there and the cleanup in step 5 keeps them (swamp-club#3281). The
+   verification checks that every source
    file arrived (regular files with the same size, symlinks by existence), so
    local files a `.swamp/` destination already holds, such as method-run logs,
    do not fail it.

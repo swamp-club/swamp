@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir, walk } from "@std/fs";
-import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
+import {
+  basename,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import {
   CATALOG_FILES,
   classifyInRepoConfig,
@@ -30,6 +37,8 @@ import {
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
   type InRepoConfigRole,
+  isRunLogFile,
+  mayHoldRunLogs,
   mergeSetupDatastoreBlock,
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
@@ -1604,7 +1613,12 @@ export function createDatastoreSetupDeps(
     ) => {
       const kept = keep.map((p) => resolve(sourceDir, p));
       for (const subdir of dirs) {
-        await removeExcept(resolve(sourceDir, subdir), kept);
+        // Run logs stay with the checkout: their records point at them in
+        // .swamp whatever the datastore (swamp-club#3281).
+        const keepFile = mayHoldRunLogs(subdir)
+          ? (name: string) => isRunLogFile(subdir, name)
+          : undefined;
+        await removeExcept(resolve(sourceDir, subdir), kept, keepFile);
       }
     },
     invalidateCatalog: (repoDir: string) => removeCatalogDb(repoDir),
@@ -1774,29 +1788,52 @@ async function configFileDiffers(
 
 /**
  * Removes `path` recursively, except any `kept` path inside it, which stays
- * with its ancestors. A symlink is never descended into: with nothing kept
- * inside, only the link is removed; with a kept path inside, the link is
- * left in place so cleanup never deletes the files of its target and the
- * kept path stays reachable. Removal failures are non-fatal: the source may
- * already be gone.
+ * with its ancestors, and any regular file whose name `keepFile` accepts.
+ * When `keepFile` is given the tree is walked file by file and directories
+ * it leaves empty are removed. A symlink is never descended into: with
+ * nothing kept inside, only the link is removed; with a kept path inside,
+ * the link is left in place so cleanup never deletes the files of its
+ * target and the kept path stays reachable. Removal failures are non-fatal:
+ * the source may already be gone.
  */
 async function removeExcept(
   path: string,
   kept: readonly string[],
+  keepFile?: (name: string) => boolean,
 ): Promise<void> {
   if (kept.includes(path)) return;
   const keptInside = kept.filter((k) => k.startsWith(path + SEPARATOR));
   try {
-    if (keptInside.length === 0) {
+    if (keptInside.length === 0 && !keepFile) {
       await Deno.remove(path, { recursive: true });
       return;
     }
-    if ((await Deno.lstat(path)).isSymlink) return;
+    const stat = await Deno.lstat(path);
+    if (stat.isSymlink) {
+      if (keptInside.length === 0) await Deno.remove(path);
+      return;
+    }
+    if (!stat.isDirectory) {
+      if (!keepFile?.(basename(path))) await Deno.remove(path);
+      return;
+    }
     for await (const entry of Deno.readDir(path)) {
-      await removeExcept(join(path, entry.name), keptInside);
+      await removeExcept(join(path, entry.name), keptInside, keepFile);
     }
   } catch {
     // Non-fatal: source dir may already be gone
+    return;
+  }
+  if (keepFile) await removeIfEmpty(path);
+}
+
+/** Removes the directory `path` when nothing is left in it. */
+async function removeIfEmpty(path: string): Promise<void> {
+  try {
+    for await (const _ of Deno.readDir(path)) return;
+    await Deno.remove(path);
+  } catch {
+    // Non-fatal: already gone, or not empty
   }
 }
 

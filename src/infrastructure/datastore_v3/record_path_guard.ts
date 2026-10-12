@@ -37,6 +37,7 @@ import { join, resolve, SEPARATOR } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
+  REPO_LOCAL_STREAM_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
 import { lexicalRefusal } from "../../domain/datastore_v3/materialisation.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
@@ -70,20 +71,11 @@ export function v3CatalogPath(repoDir: string): string {
 }
 
 /**
- * Datastore subdirectories that have no v3 home because nothing writes them
- * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry
- * files are written to the checkout's own `.swamp`, or the user-global
- * telemetry spool, whatever the datastore, and nothing writes `logs/` or
- * `files/`. They stay repo-local on v3, so no commit may materialise into
- * them: a key there could overwrite a checkout's own audit trail in solo
- * layout. See "v3 stream directories" in `design/enablers/datastores.md`.
+ * The repo-local stream directories (swamp-club#3278), defined beside the
+ * datastore directories so datastore setup leaves them in place too
+ * (swamp-club#3281).
  */
-export const REPO_LOCAL_STREAM_SUBDIRS = [
-  "audit",
-  "telemetry",
-  "logs",
-  "files",
-] as const;
+export { REPO_LOCAL_STREAM_SUBDIRS };
 
 /**
  * The first segments a materialised key may have: the synced subdirectories,
