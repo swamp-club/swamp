@@ -80,6 +80,7 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
   if (err instanceof SignalRefusedUserError) {
     data.refusal = err.refusal;
     if (err.lastWait) data.lastWait = { ...err.lastWait };
+    if (err.pending) data.pending = { ...err.pending };
   }
   if (err instanceof DuplicateTypeUserError) {
     data.duplicateType = {

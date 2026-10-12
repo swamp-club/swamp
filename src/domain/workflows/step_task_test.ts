@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { SIGNAL_WAIT_MAX_TIMEOUT_SECONDS } from "./signal_wait.ts";
+import {
+  SIGNAL_ACCEPT_EARLY_MAX_SECONDS,
+  SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
+} from "./signal_wait.ts";
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 
 Deno.test("StepTask.modelMethod creates model method task", () => {
@@ -736,6 +739,62 @@ Deno.test("StepTask.waitForSignal: carries a key, and leaves the field off when 
   assertEquals(StepTask.fromData(keyed.toData()).equals(keyed), true);
   assertEquals(
     "key" in StepTask.waitForSignal(60, { type: "object" }).data,
+    false,
+  );
+});
+
+Deno.test("StepTaskSchema: acceptEarly is a bounded number of seconds on a keyed wait_for_signal", () => {
+  const task = (extra: Record<string, unknown>) => ({
+    type: "wait_for_signal",
+    timeout: 60,
+    schema: { type: "object" },
+    ...extra,
+  });
+  for (const acceptEarly of [0.5, 10, SIGNAL_ACCEPT_EARLY_MAX_SECONDS]) {
+    const parsed = StepTaskSchema.safeParse(
+      task({ key: "kitchen-verdict", acceptEarly }),
+    );
+    assertEquals(parsed.success, true, String(acceptEarly));
+  }
+  for (
+    const acceptEarly of [
+      0,
+      -1,
+      SIGNAL_ACCEPT_EARLY_MAX_SECONDS + 1,
+      "10",
+      "${{ inputs.early }}",
+    ]
+  ) {
+    const parsed = StepTaskSchema.safeParse(
+      task({ key: "kitchen-verdict", acceptEarly }),
+    );
+    assertEquals(parsed.success, false, String(acceptEarly));
+  }
+  assertThrows(
+    () => StepTaskSchema.parse(task({ acceptEarly: 10 })),
+    Error,
+    "must declare a key",
+  );
+});
+
+Deno.test("StepTask.waitForSignal: carries acceptEarly, and leaves the field off when none is given", () => {
+  const early = StepTask.waitForSignal(
+    60,
+    { type: "object" },
+    "kitchen-verdict",
+    10,
+  );
+  assertEquals(early.data, {
+    type: "wait_for_signal",
+    timeout: 60,
+    schema: { type: "object" },
+    key: "kitchen-verdict",
+    acceptEarly: 10,
+  });
+  assertEquals(StepTask.fromData(early.toData()).equals(early), true);
+  assertEquals(
+    "acceptEarly" in
+      StepTask.waitForSignal(60, { type: "object" }, "kitchen-verdict").data,
     false,
   );
 });

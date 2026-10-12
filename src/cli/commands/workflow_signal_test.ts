@@ -16,7 +16,12 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type {
   WorkflowSignalAddress,
   WorkflowSignalData,
@@ -25,10 +30,12 @@ import { UserError } from "../../domain/errors.ts";
 import type { CommandContext } from "../context.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {
+  parseIdempotencyKey,
   parseSignalAddress,
   parseSignalPayload,
   remoteSignalPayload,
   remoteSignalUserError,
+  renderPendingSignalResult,
   renderRemoteSignalResult,
   renderSignalResult,
   signalUserError,
@@ -278,7 +285,13 @@ Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow an
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
-    { workflow: "@acme/release", key: "verdict", payload: 7 },
+    // A key address says this client reads a pending reply.
+    {
+      workflow: "@acme/release",
+      key: "verdict",
+      payload: 7,
+      acceptsPending: true,
+    },
   );
 });
 
@@ -348,6 +361,51 @@ Deno.test("signalUserError: a refusal keeps its kind and the key's last wait for
   });
 });
 
+Deno.test("signalUserError: an already_pending refusal keeps until when the earlier signal is held, and its receipt, for JSON output", () => {
+  const receipt = {
+    id: "7a1f6f0c-2d5e-4a51-9d0b-1f6f8f0f3a22",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "tester",
+  };
+  const heldUntil = "2026-01-01T00:00:10.000Z";
+  // As the use case reports it: beside the refusal.
+  const local = signalUserError({
+    code: "validation_failed",
+    message: "A signal is already pending.",
+    details: { refusal: "already_pending", receipt, heldUntil },
+  });
+  assertEquals(buildErrorJson(local), {
+    error: "A signal is already pending.",
+    code: "validation_failed",
+    refusal: "already_pending",
+    pending: { heldUntil, receipt },
+  });
+  // As a server reports it to a caller who may only signal: under
+  // `pending`, with no receipt and a message that names no time.
+  const remote = remoteSignalUserError(
+    new ServerResponseError({
+      code: "workflow_signal_refused",
+      message: "A signal is already pending for that key.",
+      details: { refusal: "already_pending", pending: { heldUntil } },
+    }),
+  );
+  assert(remote instanceof SignalRefusedUserError);
+  assertEquals(buildErrorJson(remote), {
+    error:
+      `Server reported workflow_signal_refused: A signal is already pending for that key. The earlier signal is held until ${heldUntil}.`,
+    code: "workflow_signal_refused",
+    refusal: "already_pending",
+    pending: { heldUntil },
+  });
+  // The receipt of another refusal is not read as a pending signal's.
+  const settled = signalUserError({
+    code: "validation_failed",
+    message: "already settled",
+    details: { refusal: "already_settled", receipt, heldUntil },
+  });
+  assertEquals("pending" in buildErrorJson(settled), false);
+});
+
 Deno.test("signalUserError: an error that is no refusal stays a plain user error", () => {
   const error = signalUserError({ code: "io_error", message: "disk" });
   assertEquals(error instanceof SignalRefusedUserError, false);
@@ -392,4 +450,132 @@ Deno.test("remoteSignalUserError: a last wait that is not in the form of one is 
   assertEquals(remoteSignalUserError(notFound), notFound);
   const other = new Error("socket closed");
   assertEquals(remoteSignalUserError(other), other);
+});
+
+const HELD = {
+  pending: true as const,
+  key: "kitchen-verdict",
+  workflowId: "0a5c1e8e-7f4b-4c55-9a3e-2b1c0d9e8f7a",
+  workflowName: "kitchen",
+  signal: {
+    id: "2b1c0d9e-7f4b-4c55-9a3e-0a5c1e8e8f7a",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "tester",
+  },
+  heldUntil: "2026-01-01T00:00:10.000Z",
+};
+
+Deno.test("renderPendingSignalResult: log mode says the signal is held, not delivered, and names no run", () => {
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), HELD)
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "No wait holds the key yet");
+  assertEquals(lines[0].includes("resume"), false);
+  assertEquals(
+    captureStdout(() =>
+      renderPendingSignalResult(hintTestContext({ verbosity: "quiet" }), HELD)
+    ),
+    [],
+  );
+});
+
+Deno.test("renderPendingSignalResult: a held signal says when the key's last wait was settled by a signal, so a retry is recognised", () => {
+  const lastWait = {
+    waitId: "b0f6f0c2-5d0e-4a51-9d0b-1f6f8f0f3a11",
+    settledAs: "accepted" as const,
+    settledAt: "2025-12-31T23:59:58.000Z",
+    receipt: {
+      id: "7a1f6f0c-2d5e-4a51-9d0b-1f6f8f0f3a22",
+      receivedAt: "2025-12-31T23:59:50.000Z",
+      submittedBy: "tester",
+    },
+  };
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), { ...HELD, lastWait })
+  );
+  assertEquals(lines.length, 2);
+  assertStringIncludes(lines[1], lastWait.receipt.id);
+  assertStringIncludes(lines[1], lastWait.settledAt);
+  assertStringIncludes(lines[1], "held for the next run");
+  // A caller who may only signal is told when, not by which signal.
+  const { receipt: _receipt, ...withoutReceipt } = lastWait;
+  const generic = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), {
+      ...HELD,
+      lastWait: withoutReceipt,
+    })
+  );
+  assertStringIncludes(generic[1], "settled by a signal at");
+  // A wait that timed out says nothing of an earlier signal landing.
+  const expired = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), {
+      ...HELD,
+      lastWait: { ...withoutReceipt, settledAs: "timed_out" },
+    })
+  );
+  assertEquals(expired.length, 1);
+});
+
+Deno.test("renderPendingSignalResult: json mode prints the receipt and until when the signal is held", () => {
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext({ outputMode: "json" }), HELD)
+  );
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), HELD);
+  // A server's reply to a caller who may only signal names no workflow; the
+  // document still says the signal is pending.
+  const { signal, heldUntil } = HELD;
+  const remote = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext({ outputMode: "json" }), {
+      signal,
+      heldUntil,
+    })
+  );
+  assertEquals(JSON.parse(remote[0]), { signal, heldUntil, pending: true });
+});
+
+Deno.test("renderSignalResult: a signal a step took on opening its wait suggests no resume", () => {
+  const lines = captureStdout(() =>
+    renderSignalResult(
+      hintTestContext(),
+      signalled({ awaitingResume: false, taken: true }),
+    )
+  );
+  assertEquals(lines, [
+    "The step took the signal as it opened its wait, and its run went on without waiting.",
+  ]);
+});
+
+Deno.test("parseIdempotencyKey: passes a key in the form of one, and none; refuses any other", () => {
+  assertEquals(parseIdempotencyKey(undefined), undefined);
+  assertEquals(parseIdempotencyKey("order-1"), "order-1");
+  for (const raw of ["", "has space", "a/b", "k".repeat(129)]) {
+    assertThrows(
+      () => parseIdempotencyKey(raw),
+      UserError,
+      "--idempotency-key must be",
+    );
+  }
+});
+
+Deno.test("remoteSignalPayload: an idempotency key is sent with either address, and left out when none was given", () => {
+  assertEquals(
+    remoteSignalPayload({ waitId: WAIT_ID }, {}, "order-1"),
+    { waitId: WAIT_ID, payload: {}, idempotencyKey: "order-1" },
+  );
+  assertEquals(
+    remoteSignalPayload({ workflow: "release", key: "verdict" }, {}, "order-1"),
+    {
+      workflow: "release",
+      key: "verdict",
+      payload: {},
+      acceptsPending: true,
+      idempotencyKey: "order-1",
+    },
+  );
+  assertEquals(
+    "idempotencyKey" in remoteSignalPayload({ waitId: WAIT_ID }, {}),
+    false,
+  );
 });

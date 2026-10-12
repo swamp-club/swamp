@@ -1578,6 +1578,14 @@ export async function handleWorkflowApprove(
  * the caller may not signal is answered as one that does not exist. Nothing
  * here reserves or saves a run.
  */
+function idempotencyKeyOf(
+  payload: WorkflowSignalPayload,
+): { idempotencyKey?: string } {
+  return payload.idempotencyKey !== undefined
+    ? { idempotencyKey: payload.idempotencyKey }
+    : {};
+}
+
 export async function handleWorkflowSignal(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1589,12 +1597,20 @@ export async function handleWorkflowSignal(
     ctx,
     accessCallerOf(socket, principal),
     "waitId" in payload
-      ? { requestId, waitId: payload.waitId, payload: payload.payload }
+      ? {
+        requestId,
+        waitId: payload.waitId,
+        payload: payload.payload,
+        ...idempotencyKeyOf(payload),
+      }
       : {
         requestId,
         workflow: payload.workflow,
         key: payload.key,
         payload: payload.payload,
+        // A client from before the pending reply cannot read one.
+        holdEarly: payload.acceptsPending === true,
+        ...idempotencyKeyOf(payload),
       },
     {
       onWorkflowResolved: (name) =>
@@ -1623,6 +1639,23 @@ export async function handleWorkflowSignal(
         captureDecisionSubject(socket, principal),
       );
       return;
+    case "pending":
+      // Nothing took the signal yet, so there is no run to continue.
+      if (result.data.workflowName !== undefined) {
+        recordAuditedResource(
+          socket,
+          requestId,
+          "workflow",
+          result.data.workflowName,
+          ctx,
+        );
+      }
+      send(socket, {
+        type: "workflow.signal",
+        id: requestId,
+        payload: { pending: result.data },
+      });
+      return;
     case "not_found":
       sendError(socket, requestId, "not_found", result.message);
       return;
@@ -1639,6 +1672,7 @@ export async function handleWorkflowSignal(
       sendError(socket, requestId, "workflow_signal_refused", result.message, {
         refusal: result.status,
         ...(result.receipt ? { receipt: result.receipt } : {}),
+        ...(result.pending ? { pending: result.pending } : {}),
         ...(result.lastWait ? { lastWait: result.lastWait } : {}),
       });
   }

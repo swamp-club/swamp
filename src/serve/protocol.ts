@@ -416,12 +416,26 @@ export interface WorkflowApprovePayload {
  * addresses is sent. The payload is untrusted and checked by the wait.
  */
 export type WorkflowSignalPayload =
-  | { waitId: string; payload: unknown }
+  | {
+    waitId: string;
+    payload: unknown;
+    /** Names this signal across retries; see `isIdempotencyKey`. */
+    idempotencyKey?: string;
+  }
   | {
     /** The workflow's name or ID. */
     workflow: string;
     key: string;
     payload: unknown;
+    /**
+     * True from a client that reads a `pending` reply (swamp-club#3212). A
+     * client from before it reads `data` of every reply, so the server
+     * holds no signal for one that does not say this: it is refused
+     * `no_open_wait`, as it was before, and nothing is stored.
+     */
+    acceptsPending?: boolean;
+    /** Names this signal across retries; see `isIdempotencyKey`. */
+    idempotencyKey?: string;
   };
 
 export interface WorkflowWaitsPayload {
@@ -1306,7 +1320,13 @@ export interface WorkflowSignalResponseData {
     waitId: string;
     receivedAt: string;
     submittedBy: string;
+    idempotencyKey?: string;
   };
+  /**
+   * True when the request carried the idempotency key of a signal already
+   * received: `signal` is that one's receipt, and nothing was delivered.
+   */
+  duplicate?: true;
   /** The key the wait holds, when its step declared one. */
   key?: string;
   workflowId?: string;
@@ -1317,11 +1337,51 @@ export interface WorkflowSignalResponseData {
   awaitingResume?: boolean;
   runRecordAvailable?: boolean;
   resumeCommand?: string;
+  /** True when the step took the signal as it opened its wait. */
+  taken?: true;
 }
 
-export interface WorkflowSignalResponse {
-  data: WorkflowSignalResponseData;
+/**
+ * A signal by key held as the key's pending signal (swamp-club#3212): no
+ * wait or run took it yet. The key and the workflow are present only for a
+ * caller who may also read the workflow.
+ */
+export interface WorkflowSignalPendingResponseData {
+  /** What swamp recorded about the signal. */
+  signal: {
+    id: string;
+    receivedAt: string;
+    submittedBy: string;
+    idempotencyKey?: string;
+  };
+  /** When the signal stops being taken by a wait that opens. */
+  heldUntil: string;
+  /**
+   * True when the request carried the idempotency key of the signal that is
+   * held: `signal` is that one's receipt, and nothing more was stored.
+   */
+  duplicate?: true;
+  key?: string;
+  workflowId?: string;
+  workflowName?: string;
+  /**
+   * The wait that last held the key, when its claim is still the key's
+   * highest record: how a sender that retries after a lost reply tells its
+   * first signal landed. The receipt is present only for a caller who may
+   * read the workflow.
+   */
+  lastWait?: {
+    waitId: string;
+    settledAs: "accepted" | "timed_out" | "cancelled";
+    settledAt: string;
+    receipt?: { id: string; receivedAt: string; submittedBy: string };
+  };
 }
+
+/** `data` for a delivered signal; `pending` for one that is held. */
+export type WorkflowSignalResponse =
+  | { data: WorkflowSignalResponseData; pending?: undefined }
+  | { data?: undefined; pending: WorkflowSignalPendingResponseData };
 
 export interface WorkflowWaitsResponse {
   data: Record<string, unknown>;

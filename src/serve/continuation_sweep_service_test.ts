@@ -23,6 +23,7 @@ import {
   ContinuationSweepService,
   decideContinuationSweepStart,
   sweepContinuations,
+  sweepHeldSignals,
 } from "./continuation_sweep_service.ts";
 import { ActiveRunRegistry } from "./active_run_registry.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
@@ -33,6 +34,9 @@ import { Job } from "../domain/workflows/job.ts";
 import { Step } from "../domain/workflows/step.ts";
 import { StepTask } from "../domain/workflows/step_task.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { holdEarlySignal } from "../domain/workflows/early_signal.ts";
+import { PENDING_SIGNAL_LAPSE_GRACE_MS } from "../domain/workflows/pending_signal.ts";
+import { InMemorySignalWaitStore } from "../domain/workflows/signal_wait_store_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -164,6 +168,55 @@ Deno.test("sweepContinuations: stops between runs once the server is stopping", 
 
   assertEquals(result, { examined: 0, launched: 0 });
   assertEquals(launched, []);
+});
+
+/** A context whose datastore holds wait records in `store`, or cannot. */
+function waitsCtx(
+  store: InMemorySignalWaitStore | undefined,
+): Pick<ConnectionContext, "repoContext"> {
+  return {
+    repoContext: {
+      signalWaits: store
+        ? { supported: true, store }
+        : { supported: false, reason: "no control-plane store" },
+    },
+  } as unknown as Pick<ConnectionContext, "repoContext">;
+}
+
+Deno.test("sweepHeldSignals: lapses a pending signal no wait took, once its grace has passed", async () => {
+  const store = new InMemorySignalWaitStore();
+  const received = new Date("2026-01-01T00:00:00.000Z");
+  const arrival = await holdEarlySignal(store, {
+    workflowId: "wf-kitchen",
+    key: "kitchen-verdict",
+    payload: {},
+    submittedBy: "camera",
+    acceptEarly: 10,
+  }, received);
+  assertEquals(arrival.kind, "pending");
+
+  assertEquals(await sweepHeldSignals(waitsCtx(store), received), 0);
+  const later = new Date(
+    received.getTime() + 10_000 + PENDING_SIGNAL_LAPSE_GRACE_MS + 1,
+  );
+  assertEquals(await sweepHeldSignals(waitsCtx(store), later), 1);
+  const head = await store.highestPendingRecord({
+    workflowId: "wf-kitchen",
+    key: "kitchen-verdict",
+    slot: 1,
+  });
+  assertEquals(head.kind === "found" && head.record.kind, "lapse");
+  assertEquals(store.pendingRecords.size, 1);
+});
+
+Deno.test("sweepHeldSignals: a datastore that holds no waits, and a sweep that fails, are passed over", async () => {
+  assertEquals(await sweepHeldSignals(waitsCtx(undefined)), 0);
+  const failing = new class extends InMemorySignalWaitStore {
+    override listPendingAddresses(): Promise<never> {
+      return Promise.reject(new Error("listing failed"));
+    }
+  }();
+  assertEquals(await sweepHeldSignals(waitsCtx(failing)), 0);
 });
 
 Deno.test("ContinuationSweepService: the first pass is the boot pass, and later ones are not", async () => {

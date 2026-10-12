@@ -472,9 +472,23 @@ export class DefaultWorkflowValidationService
         if (!step.task) continue;
         const taskData = step.task.data;
         if (taskData.type !== "wait_for_signal") continue;
-        const offending = schemaExpressions(taskData.schema).find((expr) =>
-          unresolvedRoot.test(expr)
-        );
+        const expressions = schemaExpressions(taskData.schema);
+        // An early payload is checked against the schema as the definition
+        // has it, before any run exists to resolve an expression
+        // (swamp-club#3212).
+        if (taskData.acceptEarly !== undefined && expressions.length > 0) {
+          results.push(
+            WorkflowValidationResult.fail(
+              `Wait schema in job '${job.name}' step '${step.name}'`,
+              `a wait_for_signal step that sets acceptEarly may hold no ` +
+                `expression in its schema, but contains ${expressions[0]}. A ` +
+                `signal that arrives before the wait opens is checked against ` +
+                `the schema in the definition, where inputs.* is not resolved`,
+            ),
+          );
+          continue;
+        }
+        const offending = expressions.find((expr) => unresolvedRoot.test(expr));
         if (offending) {
           results.push(
             WorkflowValidationResult.fail(

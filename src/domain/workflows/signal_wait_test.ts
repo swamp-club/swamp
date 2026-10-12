@@ -19,6 +19,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import type { InputsSchema } from "../definitions/definition.ts";
 import {
+  isIdempotencyKey,
   isWaitKey,
   openSignalWaitMessage,
   parseStoredWait,
@@ -597,4 +598,79 @@ Deno.test("isWaitKey: accepts the key form and refuses Windows device names, in 
     })?.kind,
     "broken",
   );
+});
+
+Deno.test("SignalWait.withEarly: a keyed wait keeps where its pending signal is, through its stored form and a settle", () => {
+  const early = {
+    generation: 3,
+    overRelease: true,
+    from: "2025-12-31T23:59:50.000Z",
+  };
+  const wait = SignalWait.open(
+    { type: "object" },
+    60,
+    NOW,
+    undefined,
+    "verdict",
+  )
+    .withEarly(early);
+  assertEquals(wait.early, early);
+  assertEquals(wait.toData().early, early);
+  const restored = SignalWait.fromData(wait.toData());
+  assertEquals(restored.early, early);
+  assertEquals(restored.equals(wait), true);
+  assertEquals(
+    wait.settledWith({
+      id: crypto.randomUUID(),
+      waitId: wait.id,
+      receivedAt: NOW.toISOString(),
+      submittedBy: "ada",
+    }).early,
+    early,
+  );
+  // A wait without it stores no such field.
+  assertEquals(
+    "early" in SignalWait.open({ type: "object" }, 60, NOW).toData(),
+    false,
+  );
+});
+
+Deno.test("SignalWait.withEarly: a wait that holds no key takes no early signal", () => {
+  assertThrows(
+    () =>
+      SignalWait.open({ type: "object" }, 60, NOW).withEarly({
+        generation: 1,
+        overRelease: false,
+        from: NOW.toISOString(),
+      }),
+    Error,
+    "holds a key",
+  );
+});
+
+Deno.test("isIdempotencyKey: accepts 1 to 128 letters, digits, dots, colons, hyphens and underscores, and nothing else", () => {
+  for (
+    const key of [
+      "a",
+      "order-1",
+      "evt_01HZX.retry:3",
+      "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+      "K".repeat(128),
+    ]
+  ) {
+    assertEquals(isIdempotencyKey(key), true, key);
+  }
+  for (
+    const key of [
+      "",
+      "has space",
+      "a/b",
+      "a\\b",
+      "line\nbreak",
+      "é",
+      "k".repeat(129),
+    ]
+  ) {
+    assertEquals(isIdempotencyKey(key), false, key);
+  }
 });

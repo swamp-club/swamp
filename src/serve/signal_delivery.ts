@@ -30,6 +30,7 @@
 import { consumeStream } from "../libswamp/stream.ts";
 import {
   createWorkflowSignalDeps,
+  type PendingSignalReceipt,
   type SignalLastWait,
   signalLastWait,
   signalRefusalKind,
@@ -37,6 +38,7 @@ import {
   workflowSignal,
   type WorkflowSignalData,
   type WorkflowSignalEvent,
+  type WorkflowSignalPendingData,
 } from "../libswamp/workflows/signal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { principalToString } from "../domain/access/principal.ts";
@@ -69,7 +71,10 @@ import {
   unresolvedAccessResource,
   workflowAccessResource,
 } from "./handlers/resource_resolution.ts";
-import type { WorkflowSignalResponseData } from "./protocol.ts";
+import type {
+  WorkflowSignalPendingResponseData,
+  WorkflowSignalResponseData,
+} from "./protocol.ts";
 import { continueSettledRun } from "./resume_launcher.ts";
 import { withSyncGate } from "./sync_gate.ts";
 import {
@@ -102,6 +107,17 @@ export type SignalDeliveryRequest = SignalDeliveryAddress & {
   /** Identifies the request in audit events. */
   readonly requestId: string;
   readonly payload: unknown;
+  /**
+   * False for a caller that cannot read a `pending` answer: a signal by key
+   * that finds no open wait is then refused `no_open_wait` and never held,
+   * whatever the step declares (swamp-club#3212). Defaults to true.
+   */
+  readonly holdEarly?: boolean;
+  /**
+   * The sender's idempotency key, already in the form of one. A signal
+   * whose key matches one already received is answered with that signal.
+   */
+  readonly idempotencyKey?: string;
 };
 
 /** What the transport that carries a signal is told along the way. */
@@ -121,6 +137,7 @@ export type SignalRefusalStatus =
   | "no_open_wait"
   | "expired"
   | "already_settled"
+  | "already_pending"
   | "closed"
   | "unreadable"
   | "unsupported";
@@ -143,6 +160,19 @@ export type SignalDeliveryResult =
     };
   }
   /**
+   * By key: held as the key's pending signal (swamp-club#3212). No wait or
+   * run took it, so no run is continued.
+   */
+  | {
+    readonly status: "pending";
+    readonly data: WorkflowSignalPendingResponseData;
+    /**
+     * The workflow the signal is held for, for the server's own use: the
+     * caller is told it only in `data`, and only when they may read it.
+     */
+    readonly workflow: { readonly id: string; readonly name: string };
+  }
+  /**
    * An unknown wait ID, an unknown workflow, a key the workflow does not
    * declare, or a wait the caller may not signal.
    */
@@ -157,6 +187,14 @@ export type SignalDeliveryResult =
     readonly message: string;
     /** The earlier signal, for a caller who may read the workflow. */
     readonly receipt?: SignalReceipt;
+    /**
+     * With `already_pending`: until when the earlier signal is held, and
+     * what was recorded about it for a caller who may read the workflow.
+     */
+    readonly pending?: {
+      readonly heldUntil: string;
+      readonly receipt?: PendingSignalReceipt;
+    };
     /**
      * With `no_open_wait`: the wait that last held the key and how it was
      * settled, so a sender who retries can tell a signal that landed from a
@@ -176,6 +214,8 @@ const GENERIC_REFUSAL: Record<SignalRefusalStatus, string> = {
     "No open wait holds that key, so the signal was not delivered and nothing was stored.",
   expired: "The wait has expired and no longer accepts a signal.",
   already_settled: "The wait is already settled.",
+  already_pending:
+    "A signal is already pending for that key, so this one was not stored.",
   closed: "The wait was closed before a signal arrived.",
   unreadable:
     "The wait's stored record cannot be read, so no signal can be delivered to it.",
@@ -488,6 +528,7 @@ export async function deliverSignalForCaller(
 
   let result: SignalDeliveryResult | undefined;
   let delivered: WorkflowSignalData | undefined;
+  let held: WorkflowSignalPendingData | undefined;
   try {
     await consumeStream<WorkflowSignalEvent>(
       workflowSignal(handlerLibSwampContext(ctx), deps, {
@@ -500,11 +541,18 @@ export async function deliverSignalForCaller(
           : {}),
         authorize,
         waitsCommand: SERVER_WAITS_COMMAND,
+        ...(request.holdEarly === false ? { holdEarly: false } : {}),
+        ...(request.idempotencyKey !== undefined
+          ? { idempotencyKey: request.idempotencyKey }
+          : {}),
       }),
       {
         resolving: () => {},
         completed: (event) => {
           delivered = event.data;
+        },
+        pending: (event) => {
+          held = event.data;
         },
         error: (event) => {
           const kind = signalRefusalKind(event.error);
@@ -522,8 +570,13 @@ export async function deliverSignalForCaller(
               : [];
             result = {
               status: "invalid_payload",
-              message: "Payload refused; the wait stays open:\n" +
-                errors.map((error) => `  - ${error}`).join("\n"),
+              // An early signal has no wait to stay open.
+              message: ((details as { early?: unknown })?.early === true
+                ? "Payload refused; nothing was stored:\n"
+                : "Payload refused; the wait stays open:\n") +
+                errors.map((error) =>
+                  `  - ${error}`
+                ).join("\n"),
               errors,
             };
           } else {
@@ -533,6 +586,12 @@ export async function deliverSignalForCaller(
             const last = kind === "no_open_wait"
               ? signalLastWait(event.error)
               : undefined;
+            const earlier = kind === "already_pending"
+              ? event.error.details as {
+                receipt?: PendingSignalReceipt;
+                heldUntil?: string;
+              }
+              : undefined;
             result = {
               status: kind,
               message: readable
@@ -540,6 +599,16 @@ export async function deliverSignalForCaller(
                 : GENERIC_REFUSAL[kind] +
                   (last ? genericLastWait(last) : ""),
               ...(receipt ? { receipt: { ...receipt } } : {}),
+              ...(earlier?.heldUntil !== undefined
+                ? {
+                  pending: {
+                    heldUntil: earlier.heldUntil,
+                    ...(readable && earlier.receipt
+                      ? { receipt: { ...earlier.receipt } }
+                      : {}),
+                  },
+                }
+                : {}),
               ...(last
                 ? {
                   lastWait: {
@@ -565,6 +634,37 @@ export async function deliverSignalForCaller(
     return { status: "failed", message: "Signal delivery failed" };
   }
 
+  if (held !== undefined) {
+    emitHeld(ctx, caller, request.requestId, held);
+    return {
+      status: "pending",
+      workflow: { id: held.workflowId, name: held.workflowName },
+      data: {
+        signal: { ...held.signal },
+        heldUntil: held.heldUntil,
+        ...(held.duplicate ? { duplicate: true as const } : {}),
+        ...(readable
+          ? {
+            key: held.key,
+            workflowId: held.workflowId,
+            workflowName: held.workflowName,
+          }
+          : {}),
+        ...(held.lastWait
+          ? {
+            lastWait: {
+              waitId: held.lastWait.waitId,
+              settledAs: held.lastWait.settledAs,
+              settledAt: held.lastWait.settledAt,
+              ...(readable && held.lastWait.receipt
+                ? { receipt: { ...held.lastWait.receipt } }
+                : {}),
+            },
+          }
+          : {}),
+      },
+    };
+  }
   if (delivered === undefined) {
     return result ?? { status: "failed", message: "Signal delivery failed" };
   }
@@ -580,6 +680,7 @@ export async function deliverSignalForCaller(
     data: {
       waitId: delivered.waitId,
       signal: { ...delivered.signal },
+      ...(delivered.duplicate ? { duplicate: true as const } : {}),
       ...(readable
         ? {
           ...(delivered.key !== undefined ? { key: delivered.key } : {}),
@@ -591,6 +692,7 @@ export async function deliverSignalForCaller(
           awaitingResume: delivered.awaitingResume,
           runRecordAvailable: delivered.runRecordAvailable,
           resumeCommand: delivered.resumeCommand,
+          ...(delivered.taken ? { taken: true as const } : {}),
         }
         : {}),
     },
@@ -630,7 +732,45 @@ function emitDelivered(
     // The key is the one the wait's registration holds, never request text.
     detail:
       `wait=${delivered.waitId} receipt=${delivered.signal.id} run=${delivered.runId}` +
-      (delivered.key !== undefined ? ` key=${delivered.key}` : ""),
+      (delivered.key !== undefined ? ` key=${delivered.key}` : "") +
+      (delivered.duplicate ? " duplicate=true" : ""),
+  }));
+}
+
+/**
+ * Audits a signal held as a key's pending signal, with its receipt and
+ * never its payload. The key is the one the workflow declares: the use case
+ * holds a signal only under a declared key.
+ */
+function emitHeld(
+  ctx: ConnectionContext,
+  caller: AccessCaller,
+  requestId: string,
+  held: WorkflowSignalPendingData,
+): void {
+  if (!ctx.auditEmitter) return;
+  const { principal } = caller;
+  ctx.auditEmitter.emit(buildAuditEvent({
+    instanceId: ctx.instanceId ?? "unknown",
+    category: "execution",
+    stage: "response",
+    outcome: "success",
+    action: "workflow.signal.pending",
+    resourceKind: "workflow",
+    resourceName: held.workflowName,
+    principalKind: principal?.kind ?? "anonymous",
+    principalId: principal?.id ?? "anonymous",
+    initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",
+    actor: resolveActorIdentity(
+      principal,
+      ctx.resolvedUserNames,
+      caller.loginIdentity,
+    ),
+    sourceIp: caller.sourceIp,
+    requestId,
+    detail:
+      `receipt=${held.signal.id} key=${held.key} heldUntil=${held.heldUntil}` +
+      (held.duplicate ? " duplicate=true" : ""),
   }));
 }
 

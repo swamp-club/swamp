@@ -697,3 +697,69 @@ Deno.test("findSettledKeyHolder: a workflow id or a key no record can be kept un
     assertEquals(await findSettledKeyHolder(store, workflowId, key), undefined);
   }
 });
+
+// Early facts on a claim (swamp-club#3212).
+
+Deno.test("claimWaitKey: a step with acceptEarly records the slot it reads and the earliest receipt it takes", async () => {
+  const store = new InMemorySignalWaitStore();
+  const first = await claimWaitKey(store, request({ acceptEarly: 10 }), NOW);
+  assert(first.kind === "acquired");
+  assertEquals(first.claim.early, {
+    generation: 1,
+    overRelease: false,
+    from: "2025-12-31T23:59:50.000Z",
+  });
+  // Without acceptEarly a claim records none.
+  const plain = new InMemorySignalWaitStore();
+  const none = await claimWaitKey(plain, request(), NOW);
+  assert(none.kind === "acquired");
+  assertEquals("early" in none.claim, false);
+  assertEquals("early" in waitRefOfClaim(none.claim), false);
+  assertEquals(waitRefOfClaim(first.claim).early, first.claim.early);
+  assertEquals(waitRefOfClaim(first.claim).key, first.claim.key);
+});
+
+Deno.test("claimWaitKey: a claim created over a release says so, and one created over a settled claim does not", async () => {
+  const store = new InMemorySignalWaitStore();
+  const first = await claimWaitKey(store, request({ acceptEarly: 10 }), NOW);
+  assert(first.kind === "acquired");
+  await store.settle(cancelledOutcome(waitRefOfClaim(first.claim), NOW));
+  const second = await claimWaitKey(
+    store,
+    request({ acceptEarly: 10, waitId: crypto.randomUUID() }),
+    NOW,
+  );
+  assert(second.kind === "acquired");
+  assertEquals(second.claim.early?.overRelease, false);
+  await store.settle(cancelledOutcome(waitRefOfClaim(second.claim), NOW));
+  // The run of the second claim is deleted: a release takes generation 3.
+  await releaseKeyClaims(store, (claim) => claim.generation === 2, NOW);
+  const third = await claimWaitKey(
+    store,
+    request({ acceptEarly: 10, waitId: crypto.randomUUID() }),
+    NOW,
+  );
+  assert(third.kind === "acquired");
+  assertEquals(third.claim.generation, 4);
+  assertEquals(third.claim.early?.overRelease, true);
+});
+
+Deno.test("decodeWaitKeyRecord: a claim whose early facts name another generation than its own is unreadable", async () => {
+  const store = new InMemorySignalWaitStore();
+  const acquired = await claimWaitKey(
+    store,
+    request({ acceptEarly: 10 }),
+    NOW,
+  );
+  assert(acquired.kind === "acquired");
+  const claim = acquired.claim;
+  assertEquals(decodeWaitKeyRecord(encodeWaitKeyRecord(claim), claim), {
+    kind: "found",
+    record: claim,
+  });
+  // Altered to read the slot of another claim.
+  const altered = { ...claim, early: { ...claim.early!, generation: 7 } };
+  assertEquals(decodeWaitKeyRecord(encodeWaitKeyRecord(altered), claim), {
+    kind: "unreadable",
+  });
+});

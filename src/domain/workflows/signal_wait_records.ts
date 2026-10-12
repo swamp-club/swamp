@@ -38,6 +38,8 @@ import {
   type SignalReceipt,
   SignalReceiptSchema,
   SignalWait,
+  type WaitEarly,
+  WaitEarlySchema,
 } from "./signal_wait.ts";
 
 /** Key family of registrations: `waits/<waitId>`. */
@@ -121,6 +123,9 @@ export const WaitRegistrationSchema = z.object({
   registeredAt: z.string().datetime(),
   // The key the wait holds, if its step declared one (swamp-club#3209).
   key: z.string().refine(isWaitKey).optional(),
+  // What a reader needs to give the wait its key's pending signal, if its
+  // step declared `acceptEarly` (swamp-club#3212).
+  early: WaitEarlySchema.optional(),
 });
 
 export type WaitRegistration = z.infer<typeof WaitRegistrationSchema>;
@@ -152,12 +157,22 @@ export type WaitOutcome = z.infer<typeof WaitOutcomeSchema>;
 /** An outcome that carries a signal. */
 export type AcceptedWaitOutcome = Extract<WaitOutcome, { kind: "accepted" }>;
 
-/** The facts of a wait an outcome is built from. */
+/**
+ * The facts of a wait an outcome is built from. `key`, `early` and `schema`
+ * are carried for a wait whose step set `acceptEarly`, so whoever settles it
+ * can give it its key's pending signal first (swamp-club#3212); no outcome
+ * stores them. `workflowName` is the name the wait's run recorded, which a
+ * pending signal held for an authorized caller is matched against.
+ */
 export interface WaitRef {
   waitId: string;
   workflowId: string;
+  workflowName?: string;
   runId: string;
   deadline: string;
+  key?: string;
+  early?: WaitEarly;
+  schema?: WaitRegistration["schema"];
 }
 
 /** A record as read back: present and valid, absent, or not readable. */
@@ -249,6 +264,7 @@ export function registrationOf(
     schema: structuredClone(wait.schema),
     registeredAt: now.toISOString(),
     ...(wait.key !== undefined ? { key: wait.key } : {}),
+    ...(wait.early !== undefined ? { early: { ...wait.early } } : {}),
   };
 }
 
@@ -310,6 +326,7 @@ export function decideSignal(
   payload: unknown,
   submittedBy: string,
   now: Date,
+  idempotencyKey?: string,
 ): SignalDecision {
   if (isWaitExpired(registration, now)) {
     return {
@@ -329,6 +346,7 @@ export function decideSignal(
     waitId: registration.waitId,
     receivedAt: now.toISOString(),
     submittedBy,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
   };
   return {
     accepted: true,

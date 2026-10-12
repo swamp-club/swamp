@@ -618,14 +618,18 @@ transports to that. What it does, in order:
   refusals: a reader gets the use case's message and, for an already settled
   wait, the earlier receipt; a caller with `signal` alone gets a fixed sentence
   per refusal. So a signal-only caller that retries after a lost reply learns
-  the wait is settled but not by which signal; retries are not idempotent.
+  the wait is settled but not by which signal; a retry is idempotent only
+  under an idempotency key (below).
 - A delivery emits the audit event `workflow.signal.delivered` with the wait
   ID, the receipt ID and the run ID. The payload is never logged or audited.
 
 | Outcome | WebSocket error | HTTP status |
 | --- | --- | --- |
 | delivered | — (`workflow.signal` reply) | 200 |
+| by key: held as the key's pending signal (the reply carries the receipt and `heldUntil`, and no wait or run) | — (`workflow.signal` reply, `status: pending`) | 202 |
+| a retry under the idempotency key of a signal already received (the reply is that signal's, with `duplicate: true`; nothing is delivered or stored) | — (`workflow.signal` reply) | 200, or 202 while that signal is held |
 | unknown wait, unknown workflow or undeclared key, or not allowed | `not_found` | 404 |
+| by key: an earlier signal is pending for the key (the earlier receipt for a caller who may read the workflow) | `workflow_signal_refused`, `refusal: already_pending` | 409 |
 | by key: the key is declared and no open wait holds it (`lastWait` says how its last wait was settled) | `workflow_signal_refused`, `refusal: no_open_wait` | 409 |
 | payload refused (errors listed) | `workflow_signal_refused`, `refusal: invalid_payload` | 422 |
 | already settled | `workflow_signal_refused`, `refusal: already_settled` | 409 |
@@ -694,7 +698,31 @@ What differs by key, in order:
   to. This is what covers a workflow renamed since the wait was opened, whose
   wait is still authorized under the name the run recorded. A refusal here is
   `not_found` too.
-- A declared key that no open wait holds is refused `no_open_wait`. Only a
+- A declared key that no open wait holds, on a step that sets `acceptEarly`,
+  holds the signal as the key's pending signal (swamp-club#3212, "Early
+  signals" in [workflows](workflows.md)). It is stored only after the caller
+  was authorized for `signal` on the workflow, under the workflow ID that was
+  authorized, and it records the authorized workflow name: only a wait whose
+  run recorded that name takes it, which keeps the second authorization of a
+  signal by key (a workflow renamed since the wait's run started) for a
+  signal that arrived before the wait did. The reply is `pending`; no run is continued, since none took the
+  signal yet. It is audited as `workflow.signal.pending` with the receipt ID,
+  the key and until when it is held, never the payload. A second signal while
+  one is held is refused `already_pending` with `pending.heldUntil`, and the
+  earlier receipt for a caller who may read the workflow. Over the WebSocket
+  a signal is held only for a request that sets `acceptsPending`: a client
+  from before the pending reply reads `data` of every reply, so it is refused
+  `no_open_wait` as it was before, and nothing is stored. The HTTP route
+  always holds.
+- A request may carry an idempotency key: `idempotencyKey` over the WebSocket,
+  the `Idempotency-Key` header over HTTP (400 for one not in the form
+  `isIdempotencyKey` accepts). One that matches a signal the same principal
+  already sent for the wait or its key is answered with that signal's receipt
+  and `duplicate: true`, and nothing is delivered or stored; a key another
+  principal used is not a match, so no caller is shown a receipt that is not
+  their own; the audit detail carries `duplicate=true`. See "Idempotency keys" in
+  [workflows](workflows.md) for where it is looked for and for how long.
+- A declared key that no open wait holds is otherwise refused `no_open_wait`. Only a
   caller who may signal the workflow gets this far, and such a caller already
   learns whether a wait is open from whether a delivery succeeds. A caller who
   may also read the workflow gets the use case's message; one with `signal`
@@ -720,8 +748,13 @@ What differs by key, in order:
   server does not know the address a client reached it by.
   Several senders racing for one open wait can still get `already_settled`
   instead: each resolved the key while the wait was open. Both are 409, and
-  neither makes a retry idempotent; a sender that needs that sends one signal
-  and reads `lastWait` before sending again.
+  neither makes a retry idempotent; a sender that needs that sends an
+  idempotency key, or sends one signal and reads `lastWait` before sending
+  again.
+  On a step with `acceptEarly` a retry by key with no idempotency key is not
+  refused: it is held as a second signal for the next run (202). The pending reply carries the same
+  `lastWait`, with the earlier `receipt` only for a caller who may read the
+  workflow, so the sender can still tell that the first signal landed.
 - The key is resolved from claim records only (`findKeyHolder`). Run records
   are not scanned, as they are not for a wait ID.
 - The reply is the by-ID reply: the wait ID and the receipt, and for a caller
@@ -953,6 +986,7 @@ as its instance id. The coordination records:
 | `waits/<waitId>`                            | The executor, when a `wait_for_signal` step starts waiting      | `workflow signal`, `workflow waits`; removed when the run ends            |
 | `wait-outcomes/<waitId>`                    | `putIfAbsent` by whichever of a signal, a timeout or a cancel settles the wait first | The resume that applies it; removed with the run record |
 | `wait-keys/<workflowId>/<key>/<generation>` | `putIfAbsent` by a `wait_for_signal` step that declares a `key`, before it registers its wait; a release by whoever removes the highest claim | The next step that claims the key; removed with the run record, or with the workflow |
+| `wait-pending/<workflowId>/<key>/<slot>/<number>` | `putIfAbsent` by a signal by key that finds no open wait on a step with `acceptEarly`; a lapse by the sweep over one no wait took | The step that claims the slot, and whoever settles its wait; removed with the claim, or with the workflow |
 | `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance

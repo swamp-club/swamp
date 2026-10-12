@@ -481,6 +481,7 @@ import {
   decideContinuationSweepStart,
   DEFAULT_CONTINUATION_SWEEP_INTERVAL_MS,
   sweepContinuations,
+  sweepHeldSignals,
 } from "../../serve/continuation_sweep_service.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -7373,13 +7374,16 @@ export const serveCommand = new Command()
       continuationSweepService = new ContinuationSweepService({
         intervalMs: continuationSweepIntervalMs,
         bootPassOnly,
-        sweep: ({ boot, isStopping }) =>
-          sweepContinuations(connectionCtx, {
+        sweep: async ({ boot, isStopping }) => {
+          const result = await sweepContinuations(connectionCtx, {
             // A dead holder's claim is replaced only while the run records
             // are current: after boot they go stale on a synced datastore.
             takeover: !synced || boot,
             isStopping,
-          }),
+          });
+          if (!isStopping()) await sweepHeldSignals(connectionCtx);
+          return result;
+        },
       });
       continuationSweepService.start();
     }

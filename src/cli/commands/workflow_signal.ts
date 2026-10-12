@@ -24,6 +24,7 @@ import {
   workflowSignal,
   type WorkflowSignalAddress,
   type WorkflowSignalData,
+  type WorkflowSignalPendingData,
 } from "../../libswamp/workflows/signal.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
@@ -53,10 +54,13 @@ import {
 } from "../remote_run.ts";
 import type {
   WorkflowSignalPayload,
+  WorkflowSignalPendingResponseData,
   WorkflowSignalResponse,
   WorkflowSignalResponseData,
 } from "../../serve/protocol.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
   isWaitKey,
   SIGNAL_WORKFLOW_MAX_LENGTH,
   WAIT_KEY_FORM,
@@ -108,6 +112,19 @@ export function parseSignalAddress(
 }
 
 /**
+ * Checks the `--idempotency-key` flag. The key is kept on the signal's
+ * receipt, so only a narrow form is taken.
+ */
+export function parseIdempotencyKey(
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined || isIdempotencyKey(raw)) return raw;
+  throw new UserError(
+    `--idempotency-key must be ${IDEMPOTENCY_KEY_FORM}.`,
+  );
+}
+
+/**
  * Renders a delivered signal in log or JSON mode. The command to run next
  * goes through writeOutput, not the logger, so it can be copied as printed.
  * `--quiet` hides it, as it hides the logger's info lines. `commandTarget`
@@ -137,6 +154,22 @@ export function renderSignalResult(
       .info`Signalled step ${data.stepName} in workflow ${data.workflowName}: wait ${data.waitId} holding key ${data.key}, signal ${data.signal.id}`;
   }
   if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.` +
+        // The reply that was lost is where the sender would have read this.
+        (data.awaitingResume
+          ? ` If the run was not resumed since: ${data.resumeCommand}`
+          : ""),
+    );
+    return;
+  }
+  if (data.taken) {
+    writeOutput(
+      "The step took the signal as it opened its wait, and its run went on without waiting.",
+    );
+    return;
+  }
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
@@ -149,6 +182,49 @@ export function renderSignalResult(
 }
 
 /**
+ * Renders a signal that is held as its key's pending signal, in log or JSON
+ * mode (swamp-club#3212). A server names the key and the workflow only to a
+ * caller who may read the workflow. Nothing is said of a run: none took the
+ * signal, and none may.
+ */
+export function renderPendingSignalResult(
+  cliCtx: CommandContext,
+  data: WorkflowSignalPendingData | WorkflowSignalPendingResponseData,
+): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify({ ...data, pending: true }));
+    return;
+  }
+  if (data.key !== undefined && data.workflowName !== undefined) {
+    cliCtx.logger
+      .info`Signal ${data.signal.id} is held for key ${data.key} of workflow ${data.workflowName} until ${data.heldUntil}`;
+  } else {
+    cliCtx.logger
+      .info`Signal ${data.signal.id} is held until ${data.heldUntil}`;
+  }
+  if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and is the one held. Nothing more was stored.`,
+    );
+    return;
+  }
+  writeOutput(
+    "No wait holds the key yet. A step that opens its wait by then takes the signal and does not wait; after that the signal is ignored.",
+  );
+  // A retry after a lost reply is held as a second signal. The wait that
+  // last held the key says whether the first one landed.
+  const last = data.lastWait;
+  if (last?.settledAs === "accepted") {
+    writeOutput(
+      `The last wait under the key was settled by ${
+        last.receipt ? `signal ${last.receipt.id}` : "a signal"
+      } at ${last.settledAt}. If this is a retry of a signal sent at about that time, the first one landed and this one is held for the next run.`,
+    );
+  }
+}
+
+/**
  * The `workflow.signal` payload for a signal sent through a server. The
  * server accepts only a UUID as a wait ID, and only a bounded workflow and
  * key; it answers anything else as a malformed request, which reads as a
@@ -158,7 +234,9 @@ export function renderSignalResult(
 export function remoteSignalPayload(
   address: WorkflowSignalAddress,
   payload: unknown,
+  idempotencyKey?: string,
 ): WorkflowSignalPayload {
+  const keyed = idempotencyKey !== undefined ? { idempotencyKey } : {};
   if ("waitId" in address) {
     const id = normalizeWaitId(address.waitId);
     if (id === undefined) {
@@ -167,7 +245,7 @@ export function remoteSignalPayload(
         "not_found",
       );
     }
-    return { waitId: id, payload };
+    return { waitId: id, payload, ...keyed };
   }
   if (
     address.workflow.length === 0 ||
@@ -194,7 +272,15 @@ export function remoteSignalPayload(
       "not_found",
     );
   }
-  return { workflow: address.workflow, key: address.key, payload };
+  return {
+    workflow: address.workflow,
+    key: address.key,
+    payload,
+    // This command reads a pending reply; a server holds no signal for a
+    // client that does not say so.
+    acceptsPending: true,
+    ...keyed,
+  };
 }
 
 /**
@@ -226,6 +312,8 @@ export function renderRemoteSignalResult(
         awaitingResume: data.awaitingResume ?? false,
         runRecordAvailable: data.runRecordAvailable ?? false,
         resumeCommand: data.resumeCommand,
+        ...(data.taken ? { taken: true as const } : {}),
+        ...(data.duplicate ? { duplicate: true as const } : {}),
       },
       formatCommandTarget({ server }),
     );
@@ -238,6 +326,12 @@ export function renderRemoteSignalResult(
   cliCtx.logger
     .info`Signal ${data.signal.id} delivered to wait ${data.waitId}`;
   if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.`,
+    );
+    return;
+  }
   // The server does not say which run this was; it still has to be resumed.
   writeOutput(
     "The signal takes effect when the run is next resumed, by someone who may resume it.",
@@ -261,6 +355,7 @@ export function signalUserError(error: SwampError): UserError {
       plain.code,
       refusal.refusal,
       refusal.lastWait,
+      refusal.pending,
     ),
     errorPaths(plain),
   );
@@ -278,11 +373,16 @@ export function remoteSignalUserError(error: unknown): unknown {
   ) return error;
   const refusal = signalRefusalFromDetails(error.details);
   if (!refusal) return error;
+  // A caller who may only signal gets a fixed sentence that names no time.
+  const until = refusal.pending?.heldUntil;
   return new SignalRefusedUserError(
-    error.message,
+    until !== undefined && !error.message.includes(until)
+      ? `${error.message} The earlier signal is held until ${until}.`
+      : error.message,
     error.code,
     refusal.refusal,
     refusal.lastWait,
+    refusal.pending,
   );
 }
 
@@ -319,12 +419,16 @@ export const workflowSignalCommand = withRemoteOptions(
     )
     .option(
       "--key <key:string>",
-      "With --workflow, in place of a wait ID: the key a wait_for_signal step declares",
+      "With --workflow, in place of a wait ID: the key a wait_for_signal step declares. A step that sets acceptEarly holds a signal sent before its wait opens",
     )
     .option(
       "--payload <json:string>",
       "The message, as a JSON object matching the wait's schema",
       { required: true },
+    )
+    .option(
+      "--idempotency-key <key:string>",
+      "Names this signal across retries (1-128 letters, digits, '.', ':', '-', '_'): one sent again with the same key after it was received is answered with the first, and is not delivered or held twice",
     ),
 )
   .action(async function (options: AnyOptions, waitId?: string) {
@@ -337,10 +441,13 @@ export const workflowSignalCommand = withRemoteOptions(
       workflow: options.workflow as string | undefined,
       key: options.key as string | undefined,
     });
+    const idempotencyKey = parseIdempotencyKey(
+      options.idempotencyKey as string | undefined,
+    );
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      const named = remoteSignalPayload(address, payload);
+      const named = remoteSignalPayload(address, payload, idempotencyKey);
       const token = await resolveServerTokenFromOptions(server, options);
       let response: WorkflowSignalResponse;
       try {
@@ -352,6 +459,17 @@ export const workflowSignalCommand = withRemoteOptions(
         );
       } catch (error) {
         throw remoteSignalUserError(error);
+      }
+      if (response.pending !== undefined) {
+        renderPendingSignalResult(cliCtx, response.pending);
+        return;
+      }
+      // A reply of a kind added since this build has neither.
+      if (response.data === undefined) {
+        throw new UserError(
+          "The server answered the signal in a form this swamp cannot read; upgrade swamp here, then check what the signal did before sending it again.",
+          "unsupported_by_client",
+        );
       }
       renderRemoteSignalResult(
         cliCtx,
@@ -379,11 +497,18 @@ export const workflowSignalCommand = withRemoteOptions(
     });
 
     await consumeStream(
-      workflowSignal(ctx, deps, { ...address, payload }),
+      workflowSignal(ctx, deps, {
+        ...address,
+        payload,
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      }),
       {
         resolving: () => {},
         completed: (e) => {
           renderSignalResult(cliCtx, e.data, commandTarget);
+        },
+        pending: (e) => {
+          renderPendingSignalResult(cliCtx, e.data);
         },
         error: (e) => {
           throw signalUserError(e.error);

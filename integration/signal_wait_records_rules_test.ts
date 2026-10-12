@@ -54,6 +54,7 @@ import {
   WAIT_REGISTRATION_PREFIX,
 } from "../src/domain/workflows/signal_wait_records.ts";
 import { WAIT_KEY_RECORD_PREFIX } from "../src/domain/workflows/wait_key_claim.ts";
+import { PENDING_SIGNAL_PREFIX } from "../src/domain/workflows/pending_signal.ts";
 
 /** True when a line of `source` outside a comment matches `pattern`. */
 function mentions(source: string, pattern: RegExp): boolean {
@@ -77,6 +78,9 @@ const WAIT_KEY_LITERAL = /["'`](?:waits|wait-outcomes)\//;
 
 /** A string literal that starts with the family of key records. */
 const KEY_RECORD_LITERAL = /["'`]wait-keys\//;
+
+/** A string literal that starts with the family of pending signals. */
+const PENDING_SIGNAL_LITERAL = /["'`]wait-pending\//;
 
 /** An assignment of a run repository's save hook. */
 const BEFORE_SAVE_ASSIGNMENT = /\.beforeSave\s*=[^=]/;
@@ -120,6 +124,36 @@ Deno.test("signal wait rules: the key families are what the pattern looks for", 
     false,
   );
   assertEquals(mentions('const P = "wait-keys/";', WAIT_KEY_LITERAL), false);
+  assertEquals(PENDING_SIGNAL_PREFIX, "wait-pending/");
+  assertEquals(
+    mentions('const P = "wait-pending/";', PENDING_SIGNAL_LITERAL),
+    true,
+  );
+  assertEquals(
+    mentions("  // under wait-pending/<id>", PENDING_SIGNAL_LITERAL),
+    false,
+  );
+  assertEquals(
+    mentions('const P = "wait-pending/";', WAIT_KEY_LITERAL),
+    false,
+  );
+  assertEquals(
+    mentions('const P = "wait-pending/";', KEY_RECORD_LITERAL),
+    false,
+  );
+});
+
+Deno.test("only pending_signal.ts names the family of pending signals", async () => {
+  assertPinnedSet(
+    await filesMentioning(PENDING_SIGNAL_LITERAL),
+    ["src/domain/workflows/pending_signal.ts"],
+    "pending signal family literals",
+    "Build the store key of a pending signal with pendingRecordKey from " +
+      "src/domain/workflows/pending_signal.ts, and read or write the " +
+      "records through a SignalWaitStore, so every writer validates the " +
+      "workflow id and the key, and a signal no wait took is superseded by " +
+      "a lapse instead of deleted.",
+  );
 });
 
 Deno.test("only wait_key_claim.ts names the family of key records", async () => {
@@ -157,10 +191,16 @@ Deno.test("only signal_wait_records.ts names the wait key families", async () =>
  * (swamp-club#3210), which finds its wait through them. That holds every
  * function of the file to the rule, the ones a step claims and releases a
  * key with included: none of them has a reason to write a run.
+ *
+ * So are the files a signal that arrives before its wait opens is held by
+ * (swamp-club#3212): it writes a pending record and, when it finds a wait,
+ * that wait's outcome.
  */
 const SIGNAL_PATH_FILES = [
   ["src", "libswamp", "workflows", "signal.ts"],
   ["src", "domain", "workflows", "wait_key_claim.ts"],
+  ["src", "domain", "workflows", "early_signal.ts"],
+  ["src", "domain", "workflows", "pending_signal.ts"],
   ["src", "serve", "signal_delivery.ts"],
   ["src", "serve", "signal_http.ts"],
 ];
@@ -191,6 +231,30 @@ Deno.test("workflow signal reads who holds a key and writes no key record", asyn
       "or remove a key. It resolves a key to the wait that holds it with " +
       "findKeyHolder, which writes nothing, and the outcome it then creates " +
       "is the only record a signal writes.",
+  );
+});
+
+Deno.test("an early signal reads who holds a key and writes no key record", async () => {
+  const source = await Deno.readTextFile(
+    join(ROOT, "src", "domain", "workflows", "early_signal.ts"),
+  );
+  assertEquals(
+    mentions(
+      source,
+      /\bclaimWaitKey\b|\breleaseKeyClaims\b|\.createKeyRecord\s*\(|\.removeKeyRecord\s*\(|\.removeKeyRecordsOfWorkflow\s*\(/,
+    ),
+    false,
+    "src/domain/workflows/early_signal.ts: a signal that arrives before " +
+      "its wait opens must not claim, release or remove a key. Only a step " +
+      "claims one; the signal stores a pending record in the slot of the " +
+      "next claim and reads the key with findKeyHolder.",
+  );
+  assertEquals(
+    mentions(source, /\.removePendingRecord\s*\(|\.put\s*\(/),
+    false,
+    "src/domain/workflows/early_signal.ts: a pending signal is created " +
+      "once and never overwritten or deleted to be replaced. A signal past " +
+      "its age limit is superseded at the next number of its slot.",
   );
 });
 

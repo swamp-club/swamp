@@ -2626,7 +2626,40 @@ Deno.test("validate: step writes false overrides job writes true — no warning"
   assertEquals(warning, undefined);
 });
 
-function waitWorkflow(schema: Record<string, unknown>): Workflow {
+Deno.test("fails a wait_for_signal schema that reads inputs when the step sets acceptEarly", async () => {
+  const schema = {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: ["${{ inputs.verdict }}"] },
+    },
+  };
+  const early = await service.validate(waitWorkflow(schema, 10));
+  const result = early.find((r) => r.name.includes("Wait schema"));
+  assertEquals(result?.passed, false);
+  assertEquals(result?.name, "Wait schema in job 'release' step 'review'");
+  assertEquals(result?.error?.includes("${{ inputs.verdict }}"), true);
+  assertEquals(result?.error?.includes("acceptEarly"), true);
+
+  // Without acceptEarly the schema is resolved when the wait captures it.
+  const plain = await service.validate(waitWorkflow(schema));
+  assertEquals(
+    plain.find((r) => r.name.includes("Wait schema") && !r.passed),
+    undefined,
+  );
+  // A literal schema is what an early payload can be checked against.
+  const literal = await service.validate(
+    waitWorkflow({ type: "object", required: ["verdict"] }, 10),
+  );
+  assertEquals(
+    literal.find((r) => r.name.includes("Wait schema") && !r.passed),
+    undefined,
+  );
+});
+
+function waitWorkflow(
+  schema: Record<string, unknown>,
+  acceptEarly?: number,
+): Workflow {
   return Workflow.create({
     name: "wait-workflow",
     jobs: [
@@ -2635,7 +2668,9 @@ function waitWorkflow(schema: Record<string, unknown>): Workflow {
         steps: [
           Step.create({
             name: "review",
-            task: StepTask.waitForSignal(60, schema),
+            task: acceptEarly === undefined
+              ? StepTask.waitForSignal(60, schema)
+              : StepTask.waitForSignal(60, schema, "verdict", acceptEarly),
           }),
         ],
       }),

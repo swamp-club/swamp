@@ -24,6 +24,7 @@ import {
 } from "../definitions/definition.ts";
 import {
   isWaitKey,
+  SIGNAL_ACCEPT_EARLY_MAX_SECONDS,
   SIGNAL_WAIT_MAX_TIMEOUT_SECONDS,
   SUPPORTED_WAIT_SCHEMA_KEYWORDS,
   unenforcedSchemaKeywords,
@@ -89,6 +90,10 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
       isWaitKey,
       `A wait_for_signal key must be ${WAIT_KEY_FORM}. It takes no expression.`,
     ).optional(),
+    // Seconds a signal by key may arrive before the wait opens
+    // (swamp-club#3212). Bounded: the signal is held with no run behind it.
+    acceptEarly: z.number().positive().max(SIGNAL_ACCEPT_EARLY_MAX_SECONDS)
+      .optional(),
   }),
 ]);
 
@@ -126,6 +131,14 @@ export const StepTaskSchema = z.preprocess((data) => {
       );
     }
     if (d.type === "wait_for_signal") {
+      // An early signal is addressed by key, so there is nothing to hold it
+      // under without one.
+      if (d.acceptEarly !== undefined && d.key === undefined) {
+        throw new Error(
+          `A wait_for_signal step that sets acceptEarly must declare a key: ` +
+            `a signal that arrives before the wait opens is held under the key.`,
+        );
+      }
       const schema = d.schema;
       // An inputs schema may be written flat, as a bare map of properties.
       // For a wait that form is ambiguous with the schema's own keywords, so
@@ -311,6 +324,7 @@ export class StepTask {
     timeout: number,
     schema: InputsSchema,
     key?: string,
+    acceptEarly?: number,
   ): StepTask {
     // Parsed, so the schema's keys are in the order a loaded task has them
     // and equals() compares the two alike.
@@ -319,6 +333,7 @@ export class StepTask {
       timeout,
       schema,
       ...(key !== undefined ? { key } : {}),
+      ...(acceptEarly !== undefined ? { acceptEarly } : {}),
     });
   }
 

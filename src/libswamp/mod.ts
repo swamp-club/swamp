@@ -396,6 +396,7 @@ export {
 } from "./workflows/approvals.ts";
 export {
   createWorkflowSignalDeps,
+  type PendingSignalReceipt,
   type SignalLastWait,
   signalLastWait,
   type SignalRefusalKind,
@@ -407,6 +408,7 @@ export {
   type WorkflowSignalDeps,
   type WorkflowSignalEvent,
   type WorkflowSignalInput,
+  type WorkflowSignalPendingData,
 } from "./workflows/signal.ts";
 export {
   createWorkflowWaitsDeps,

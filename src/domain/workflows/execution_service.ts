@@ -61,8 +61,11 @@ import {
   cancelledOutcome,
   isWaitExpired,
   registrationOf,
+  type StoredWaitRecord,
+  type WaitOutcome,
   type WaitRegistration,
 } from "./signal_wait_records.ts";
+import { earlyWaitRef, takePendingSignal } from "./pending_signal.ts";
 import {
   SIGNAL_WAITS_NOT_CONFIGURED,
   type SignalWaitStore,
@@ -74,6 +77,7 @@ import {
   closeRunWaits,
   findRegistrationOfStep,
   settleReenteredWait,
+  waitRefOf,
 } from "./signal_wait_cleanup.ts";
 import {
   MAX_WORKFLOW_NESTING_DEPTH,
@@ -5353,6 +5357,7 @@ export class WorkflowExecutionService {
             schema: earlier.schema,
             deadline: earlier.deadline,
             ...(earlier.key !== undefined ? { key: earlier.key } : {}),
+            ...(earlier.early !== undefined ? { early: earlier.early } : {}),
           })
           : SignalWait.open(
             task.schema,
@@ -5394,6 +5399,9 @@ export class WorkflowExecutionService {
               jobName: job.name,
               stepName,
               deadline: wait.deadline.toISOString(),
+              ...(task.acceptEarly !== undefined
+                ? { acceptEarly: task.acceptEarly }
+                : {}),
               // Read now, not when the step began: finding a wait to take
               // over reads every registration, and a claim dated before
               // that would look older than it is to a claimant judging
@@ -5415,8 +5423,17 @@ export class WorkflowExecutionService {
               schema: task.schema,
               deadline: acquisition.claim.deadline,
               key: task.key,
+              ...(acquisition.claim.early !== undefined
+                ? { early: acquisition.claim.early }
+                : {}),
             });
-          } else if (acquisition.kind !== "acquired") {
+          } else if (acquisition.kind === "acquired") {
+            // The wait keeps where its key's pending signal is, so any
+            // reader can give it that signal (swamp-club#3212).
+            if (acquisition.claim.early !== undefined) {
+              wait = wait.withEarly(acquisition.claim.early);
+            }
+          } else {
             getSwampLogger(["workflow", "run"]).warn(
               "Step {stepName} of run {runId} did not open its wait: {reason}. The step failed with {error}.",
               {
@@ -5464,6 +5481,57 @@ export class WorkflowExecutionService {
           }
         }
         stepRun.waitForSignal(wait);
+        // A signal that arrived before the wait opened is taken now, after
+        // the claim and the registration: a signaller that stores its
+        // signal and then reads the key finds one of them, whichever of the
+        // two reads comes first (swamp-club#3212). The step then succeeds at
+        // once and the run does not suspend on it.
+        const earlyRef = earlyWaitRef(
+          waitRefOf(run, stepRun) ?? {
+            waitId: wait.id,
+            workflowId: run.workflowId,
+            runId: run.id,
+            deadline: wait.deadline.toISOString(),
+          },
+        );
+        if (earlyRef) {
+          let taken: StoredWaitRecord<WaitOutcome> = { kind: "absent" };
+          try {
+            taken = await takePendingSignal(waits, earlyRef);
+          } catch (error) {
+            // The wait is open and registered. Whoever settles it next
+            // takes the signal, so the step waits instead of failing.
+            getSwampLogger(["workflow", "run"]).warn(
+              "Step {stepName} of run {runId} could not read the pending signal of its key: {error}. It waits for a signal.",
+              {
+                stepName,
+                runId: run.id,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
+          if (
+            taken.kind === "found" && taken.record.kind === "accepted" &&
+            stepRun.applyWaitOutcome(taken.record)
+          ) {
+            // What a resume restores for a signalled step, so the steps
+            // that follow in this run read the same outputs.
+            liveOutputs = {
+              payload: taken.record.payload,
+              signal: { ...taken.record.receipt },
+            };
+            stepSpan.setStatus({ code: SpanStatusCode.OK });
+            yield {
+              kind: "step_completed",
+              jobId: job.name,
+              stepId: stepName,
+              runId: run.id,
+              forEachTemplate,
+              forEachIndex,
+            };
+            return;
+          }
+        }
         yield {
           kind: "signal_wait_requested",
           runId: run.id,
