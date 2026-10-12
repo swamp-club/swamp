@@ -65,7 +65,7 @@ import {
   runVaultScopeContext,
   serviceRunVaultScope,
 } from "../../serve/run_vault_access_policy.ts";
-import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
+import { runOutsideAmbientContext } from "../../infrastructure/runtime/ambient_context.ts";
 import {
   auditScheduledEvent,
   auditWebhookEvent,
@@ -506,17 +506,18 @@ const DISPATCH_ENV_ALLOW_HELP =
 type AnyOptions = any;
 
 /**
- * Runs every HTTP request, WebSocket upgrades included, outside any run's
- * vault scope (swamp-club#2676). Deno can leave the async context of the
- * last code that ran current when it calls a serve handler (a first-time
- * dynamic `import()` inside a run does), so without this a request — and
- * every message on a connection it upgrades — could inherit another run's
- * scope, and token authentication would be refused the reserved vault.
+ * Runs every HTTP request, WebSocket upgrades included, outside every
+ * ambient store a run enters (swamp-club#2676, swamp-club#3125). Deno can
+ * leave the async context of the last code that ran current when it calls a
+ * serve handler (a first-time dynamic `import()` inside a run does), so
+ * without this a request — and every message on a connection it upgrades —
+ * could inherit another run's vault scope, unit of work, held locks, trace
+ * frames or extension lock leases.
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
 ): Deno.ServeHandler<A> {
-  return (req, info) => withoutVaultAccess(() => handler(req, info));
+  return (req, info) => runOutsideAmbientContext(() => handler(req, info));
 }
 
 const logger = getSwampLogger(["serve"]);

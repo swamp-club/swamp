@@ -947,11 +947,12 @@ every vault service a run builds is covered. A refusal throws
 `VaultAccessDeniedError`, naming the vault and the principal or workflow,
 never a value. With no scope, vault operations behave as before. Control-plane
 work called from a run opts out with `withoutVaultAccess`. Serve's HTTP
-handler also runs every request under `withoutVaultAccess`
-(`unscopedHttpHandler`): Deno leaves an `AsyncLocalStorage` store set after a
-lazy dynamic `import()` inside a scope, and the next `Deno.serve` callback
-would otherwise inherit the run's scope (other ambient stores:
-swamp-club#3125).
+handler runs every request outside every ambient store
+(`unscopedHttpHandler`, via `runOutsideAmbientContext`, which enters the
+async context captured at startup): Deno leaves an `AsyncLocalStorage` store
+set after a lazy dynamic `import()` inside a scope, and later `Deno.serve`
+callbacks would otherwise inherit the run's vault scope, unit of work, held
+locks, trace frames and extension lock leases (swamp-club#3125).
 
 Sensitive outputs are ordinary vault operations under the scope: storing a
 field is a `write` and every read-back of its reference (later steps, later

@@ -27,13 +27,16 @@
  * - a worker's `resolveSecret`, `putSecret` and data-plane sensitive write
  *   are held to the dispatching run's scope, and the data plane stores in
  *   the configured default vault the pre-run check approved;
- * - an HTTP request serve answers starts outside any run's scope, even when
- *   Deno hands the handler the async context a run left behind.
+ * - an HTTP request serve answers starts outside any run's scope — and
+ *   every other store a run entered (swamp-club#3125) — even when Deno hands
+ *   the handler the async context a run left behind.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { processLockHolderMarker } from "../src/domain/datastore/lock_holder_marker.ts";
 import {
   SCHEDULER_PRINCIPAL,
   WEBHOOK_PRINCIPAL,
@@ -54,6 +57,11 @@ import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { createWorkflowId } from "../src/domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../src/domain/workflows/workflow_run.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { createLegacyUnitOfWork } from "../src/infrastructure/persistence/legacy_unit_of_work.ts";
+import {
+  currentUnitOfWork,
+  runInUnitOfWork,
+} from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 import { ScheduledExecutionService } from "../src/libswamp/workflows/scheduled_execution.ts";
 import { unscopedHttpHandler } from "../src/cli/commands/serve.ts";
 import { BundleRegistry } from "../src/serve/bundle_registry.ts";
@@ -485,14 +493,28 @@ Deno.test({
 
 Deno.test({
   name:
-    "serve ingress vault scope: an HTTP request starts outside any run's scope even when Deno hands it a run's leftover context",
+    "serve ingress scope: an HTTP request starts outside every store a run entered, even when Deno hands it a run's leftover context",
   ...SANITIZE,
   fn: () =>
     withVaultScopeFixture(async (f) => {
-      const seenScoped: Record<string, boolean> = {};
+      // A store added later stands in for any ambient store serve grows.
+      const futureStore = new AsyncLocalStorage<string>();
+      const lockNonce = crypto.randomUUID();
+      const seen: Record<string, string[]> = { raw: [], wrapped: [] };
       const reads: Record<string, string> = {};
       const handler = (label: string) => async () => {
-        seenScoped[label] = currentVaultAccess() !== undefined;
+        const leaked: string[] = [];
+        if (currentVaultAccess() !== undefined) leaked.push("vault scope");
+        if (currentUnitOfWork() !== undefined) leaked.push("unit of work");
+        if (
+          Object.values(processLockHolderMarker.childLockEnv()).some((v) =>
+            v.includes(lockNonce)
+          )
+        ) {
+          leaked.push("held lock");
+        }
+        if (futureStore.getStore() !== undefined) leaked.push("future store");
+        seen[label].push(leaked.join(", "));
         try {
           await (await f.vaults()).get("erp", "password");
           reads[label] = "ok";
@@ -512,28 +534,41 @@ Deno.test({
       try {
         // A run loads a module for the first time, as a run that pulls an
         // extension or a lazily imported service does.
-        await runWithVaultAccess(botScope(f), async () => {
-          await import(
-            `data:text/javascript,export default ${
-              JSON.stringify(crypto.randomUUID())
-            }`
-          );
-        });
-        for (const server of [raw, wrapped]) {
-          const response = await fetch(
-            `http://127.0.0.1:${server.addr.port}/`,
-          );
-          await response.body?.cancel();
+        await runWithVaultAccess(botScope(f), () =>
+          runInUnitOfWork(
+            createLegacyUnitOfWork(undefined, { flush: undefined }),
+            () =>
+              processLockHolderMarker.runHolding([lockNonce], () =>
+                futureStore.run("run", async () => {
+                  await import(
+                    `data:text/javascript,export default ${
+                      JSON.stringify(crypto.randomUUID())
+                    }`
+                  );
+                })),
+          ));
+        // The leftover context outlives the first request, so ask twice.
+        for (let i = 0; i < 2; i++) {
+          for (const server of [raw, wrapped]) {
+            const response = await fetch(
+              `http://127.0.0.1:${server.addr.port}/`,
+            );
+            await response.body?.cancel();
+          }
         }
       } finally {
         await raw.shutdown();
         await wrapped.shutdown();
       }
-      assertEquals(seenScoped.wrapped, false);
+      assertEquals(seen.wrapped, ["", ""]);
       assertEquals(reads.wrapped, "ok");
-      // Where the runtime does leak the context, an unwrapped handler is
-      // held to the run's principal: the reason serve wraps its handler.
-      if (seenScoped.raw) {
+      // Where the runtime does leak the context, an unwrapped handler sees
+      // the run's stores: the reason serve wraps its handler.
+      if (seen.raw[0] !== "") {
+        assertEquals(seen.raw, [
+          "vault scope, unit of work, held lock, future store",
+          "vault scope, unit of work, held lock, future store",
+        ]);
         assertStringIncludes(reads.raw, "vault 'erp' is refused");
       }
     }, { grants: WORKER_GRANTS }),
