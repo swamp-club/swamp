@@ -29,6 +29,11 @@
     "jsr:@std/yaml@^1.1.0": "1.1.0",
     "npm:@aws-sdk/client-cloudcontrol@^3.1042.0": "3.1042.0",
     "npm:@babel/parser@^7.29.7": "7.29.7",
+    "npm:@fontsource/ibm-plex-sans@^5.3.0": "5.3.0",
+    "npm:@fontsource/jetbrains-mono@^5.3.0": "5.3.0",
+    "npm:@fontsource/orbitron@^5.3.0": "5.3.0",
+    "npm:@fontsource/plus-jakarta-sans@^5.3.0": "5.3.0",
+    "npm:@fontsource/space-grotesk@^5.3.0": "5.3.0",
     "npm:@marcbachmann/cel-js@7.6.1": "7.6.1",
     "npm:@opentelemetry/api-logs@~0.57.2": "0.57.2",
     "npm:@opentelemetry/api@^1.9.1": "1.9.1",
@@ -851,6 +856,21 @@
       "integrity": "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA==",
       "os": ["win32"],
       "cpu": ["x64"]
+    },
+    "@fontsource/ibm-plex-sans@5.3.0": {
+      "integrity": "sha512-CbE4CbbEEZJX860XyUiRpsksXIQR8Rp2XDva2VO53NJox9tVNtusrysd2x5YkUEY3ErQ66W1IiiQL8/wihhw5w=="
+    },
+    "@fontsource/jetbrains-mono@5.3.0": {
+      "integrity": "sha512-fqDfB5I9f1p1TV486aUgB9t8zP84P0O1FtQR5Ol9vjwPy+S+EIGlVYm1cvj2W5shcZMTg2nZFdVMoH5wFu8a1A=="
+    },
+    "@fontsource/orbitron@5.3.0": {
+      "integrity": "sha512-+BhPsbUAo/AF7sRcf+TEexm+EWWkgTiR9Zwb7AhYIPkc5oplfvw0C45Oc2xlKPhwVEmxG8hHuA6/Ansbl+Bc6w=="
+    },
+    "@fontsource/plus-jakarta-sans@5.3.0": {
+      "integrity": "sha512-9WRw3G74Ve4cyPApAZSXLPY5DiLOZXDn7Q7dIBjFBpA0Pj56ljDItEdy2UUajjJxRuTg2HkMLO5C3K2nAQORWg=="
+    },
+    "@fontsource/space-grotesk@5.3.0": {
+      "integrity": "sha512-ksnGizDPXIDuvqcTYTSrmZ+evx9sDlS8rp7+42BQ7wU+spt3twEoXfbJz672C+5CLg6VeUQwRy5RXshWb67LcQ=="
     },
     "@jridgewell/gen-mapping@0.3.13": {
       "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
@@ -2697,6 +2717,11 @@
       "packages/dashboard": {
         "packageJson": {
           "dependencies": [
+            "npm:@fontsource/ibm-plex-sans@^5.3.0",
+            "npm:@fontsource/jetbrains-mono@^5.3.0",
+            "npm:@fontsource/orbitron@^5.3.0",
+            "npm:@fontsource/plus-jakarta-sans@^5.3.0",
+            "npm:@fontsource/space-grotesk@^5.3.0",
             "npm:@tailwindcss/vite@^4.3.3",
             "npm:@types/js-yaml@^4.0.9",
             "npm:@types/react-dom@^19.2.4",

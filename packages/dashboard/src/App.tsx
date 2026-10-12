@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { useHealthStream } from "./client/useHealthStream";
@@ -49,9 +56,23 @@ import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
-import { buildPath } from "./routes.ts";
+import { buildPath, isStartPath } from "./routes.ts";
+
+// Only `swamp start` serves the start page, so it loads as its own chunk.
+const Start = lazy(() =>
+  import("./views/start/Start").then((m) => ({ default: m.Start }))
+);
 
 export function App() {
+  // The `swamp start` page talks only to its own loopback server, so it
+  // must never mount the serve provider, its auth probe or its socket.
+  if (isStartPath(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="loading">Loading...</div>}>
+        <Start />
+      </Suspense>
+    );
+  }
   return (
     <SwampProvider>
       <AppShell />

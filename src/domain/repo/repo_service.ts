@@ -63,6 +63,7 @@ import {
   CustomToolSkillDirsRepository,
 } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { BRIEF_HEADER } from "../start/brief.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -1424,13 +1425,22 @@ essential context for working with this repository.`
 matches a skill area below, read the corresponding \`SKILL.md\` file for guidance.`;
 
     const gettingStarted = useSkillNames
-      ? `If the user is new to swamp or asks to get started, or a swamp command you
+      ? `If you were asked to read a task brief under \`tasks/\` (a file whose first
+line is \`${BRIEF_HEADER}\`), read that brief, then invoke the
+\`swamp-getting-started\` skill and follow it from its brief entry point.
+
+If the user is new to swamp or asks to get started, or a swamp command you
 run shows this repository has no models yet, invoke the
 \`swamp-getting-started\` skill. It checks for existing models itself and walks
 new users through an interactive onboarding tutorial.
 
 Otherwise, use the \`swamp\` skill to work with swamp models.`
-      : `If the user is new to swamp or asks to get started, or a swamp command you
+      : `If you were asked to read a task brief under \`tasks/\` (a file whose first
+line is \`${BRIEF_HEADER}\`), read that brief, then read
+\`${skillsDir}/swamp-getting-started/SKILL.md\` and follow it from its brief
+entry point.
+
+If the user is new to swamp or asks to get started, or a swamp command you
 run shows this repository has no models yet, read
 \`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its instructions. It
 checks for existing models itself and walks new users through an interactive
