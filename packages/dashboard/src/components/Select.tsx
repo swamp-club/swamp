@@ -37,6 +37,42 @@ import {
   typeaheadMatch,
 } from "../lib/select_logic.ts";
 
+// Deno type-checks component tests without the DOM library, so the few
+// DOM calls go through these structural types (see dom_types.ts).
+interface ElLike {
+  focus(options?: { preventScroll?: boolean }): void;
+  getBoundingClientRect(): {
+    top: number;
+    bottom: number;
+    left: number;
+    height: number;
+    width: number;
+  };
+  contains(node: unknown): boolean;
+  querySelector(
+    selector: string,
+  ): { scrollIntoView(options: { block: "nearest" }): void } | null;
+  readonly parentElement: ElLike | null;
+}
+
+interface DocLike {
+  addEventListener(
+    type: "pointerdown",
+    fn: (e: { target: unknown }) => void,
+  ): void;
+  removeEventListener(
+    type: "pointerdown",
+    fn: (e: { target: unknown }) => void,
+  ): void;
+}
+
+const el = (node: unknown): ElLike | null => node as ElLike | null;
+
+function viewport(): { width: number; height: number } {
+  const g = globalThis as { innerWidth?: number; innerHeight?: number };
+  return { width: g.innerWidth ?? 0, height: g.innerHeight ?? 0 };
+}
+
 export interface SelectOption<T extends string> {
   value: T;
   label: string;
@@ -115,7 +151,7 @@ export function Select<T extends string>(
   const close = useCallback((refocus: boolean) => {
     setOpen(false);
     setQuery("");
-    if (refocus) triggerRef.current?.focus();
+    if (refocus) el(triggerRef.current)?.focus();
   }, []);
 
   const choose = useCallback((index: number) => {
@@ -128,7 +164,7 @@ export function Select<T extends string>(
   // Focus the search box or the list when the menu opens.
   useEffect(() => {
     if (!open) return;
-    (withSearch ? searchRef.current : listRef.current)?.focus({
+    el(withSearch ? searchRef.current : listRef.current)?.focus({
       preventScroll: true,
     });
   }, [open, withSearch]);
@@ -136,13 +172,12 @@ export function Select<T extends string>(
   // Flip above / align right when the menu would leave the viewport.
   useLayoutEffect(() => {
     if (!open) return;
-    const menu = listRef.current?.parentElement;
-    const trigger = triggerRef.current;
+    const menu = el(listRef.current)?.parentElement;
+    const trigger = el(triggerRef.current);
     if (!menu || !trigger) return;
     const t = trigger.getBoundingClientRect();
     const m = menu.getBoundingClientRect();
-    const vh = globalThis.innerHeight ?? 0;
-    const vw = globalThis.innerWidth ?? 0;
+    const { width: vw, height: vh } = viewport();
     setPlacement({
       up: t.bottom + m.height + 8 > vh && t.top - m.height - 8 > 0,
       end: t.left + m.width > vw - 8,
@@ -152,7 +187,7 @@ export function Select<T extends string>(
   // Keep the active option in view.
   useEffect(() => {
     if (!open || active < 0) return;
-    listRef.current
+    el(listRef.current)
       ?.querySelector(`[data-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" });
   }, [open, active]);
@@ -160,11 +195,13 @@ export function Select<T extends string>(
   // Close on a pointer press outside.
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) close(false);
+    const doc = (globalThis as { document?: DocLike }).document;
+    if (!doc) return;
+    const onDown = (e: { target: unknown }) => {
+      if (!el(rootRef.current)?.contains(e.target)) close(false);
     };
-    document.addEventListener("pointerdown", onDown);
-    return () => document.removeEventListener("pointerdown", onDown);
+    doc.addEventListener("pointerdown", onDown);
+    return () => doc.removeEventListener("pointerdown", onDown);
   }, [open, close]);
 
   const typeahead = (char: string) => {
@@ -289,7 +326,7 @@ export function Select<T extends string>(
                 aria-controls={listId}
                 aria-activedescendant={activeId}
                 onChange={(e) => {
-                  setQuery(e.target.value);
+                  setQuery((e.target as unknown as { value: string }).value);
                   // The best match is first; keep it active as the list narrows.
                   setActive(0);
                 }}
