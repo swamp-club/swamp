@@ -24,6 +24,7 @@ import { CodeBlock } from "../components/CodeBlock";
 import { Markdown } from "../components/Markdown";
 import { RouteLink } from "../components/RouteLink";
 import { ShareBar } from "../components/ShareBar";
+import { Skeleton, SkeletonRegion, SkeletonText } from "../components/Skeleton";
 import { useDocumentTitle } from "../hooks/useDocumentTitle.ts";
 import type { DetailView, RouteState } from "../routes.ts";
 import {
@@ -55,6 +56,11 @@ type ItemDetail = Extract<
 interface DataDetailProps {
   detail: ItemDetail;
   onBack: () => void;
+  /**
+   * Rendered inside another page (a run's side drawer): no page header,
+   * breadcrumb or tab title — the host supplies those.
+   */
+  embedded?: boolean;
 }
 
 /**
@@ -62,23 +68,32 @@ interface DataDetailProps {
  * the target of `/models/<m>/data/<d>[/versions/<n>]`,
  * `/models/<m>/reports/<r>` and `/workflows/<wf>/runs/<id>/reports/<r>`.
  */
-export function DataDetail({ detail, onBack }: DataDetailProps) {
+export function DataDetail(
+  { detail, onBack, embedded = false }: DataDetailProps,
+) {
   switch (detail.kind) {
     case "data":
-      return <DataItemPage detail={detail} onBack={onBack} />;
+      return (
+        <DataItemPage detail={detail} onBack={onBack} embedded={embedded} />
+      );
     case "report":
-      return <ModelReportPage detail={detail} onBack={onBack} />;
+      return (
+        <ModelReportPage detail={detail} onBack={onBack} embedded={embedded} />
+      );
     case "runReport":
-      return <RunReportPage detail={detail} onBack={onBack} />;
+      return (
+        <RunReportPage detail={detail} onBack={onBack} embedded={embedded} />
+      );
   }
 }
 
 // ── data item / version ────────────────────────────────────────────────
 
 function DataItemPage(
-  { detail, onBack }: {
+  { detail, onBack, embedded }: {
     detail: Extract<ItemDetail, { kind: "data" }>;
     onBack: () => void;
+    embedded: boolean;
   },
 ) {
   const { modelName, dataName, version } = detail;
@@ -109,6 +124,7 @@ function DataItemPage(
       kindLabel={isReport ? "report" : "data"}
       context={modelName}
       onBack={onBack}
+      embedded={embedded}
       breadcrumb={<ModelCrumb modelName={modelName} />}
       link={{ view: "models", detail }}
       permalink={version === undefined && item
@@ -167,9 +183,10 @@ function DataItemPage(
 // ── model report (latest) ──────────────────────────────────────────────
 
 function ModelReportPage(
-  { detail, onBack }: {
+  { detail, onBack, embedded }: {
     detail: Extract<ItemDetail, { kind: "report" }>;
     onBack: () => void;
+    embedded: boolean;
   },
 ) {
   const { modelName, reportName, variant } = detail;
@@ -200,6 +217,7 @@ function ModelReportPage(
       kindLabel="report"
       context={modelName}
       onBack={onBack}
+      embedded={embedded}
       breadcrumb={<ModelCrumb modelName={modelName} />}
       link={{ view: "models", detail }}
       permalink={item
@@ -242,9 +260,10 @@ function ModelReportPage(
 // ── a run's workflow-scope report ──────────────────────────────────────
 
 function RunReportPage(
-  { detail, onBack }: {
+  { detail, onBack, embedded }: {
     detail: Extract<ItemDetail, { kind: "runReport" }>;
     onBack: () => void;
+    embedded: boolean;
   },
 ) {
   const { workflowName, runId, reportName } = detail;
@@ -311,6 +330,7 @@ function RunReportPage(
       kindLabel="report"
       context={`${workflowName} run ${shortRunId(runId)}`}
       onBack={onBack}
+      embedded={embedded}
       breadcrumb={
         <>
           <RouteLink
@@ -406,6 +426,7 @@ interface ItemPageProps {
   kindLabel: string;
   context: string;
   onBack: () => void;
+  embedded: boolean;
   breadcrumb: ReactNode;
   link: RouteState;
   permalink?: RouteState;
@@ -425,27 +446,45 @@ interface ItemPageProps {
 
 function ItemPage(props: ItemPageProps) {
   const { title, kindLabel, item, error, loading } = props;
-  useDocumentTitle(documentTitle(title, props.context));
+  useDocumentTitle(
+    props.embedded ? null : documentTitle(title, props.context),
+  );
 
   return (
     <>
-      <div className="page-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button type="button" className="back-button" onClick={props.onBack}>
-            &larr; Back
-          </button>
-          <h1 className="item-title">{title}</h1>
-          <span className="cron-badge">{kindLabel}</span>
-          {item && <span className="cron-badge">v{item.version}</span>}
-        </div>
-        <div className="header-right">
-          <ShareBar link={props.link} permalink={props.permalink} />
-        </div>
-      </div>
+      {props.embedded
+        ? (
+          <div className="item-embed-meta">
+            <span className="cron-badge">{kindLabel}</span>
+            {item && <span className="cron-badge">v{item.version}</span>}
+            <span className="item-embed-context">{props.context}</span>
+          </div>
+        )
+        : (
+          <>
+            <div className="page-header">
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button
+                  type="button"
+                  className="back-button"
+                  onClick={props.onBack}
+                >
+                  &larr; Back
+                </button>
+                <h1 className="item-title">{title}</h1>
+                <span className="cron-badge">{kindLabel}</span>
+                {item && <span className="cron-badge">v{item.version}</span>}
+              </div>
+              <div className="header-right">
+                <ShareBar link={props.link} permalink={props.permalink} />
+              </div>
+            </div>
 
-      <nav className="breadcrumb" aria-label="Breadcrumb">
-        {props.breadcrumb}
-      </nav>
+            <nav className="breadcrumb" aria-label="Breadcrumb">
+              {props.breadcrumb}
+            </nav>
+          </>
+        )}
 
       {props.stale && item && (
         <div className="notice notice-warning">
@@ -455,7 +494,9 @@ function ItemPage(props: ItemPageProps) {
       )}
 
       {loading && !item && !error && (
-        <div className="loading">Loading&hellip;</div>
+        props.embedded
+          ? <EmbeddedSkeleton label={`Loading ${kindLabel}`} />
+          : <div className="loading">Loading&hellip;</div>
       )}
 
       {error && (
@@ -482,6 +523,26 @@ function ItemPage(props: ItemPageProps) {
         </>
       )}
     </>
+  );
+}
+
+/** The content panel's shape while an embedded item loads. */
+function EmbeddedSkeleton({ label }: { label: string }) {
+  return (
+    <SkeletonRegion label={label}>
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-header">
+          <Skeleton width={90} height={12} />
+          <Skeleton width={72} height={22} radius={5} />
+        </div>
+        <div className="content-body">
+          <Skeleton width="45%" height={18} style={{ marginBottom: 14 }} />
+          <SkeletonText lines={6} />
+          <Skeleton width="35%" height={14} style={{ margin: "18px 0 12px" }} />
+          <SkeletonText lines={4} />
+        </div>
+      </div>
+    </SkeletonRegion>
   );
 }
 
