@@ -17,9 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
 import { buildPath, isPlainLeftClick, type RouteState } from "../routes.ts";
 import { navigateTo } from "../hooks/useRouter.ts";
 import { formatDuration, formatShortDateTime } from "../lib/format.ts";
+import { failureHref, openFailureOnClick } from "./FailureLink.tsx";
 
 export interface RunHistoryEntry {
   runId: string;
@@ -101,6 +104,20 @@ export function RunHistoryBar(
               role="listitem"
               className={cls}
               title={title}
+            />
+          );
+        }
+        // A failed pip opens straight on the failure's log.
+        if (run.status === "failed") {
+          return (
+            <a
+              key={run.runId}
+              role="listitem"
+              className={cls}
+              href={failureHref(wf, run.runId)}
+              title={title}
+              aria-label={title.replace("\n", ", ")}
+              onClick={openFailureOnClick(wf, run.runId)}
             />
           );
         }
