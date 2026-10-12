@@ -76,9 +76,9 @@ appliesTo: ["create", "update"], // on create and update, not delete
 ## Skipping Checks
 
 ```bash
-swamp model method run my-model create --skip-checks              # skip all
-swamp model method run my-model create --skip-check valid-region  # skip by name
-swamp model method run my-model create --skip-check-label live    # skip by label
+swamp behavior run my-model create --skip-checks              # skip all
+swamp behavior run my-model create --skip-check valid-region  # skip by name
+swamp behavior run my-model create --skip-check-label live    # skip by label
 ```
 
 ## Extension Checks

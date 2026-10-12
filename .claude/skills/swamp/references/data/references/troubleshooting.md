@@ -40,7 +40,7 @@ swamp data list <model-name> --json
 swamp data query 'modelName == "<model-name>"' --select '{"name": name, "specName": specName}'
 
 # 3. Run the create method first
-swamp model method run <model-name> create
+swamp behavior run <model-name> create
 ```
 
 **CEL path anatomy**:
@@ -120,7 +120,7 @@ data.latest("model", "result").?attributes.?ready.orValue(false)
 swamp model search --json
 
 # Run a method to produce data
-swamp model method run <model-name> <method>
+swamp behavior run <model-name> <method>
 
 # Check if model input exists
 swamp model get <model-name> --json

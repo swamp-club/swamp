@@ -340,13 +340,13 @@ rotate it first, then remove the recorded copies.
 
 Pass a vault **reference**, never the secret value:
 
-| Carrying                                                                               | Safe?                                                         |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `${{ vault.get(v, k) }}` via `model method run` `--input` / `--input-file` / `--stdin` | Yes — resolved at run, redacted, only the expression recorded |
-| `${{ vault.get(v, env.KEY) }}` (env holds the key name)                                | Yes                                                           |
-| `${{ env.SECRET }}` (env holds the secret)                                             | No — resolved but not redacted in step data                   |
-| `${{ vault.get(...) }}` via `workflow run/resume` input                                | No effect — inert, stays literal text                         |
-| The secret value via any `--input` / `--stdin`                                         | No — recorded in cleartext                                    |
+| Carrying                                                                           | Safe?                                                         |
+| ---------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `${{ vault.get(v, k) }}` via `behavior run` `--input` / `--input-file` / `--stdin` | Yes — resolved at run, redacted, only the expression recorded |
+| `${{ vault.get(v, env.KEY) }}` (env holds the key name)                            | Yes                                                           |
+| `${{ env.SECRET }}` (env holds the secret)                                         | No — resolved but not redacted in step data                   |
+| `${{ vault.get(...) }}` via `workflow run/resume` input                            | No effect — inert, stays literal text                         |
+| The secret value via any `--input` / `--stdin`                                     | No — recorded in cleartext                                    |
 
 In a `command/shell` run string, do not wrap a vault expression in single
 quotes: the secret is injected as an environment variable reference, which
@@ -354,8 +354,8 @@ single quotes keep literal.
 
 ### Trust Boundary: Which Inputs Are Evaluated
 
-`swamp model method run --input` (and `--input-file`, `--stdin`) values are
-treated as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
+`swamp behavior run --input` (and `--input-file`, `--stdin`) values are treated
+as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
 `${{ env.X }}` inside them resolves and reaches the method in plaintext (vault
 values are redacted in stored output; env values are not). Pass untrusted text —
 issue bodies, tickets, scraped pages — with `--literal-inputs`, or route it
@@ -365,8 +365,8 @@ a warning, even when the text matches an expression the author wrote.
 | Source                                   | Expressions     |
 | ---------------------------------------- | --------------- |
 | Model definitions, workflow YAML         | evaluated       |
-| `swamp model method run --input`         | evaluated       |
-| `... method run --literal-inputs`        | inert (literal) |
+| `swamp behavior run --input`             | evaluated       |
+| `swamp behavior run --literal-inputs`    | inert (literal) |
 | `swamp workflow run/resume --input`      | inert (literal) |
 | Data content (`data.latest(...)` etc.)   | inert (literal) |
 | `forEach` items, webhook/trigger payload | inert (literal) |

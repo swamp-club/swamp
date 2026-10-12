@@ -138,5 +138,9 @@
   {
     "query": "Submit a feature request for better error messages",
     "expected_guide": "issue"
+  },
+  {
+    "query": "Run swamp behavior run my-server deploy with env=prod",
+    "expected_guide": "model"
   }
 ]

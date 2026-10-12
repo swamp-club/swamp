@@ -33,8 +33,8 @@ before execution and releases it after the step completes. This means:
   still waits on locks the same swamp holds for other runs (parallel steps,
   other `swamp serve` runs)
 - The same holds through `--server`: a step of a `swamp serve` run that calls
-  `swamp model method run --server` (or `workflow run`) back into that serve
-  hands its lock on, so a nested command under the requested run skips it
+  `swamp behavior run --server` (or `workflow run`) back into that serve hands
+  its lock on, so a nested command under the requested run skips it
 - Don't run nested structural commands (e.g. `swamp data gc`) from parallel
   steps: each waits on the other's step lock, so one of them fails within
   seconds with `lock_wait_cycle` (exit 1, not retryable from inside the step).
@@ -65,5 +65,5 @@ directly delete the lock file.
 
 **Will concurrent model method runs serialize?** Yes, if they target the same
 model instance. Different instances run in parallel. This applies equally to
-standalone `swamp model method run` and workflow steps — both use the same
+standalone `swamp behavior run` and workflow steps — both use the same
 per-instance locking mechanism.

@@ -3,26 +3,26 @@
 Create and run reports that analyze model and workflow executions. Reports
 produce markdown (human-readable) and JSON (machine-readable) output. All
 commands support `--json`. Always run `swamp help report` or
-`swamp help model method run` to confirm exact flags before executing — the
-output is structured JSON.
+`swamp help behavior run` to confirm exact flags before executing — the output
+is structured JSON.
 
 ## Quick Reference
 
-| Task                     | Command                                                           |
-| ------------------------ | ----------------------------------------------------------------- |
-| Get a stored report      | `swamp report get <report-name> --model <model>`                  |
-| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
-| Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
-| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
-| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
-| Run method with reports  | `swamp model method run <model> <method>`                         |
-| Skip all reports         | `swamp model method run <model> <method> --skip-reports`          |
-| Skip report by name      | `swamp model method run <model> <method> --skip-report <n>`       |
-| Skip report by label     | `swamp model method run <model> <method> --skip-report-label <l>` |
-| Run only named report    | `swamp model method run <model> <method> --report <n>`            |
-| Run only labeled reports | `swamp model method run <model> <method> --report-label <l>`      |
-| Workflow with reports    | `swamp workflow run <workflow>`                                   |
-| Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
+| Task                     | Command                                                          |
+| ------------------------ | ---------------------------------------------------------------- |
+| Get a stored report      | `swamp report get <report-name> --model <model>`                 |
+| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`      |
+| Get report as JSON       | `swamp report get <report-name> --model <model> --json`          |
+| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120` |
+| Cap column width         | `swamp report get <report-name> --max-col-width 60`              |
+| Run method with reports  | `swamp behavior run <model> <method>`                            |
+| Skip all reports         | `swamp behavior run <model> <method> --skip-reports`             |
+| Skip report by name      | `swamp behavior run <model> <method> --skip-report <n>`          |
+| Skip report by label     | `swamp behavior run <model> <method> --skip-report-label <l>`    |
+| Run only named report    | `swamp behavior run <model> <method> --report <n>`               |
+| Run only labeled reports | `swamp behavior run <model> <method> --report-label <l>`         |
+| Workflow with reports    | `swamp workflow run <workflow>`                                  |
+| Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                   |
 
 ## How Reports Work
 

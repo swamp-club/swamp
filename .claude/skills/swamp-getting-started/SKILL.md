@@ -92,7 +92,7 @@ warnings to the user.
 **Gate:** State 2 passed.
 
 **Action:** Tell the user what's about to happen, then run
-`swamp model method run <name> <method>`. Pick `<method>`:
+`swamp behavior run <name> <method>`. Pick `<method>`:
 
 - `command/shell`: `execute`
 - Local typed: a read-only method first (`sync`, `get`)

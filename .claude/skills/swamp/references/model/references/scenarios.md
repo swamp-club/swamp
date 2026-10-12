@@ -65,7 +65,7 @@ swamp model validate my-shell --json
 **4. Run**
 
 ```bash
-swamp model method run my-shell execute
+swamp behavior run my-shell execute
 ```
 
 **5. View output**
@@ -133,7 +133,7 @@ methods:
 Run it:
 
 ```bash
-swamp model method run vpc-lookup execute
+swamp behavior run vpc-lookup execute
 ```
 
 **2. Create subnet lookup model (references VPC)**
@@ -161,7 +161,7 @@ Validate and run:
 
 ```bash
 swamp model validate subnet-lookup --json
-swamp model method run subnet-lookup execute
+swamp behavior run subnet-lookup execute
 ```
 
 **3. Create instance model (references both)**
@@ -271,16 +271,16 @@ swamp model validate my-deploy --json
 
 ```bash
 # Dev environment
-swamp model method run my-deploy deploy --input environment=dev
+swamp behavior run my-deploy deploy --input environment=dev
 
 # Production with 3 replicas
-swamp model method run my-deploy deploy --input environment=production --input replicas=3
+swamp behavior run my-deploy deploy --input environment=production --input replicas=3
 
 # Staging dry run
-swamp model method run my-deploy deploy --input environment=staging --input dryRun=true
+swamp behavior run my-deploy deploy --input environment=staging --input dryRun=true
 
 # JSON syntax also works for complex inputs
-swamp model method run my-deploy deploy --input '{"environment": "staging", "dryRun": true}'
+swamp behavior run my-deploy deploy --input '{"environment": "staging", "dryRun": true}'
 ```
 
 **5. Alternative: Use input file**
@@ -296,7 +296,7 @@ dryRun: false
 Run with file:
 
 ```bash
-swamp model method run my-deploy deploy --input-file inputs/production.yaml
+swamp behavior run my-deploy deploy --input-file inputs/production.yaml
 ```
 
 **6. Alternative: Pipe inputs from another command**
@@ -304,12 +304,12 @@ swamp model method run my-deploy deploy --input-file inputs/production.yaml
 ```bash
 # Pass --stdin to read piped JSON as inputs
 echo '{"environment": "production", "replicas": 5}' \
-  | swamp model method run my-deploy deploy --stdin
+  | swamp behavior run my-deploy deploy --stdin
 
 # Batch: run deploy for each result from a data query
 swamp data query 'modelName == "infra" && attributes.status == "pending"' --json \
   | jq -c '.results[] | {environment: .attributes.env, replicas: .attributes.count}' \
-  | swamp model method run my-deploy deploy --stdin
+  | swamp behavior run my-deploy deploy --stdin
 ```
 
 ### CEL Paths Used

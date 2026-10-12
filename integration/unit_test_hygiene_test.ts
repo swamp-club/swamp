@@ -162,9 +162,6 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/cli/context_test.ts",
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.
-  "src/cli/commands/model_method_run_test.ts",
-  // In-process Deno.serve WebSocket stands in for the swamp server that
-  // the command's --server path talks to.
   "src/cli/commands/model_validate_test.ts",
   // In-process Deno.serve WebSocket stands in for the swamp server that
   // the command's --server path talks to.

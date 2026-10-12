@@ -8,7 +8,7 @@ Read this after the plan is approved and the human says to implement. The
 Before writing any code, signal that implementation has begun:
 
 ```
-swamp model @swamp/issue-lifecycle method run implement issue-<N>
+swamp behavior run @swamp/issue-lifecycle implement issue-<N>
 ```
 
 This transitions the phase to `implementing` and posts an
@@ -80,7 +80,7 @@ After the PR is open, record its URL on the lifecycle so the swamp-club record
 points to where the fix lives:
 
 ```
-swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
+swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
 ```
 
 This writes a `pullRequest-main` resource, transitions the phase to `pr_open`,
@@ -114,11 +114,11 @@ Check the PR status externally (e.g.,
 
 - **PR merged**: call `pr_merged` to transition to `releasing`
   ```
-  swamp model @swamp/issue-lifecycle method run pr_merged issue-<N>
+  swamp behavior run @swamp/issue-lifecycle pr_merged issue-<N>
   ```
 - **PR failed** (CI red, changes requested): call `pr_failed` with the reason
   ```
-  swamp model @swamp/issue-lifecycle method run pr_failed issue-<N> --input reason="CI failed: type check errors"
+  swamp behavior run @swamp/issue-lifecycle pr_failed issue-<N> --input reason="CI failed: type check errors"
   ```
 - **PR still open and passing**: wait and check again later.
 
@@ -129,11 +129,11 @@ When in `pr_failed`, diagnose and fix the issue. Then either:
 - Push fixes and call `link_pr` again (same or new PR URL) to return to
   `pr_open`:
   ```
-  swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
+  swamp behavior run @swamp/issue-lifecycle link_pr issue-<N> --input url=<PR URL>
   ```
 - Call `implement` to go back to the implementing phase for major rework:
   ```
-  swamp model @swamp/issue-lifecycle method run implement issue-<N>
+  swamp behavior run @swamp/issue-lifecycle implement issue-<N>
   ```
 
 ## 5. Ship the Release
@@ -142,13 +142,13 @@ After `pr_merged` transitions to `releasing`, wait for the release build to
 complete. Once the release is out, call `ship`:
 
 ```
-swamp model @swamp/issue-lifecycle method run ship issue-<N>
+swamp behavior run @swamp/issue-lifecycle ship issue-<N>
 ```
 
 Optionally pass release metadata:
 
 ```
-swamp model @swamp/issue-lifecycle method run ship issue-<N> --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
+swamp behavior run @swamp/issue-lifecycle ship issue-<N> --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
 ```
 
 This transitions the phase to `notify`, transitions the swamp-club status to
@@ -165,7 +165,7 @@ model decide — it checks the author's swamp-club user id against the swamp-clu
 team roster (eligible assignees):
 
 ```
-swamp model @swamp/issue-lifecycle method run notify issue-<N>
+swamp behavior run @swamp/issue-lifecycle notify issue-<N>
 ```
 
 - A team member is skipped; anyone else gets a thank-you ripple.
@@ -181,7 +181,7 @@ human should be able to read these two statements and immediately judge whether
 the work was on target.
 
 ```
-swamp model @swamp/issue-lifecycle method run summarize issue-<N> \
+swamp behavior run @swamp/issue-lifecycle summarize issue-<N> \
   --input originalProblem="<plain-language restatement of the bug or feature request>" \
   --input deliveredOutcome="<plain-language description of what was built or fixed>" \
   --input outcomeMet=<true|false>

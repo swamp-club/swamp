@@ -18,7 +18,7 @@ For most use cases, **direct type execution** is the right approach — pass
 inputs at runtime without managing definition YAML files:
 
 ```bash
-swamp model @<type> method run <method> <name> --input key=value
+swamp behavior run @<type> <method> <name> --input key=value
 ```
 
 Inputs are automatically routed between global arguments and method arguments
@@ -51,39 +51,39 @@ create per-input ephemeral instances for concurrent dispatch. See
 
 ## Quick Reference
 
-| Task                | Command                                                              |
-| ------------------- | -------------------------------------------------------------------- |
-| Search model types  | `swamp model type search [query] --json`                             |
-| Describe a type     | `swamp model type describe <type> --compact --json`                  |
-| Create model input  | `swamp model create <type> <name> --json`                            |
-| Create with args    | `swamp model create <type> <name> --global-arg key=value --json`     |
-| Search models       | `swamp model search [query] --json`                                  |
-| Get model details   | `swamp model get <id_or_name> --json`                                |
-| Edit model input    | `swamp model edit [id_or_name]`                                      |
-| Delete a model      | `swamp model delete <id_or_name> --json`                             |
-| Validate model      | `swamp model validate [id_or_name] --json`                           |
-| Validate by label   | `swamp model validate [id_or_name] --label policy --json`            |
-| Validate by method  | `swamp model validate [id_or_name] --method create --json`           |
-| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                           |
-| Run a method        | `swamp model method run <id_or_name> <method>`                       |
-| Run with inputs     | `swamp model method run <name> <method> --input key=value`           |
-| Run from stdin      | `echo '{"k":"v"}' \| swamp model method run <name> <method> --stdin` |
-| Direct type exec    | `swamp model @<type> method run <method> <name> --input k=v`         |
-| Skip all checks     | `swamp model method run <name> <method> --skip-checks`               |
-| Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`            |
-| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l>`      |
-| Search outputs      | `swamp model output search [query] --json`                           |
-| Get output details  | `swamp model output get <output_or_model> --json`                    |
-| View output logs    | `swamp model output logs <output_id> --json`                         |
-| View output data    | `swamp model output data <output_id> --json`                         |
-| Cancel a run        | `swamp model cancel <name>`                                          |
-| Cancel all runs     | `swamp model cancel --all`                                           |
-| Active runs         | `swamp run history --active`                                         |
-| Recent runs         | `swamp run history`                                                  |
-| Diagnose stale runs | `swamp run doctor`                                                   |
-| Preview run GC      | `swamp run gc --dry-run`                                             |
-| Run GC (outputs)    | `swamp run gc --force`                                               |
-| Run GC (custom age) | `swamp run gc --older-than 7d`                                       |
+| Task                | Command                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| Search model types  | `swamp model type search [query] --json`                         |
+| Describe a type     | `swamp model type describe <type> --compact --json`              |
+| Create model input  | `swamp model create <type> <name> --json`                        |
+| Create with args    | `swamp model create <type> <name> --global-arg key=value --json` |
+| Search models       | `swamp model search [query] --json`                              |
+| Get model details   | `swamp model get <id_or_name> --json`                            |
+| Edit model input    | `swamp model edit [id_or_name]`                                  |
+| Delete a model      | `swamp model delete <id_or_name> --json`                         |
+| Validate model      | `swamp model validate [id_or_name] --json`                       |
+| Validate by label   | `swamp model validate [id_or_name] --label policy --json`        |
+| Validate by method  | `swamp model validate [id_or_name] --method create --json`       |
+| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                       |
+| Run a method        | `swamp behavior run <id_or_name> <method>`                       |
+| Run with inputs     | `swamp behavior run <name> <method> --input key=value`           |
+| Run from stdin      | `echo '{"k":"v"}' \| swamp behavior run <name> <method> --stdin` |
+| Direct type exec    | `swamp behavior run @<type> <method> <name> --input k=v`         |
+| Skip all checks     | `swamp behavior run <name> <method> --skip-checks`               |
+| Skip check by name  | `swamp behavior run <name> <method> --skip-check <n>`            |
+| Skip check by label | `swamp behavior run <name> <method> --skip-check-label <l>`      |
+| Search outputs      | `swamp model output search [query] --json`                       |
+| Get output details  | `swamp model output get <output_or_model> --json`                |
+| View output logs    | `swamp model output logs <output_id> --json`                     |
+| View output data    | `swamp model output data <output_id> --json`                     |
+| Cancel a run        | `swamp model cancel <name>`                                      |
+| Cancel all runs     | `swamp model cancel --all`                                       |
+| Active runs         | `swamp run history --active`                                     |
+| Recent runs         | `swamp run history`                                              |
+| Diagnose stale runs | `swamp run doctor`                                               |
+| Preview run GC      | `swamp run gc --dry-run`                                         |
+| Run GC (outputs)    | `swamp run gc --force`                                           |
+| Run GC (custom age) | `swamp run gc --older-than 7d`                                   |
 
 ## Discover Before Shelling Out
 

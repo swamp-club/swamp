@@ -24,7 +24,7 @@ The swamp-club issue must already exist — create it in the swamp-club UI first
 then note its sequential number (e.g. `42`).
 
 ```
-swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
+swamp behavior run @swamp/issue-lifecycle start issue-<N> --input issueNumber=<N>
 ```
 
 This uses direct type execution to auto-create the model definition and run
@@ -68,7 +68,7 @@ on affected files to see if they were recently changed.
 ## 3. Classify the Issue
 
 ```
-swamp model @swamp/issue-lifecycle method run triage issue-<N> \
+swamp behavior run @swamp/issue-lifecycle triage issue-<N> \
   --input type=<bug|feature|platform|security> \
   --input confidence=<high|medium|low> \
   --input reasoning="<your analysis>"
