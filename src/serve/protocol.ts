@@ -397,15 +397,42 @@ export interface WorkflowHistorySearchPayload {
 
 export interface WorkflowRunSearchPayload {
   query?: string;
+  /** Runs started at or after: a duration back from now (`7d`) or ISO time. */
   since?: string;
+  /** Runs started before (exclusive): a duration back or ISO time. */
+  until?: string;
   status?: string;
+  /** One workflow's runs, by name ignoring case. */
   workflow?: string;
+  /** Runs of any of these workflows, by exact name; empty filters nothing. */
+  workflows?: string[];
+  /** Runs with this trigger source (`schedule`, `api`…), ignoring case. */
+  triggerSource?: string;
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
   /** Page size; the server applies a default of 500 when omitted. */
   limit?: number;
   /** Number of authorized runs to skip before the page. */
   offset?: number;
+}
+
+/**
+ * Asks for run counts across workflows. Counts only runs the caller may
+ * read. Every field is optional.
+ */
+export interface WorkflowRunSummaryPayload {
+  /** Runs started at or after this ISO time (a duration back also works). */
+  since?: string;
+  /** Runs started before this ISO time (exclusive). */
+  until?: string;
+  /** Only runs of these workflows, by exact name. */
+  workflows?: string[];
+  /** Only runs with this trigger source, ignoring case. */
+  triggerSource?: string;
+  /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
+  recentLimit?: number;
+  /** Include hourly buckets. */
+  timeline?: boolean;
 }
 
 export interface WorkflowSchemaPayload {
@@ -868,6 +895,11 @@ export type ServerRequest =
     payload?: WorkflowRunSearchPayload;
   }
   | {
+    type: "workflow.run.summary";
+    id: string;
+    payload?: WorkflowRunSummaryPayload;
+  }
+  | {
     type: "workflow.schema";
     id: string;
     payload: WorkflowSchemaPayload;
@@ -1294,6 +1326,72 @@ export interface WorkflowRunSearchResponse {
   data: Record<string, unknown>;
   /** Authorized matches before `offset`/`limit` were applied. */
   total?: number;
+}
+
+/** One run in a workflow's `recent` list. */
+export interface WorkflowRunSummaryRecentRun {
+  runId: string;
+  status: string;
+  startedAt?: string;
+  duration?: number;
+  triggerSource?: string;
+}
+
+/**
+ * The runs of one workflow, counted. `failed` includes interrupted runs and
+ * `running` includes pending ones; a status in no bucket counts in `runs`
+ * only.
+ */
+export interface WorkflowRunSummaryWorkflow {
+  workflowId: string;
+  workflowName: string;
+  runs: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+  running: number;
+  suspended: number;
+  /** Total duration of the finished runs. */
+  durationMs: number;
+  lastStartedAt?: string;
+  /** The newest runs, newest first. */
+  recent: WorkflowRunSummaryRecentRun[];
+}
+
+/** The runs started within one UTC hour. */
+export interface WorkflowRunSummaryBucket {
+  /** Top of the UTC hour, as an ISO timestamp. */
+  start: string;
+  runs: number;
+  succeeded: number;
+  failed: number;
+  cancelled: number;
+}
+
+/** Run counts across the workflows the caller may read. */
+export interface WorkflowRunSummaryData {
+  since?: string;
+  until?: string;
+  totals: {
+    /** Workflows with at least one counted run. */
+    workflows: number;
+    runs: number;
+    succeeded: number;
+    failed: number;
+    cancelled: number;
+    running: number;
+    suspended: number;
+    /** Total duration of the finished runs. */
+    durationMs: number;
+  };
+  /** One entry per workflow with a counted run, ordered by name. */
+  workflows: WorkflowRunSummaryWorkflow[];
+  /** Hours with runs, ascending; only when asked for. */
+  timeline?: WorkflowRunSummaryBucket[];
+}
+
+export interface WorkflowRunSummaryResponse {
+  data: WorkflowRunSummaryData;
 }
 
 export interface WorkflowSchemaResponse {
@@ -1841,6 +1939,11 @@ export type ServerMessage =
     type: "workflow.run.search";
     id: string;
     payload: WorkflowRunSearchResponse;
+  }
+  | {
+    type: "workflow.run.summary";
+    id: string;
+    payload: WorkflowRunSummaryResponse;
   }
   | { type: "workflow.schema"; id: string; payload: WorkflowSchemaResponse }
   | { type: "workflow.search"; id: string; payload: WorkflowSearchResponse }

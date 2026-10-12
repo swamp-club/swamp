@@ -174,6 +174,13 @@ export {
   type WorkflowRunSearchItem,
 } from "./workflows/run_search.ts";
 export {
+  workflowRunSummary,
+  type WorkflowRunSummaryData,
+  type WorkflowRunSummaryDeps,
+  type WorkflowRunSummaryEvent,
+  type WorkflowRunSummaryInput,
+} from "./workflows/run_summary.ts";
+export {
   workflowHistorySearch,
   type WorkflowHistorySearchData,
   type WorkflowHistorySearchDeps,
