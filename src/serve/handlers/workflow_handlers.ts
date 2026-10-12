@@ -233,7 +233,6 @@ import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
 import {
-  mergeTriggerOverride,
   readServeConfigFile,
   SERVE_CONFIG_PATH,
   type ServeConfigFile,
@@ -3007,49 +3006,23 @@ export async function handleWorkflowTriggerSet(
     )
   ) return;
 
-  if (payload.schedule === undefined && payload.paused === undefined) {
-    sendError(
-      socket,
-      requestId,
-      "invalid_request",
-      "workflow.trigger.set needs a schedule, paused, or both",
-    );
-    return;
-  }
-  if (payload.inputs !== undefined && payload.schedule === undefined) {
-    sendError(
-      socket,
-      requestId,
-      "invalid_request",
-      "workflow.trigger.set accepts inputs only with a schedule",
-    );
-    return;
-  }
-
   try {
-    const config =
-      await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath) ?? {};
-    const triggers = config.triggers ?? {};
-    const merged = mergeTriggerOverride(triggers[payload.workflowName], {
+    const entry: TriggerOverrideEntry = {
       schedule: payload.schedule,
-      inputs: payload.inputs,
-      paused: payload.paused,
-    });
+      ...(payload.inputs && Object.keys(payload.inputs).length > 0
+        ? { inputs: payload.inputs }
+        : {}),
+    };
 
     const configPath = ctx.serveConfigPath ??
       join(ctx.repoDir, SERVE_CONFIG_PATH);
-    if (merged) {
-      validateTriggerOverrideEntry(merged, configPath, payload.workflowName);
-      triggers[payload.workflowName] = merged;
-    } else {
-      delete triggers[payload.workflowName];
-    }
-    if (Object.keys(triggers).length > 0) {
-      config.triggers = triggers;
-    } else {
-      delete config.triggers;
-    }
-    const entry: TriggerOverrideEntry = merged ?? {};
+    validateTriggerOverrideEntry(entry, configPath, payload.workflowName);
+
+    const config =
+      await readServeConfigFile(ctx.repoDir, ctx.serveConfigPath) ?? {};
+    const triggers = config.triggers ?? {};
+    triggers[payload.workflowName] = entry;
+    config.triggers = triggers;
     if (
       !await writeTriggerConfig(
         socket,
@@ -3129,7 +3102,6 @@ export async function handleWorkflowTriggerGet(
         ...(builtIn?.inputs ?? {}),
         ...(override?.inputs ?? {}),
       },
-      paused: override?.paused === true,
     };
 
     send(socket, {

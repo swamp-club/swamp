@@ -1284,9 +1284,8 @@ const WorkflowTriggerSetRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     workflowName: z.string().min(1),
-    schedule: z.string().min(1).optional(),
+    schedule: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()).optional(),
-    paused: z.boolean().optional(),
   }),
 });
 
@@ -1613,17 +1612,6 @@ export function validateServerRequest(
     `${i.path.join(".")}: ${i.message}`
   ).join("; ");
   return `Invalid request: ${issues}`;
-}
-
-/**
- * The audit action of a `workflow.trigger.set`: a request that pauses or
- * resumes the schedule is recorded as such, so the trail reads as a pause
- * or resume rather than as one more override write.
- */
-export function triggerSetAuditAction(paused: boolean | undefined): string {
-  if (paused === true) return "workflow.trigger.pause";
-  if (paused === false) return "workflow.trigger.resume";
-  return "workflow.trigger.set";
 }
 
 /**
@@ -3772,14 +3760,11 @@ export function handleMessage(
           controller,
           principal,
         ),
-        {
-          ...auditOpts(
-            "admin",
-            "workflow",
-            request.payload?.workflowName ?? "*",
-          ),
-          action: triggerSetAuditAction(request.payload?.paused),
-        },
+        auditOpts(
+          "admin",
+          "workflow",
+          request.payload?.workflowName ?? "*",
+        ),
       );
       break;
     case "workflow.trigger.get":

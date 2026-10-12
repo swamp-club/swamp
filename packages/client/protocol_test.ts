@@ -290,10 +290,6 @@ const _identicalPairs: {
     serve.WorkflowTriggerGetPayload
   >;
   EffectiveTrigger: Identical<client.EffectiveTrigger, serve.EffectiveTrigger>;
-  EffectiveTriggerState: Identical<
-    client.EffectiveTriggerState,
-    serve.EffectiveTriggerState
-  >;
   WorkflowTriggerGetResult: Identical<
     client.WorkflowTriggerGetResult,
     serve.WorkflowTriggerGetResult
@@ -406,7 +402,6 @@ const _identicalPairs: {
   RunHistoryPayload: true,
   WorkflowTriggerGetPayload: true,
   EffectiveTrigger: true,
-  EffectiveTriggerState: true,
   WorkflowTriggerGetResult: true,
   WorkflowTriggerGetResponse: true,
   AccessGrantListResponse: true,

@@ -40,11 +40,8 @@ export interface HealthSnapshotSchedule {
   readonly workflowId: string;
   readonly workflowName: string;
   readonly cronExpression: string;
-  /** Null while paused. */
   readonly nextRun: string | null;
   readonly running: boolean;
-  /** True while a trigger override pauses the schedule. */
-  readonly paused: boolean;
   /**
    * Where the effective cron expression comes from: the workflow's own
    * `trigger.schedule`, or a serve trigger override.
@@ -92,8 +89,6 @@ export interface ScheduleProvider {
     readonly workflowName: string;
     readonly cronExpression: string;
     readonly nextRun: Date | null;
-    /** Defaults to false. */
-    readonly paused?: boolean;
     /** Defaults to "workflow". */
     readonly source?: "workflow" | "override";
   }>;
@@ -221,9 +216,8 @@ export class HealthCollector {
         workflowId: String(s.workflowId),
         workflowName: s.workflowName,
         cronExpression: s.cronExpression,
-        nextRun: s.paused ? null : s.nextRun?.toISOString() ?? null,
+        nextRun: s.nextRun?.toISOString() ?? null,
         running: this.#deps.scheduleProvider!.isRunning(String(s.workflowId)),
-        paused: s.paused ?? false,
         source: s.source ?? "workflow",
         ...this.#deps.scheduleProvider!.queueStatus(String(s.workflowId)),
       }))

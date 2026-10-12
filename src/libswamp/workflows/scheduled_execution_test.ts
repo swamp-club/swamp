@@ -1798,34 +1798,6 @@ Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay 
   }
 });
 
-// ── Paused schedules ────────────────────────────────────────────────
-
-Deno.test("ScheduledExecutionService: a paused override lists the schedule with no next run", async () => {
-  const wf = createTestWorkflow("paused-wf", "0 12 * * *");
-  const events: ScheduledExecutionEvent[] = [];
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: () => Promise.resolve(),
-    triggerOverrides: new Map([["paused-wf", { paused: true }]]),
-  });
-  await service.start((e) => events.push(e));
-  try {
-    assertEquals(service.listSchedules(), [{
-      workflowId: wf.id,
-      workflowName: "paused-wf",
-      cronExpression: "0 12 * * *",
-      nextRun: null,
-      paused: true,
-      source: "workflow",
-    }]);
-    assert(events.some((e) => e.kind === "schedule_paused"));
-    assert(!events.some((e) => e.kind === "schedule_registered"));
-  } finally {
-    await service.stop();
-  }
-});
-
 Deno.test("ScheduledExecutionService.listSchedules: reports where the cron comes from", async () => {
   const builtIn = createTestWorkflow("builtin-wf", "0 12 * * *");
   const overridden = createTestWorkflow("overridden-wf", "0 12 * * *");
@@ -1834,7 +1806,7 @@ Deno.test("ScheduledExecutionService.listSchedules: reports where the cron comes
     repoDir: "/tmp/nonexistent-test-repo",
     executeWorkflow: () => Promise.resolve(),
     triggerOverrides: new Map([
-      ["overridden-wf", { schedule: "0 3 * * *", paused: true }],
+      ["overridden-wf", { schedule: "0 3 * * *" }],
     ]),
   });
   await service.start();
@@ -1843,162 +1815,8 @@ Deno.test("ScheduledExecutionService.listSchedules: reports where the cron comes
       service.listSchedules().map((s) => [s.workflowName, s]),
     );
     assertEquals(byName.get("builtin-wf")?.source, "workflow");
-    assertEquals(byName.get("builtin-wf")?.paused, false);
-    assert(byName.get("builtin-wf")?.nextRun instanceof Date);
     assertEquals(byName.get("overridden-wf")?.source, "override");
     assertEquals(byName.get("overridden-wf")?.cronExpression, "0 3 * * *");
-    assertEquals(byName.get("overridden-wf")?.paused, true);
-  } finally {
-    await service.stop();
-  }
-});
-
-Deno.test("ScheduledExecutionService: a paused schedule never fires while others do", async () => {
-  const active = createTestWorkflow("active-wf", "* * * * * *");
-  const paused = createTestWorkflow("held-wf", "* * * * * *");
-  const executed: string[] = [];
-  const events: ScheduledExecutionEvent[] = [];
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([active, paused]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: (input) => {
-      executed.push(input.workflowIdOrName);
-      return Promise.resolve();
-    },
-    maxConcurrentRuns: 2,
-    triggerOverrides: new Map([["held-wf", { paused: true }]]),
-  });
-  await service.start((e) => events.push(e));
-  try {
-    // Two fires of the every-second schedule span a tick of the paused one.
-    await waitFor(
-      () => executed.filter((name) => name === "active-wf").length >= 2,
-      "two active fires",
-    );
-    assertEquals(executed.includes("held-wf"), false);
-    assertEquals(
-      events.some((e) =>
-        e.kind === "schedule_fired" && e.workflowName === "held-wf"
-      ),
-      false,
-    );
-    assertEquals(service.queueStatus(paused.id).queued, 0);
-  } finally {
-    await service.stop();
-  }
-});
-
-Deno.test("updateTriggerOverrides: pausing then resuming re-registers with a fresh next run", async () => {
-  const wf = createTestWorkflow("toggle-wf", "* * * * * *");
-  const executed: string[] = [];
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: (input) => {
-      executed.push(input.workflowIdOrName);
-      return Promise.resolve();
-    },
-  });
-  await service.start();
-  try {
-    const paused = await service.updateTriggerOverrides(
-      new Map([["toggle-wf", { paused: true }]]),
-    );
-    assertEquals(paused, 1);
-    const [held] = service.listSchedules();
-    assertEquals(held.paused, true);
-    assertEquals(held.nextRun, null);
-
-    const before = Date.now();
-    const resumed = await service.updateTriggerOverrides(new Map());
-    assertEquals(resumed, 1);
-    const [live] = service.listSchedules();
-    assertEquals(live.paused, false);
-    assert(live.nextRun !== null && live.nextRun.getTime() >= before);
-
-    const firesAtResume = executed.length;
-    await waitFor(() => executed.length > firesAtResume, "fire after resume");
-  } finally {
-    await service.stop();
-  }
-});
-
-Deno.test("updateTriggerOverrides: a pause-only change is detected", async () => {
-  const wf = createTestWorkflow("pause-change-wf", "0 12 * * *");
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: () => Promise.resolve(),
-    triggerOverrides: new Map([
-      ["pause-change-wf", { schedule: "0 3 * * *" }],
-    ]),
-  });
-  await service.start();
-  try {
-    const changed = await service.updateTriggerOverrides(
-      new Map([["pause-change-wf", { schedule: "0 3 * * *", paused: true }]]),
-    );
-    assertEquals(changed, 1);
-    assertEquals(service.listSchedules()[0].paused, true);
-    assertEquals(service.listSchedules()[0].cronExpression, "0 3 * * *");
-  } finally {
-    await service.stop();
-  }
-});
-
-Deno.test("ScheduledExecutionService: a run queued before its schedule was paused is dropped", async () => {
-  const wf = createTestWorkflow("queued-wf", "0 0 1 1 *");
-  const executor = createPerRunExecutor();
-  const deleted: string[] = [];
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: executor.executeWorkflow,
-    pendingRunHook: {
-      enqueue: () => Promise.resolve(),
-      delete: (id) => {
-        deleted.push(id);
-        return Promise.resolve();
-      },
-    },
-  });
-  await service.start();
-  try {
-    replay(service, "blocker-wf");
-    await waitFor(() => executor.runs.length === 1, "blocker run");
-    replay(service, "queued-wf");
-    assertEquals(service.queueStatus(wf.id).queued, 1);
-
-    await service.updateTriggerOverrides(
-      new Map([["queued-wf", { paused: true }]]),
-    );
-    executor.runs[0].release();
-    await waitFor(
-      () => service.queueStatus(wf.id).queued === 0 && deleted.length === 2,
-      "queued run dropped",
-    );
-    await waitFor(() => executor.finished() === 1, "blocker finished");
-    assertEquals(executor.runs.map((run) => run.workflow), ["blocker-wf"]);
-  } finally {
-    await service.stop();
-  }
-});
-
-Deno.test("updateTriggerOverrides: removing a paused override for an override-only schedule unregisters it", async () => {
-  const wf = createTestWorkflow("override-only-wf");
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([wf]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: () => Promise.resolve(),
-    triggerOverrides: new Map([
-      ["override-only-wf", { schedule: "0 3 * * *", paused: true }],
-    ]),
-  });
-  await service.start();
-  try {
-    assertEquals(service.listSchedules().length, 1);
-    await service.updateTriggerOverrides(new Map());
-    assertEquals(service.listSchedules(), []);
   } finally {
     await service.stop();
   }

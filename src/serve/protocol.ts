@@ -705,19 +705,10 @@ export interface WorkflowEvaluatePayload {
 
 // ── Workflow trigger override operations ────────────────────────────
 
-/**
- * Sets or changes a workflow's trigger override. A payload must carry
- * `schedule`, `paused`, or both; `inputs` only with `schedule`. A schedule
- * replaces the override's schedule and inputs together; without one, both
- * are kept. `paused` is kept when omitted, so `{ paused: true }` pauses the
- * workflow's schedule (built-in or overridden) and `{ paused: false }`
- * resumes it — an override left with nothing to store is removed.
- */
 export interface WorkflowTriggerSetPayload {
   workflowName: string;
-  schedule?: string;
+  schedule: string;
   inputs?: Record<string, unknown>;
-  paused?: boolean;
 }
 
 export interface WorkflowTriggerGetPayload {
@@ -733,21 +724,14 @@ export interface EffectiveTrigger {
   readonly inputs: Record<string, unknown>;
 }
 
-/** The trigger the scheduler applies: built-in merged with the override. */
-export interface EffectiveTriggerState extends EffectiveTrigger {
-  /** True while the override pauses the schedule. */
-  readonly paused: boolean;
-}
-
 export interface WorkflowTriggerGetResult {
   readonly workflowName: string;
   readonly builtIn: EffectiveTrigger | null;
   readonly override: {
     readonly schedule?: string;
     readonly inputs?: Record<string, unknown>;
-    readonly paused?: boolean;
   } | null;
-  readonly effective: EffectiveTriggerState;
+  readonly effective: EffectiveTrigger;
 }
 
 // ── Vault CRUD / audit operations ───────────────────────────────────
@@ -1784,12 +1768,7 @@ export interface WorkflowEvaluateResponse {
 export interface WorkflowTriggerSetResponse {
   data: {
     workflowName: string;
-    /** The override as stored; `{}` when a resume left nothing to store. */
-    entry: {
-      schedule?: string;
-      inputs?: Record<string, unknown>;
-      paused?: boolean;
-    };
+    entry: { schedule?: string; inputs?: Record<string, unknown> };
   };
 }
 

@@ -67,16 +67,3 @@ Deno.test("workflowTriggerSetCommand: has correct name and options", async () =>
   const inputOpt = options.find((o) => o.name === "input");
   assertEquals(inputOpt !== undefined, true);
 });
-
-Deno.test("workflowTriggerSetCommand: schedule is optional and paused/resume are offered", async () => {
-  const { workflowTriggerSetCommand } = await import(
-    "./workflow_trigger_set.ts"
-  );
-  const options = workflowTriggerSetCommand.getOptions();
-  assertEquals(
-    options.find((o) => o.name === "schedule")?.required ?? false,
-    false,
-  );
-  assertEquals(options.some((o) => o.name === "paused"), true);
-  assertEquals(options.some((o) => o.name === "resume"), true);
-});

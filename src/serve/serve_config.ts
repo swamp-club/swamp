@@ -114,50 +114,6 @@ export interface WebhookConfigEntry {
 export interface TriggerOverrideEntry {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
-  /**
-   * True stops the workflow's schedule (built-in or overridden) from firing
-   * until it is cleared. Only `true` is stored; a resume drops the key.
-   */
-  readonly paused?: boolean;
-}
-
-/** A change to one workflow's trigger override (`workflow.trigger.set`). */
-export interface TriggerOverrideUpdate {
-  readonly schedule?: string;
-  readonly inputs?: Record<string, unknown>;
-  readonly paused?: boolean;
-}
-
-/**
- * Applies a trigger override change to the existing entry. `schedule` and
- * `inputs` change together: an update with a schedule replaces both (inputs
- * it omits are dropped), and one without a schedule keeps both. `paused` is
- * independent: an update that omits it keeps the existing pause state, so a
- * retime never resumes a paused schedule and a pause never drops the
- * override. A resume stores no `paused` key. Returns null when nothing is
- * left to store, so the caller removes the entry.
- */
-export function mergeTriggerOverride(
-  existing: TriggerOverrideEntry | undefined,
-  update: TriggerOverrideUpdate,
-): TriggerOverrideEntry | null {
-  const base: { schedule?: string; inputs?: Record<string, unknown> } =
-    update.schedule !== undefined
-      ? {
-        schedule: update.schedule,
-        ...(update.inputs && Object.keys(update.inputs).length > 0
-          ? { inputs: update.inputs }
-          : {}),
-      }
-      : {
-        ...(existing?.schedule !== undefined
-          ? { schedule: existing.schedule }
-          : {}),
-        ...(existing?.inputs !== undefined ? { inputs: existing.inputs } : {}),
-      };
-  const paused = update.paused ?? existing?.paused === true;
-  const entry: TriggerOverrideEntry = paused ? { ...base, paused: true } : base;
-  return Object.keys(entry).length > 0 ? entry : null;
 }
 
 // ── Config File Shape ─────────────────────────────────────────────────
@@ -864,7 +820,7 @@ function validateWebhookEntry(
   }
 }
 
-const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs", "paused"]);
+const KNOWN_TRIGGER_OVERRIDE_KEYS = new Set(["schedule", "inputs"]);
 
 export function validateTriggerOverrideEntry(
   entry: unknown,
@@ -874,7 +830,7 @@ export function validateTriggerOverrideEntry(
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw configError(
       path,
-      `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule', 'inputs' and 'paused'`,
+      `Invalid trigger override for '${workflowName}' in ${path}: expected object with optional 'schedule' and 'inputs'`,
     );
   }
   const obj = entry as Record<string, unknown>;
@@ -915,20 +871,10 @@ export function validateTriggerOverrideEntry(
       );
     }
   }
-  if (obj.paused !== undefined && typeof obj.paused !== "boolean") {
+  if (obj.schedule === undefined && obj.inputs === undefined) {
     throw configError(
       path,
-      `Invalid trigger override for '${workflowName}' in ${path}: paused must be a boolean, got ${typeof obj
-        .paused}`,
-    );
-  }
-  if (
-    obj.schedule === undefined && obj.inputs === undefined &&
-    obj.paused === undefined
-  ) {
-    throw configError(
-      path,
-      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule', 'inputs' or 'paused'`,
+      `Invalid trigger override for '${workflowName}' in ${path}: must specify at least 'schedule' or 'inputs'`,
     );
   }
 }

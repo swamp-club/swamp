@@ -32,7 +32,6 @@ import { assertPathEquals } from "../infrastructure/persistence/path_test_helper
 import {
   loadServeConfig,
   mergeServeOptions,
-  mergeTriggerOverride,
   parseAuditConfig,
   parseExplicitFlags,
   parseTokenSecretsKeyConfig,
@@ -1466,102 +1465,6 @@ Deno.test("loadServeConfig: accepts trigger override with inputs only", () => {
     assertEquals(config.triggers!["my-workflow"].inputs, { count: 5 });
     assertEquals(config.triggers!["my-workflow"].schedule, undefined);
   });
-});
-
-Deno.test("loadServeConfig: accepts a paused-only trigger override", () => {
-  withTempDir((dir) => {
-    writeConfig(dir, {
-      triggers: {
-        "my-workflow": { paused: true },
-      },
-    });
-    const config = loadServeConfig(undefined, dir)!;
-    assertEquals(config.triggers!["my-workflow"], { paused: true });
-  });
-});
-
-Deno.test("loadServeConfig: accepts paused alongside schedule and inputs", () => {
-  withTempDir((dir) => {
-    writeConfig(dir, {
-      triggers: {
-        "my-workflow": {
-          schedule: "0 3 * * *",
-          inputs: { count: 5 },
-          paused: true,
-        },
-      },
-    });
-    const config = loadServeConfig(undefined, dir)!;
-    assertEquals(config.triggers!["my-workflow"].paused, true);
-    assertEquals(config.triggers!["my-workflow"].schedule, "0 3 * * *");
-  });
-});
-
-Deno.test("loadServeConfig: rejects a trigger override whose paused is not a boolean", () => {
-  withTempDir((dir) => {
-    writeConfig(dir, {
-      triggers: {
-        "my-workflow": { paused: "yes" },
-      },
-    });
-    assertThrows(
-      () => loadServeConfig(undefined, dir),
-      Error,
-      "paused must be a boolean",
-    );
-  });
-});
-
-Deno.test("mergeTriggerOverride: a pause keeps the existing schedule and inputs", () => {
-  assertEquals(
-    mergeTriggerOverride(
-      { schedule: "0 3 * * *", inputs: { env: "prod" } },
-      { paused: true },
-    ),
-    { schedule: "0 3 * * *", inputs: { env: "prod" }, paused: true },
-  );
-});
-
-Deno.test("mergeTriggerOverride: a pause with no override stores paused only", () => {
-  assertEquals(mergeTriggerOverride(undefined, { paused: true }), {
-    paused: true,
-  });
-});
-
-Deno.test("mergeTriggerOverride: a resume drops the paused key", () => {
-  assertEquals(
-    mergeTriggerOverride({ schedule: "0 3 * * *", paused: true }, {
-      paused: false,
-    }),
-    { schedule: "0 3 * * *" },
-  );
-});
-
-Deno.test("mergeTriggerOverride: a resume of a paused-only override leaves nothing to store", () => {
-  assertEquals(
-    mergeTriggerOverride({ paused: true }, { paused: false }),
-    null,
-  );
-});
-
-Deno.test("mergeTriggerOverride: a new schedule replaces schedule and inputs and keeps the pause", () => {
-  assertEquals(
-    mergeTriggerOverride(
-      { schedule: "0 3 * * *", inputs: { env: "prod" }, paused: true },
-      { schedule: "0 6 * * *" },
-    ),
-    { schedule: "0 6 * * *", paused: true },
-  );
-});
-
-Deno.test("mergeTriggerOverride: a schedule without paused stores no paused key", () => {
-  assertEquals(
-    mergeTriggerOverride(undefined, {
-      schedule: "0 6 * * *",
-      inputs: { env: "prod" },
-    }),
-    { schedule: "0 6 * * *", inputs: { env: "prod" } },
-  );
 });
 
 Deno.test("mergeServeOptions: triggerOverrides from config", () => {
