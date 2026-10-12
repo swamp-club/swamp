@@ -136,15 +136,20 @@ export type {
 } from "./datastore_test_context.ts";
 
 export type {
+  ControlPlaneReadOptions,
   ControlPlaneStore,
+  DatastoreControlPlaneStore,
   DatastoreHealthResult,
   DatastoreProvider,
+  DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
   DatastoreVerifier,
   DistributedLock,
   LockInfo,
   LockOptions,
+  StorageCapabilities,
+  StoredChunk,
   SyncCapabilities,
   SyncContext,
 } from "./datastore_types.ts";
@@ -171,12 +176,18 @@ export type {
 
 export {
   assertControlPlaneStoreConformance,
+  assertDatastoreControlPlaneStoreConformance,
   createInMemoryControlPlaneStore,
 } from "./control_plane_conformance.ts";
 
 export type {
   ControlPlaneStoreConformanceOptions,
+  DatastoreControlPlaneStoreConformanceOptions,
 } from "./control_plane_conformance.ts";
+
+export { assertStorageConformance } from "./storage_conformance.ts";
+
+export type { StorageConformanceOptions } from "./storage_conformance.ts";
 
 export {
   createInMemoryRemote,
@@ -188,6 +199,7 @@ export {
 export type {
   ConnectOptions,
   FailNextOptions,
+  InMemoryControlPlaneRead,
   InMemoryPushManifest,
   InMemoryRemote,
   InMemoryRemoteFailure,

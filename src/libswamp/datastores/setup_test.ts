@@ -56,6 +56,8 @@ import {
   UnsupportedDatastoreFormatError,
 } from "../../domain/datastore/datastore_format.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { VaultConfig } from "../../domain/vaults/vault_config.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 function makeDeps(
@@ -77,11 +79,17 @@ function makeDeps(
       Promise.resolve({ valid: true, sourceCount: 5, destCount: 5 }),
     cleanupSourceDirs: () => Promise.resolve(),
     updateRepoConfig: () => Promise.resolve(),
+    invalidateCatalog: () => Promise.resolve(),
     resolveInRepoConfigRole: () => Promise.resolve("unmanaged"),
     listConfigTierConflicts: () => Promise.resolve([]),
     inspectManagedConfigTier: () => Promise.resolve({ managed: false }),
+    findLocalDefaultVault: () => Promise.resolve(undefined),
     collapseEnvVars: (path: string) => path,
     assertDatastoreFormat: () => Promise.resolve(),
+    inspectV3Target: () => Promise.resolve({ kind: "absent" }),
+    hasDatastoreRecords: () => Promise.resolve(false),
+    createV3Datastore: () => Promise.resolve(),
+    currentDatastore: () => Promise.resolve({ engine: "v2" }),
     ...overrides,
   };
 }
@@ -121,6 +129,7 @@ Deno.test("datastoreSetupFilesystem: completes with migration", async () => {
   assertEquals(completed.data.errors, []);
   assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
   assertEquals(completed.data.destinationPath, "/tmp/datastore");
+  assertEquals(completed.data.sourceKept, undefined);
 });
 
 Deno.test("datastoreSetupFilesystem: completes with skip migration", async () => {
@@ -1690,6 +1699,67 @@ Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes only the link for
   });
 });
 
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: keeps run logs and removes the records beside them", async () => {
+  await withSetupTempDir(async (dir) => {
+    const outputLog = join(dir, "outputs", "command", "shell", "r1.log");
+    const runLog = join(dir, "workflow-runs", "wf1", "workflow-run-r2.log");
+    await writeTestFile(outputLog, "method log");
+    await writeTestFile(
+      join(dir, "outputs", "command", "shell", "r1.yaml"),
+      "record",
+    );
+    await writeTestFile(runLog, "workflow log");
+    await writeTestFile(
+      join(dir, "workflow-runs", "wf1", "workflow-run-r2.yaml"),
+      "record",
+    );
+    await writeTestFile(join(dir, "workflow-runs", "wf2", "r3.yaml"), "r");
+    await writeTestFile(join(dir, "data", "notes.log"), "data");
+    const deps = createDatastoreSetupDeps(dir, noTier);
+
+    await deps.cleanupSourceDirs(dir, ["outputs", "workflow-runs", "data"]);
+
+    assertEquals(await Deno.readTextFile(outputLog), "method log");
+    assertEquals(await Deno.readTextFile(runLog), "workflow log");
+    assertEquals(
+      await pathExists(join(dir, "outputs", "command", "shell", "r1.yaml")),
+      false,
+    );
+    assertEquals(
+      await pathExists(
+        join(dir, "workflow-runs", "wf1", "workflow-run-r2.yaml"),
+      ),
+      false,
+    );
+    assertEquals(await pathExists(join(dir, "workflow-runs", "wf2")), false);
+    assertEquals(await pathExists(join(dir, "data")), false);
+  });
+});
+
+Deno.test("createDatastoreSetupDeps.cleanupSourceDirs: removes a symlinked dir under outputs as a link, never through it", async () => {
+  await withSetupTempDir(async (dir) => {
+    const target = join(dir, "elsewhere");
+    await writeTestFile(join(target, "keep.yaml"), "outside");
+    await writeTestFile(join(target, "keep.log"), "outside log");
+    const source = join(dir, "source");
+    await writeTestFile(join(source, "outputs", "a", "r1.yaml"), "record");
+    await Deno.symlink(target, join(source, "outputs", "linked"), {
+      type: "dir",
+    });
+    const deps = createDatastoreSetupDeps(source, noTier);
+
+    await deps.cleanupSourceDirs(source, ["outputs"]);
+
+    assertEquals(await pathExists(join(source, "outputs", "linked")), false);
+    assertEquals(await Deno.readTextFile(join(target, "keep.yaml")), "outside");
+    assertEquals(
+      await Deno.readTextFile(join(target, "keep.log")),
+      "outside log",
+    );
+    assertEquals(await pathExists(join(source, "outputs")), false);
+  });
+});
+
 /**
  * Registers an extension datastore whose remote is a temp directory: push
  * copies the cache over it and pull copies it over the cache, both
@@ -3167,4 +3237,1181 @@ Deno.test("datastoreSetupExtension: tells a repo already bound to a reserved nam
   }
   assertEquals(events.some((e) => e.kind === "completed"), false);
   assertEquals(setupSyncSpyCalls, []);
+});
+
+// ============================================================================
+// Local default vault warning (swamp-club#3259)
+// ============================================================================
+
+Deno.test("datastoreSetupExtension: warns when the default vault is local_encryption", async () => {
+  ensureTestExtensionType("test-ext-setup");
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.resolve("default"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+
+  const warnings = warningsOf(events);
+  assertEquals(warnings.length, 1);
+  assertEquals(events[events.length - 1].kind, "completed");
+  const data = warnings[0].data;
+  assertEquals(data.code, "local_default_vault");
+  if (data.code !== "local_default_vault") return;
+  assertEquals(data.vaultName, "default");
+  assertStringIncludes(data.message, "'default' is a local_encryption vault");
+  assertStringIncludes(data.message, "swamp vault migrate default");
+});
+
+Deno.test("datastoreSetupExtension: a failed default vault lookup is skipped, not fatal", async () => {
+  ensureTestExtensionType("test-ext-setup");
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.reject(new Error("unreadable")),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+  assertEquals(events[events.length - 1].kind, "completed");
+});
+
+Deno.test("datastoreSetupFilesystem: does not warn about a local default vault", async () => {
+  const deps = makeDeps({
+    findLocalDefaultVault: () => Promise.resolve("default"),
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+
+  assertEquals(warningsOf(events).length, 0);
+});
+
+Deno.test("createDatastoreSetupDeps.findLocalDefaultVault: names a local_encryption default vault only", async () => {
+  await withSetupTempDir(async (repoDir) => {
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    const markerRepo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(repoDir);
+    await markerRepo.write(repoPath, {
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+      repoId: "repo-3259",
+    });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+
+    const vaults = new YamlVaultConfigRepository(repoDir);
+    await vaults.save(
+      VaultConfig.create("local-id", "default", "local_encryption", {
+        auto_generate: true,
+      }),
+    );
+    await vaults.save(VaultConfig.create("shared-id", "shared", "mock", {}));
+    const marker = await markerRepo.read(repoPath);
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "default" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), "default");
+
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "shared" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "missing" });
+    assertEquals(await deps.findLocalDefaultVault(repoDir), undefined);
+  });
+});
+
+// ============================================================================
+// Setup from a filesystem datastore outside the repo (swamp-club#3238)
+// ============================================================================
+
+/**
+ * A repo whose datastore was moved to `external`, as the first
+ * `setup filesystem` leaves it: the data on the external path with the stale
+ * catalog copy that move took along, and the live local catalog and a
+ * method-run log in the repo's own .swamp.
+ */
+async function writeMovedOutRepo(
+  tmp: string,
+): Promise<{ repoDir: string; external: string }> {
+  const repoDir = join(tmp, "repo");
+  const external = join(tmp, "nas");
+  await writeMarker(repoDir, { type: "filesystem", path: external });
+  await writeTestFile(join(external, "data", "a.json"), "{}");
+  await writeTestFile(join(external, "outputs", "run.yaml"), "out");
+  await writeTestFile(join(external, "data", "_catalog.db"), "stale");
+  await writeTestFile(join(repoDir, ".swamp", "data", "_catalog.db"), "live");
+  await writeTestFile(join(repoDir, ".swamp", "data", "_catalog.db-wal"), "w");
+  await writeTestFile(join(repoDir, ".swamp", "outputs", "run.log"), "log");
+  return { repoDir, external };
+}
+
+type CompletedEvent = Extract<DatastoreSetupEvent, { kind: "completed" }>;
+
+Deno.test("datastoreSetupFilesystem: moving back to .swamp copies from the external datastore", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, external } = await writeMovedOutRepo(tmp);
+    const swampDir = join(repoDir, ".swamp");
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+    let catalogAtInvalidation: string | undefined;
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        {
+          ...deps,
+          invalidateCatalog: async (dir) => {
+            catalogAtInvalidation = await Deno.readTextFile(
+              join(swampDir, "data", "_catalog.db"),
+            );
+            await deps.invalidateCatalog(dir);
+          },
+        },
+        {
+          datastorePath: swampDir,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    assertEquals(completed.data.filesCopied, 2);
+    assertEquals(completed.data.sourcePath, external);
+    assertEquals(completed.data.sourceKept, true);
+    assertEquals(
+      await Deno.readTextFile(join(swampDir, "data", "a.json")),
+      "{}",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(swampDir, "outputs", "run.yaml")),
+      "out",
+    );
+    // The local run log survives, the stale catalog was never copied over
+    // the live one, and the live one is then dropped for a rebuild.
+    assertEquals(await pathExists(join(swampDir, "outputs", "run.log")), true);
+    assertEquals(catalogAtInvalidation, "live");
+    assertEquals(
+      await pathExists(join(swampDir, "data", "_catalog.db")),
+      false,
+    );
+    assertEquals(
+      await pathExists(join(swampDir, "data", "_catalog.db-wal")),
+      false,
+    );
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
+    assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", swampDir);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: moving between external paths copies from the current one", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, external } = await writeMovedOutRepo(tmp);
+    const next = join(tmp, "next");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath: next,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.data.errors, []);
+    assertEquals(await pathExists(join(next, "data", "a.json")), true);
+    assertEquals(await pathExists(join(next, "data", "_catalog.db")), false);
+    // The repo's own .swamp is not a source: its run log stays put.
+    assertEquals(await pathExists(join(next, "outputs", "run.log")), false);
+    assertEquals(
+      await pathExists(join(repoDir, ".swamp", "outputs", "run.log")),
+      true,
+    );
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
+    assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", next);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: a missing external datastore stops setup without changes", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const external = join(tmp, "unmounted");
+    await writeMarker(repoDir, { type: "filesystem", path: external });
+    await writeTestFile(join(repoDir, ".swamp", "data", "_catalog.db"), "live");
+    const calls: string[] = [];
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        {
+          ...deps,
+          migrateData: (...args) => {
+            calls.push("migrate");
+            return deps.migrateData(...args);
+          },
+          invalidateCatalog: (dir) => {
+            calls.push("invalidate");
+            return deps.invalidateCatalog(dir);
+          },
+        },
+        {
+          datastorePath: join(repoDir, ".swamp"),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    const last = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error");
+    assertEquals(last.error.code, "validation_failed");
+    assertStringIncludes(last.error.message, external);
+    assertEquals(calls, []);
+    assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", external);
+    assertEquals(
+      await pathExists(join(repoDir, ".swamp", "data", "_catalog.db")),
+      true,
+    );
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: --skip-migration switches off a missing external datastore and drops the catalog", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const external = join(tmp, "unmounted");
+    await writeMarker(repoDir, { type: "filesystem", path: external });
+    await writeTestFile(join(repoDir, ".swamp", "data", "_catalog.db"), "live");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath: join(repoDir, ".swamp"),
+          repoDir,
+          skipMigration: true,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    assertEquals((events.at(-1) as CompletedEvent).data.errors, []);
+    assertEquals(
+      await pathExists(join(repoDir, ".swamp", "data", "_catalog.db")),
+      false,
+    );
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: setup onto the current external datastore moves nothing", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, external } = await writeMovedOutRepo(tmp);
+    const calls: string[] = [];
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        {
+          ...deps,
+          migrateData: (...args) => {
+            calls.push("migrate");
+            return deps.migrateData(...args);
+          },
+          cleanupSourceDirs: (...args) => {
+            calls.push("cleanup");
+            return deps.cleanupSourceDirs(...args);
+          },
+          invalidateCatalog: (dir) => {
+            calls.push("invalidate");
+            return deps.invalidateCatalog(dir);
+          },
+        },
+        {
+          datastorePath: join(external, "data", ".."),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    assertEquals((events.at(-1) as CompletedEvent).data.errors, []);
+    assertEquals(calls, []);
+    assertEquals(await pathExists(join(external, "data", "a.json")), true);
+    assertEquals(
+      await Deno.readTextFile(join(repoDir, ".swamp", "data", "_catalog.db")),
+      "live",
+    );
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: refuses a destination inside a migrated subdir of the source", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, external } = await writeMovedOutRepo(tmp);
+    const nested = join(external, "data", "store");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath: nested,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    const last = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error");
+    assertStringIncludes(last.error.message, join(external, "data"));
+    assertEquals(await pathExists(join(external, "data", "a.json")), true);
+    assertPathEquals((await readDatastoreBlock(repoDir))?.path ?? "", external);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: a destination elsewhere inside .swamp still migrates", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const store = join(repoDir, ".swamp", "store");
+    await writeMarker(repoDir, { type: "filesystem", path: ".swamp" });
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        { datastorePath: store, repoDir, skipMigration: false },
+      ),
+    );
+
+    assertEquals((events.at(-1) as CompletedEvent).data.errors, []);
+    assertEquals(await pathExists(join(store, "data", "a.json")), true);
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: moving back moves an external managed config tier but not the pulled extension root", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const external = join(tmp, "nas");
+    const swampDir = join(repoDir, ".swamp");
+    await writeMarker(repoDir, {
+      type: "filesystem",
+      path: external,
+      managedConfig: true,
+    });
+    await writeTestFile(join(external, "config", "models", "m.yaml"), "tier");
+    await writeTestFile(
+      join(external, "config", "pulled-extensions", "ext", "mod.ts"),
+      "remote",
+    );
+    await writeTestFile(
+      join(swampDir, "config", "pulled-extensions", "ext", "mod.ts"),
+      "local",
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(
+          repoDir,
+          () => Promise.resolve(join(external, "config")),
+        ),
+        {
+          datastorePath: swampDir,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    assertEquals((events.at(-1) as CompletedEvent).data.errors, []);
+    assertEquals(
+      await Deno.readTextFile(join(swampDir, "config", "models", "m.yaml")),
+      "tier",
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        join(swampDir, "config", "pulled-extensions", "ext", "mod.ts"),
+      ),
+      "local",
+    );
+    assertEquals((await readDatastoreBlock(repoDir))?.managedConfig, true);
+  });
+});
+
+Deno.test("datastoreSetupExtension: moving to an extension datastore pushes from the external datastore", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, external } = await writeMovedOutRepo(tmp);
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const type = registerTempDirRemoteType(remoteDir, cacheDir);
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3238",
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.data.errors, []);
+    assertEquals(completed.data.sourcePath, external);
+    assertEquals(completed.data.sourceKept, true);
+    assertEquals(await pathExists(join(remoteDir, "data", "a.json")), true);
+    assertEquals(
+      await pathExists(join(remoteDir, "data", "_catalog.db")),
+      false,
+    );
+    // Other repositories may share the external datastore: it is left as
+    // it was.
+    assertEquals(
+      await Deno.readTextFile(join(external, "data", "a.json")),
+      "{}",
+    );
+    assertEquals(
+      await pathExists(join(repoDir, ".swamp", "data", "_catalog.db")),
+      false,
+    );
+  });
+});
+
+Deno.test("datastoreSetupExtension: a missing external datastore stops setup before syncing", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const external = join(tmp, "unmounted");
+    await writeMarker(repoDir, { type: "filesystem", path: external });
+    const remoteDir = join(tmp, "remote");
+    const type = registerTempDirRemoteType(remoteDir, join(tmp, "cache"));
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3238",
+          skipMigration: false,
+          outgoingDatastorePath: external,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "error");
+    assertEquals(await pathExists(remoteDir), false);
+    assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: an empty external datastore root (an unmounted mount point) stops setup", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const mountPoint = join(tmp, "Volumes", "NAS");
+    await Deno.mkdir(mountPoint, { recursive: true });
+    await writeMarker(repoDir, { type: "filesystem", path: mountPoint });
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath: join(repoDir, ".swamp"),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: mountPoint,
+        },
+      ),
+    );
+
+    const last = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(last.kind, "error");
+    assertStringIncludes(last.error.message, "holds no datastore data");
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      mountPoint,
+    );
+  });
+});
+
+Deno.test("datastoreSetupExtension: an empty external datastore root (an unmounted mount point) stops setup", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const mountPoint = join(tmp, "Volumes", "NAS");
+    await Deno.mkdir(mountPoint, { recursive: true });
+    await writeMarker(repoDir, { type: "filesystem", path: mountPoint });
+    const remoteDir = join(tmp, "remote");
+    const type = registerTempDirRemoteType(remoteDir, join(tmp, "cache"));
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3238",
+          skipMigration: false,
+          outgoingDatastorePath: mountPoint,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "error");
+    assertEquals(await pathExists(remoteDir), false);
+    assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 creates a v3 datastore and records the format, migrating nothing", async () => {
+  const created: string[] = [];
+  const saved: Record<string, unknown>[] = [];
+  let migrated = false;
+  const deps = makeDeps({
+    createV3Datastore: (path) => {
+      created.push(path);
+      return Promise.resolve();
+    },
+    updateRepoConfig: (_repoDir, config) => {
+      saved.push(config);
+      return Promise.resolve();
+    },
+    migrateData: () => {
+      migrated = true;
+      return Promise.reject(new Error("v3 setup must not migrate"));
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["validating", "completed"]);
+  const completed = events[1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.format, 3);
+  assertEquals(created, ["/tmp/datastore"]);
+  assertEquals(saved[0].format, 3);
+  assertEquals(migrated, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses a target that is not new and empty", async () => {
+  let created = false;
+  const deps = makeDeps({
+    inspectV3Target: () =>
+      Promise.resolve({
+        kind: "refused",
+        reason: "/tmp/datastore is not empty",
+      }),
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "new, empty directory");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses while the current datastore holds records", async () => {
+  let created = false;
+  const deps = makeDeps({
+    hasDatastoreRecords: () => Promise.resolve(true),
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "holds records");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses when the current datastore cannot be read", async () => {
+  let created = false;
+  const deps = makeDeps({
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({
+        format: 3,
+        outgoingDatastorePath: `/no/such/datastore-${crypto.randomUUID()}`,
+      }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: a repo on a v3 datastore is not moved, to v2 or to another v3", async () => {
+  for (const format of [undefined, 3] as const) {
+    let changed = false;
+    const deps = makeDeps({
+      currentDatastore: () => Promise.resolve({ engine: "v3" }),
+      updateRepoConfig: () => {
+        changed = true;
+        return Promise.resolve();
+      },
+      createV3Datastore: () => {
+        changed = true;
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput(format === undefined ? {} : { format }),
+      ),
+    );
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "uses a v3 datastore");
+    assertEquals(changed, false);
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 keeps a namespace set before setup, and checks its records too", async () => {
+  const saved: Record<string, unknown>[] = [];
+  const checked: string[] = [];
+  const deps = makeDeps({
+    currentDatastore: () =>
+      Promise.resolve({ engine: "v2", namespace: "team" }),
+    hasDatastoreRecords: (dir) => {
+      checked.push(dir);
+      return Promise.resolve(false);
+    },
+    updateRepoConfig: (_repoDir, config) => {
+      saved.push(config);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3, skipMigration: true }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(saved[0].namespace, "team");
+  assertEquals(saved[0].format, 3);
+  assertEquals(
+    checked.map((dir) => dir.split(/[\\/]/).slice(-2).join("/")),
+    ["repo/.swamp", ".swamp/team"],
+  );
+});
+
+Deno.test("datastoreSetupExtension: a repo on a v3 datastore is not moved to an extension datastore", async () => {
+  let changed = false;
+  const deps = makeDeps({
+    currentDatastore: () => Promise.resolve({ engine: "v3" }),
+    updateRepoConfig: () => {
+      changed = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "uses a v3 datastore");
+  assertEquals(changed, false);
+});
+
+Deno.test("datastoreSetupFilesystem: a v2 setup onto a datastore that is already v3 is refused", async () => {
+  let changed = false;
+  const deps = makeDeps({
+    assertDatastoreFormat: () => Promise.resolve("v3"),
+    migrateData: () => {
+      changed = true;
+      return Promise.reject(new Error("must not migrate"));
+    },
+    updateRepoConfig: () => {
+      changed = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "is a v3 datastore");
+  assertEquals(changed, false);
+});
+
+Deno.test("datastoreSetupExtension: leaves the audit trail and run logs in .swamp", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const repoDir = join(tmp, "repo");
+    const remoteDir = join(tmp, "remote");
+    const cacheDir = join(tmp, "cache");
+    const type = registerTempDirRemoteType(remoteDir, cacheDir);
+    await writeMarker(repoDir, { type, config: {} });
+    const swamp = join(repoDir, ".swamp");
+    const audit = join("audit", "commands-2026-10-12.jsonl");
+    const outputLog = join("outputs", "command", "shell", "r1.log");
+    const outputRecord = join("outputs", "command", "shell", "r1.yaml");
+    const runLog = join("workflow-runs", "wf1", "workflow-run-r2.log");
+    await writeTestFile(join(swamp, audit), "{}");
+    await writeTestFile(join(swamp, outputLog), "method log");
+    await writeTestFile(join(swamp, outputRecord), "record");
+    await writeTestFile(join(swamp, runLog), "workflow log");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-3281",
+          skipMigration: false,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.directoriesMigrated.includes("audit"), false);
+    assertEquals(await Deno.readTextFile(join(swamp, audit)), "{}");
+    assertEquals(await Deno.readTextFile(join(swamp, outputLog)), "method log");
+    assertEquals(await Deno.readTextFile(join(swamp, runLog)), "workflow log");
+    assertEquals(await pathExists(join(swamp, outputRecord)), false);
+    assertEquals(await pathExists(join(remoteDir, outputRecord)), true);
+    for (const rel of [audit, outputLog, runLog]) {
+      assertEquals(await pathExists(join(remoteDir, rel)), false, rel);
+    }
+  });
+});
+
+// swamp-club#3301: `namespace set` before any setup leaves the repo's own
+// .swamp/<namespace> holding only its manifest, or nothing. Setup takes that
+// as a fresh start, not an inaccessible datastore.
+
+/** A repo whose datastore is its own .swamp with `team` set before setup. */
+async function writeFreshNamespaceRepo(
+  tmp: string,
+  manifest: boolean,
+): Promise<{ repoDir: string; namespaceRoot: string }> {
+  const repoDir = join(tmp, "repo");
+  await writeMarker(repoDir, {
+    type: "filesystem",
+    path: join(repoDir, ".swamp"),
+    namespace: "team",
+  });
+  const namespaceRoot = join(repoDir, ".swamp", "team");
+  if (manifest) {
+    await writeTestFile(
+      join(namespaceRoot, ".namespace.json"),
+      JSON.stringify({
+        namespace: "team",
+        repoId: "repo-2837",
+        registeredAt: "2026-10-12T00:00:00.000Z",
+      }),
+    );
+  }
+  return { repoDir, namespaceRoot };
+}
+
+Deno.test("datastoreSetupFilesystem: format 3 after namespace set creates a namespaced v3 datastore without --skip-migration", async () => {
+  for (const manifest of [true, false]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        manifest,
+      );
+      const datastorePath = join(tmp, "v3");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath,
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+            format: 3,
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as CompletedEvent;
+      assertEquals(completed.kind, "completed", `manifest: ${manifest}`);
+      assertEquals(completed.data.format, 3);
+      const block = await readDatastoreBlock(repoDir);
+      assertEquals(block?.namespace, "team");
+      assertEquals(block?.format, 3);
+      assertPathEquals(block?.path ?? "", datastorePath);
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 after namespace set still refuses a repo that holds records", async () => {
+  for (const records of ["data/a.json", "team/data/a.json"]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        true,
+      );
+      await writeTestFile(join(repoDir, ".swamp", records), "{}");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath: join(tmp, "v3"),
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+            format: 3,
+          },
+        ),
+      );
+
+      const error = events.at(-1) as Extract<
+        DatastoreSetupEvent,
+        { kind: "error" }
+      >;
+      assertEquals(error.kind, "error", records);
+      assertEquals(await pathExists(join(tmp, "v3")), false);
+      assertEquals((await readDatastoreBlock(repoDir))?.format, undefined);
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set keeps the namespace and registers it at the new path", async () => {
+  for (const manifest of [true, false]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        manifest,
+      );
+      const datastorePath = join(tmp, "shared");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath,
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as CompletedEvent;
+      assertEquals(completed.kind, "completed", `manifest: ${manifest}`);
+      assertEquals(completed.data.filesCopied, 0);
+      assertEquals(completed.data.errors, []);
+      const block = await readDatastoreBlock(repoDir);
+      assertEquals(block?.namespace, "team");
+      assertPathEquals(block?.path ?? "", datastorePath);
+      assertEquals(
+        await pathExists(join(datastorePath, "team", "data")),
+        true,
+      );
+      assertEquals(await pathExists(join(datastorePath, "data")), false);
+      assertEquals(
+        (await readNamespaceManifest(datastorePath, "team"))?.repoId,
+        "repo-2837",
+      );
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses while .swamp holds un-namespaced records", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+    const datastorePath = join(tmp, "shared");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "namespace migrate --confirm");
+    assertEquals(await pathExists(join(datastorePath, "team")), false);
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      join(repoDir, ".swamp"),
+    );
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set leaves instance-local config out of the records check", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(
+      join(repoDir, ".swamp", "config", "pulled-extensions", "x", "mod.ts"),
+      "export {};",
+    );
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        {
+          ...deps,
+          resolveInRepoConfigRole: () => Promise.resolve("instance_local"),
+        },
+        {
+          datastorePath: join(tmp, "shared"),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals((await readDatastoreBlock(repoDir))?.namespace, "team");
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses a namespace another repo registered at the target", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    const datastorePath = join(tmp, "shared");
+    await writeTestFile(
+      join(datastorePath, "team", ".namespace.json"),
+      JSON.stringify({
+        namespace: "team",
+        repoId: "another-repo",
+        registeredAt: "2026-10-12T00:00:00.000Z",
+      }),
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "another-repo");
+    assertEquals(await pathExists(join(datastorePath, "team", "data")), false);
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      join(repoDir, ".swamp"),
+    );
+  });
+});
+
+Deno.test("datastoreSetupExtension: setup after namespace set completes and keeps the namespace", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      false,
+    );
+    const type = registerTempDirRemoteType(
+      join(tmp, "remote"),
+      join(tmp, "cache"),
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2837",
+          skipMigration: false,
+          namespace: "team",
+          namespaceAlreadyBound: true,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    const block = await readDatastoreBlock(repoDir);
+    assertEquals(block?.type, type);
+    assertEquals(block?.namespace, "team");
+  });
+});
+
+Deno.test("datastoreSetupExtension: setup after namespace set refuses while .swamp holds un-namespaced records", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+    const remoteDir = join(tmp, "remote");
+    const type = registerTempDirRemoteType(remoteDir, join(tmp, "cache"));
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2837",
+          skipMigration: false,
+          namespace: "team",
+          namespaceAlreadyBound: true,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "namespace migrate --confirm");
+    assertEquals(await pathExists(remoteDir), false);
+    assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
+  });
 });

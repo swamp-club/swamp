@@ -25,8 +25,10 @@ import {
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import {
+  defaultLocalEncryptionConfig,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
+  withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "../../domain/vaults/local_encryption_key_source.ts";
 import { createVaultProvider } from "../../domain/vaults/vault_provider_factory.ts";
@@ -166,17 +168,8 @@ export async function createVaultMigrateDeps(
  */
 function resolveBuiltInProviderConfig(
   vaultType: string,
-  repoDir: string,
 ): Record<string, unknown> {
-  switch (vaultType.toLowerCase()) {
-    case "local_encryption":
-      return {
-        auto_generate: true,
-        base_dir: repoDir,
-      };
-    default:
-      return {};
-  }
+  return isLocalEncryptionType(vaultType) ? defaultLocalEncryptionConfig() : {};
 }
 
 /** How to try the migration again once the config is complete. */
@@ -246,7 +239,11 @@ export async function vaultMigratePreview(
   );
 
   // Verify we can create a provider for the target type (catches config issues early)
-  deps.createProvider(input.targetType, input.vaultName, targetConfig);
+  deps.createProvider(
+    input.targetType,
+    input.vaultName,
+    withRuntimeBaseDir(input.targetType, targetConfig, input.repoDir),
+  );
 
   // Get current type info
   const currentTypeInfo = deps.getVaultTypeInfo(config.type);
@@ -307,14 +304,14 @@ function resolveTargetConfig(
           `running swamp.`,
       );
     }
-    return withServerDefaultKeySource(providedConfig, repoDir);
+    return withServerDefaultKeySource(providedConfig);
   }
 
   if (providedConfig) {
     return providedConfig;
   }
 
-  return resolveBuiltInProviderConfig(targetType, repoDir);
+  return resolveBuiltInProviderConfig(targetType);
 }
 
 /** Migrates a vault to a new backend type in-place. */
@@ -384,7 +381,7 @@ export async function* vaultMigrate(
         const targetProvider = deps.createProvider(
           input.targetType,
           input.vaultName,
-          targetConfig,
+          withRuntimeBaseDir(input.targetType, targetConfig, input.repoDir),
         );
 
         // Load source vault service and copy secrets

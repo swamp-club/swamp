@@ -35,6 +35,7 @@ import {
 import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
+import { explainedAccessResource } from "../../libswamp/access/explained_resource.ts";
 import {
   parseFieldFlags,
   parseResourceFlag,
@@ -100,7 +101,7 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--field <field:string>",
-    "Resource field for condition evaluation (key=value, repeatable)",
+    "Resource field for condition evaluation (key=value, repeatable); overrides the field resolved from the repo",
     { collect: true },
   )
   .option(
@@ -219,12 +220,23 @@ export const accessCheckCommand = new Command()
         collectives,
         groups,
       };
-      const fields = parseFieldFlags(options.field as string[] | undefined);
-      const accessResource = {
-        kind: resource.kind,
-        name: resource.pattern,
-        fields,
-      };
+      // Resolve the named resource from the repo as serve does, so a grant on
+      // its stored type or a condition on its tags applies (swamp-club#3224).
+      const accessResource = await explainedAccessResource(
+        repoContext,
+        resource.kind,
+        resource.pattern,
+        parseFieldFlags(options.field as string[] | undefined),
+        (error) => {
+          ctx.logger.warn(
+            "Could not look up {resource}; checking it by name only: {error}",
+            {
+              resource: options.on as string,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        },
+      );
 
       const decisions = service.explain(
         accessPrincipal,

@@ -155,9 +155,11 @@ function normalizeCursor(
 /**
  * Kiro shell tool aliases. kiro-cli emits "shell" at runtime even though agent
  * configs accept "executeBash" / "execute_bash" / "execute_cmd" as aliases.
+ * Kiro IDE 1.0's shell tools are "execute_bash" and "execute_pwsh".
  */
 const KIRO_SHELL_TOOL_NAMES = new Set([
   "execute_bash",
+  "execute_pwsh",
   "shell",
   "execute_cmd",
 ]);
@@ -166,8 +168,10 @@ const KIRO_SHELL_TOOL_NAMES = new Set([
  * Kiro: postToolUse hook (fires for both success and failure).
  *
  * Supports two input formats:
- * - kiro-cli (stdin, snake_case): tool_name, tool_input, tool_response
- * - Kiro IDE (USER_PROMPT env var, camelCase): toolName, toolArgs, toolResult, toolSuccess
+ * - kiro-cli and Kiro IDE 1.0 (stdin, snake_case): tool_name, tool_input,
+ *   tool_response
+ * - Kiro IDE 0.x (USER_PROMPT env var, camelCase): toolName, toolArgs,
+ *   toolResult, toolSuccess
  *
  * tool_name/toolName is one of KIRO_SHELL_TOOL_NAMES, command from
  * tool_input/toolArgs, failure when tool_response.success === false or

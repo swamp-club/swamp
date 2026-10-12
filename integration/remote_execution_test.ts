@@ -190,6 +190,7 @@ async function startOrchestrator(
     onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
     onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
     onWorkerEnrolled: (worker) => dispatchService.notifyWorkerEnrolled(worker),
+    onWorkerDraining: (worker) => dispatchService.notifyWorkerDraining(worker),
   });
   dispatchService.bindGateway(gateway);
   const dataPlane = new DataPlane({
@@ -850,6 +851,105 @@ Deno.test({
       } finally {
         workerStop.abort();
         if (workerDone) await workerDone.catch(() => {});
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+// ── Draining with work in flight (swamp-club#3156) ──────────────────────
+
+Deno.test({
+  name:
+    "remote execution: a worker draining with a step in flight takes no new step, and the next one lands on another worker (swamp-club#3156)",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const stops: AbortController[] = [];
+      const dones: Promise<WorkerExitResult>[] = [];
+      let drainFirst: ((reason: "signal") => void) | null = null;
+      const started = join(dir, "step-started");
+      const release = join(dir, "step-release");
+      try {
+        for (const name of ["drain-a", "drain-b"]) {
+          const token = await orchestrator.mintToken(name);
+          const stop = new AbortController();
+          stops.push(stop);
+          dones.push(runWorker({
+            url: orchestrator.serverUrl,
+            token,
+            labels: { tier: "it" },
+            swampVersion: "test",
+            cacheDir: join(dir, `worker-cache-${name}`),
+            signal: stop.signal,
+            runnerCommand: TEST_RUNNER_COMMAND,
+            onDrainAvailable: name === "drain-a"
+              ? (drain) => {
+                drainFirst = drain;
+              }
+              : undefined,
+          }));
+        }
+        await waitFor(
+          () =>
+            orchestrator.gateway.workers().filter((w) => w.status === "idle")
+              .length === 2,
+          "both workers enrolled and idle",
+        );
+
+        // A step on drain-a that runs until the test releases it.
+        let firstSettled = false;
+        const first = orchestrator.dispatchService.executeRemote({
+          ...shellStepRequest(false),
+          placement: { target: "drain-a" },
+          methodArgs: {
+            run: `touch '${started}'; ` +
+              `while [ ! -f '${release}' ]; do sleep 0.05; done`,
+          },
+          secretValues: [],
+        }).finally(() => {
+          firstSettled = true;
+        });
+        first.catch(() => {});
+        await waitFor(() => {
+          try {
+            Deno.statSync(started);
+            return true;
+          } catch {
+            return false;
+          }
+        }, "the first step to start on drain-a");
+
+        // The worker is told to stop, as SIGTERM does, with that step running.
+        drainFirst!("signal");
+        await waitFor(
+          () => orchestrator.gateway.worker("drain-a")?.status === "draining",
+          "the orchestrator to learn drain-a is draining",
+        );
+        assertEquals(firstSettled, false);
+
+        // A step dispatched during the drain goes to the other worker.
+        const second = await orchestrator.dispatchService.executeRemote(
+          remoteStepRequest({ methodArgs: { echo: "during the drain" } }),
+        );
+        assertEquals(second.workerName, "drain-b");
+
+        // The step in flight still finishes, and then the worker leaves.
+        await Deno.writeTextFile(release, "");
+        const finished = await first;
+        assertEquals(finished.workerName, "drain-a");
+        assertEquals((await dones[0]).reason, "signal");
+        await waitFor(
+          () => orchestrator.gateway.worker("drain-a") === null,
+          "drain-a to leave the pool",
+        );
+      } finally {
+        await Deno.writeTextFile(release, "").catch(() => {});
+        for (const stop of stops) stop.abort();
+        await Promise.allSettled(dones);
         await orchestrator.shutdown();
       }
     });

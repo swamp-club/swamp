@@ -23,7 +23,10 @@
  */
 
 import { z } from "zod";
-import type { ServerRequest } from "./protocol.ts";
+import {
+  SERVE_CAPABILITY_LITERAL_INPUTS,
+  type ServerRequest,
+} from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
@@ -38,6 +41,9 @@ import {
 } from "../domain/datastore/lock_holder_marker.ts";
 import { audited, type AuditedOptions } from "./audited.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
+  SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH,
   SIGNAL_KEY_MAX_LENGTH,
   SIGNAL_WORKFLOW_MAX_LENGTH,
 } from "../domain/workflows/signal_wait.ts";
@@ -256,6 +262,7 @@ const ModelMethodRunRequestSchema = z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    literalInputs: z.boolean().optional(),
     lastEvaluated: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
@@ -838,6 +845,11 @@ const WorkflowRejectRequestSchema = z.object({
 // accept the same IDs. A workflow and a key are only bounded here: whether
 // they name anything is decided after the caller is authorized, and answered
 // as a wait that does not exist.
+const SignalIdempotencyKeySchema = z.string()
+  .max(SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH)
+  .refine(isIdempotencyKey, `must be ${IDEMPOTENCY_KEY_FORM}`)
+  .optional();
+
 const WorkflowSignalRequestSchema = z.object({
   type: z.literal("workflow.signal"),
   id: z.string().min(1).max(256),
@@ -848,12 +860,15 @@ const WorkflowSignalRequestSchema = z.object({
         "must be a UUID",
       ),
       payload: z.unknown(),
+      idempotencyKey: SignalIdempotencyKeySchema,
     }),
     z.object({
       waitId: z.never().optional(),
       workflow: z.string().min(1).max(SIGNAL_WORKFLOW_MAX_LENGTH),
       key: z.string().min(1).max(SIGNAL_KEY_MAX_LENGTH),
       payload: z.unknown(),
+      acceptsPending: z.boolean().optional(),
+      idempotencyKey: SignalIdempotencyKeySchema,
     }),
   ], {
     // A request with no message is told so: the sentence about the address
@@ -862,6 +877,12 @@ const WorkflowSignalRequestSchema = z.object({
       typeof issue.input === "object" && issue.input !== null &&
         !("payload" in issue.input)
         ? `must carry a "payload": the JSON message for the wait`
+        // Judged before the address, which may be a good one.
+        : typeof issue.input === "object" && issue.input !== null &&
+            "idempotencyKey" in issue.input &&
+            !(typeof issue.input.idempotencyKey === "string" &&
+              isIdempotencyKey(issue.input.idempotencyKey))
+        ? `must carry an "idempotencyKey" that is ${IDEMPOTENCY_KEY_FORM}, or none`
         : `must name the wait with a "waitId" that is a UUID, or with a "workflow" of at most ${SIGNAL_WORKFLOW_MAX_LENGTH} characters and a "key" of at most ${SIGNAL_KEY_MAX_LENGTH}`,
   }),
 });
@@ -1863,7 +1884,11 @@ export function handleMessage(
           send(socket, {
             type: "server.version",
             id: request.id,
-            payload: { version: SERVER_VERSION, gitSha: SERVER_GIT_SHA },
+            payload: {
+              version: SERVER_VERSION,
+              gitSha: SERVER_GIT_SHA,
+              capabilities: [SERVE_CAPABILITY_LITERAL_INPUTS],
+            },
           }),
         ),
         auditOpts("admin", "server", "*"),

@@ -32,7 +32,10 @@ import {
   LEGACY_EXTENSION_SEMANTICS,
 } from "./in_memory_remote.ts";
 import { assertSyncServiceConformance } from "./datastore_conformance.ts";
-import { assertControlPlaneStoreConformance } from "./control_plane_conformance.ts";
+import {
+  assertControlPlaneStoreConformance,
+  assertDatastoreControlPlaneStoreConformance,
+} from "./control_plane_conformance.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-in-memory-remote-" });
@@ -1292,6 +1295,40 @@ Deno.test("createInMemoryRemote: the control-plane store passes the conformance 
   );
 });
 
+Deno.test("createInMemoryRemote: the datastore-wide store passes the datastore-wide conformance suite and is left empty", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    let caches = 0;
+    await assertDatastoreControlPlaneStoreConformance({
+      openDatastoreStore: () => remote.datastoreControlPlaneStore!(),
+      openSyncService: () => remote.connect(join(dir, `cache-${caches++}`)),
+    });
+    assertEquals([...remote.controlPlaneRecords().keys()], []);
+  });
+});
+
+Deno.test("createInMemoryRemote: the datastore-wide store reads the root whatever a service bound, and is absent without controlPlane", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    remote.seedControlPlane("k", bytes("root"));
+    remote.seedControlPlane("k", bytes("team"), { namespace: "team" });
+    const team = remote.connect(join(dir, "team"));
+    await team.pullChanged({ namespace: "team" });
+    const store = remote.datastoreControlPlaneStore!();
+    assertEquals(new TextDecoder().decode((await store.get("k"))!), "root");
+    await assertRejects(
+      () => store.get("k", { signal: AbortSignal.abort(new Error("gone")) }),
+      Error,
+      "gone",
+    );
+    assertEquals(remote.controlPlaneReads(), [
+      { instance: "datastore", key: "_control/k" },
+      { instance: "datastore", key: "_control/k" },
+    ]);
+    assertEquals(createInMemoryRemote().datastoreControlPlaneStore, undefined);
+  });
+});
+
 Deno.test("createInMemoryRemote: a service that has not pulled reads datastore-wide control records", async () => {
   await withTempDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });
@@ -1360,10 +1397,69 @@ Deno.test("createInMemoryRemote: control-plane calls fail while offline and on a
   assertEquals(await store.get("k"), null);
 });
 
+Deno.test("createInMemoryRemote: counts connections and lists every control-plane read, failed ones too", async () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  assertEquals(remote.connections(), 0);
+  const solo = remote.connect("/cache/a", { instance: "a" })
+    .controlPlaneStore!();
+  const team = remote.connect("/cache/b", { instance: "b" });
+  await team.pullChanged({ namespace: "team" });
+  assertEquals(remote.connections(), 2);
+
+  await solo.get("datastore-format");
+  remote.failNext("controlPlane", new Error("boom"));
+  await assertRejects(() => team.controlPlaneStore!().get("k"), Error, "boom");
+  assertEquals(remote.controlPlaneReads(), [
+    { instance: "a", key: "_control/datastore-format" },
+    { instance: "b", key: "team/_control/k" },
+  ]);
+  assertEquals(remote.ops().filter((op) => op.op === "controlPlane"), []);
+});
+
+Deno.test("createInMemoryRemote: an aborted control-plane read binds no namespace", async () => {
+  await withTempDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const service = remote.connect(join(dir, "a"));
+    await assertRejects(
+      () =>
+        service.controlPlaneStore!().get("k", {
+          signal: AbortSignal.abort(new Error("gone")),
+        }),
+      Error,
+      "gone",
+    );
+    // Still unbound, so the first pull may take a namespace.
+    assertEquals(await service.pullChanged({ namespace: "team" }), 0);
+  });
+});
+
 Deno.test("createInMemoryRemote: seedControlPlane needs the controlPlane option", () => {
   assertThrows(
     () => createInMemoryRemote().seedControlPlane("k", bytes("x")),
     Error,
     "controlPlane option",
   );
+});
+
+Deno.test("createInMemoryRemote: storage is present only with the storage option, and handles share chunks", async () => {
+  const plain = createInMemoryRemote();
+  assertEquals(plain.storage, undefined);
+  assertEquals(plain.setChunkLastModified, undefined);
+
+  const remote = createInMemoryRemote({ storage: true });
+  const signal = new AbortController().signal;
+  const sha = "a".repeat(64);
+  await remote.storage!().put("ns", sha, new Uint8Array([1, 2]), signal);
+  assertEquals(
+    await remote.storage!().get("ns", sha, signal),
+    new Uint8Array([1, 2]),
+  );
+  await remote.setChunkLastModified!("ns", sha, new Date(0));
+  assertEquals(
+    await Array.fromAsync(remote.storage!().list("ns", signal)),
+    [{ sha256: sha, lastModified: new Date(0) }],
+  );
+  // Chunks are kept apart from files, ops and the control plane.
+  assertEquals(remote.files().size, 0);
+  assertEquals(remote.ops().length, 0);
 });

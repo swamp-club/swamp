@@ -396,6 +396,7 @@ export {
 } from "./workflows/approvals.ts";
 export {
   createWorkflowSignalDeps,
+  type PendingSignalReceipt,
   type SignalLastWait,
   signalLastWait,
   type SignalRefusalKind,
@@ -407,6 +408,7 @@ export {
   type WorkflowSignalDeps,
   type WorkflowSignalEvent,
   type WorkflowSignalInput,
+  type WorkflowSignalPendingData,
 } from "./workflows/signal.ts";
 export {
   createWorkflowWaitsDeps,
@@ -592,6 +594,10 @@ export {
   type ServerTokenRotateInput,
 } from "./access/token_rotate.ts";
 export { createServerTokenRunDeps } from "./access/run_deps.ts";
+export {
+  explainedAccessResource,
+  type ExplainedResourceDeps,
+} from "./access/explained_resource.ts";
 
 export {
   createNamespace,
@@ -1762,6 +1768,13 @@ export {
   type DatastoreCompactEvent,
 } from "./datastores/compact.ts";
 export {
+  datastoreGc,
+  type DatastoreGcChunkReport,
+  type DatastoreGcData,
+  type DatastoreGcDeps,
+  type DatastoreGcEvent,
+} from "./datastores/gc.ts";
+export {
   createMigrateIndexDeps,
   type CreateMigrateIndexDepsOptions,
   datastoreMigrateIndex,
@@ -1784,6 +1797,7 @@ export {
   type NamespaceUnsetEvent,
 } from "./datastores/namespace_unset.ts";
 export {
+  createNamespaceListDeps,
   datastoreNamespaceList,
   type NamespaceInfo,
   type NamespaceListData,

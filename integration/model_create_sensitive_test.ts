@@ -28,7 +28,12 @@
  * datastore sync) cannot land a literal secret on disk either.
  */
 
-import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { z } from "zod";
 import { consumeStream } from "../src/libswamp/stream.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
@@ -56,6 +61,10 @@ const modelDef = defineModel({
     apiKey: z.string().meta({ sensitive: true }),
     token: z.string().min(20).meta({ sensitive: true }).optional(),
     region: z.string(),
+    users: z.array(z.object({
+      userId: z.string(),
+      password: z.string().meta({ sensitive: true }),
+    })).optional(),
   }),
   methods: {},
 }) as unknown as ModelDefinition;
@@ -194,5 +203,75 @@ Deno.test("Integration: the persistence chokepoint blocks an out-of-band writer"
       UserError,
     );
     assertEquals(await repo.findByNameGlobal("smuggled"), null);
+  });
+});
+
+Deno.test("Integration: model create refuses a literal in a sensitive field of an array element (swamp-club#3275)", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    const repo = new YamlDefinitionRepository(repoDir);
+
+    const events = await runCreate(realDeps(repo), "leaky-users", {
+      apiKey: "${{ vault.get('creds', 'apiKey') }}",
+      region: "us-east-1",
+      users: [
+        { userId: "a", password: "${{ vault.get('creds', 'a') }}" },
+        { userId: "b", password: "literal-pass-1" },
+      ],
+    });
+
+    const last = events[events.length - 1];
+    assertEquals(last.kind, "error");
+    if (last.kind === "error") {
+      assertStringIncludes(last.error.message, "'users[1].password'");
+      assertEquals(last.error.message.includes("literal-pass-1"), false);
+    }
+    assertEquals(await repo.findByNameGlobal("leaky-users"), null);
+  });
+});
+
+Deno.test("Integration: model create persists vault.get expressions in array elements verbatim", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    const repo = new YamlDefinitionRepository(repoDir);
+    const users = [
+      { userId: "a", password: "${{ vault.get('creds', 'a') }}" },
+      { userId: "b", password: "${{ vault.get('creds', 'b') }}" },
+    ];
+
+    const events = await runCreate(realDeps(repo), "vaulted-users", {
+      apiKey: "${{ vault.get('creds', 'apiKey') }}",
+      region: "us-east-1",
+      users,
+    });
+
+    assertEquals(events[events.length - 1].kind, "completed");
+    const stored = await repo.findByNameGlobal("vaulted-users");
+    assertNotEquals(stored, null);
+    assertEquals(stored!.definition.globalArguments.users, users);
+  });
+});
+
+Deno.test("Integration: the persistence chokepoint blocks an array-nested literal from an out-of-band writer", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    const repo = new YamlDefinitionRepository(repoDir);
+
+    const definition = Definition.create({
+      name: "smuggled-users",
+      type: SENSITIVE_CREATE_TYPE.normalized,
+      globalArguments: {
+        apiKey: "${{ vault.get('creds', 'apiKey') }}",
+        region: "us-east-1",
+        users: [{ userId: "a", password: "literal-pass-1" }],
+      },
+    });
+
+    const error = await assertRejects(
+      () => repo.save(SENSITIVE_CREATE_TYPE, definition),
+      UserError,
+    );
+    assertStringIncludes(error.message, "'users[0].password'");
+    assertEquals(await repo.findByNameGlobal("smuggled-users"), null);
   });
 });

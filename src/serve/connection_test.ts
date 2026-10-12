@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertGreater,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   createConnectionTeardown,
   exceptionTypeForClient,
@@ -225,6 +230,51 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
       payload: { ...address, payload: null },
     });
     assertEquals(typeof sent, "object");
+  }
+  // A key address may say the client reads a pending reply.
+  const flagged = validateServerRequest({
+    type: "workflow.signal",
+    id: "req-1",
+    payload: {
+      workflow: "release",
+      key: "release-verdict",
+      payload: {},
+      acceptsPending: true,
+    },
+  });
+  assertEquals(
+    typeof flagged === "object" &&
+      (flagged as { payload: { acceptsPending?: boolean } }).payload
+        .acceptsPending,
+    true,
+  );
+  // Either address may carry an idempotency key, in the form of one.
+  for (
+    const address of [
+      { waitId: "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90" },
+      { workflow: "release", key: "release-verdict" },
+    ]
+  ) {
+    const keyed = validateServerRequest({
+      type: "workflow.signal",
+      id: "req-1",
+      payload: { ...address, payload: {}, idempotencyKey: "order-1" },
+    });
+    assertEquals(
+      typeof keyed === "object" &&
+        (keyed as { payload: { idempotencyKey?: string } }).payload
+          .idempotencyKey,
+      "order-1",
+    );
+    for (const idempotencyKey of ["", "has space", "k".repeat(129), 7]) {
+      const refused = validateServerRequest({
+        type: "workflow.signal",
+        id: "req-1",
+        payload: { ...address, payload: {}, idempotencyKey },
+      });
+      assert(typeof refused === "string");
+      assertStringIncludes(refused, "idempotencyKey");
+    }
   }
   // An address that names no wait is still told about the address.
   const result = validateServerRequest({
@@ -5107,4 +5157,24 @@ Deno.test("handleConnection: frames arriving on a closing session are not served
 
   assertEquals(fed, ["before"]);
   socket.onclose?.(new CloseEvent("close"));
+});
+
+Deno.test("handleMessage: server.version lists the literal-inputs capability (swamp-club#3205)", async () => {
+  const ctx = {
+    ...makeCtx(modeTokenConfig, []),
+    auditEmitter: { emit: () => {} },
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "server.version", id: "req-cap" })),
+    testPrincipal,
+  );
+  await waitFor(() => mock.sent.length >= 1, "version reply sent");
+  const reply = parseSent(mock) as {
+    payload: { capabilities?: string[] };
+  };
+  assertEquals(reply.payload.capabilities, ["literal-inputs"]);
 });

@@ -95,6 +95,13 @@ export interface DataArtifactRef {
   name: string;
   version: number;
   tags: Record<string, string>;
+  /**
+   * The SHA-256 of the version's content, recorded on a v3 datastore
+   * (swamp-club#3279), where a removed version can be written again: it
+   * tells the content this run produced from a later re-save. Absent on v2
+   * records, and on any version whose save reported no checksum.
+   */
+  sha256?: string;
 }
 
 /**
@@ -105,6 +112,7 @@ export const DataArtifactRefSchema = z.object({
   name: z.string().min(1),
   version: z.number().int().positive(),
   tags: z.record(z.string(), z.string()),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 
 /**

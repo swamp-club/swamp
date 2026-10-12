@@ -1435,6 +1435,133 @@ Deno.test("validateStepInputs: direct-execution step with CEL modelName and meth
   );
 });
 
+Deno.test("validateStepInputs: CEL methodName on a literal model passes", async () => {
+  const resolver = mockResolver({
+    "my-model.${{ inputs.method }}": {
+      status: "method_not_found",
+      modelType: "command/shell",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "${{ inputs.method }}"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, false);
+});
+
+Deno.test("validateStepInputs: direct-execution step with CEL methodName passes", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/test/model.${{ inputs.method }}": {
+      status: "method_not_found",
+      modelType: "@swamp/test/model",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/test/model",
+              "my-instance",
+              "${{ inputs.method }}",
+              { region: "us-east-1" },
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: CEL methodName on a missing model still warns", async () => {
+  const resolver = mockResolver({});
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("missing-model", "${{ inputs.method }}"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.warning, true);
+  assertEquals(inputResult?.name.includes("model not found"), true);
+});
+
+Deno.test("validateStepInputs: CEL methodName with an unresolvable modelType fails", async () => {
+  const resolver = mockResolverWithType({
+    "type:@swamp/missing/model.${{ inputs.method }}": {
+      status: "type_unresolvable",
+      modelType: "@swamp/missing/model",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.directExecution(
+              "@swamp/missing/model",
+              "my-instance",
+              "${{ inputs.method }}",
+              {},
+            ),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(
+    inputResult?.error?.includes("could not be resolved"),
+    true,
+  );
+});
+
 Deno.test("validateStepInputs: direct-execution step with globalArgs satisfying required arg passes", async () => {
   const resolver = mockResolverWithType({
     "type:@swamp/test/model.create": {
@@ -2499,7 +2626,40 @@ Deno.test("validate: step writes false overrides job writes true — no warning"
   assertEquals(warning, undefined);
 });
 
-function waitWorkflow(schema: Record<string, unknown>): Workflow {
+Deno.test("fails a wait_for_signal schema that reads inputs when the step sets acceptEarly", async () => {
+  const schema = {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: ["${{ inputs.verdict }}"] },
+    },
+  };
+  const early = await service.validate(waitWorkflow(schema, 10));
+  const result = early.find((r) => r.name.includes("Wait schema"));
+  assertEquals(result?.passed, false);
+  assertEquals(result?.name, "Wait schema in job 'release' step 'review'");
+  assertEquals(result?.error?.includes("${{ inputs.verdict }}"), true);
+  assertEquals(result?.error?.includes("acceptEarly"), true);
+
+  // Without acceptEarly the schema is resolved when the wait captures it.
+  const plain = await service.validate(waitWorkflow(schema));
+  assertEquals(
+    plain.find((r) => r.name.includes("Wait schema") && !r.passed),
+    undefined,
+  );
+  // A literal schema is what an early payload can be checked against.
+  const literal = await service.validate(
+    waitWorkflow({ type: "object", required: ["verdict"] }, 10),
+  );
+  assertEquals(
+    literal.find((r) => r.name.includes("Wait schema") && !r.passed),
+    undefined,
+  );
+});
+
+function waitWorkflow(
+  schema: Record<string, unknown>,
+  acceptEarly?: number,
+): Workflow {
   return Workflow.create({
     name: "wait-workflow",
     jobs: [
@@ -2508,7 +2668,9 @@ function waitWorkflow(schema: Record<string, unknown>): Workflow {
         steps: [
           Step.create({
             name: "review",
-            task: StepTask.waitForSignal(60, schema),
+            task: acceptEarly === undefined
+              ? StepTask.waitForSignal(60, schema)
+              : StepTask.waitForSignal(60, schema, "verdict", acceptEarly),
           }),
         ],
       }),

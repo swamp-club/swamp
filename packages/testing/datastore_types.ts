@@ -177,12 +177,49 @@ export interface ControlPlaneStore {
    * record that exists is left unchanged.
    */
   putIfAbsent?(key: string, data: Uint8Array): Promise<boolean>;
-  /** The record, or null when the key holds none. */
-  get(key: string): Promise<Uint8Array | null>;
+  /**
+   * The record, or null when the key holds none. Honour `options.signal`
+   * by stopping the request and any retry backoff when it aborts.
+   */
+  get(
+    key: string,
+    options?: ControlPlaneReadOptions,
+  ): Promise<Uint8Array | null>;
   /** Removes the record. Removing a key that holds none is not an error. */
   delete(key: string): Promise<void>;
   /** The keys under `prefix`, each in full, as passed to `put`. */
   list(prefix: string): Promise<string[]>;
+}
+
+/** Options for a control-plane read. */
+export interface ControlPlaneReadOptions {
+  /**
+   * Cancels the read: stop the request in flight and any retry backoff, and
+   * reject. Retrying until it aborts is fine.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Reads control-plane records at the datastore-wide `_control/` root,
+ * whatever namespace a repository uses. Swamp reads the datastore format
+ * marker (`datastore-format`) through it before a command opens the
+ * datastore.
+ *
+ * It must bind no namespace and share no state with any sync service the
+ * provider builds.
+ */
+export interface DatastoreControlPlaneStore {
+  /**
+   * The record at `_control/<key>`, or null only when no such record exists.
+   * Every other failure, access denied included, rejects. Must reject when
+   * `options.signal` aborts; for a sync service's `ControlPlaneStore`
+   * honouring it is recommended, not required.
+   */
+  get(
+    key: string,
+    options?: ControlPlaneReadOptions,
+  ): Promise<Uint8Array | null>;
 }
 
 /**
@@ -210,4 +247,92 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+  /**
+   * Return a read-only store for the datastore-wide control plane. Building
+   * it must be cheap: no sync service, no namespace binding and no request
+   * until `get`, and a `get` should be one request with no credentials
+   * preflight. Optional; without it swamp reads the format marker through a
+   * fresh sync service's `controlPlaneStore()`.
+   */
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  /**
+   * Return the `storage/1` chunk storage for a v3 datastore, scoped to the
+   * datastore root. Optional; swamp does not call it yet. Check an
+   * implementation with `assertStorageConformance`.
+   */
+  storage?(): DatastoreStorage;
+}
+
+/** What a {@link DatastoreStorage} supports. */
+export interface StorageCapabilities {
+  /**
+   * The largest chunk the backend stores, in bytes. Swamp cuts chunks of
+   * `min(16 MiB, maxChunkBytes)`.
+   */
+  readonly maxChunkBytes: number;
+  /**
+   * True when the storage implements `touch`. Without it, swamp puts a
+   * chunk it found present again, which refreshes it the same way.
+   */
+  readonly touch: boolean;
+}
+
+/** One chunk, as {@link DatastoreStorage.list} reports it. */
+export interface StoredChunk {
+  readonly sha256: string;
+  /** When the chunk was last put or touched. */
+  readonly lastModified: Date;
+}
+
+/**
+ * The `storage/1` contract: immutable chunks keyed by namespace and the
+ * SHA-256 of their bytes, stored at
+ * `<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>`.
+ *
+ * `namespace` is the repository's namespace slug, or `_default` for an
+ * unnamespaced datastore (solo, or a team datastore with no namespace).
+ * `sha256` is 64 lowercase hex characters. Swamp verifies every chunk it
+ * reads, so the storage need not hash anything. Every method must reject
+ * when `signal` aborts.
+ */
+export interface DatastoreStorage {
+  readonly contract: "storage/1";
+  capabilities(): StorageCapabilities;
+  /** The subset of `hashes` stored in `namespace`. */
+  has(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>>;
+  /**
+   * Stores `bytes` under `sha256`, replacing any chunk already there, and
+   * sets its `lastModified` to now. A reader never sees a partial chunk, and
+   * concurrent puts of one hash leave one complete chunk.
+   */
+  put(
+    namespace: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<void>;
+  /** The chunk's bytes, or null only when no such chunk exists. */
+  get(
+    namespace: string,
+    sha256: string,
+    signal: AbortSignal,
+  ): Promise<Uint8Array | null>;
+  /**
+   * Sets `lastModified` to now for each of `hashes` that is stored, and
+   * returns the ones that are not. Present exactly when
+   * `capabilities().touch` is true.
+   */
+  touch?(
+    namespace: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>>;
+  /** Every chunk stored in `namespace`, in no particular order. */
+  list(namespace: string, signal: AbortSignal): AsyncIterable<StoredChunk>;
+  /** Removes the chunk; removing a missing chunk succeeds. */
+  delete(namespace: string, sha256: string, signal: AbortSignal): Promise<void>;
 }

@@ -1284,10 +1284,13 @@ export class ModelResolver {
         const ns = routeNamespace(rawModelName, ownNamespace);
 
         if (!ns.isWildcard) {
+          // A namespaced name is never read through the caller's own
+          // definition of that name: its coordinates select this repository's
+          // data whatever namespace was asked for (swamp-club#3295).
           const coords =
             parseNamespacedModelName(rawModelName).namespace === undefined
               ? await resolveIdentities(ns.modelName)
-              : coordsMap.get(ns.modelName);
+              : undefined;
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
               if (isControlPlaneModelType(modelType.normalized)) continue;
@@ -1375,12 +1378,18 @@ export class ModelResolver {
             );
             // The coordinates path above resolves sensitive vault references
             // through this resolver's own vault service; do the same here so
-            // both paths return the same attributes.
-            await this.resolveRecordVaultRefs(
-              record,
-              record?.tags,
-              sensitiveValues,
-            );
+            // both paths return the same attributes. Another namespace's
+            // record is returned as stored, as the wildcard and version
+            // readers return it: its tags and values are that namespace's to
+            // write, and must not choose which of this repository's secrets
+            // are read (swamp-club#3306).
+            if (record?.namespace === ownNamespace) {
+              await this.resolveRecordVaultRefs(
+                record,
+                record.tags,
+                sensitiveValues,
+              );
+            }
             await this.materializePath(record);
             return record;
           }

@@ -413,6 +413,7 @@ export const workflowRunCommand = new Command()
                   globalArgs,
                   authoredExpressions,
                   sensitiveValues,
+                  provenance,
                 ) => {
                   const typeStr = typeArg;
                   let resolvedType = ModelType.create(typeStr);
@@ -472,6 +473,7 @@ export const workflowRunCommand = new Command()
                     repoContext.autoDefinitionsDir,
                     authoredExpressions,
                     sensitiveValues,
+                    provenance,
                   );
                   if (!result.ok) throw new Error(result.error.message);
                   return {
@@ -502,6 +504,8 @@ export const workflowRunCommand = new Command()
                   repoContext.hydrateFile,
                   unlocked.vaultsDir,
                   unlocked.datastoreResolver,
+                  repoContext.autoGc,
+                  repoContext.unifiedDataRepo.fetchForeignContent,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 return service;

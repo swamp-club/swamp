@@ -26,6 +26,7 @@
  */
 
 import type { DatastoreConfig } from "./datastore_config.ts";
+import type { DatastoreEngine } from "./datastore_format.ts";
 
 /**
  * Resolves paths to either local `.swamp/` or the configured datastore.
@@ -72,4 +73,17 @@ export interface DatastorePathResolver {
    * Returns the current datastore configuration.
    */
   config(): DatastoreConfig;
+
+  /**
+   * The engine the datastore is opened with (swamp-club#3279). Absent on a
+   * resolver that predates it, which is v2: use {@link resolverEngine}.
+   */
+  engine?(): DatastoreEngine;
+}
+
+/** The engine a resolver reports, v2 when it reports none. */
+export function resolverEngine(
+  resolver: DatastorePathResolver | undefined,
+): DatastoreEngine {
+  return resolver?.engine?.() ?? "v2";
 }

@@ -18,8 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { PathTraversalError } from "../../infrastructure/persistence/safe_path.ts";
 import {
   extensionInstall,
   type ExtensionInstallEvent,
@@ -738,6 +739,76 @@ Deno.test("needsInstallOrMigration: missing file beats legacy classification", a
   }
 });
 
+// A lockfile written on Windows stores backslash-separated paths
+// (swamp-club#3271). On Windows they name nested files; on POSIX a
+// backslash is an ordinary filename character, so each entry is one
+// file at the repo root. Writing through join(repo, entry) creates
+// whichever the platform means, so these tests hold on both.
+
+Deno.test("needsInstallOrMigration: backslash gen-1 path on disk returns migrate", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const entry = "extensions\\models\\legacy.ts";
+    const path = join(tmpDir, entry);
+    await ensureDir(dirname(path));
+    await Deno.writeTextFile(path, "// legacy");
+
+    const result = await needsInstallOrMigration([entry], tmpDir);
+    assertEquals(result, "migrate");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("needsInstallOrMigration: missing backslash gen-1 path returns install", async () => {
+  // A Windows-written lockfile read on POSIX: the literal backslash
+  // name is not on disk, so the extension is re-pulled.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const result = await needsInstallOrMigration(
+      ["extensions\\models\\ghost.ts"],
+      tmpDir,
+    );
+    assertEquals(result, "install");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("needsInstallOrMigration and sweepLegacyPaths: backslash traversal entry never reaches outside the repo", async () => {
+  const rootDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const repoDir = join(rootDir, "repo");
+    await ensureDir(repoDir);
+    const keep = join(repoDir, "keep.txt");
+    await Deno.writeTextFile(keep, "keep");
+    // Where the entry resolves when backslashes are separators.
+    const sentinel = join(rootDir, "outside");
+    await Deno.writeTextFile(sentinel, "sentinel");
+    const entry = "extensions\\models\\..\\..\\..\\outside";
+
+    if (Deno.build.os === "windows") {
+      await assertRejects(
+        () => needsInstallOrMigration([entry], repoDir),
+        PathTraversalError,
+      );
+      await assertRejects(
+        () => sweepLegacyPaths([entry], repoDir),
+        PathTraversalError,
+      );
+    } else {
+      // One filename inside the repo, not on disk.
+      assertEquals(await needsInstallOrMigration([entry], repoDir), "install");
+      await sweepLegacyPaths([entry], repoDir);
+    }
+
+    assertEquals(await Deno.readTextFile(sentinel), "sentinel");
+    assertEquals(await Deno.readTextFile(keep), "keep");
+  } finally {
+    await Deno.remove(rootDir, { recursive: true });
+  }
+});
+
 Deno.test(
   "needsInstallOrMigration: skill dir under tool-specific skillsDir does not trigger migrate",
   async () => {
@@ -1366,6 +1437,39 @@ Deno.test(
         if (e instanceof Deno.errors.NotFound) libExists = false;
       }
       assertEquals(libExists, false, "_lib/ should be pruned when empty");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepLegacyPaths: removes backslash legacy paths, leaves current-layout paths",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const gen1 = "extensions\\models\\gen1.ts";
+      const gen2 = ".swamp\\pulled-extensions\\models\\gen2.ts";
+      const current = ".swamp\\pulled-extensions\\@ok\\ext\\models\\current.ts";
+      for (const entry of [gen1, gen2, current]) {
+        const path = join(tmpDir, entry);
+        await ensureDir(dirname(path));
+        await Deno.writeTextFile(path, "// x");
+      }
+
+      await sweepLegacyPaths([gen1, gen2, current], tmpDir);
+
+      for (const entry of [gen1, gen2]) {
+        let exists = true;
+        try {
+          await Deno.stat(join(tmpDir, entry));
+        } catch (e) {
+          if (e instanceof Deno.errors.NotFound) exists = false;
+        }
+        assertEquals(exists, false, `${entry} should be removed`);
+      }
+      const stat = await Deno.stat(join(tmpDir, current));
+      assertEquals(stat.isFile, true);
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
     }

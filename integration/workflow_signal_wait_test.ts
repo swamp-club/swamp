@@ -109,6 +109,7 @@ import {
 } from "../src/libswamp/workflows/waits.ts";
 import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import type { InputsSchema } from "../src/domain/definitions/definition.ts";
+import type { PendingSignal } from "../src/domain/workflows/pending_signal.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -257,7 +258,12 @@ const VERDICT_SCHEMA: InputsSchema = {
 /** The workflow from the issue: a review wait, then ship or escalate. */
 function release(
   name: string,
-  options: { allowFailure?: boolean; reviewGuard?: string; key?: string } = {},
+  options: {
+    allowFailure?: boolean;
+    reviewGuard?: string;
+    key?: string;
+    acceptEarly?: number;
+  } = {},
 ): Workflow {
   return Workflow.create({
     name,
@@ -276,7 +282,12 @@ function release(
             name: "review",
             allowFailure: options.allowFailure ?? true,
             guard: options.reviewGuard,
-            task: StepTask.waitForSignal(3600, VERDICT_SCHEMA, options.key),
+            task: StepTask.waitForSignal(
+              3600,
+              VERDICT_SCHEMA,
+              options.key,
+              options.acceptEarly,
+            ),
           }),
           Step.create({
             name: "ship",
@@ -2030,9 +2041,17 @@ Deno.test("signal wait: a new run opens its waits without reading every registra
       removeOutcome: (id) => h.waits.removeOutcome(id),
       highestKeyRecord: (w, k) => h.waits.highestKeyRecord(w, k),
       createKeyRecord: (r) => h.waits.createKeyRecord(r),
+      findKeyRecord: (at) => h.waits.findKeyRecord(at),
       listKeyRecords: () => h.waits.listKeyRecords(),
       removeKeyRecord: (at) => h.waits.removeKeyRecord(at),
       removeKeyRecordsOfWorkflow: (w) => h.waits.removeKeyRecordsOfWorkflow(w),
+      highestPendingRecord: (at) => h.waits.highestPendingRecord(at),
+      createPendingRecord: (r) => h.waits.createPendingRecord(r),
+      findPendingRecord: (at) => h.waits.findPendingRecord(at),
+      listPendingAddresses: () => h.waits.listPendingAddresses(),
+      removePendingRecord: (at) => h.waits.removePendingRecord(at),
+      removePendingRecordsOfWorkflow: (w) =>
+        h.waits.removePendingRecordsOfWorkflow(w),
     };
     h.service.signalWaits = { supported: true, store: counting };
 
@@ -2654,12 +2673,14 @@ function heldAfterRead(
         return highest;
       },
       createKeyRecord: (r) => store.createKeyRecord(r),
+      findKeyRecord: (at) => store.findKeyRecord(at),
       listKeyRecords: () => store.listKeyRecords(),
       removeKeyRecord: (at) => store.removeKeyRecord(at),
       removeKeyRecordsOfWorkflow: (w) => store.removeKeyRecordsOfWorkflow(w),
       findOutcome: (id) => store.findOutcome(id),
       settle: (o) => store.settle(o),
       findRegistration: (id) => store.findRegistration(id),
+      highestPendingRecord: (at) => store.highestPendingRecord(at),
     },
   };
 }
@@ -3079,5 +3100,369 @@ Deno.test("signal by key: a holder settled between resolving and delivering is a
       { verdict: "ship" },
     );
     assertEquals(data.waitId, nextWait);
+  });
+});
+
+// A signal that arrives before its wait opens (swamp-club#3212). The
+// executor and a signal sent now read the real clock, so "early" is a
+// signal sent before the run starts; one that is too old is sent with a
+// clock set back, never by waiting.
+
+const EARLY_KEY = "kitchen-verdict";
+
+function earlyRelease(name: string, acceptEarly = 600): Workflow {
+  return release(name, { key: EARLY_KEY, acceptEarly });
+}
+
+/** Sends a signal by key as a signaller whose clock reads `now`. */
+async function signalByKeyAt(
+  h: Harness,
+  workflow: Workflow,
+  payload: unknown,
+  now?: Date,
+): Promise<WorkflowSignalEvent> {
+  let last: WorkflowSignalEvent | undefined;
+  for await (
+    const event of workflowSignal(
+      createLibSwampContext(),
+      {
+        ...createWorkflowSignalDeps(
+          h.runRepo,
+          { supported: true, store: h.waits },
+          h.workflowRepo,
+        ),
+        ...(now ? { now: () => now } : {}),
+      },
+      { workflow: workflow.name, key: EARLY_KEY, payload, submittedBy: "cam" },
+    )
+  ) {
+    last = event;
+  }
+  assert(last);
+  return last;
+}
+
+/**
+ * Stores a signal in the slot of the wait `run` holds, as a signaller does
+ * that read the key before the step claimed it and stopped before reading
+ * it again: the step has read its slot by now and found nothing.
+ */
+async function leavePendingFor(
+  h: Harness,
+  workflow: Workflow,
+  run: WorkflowRun,
+  receivedAt: Date,
+): Promise<PendingSignal> {
+  const early = stepOf(run, "review").signalWait?.early;
+  assert(early, "the wait keeps where its pending signal is");
+  const record: PendingSignal = {
+    kind: "pending",
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    slot: early.generation,
+    number: 1,
+    receiptId: crypto.randomUUID(),
+    receivedAt: receivedAt.toISOString(),
+    submittedBy: "cam",
+    payload: { verdict: "ship" },
+    acceptEarly: 600,
+  };
+  const stored = await h.waits.createPendingRecord(record);
+  assert(stored.kind === "found");
+  return record;
+}
+
+Deno.test("early signal: a signal sent before the run reaches its wait is the step's output as soon as the step opens it, and the run never suspends there", async () => {
+  const workflow = earlyRelease("early-taken");
+  const plain = release("early-plain", { key: "plain-verdict" });
+  await withHarness([workflow, plain], async (h) => {
+    const sent = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    assert(sent.kind === "pending", `got ${sent.kind}`);
+    assertEquals(sent.data.workflowName, workflow.name);
+    assertEquals((await h.waits.listRegistrations()).length, 0);
+
+    const events = await drain(h.service.run(workflow.name));
+    assertEquals(
+      events.some((event) => event.kind === "signal_wait_requested"),
+      false,
+    );
+    const run = await only(h, workflow);
+    assertEquals(run.status, "succeeded");
+    const review = stepOf(run, "review");
+    assertEquals(review.status, "succeeded");
+    // The outputs of any signalled step: the payload and the receipt the
+    // sender was given, now naming the wait that took it.
+    assertEquals(review.output, {
+      type: "wait_for_signal",
+      payload: { verdict: "ship" },
+      signal: { ...sent.data.signal, waitId: waitIdOf(run) },
+    });
+    assertEquals(stepOf(run, "ship").status, "succeeded");
+    assertEquals(h.executor.executed, [`${workflow.name}/ship`]);
+
+    // The same shape a step signalled after it suspended gets.
+    const other = await startRun(h, plain);
+    const byId = await signalOk(h, waitIdOf(other), { verdict: "ship" });
+    await drain(h.service.resume(plain.name, other.id));
+    assertEquals(
+      Object.keys(stepOf(await reload(h, other), "review").output ?? {}),
+      Object.keys(review.output ?? {}),
+    );
+    assertEquals(
+      Object.keys(byId.signal).sort(),
+      Object.keys(
+        (review.output as { signal: Record<string, unknown> }).signal,
+      ).sort(),
+    );
+
+    // A retry of the early signal finds no open wait and is held as a
+    // second signal, for the next run. Its answer names the wait the first
+    // one settled, which is how the sender tells the first one landed.
+    const retry = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    assert(retry.kind === "pending", `got ${retry.kind}`);
+    assertEquals(retry.data.lastWait?.waitId, waitIdOf(run));
+    assertEquals(retry.data.lastWait?.settledAs, "accepted");
+    assertEquals(retry.data.lastWait?.receipt?.id, sent.data.signal.id);
+  });
+});
+
+Deno.test("early signal: a pending signal older than the limit is ignored, the wait opens, and it takes a later signal", async () => {
+  const workflow = earlyRelease("early-too-old", 10);
+  await withHarness([workflow], async (h) => {
+    const stale = await signalByKeyAt(
+      h,
+      workflow,
+      { verdict: "abandon" },
+      new Date(Date.now() - 60_000),
+    );
+    assert(stale.kind === "pending");
+
+    const run = await startRun(h, workflow);
+    assertEquals(run.status, "suspended");
+    assertEquals(stepOf(run, "review").status, "waiting_signal");
+    assertEquals((await h.waits.findOutcome(waitIdOf(run))).kind, "absent");
+
+    const data = await signalOk(
+      h,
+      { workflow: workflow.name, key: EARLY_KEY },
+      { verdict: "ship" },
+    );
+    assertEquals(data.waitId, waitIdOf(run));
+    await drain(h.service.resume(workflow.name, run.id));
+    const finished = await reload(h, run);
+    assertEquals(
+      (stepOf(finished, "review").output as { payload: unknown }).payload,
+      { verdict: "ship" },
+    );
+  });
+});
+
+Deno.test("early signal: an early payload the schema refuses is refused on arrival and nothing is stored", async () => {
+  const workflow = earlyRelease("early-refused");
+  await withHarness([workflow], async (h) => {
+    const refused = await signalByKeyAt(h, workflow, { verdict: "maybe" });
+    assert(refused.kind === "error");
+    assertEquals(
+      (refused.error.details as { refusal?: string }).refusal,
+      "invalid_payload",
+    );
+    assertEquals(await h.waits.listPendingAddresses(), []);
+    assertEquals(await h.waits.listOutcomes(), []);
+  });
+});
+
+Deno.test("early signal: a keyed wait without acceptEarly refuses an early signal and stores nothing", async () => {
+  const workflow = release("early-not-declared", { key: EARLY_KEY });
+  await withHarness([workflow], async (h) => {
+    const refused = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    assert(refused.kind === "error");
+    assertEquals(
+      (refused.error.details as { refusal?: string }).refusal,
+      "no_open_wait",
+    );
+    assertEquals(await h.waits.listPendingAddresses(), []);
+    // And its wait opens as before.
+    assertEquals((await startRun(h, workflow)).status, "suspended");
+  });
+});
+
+Deno.test("early signal: a signal stored after the step read its slot is applied by the next resume, and never lost", async () => {
+  const workflow = earlyRelease("early-after-read");
+  await withHarness([workflow], async (h) => {
+    // The step claims, registers and reads an empty slot.
+    const run = await startRun(h, workflow);
+    assertEquals(run.status, "suspended");
+    // The signaller's create lands after that read; it stops before it
+    // reads the key again.
+    const pending = await leavePendingFor(h, workflow, run, new Date());
+    assertEquals((await h.waits.findOutcome(waitIdOf(run))).kind, "absent");
+
+    await drain(h.service.resume(workflow.name, run.id));
+    const finished = await reload(h, run);
+    assertEquals(finished.status, "succeeded");
+    assertEquals(
+      (stepOf(finished, "review").output as { signal: { id: string } })
+        .signal.id,
+      pending.receiptId,
+    );
+  });
+});
+
+Deno.test("early signal: a signaller that reads the key after the step claimed it delivers its own stored signal", async () => {
+  const workflow = earlyRelease("early-signaller-finishes");
+  await withHarness([workflow], async (h) => {
+    // The step opens its wait between the signal's create and its second
+    // read of the key.
+    const original = h.waits.createPendingRecord.bind(h.waits);
+    let started: WorkflowRun | undefined;
+    h.waits.createPendingRecord = async (record) => {
+      const stored = await original(record);
+      if (!started) started = await startRun(h, workflow);
+      return stored;
+    };
+    let sent: WorkflowSignalEvent;
+    try {
+      sent = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    } finally {
+      h.waits.createPendingRecord = original;
+    }
+    assert(started);
+    // Here the step read the slot after the create, and took the signal
+    // itself; the signaller finds its receipt on the wait's outcome.
+    assert(sent.kind === "completed", `got ${sent.kind}`);
+    assertEquals(sent.data.waitId, waitIdOf(started));
+    assertEquals(sent.data.runId, started.id);
+    assertEquals(started.status, "succeeded");
+    assertEquals(
+      (stepOf(started, "review").output as { signal: { id: string } })
+        .signal.id,
+      sent.data.signal.id,
+    );
+  });
+});
+
+Deno.test("early signal: a wait at its deadline with a pending signal received before it succeeds", async () => {
+  const workflow = earlyRelease("early-deadline");
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const claim = await highestOf(h, workflow, EARLY_KEY);
+    assert(claim.kind === "claim");
+    // The deadline is moved to just before the claim, so it has passed;
+    // the signal was received at that same moment, which is not after it.
+    const deadline = new Date(new Date(claim.recordedAt).getTime() - 1);
+    const data = run.toData();
+    const wait = data.jobs[0].steps.find((s) => s.stepName === "review")!
+      .wait as { id: string; deadline: string };
+    wait.deadline = deadline.toISOString();
+    const registration = await h.waits.findRegistration(wait.id);
+    assert(registration.kind === "found");
+    await h.waits.removeRegistration(wait.id);
+    await h.waits.register({
+      ...registration.record,
+      deadline: wait.deadline,
+    });
+    await h.runRepo.save(workflow.id, WorkflowRun.fromData(data));
+    const pending = await leavePendingFor(h, workflow, run, deadline);
+
+    await drain(h.service.resume(workflow.name, run.id));
+    const finished = await reload(h, run);
+    const review = stepOf(finished, "review");
+    assertEquals(review.status, "succeeded");
+    assertEquals(
+      (review.output as { signal: { id: string } }).signal.id,
+      pending.receiptId,
+    );
+    assertEquals(stepOf(finished, "ship").status, "succeeded");
+    assertEquals(stepOf(finished, "escalate").status, "skipped");
+  });
+});
+
+Deno.test("early signal: of two early signals at once exactly one is stored, and the other is told which", async () => {
+  const workflow = earlyRelease("early-two-signals");
+  await withHarness([workflow], async (h) => {
+    const [a, b] = await Promise.all([
+      signalByKeyAt(h, workflow, { verdict: "ship" }),
+      signalByKeyAt(h, workflow, { verdict: "fix" }),
+    ]);
+    const held = [a, b].filter((event) => event.kind === "pending");
+    const refused = [a, b].filter((event) => event.kind === "error");
+    assertEquals([held.length, refused.length], [1, 1]);
+    assert(held[0].kind === "pending" && refused[0].kind === "error");
+    assertEquals(
+      (refused[0].error.details as { refusal?: string }).refusal,
+      "already_pending",
+    );
+    assertEquals(
+      (refused[0].error.details as { receipt?: { id: string } }).receipt?.id,
+      held[0].data.signal.id,
+    );
+    assertEquals((await h.waits.listPendingAddresses()).length, 1);
+  });
+});
+
+Deno.test("early signal: of two steps opening at once with one pending signal, only the step that wins the claim takes it", async () => {
+  const workflow = earlyRelease("early-two-steps");
+  await withHarness([workflow], async (h) => {
+    const sent = await signalByKeyAt(h, workflow, { verdict: "ship" });
+    assert(sent.kind === "pending");
+
+    await Promise.all([
+      drain(h.service.run(workflow.name)),
+      drain(serviceOfAnotherProcess(h).run(workflow.name)),
+    ]);
+    const runs = await h.runRepo.findAllByWorkflowId(workflow.id);
+    assertEquals(runs.length, 2);
+    const reviews = runs.map((run) => stepOf(run, "review"));
+    const took = reviews.filter((step) => step.status === "succeeded");
+    const lost = reviews.filter((step) => step.status !== "succeeded");
+    assertEquals(took.length, 1);
+    assertEquals(
+      (took[0].output as { signal: { id: string } }).signal.id,
+      sent.data.signal.id,
+    );
+    // The other step either lost the claim, or claimed the key once the
+    // winner's wait was settled and found its own slot empty. It never has
+    // the signal.
+    assertEquals(lost.length, 1);
+    assert(
+      lost[0].error === WAIT_KEY_HELD_STEP_ERROR ||
+        lost[0].status === "waiting_signal",
+      `the other step is ${lost[0].status} (${lost[0].error})`,
+    );
+    const outcomes = (await h.waits.listOutcomes()).filter((o) =>
+      o.kind === "accepted"
+    );
+    assertEquals(outcomes.length, 1);
+  });
+});
+
+Deno.test("early signal: deleting a workflow removes its pending signals and no others", async () => {
+  const doomed = earlyRelease("early-doomed");
+  const kept = earlyRelease("early-kept");
+  await withHarness([doomed, kept], async (h) => {
+    assertEquals(
+      (await signalByKeyAt(h, doomed, { verdict: "ship" })).kind,
+      "pending",
+    );
+    assertEquals(
+      (await signalByKeyAt(h, kept, { verdict: "ship" })).kind,
+      "pending",
+    );
+    for await (
+      const event of workflowDelete(
+        createLibSwampContext(),
+        createWorkflowDeleteDeps(h.repoDir, undefined, undefined, undefined, {
+          supported: true,
+          store: h.waits,
+        }),
+        { workflowIdOrName: doomed.name },
+      )
+    ) {
+      if (event.kind === "error") throw new Error(event.error.message);
+    }
+    assertEquals(
+      (await h.waits.listPendingAddresses()).map((at) => at.workflowId),
+      [kept.id],
+    );
   });
 });

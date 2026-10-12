@@ -95,4 +95,50 @@ Deno.test("SecretRedactor", async (t) => {
       "*** then *** again",
     );
   });
+
+  await t.step("a CRLF secret is redacted in its LF-normalised form", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("line-one\r\nline-two");
+    assertEquals(
+      redactor.redact("key: line-one\nline-two end"),
+      "key: *** end",
+    );
+  });
+
+  await t.step("a CRLF secret is still redacted in its original form", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("line-one\r\nline-two");
+    assertEquals(
+      redactor.redact("key: line-one\r\nline-two end"),
+      "key: *** end",
+    );
+  });
+
+  await t.step("a secret ending in CR is redacted once the CR is gone", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("token123\r");
+    assertEquals(redactor.redact("token123\nnext"), "***\nnext");
+  });
+
+  await t.step("the JSON-escaped LF-normalised form is redacted", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("line-one\r\nline-two");
+    assertEquals(
+      redactor.redact('{"v":"line-one\\nline-two"}'),
+      '{"v":"***"}',
+    );
+  });
+
+  await t.step("a CR not before an LF or the end is kept in the form", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("abc\rdef");
+    assertEquals(redactor.redact("abcdef"), "abcdef");
+    assertEquals(redactor.redact("abc\rdef"), "***");
+  });
+
+  await t.step("a normalised form under 3 chars is not registered", () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("ab\r");
+    assertEquals(redactor.redact("ab ab\r"), "ab ***");
+  });
 });

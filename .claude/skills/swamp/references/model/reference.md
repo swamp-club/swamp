@@ -424,9 +424,17 @@ and audit action; only the words differ.
 
 **Inputs are evaluated.** `--input`, `--input-file`, and `--stdin` values are
 treated as operator-written: any `${{ vault.get(...) }}` or `${{ env.X }}` in
-them resolves and reaches the method in plaintext. Never pass untrusted text
-(issue bodies, tickets, scraped pages) this way; see the vault reference, "Trust
-Boundary: Which Inputs Are Evaluated".
+them resolves and reaches the method in plaintext. For text you did not write
+(issue bodies, tickets, scraped pages), add `--literal-inputs`: values reach the
+method verbatim, `@` is not read as a file path, and a value routed to a global
+argument that holds `${{` is refused rather than stored. The flag covers every
+input in the call, vault references included, so pass secrets through the
+definition instead; it cannot be combined with `--last-evaluated`. See the vault
+reference, "Trust Boundary: Which Inputs Are Evaluated".
+
+```bash
+swamp model method run github-pr update-body --literal-inputs --input-file body.json
+```
 
 **Data versioning:** Running a method multiple times creates new data versions
 (v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use

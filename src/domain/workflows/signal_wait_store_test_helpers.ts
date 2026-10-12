@@ -40,18 +40,32 @@ import {
   waitKeyRecordKey,
   waitKeyWorkflowPrefix,
 } from "./wait_key_claim.ts";
+import {
+  decodePendingRecord,
+  encodePendingRecord,
+  type HighestPendingRecord,
+  type PendingAddress,
+  pendingAddressFromKey,
+  type PendingRecord,
+  pendingRecordKey,
+  type PendingSlot,
+  pendingSlotPrefix,
+  pendingWorkflowPrefix,
+} from "./pending_signal.ts";
 
 /**
  * A {@link SignalWaitStore} held in memory, for tests. Records are kept as
  * the bytes a real store holds, so every read is parsed as in production,
- * and `registrations`, `outcomes` and `keyRecords` can be edited to stage a
- * damaged one.
+ * and `registrations`, `outcomes`, `keyRecords` and `pendingRecords` can be
+ * edited to stage a damaged one.
  */
 export class InMemorySignalWaitStore implements SignalWaitStore {
   readonly registrations = new Map<string, Uint8Array>();
   readonly outcomes = new Map<string, Uint8Array>();
   /** Key records by their store key. */
   readonly keyRecords = new Map<string, Uint8Array>();
+  /** Pending records by their store key. */
+  readonly pendingRecords = new Map<string, Uint8Array>();
 
   register(registration: WaitRegistration): Promise<void> {
     if (!this.registrations.has(registration.waitId)) {
@@ -142,6 +156,10 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
     return Promise.resolve(this.#findKeyRecord(record));
   }
 
+  findKeyRecord(at: WaitKeyAddress): Promise<StoredWaitRecord<WaitKeyRecord>> {
+    return Promise.resolve(this.#findKeyRecord(at));
+  }
+
   listKeyRecords(): Promise<WaitKeyRecord[]> {
     const found: WaitKeyRecord[] = [];
     for (const storeKey of [...this.keyRecords.keys()]) {
@@ -164,6 +182,66 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
       if (storeKey.startsWith(prefix)) this.keyRecords.delete(storeKey);
     }
     return Promise.resolve();
+  }
+
+  highestPendingRecord(at: PendingSlot): Promise<HighestPendingRecord> {
+    const prefix = pendingSlotPrefix(at);
+    let number = 0;
+    for (const storeKey of this.pendingRecords.keys()) {
+      if (!storeKey.startsWith(prefix)) continue;
+      const found = pendingAddressFromKey(storeKey);
+      if (found !== undefined && found.number > number) number = found.number;
+    }
+    if (number === 0) return Promise.resolve({ kind: "none" });
+    const stored = this.#findPendingRecord({ ...at, number });
+    return Promise.resolve(
+      stored.kind === "found" ? stored : { kind: "unreadable", number },
+    );
+  }
+
+  createPendingRecord(
+    record: PendingRecord,
+  ): Promise<StoredWaitRecord<PendingRecord>> {
+    const storeKey = pendingRecordKey(record);
+    if (!this.pendingRecords.has(storeKey)) {
+      this.pendingRecords.set(storeKey, encodePendingRecord(record));
+    }
+    return Promise.resolve(this.#findPendingRecord(record));
+  }
+
+  findPendingRecord(
+    at: PendingAddress,
+  ): Promise<StoredWaitRecord<PendingRecord>> {
+    return Promise.resolve(this.#findPendingRecord(at));
+  }
+
+  listPendingAddresses(): Promise<PendingAddress[]> {
+    const found: PendingAddress[] = [];
+    for (const storeKey of this.pendingRecords.keys()) {
+      const at = pendingAddressFromKey(storeKey);
+      if (at !== undefined) found.push(at);
+    }
+    return Promise.resolve(found);
+  }
+
+  removePendingRecord(at: PendingAddress): Promise<void> {
+    this.pendingRecords.delete(pendingRecordKey(at));
+    return Promise.resolve();
+  }
+
+  removePendingRecordsOfWorkflow(workflowId: string): Promise<void> {
+    const prefix = pendingWorkflowPrefix(workflowId);
+    for (const storeKey of [...this.pendingRecords.keys()]) {
+      if (storeKey.startsWith(prefix)) this.pendingRecords.delete(storeKey);
+    }
+    return Promise.resolve();
+  }
+
+  #findPendingRecord(at: PendingAddress): StoredWaitRecord<PendingRecord> {
+    return decodePendingRecord(
+      this.pendingRecords.get(pendingRecordKey(at)) ?? null,
+      at,
+    );
   }
 
   #findKeyRecord(at: WaitKeyAddress): StoredWaitRecord<WaitKeyRecord> {

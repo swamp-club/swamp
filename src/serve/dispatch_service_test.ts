@@ -33,7 +33,11 @@ import {
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
 import { BundleRegistry } from "./bundle_registry.ts";
-import { WorkerGateway, type WorkerSnapshot } from "./worker_gateway.ts";
+import {
+  WorkerGateway,
+  WorkerNotDispatchableError,
+  type WorkerSnapshot,
+} from "./worker_gateway.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { errorPaths } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
@@ -1064,7 +1068,14 @@ Deno.test("executeRemote: releaseAffinity clears pin", async () => {
   assertEquals(typeof r2.workerName, "string");
 });
 
-Deno.test("executeRemote: affinity worker lost mid-dispatch fails instead of re-dispatching", async () => {
+const OK_RESULT: DispatchResult = {
+  status: "success",
+  outputs: [],
+  logs: [],
+  durationMs: 1,
+};
+
+Deno.test("executeRemote: first affinity step re-dispatches when its worker is lost before the pin binds (swamp-club#3156)", async () => {
   const h = createHarness({
     workers: [
       snapshot({ name: "w1" }),
@@ -1074,29 +1085,320 @@ Deno.test("executeRemote: affinity worker lost mid-dispatch fails instead of re-
   const affinityKey = "run-4:job-build";
 
   let callCount = 0;
-  h.setBehavior((_name, _params) => {
+  h.setBehavior((name) => {
     callCount++;
     if (callCount === 1) {
+      h.pool.delete(name);
       throw new ChannelClosedError("socket dropped");
     }
-    return Promise.resolve({
-      status: "success",
-      outputs: [],
-      logs: [],
-      durationMs: 1,
-    });
+    return Promise.resolve(OK_RESULT);
+  });
+
+  const lost = h.dispatchCalls;
+  const result = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-1",
+  }));
+  assertEquals(callCount, 2);
+  assertEquals(result.workerName !== lost[0].name, true);
+
+  // The group pins to the worker that completed the first step.
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-2",
+  }));
+  assertEquals(h.dispatchCalls[2].name, result.workerName);
+});
+
+Deno.test("executeRemote: first affinity step with declared writes fails when its worker is lost", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  let callCount = 0;
+  h.setBehavior((name) => {
+    callCount++;
+    h.pool.delete(name);
+    throw new ChannelClosedError("socket dropped");
   });
 
   await assertRejects(
     () =>
       h.service.executeRemote(stepRequest({
-        placement: { labels: {}, platform: "linux", affinityKey },
-        stepName: "step-1",
+        placement: {
+          labels: {},
+          platform: "linux",
+          affinityKey: "run-4:job-w",
+        },
+        declaredWrites: true,
       })),
     WorkerAffinityLostError,
   );
   assertEquals(callCount, 1);
 });
+
+Deno.test("executeRemote: affinity worker lost mid-dispatch after the pin binds fails instead of re-dispatching", async () => {
+  const h = createHarness({
+    workers: [
+      snapshot({ name: "w1" }),
+      snapshot({ name: "w2" }),
+    ],
+  });
+  const affinityKey = "run-4:job-bound";
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-1",
+  }));
+
+  let callCount = 0;
+  h.setBehavior(() => {
+    callCount++;
+    throw new ChannelClosedError("socket dropped");
+  });
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: {}, platform: "linux", affinityKey },
+        stepName: "step-2",
+      })),
+    WorkerAffinityLostError,
+  );
+  assertEquals(callCount, 1);
+});
+
+Deno.test("executeRemote: affinity fails at once when the pinned worker is draining (swamp-club#3156)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+    queueTimeoutMs: 60_000,
+  });
+  const affinityKey = "run-5:job-drain";
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+  const pinned = h.dispatchCalls[0].name;
+  h.pool.set(pinned, { ...h.pool.get(pinned)!, status: "draining" });
+
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: {}, platform: "linux", affinityKey },
+        stepName: "step-2",
+      })),
+    WorkerAffinityLostError,
+  );
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: a queued affinity step fails when its pinned worker starts draining (swamp-club#3156)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+    queueTimeoutMs: 60_000,
+  });
+  const affinityKey = "run-6:job-drain";
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+  const pinned = h.dispatchCalls[0].name;
+  h.pool.set(pinned, {
+    ...h.pool.get(pinned)!,
+    status: "busy",
+    activeDispatchIds: ["other"],
+  });
+
+  let queued = false;
+  const step = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-2",
+    onEvent: (event) => {
+      if (event.kind === "queued") queued = true;
+    },
+  }));
+  step.catch(() => {});
+  await waitFor(() => queued, "step-2 queued behind its busy pinned worker");
+
+  const draining = { ...h.pool.get(pinned)!, status: "draining" as const };
+  h.pool.set(pinned, draining);
+  h.service.notifyWorkerDraining(draining);
+
+  await assertRejects(() => step, WorkerAffinityLostError);
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+Deno.test("executeRemote: a queued affinity step dispatches to its pinned worker once it is free", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+    queueTimeoutMs: 60_000,
+  });
+  const affinityKey = "run-7:job-busy";
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+  const pinned = h.dispatchCalls[0].name;
+  h.pool.set(pinned, {
+    ...h.pool.get(pinned)!,
+    status: "busy",
+    activeDispatchIds: ["other"],
+  });
+
+  let queued = false;
+  const step = h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-2",
+    onEvent: (event) => {
+      if (event.kind === "queued") queued = true;
+    },
+  }));
+  await waitFor(() => queued, "step-2 queued behind its busy pinned worker");
+
+  const idle = snapshot({ name: pinned });
+  h.pool.set(pinned, idle);
+  h.service.notifyWorkerIdle(idle);
+
+  const result = await step;
+  assertEquals(result.workerName, pinned);
+});
+
+Deno.test("executeRemote: a refused affinity step fails when its pinned worker has left, and re-queues when it is only busy", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+    queueTimeoutMs: 60_000,
+  });
+  const affinityKey = "run-8:job-refused";
+  await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+  }));
+  const pinned = h.dispatchCalls[0].name;
+
+  // Busy desync on a healthy pinned worker: the step waits and retries.
+  let attempts = 0;
+  h.setBehavior(() => {
+    attempts++;
+    if (attempts === 1) {
+      // A macrotask, so the wake lands after the step starts waiting.
+      setTimeout(() => h.service.notifyWorkerIdle(snapshot({ name: pinned })));
+      return Promise.reject(
+        new RpcError({ code: "worker_busy", message: "at capacity" }),
+      );
+    }
+    return Promise.resolve(OK_RESULT);
+  });
+  const retried = await h.service.executeRemote(stepRequest({
+    placement: { labels: {}, platform: "linux", affinityKey },
+    stepName: "step-2",
+  }));
+  assertEquals(retried.workerName, pinned);
+  assertEquals(attempts, 2);
+
+  // The pinned worker left the pool before the dispatch was sent.
+  h.setBehavior((name) => {
+    h.pool.delete(name);
+    return Promise.reject(new WorkerNotDispatchableError(name, "not_in_pool"));
+  });
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { labels: {}, platform: "linux", affinityKey },
+        stepName: "step-3",
+      })),
+    WorkerAffinityLostError,
+  );
+});
+
+Deno.test("executeRemote: an unbound first affinity step queues when the only worker is draining", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1", status: "draining" })],
+    queueTimeoutMs: 50,
+  });
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: {
+          labels: {},
+          platform: "linux",
+          affinityKey: "run-9:job-first",
+        },
+      })),
+    Error,
+    "Timed out waiting for a worker",
+  );
+  assertEquals(h.dispatchCalls.length, 0);
+});
+
+Deno.test("DispatchService: a worker that leaves the pool between scheduling and dispatch re-queues the step (swamp-club#3156)", async () => {
+  const h = createHarness({
+    workers: [snapshot({ name: "w1" }), snapshot({ name: "w2" })],
+  });
+  h.setBehavior((name) => {
+    if (h.dispatchCalls.length === 1) {
+      // What WorkerGateway.dispatch throws once a drained worker has closed
+      // its socket and been removed from the pool.
+      h.pool.delete(name);
+      return Promise.reject(
+        new WorkerNotDispatchableError(name, "not_in_pool"),
+      );
+    }
+    return Promise.resolve(OK_RESULT);
+  });
+
+  const result = await h.service.executeRemote(stepRequest());
+  assertEquals(h.dispatchCalls.length, 2);
+  assertEquals(result.workerName, h.dispatchCalls[1].name);
+  assertEquals(result.workerName !== h.dispatchCalls[0].name, true);
+  // The abandoned attempt's lease ends; the second attempt's completes.
+  assertEquals(
+    h.transitions.filter((t) => t.typeArg.includes("lease")).map((t) =>
+      t.methodName
+    ),
+    ["acquire", "expire", "acquire", "complete"],
+  );
+});
+
+Deno.test("DispatchService: a probe refused by the gateway fails instead of re-queueing", async () => {
+  const h = createHarness();
+  h.setBehavior((name) =>
+    Promise.reject(new WorkerNotDispatchableError(name, "at_capacity"))
+  );
+  await assertRejects(
+    () =>
+      h.service.executeRemote(stepRequest({
+        placement: { target: "w1" },
+        skipScheduler: true,
+      })),
+    WorkerNotDispatchableError,
+  );
+  assertEquals(h.dispatchCalls.length, 1);
+});
+
+for (
+  const [label, refuse] of [
+    [
+      "a gateway refusal",
+      (name: string) => new WorkerNotDispatchableError(name, "at_capacity"),
+    ],
+    [
+      "worker_busy",
+      (_name: string) =>
+        new RpcError({ code: "worker_busy", message: "at capacity" }),
+    ],
+  ] as const
+) {
+  Deno.test(`DispatchService: a step re-queued on ${label} times out at its queue deadline`, async () => {
+    const h = createHarness({ queueTimeoutMs: 50 });
+    h.setBehavior((name) => Promise.reject(refuse(name)));
+    await assertRejects(
+      () => h.service.executeRemote(stepRequest()),
+      Error,
+      "Timed out waiting for a worker",
+    );
+    // The loop ended with the rejection: no dispatch follows it.
+    const calls = h.dispatchCalls.length;
+    assertEquals(calls >= 1, true);
+    await new Promise((resolve) => queueMicrotask(() => resolve(undefined)));
+    assertEquals(h.dispatchCalls.length, calls);
+  });
+}
 
 Deno.test("executeRemote: steps without affinity key are unaffected", async () => {
   const h = createHarness({
@@ -1167,6 +1469,9 @@ Deno.test("executeRemote: concurrent affinity step rejects when first step fails
     h.service.executeRemote(stepRequest({
       placement: { labels: {}, platform: "linux", affinityKey },
       stepName: "step-a",
+      // A write-bearing first step fails on a drop; a no-write one would
+      // re-dispatch (swamp-club#3156).
+      declaredWrites: true,
     })),
     h.service.executeRemote(stepRequest({
       placement: { labels: {}, platform: "linux", affinityKey },
@@ -1214,6 +1519,7 @@ Deno.test("DispatchService: revoking the worker's token mid-dispatch fails the s
     graceWindowMs: 60_000,
     onWorkerRemoved: (worker) => service.notifyWorkerRemoved(worker),
     runModelMethod: () => Promise.resolve(),
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
     readTokenExpiresAt: () => Promise.resolve(null),
     readTokenRecord: (name) =>
       Promise.resolve({
@@ -1351,4 +1657,290 @@ Deno.test("DispatchService: dispatch-env-allow limits the shipped snapshot (swam
 
   // The real process environment, with an empty allowlist: nothing ships.
   assertEquals(calls[0].environmentSnapshot, {});
+});
+
+/**
+ * A one-worker pool whose fake gateway counts slots the way the real one
+ * does: a dispatch is listed in `activeDispatchIds` from registration until
+ * it settles, and one past capacity is refused. Each dispatch stays open
+ * until the test settles its gate.
+ */
+function createSlotHarness(capacity: number) {
+  const active: string[] = [];
+  const calls: DispatchParams[] = [];
+  const gates: PromiseWithResolvers<DispatchResult>[] = [];
+  /** Step names whose lease acquire rejects. */
+  const failedAcquires = new Set<string>();
+  const worker = (): WorkerSnapshot =>
+    snapshot({
+      name: "w1",
+      capacity,
+      activeDispatchIds: [...active],
+      status: active.length > 0 ? "busy" : "idle",
+    });
+
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    queueTimeoutMs: 60_000,
+    runModelMethod: (input) => {
+      const stepName = String(input.inputs.stepName);
+      if (input.methodName === "acquire" && failedAcquires.has(stepName)) {
+        return Promise.reject(
+          new Error(`stubbed acquire failure: ${stepName}`),
+        );
+      }
+      return Promise.resolve();
+    },
+    captureEnvironment: () => ({}),
+  });
+  service.bindGateway({
+    workers: () => [worker()],
+    worker: () => worker(),
+    dispatch: (_name, params, options) => {
+      if (active.length >= capacity) {
+        return Promise.reject(new Error("Worker 'w1' is at capacity"));
+      }
+      calls.push(params);
+      active.push(params.dispatchId);
+      options?.onRegistered?.();
+      const gate = Promise.withResolvers<DispatchResult>();
+      gates.push(gate);
+      return gate.promise.finally(() => {
+        active.splice(active.indexOf(params.dispatchId), 1);
+        service.notifyWorkerIdle(worker());
+      });
+    },
+  });
+
+  /** Runs a step, recording whether it was ever queued. */
+  const run = (stepName: string, overrides?: Partial<RemoteStepRequest>) => {
+    const step = { queued: false, done: Promise.resolve() };
+    step.done = service.executeRemote(stepRequest({
+      stepName,
+      onEvent: (event) => {
+        if (event.kind === "queued") step.queued = true;
+      },
+      ...overrides,
+    })).then(() => {});
+    return step;
+  };
+  const succeed = (index: number) =>
+    gates[index].resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+
+  return {
+    service,
+    worker,
+    active,
+    calls,
+    gates,
+    failedAcquires,
+    run,
+    succeed,
+  };
+}
+
+Deno.test("DispatchService: a step arriving mid-dispatch gets the worker's free slot (swamp-club#3293)", async () => {
+  const h = createSlotHarness(2);
+  const first = h.run("one");
+  await waitFor(() => h.calls.length === 1, "first dispatch registered");
+
+  // One of two slots is in use: the second step must not wait for it.
+  const second = h.run("two");
+  await waitFor(() => h.calls.length === 2, "second dispatch registered");
+  assertEquals(second.queued, false);
+  assertEquals(h.active.length, 2);
+
+  h.succeed(0);
+  h.succeed(1);
+  await first.done;
+  await second.done;
+});
+
+Deno.test("DispatchService: steps arriving together never exceed the worker's capacity (swamp-club#3293)", async () => {
+  const h = createSlotHarness(2);
+  const steps = [h.run("one"), h.run("two"), h.run("three")];
+  await waitFor(() => h.calls.length === 2, "two dispatches registered");
+  // The third was placed while the first two only held reservations.
+  assertEquals(steps.map((s) => s.queued), [false, false, true]);
+  assertEquals(h.active.length, 2);
+
+  // A slot frees up: the queued step takes it.
+  h.succeed(0);
+  await waitFor(() => h.calls.length === 3, "third dispatch registered");
+  h.succeed(1);
+  h.succeed(2);
+  await Promise.all(steps.map((s) => s.done));
+});
+
+Deno.test("DispatchService: a retried step holds one slot, not one per attempt (swamp-club#3293)", async () => {
+  const h = createSlotHarness(2);
+  const retried = h.run("one");
+  await waitFor(() => h.calls.length === 1, "first attempt registered");
+  h.gates[0].reject(
+    new RpcError({ code: "worker_busy", message: "Worker is at capacity" }),
+  );
+  // The re-queued step waits for a pool change, as it would for the
+  // gateway's idle notification.
+  await waitFor(() => {
+    h.service.notifyWorkerIdle(h.worker());
+    return h.calls.length === 2;
+  }, "second attempt registered");
+
+  // Only the second attempt occupies a slot, so the other one is free.
+  const other = h.run("two");
+  await waitFor(() => h.calls.length === 3, "other step registered");
+  assertEquals(other.queued, false);
+
+  h.succeed(1);
+  h.succeed(2);
+  await retried.done;
+  await other.done;
+
+  // Nothing is left reserved: both slots are available again.
+  const pair = [h.run("three"), h.run("four")];
+  await waitFor(() => h.calls.length === 5, "both later steps registered");
+  assertEquals(pair.map((s) => s.queued), [false, false]);
+  h.succeed(3);
+  h.succeed(4);
+  await Promise.all(pair.map((s) => s.done));
+});
+
+Deno.test("DispatchService: an attempt that fails before reaching the gateway frees its slot (swamp-club#3293)", async () => {
+  const h = createSlotHarness(2);
+  h.failedAcquires.add("one");
+  await assertRejects(
+    () => h.service.executeRemote(stepRequest({ stepName: "one" })),
+    Error,
+    "stubbed acquire failure",
+  );
+  assertEquals(h.calls.length, 0);
+
+  const pair = [h.run("two"), h.run("three")];
+  await waitFor(() => h.calls.length === 2, "both steps registered");
+  assertEquals(pair.map((s) => s.queued), [false, false]);
+  h.succeed(0);
+  h.succeed(1);
+  await Promise.all(pair.map((s) => s.done));
+});
+
+Deno.test("DispatchService: an unscheduled dispatch leaves another step's reservation alone (swamp-club#3293)", async () => {
+  const h = createSlotHarness(2);
+  // Step one is placed on w1 but held before the gateway registers it.
+  const handOff = Promise.withResolvers<void>();
+  const reserved = h.run("one", {
+    beginLockHandOff: async () => {
+      await handOff.promise;
+      return { lent: undefined, end: () => Promise.resolve() };
+    },
+  });
+
+  const unscheduled = h.run("probe", {
+    skipScheduler: true,
+    placement: { labels: {}, platform: "linux", target: "w1" },
+  });
+  await waitFor(() => h.calls.length === 1, "unscheduled dispatch registered");
+  h.succeed(0);
+  await unscheduled.done;
+
+  // Step one's reservation still holds a slot, so only one more step fits.
+  const second = h.run("two");
+  await waitFor(() => h.calls.length === 2, "second dispatch registered");
+  const third = h.run("three");
+  await waitFor(() => third.queued, "third step queued");
+  assertEquals(second.queued, false);
+  assertEquals(h.calls.length, 2);
+
+  handOff.resolve();
+  await waitFor(() => h.calls.length === 3, "reserved step registered");
+  h.succeed(1);
+  h.succeed(2);
+  await waitFor(() => h.calls.length === 4, "third dispatch registered");
+  h.succeed(3);
+  await Promise.all([reserved.done, second.done, third.done]);
+});
+
+Deno.test("DispatchService: a two-slot worker runs a step that arrives while another is running (swamp-club#3293)", async () => {
+  const gateway = new WorkerGateway({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    capabilityService: { registerHandlers: () => {} },
+    onWorkerIdle: (worker) => service.notifyWorkerIdle(worker),
+    runModelMethod: () => Promise.resolve(),
+    readTokenExpiresAt: () => Promise.resolve(null),
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
+    readTokenRecord: (name) =>
+      Promise.resolve({
+        name,
+        state: "enrolled",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        vaultName: "local",
+        secretKey: `worker-token-${name}`,
+        maxEnrollments: 1,
+        bindings: [],
+      }),
+  });
+  const service = new DispatchService({
+    repoDir: "/tmp/unused",
+    repoContext: {} as RepositoryContext,
+    dispatches: new DispatchRegistry(),
+    bundles: new BundleRegistry(),
+    queueTimeoutMs: 60_000,
+    runModelMethod: () => Promise.resolve(),
+    captureEnvironment: () => ({}),
+  });
+  service.bindGateway(gateway);
+
+  const workerChannel: RpcChannel = new RpcChannel({
+    send: (data) => void Promise.resolve().then(() => attached.feed(data)),
+  });
+  const attached = gateway.attachTransport({
+    send: (data) =>
+      void Promise.resolve().then(() => workerChannel.handleRaw(data)),
+  }, () => attached.closed());
+  await workerChannel.call<EnrollResult>(RemoteMethod.enroll, {
+    token: "w1.s3cret",
+    instanceUuid: "uuid-1",
+    machineId: "machine-1",
+    protocolVersion: REMOTE_PROTOCOL_VERSION,
+    swampVersion: "1.0.0",
+    platform: "linux",
+    arch: "x86_64",
+    labels: {},
+    resourceLimits: { capacity: 2 },
+  });
+  let running = 0;
+  const finish = Promise.withResolvers<void>();
+  workerChannel.register(WorkerMethod.dispatch, async () => {
+    running++;
+    await finish.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+
+  const first = service.executeRemote(stepRequest({ stepName: "one" }));
+  await waitFor(() => running === 1, "first dispatch reached the worker");
+  assertEquals(gateway.worker("w1")?.activeDispatchIds.length, 1);
+
+  let queued = false;
+  const second = service.executeRemote(stepRequest({
+    stepName: "two",
+    onEvent: (event) => {
+      if (event.kind === "queued") queued = true;
+    },
+  }));
+  await waitFor(() => running === 2, "second dispatch reached the worker");
+  assertEquals(queued, false);
+
+  finish.resolve();
+  await first;
+  await second;
+  gateway.dispose();
 });

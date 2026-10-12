@@ -32,6 +32,8 @@ import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
   SIGNAL_KEY_MAX_LENGTH,
   SIGNAL_PAYLOAD_MAX_BYTES,
   SIGNAL_WORKFLOW_MAX_LENGTH,
@@ -108,9 +110,12 @@ export interface SignalHttpDeps {
 
 const STATUS: Record<SignalDeliveryResult["status"], number> = {
   delivered: 200,
+  // Held for a wait that has not opened: accepted, and not yet acted on.
+  pending: 202,
   not_found: 404,
   invalid_payload: 422,
   already_settled: 409,
+  already_pending: 409,
   // The key is declared and nothing waits on it now: the request is right
   // and the workflow's state refuses it. The body's `status` tells it from
   // a wait that is already settled.
@@ -275,6 +280,15 @@ export async function handleSignalHttpRequest(
     address = { workflow, key };
   }
 
+  // What names the signal across the sender's retries, in the header HTTP
+  // clients already send for it.
+  const idempotencyKey = req.headers.get("idempotency-key") ?? undefined;
+  if (idempotencyKey !== undefined && !isIdempotencyKey(idempotencyKey)) {
+    return badRequest(
+      `The Idempotency-Key header must be ${IDEMPOTENCY_KEY_FORM}`,
+    );
+  }
+
   // The wait ID, or the workflow a key address names: as sent until it
   // resolves, then under its canonical name, as its denial is audited.
   let named = "waitId" in address ? address.waitId : address.workflow;
@@ -282,6 +296,7 @@ export async function handleSignalHttpRequest(
     requestId,
     ...address,
     payload: (body as { payload: unknown }).payload,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
   }, {
     onWorkflowResolved: (name) => {
       named = name;
@@ -294,9 +309,9 @@ export async function handleSignalHttpRequest(
   });
 
   // The run is for the server alone; the caller is told it only in `data`.
-  const { status, run: _run, ...rest } = result as typeof result & {
-    run?: unknown;
-  };
+  const { status, run: _run, workflow: _workflow, ...rest } = result as
+    & typeof result
+    & { run?: unknown; workflow?: unknown };
   return Response.json({ status, ...rest }, { status: STATUS[status] });
 }
 
@@ -316,9 +331,10 @@ function emitResponseAudit(
 ): void {
   if (!ctx.auditEmitter) return;
   const { principal, sourceIp } = caller;
-  const outcome: AuditOutcome = result.status === "delivered"
-    ? "success"
-    : "failure";
+  const outcome: AuditOutcome =
+    result.status === "delivered" || result.status === "pending"
+      ? "success"
+      : "failure";
   ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
     category: "execution",
@@ -326,9 +342,10 @@ function emitResponseAudit(
     outcome,
     action: "workflow.signal",
     resourceKind: "workflow",
-    resourceName:
-      (result.status === "delivered" ? result.data.workflowName : undefined) ??
-        named,
+    resourceName: (result.status === "delivered" || result.status === "pending"
+      ? result.data.workflowName
+      : undefined) ??
+      named,
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",

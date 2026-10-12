@@ -74,6 +74,7 @@ import type {
 } from "../domain/remote/remote_dispatch.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
+import { WorkerNotDispatchableError } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -121,6 +122,12 @@ export interface DispatchGateway {
     options?: {
       signal?: AbortSignal;
       onEvent?: (event: RpcStreamEvent) => void;
+      /**
+       * Called synchronously once the dispatch is listed in the worker's
+       * `activeDispatchIds`, i.e. from then on the pool itself counts the
+       * slot as taken.
+       */
+      onRegistered?: () => void;
     },
   ): Promise<DispatchResult>;
 }
@@ -149,7 +156,12 @@ export class DispatchService {
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
-  /** Per-worker reservation count for queued steps not yet dispatched. */
+  /**
+   * Per-worker count of steps the scheduler placed but the gateway has not
+   * registered yet. A reservation ends when the dispatch appears in the
+   * worker's `activeDispatchIds`, so a dispatch is counted by exactly one
+   * of the two.
+   */
   readonly #reserved = new Map<string, number>();
   /** Dispatches that performed at least one durable write. */
   readonly #writesByDispatch = new Set<string>();
@@ -161,7 +173,7 @@ export class DispatchService {
    * Worker affinity pins: maps an affinity key to the worker that
    * executed the first step in the group. Subsequent steps with the
    * same key are forced onto that worker; if the worker disconnects,
-   * the step fails with a WorkerAffinityLostError.
+   * or starts draining, the step fails with a WorkerAffinityLostError.
    */
   readonly #affinityPins = new Map<string, string>();
   /**
@@ -312,9 +324,11 @@ export class DispatchService {
     try {
       const affinityKey = request.placement.affinityKey;
       let effectivePlacement = request.placement;
+      // The worker this step's affinity group is bound to, when it is bound.
+      let pinnedWorker: string | undefined;
 
       if (affinityKey) {
-        let pinnedWorker = this.#affinityPins.get(affinityKey);
+        pinnedWorker = this.#affinityPins.get(affinityKey);
         if (!pinnedWorker) {
           const inflight = this.#affinityInflight.get(affinityKey);
           if (inflight) {
@@ -330,14 +344,19 @@ export class DispatchService {
           }
         }
         if (pinnedWorker) {
-          const pool = this.#poolSnapshot();
-          const worker = pool.find((w) => w.name === pinnedWorker);
-          if (!worker || !worker.connected) {
-            throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
-          }
           effectivePlacement = { ...request.placement, target: pinnedWorker };
         }
       }
+      // A bound pin whose worker has left or is draining can never be
+      // honoured, so the step fails rather than queueing until its timeout.
+      const assertPinHeld = () => {
+        if (
+          affinityKey && pinnedWorker && this.#pinnedWorkerLost(pinnedWorker)
+        ) {
+          throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
+        }
+      };
+      assertPinHeld();
 
       if (effectivePlacement.target) {
         const pool = this.#poolSnapshot();
@@ -368,17 +387,35 @@ export class DispatchService {
 
       while (true) {
         request.signal?.throwIfAborted();
-        const workerName = request.skipScheduler &&
-            effectivePlacement.target
-          ? effectivePlacement.target
-          : await this.#acquireWorker(
+        const scheduled = !(request.skipScheduler && effectivePlacement.target);
+        const workerName = scheduled
+          ? await this.#acquireWorker(
             effectivePlacement,
             request.signal,
             deadline,
             emitQueued,
-          );
+            assertPinHeld,
+          )
+          : effectivePlacement.target!;
+        // One per attempt: every pass of this loop takes its own
+        // reservation. An unscheduled attempt took none.
+        let reservationHeld = scheduled;
+        const releaseReservation = () => {
+          if (!reservationHeld) return;
+          reservationHeld = false;
+          const count = this.#reserved.get(workerName) ?? 0;
+          if (count <= 1) {
+            this.#reserved.delete(workerName);
+          } else {
+            this.#reserved.set(workerName, count - 1);
+          }
+        };
         try {
-          const result = await this.#dispatchOnce(workerName, request);
+          const result = await this.#dispatchOnce(
+            workerName,
+            request,
+            releaseReservation,
+          );
           lastDispatchId = result.dispatchId;
           endQueue("mark_dispatched", { dispatchId: result.dispatchId });
           if (affinityKey && !this.#affinityPins.has(affinityKey)) {
@@ -393,7 +430,9 @@ export class DispatchService {
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
-            if (affinityKey) {
+            // Before the pin binds, no other step of the group has run on
+            // the lost worker, so a no-write first step re-dispatches below.
+            if (affinityKey && (pinnedWorker || error.hadWrites)) {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
               });
@@ -418,34 +457,57 @@ export class DispatchService {
             });
             continue;
           }
-          if (
-            error instanceof RpcError &&
-            (error.code === "worker_busy" ||
-              error.code === "worker_draining")
-          ) {
+          // The attempt never ran: the gateway refused to send it, or the
+          // worker refused to take it. A probe names one worker and has no
+          // other to fall back on, so the gateway's refusal fails it.
+          const refusal = error instanceof WorkerNotDispatchableError
+            ? (request.skipScheduler ? null : error.reason)
+            : error instanceof RpcError &&
+                (error.code === "worker_busy" ||
+                  error.code === "worker_draining")
+            ? error.code
+            : null;
+          if (refusal !== null) {
+            assertPinHeld();
+            if (
+              refusal === "not_in_pool" || refusal === "disconnected" ||
+              refusal === "draining"
+            ) {
+              // The scheduler no longer offers this worker, so the step goes
+              // straight back to it instead of waiting on a pool change.
+              logger.warn(
+                "Worker {worker} was {code} on dispatch; re-scheduling step",
+                { worker: workerName, code: refusal },
+              );
+              endQueue("mark_dispatched", {
+                dispatchId: lastDispatchId ?? "unknown",
+              });
+              continue;
+            }
+            const remaining = deadline !== null
+              ? deadline - Date.now()
+              : WAIT_FOREVER_POLL_CAP_MS;
+            if (remaining <= 0) {
+              throw new Error(
+                `Timed out waiting for a worker matching ${
+                  describePlacement(effectivePlacement)
+                } to become available`,
+              );
+            }
             logger.warn(
               "Worker {worker} reported {code} on dispatch; re-queueing step",
-              { worker: workerName, code: error.code },
+              { worker: workerName, code: refusal },
             );
             endQueue("mark_dispatched", {
               dispatchId: lastDispatchId ?? "unknown",
             });
-            await this.#waitForPoolChange(
-              deadline !== null
-                ? Math.max(deadline - Date.now(), 0)
-                : WAIT_FOREVER_POLL_CAP_MS,
-              request.signal,
-            );
+            await this.#waitForPoolChange(remaining, request.signal);
             continue;
           }
           throw error;
         } finally {
-          const count = this.#reserved.get(workerName) ?? 0;
-          if (count <= 1) {
-            this.#reserved.delete(workerName);
-          } else {
-            this.#reserved.set(workerName, count - 1);
-          }
+          // An attempt that failed before the gateway registered it.
+          releaseReservation();
         }
       }
     } catch (error) {
@@ -485,6 +547,7 @@ export class DispatchService {
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
+    onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const handOff = await request.beginLockHandOff?.();
     let outcome:
@@ -493,7 +556,12 @@ export class DispatchService {
     try {
       outcome = {
         ok: true,
-        result: await this.#dispatchLent(workerName, request, handOff?.lent),
+        result: await this.#dispatchLent(
+          workerName,
+          request,
+          handOff?.lent,
+          onRegistered,
+        ),
       };
     } catch (error) {
       outcome = { ok: false, error };
@@ -540,6 +608,7 @@ export class DispatchService {
     workerName: string,
     request: RemoteStepRequest,
     lockHolder: RemoteLockHolder | undefined,
+    onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
@@ -627,6 +696,7 @@ export class DispatchService {
       const result = await gateway.dispatch(workerName, params, {
         signal: request.signal,
         onEvent: request.onEvent,
+        onRegistered,
       });
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
@@ -730,9 +800,11 @@ export class DispatchService {
     signal: AbortSignal | undefined,
     deadline: number | null,
     onQueued?: () => void,
+    assertPlaceable?: () => void,
   ): Promise<string> {
     while (true) {
       signal?.throwIfAborted();
+      assertPlaceable?.();
       const decision: ScheduleDecision = scheduleStep(
         placement,
         this.#poolSnapshot(),
@@ -759,7 +831,21 @@ export class DispatchService {
     }
   }
 
-  /** The live pool with reservation counts overlaid onto active dispatch counts. */
+  /**
+   * Whether an affinity group's pinned worker can no longer take its steps:
+   * gone from the pool, disconnected, or draining. Read from the gateway
+   * directly — the reservation overlay reports a full draining worker as busy.
+   */
+  #pinnedWorkerLost(workerName: string): boolean {
+    const worker = this.#gateway!.worker(workerName);
+    return worker === null || !worker.connected ||
+      worker.status === "draining";
+  }
+
+  /**
+   * The live pool with reservations overlaid onto active dispatch counts.
+   * Reservations cover only dispatches the gateway has not registered yet.
+   */
   #poolSnapshot(): WorkerSnapshot[] {
     return this.#gateway!.workers().map((worker) => {
       const reservations = this.#reserved.get(worker.name) ?? 0;

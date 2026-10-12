@@ -125,6 +125,51 @@ change as those extensions change. New cases may be added, and some may skip, so
 assert on the cases you rely on and log the skips rather than pinning the exact
 skipped list.
 
+## Datastore-Wide Control-Plane Conformance
+
+For a provider that implements `datastoreControlPlaneStore()`:
+
+```typescript
+import { assertDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("datastore-wide control-plane store conformance", async () => {
+  await assertDatastoreControlPlaneStoreConformance({
+    openDatastoreStore: () => provider.datastoreControlPlaneStore!(),
+    // A fresh, never-pulled service with its own cache each call.
+    openSyncService: async () =>
+      provider.createSyncService!("/repo", await Deno.makeTempDir()),
+  });
+});
+```
+
+It checks that `get` reads the datastore-wide record, returns `null` for a
+missing key, never sees a namespace-only record, rejects on an aborted signal,
+and leaves a sync service free to bind its namespace afterwards.
+
+## Storage Conformance
+
+For a provider that implements `storage()`:
+
+```typescript
+import { assertStorageConformance } from "@swamp-club/swamp-testing";
+
+Deno.test("storage/1 conformance", async () => {
+  await assertStorageConformance(() => provider.storage!(), {
+    // Optional: backdate a chunk so touch and put refreshes are checked.
+    setLastModified: (ns, sha256, date) => backdate(ns, sha256, date),
+  });
+});
+```
+
+It checks the contract and capabilities, put/get/has/delete, namespace isolation
+(including `_default`, the namespace of an unnamespaced datastore), `list`, that
+`put` copies its input, `touch` reporting missing hashes, concurrent puts of one
+hash, a second handle seeing the first's writes, and rejection on an aborted
+signal. It writes under namespaces of its own and deletes what it wrote. Without
+`setLastModified` (e.g. against a real bucket) the refresh checks are skipped.
+`createInMemoryRemote({ storage: true })` gives a conforming in-memory
+`storage()` for tests.
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary.

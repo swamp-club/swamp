@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   handleSignalHttpRequest,
   matchSignalRoute,
@@ -400,5 +400,26 @@ Deno.test("handleSignalHttpRequest: another scheme, or a Bearer header with no t
     assertEquals(response.status, 401, authorization);
     assertEquals(calls, [], authorization);
     await response.body?.cancel();
+  }
+});
+
+Deno.test("handleSignalHttpRequest: an Idempotency-Key header in another form is refused before delivery", async () => {
+  resetRateLimitState();
+  for (const key of ["has space", "a/b", "k".repeat(129)]) {
+    const response = await handleSignalHttpRequest(
+      new Request(`http://serve.test/api/v1/signal/${WAIT_ID}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer good.secret",
+          "idempotency-key": key,
+        },
+        body: JSON.stringify({ payload: { verdict: "ship" } }),
+      }),
+      { waitId: WAIT_ID },
+      "203.0.113.4",
+      deps(),
+    );
+    assertEquals(response.status, 400, key.slice(0, 20));
+    assertStringIncludes(await response.text(), "Idempotency-Key");
   }
 });

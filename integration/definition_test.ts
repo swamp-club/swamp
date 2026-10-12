@@ -290,7 +290,7 @@ Deno.test("Definition: save and load evaluated definitions", async () => {
     );
 
     // Save the evaluated definition
-    await evaluatedRepo.save(modelType, result.definition);
+    await evaluatedRepo.save(modelType, result.definition, undefined);
 
     // Load the evaluated definition
     const loaded = await evaluatedRepo.findById(modelType, definition.id);

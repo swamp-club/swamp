@@ -985,6 +985,12 @@ picks the worker with the most free slots, then by name for determinism
 (`scheduleStep` in `src/domain/remote/scheduler.ts`). The `DispatchRegistry`
 tracks N active dispatches per worker, keyed by `(workerName, dispatchId)`.
 
+A slot is counted once. When the scheduler places a step, the `DispatchService`
+holds a reservation on that worker's slot until the gateway lists the dispatch
+in the worker's `activeDispatchIds`; from then on the dispatch itself occupies
+the slot and the reservation is gone. A worker with a free slot therefore
+takes a step that arrives while its other dispatches are running.
+
 **Per-dispatch credentials**: each runner has its own credential from
 `SessionCredentialService.issueForDispatch(workerId, dispatchId)`, separate
 from the control-channel credential (above). The service refreshes it
@@ -998,6 +1004,16 @@ The capability bridge overrides `dispatchId` in every RPC verb so the
 The idle timeout starts only when all slots are empty. `maxDispatches` counts
 total completed dispatches, not concurrent ones. Drain waits for all active
 runners to finish (`activeRunners === 0`).
+
+**Drain**: a worker that starts draining (a signal, `maxDispatches` or the idle
+timeout) sends `worker.drain` at once, before its active runners finish. The
+orchestrator marks it `draining` for the whole drain, so the scheduler offers it
+no new step while its in-flight work completes. When that work is done the
+worker sends `worker.drain` a second time and waits for the answer before it
+closes the connection: frames arrive in order, so the answer proves the last
+dispatch response reached the orchestrator, and a worker process that exits
+straight after closing cannot lose it. The orchestrator ignores the repeat. The
+gateway removes a draining worker on disconnect with no grace window.
 
 ## Shipping extension code
 
@@ -1220,10 +1236,18 @@ label/platform matching, and later steps in the group are forced there by an
 internal target override. Workflow-level affinity covers the whole run;
 job-level covers the job.
 
-If the pinned worker disconnects mid-group, between steps or during a dispatch,
-the step fails with a `WorkerAffinityLostError` rather than re-dispatching.
-Silent re-dispatch to another worker would break the co-location the author
-opted into.
+If the pinned worker disconnects or starts draining mid-group, between steps or
+during a dispatch, the step fails with a `WorkerAffinityLostError` rather than
+re-dispatching. Silent re-dispatch to another worker would break the
+co-location the author opted into. The check is repeated while the step is
+queued, so a step waiting on a pinned worker fails as soon as that worker
+drains instead of at its `queueTimeout`. A worker run with `--max-dispatches`
+or `--idle-timeout` drains too, and fails the rest of its group the same way.
+
+The pin binds when the first step of the group completes. Until then no step
+of the group has run anywhere, so a first step that loses its worker without
+having written re-dispatches like an unpinned step, and the group pins to the
+worker that completes it.
 
 The dispatch service keeps pins in an in-memory `affinityKey → worker` map,
 keyed by `runId` (workflow-level) or `runId:jobName` (job-level). Pins are
@@ -1309,6 +1333,13 @@ below).
   **write-bearing** step fails the run and surfaces the partial state, as a
   local mid-method crash does today. swamp does not auto-retry crashed methods
   locally either, so this is not a regression.
+- **The dispatch never reached the worker:** a worker can leave, drop or start
+  draining between the scheduler choosing it and the gateway sending the
+  dispatch. The gateway refuses with a `WorkerNotDispatchableError`
+  (`src/serve/worker_gateway.ts`), and the worker itself can refuse with
+  `worker_busy` or `worker_draining`. Nothing ran, so the step goes back to the
+  scheduler whatever it declares about writes, and is still bound by its
+  `queueTimeout`. A fleet probe names one worker and fails instead.
 
 ### Write-bearing classification
 
@@ -1348,7 +1379,12 @@ connection error with two guards:
   `token_not_found`, `enrollment_allowance_exhausted`), and these plus
   `protocol_mismatch` and `invalid_token` make up
   `PERMANENT_ENROLLMENT_ERROR_CODES` (`src/domain/remote/protocol.ts`). Any
-  other coded rejection, such as `token_unreadable`, is retried. An uncoded
+  other coded rejection, such as `token_unreadable` or `token_not_synced`, is
+  retried. The gateway looks up the token's definition before `redeem` and runs
+  it pinned to that id, so enrollment never creates a token definition. Without
+  a definition it answers `token_not_synced` when the token's record is already
+  in the local cache (an HA peer minted it and this replica has not pulled the
+  definition yet), and `token_not_found` otherwise (swamp-club#3074). An uncoded
   error (from an orchestrator that predates the codes, or the transport) is
   matched against seven phrases (`revoked`, `expired`, `does not match`,
   `already bound`, `protocol version`, `does not exist` and

@@ -26,10 +26,15 @@ import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_mo
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import {
   createServerTokenGcDeps,
+  createServerTokenGcRepos,
   type ServerTokenGcDepsInput,
 } from "./server_token_gc_deps.ts";
+import { createRepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
+import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { TokenGcInfo } from "./server_token_gc_service.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
+import { waitFor } from "@swamp-club/swamp-testing";
+import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import {
   signalChange,
   type UnscopedChange,
@@ -89,6 +94,8 @@ interface Harness {
   input: ServerTokenGcDepsInput;
   /** Every mutation, in order: "secret:<vault>/<key>", "data:<id>/<name>", "definition:<id>", "push". */
   events: string[];
+  /** Replaces the stored token-main for TOKEN_DEF_ID, as a rotation would. */
+  setStored(attrs: Record<string, unknown> | null): void;
 }
 
 function harness(opts: {
@@ -97,12 +104,15 @@ function harness(opts: {
   stored?: Record<string, unknown> | null;
   deleteVaults?: string[];
   vaultDeleteError?: Error;
+  /** Keys each vault lists; a vault not named here lists none. */
+  vaultKeys?: Record<string, string[]>;
+  vaultListError?: Error;
   /** The server-token definition that owns the name "ci"; null for none. */
   owner?: Definition | null;
 } = {}): Harness {
   const events: string[] = [];
   const deleteVaults = new Set(opts.deleteVaults ?? [TOKEN_SECRETS_VAULT_NAME]);
-  const stored = opts.stored !== undefined ? opts.stored : tokenAttrs("ci");
+  let stored = opts.stored !== undefined ? opts.stored : tokenAttrs("ci");
   const owner = opts.owner !== undefined
     ? opts.owner
     : Definition.create({ id: TOKEN_DEF_ID, name: "ci", version: 1 });
@@ -133,6 +143,9 @@ function harness(opts: {
 
   return {
     events,
+    setStored: (attrs) => {
+      stored = attrs;
+    },
     input: {
       intervalMs: 1000,
       gracePeriodMs: 1000,
@@ -158,6 +171,11 @@ function harness(opts: {
       },
       vaultService: {
         supportsDelete: (vault) => deleteVaults.has(vault),
+        list: (vault) => {
+          events.push(`list:${vault}`);
+          if (opts.vaultListError) return Promise.reject(opts.vaultListError);
+          return Promise.resolve(opts.vaultKeys?.[vault] ?? []);
+        },
         delete: (vault, key) => {
           if (opts.vaultDeleteError) {
             return Promise.reject(opts.vaultDeleteError);
@@ -172,8 +190,45 @@ function harness(opts: {
         events.push("push");
         return Promise.resolve();
       },
+      withTokenLock: (_name, fn) => fn(),
     },
   };
+}
+
+/**
+ * An in-process stand-in for the server token name lock: one holder per
+ * name, the rest wait in order. `waiting` reports how many callers wait on
+ * a name, so a test can see the GC blocked on it without sleeping.
+ */
+class NameMutex {
+  readonly #tails = new Map<string, Promise<void>>();
+  readonly #waiting = new Map<string, number>();
+  readonly lockedNames: string[] = [];
+
+  waiting(name: string): number {
+    return this.#waiting.get(name) ?? 0;
+  }
+
+  async run<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    this.lockedNames.push(name);
+    const previous = this.#tails.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#tails.set(name, previous.then(() => tail));
+    this.#waiting.set(name, this.waiting(name) + 1);
+    try {
+      await previous;
+    } finally {
+      this.#waiting.set(name, this.waiting(name) - 1);
+    }
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
 }
 
 // --- listTokens ---
@@ -361,15 +416,101 @@ Deno.test("createServerTokenGcDeps: collectToken also clears a legacy token's ca
   const h = harness({
     stored: tokenAttrs("ci", { vaultName: "legacy" }),
     deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultKeys: { legacy: ["other", "server-token-ci"] },
   });
   const deps = createServerTokenGcDeps(h.input);
 
   await deps.collectToken(listed(), always);
 
-  assertEquals(h.events.slice(0, 2), [
+  assertEquals(h.events.slice(0, 3), [
     `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+    "list:legacy",
     "secret:legacy/server-token-ci",
   ]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken leaves a recorded vault alone when its listing lacks the key (swamp-club#2535)", async () => {
+  // A datastore writer can point the record at any vault; only one that
+  // actually holds the token's key is touched.
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "prod" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "prod"],
+    vaultKeys: { prod: ["db-password"] },
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:prod/server-token-ci"), false);
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
+});
+
+Deno.test("createServerTokenGcDeps: a recorded vault is listed once per sweep (swamp-club#2535)", async () => {
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultKeys: { legacy: ["server-token-ci"] },
+  });
+  const deps = createServerTokenGcDeps(h.input);
+  const lists = () => h.events.filter((e) => e === "list:legacy").length;
+
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 1);
+
+  // The next sweep lists again.
+  await deps.listTokens();
+  await deps.collectToken(listed(), always);
+  assertEquals(lists(), 2);
+});
+
+Deno.test("createServerTokenGcDeps: a failed listing is retried within the sweep (swamp-club#2535)", async () => {
+  let failures = 1;
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+  });
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    vaultService: {
+      ...h.input.vaultService,
+      list: (vault) => {
+        h.events.push(`list:${vault}`);
+        return failures-- > 0
+          ? Promise.reject(new Error("throttled"))
+          : Promise.resolve(["server-token-ci"]);
+      },
+    },
+  });
+
+  await deps.listTokens();
+  // The first collection cannot list the vault, so it leaves the key there.
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  // The failure was not cached: the next one lists again and deletes it.
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.filter((e) => e === "list:legacy").length, 2);
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), true);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken still collects a token whose recorded vault cannot be listed (swamp-club#2535)", async () => {
+  // A vault whose credentials allow deletes but not listing must not keep
+  // the token forever. Its key is left alone, since the listing cannot show
+  // that the vault holds it.
+  const h = harness({
+    stored: tokenAttrs("ci", { vaultName: "legacy" }),
+    deleteVaults: [TOKEN_SECRETS_VAULT_NAME, "legacy"],
+    vaultListError: new Error("Permission denied (os error 13): readdir"),
+  });
+  const deps = createServerTokenGcDeps(h.input);
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(h.events.includes("secret:legacy/server-token-ci"), false);
+  assertEquals(
+    h.events.includes(`secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`),
+    true,
+  );
+  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without delete support", async () => {
@@ -382,6 +523,7 @@ Deno.test("createServerTokenGcDeps: collectToken skips a recorded vault without 
     `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
   );
   assertEquals(h.events.includes("secret:read-only/server-token-ci"), false);
+  assertEquals(h.events.includes("list:read-only"), false);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken keeps the records when the token secrets vault cannot delete", async () => {
@@ -396,14 +538,20 @@ Deno.test("createServerTokenGcDeps: collectToken keeps the records when the toke
   assertEquals(h.events, []);
 });
 
-Deno.test("createServerTokenGcDeps: collectToken treats a missing secret as deleted", async () => {
+Deno.test("createServerTokenGcDeps: collectToken keeps the records when a delete fails with a not-found message (swamp-club#2535)", async () => {
+  // The control-plane store deletes a missing key without error, so a
+  // not-found message is an unrelated failure, never "already deleted".
   const h = harness({
-    vaultDeleteError: new Error("Secret 'server-token-ci' not found"),
+    vaultDeleteError: new Error("credentials file not found"),
   });
   const deps = createServerTokenGcDeps(h.input);
 
-  assertEquals(await deps.collectToken(listed(), always), "collected");
-  assertEquals(h.events.includes(`definition:${TOKEN_DEF_ID}`), true);
+  await assertRejects(
+    () => deps.collectToken(listed(), always),
+    Error,
+    "credentials file not found",
+  );
+  assertEquals(h.events, []);
 });
 
 Deno.test("createServerTokenGcDeps: collectToken keeps the records when the secret delete fails", async () => {
@@ -502,3 +650,255 @@ Deno.test("createServerTokenGcDeps: collectToken reads and deletes only while ho
   assertEquals(await collection, "collected");
   assertEquals(h.events.at(-1), "push");
 });
+
+// --- the server token name lock (swamp-club#2534) ---
+
+Deno.test("createServerTokenGcDeps: collectToken waits for a rotation holding the name lock, then skips the rotated token (swamp-club#2534)", async () => {
+  const h = harness();
+  const mutex = new NameMutex();
+  // No sync gate: the filesystem-datastore deployment the issue reports.
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    withTokenLock: (name, fn) => mutex.run(name, fn),
+  });
+
+  let finishRotation!: () => void;
+  const rotationMayFinish = new Promise<void>((resolve) => {
+    finishRotation = resolve;
+  });
+  let rotationEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    rotationEntered = resolve;
+  });
+  const rotation = mutex.run("ci", async () => {
+    rotationEntered();
+    await rotationMayFinish;
+    // The rotation writes a fresh, active record for the same name.
+    h.setStored(
+      tokenAttrs("ci", {
+        state: "active",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        revokedAt: undefined,
+      }),
+    );
+  });
+  await entered;
+
+  const collection = deps.collectToken(
+    listed(),
+    (current) => current.state === "revoked",
+  );
+  await waitFor(() => mutex.waiting("ci") === 1, "the GC to wait on the lock");
+  assertEquals(h.events, []);
+
+  finishRotation();
+  await rotation;
+  assertEquals(await collection, "skipped");
+  assertEquals(h.events, []);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken takes the name lock before the sync gate, never inside it (swamp-club#2534)", async () => {
+  const h = harness();
+  const mutex = new NameMutex();
+  const syncGate = createSyncGate();
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    syncGate,
+    withTokenLock: (name, fn) => mutex.run(name, fn),
+  });
+
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holderEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    holderEntered = resolve;
+  });
+  const holder = mutex.run("ci", async () => {
+    holderEntered();
+    await held;
+  });
+  await entered;
+
+  const collection = deps.collectToken(listed(), always);
+  await waitFor(() => mutex.waiting("ci") === 1, "the GC to wait on the lock");
+  // The GC waits on the lock without holding the gate, so a gated request
+  // still runs.
+  assertEquals(
+    await withSyncGate(syncGate, () => Promise.resolve("ran")),
+    "ran",
+  );
+
+  release();
+  await holder;
+  assertEquals(await collection, "collected");
+});
+
+Deno.test("createServerTokenGcDeps: collectToken locks the listed token's name (swamp-club#2534)", async () => {
+  const h = harness();
+  const mutex = new NameMutex();
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    withTokenLock: (name, fn) => mutex.run(name, fn),
+  });
+
+  assertEquals(await deps.collectToken(listed(), always), "collected");
+  assertEquals(mutex.lockedNames, ["ci"]);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken deletes nothing when the name lock cannot be taken (swamp-club#2534)", async () => {
+  const h = harness();
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    withTokenLock: () =>
+      Promise.reject(
+        new LockTimeoutError("server-token-locks/x/.lock", null, 10),
+      ),
+  });
+
+  await assertRejects(
+    () => deps.collectToken(listed(), always),
+    LockTimeoutError,
+  );
+  assertEquals(h.events, []);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken pulls under the name lock and the gate before it re-reads, so another replica's rotation is seen (swamp-club#2534)", async () => {
+  const h = harness();
+  const mutex = new NameMutex();
+  const syncGate = createSyncGate();
+  const order: string[] = [];
+  let probe: Promise<void> | undefined;
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    syncGate,
+    dataRepo: {
+      getContent: (...args) => {
+        order.push("re-read");
+        return h.input.dataRepo.getContent(...args);
+      },
+    },
+    withTokenLock: (name, fn) =>
+      mutex.run(name, () => {
+        order.push("lock");
+        return fn();
+      }),
+    pullChanged: () => {
+      // A gated request queued now runs only after the unit: the pull runs
+      // inside the gate.
+      probe = withSyncGate(syncGate, () => {
+        order.push("gated request");
+        return Promise.resolve();
+      });
+      order.push("pull");
+      // The pull brings in the active record another replica wrote.
+      h.setStored(
+        tokenAttrs("ci", {
+          state: "active",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          revokedAt: undefined,
+        }),
+      );
+      return Promise.resolve();
+    },
+  });
+
+  assertEquals(
+    await deps.collectToken(listed(), (current) => current.state === "revoked"),
+    "skipped",
+  );
+  await probe;
+  // The gated request queued during the pull runs only after the re-read.
+  assertEquals(order, ["lock", "pull", "re-read", "gated request"]);
+  assertEquals(h.events, []);
+});
+
+Deno.test("createServerTokenGcDeps: collectToken deletes nothing when its pull fails (swamp-club#2534)", async () => {
+  const h = harness();
+  const deps = createServerTokenGcDeps({
+    ...h.input,
+    pullChanged: () => Promise.reject(new Error("remote unreachable")),
+  });
+
+  await assertRejects(
+    () => deps.collectToken(listed(), always),
+    Error,
+    "remote unreachable",
+  );
+  assertEquals(h.events, []);
+});
+
+// --- createServerTokenGcRepos: owner lookup (swamp-club#2535) ---
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+for (const location of ["models", "auto-definitions"] as const) {
+  Deno.test(`createServerTokenGcRepos: collectToken deletes an owning definition stored in ${location}`, async () => {
+    await withTempDir(async (repoDir) => {
+      const repoContext = createRepositoryContext({ repoDir });
+      try {
+        // A server-token definition outside auto-definitions is an older
+        // layout the boot migration missed; authentication still finds it.
+        const writer = location === "models"
+          ? new YamlDefinitionRepository(repoDir, undefined, undefined, false)
+          : new YamlDefinitionRepository(
+            repoDir,
+            undefined,
+            repoContext.autoDefinitionsDir,
+            false,
+          );
+        const owner = Definition.create({ name: "ci", version: 1 });
+        await writer.save(SERVER_TOKEN_MODEL_TYPE, owner);
+
+        const repos = createServerTokenGcRepos(repoDir, repoContext);
+        const h = harness({ stored: tokenAttrs("ci") });
+        const deps = createServerTokenGcDeps({
+          ...h.input,
+          definitionRepo: repos.definitionRepo,
+          modelDeleteDeps: repos.modelDeleteDeps,
+          dataRepo: {
+            getContent: (_type, modelId, dataName) =>
+              Promise.resolve(
+                modelId === owner.id && dataName === "token-main"
+                  ? new TextEncoder().encode(JSON.stringify(tokenAttrs("ci")))
+                  : null,
+              ),
+          },
+        });
+
+        assertEquals(
+          await deps.collectToken(listed({ definitionId: owner.id }), always),
+          "collected",
+        );
+        // The owner was resolved, so the name's secret went too.
+        assertEquals(
+          h.events.includes(
+            `secret:${TOKEN_SECRETS_VAULT_NAME}/server-token-ci`,
+          ),
+          true,
+        );
+        assertEquals(
+          await new YamlDefinitionRepository(repoDir).findByName(
+            SERVER_TOKEN_MODEL_TYPE,
+            "ci",
+          ),
+          null,
+        );
+      } finally {
+        repoContext.catalogStore.close();
+      }
+    });
+  });
+}

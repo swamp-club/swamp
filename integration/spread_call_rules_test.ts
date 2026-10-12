@@ -206,13 +206,6 @@ const PINNED: ReadonlyArray<
   },
   {
     file: "src/cli/commands/serve.ts",
-    reason: "workflow runs still active at shutdown",
-    calls: [
-      "Math.min(...workflowRuns.map((r) => r.startedAt.getTime()))",
-    ],
-  },
-  {
-    file: "src/cli/commands/serve.ts",
     reason: "admins and allowed users in the serve config",
     calls: [
       "authConfig.admins.splice(0, authConfig.admins.length, ...resolution.admins)",
@@ -577,6 +570,13 @@ const PINNED: ReadonlyArray<
     calls: [
       "lines.push(...formatValidationLines(data.validations))",
       "lines.push(...formatValidationLines(workflow.validations))",
+    ],
+  },
+  {
+    file: "src/serve/shutdown_interrupt.ts",
+    reason: "workflow runs still active at shutdown",
+    calls: [
+      "Math.min(...workflowRuns.map((r) => r.startedAt.getTime()))",
     ],
   },
 ];

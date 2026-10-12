@@ -74,6 +74,37 @@ function duplicateAuditHookResult(
   return undefined;
 }
 
+/**
+ * Whether a kiro-cli agent config's `hooks` field holds a post-tool hook, in
+ * either the 2.x object form (`{ postToolUse: [{ command }] }`) or the
+ * universal array form current swamp writes
+ * (`[{ trigger: "postToolUse", action: { command } }]`). Either way the hook
+ * must run `swamp audit record --from-hook --tool kiro`. The command only has
+ * to contain the audit hook: a command the user wrapped still records. (Repo
+ * upgrade, which deletes hooks, matches swamp's exact command instead.)
+ */
+function hasKiroPostToolUseHook(hooks: unknown): boolean {
+  const runsAudit = (command: unknown) =>
+    typeof command === "string" &&
+    command.includes("audit record --from-hook --tool kiro");
+  if (Array.isArray(hooks)) {
+    return hooks.some((hook) => {
+      const entry = hook as
+        | { trigger?: unknown; action?: { command?: unknown } }
+        | null;
+      return (entry?.trigger === "postToolUse" ||
+        entry?.trigger === "PostToolUse") &&
+        runsAudit(entry?.action?.command);
+    });
+  }
+  const postToolUse = (hooks as { postToolUse?: unknown } | undefined)
+    ?.postToolUse;
+  return Array.isArray(postToolUse) &&
+    postToolUse.some((hook) =>
+      runsAudit((hook as { command?: unknown } | null)?.command)
+    );
+}
+
 async function checkKiro(ctx: CheckContext): Promise<CheckResult> {
   const configPath = join(ctx.repoPath, ".kiro/agents/swamp.json");
   let parsed: Record<string, unknown>;
@@ -118,12 +149,11 @@ async function checkKiro(ctx: CheckContext): Promise<CheckResult> {
       details: { tools },
     };
   }
-  const hooks = parsed.hooks as { postToolUse?: unknown[] } | undefined;
-  if (!hooks?.postToolUse || hooks.postToolUse.length === 0) {
+  if (!hasKiroPostToolUseHook(parsed.hooks)) {
     return {
       name: "agent-config-loadable",
       status: "fail",
-      message: "no `hooks.postToolUse` configured in the agent config",
+      message: "no `postToolUse` hook configured in the agent config",
       hint: "Run `swamp init --tool kiro --force` to regenerate.",
     };
   }

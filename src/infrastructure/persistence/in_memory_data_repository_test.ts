@@ -564,3 +564,43 @@ Deno.test("collectGarbage: frees budget for reclaimed bytes", async () => {
   const result = await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
   assertEquals(result.version, 3);
 });
+
+async function promoteDeferred(
+  repo: InMemoryUnifiedDataRepository,
+  count: number,
+): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    const receipt = await repo.saveDeferred(
+      TEST_TYPE,
+      TEST_MODEL_ID,
+      createTestData({ garbageCollection: 2 }),
+      TEST_CONTENT,
+    );
+    await repo.advanceLatestMarkers([receipt]);
+  }
+}
+
+Deno.test("advanceLatestMarkers: prunes promoted deferred writes to the cap with enableWriteGc (swamp-club#3251)", async () => {
+  const repo = new InMemoryUnifiedDataRepository(
+    new CatalogStore(":memory:"),
+    undefined,
+    undefined,
+    true,
+  );
+  await promoteDeferred(repo, 5);
+
+  assertEquals(
+    await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [4, 5],
+  );
+});
+
+Deno.test("advanceLatestMarkers: keeps every promoted deferred write without enableWriteGc (swamp-club#3251)", async () => {
+  const { repo } = createRepo();
+  await promoteDeferred(repo, 5);
+
+  assertEquals(
+    await repo.listVersions(TEST_TYPE, TEST_MODEL_ID, "test-data"),
+    [1, 2, 3, 4, 5],
+  );
+});

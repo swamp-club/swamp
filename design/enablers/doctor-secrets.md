@@ -60,8 +60,70 @@ print as concrete commands.
 The scan resolves each definition's type schema through the model registry to
 find sensitive global args. If a type cannot be resolved (e.g. an extension not
 installed locally), the definition is reported as **unresolved**: an advisory
-warning, not a silent skip. The redaction primitives in the same module have the
-same object-shape-only limit.
+warning, not a silent skip.
+
+## Nested fields
+
+The rule walks the schema and the stored values together
+(`findValuesWithMetadata` in `src/domain/models/zod_field_metadata.ts`), so a
+sensitive field is found in objects, array elements, tuple items, record values,
+`.catchall()` keys, union members and intersections. A finding names the
+element: `users[1].password`, `accounts.prod.token`.
+
+The walk reads the value as stored. A `z.preprocess()` that turns a string into
+a container is not run, so a sensitive field inside that string is not reached.
+Each schema is walked once per place in the value, so the cost grows with the
+size of the value even when union members overlap in a recursive schema.
+
+- **Unions.** No member's validation runs. Every member the value could belong
+  to is checked, and a value is refused if any of them marks it sensitive. Only
+  members certain to reject the value are dropped:
+  - a member of another kind: an object member for an array, a string member for
+    a number or boolean. A stored string fits every scalar member, because an
+    expression is text until it is resolved. A coerced scalar or a member behind
+    `z.preprocess()` fits any value and is kept.
+  - an object member that requires a literal for a key where the value holds a
+    literal another member requires there. `{ kind: "env", ... }` is not checked
+    against a member declaring `kind: z.literal("secret")`. A tag that names no
+    member, or is still an expression, drops nothing.
+- **Vault keys.** A field inside an array element or record value occurs once
+  per element, so its suggested vault key is built from the whole path
+  (`users-1-password`). A declared `vaultKey` is not used there, because every
+  element would share it. A declared `vaultName` still applies. A field reached
+  only through objects, unions or wrappers occurs once and keeps its declared
+  `vaultKey`.
+- **Paths.** A path names one place in the stored value. A key made of
+  letters, digits, `_` and `-` is joined with a dot. Any other key is written
+  quoted and escaped (`accounts["eu.west"].token`), so it cannot read as nesting
+  or as an array index. Control characters and bidirectional marks in a key are
+  written as `\uXXXX` escapes. A path naming an array element is not a
+  `--global-arg` key; the refusal says to pass the whole array with
+  `<name>:json=[...]`. A suggested vault key built from a path or from a quoted
+  key holds only letters, digits, `_` and `-`. A key that is not declared gets a
+  numeric suffix when it equals another key suggested for the same definition;
+  fields that declare the same `vaultKey` share it. Keys already in the vault
+  are not consulted.
+
+- **Values of the wrong shape.** A value that is not the object or array its
+  schema declares cannot be walked: `tokens: "hunter2"` for an array of
+  sensitive tokens. If that schema marks anything inside it, the whole value is
+  reported at its own path. One expression that resolves to the whole container
+  is still accepted.
+- **Pipes.** Both sides of `a.pipe(b)` are read, so a field marked on `b` is
+  found. Where a transform changes the shape between them, the wrong-shape rule
+  reports the stored value whole.
+- **Absent-only union members.** `z.null()`, `z.undefined()`, `z.void()` and
+  `z.never()` accept no present value and are dropped, so they do not make a
+  number look as if it belonged to a member other than the sensitive one.
+
+`redactSensitiveValues` (`model get`, reports) and `extractSensitiveFieldValues`
+(the values registered for masking in logs before a method runs) use the same
+walk, so a field the guard sends to a vault is masked once it is resolved. Both
+first ask whether the schema marks anything at all (`schemaHoldsMetadata`,
+answered once per schema and kept), and skip the walk when it does not. The
+guard itself always walks.
+Vaulting of sensitive fields in resource data still reads the schema alone and
+sees object-nested fields only (swamp-club#3038).
 
 ## Out of scope
 

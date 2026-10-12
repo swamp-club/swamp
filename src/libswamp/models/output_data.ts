@@ -49,6 +49,13 @@ import {
 } from "./output_reference.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  type ArtifactProducer,
+  resolveRunArtifact,
+  type RunArtifactResolution,
+} from "../../domain/datastore_v3/run_artifact_resolution.ts";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import { sha256Hex } from "../data/run_artifact_check.ts";
 /** Data payload for the completed event. */
 export interface ModelOutputDataData {
   outputId: string;
@@ -111,6 +118,18 @@ export interface ModelOutputDataDeps
     name: string,
     version?: number,
   ) => Promise<Uint8Array | null>;
+  /**
+   * On a v3 datastore, whether the version an output's ref names is still
+   * the content that output produced (swamp-club#3279): history compaction
+   * can leave a later re-save of the same version live. Absent on v2, where
+   * a version is never written again.
+   */
+  checkArtifact?: (
+    type: ModelType,
+    definitionId: string,
+    ref: DataArtifactRef,
+    producer: ArtifactProducer,
+  ) => Promise<RunArtifactResolution>;
 }
 
 /** Wires real infrastructure into ModelOutputDataDeps. */
@@ -172,6 +191,32 @@ export function createModelOutputDataDeps(
       dataRepo.findByName(type, definitionId, name, version),
     getContent: (type, definitionId, name, version) =>
       dataRepo.getContent(type, definitionId, name, version),
+    ...(resolverEngine(datastoreResolver) === "v3"
+      ? {
+        checkArtifact: async (type, definitionId, ref, producer) => {
+          const data = await dataRepo.findByName(
+            type,
+            definitionId,
+            ref.name,
+            ref.version,
+          );
+          const content = data === null ? null : await dataRepo.getContent(
+            type,
+            definitionId,
+            ref.name,
+            ref.version,
+          );
+          return resolveRunArtifact(
+            ref,
+            producer,
+            data === null || content === null ? undefined : {
+              metadata: data.toData(),
+              sha256: await sha256Hex(content),
+            },
+          );
+        },
+      }
+      : {}),
   };
 }
 
@@ -270,6 +315,32 @@ export async function* modelOutputData(
           ),
         };
         return;
+      }
+
+      // On v3 the ref's version is checked to still be this output's
+      // content; an explicit --version reads whatever is live.
+      if (deps.checkArtifact !== undefined && input.version === undefined) {
+        const resolution = await deps.checkArtifact(
+          type,
+          definition.id,
+          dataArtifact,
+          {
+            ...(output.provenance.workflowRunId !== undefined
+              ? { workflowRunId: output.provenance.workflowRunId }
+              : {}),
+            startedAt: output.startedAt,
+            ...(output.completedAt !== undefined
+              ? { completedAt: output.completedAt }
+              : {}),
+          },
+        );
+        if (resolution.kind === "unavailable") {
+          yield {
+            kind: "error",
+            error: notFound("Data", resolution.reason),
+          };
+          return;
+        }
       }
 
       // Get the version

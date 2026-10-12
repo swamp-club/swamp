@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertFalse, assertRejects } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   ExtensionApiClient,
@@ -27,6 +27,7 @@ import {
   REGISTRY_TOKEN_SCOPE_CODE,
 } from "./extension_api_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { RegistryUnavailableError } from "../../domain/extensions/registry_unavailable_error.ts";
 import { MAX_EXTENSION_ARCHIVE_BYTES } from "../../domain/extensions/extension_archive_limits.ts";
 
 for (
@@ -1603,3 +1604,99 @@ Deno.test("ExtensionApiClient.listVersions: truncates a long yank reason by code
     `${"x".repeat(MAX_REGISTRY_WARNING_LENGTH)}…`,
   );
 });
+
+/** A client whose every request is answered by `fetch`, with no real waits. */
+function clientAnswering(fetch: () => Promise<Response>): ExtensionApiClient {
+  return new ExtensionApiClient("http://registry.test", {}, {
+    sleep: () => Promise.resolve(),
+    fetch,
+  });
+}
+
+Deno.test("ExtensionApiClient: a timed-out request throws RegistryUnavailableError", async () => {
+  const timeout = new DOMException("Signal timed out.", "TimeoutError");
+  const client = clientAnswering(() => Promise.reject(timeout));
+  const err = await assertRejects(
+    () => client.getExtension("@swamp/s3-datastore"),
+    RegistryUnavailableError,
+    "Request to http://registry.test timed out. Is the server running?",
+  );
+  assertEquals(err.name, "UserError");
+  assertEquals(err.cause, timeout);
+});
+
+Deno.test("ExtensionApiClient: a failed connection throws RegistryUnavailableError", async () => {
+  const failure = new TypeError("error sending request");
+  const client = clientAnswering(() => Promise.reject(failure));
+  const err = await assertRejects(
+    () => client.searchExtensions({ q: "s3" }),
+    RegistryUnavailableError,
+    "Could not connect to http://registry.test: error sending request",
+  );
+  assertEquals(err.cause, failure);
+});
+
+Deno.test("ExtensionApiClient: a 5xx response throws RegistryUnavailableError", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({ error: "upstream unavailable" }, {
+      status: 503,
+    }))
+  );
+  await assertRejects(
+    () => client.getExtension("@swamp/s3-datastore"),
+    RegistryUnavailableError,
+    "Extension API error (HTTP 503): upstream unavailable",
+  );
+});
+
+Deno.test("ExtensionApiClient: a 5xx HTML error page throws RegistryUnavailableError", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(
+      new Response("<!DOCTYPE html><html>Bad Gateway</html>", {
+        status: 502,
+        headers: { "content-type": "text/html" },
+      }),
+    )
+  );
+  await assertRejects(
+    () => client.searchExtensions({ q: "s3" }),
+    RegistryUnavailableError,
+    "unexpected HTML response",
+  );
+});
+
+Deno.test("ExtensionApiClient: a rate limit that outlasts the retries throws RegistryUnavailableError", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(
+      new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      }),
+    )
+  );
+  await assertRejects(
+    () => client.getExtension("@swamp/s3-datastore"),
+    RegistryUnavailableError,
+    "Rate limit exceeded",
+  );
+});
+
+Deno.test("ExtensionApiClient: getExtension still returns null on 404", async () => {
+  const client = clientAnswering(() =>
+    Promise.resolve(Response.json({ error: "not found" }, { status: 404 }))
+  );
+  assertEquals(await client.getExtension("@swamp/missing"), null);
+});
+
+for (const status of [401, 403, 409, 422, 400]) {
+  Deno.test(`ExtensionApiClient: an HTTP ${status} is not RegistryUnavailableError`, async () => {
+    const client = clientAnswering(() =>
+      Promise.resolve(Response.json({ error: "refused" }, { status }))
+    );
+    const err = await assertRejects(
+      () => client.searchExtensions({ q: "s3" }),
+      UserError,
+    );
+    assertFalse(err instanceof RegistryUnavailableError);
+  });
+}

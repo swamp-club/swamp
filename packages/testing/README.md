@@ -245,6 +245,11 @@ advertises `controlPlane`. Records live under `_control/<key>`, or
 that has not pulled or pushed binds none on its first control-plane call, as the
 S3 and GCS extensions do. Writes are logged as `controlPlane` ops.
 
+With `storage: true`, the remote also has a `storage()` returning `storage/1`
+chunk storage shared by every handle. Backdate a chunk with
+`setChunkLastModified(ns, sha256, date)`. Chunks are kept apart from files and
+the control plane, are not logged as ops, and ignore `offline` and `failNext`.
+
 Not modelled: namespace prefixes, lazy hydration, `previewPush`, Windows
 drive-letter joins, the gap between `preparePush` deleting objects and
 `commitPush` publishing the index, and the extensions' cached or fallback index
@@ -278,6 +283,7 @@ breaks the contract; call them from your own `Deno.test`.
 | `assertSyncServiceConformance`          | The sync service's methods and `capabilities()` shape    |
 | `assertSyncServiceRoundTripConformance` | Sync behaviour between two caches on one backend         |
 | `assertControlPlaneStoreConformance`    | A `controlPlaneStore()`: round-trip, list, atomic create |
+| `assertStorageConformance`              | A `storage()`: the `storage/1` chunk contract            |
 
 ### `assertControlPlaneStoreConformance`
 
@@ -298,6 +304,24 @@ refuses to start a workflow with a `wait_for_signal` step on a datastore whose
 store lacks it, or whose create is not atomic. Pass
 `{ requirePutIfAbsent: false }` to check a store without it.
 `createInMemoryControlPlaneStore()` is a conforming store for tests of your own.
+
+### `assertStorageConformance`
+
+For a provider that implements `storage()`, the content storage of the coming v3
+datastore (swamp does not call it yet). Pass a function that opens the storage;
+each handle must reach the same chunks.
+
+```typescript
+Deno.test("storage/1 conformance", async () => {
+  await assertStorageConformance(() => provider.storage!(), {
+    setLastModified: (ns, sha256, date) => backdate(ns, sha256, date),
+  });
+});
+```
+
+`setLastModified` is optional: without it the checks that `touch` and `put`
+refresh `lastModified` are skipped. `createInMemoryRemote({ storage: true })`
+provides a conforming storage, with `setChunkLastModified` as the hook.
 
 ### `assertSyncServiceRoundTripConformance`
 

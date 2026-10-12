@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join, resolve } from "@std/path";
+import { UserError } from "../errors.ts";
 import { MIGRATION_SENTINEL } from "./managed_config_migration.ts";
 
 /**
@@ -120,6 +121,13 @@ export interface FilesystemDatastoreConfig {
   readonly exclude?: string[];
   /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
+  /**
+   * The format `swamp datastore setup` created the datastore in: 2 (files,
+   * the default) or 3 (the v3 commit log, swamp-club#3279). It records the
+   * choice; the datastore's format marker decides which engine opens it, and
+   * a config that disagrees with its marker is refused.
+   */
+  readonly format?: 2 | 3;
 }
 
 /**
@@ -189,6 +197,8 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  /** Filesystem only: the format setup created the datastore in (2 or 3). */
+  format?: number;
   /**
    * When `true`, model definitions, workflow definitions, vault configs and
    * the extension lockfile are stored in the datastore's `config/` tier
@@ -201,6 +211,36 @@ export interface DatastoreConfigData {
 }
 
 /**
+ * Reads the `format` key of a `.swamp.yaml` datastore block, or the
+ * `--format` flag of `swamp datastore setup`. It must be 2 or 3, and 3 only
+ * on a filesystem datastore: v3 for S3, GCS and extension datastores arrives
+ * with Phase 4 (swamp-club#3279). Format 2 on another type is the default
+ * and is read as no key.
+ *
+ * @throws UserError for any other value, or format 3 on another type
+ */
+export function readDatastoreFormatKey(
+  type: string,
+  value: unknown,
+): 2 | 3 | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value !== 2 && value !== 3) {
+    throw new UserError(
+      `The datastore format must be 2 or 3, got ${JSON.stringify(value)}.`,
+    );
+  }
+  if (type === "filesystem") return value;
+  if (value === 3) {
+    throw new UserError(
+      `Datastore format 3 is only supported on filesystem datastores; it ` +
+        `is not supported yet for S3, GCS or extension datastores. The ` +
+        `"${type}" datastore stays on format 2.`,
+    );
+  }
+  return undefined;
+}
+
+/**
  * Returns the effective list of datastore subdirectories from config,
  * falling back to the defaults. Filters out any always-local subdirs.
  */
@@ -210,6 +250,90 @@ export function getDatastoreDirectories(
   const dirs = config.directories ?? [...DEFAULT_DATASTORE_SUBDIRS];
   const localSet = new Set<string>(ALWAYS_LOCAL_SUBDIRS);
   return dirs.filter((d) => !localSet.has(d));
+}
+
+/**
+ * The catalog database and its SQLite sidecars, relative to a datastore
+ * root. The catalog is a local index of the datastore, kept in the repo's
+ * own `.swamp/data` whatever the datastore, so datastore setup never copies
+ * it: a copy found on a datastore path is a stale leftover (swamp-club#3238).
+ */
+export const CATALOG_FILES: readonly string[] = [
+  "_catalog.db",
+  "_catalog.db-journal",
+  "_catalog.db-wal",
+  "_catalog.db-shm",
+].map((name) => join("data", name));
+
+/**
+ * Datastore subdirectories that have no v3 home because nothing writes them
+ * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry
+ * files are written to the checkout's own `.swamp`, or the user-global
+ * telemetry spool, whatever the datastore, and nothing writes `logs/` or
+ * `files/`. They stay repo-local on v3, so no commit may materialise into
+ * them: a key there could overwrite a checkout's own audit trail in solo
+ * layout. Datastore setup leaves them in `.swamp` for the same reason
+ * (swamp-club#3281). See "v3 stream directories" in
+ * `design/enablers/datastores.md`.
+ */
+export const REPO_LOCAL_STREAM_SUBDIRS = [
+  "audit",
+  "telemetry",
+  "logs",
+  "files",
+] as const;
+
+/**
+ * Datastore subdirectories whose run and output records sit beside a run
+ * log: the plain-text `.log` file a run writes into the checkout's own
+ * `.swamp`, whatever the datastore. Records store its path relative to the
+ * repository, so the log stays local when its record moves.
+ */
+const RUN_LOG_SUBDIRS: readonly string[] = ["outputs", "workflow-runs"];
+
+/**
+ * Whether `subdir`, a top-level datastore subdirectory, is a repo-local
+ * stream directory that datastore setup leaves in `.swamp`.
+ */
+export function isRepoLocalStreamSubdir(subdir: string): boolean {
+  return (REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir);
+}
+
+/**
+ * Whether a file named `fileName`, anywhere under the top-level datastore
+ * subdirectory `subdir`, is a run log that datastore setup leaves in
+ * `.swamp` (swamp-club#3281).
+ */
+export function isRunLogFile(subdir: string, fileName: string): boolean {
+  return RUN_LOG_SUBDIRS.includes(subdir) && fileName.endsWith(".log");
+}
+
+/**
+ * Whether the subdirectory `subdir` can hold a run log, so removing it
+ * must walk it rather than delete it whole.
+ */
+export function mayHoldRunLogs(subdir: string): boolean {
+  return RUN_LOG_SUBDIRS.includes(subdir);
+}
+
+/**
+ * The on-disk root a filesystem datastore keeps its tier under
+ * (`{path}/{namespace}` when namespaced), when that root is not the repo's
+ * own `.swamp/`. Datastore setup migrates from it (swamp-club#3238).
+ *
+ * Undefined for an extension datastore, whose data setup reads from its
+ * local cache, and for a root that resolves lexically to `repoSwampDir`.
+ * Setup compares real paths before it acts on the result.
+ */
+export function externalFilesystemDatastoreRoot(
+  config: DatastoreConfig,
+  repoSwampDir: string,
+): string | undefined {
+  if (isCustomDatastoreConfig(config)) return undefined;
+  const root = config.namespace
+    ? join(config.path, config.namespace)
+    : config.path;
+  return resolve(root) === resolve(repoSwampDir) ? undefined : root;
 }
 
 /**

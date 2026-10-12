@@ -313,6 +313,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // (swamp-club#3056).
   "src/serve/bookkeeping_gc.ts: reapBatch",
   "src/serve/server_token_gc_deps.ts: createServerTokenGcDeps",
+  // Serve shutdown's run interrupts: the push of the interrupted records is
+  // the root's flush, bounded by one deadline (swamp-club#3252).
+  "src/serve/shutdown_interrupt.ts: interruptShutdownRuns",
   // Writes that push nothing, in a root with no push, so they stage into it
   // rather than through signalChange's hook fallback (swamp-club#3056): boot
   // and continuous reconciliation, run.doctor's fix, and worker data-plane
@@ -328,7 +331,9 @@ const PINNED_SERVE_ROOT_ENTRY_POINTS: readonly string[] = [
   // push per outermost run, whose checkpoint publishes the lockfile under
   // the global lock (swamp-club#3192). The four extension handlers call it
   // outside any root.
-  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction",
+  // Two roots since swamp-club#3279: the v2 publish's over the hook alone,
+  // and the v3 publish's over the repository context.
+  "src/serve/handlers/admin_handlers.ts: extensionLockfileTransaction (x2)",
   // The token secret migration, one root per token under that token's name
   // lock (swamp-club#2482). It runs at serve boot, and in the CLI token
   // commands before or after their own root, never inside one.

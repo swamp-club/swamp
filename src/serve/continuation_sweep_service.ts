@@ -34,6 +34,7 @@
  * wait settled as timed out, and continues.
  */
 
+import { sweepPendingSignals } from "../domain/workflows/signal_wait_cleanup.ts";
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { ConnectionContext } from "./handlers/shared.ts";
@@ -112,6 +113,30 @@ export async function sweepContinuations(
     }
   }
   return { examined, launched };
+}
+
+/**
+ * Removes the pending signals nothing will take (swamp-club#3212), with the
+ * continuation pass: a signal by key is held through serve, so serve is
+ * where they gather, and nothing else here runs the wait-record sweep. It
+ * reads key records and never a run record, so it is safe on every
+ * datastore. Never throws: a pass that fails is logged, and the next one
+ * tries again.
+ */
+export async function sweepHeldSignals(
+  ctx: Pick<ConnectionContext, "repoContext">,
+  now: Date = new Date(),
+): Promise<number> {
+  const waits = ctx.repoContext.signalWaits;
+  if (!waits?.supported) return 0;
+  try {
+    return await sweepPendingSignals(waits.store, now);
+  } catch (error) {
+    logger.warn("Could not sweep pending signals: {error}", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 0;
+  }
 }
 
 export interface ContinuationSweepDeps {

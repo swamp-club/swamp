@@ -37,7 +37,10 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import {
   pathExists,
   recordingUnitOfWork,
+  typedRecordingUnitOfWork,
 } from "./test_helpers/staged_change_helpers.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { registerManagedConfig } from "./paths.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 Deno.test("YamlVaultConfigRepository - normal vault types resolve correctly", async () => {
@@ -612,4 +615,108 @@ Deno.test("YamlVaultConfigRepository.findByName: a duplicated name resolves to t
       await Deno.remove(dir, { recursive: true });
     }
   }
+});
+
+/** Each typed change as [partition, kind, intent kind, key, expect]. */
+function typedRows(batches: (readonly TypedChange[])[]): unknown[][][] {
+  return batches.map((batch) =>
+    batch.map((change) => {
+      if ("put" in change) {
+        return [
+          change.partition.toString(),
+          "put",
+          change.put.intent.kind,
+          change.put.key.toString(),
+          change.put.expect ?? null,
+        ];
+      }
+      const op = change.op;
+      return [
+        change.partition.toString(),
+        op.kind,
+        op.kind === "tombstone" ? op.intent.kind : null,
+        op.kind === "tombstone" ? op.key.toString() : null,
+        op.kind === "tombstone" ? op.expect ?? null : null,
+      ];
+    })
+  );
+}
+
+Deno.test("YamlVaultConfigRepository: on v3 under managed config, stages a create, a rename as two partitions, nothing for an unchanged save, and a delete (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const configBase = join(dir, "config");
+    registerManagedConfig(dir, true, configBase);
+    const { markDirty, uow, batches, staged } = typedRecordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      join(configBase, "vaults"),
+      markDirty,
+    );
+    const id = crypto.randomUUID();
+    const key = `config/vaults/local_encryption/${id}.yaml`;
+
+    const created = localVault(id, "v1");
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(created);
+      // The same bytes again: nothing to stage.
+      await repo.save(created);
+    });
+    assertEquals(typedRows(batches), [[[
+      "config--vault--v1",
+      "put",
+      "definition.create",
+      key,
+      "absent",
+    ]]]);
+
+    batches.length = 0;
+    const renamed = VaultConfig.fromData({
+      ...(await repo.findById("local_encryption", id))!.toData(),
+      name: "v2",
+    });
+    await runInUnitOfWork(uow, () => repo.save(renamed));
+    assertEquals(typedRows(batches), [
+      [["config--vault--v2", "put", "definition.rename-to", key, "absent"]],
+      [[
+        "config--vault--v1",
+        "tombstone",
+        "definition.rename-from",
+        key,
+        "present",
+      ]],
+    ]);
+
+    batches.length = 0;
+    await runInUnitOfWork(uow, () => repo.delete(renamed));
+    await runInUnitOfWork(uow, () => repo.delete(renamed));
+    assertEquals(typedRows(batches), [[[
+      "config--vault--v2",
+      "tombstone",
+      "definition.delete",
+      key,
+      null,
+    ]]]);
+    assertEquals(staged, []);
+  });
+});
+
+Deno.test("YamlVaultConfigRepository: on v3, a repo-local vault config (as repo init writes) stages nothing (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+    const repo = new YamlVaultConfigRepository(
+      dir,
+      undefined,
+      join(dir, "vaults"),
+      markDirty,
+    );
+    const config = localVault(crypto.randomUUID(), "default");
+
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(config);
+      await repo.delete(config);
+    });
+
+    assertEquals(batches, []);
+  });
 });

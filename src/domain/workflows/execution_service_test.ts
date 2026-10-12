@@ -2298,7 +2298,7 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
     const evalWorkflowRepo = new YamlEvaluatedWorkflowRepository(tempDir);
-    await evalWorkflowRepo.save(workflow);
+    await evalWorkflowRepo.save(workflow, undefined);
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
@@ -8280,6 +8280,7 @@ for (const target of ["name", "id", "direct"]) {
           await new YamlEvaluatedDefinitionRepository(tempDir).save(
             type,
             cached,
+            undefined,
           );
         }
         const reference = dependency === "dynamic"
@@ -8309,7 +8310,10 @@ for (const target of ["name", "id", "direct"]) {
         });
         const workflowRepo = new InMemoryWorkflowRepository();
         await workflowRepo.save(workflow);
-        await new YamlEvaluatedWorkflowRepository(tempDir).save(workflow);
+        await new YamlEvaluatedWorkflowRepository(tempDir).save(
+          workflow,
+          undefined,
+        );
         const executor = new RunContextCapturingExecutor();
         const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
         try {
@@ -11243,7 +11247,10 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
     const { YamlEvaluatedWorkflowRepository } = await import(
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
-    await new YamlEvaluatedWorkflowRepository(tempDir).save(evaluated);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      evaluated,
+      undefined,
+    );
     executor.failing.add("prep");
     const failed = await service.execute(source.name, {
       lastEvaluated: true,
@@ -16112,6 +16119,10 @@ Deno.test("run(): a failed step that threw a primitive still reports its own err
           definitionRepo,
           tempDir,
         ),
+        invocationEvaluator: new ExpressionEvaluationService(
+          definitionRepo,
+          tempDir,
+        ),
       });
 
       const workflowRepo = new InMemoryWorkflowRepository();
@@ -20036,3 +20047,77 @@ Deno.test({
     assertEquals(received, [{ value: "vpc-0abc123" }]);
   },
 });
+
+for (const autoGc of [true, false]) {
+  Deno.test(`run: hands autoGc ${autoGc} to every step, including a nested workflow's (swamp-club#3251)`, async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const seen = new Map<string, boolean | undefined>();
+      const executor: StepExecutor = {
+        execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+          seen.set(`${ctx.workflowName}/${ctx.stepName}`, ctx.autoGc);
+          return Promise.resolve({});
+        },
+      };
+
+      await workflowRepo.save(Workflow.create({
+        name: "child",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "child-write",
+            task: StepTask.model("m", "write"),
+          })],
+        })],
+      }));
+      const parent = Workflow.create({
+        name: "parent",
+        jobs: [Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: "parent-write",
+              task: StepTask.model("m", "write"),
+            }),
+            Step.create({
+              name: "nested",
+              task: StepTask.workflow("child"),
+            }),
+          ],
+        })],
+      });
+      await workflowRepo.save(parent);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        autoGc,
+      );
+
+      const run = await service.execute(parent.name);
+
+      assertEquals(run.status, "succeeded");
+      assertEquals(
+        Object.fromEntries(seen),
+        { "parent/parent-write": autoGc, "child/child-write": autoGc },
+      );
+    });
+  });
+}

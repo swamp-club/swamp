@@ -651,3 +651,25 @@ Deno.test("mergeInputArgs: --input values come after --arg values", () => {
     ["a=1", "a=2"],
   );
 });
+
+// --- parseKeyValueInputs / parseInputs (literal) — swamp-club#3205 ---
+
+Deno.test("parseKeyValueInputs: literal keeps a leading @ and \\@ verbatim", async () => {
+  const result = await parseKeyValueInputs(
+    ["body=@/etc/passwd", "escaped=\\@alice hi", "plain=x ${{ env.HOME }} y"],
+    { literal: true },
+  );
+  assertEquals(result, {
+    body: "@/etc/passwd",
+    escaped: "\\@alice hi",
+    plain: "x ${{ env.HOME }} y",
+  });
+});
+
+Deno.test("parseInputs: literal applies to key=value entries", async () => {
+  const { inputs } = await parseInputs({
+    input: ["body=@missing-file.txt"],
+    literal: true,
+  });
+  assertEquals(inputs, { body: "@missing-file.txt" });
+});

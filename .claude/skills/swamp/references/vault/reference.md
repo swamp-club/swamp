@@ -87,8 +87,8 @@ cat dev-secrets.yaml | swamp vault edit dev-secrets --json
 Over `--server`, a `local_encryption` vault's `base_dir`, `key_file`,
 `ssh_key_path` and `auto_generate` must keep their stored values, and
 `vault create` / `vault migrate` refuse any value other than the server's
-defaults (`auto_generate: true`, `base_dir` the serve repo) and apply those
-defaults.
+defaults (`auto_generate: true`, `base_dir` the serve repo) and store
+`auto_generate: true` with `base_dir` unset, which resolves to the serve repo.
 
 If a vault's YAML no longer parses, address it by id with `--type`; see
 [troubleshooting](references/troubleshooting.md#vault-config-file-does-not-parse).
@@ -357,15 +357,16 @@ single quotes keep literal.
 `swamp behavior run --input` (and `--input-file`, `--stdin`) values are treated
 as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
 `${{ env.X }}` inside them resolves and reaches the method in plaintext (vault
-values are redacted in stored output; env values are not). Never put untrusted
-text — issue bodies, tickets, scraped pages — into a model method run input.
-Route it through a workflow input or model data, which are inert (left literal,
-with a warning), or neutralise `${{` first.
+values are redacted in stored output; env values are not). Pass untrusted text —
+issue bodies, tickets, scraped pages — with `--literal-inputs`, or route it
+through a workflow input or model data. All three are inert: left literal, with
+a warning, even when the text matches an expression the author wrote.
 
 | Source                                   | Expressions     |
 | ---------------------------------------- | --------------- |
 | Model definitions, workflow YAML         | evaluated       |
 | `swamp behavior run --input`             | evaluated       |
+| `swamp behavior run --literal-inputs`    | inert (literal) |
 | `swamp workflow run/resume --input`      | inert (literal) |
 | Data content (`data.latest(...)` etc.)   | inert (literal) |
 | `forEach` items, webhook/trigger payload | inert (literal) |

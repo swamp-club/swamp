@@ -24,7 +24,11 @@ import { stringify as stringifyYaml } from "@std/yaml";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
-import { compareCatalogToDisk } from "./doctor_datastores.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import {
+  catalogCompletenessDataDir,
+  compareCatalogToDisk,
+} from "./doctor_datastores.ts";
 
 /**
  * Writes a data item to disk the way the repository lays it out:
@@ -209,5 +213,82 @@ Deno.test(
     assertEquals(summary.diskRecords, 2);
     assertEquals(summary.catalogRecords, 2);
     assertEquals(summary.shortfalls.length, 0);
+  }),
+);
+
+Deno.test("catalogCompletenessDataDir: is the repo's .swamp/data for the default datastore", () => {
+  const repoDir = join("/repo");
+  const resolver = new DefaultDatastorePathResolver(repoDir, {
+    type: "filesystem",
+    path: join(repoDir, ".swamp"),
+  });
+  assertEquals(
+    catalogCompletenessDataDir(resolver),
+    join(repoDir, ".swamp", "data"),
+  );
+});
+
+Deno.test("catalogCompletenessDataDir: is the external path's data dir", () => {
+  const external = join("/mnt", "nas", "store");
+  const resolver = new DefaultDatastorePathResolver(join("/repo"), {
+    type: "filesystem",
+    path: external,
+  });
+  assertEquals(catalogCompletenessDataDir(resolver), join(external, "data"));
+});
+
+Deno.test("catalogCompletenessDataDir: includes the namespace", () => {
+  const external = join("/mnt", "nas", "store");
+  const resolver = new DefaultDatastorePathResolver(join("/repo"), {
+    type: "filesystem",
+    path: external,
+    namespace: "team-a",
+  });
+  assertEquals(
+    catalogCompletenessDataDir(resolver),
+    join(external, "team-a", "data"),
+  );
+});
+
+Deno.test("catalogCompletenessDataDir: is the cache's data dir for an extension datastore", () => {
+  const cachePath = join("/home", "u", ".swamp", "repos", "id");
+  const resolver = new DefaultDatastorePathResolver(join("/repo"), {
+    type: "@swamp/s3-datastore",
+    config: {},
+    datastorePath: "s3://bucket",
+    cachePath,
+  });
+  assertEquals(catalogCompletenessDataDir(resolver), join(cachePath, "data"));
+});
+
+Deno.test(
+  "compareCatalogToDisk: reports the shortfall for records on an external datastore",
+  withFixture(async (repoDir, catalog) => {
+    // The records live on the external path; the local .swamp/data holds
+    // only the catalog, which claims to be fully built and holds nothing.
+    const externalParent = join(repoDir, "nas");
+    for (const [i, name] of ["one", "two"].entries()) {
+      writeDataItem(externalParent, ["command", "shell"], "model-001", name, i);
+    }
+    catalog.markPopulated();
+    const resolver = new DefaultDatastorePathResolver(repoDir, {
+      type: "filesystem",
+      path: join(externalParent, ".swamp"),
+    });
+
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      catalogCompletenessDataDir(resolver),
+      catalog,
+    );
+    const summary = await compareCatalogToDisk(
+      catalog,
+      dataRepo,
+      SOLO_NAMESPACE,
+    );
+
+    assertEquals(summary.diskRecords, 2);
+    assertEquals(summary.catalogRecords, 0);
+    assertEquals(summary.shortfalls.length, 1);
   }),
 );

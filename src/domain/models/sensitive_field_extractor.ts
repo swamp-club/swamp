@@ -23,7 +23,12 @@ import {
   isExpressionsOnly,
   scanExpressions,
 } from "../expressions/expression_scanner.ts";
-import { extractFieldsWithMetadata } from "./zod_field_metadata.ts";
+import {
+  extractFieldsWithMetadata,
+  type FieldMetadata,
+  findValuesWithMetadata,
+  schemaHoldsMetadata,
+} from "./zod_field_metadata.ts";
 
 /**
  * Information about a sensitive field extracted from a Zod schema.
@@ -61,18 +66,25 @@ export function extractSensitiveFields(
   schema: z.ZodTypeAny,
   prefix = "",
 ): SensitiveFieldInfo[] {
-  return extractFieldsWithMetadata(
-    schema,
-    (meta) => Boolean((meta as SensitiveMetadata).sensitive),
-    prefix,
-  ).map(({ path, meta }) => {
-    const sensitive = meta as SensitiveMetadata;
-    return {
-      path,
-      vaultName: sensitive.vaultName,
-      vaultKey: sensitive.vaultKey,
-    };
-  });
+  return extractFieldsWithMetadata(schema, isSensitive, prefix).map(
+    ({ path, meta }) => toSensitiveFieldInfo(path, meta),
+  );
+}
+
+function isSensitive(meta: FieldMetadata): boolean {
+  return Boolean((meta as SensitiveMetadata).sensitive);
+}
+
+function toSensitiveFieldInfo(
+  path: string,
+  meta: FieldMetadata,
+): SensitiveFieldInfo {
+  const sensitive = meta as SensitiveMetadata;
+  return {
+    path,
+    vaultName: sensitive.vaultName,
+    vaultKey: sensitive.vaultKey,
+  };
 }
 
 /**
@@ -140,7 +152,7 @@ function isLiteralSecret(value: unknown): boolean {
 }
 
 /**
- * Returns the dot-paths of global-argument fields marked `{ sensitive: true }`
+ * Returns the paths of global-argument fields marked `{ sensitive: true }`
  * in `schema` whose value in `args` is a literal secret (see
  * {@link isLiteralSecret}). An empty result means every sensitive global
  * argument is either absent or a runtime expression and is safe to persist.
@@ -152,14 +164,19 @@ function isLiteralSecret(value: unknown): boolean {
  * for a sensitive global argument would otherwise be written in cleartext into
  * the definition YAML.
  *
- * Sensitive fields nested inside non-object schemas (e.g. records/unions) are
- * not detected — `extractSensitiveFields` only walks object shapes — so callers
- * should treat this as a best-effort guard, consistent with the redaction
- * primitives in this module.
+ * The schema and the supplied values are walked together, so a sensitive
+ * field is found inside objects (`credentials.apiKey`), array elements and
+ * tuple items (`users[0].password`), record values (`accounts.prod.token`),
+ * `.catchall()` keys and union members. A value that is not the array or
+ * object its schema declares (`tokens: "hunter2"` for an array of tokens) is
+ * reported whole. See `findValuesWithMetadata` for what the walk does not
+ * reach. {@link redactSensitiveValues} and {@link extractSensitiveFieldValues}
+ * walk the same way, so a field this guard sends to a vault is also masked
+ * once it is resolved.
  *
  * @param schema - The global-arguments Zod schema for the model type
  * @param args - The supplied global-argument values
- * @returns Dot-paths of sensitive fields holding a literal secret
+ * @returns Paths of sensitive fields holding a literal secret
  */
 export function findLiteralSensitiveGlobalArgs(
   schema: z.ZodTypeAny | undefined,
@@ -168,18 +185,9 @@ export function findLiteralSensitiveGlobalArgs(
   if (!schema || !args) {
     return [];
   }
-  const fields = extractSensitiveFields(schema);
-  if (fields.length === 0) {
-    return [];
-  }
-
-  const offending: string[] = [];
-  for (const field of fields) {
-    if (isLiteralSecret(getNestedValue(args, field.path))) {
-      offending.push(field.path);
-    }
-  }
-  return offending;
+  return findValuesWithMetadata(schema, args, isSensitive)
+    .filter(({ value }) => isLiteralSecret(value))
+    .map(({ path }) => path);
 }
 
 /**
@@ -200,8 +208,46 @@ export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
     `reference it with a vault.get expression, e.g. ` +
     `--global-arg "apiKey=\${{ vault.get('my-vault', 'api-key') }}". If a ` +
     `stored definition already holds the value, run \`swamp doctor secrets\` ` +
-    `to find it.`
+    `to find it.` + arrayElementHint(paths)
   );
+}
+
+/**
+ * `--global-arg` keys are dot paths, so a path naming an array element cannot
+ * be passed back as a key. Says how to set such a field instead.
+ */
+function arrayElementHint(paths: string[]): string {
+  const arrays = paths.map(outermostArrayPath).filter((a) => a !== undefined);
+  if (arrays.length === 0) {
+    return "";
+  }
+  // The array's own path is a usable key only when every segment above it is
+  // a plain dot-path segment.
+  const name = arrays.find((a) => /^[A-Za-z0-9_.-]+$/.test(a)) ?? "<name>";
+  return ` A field inside an array is set by passing the whole array, e.g. ` +
+    `--global-arg '${name}:json=[...]'.`;
+}
+
+/**
+ * Returns the part of a path before its first array index, or undefined when
+ * the path crosses no array. A quoted key (`["eu[1]"]`) is skipped whole, so
+ * brackets inside it are not read as an index.
+ */
+function outermostArrayPath(path: string): string | undefined {
+  for (let i = 0; i < path.length; i++) {
+    if (path[i] !== "[") {
+      continue;
+    }
+    if (path[i + 1] !== '"') {
+      return path.slice(0, i);
+    }
+    for (i += 2; i < path.length && path[i] !== '"'; i++) {
+      if (path[i] === "\\") {
+        i++;
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Machine-readable error code for a rejected literal sensitive global argument. */
@@ -213,7 +259,11 @@ export const LITERAL_SENSITIVE_GLOBAL_ARG_CODE = "literal_sensitive_global_arg";
  * coordinates to migrate the secret to — never the secret value itself.
  */
 export interface SensitiveArgRemediation {
-  /** Dot-path of the offending sensitive global argument. */
+  /**
+   * Path of the offending sensitive global argument, for display: a field in
+   * an array element reads `users[0].password`, which is not a
+   * `--global-arg` key.
+   */
   path: string;
   /** Suggested vault name to store the secret under. */
   vaultName: string;
@@ -225,6 +275,58 @@ export interface SensitiveArgRemediation {
 
 /** Fallback vault name used when a sensitive field declares no `vaultName`. */
 const DEFAULT_REMEDIATION_VAULT = "my-vault";
+
+/** Reads a quoted path segment back; a malformed one is returned as is. */
+function unquoteKey(quoted: string): string {
+  try {
+    return String(JSON.parse(quoted));
+  } catch {
+    return quoted;
+  }
+}
+
+/**
+ * Returns the last key a path names, as a vault key: `apiKey` for
+ * `credentials.apiKey`. A quoted key holds characters that do not belong in a
+ * vault key or a shell command, so it is reduced the way an element path is:
+ * `api-key` for `credentials["api key"]`.
+ */
+function lastKeyOf(path: string): string {
+  let key = "";
+  let i = 0;
+  while (i < path.length) {
+    if (path[i] === ".") {
+      i++;
+    } else if (path[i] === "[" && path[i + 1] === '"') {
+      let end = i + 2;
+      while (end < path.length && path[end] !== '"') {
+        end += path[end] === "\\" ? 2 : 1;
+      }
+      key = vaultKeyForElementPath(unquoteKey(path.slice(i + 1, end + 1)));
+      i = end + 2;
+    } else if (path[i] === "[") {
+      const end = path.indexOf("]", i);
+      i = end === -1 ? path.length : end + 1;
+    } else {
+      let end = i;
+      while (end < path.length && path[end] !== "." && path[end] !== "[") {
+        end++;
+      }
+      key = path.slice(i, end);
+      i = end;
+    }
+  }
+  return key || path;
+}
+
+/**
+ * Turns an element path into a vault key: every run of characters outside
+ * letters, digits, `_` and `-` becomes one `-`.
+ */
+function vaultKeyForElementPath(path: string): string {
+  const key = path.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return key || "secret";
+}
 
 /**
  * Builds value-free remediation guidance for sensitive global arguments that
@@ -240,24 +342,72 @@ const DEFAULT_REMEDIATION_VAULT = "my-vault";
  * metadata, those are used; otherwise the vault name falls back to
  * `"my-vault"` and the key to the field's leaf path segment.
  *
- * @param leakedPaths - Dot-paths returned by `findLiteralSensitiveGlobalArgs`
+ * A field inside an array element or a record value occurs once per element,
+ * so its key is built from the whole path (`users[0].password` gives
+ * `users-0-password`) rather than from a declared `vaultKey` or the leaf
+ * segment, either of which would point every element at the same secret.
+ * A key that is not declared gets a numeric suffix when it equals another
+ * key suggested in the same call. Keys already in the vault are not consulted.
+ * These paths, and any path holding a quoted key, are only matched to their
+ * field's metadata when `args` is given.
+ *
+ * @param leakedPaths - Paths returned by `findLiteralSensitiveGlobalArgs`
  * @param schema - The global-arguments schema, read for vault metadata overrides
+ * @param args - The global-argument values the paths were found in
  * @returns One remediation per leaked path, in input order
  */
 export function buildSensitiveArgRemediations(
   leakedPaths: string[],
   schema?: z.ZodTypeAny,
+  args?: Record<string, unknown>,
 ): SensitiveArgRemediation[] {
   const fieldsByPath = new Map<string, SensitiveFieldInfo>();
+  const elementPaths = new Set<string>();
   if (schema) {
+    if (args) {
+      for (
+        const { path, meta, perElement } of findValuesWithMetadata(
+          schema,
+          args,
+          isSensitive,
+        )
+      ) {
+        if (!fieldsByPath.has(path)) {
+          fieldsByPath.set(path, toSensitiveFieldInfo(path, meta));
+          if (perElement) {
+            elementPaths.add(path);
+          }
+        }
+      }
+    }
     for (const field of extractSensitiveFields(schema)) {
-      fieldsByPath.set(field.path, field);
+      if (!fieldsByPath.has(field.path)) {
+        fieldsByPath.set(field.path, field);
+      }
     }
   }
+  // A declared key is used as written, and fields that declare the same key
+  // share it. Every other key is derived, and must differ from every key
+  // suggested here.
+  const declaredKey = (path: string) =>
+    elementPaths.has(path) ? undefined : fieldsByPath.get(path)?.vaultKey;
+  const takenKeys = new Set(
+    leakedPaths.map(declaredKey).filter((key) => key !== undefined),
+  );
   return leakedPaths.map((path) => {
-    const meta = fieldsByPath.get(path);
-    const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    const vaultKey = meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    const vaultName = fieldsByPath.get(path)?.vaultName ??
+      DEFAULT_REMEDIATION_VAULT;
+    let vaultKey = declaredKey(path);
+    if (vaultKey === undefined) {
+      const base = elementPaths.has(path)
+        ? vaultKeyForElementPath(path)
+        : lastKeyOf(path);
+      vaultKey = base;
+      for (let n = 2; takenKeys.has(vaultKey); n++) {
+        vaultKey = `${base}-${n}`;
+      }
+      takenKeys.add(vaultKey);
+    }
     return {
       path,
       vaultName,
@@ -275,8 +425,9 @@ export function buildSensitiveArgRemediations(
  * scrub sensitive values before display or persistence (reports, `model get`).
  * It does not mutate the input — callers receive a deep clone. Only fields that
  * are actually present in `data` are redacted; absent sensitive fields are left
- * untouched. Nested sensitive fields are handled because `extractSensitiveFields`
- * walks the schema recursively and returns dot-separated paths.
+ * untouched. The schema and the data are walked together (see
+ * `findValuesWithMetadata`), so fields inside nested objects, array elements,
+ * record values and union members are redacted too.
  *
  * @param schema - A Zod schema (typically a global-arguments or method-argument schema)
  * @param data - The data object to redact
@@ -286,15 +437,36 @@ export function redactSensitiveValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): Record<string, unknown> {
-  const fields = extractSensitiveFields(schema);
-  if (fields.length === 0) {
+  // Most schemas mark nothing; this is answered once per schema, and spares
+  // walking the value on every call.
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return data;
+  }
+  // The schema-only pass also masks a field holding null, which the walk
+  // skips as absent.
+  const fields = extractSensitiveFields(schema).filter((field) =>
+    getNestedValue(data, field.path) !== undefined
+  );
+  const found = findValuesWithMetadata(schema, data, isSensitive);
+  if (fields.length === 0 && found.length === 0) {
     return data;
   }
 
   const redacted = structuredClone(data);
   for (const field of fields) {
-    if (getNestedValue(redacted, field.path) !== undefined) {
-      setNestedValue(redacted, field.path, "***");
+    setNestedValue(redacted, field.path, "***");
+  }
+  for (const { keys } of found) {
+    let parent: unknown = redacted;
+    for (const key of keys.slice(0, -1)) {
+      // A parent already masked is a string by now, and covers this value.
+      parent = typeof parent === "object" && parent !== null
+        ? (parent as Record<string | number, unknown>)[key]
+        : undefined;
+    }
+    const last = keys.at(-1);
+    if (typeof parent === "object" && parent !== null && last !== undefined) {
+      (parent as Record<string | number, unknown>)[last] = "***";
     }
   }
   return redacted;
@@ -347,11 +519,12 @@ function collectSecretStrings(value: unknown, out: string[]): void {
 /**
  * Extracts the runtime secret values from a data object based on its Zod schema.
  *
- * For each field marked `{ sensitive: true }` in the schema:
+ * For each value under a field marked `{ sensitive: true }` in the schema,
+ * wherever the field sits (nested objects, array elements, record values,
+ * union members — see `findValuesWithMetadata`):
  * - String values are collected directly.
- * - Array values have each string element collected individually.
+ * - Array and plain-object values have each string inside them collected.
  * - Undefined or null values are skipped.
- * - Object values are skipped (nested object fields are found via recursion).
  *
  * Used to register sensitive argument values with SecretRedactor before
  * method execution so they are scrubbed from log files and result resources.
@@ -364,14 +537,19 @@ export function extractSensitiveFieldValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): string[] {
-  const fields = extractSensitiveFields(schema);
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return [];
+  }
   const secrets: string[] = [];
 
-  for (const field of fields) {
+  for (const field of extractSensitiveFields(schema)) {
     collectSecretStrings(getNestedValue(data, field.path), secrets);
   }
+  for (const { value } of findValuesWithMetadata(schema, data, isSensitive)) {
+    collectSecretStrings(value, secrets);
+  }
 
-  return secrets;
+  return [...new Set(secrets)];
 }
 
 /**
@@ -387,6 +565,11 @@ export function getNestedValue(
     if (
       current === null || current === undefined || typeof current !== "object"
     ) {
+      return undefined;
+    }
+    // A key the object does not hold is absent, whatever the prototype
+    // answers for it (`toString`, `constructor`).
+    if (!Object.hasOwn(current, part)) {
       return undefined;
     }
     current = (current as Record<string, unknown>)[part];

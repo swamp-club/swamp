@@ -25,7 +25,7 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import { z } from "zod";
@@ -359,6 +359,129 @@ Deno.test({
         Deno.exitCode = 0;
         await root().parse(REMOTE_ARGS(positionals, server.url));
         assertEquals(Deno.exitCode, 1, positionals.join(" "));
+      }
+    } finally {
+      Deno.exitCode = previousExitCode;
+      await server.shutdown();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// --literal-inputs over --server (swamp-club#3205): the flag is only sent to a
+// server that says it honours it, through either spelling.
+// ---------------------------------------------------------------------------
+
+/**
+ * A server that answers `server.version` with `capabilities` (or none, as
+ * an older server does) and records every method-run payload.
+ */
+function versionedServer(capabilities: string[] | undefined): {
+  url: string;
+  shutdown: () => Promise<void>;
+  runs: Record<string, unknown>[];
+} {
+  const runs: Record<string, unknown>[] = [];
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (message) => {
+        const request = JSON.parse(message.data as string) as {
+          type: string;
+          id: string;
+          payload: Record<string, unknown>;
+        };
+        if (request.type === "server.version") {
+          socket.send(JSON.stringify({
+            type: "server.version",
+            id: request.id,
+            payload: {
+              version: "test",
+              gitSha: "test",
+              ...(capabilities ? { capabilities } : {}),
+            },
+          }));
+          return;
+        }
+        runs.push(request.payload);
+        socket.send(JSON.stringify({
+          type: "event",
+          id: request.id,
+          event: { kind: "completed", run: { status: "succeeded" } },
+        }));
+        socket.send(JSON.stringify({ type: "done", id: request.id }));
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+    runs,
+  };
+}
+
+const LITERAL_SPELLINGS = [
+  ["model", "method", "run", "my-model", "echo"],
+  ["behavior", "run", "my-model", "echo"],
+];
+
+async function runLiteralOverServer(
+  positionals: string[],
+  url: string,
+): Promise<void> {
+  await root().parse([
+    ...positionals,
+    "--literal-inputs",
+    "--input",
+    "body=@/etc/passwd ${{ env.HOME }}",
+    "--json",
+    "--server",
+    url,
+    "--token",
+    "test.token",
+  ]);
+}
+
+Deno.test({
+  name:
+    "both run leaves: --literal-inputs is refused by a server that does not list the capability (swamp-club#3205)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = versionedServer(undefined);
+    try {
+      for (const positionals of LITERAL_SPELLINGS) {
+        await assertRejects(
+          () => runLiteralOverServer(positionals, server.url),
+          Error,
+          "does not support --literal-inputs",
+        );
+      }
+      assertEquals(server.runs, []);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "both run leaves: --literal-inputs sends literalInputs and verbatim inputs (swamp-club#3205)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = versionedServer(["literal-inputs"]);
+    const previousExitCode = Deno.exitCode;
+    try {
+      for (const positionals of LITERAL_SPELLINGS) {
+        await runLiteralOverServer(positionals, server.url);
+      }
+      assertEquals(server.runs.length, 2);
+      for (const run of server.runs) {
+        assertEquals(run.literalInputs, true);
+        assertEquals(run.inputs, { body: "@/etc/passwd ${{ env.HOME }}" });
       }
     } finally {
       Deno.exitCode = previousExitCode;

@@ -118,6 +118,7 @@ export class WorkflowReportRunner {
             name: handle.name,
             version: handle.version,
             tags: handle.tags,
+            ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
           });
         }
       },
@@ -135,6 +136,7 @@ export class WorkflowReportRunner {
               name: handle.name,
               version: handle.version,
               tags: handle.tags,
+              ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
             });
           }
         }

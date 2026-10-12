@@ -273,3 +273,119 @@ Deno.test("verifyMigration: without the skip list the skipped files make counts 
     assertEquals(verification.valid, false);
   });
 });
+
+Deno.test("verifyMigration: passes when the destination also holds its own files", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), "{}");
+    await writeFile(join(destDir, "outputs", "run.log"), "local log");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+    await migrateDatastore(sourceDir, destDir, config);
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: true, sourceCount: 1, destCount: 1 });
+  });
+});
+
+Deno.test("verifyMigration: fails when a source file is missing at the destination", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), "{}");
+    await writeFile(join(sourceDir, "data", "b.json"), "{}");
+    await writeFile(join(destDir, "data", "a.json"), "{}");
+    await writeFile(join(destDir, "data", "other.json"), "{}");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: false, sourceCount: 2, destCount: 1 });
+  });
+});
+
+Deno.test("verifyMigration: fails when a copied file is truncated", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    await writeFile(join(sourceDir, "data", "a.json"), '{"k":"v"}');
+    await writeFile(join(destDir, "data", "a.json"), "{");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification.valid, false);
+  });
+});
+
+Deno.test("verifyMigration: a numeric symlink rewritten as a text file counts as arrived", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    const modelDir = join(sourceDir, "data", "type", "id", "result");
+    await writeFile(join(modelDir, "3", "raw"), "data");
+    await Deno.symlink("3", join(modelDir, "latest"), { type: "dir" });
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+    await migrateDatastore(sourceDir, destDir, config);
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, { valid: true, sourceCount: 2, destCount: 2 });
+  });
+});
+
+Deno.test("migrateDatastore: leaves the stream directories and run logs in the source", async () => {
+  await withTempDir(async (tmpDir) => {
+    const sourceDir = join(tmpDir, "source");
+    const destDir = join(tmpDir, "dest");
+    const files: Record<string, string> = {
+      [join("audit", "commands-2026-10-12.jsonl")]: "{}",
+      [join("telemetry", "spool.jsonl")]: "{}",
+      [join("logs", "x.txt")]: "x",
+      [join("files", "y.txt")]: "y",
+      [join("outputs", "command", "shell", "execute", "r1.log")]: "log",
+      [join("outputs", "command", "shell", "execute", "r1.yaml")]: "yaml",
+      [join("workflow-runs", "wf1", "workflow-run-r2.log")]: "log",
+      [join("workflow-runs", "wf1", "workflow-run-r2.yaml")]: "yaml",
+      [join("data", "notes.log")]: "data",
+    };
+    for (const [rel, content] of Object.entries(files)) {
+      await Deno.mkdir(join(sourceDir, rel, ".."), { recursive: true });
+      await Deno.writeTextFile(join(sourceDir, rel), content);
+    }
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: destDir,
+    };
+
+    const result = await migrateDatastore(sourceDir, destDir, config);
+
+    assertEquals(result.errors, []);
+    assertEquals(result.directoriesMigrated.sort(), [
+      "data",
+      "outputs",
+      "workflow-runs",
+    ]);
+    assertEquals(result.filesCopied, 3);
+    for (const rel of Object.keys(files)) {
+      const moves = rel.endsWith(".yaml") || rel.startsWith("data");
+      assertEquals(await exists(join(destDir, rel)), moves, rel);
+    }
+
+    const verification = await verifyMigration(sourceDir, destDir, config);
+    assertEquals(verification, {
+      valid: true,
+      sourceCount: 3,
+      destCount: 3,
+    });
+  });
+});

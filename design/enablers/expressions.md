@@ -1017,10 +1017,106 @@ gate limits which stored fields get vault references resolved when read, and
 passes a non-sensitive field's literal text through untouched. This rule
 decides whether such text is ever evaluated.
 
-The remaining gap is replay. Anyone who can write a plain field can inject the
-exact raw text of an expression the author wrote elsewhere in the same source
-and have it evaluated at a sink of their choosing. That is bounded by what the
-author already granted the run.
+### Position and Value Provenance
+
+The raw-text rule above vouches for expression *text*, not for a position. Data
+that holds the exact raw text of an expression the author wrote elsewhere would
+pass it. A workflow input `x ${{ inputs.text }} y` expands into itself on every
+later pass. Data that quotes an authored `vault.get(...)`, `env` or deferred
+reference resolves that secret at whatever argument the data reaches.
+Provenance therefore also records *where* data sits.
+
+**Data ranges.** Every substitution returns a `ProvenanceMap` alongside the
+tree. For each path, the map records either that the whole subtree is data or
+which `[start, end)` ranges of the string came from data. A pass that runs
+after substitution evaluates an expression occurrence only if the raw-text rule
+allows it **and** the occurrence does not overlap a data range. Partial overlap
+counts as data, so text spliced next to authored text can never complete an
+expression across the boundary. Paths spell an object key that is not a plain
+segment (one containing `.`, `[`, `]` or `"`, or empty) as `["…"]`, JSON-quoted,
+exactly as expression extraction reports it, so a caller-chosen key can never
+collide with a nested path or an array index.
+
+The gate is strictly narrower than the raw-text rule: it never evaluates an
+occurrence that rule refuses. The only behaviour it changes is refusing
+expression text that sits inside data. Substitution stays keyed on raw text, so
+authored copies of an evaluated expression at other paths still receive the
+run-start value, as they always have. The one exception is an occurrence inside
+a data range, which is skipped.
+
+**Value provenance.** CEL context bindings carry the same maps, so an authored
+expression that travels as a value keeps its standing. Examples are a
+`vault.get(...)` passed through model-run `--input`, a step input, a runtime
+global copied through `self.globalArguments`, and a parent's deferred reference.
+Data provenance travels with values the same way. The splicing expression
+decides the provenance of what it splices:
+
+- A direct read of a binding copies that binding's map to the destination
+  offset. A whole-field splice copies it to the destination path.
+- Any other result, such as computed CEL or an object embedded as JSON, follows
+  the read-set rule. An expression occurrence inside it is authored only if its
+  raw text appears in the authored parts of the bindings that expression read.
+  Otherwise the whole result is data. The read set comes from the CEL AST and
+  widens to the whole binding root on dynamic access.
+
+Authored namespaces are an allow-list:
+
+- `inputs`, per key, as described below.
+- `self.globalArguments`. For direct execution this takes the routed
+  provenance.
+- `model.NAME.definition`.
+- Deferred-reference bindings.
+
+Every other namespace is data: `data.*`, model resources and files, step
+outputs, forEach items, `run.tags`, `workers`, execution errors, and file
+contents. Every stored definition, from any swamp version, is authored. That is
+sound because direct execution refuses to persist a global argument whose
+expression occurrence lies in a data range, whatever the authored set says.
+Vault references that swamp writes for sensitive values (`writtenReferences`)
+are authored at their new positions.
+
+**Ingress.** Inputs get provenance per key, after coercion:
+
+| Input                                                       | Provenance |
+| ----------------------------------------------------------- | ---------- |
+| `swamp workflow run/resume` caller inputs, webhook payloads | data       |
+| Workflow input defaults, static trigger input literals      | authored   |
+| Definition input-schema defaults                            | authored   |
+| `swamp model method run` inputs                             | authored   |
+| `swamp model method run --literal-inputs` inputs            | data       |
+| Child workflow inputs                                       | parent's   |
+
+**Where it is enforced.** Every evaluated-cache save states its map: the
+parameter is required, and `integration/expression_provenance_rules_test.ts`
+fails on a production save passing `undefined` or an empty map, and on any
+caller of the raw-text gate other than `partitionAuthoredAt`. In memory, a
+binding with no map is authored, which is the behaviour before this rule.
+Data is marked where it enters `inputs`, `self` or `run`: workflow caller
+inputs, spliced step inputs, routed direct-execution globals, forEach items,
+child inputs, and `--literal-inputs`. A transform that rewrites a value holding
+data (input coercion, JSON parsing) makes that value data in its entirety. Raw
+and sanitized copies keep separate maps; where two copies of one string
+differ, only the differing span is data.
+
+Evaluated caches and run records store the map, as ranges only and never text.
+The field doubles as the format marker. An artifact with the field present but
+unreadable is refused. An artifact without the field was written before this
+rule existed and replays with the raw-text rule alone, as it did then. Auto
+definitions persisted from data before this rule are already authored and stay
+that way.
+
+The read-set rule leaves one residual. In a computed result, data text
+identical to an authored reference that the same expression also read resolves
+that reference into the same argument. It cannot reach any reference the
+expression did not already read.
+
+A second residual comes from treating stored definitions as authored. Direct
+execution refuses to persist a global argument holding a whole expression from
+data, but a fragment (`${{ env.X` alone) is ordinary text and is stored, as it
+always was. Two such fragments read back from stored definitions and placed
+side by side by an author-written expression could complete one. Refusing
+fragments would refuse data that is accepted today, so this is left as it was
+before the rule existed.
 
 ### Dynamic Vault Arguments
 

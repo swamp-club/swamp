@@ -52,6 +52,7 @@ import {
 import { accessCommand } from "../src/cli/commands/access.ts";
 import { dataCommand } from "../src/cli/commands/data.ts";
 import { datastoreCommand } from "../src/cli/commands/datastore.ts";
+import { doctorCommand } from "../src/cli/commands/doctor.ts";
 import { extensionCommand } from "../src/cli/commands/extension.ts";
 import { modelCommand } from "../src/cli/commands/model_create.ts";
 import { runCommand } from "../src/cli/commands/run.ts";
@@ -108,6 +109,11 @@ export interface RowRepoOptions {
   managedConfig?: boolean;
   /** Options for the row's in-memory remote. */
   remote?: InMemoryRemoteOptions;
+  /**
+   * Give both repos' providers the remote's `datastoreControlPlaneStore`.
+   * Needs `remote.controlPlane`.
+   */
+  datastoreControlPlane?: boolean;
 }
 
 /** One row's remote, its two repos, and A's open repo context. */
@@ -186,11 +192,16 @@ export async function withRowRepos(
   );
   const remote = createInMemoryRemote(options.remote);
   const releases: number[] = [];
+  const datastoreControlPlane = options.datastoreControlPlane
+    ? { datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!() }
+    : {};
   const typeA = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "A" }),
+    ...datastoreControlPlane,
   }, { onLockRelease: () => releases.push(remote.ops().length) });
   const typeB = registerTestDatastoreType({
     connect: (cache) => remote.connect(cache, { instance: "B" }),
+    ...datastoreControlPlane,
   });
   const modelType = ModelType.create(
     `test/usecase-${crypto.randomUUID().slice(0, 8)}`,
@@ -403,6 +414,7 @@ function root(): CliRoot {
     .command("access", accessCommand)
     .command("data", dataCommand)
     .command("datastore", datastoreCommand)
+    .command("doctor", doctorCommand)
     .command("extension", extensionCommand)
     .command("model", modelCommand)
     .command("run", runCommand)
@@ -457,6 +469,35 @@ export interface CliInvocation {
  * Asserts the command left `Deno.exitCode` unchanged.
  */
 export async function runCli(invocation: CliInvocation): Promise<string[]> {
+  if (outsideSeedRoot !== undefined) {
+    const outside = outsideSeedRoot;
+    return await outside(() => runCliHere(invocation));
+  }
+  return await runCliHere(invocation);
+}
+
+/**
+ * Runs a seed's own CLI and serve calls outside the root unit of work a v3
+ * row opens around its seed (`usecase_v3_fixtures.ts`), in the context that
+ * was current before it opened: in production a command or request never
+ * runs inside another one's root. Undefined outside such a seed.
+ */
+let outsideSeedRoot: (<T>(fn: () => Promise<T>) => Promise<T>) | undefined;
+
+/** Sets {@link outsideSeedRoot} for the duration of `fn`. */
+export async function withOutsideSeedRoot<T>(
+  outside: <U>(fn: () => Promise<U>) => Promise<U>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  outsideSeedRoot = outside;
+  try {
+    return await fn();
+  } finally {
+    outsideSeedRoot = undefined;
+  }
+}
+
+async function runCliHere(invocation: CliInvocation): Promise<string[]> {
   const stdout: string[] = [];
   const originalLog = console.log;
   const previousExitCode = Deno.exitCode;
@@ -583,6 +624,17 @@ export class ObservedSyncGate extends ReadWriteLock {
 
 /** Sends one request through `handleMessage`; asserts it did not fail. */
 export async function runServe(
+  ctx: ConnectionContext,
+  invocation: ServeInvocation,
+): Promise<Frame[]> {
+  if (outsideSeedRoot !== undefined) {
+    const outside = outsideSeedRoot;
+    return await outside(() => runServeHere(ctx, invocation));
+  }
+  return await runServeHere(ctx, invocation);
+}
+
+async function runServeHere(
   ctx: ConnectionContext,
   invocation: ServeInvocation,
 ): Promise<Frame[]> {

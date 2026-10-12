@@ -31,6 +31,13 @@
 
 import { controlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
 import {
+  modelAccessResource,
+  type ModelResourceKind,
+  modelTypeFields,
+  unresolvedAccessResource,
+  workflowAccessResource,
+} from "../../domain/access/access_resources.ts";
+import {
   isControlPlaneModelType,
   normalizeModelTypeName,
 } from "../../domain/models/control_plane_types.ts";
@@ -42,7 +49,7 @@ import {
   findDefinitionByIdOrName,
   findDefinitionsByIdGlobal,
 } from "../../domain/models/model_lookup.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -67,6 +74,15 @@ import {
   sanitizeErrorForClient,
   sendError,
 } from "./shared.ts";
+
+// The builders moved to the domain so the local `swamp access check` shares
+// them (swamp-club#3224); handlers keep importing them from here.
+export {
+  modelAccessResource,
+  type ModelResourceKind,
+  unresolvedAccessResource,
+  workflowAccessResource,
+};
 
 /** How a request's id-or-name resolved. */
 export type ResourceResolution =
@@ -103,85 +119,6 @@ export type ResourceResolution =
     status: "failed";
     error: unknown;
   };
-
-/** Which resource kind a model reference is authorized as. */
-export type ModelResourceKind = "model" | "data";
-
-/**
- * The resource fields a model or data resource of `type` carries, as `kind`.
- * Every resource field of the kind is present, empty when the resource has
- * none (tags `{}`, ns `""`): a deny that needs a field the resource lacks
- * fails closed, so an untagged resource must say it has no tags
- * (swamp-club#2675).
- */
-function modelTypeFields(
-  name: string,
-  type: string,
-  tags: Record<string, string> | undefined,
-  kind: ModelResourceKind,
-): Record<string, unknown> {
-  const fields: Record<string, unknown> = { name };
-  if (kind === "model") {
-    fields.modelType = type;
-  } else {
-    fields.ns = ModelType.getUserNamespace(type) ?? "";
-  }
-  fields.tags = tags ?? {};
-  return fields;
-}
-
-/**
- * The access resource for a model definition, authorized as `kind`. A
- * control-plane model (a grant, group, token or worker record) is owned by
- * the access kind instead, whichever kind was asked for (swamp-club#2756).
- */
-export function modelAccessResource(
-  result: DefinitionLookupResult,
-  kind: ModelResourceKind = "model",
-): AccessResource {
-  if (isControlPlaneModelType(result.type.normalized)) {
-    return controlPlaneRecordResource(result.type.normalized, {
-      name: result.definition.name,
-      tags: result.definition.tags,
-    });
-  }
-  const name = result.definition.name;
-  return {
-    kind,
-    name,
-    fields: modelTypeFields(
-      name,
-      result.type.normalized,
-      result.definition.tags,
-      kind,
-    ),
-  };
-}
-
-/** The access resource for a workflow; its tags are `{}` when it has none. */
-export function workflowAccessResource(
-  workflow: Pick<Workflow, "name" | "tags">,
-): AccessResource {
-  return {
-    kind: "workflow",
-    name: workflow.name,
-    fields: { name: workflow.name, tags: workflow.tags ?? {} },
-  };
-}
-
-/**
- * The access resource for a request whose id-or-name matched nothing. A
- * resource that does not exist has no tags, so its fields say so.
- */
-export function unresolvedAccessResource(
-  kind: AccessResource["kind"],
-  idOrName: string,
-): AccessResource {
-  const fields: Record<string, unknown> = { name: idOrName };
-  if (kind !== "access") fields.tags = {};
-  if (kind === "data") fields.ns = "";
-  return { kind, name: idOrName, fields };
-}
 
 async function resolveModel(
   lookup: () => Promise<DefinitionLookupResult | null>,

@@ -713,8 +713,55 @@ defineModel({
   globalArguments: z.object({
     apiKey: z.string().meta({ sensitive: true }),
     region: z.string(),
+    users: z.array(z.object({
+      userId: z.string(),
+      password: z.string().meta({ sensitive: true }),
+    })).optional(),
   }),
   methods: {},
+});
+
+Deno.test("YamlDefinitionRepository.save refuses a literal in a sensitive field of an array element and writes no file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "leaky-users",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: {
+        apiKey: "${{ vault.get('creds', 'apiKey') }}",
+        region: "us-east-1",
+        users: [{ userId: "u", password: "SUPERSECRET123" }],
+      },
+    });
+
+    const error = await assertRejects(
+      () => repo.save(SENSITIVE_SAVE_TYPE, definition),
+      UserError,
+    );
+    assertStringIncludes(error.message, "'users[0].password'");
+    assertEquals(error.message.includes("SUPERSECRET123"), false);
+    assertEquals(await repo.findById(SENSITIVE_SAVE_TYPE, definition.id), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save accepts a vault.get expression in a sensitive field of an array element", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const users = [{ userId: "u", password: "${{ vault.get('creds', 'u') }}" }];
+    const definition = Definition.create({
+      name: "vaulted-users",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: {
+        apiKey: "${{ vault.get('creds', 'apiKey') }}",
+        region: "us-east-1",
+        users,
+      },
+    });
+
+    await repo.save(SENSITIVE_SAVE_TYPE, definition);
+    const stored = await repo.findById(SENSITIVE_SAVE_TYPE, definition.id);
+    assertEquals(stored?.globalArguments.users, users);
+  });
 });
 
 Deno.test("YamlDefinitionRepository.save refuses a literal sensitive global arg and writes no file", async () => {

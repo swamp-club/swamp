@@ -29,6 +29,16 @@ import type { Namespace } from "./namespace.ts";
 export type ContentAvailability = "current" | "acceptedShort" | "missing";
 
 /**
+ * Reads one file of another namespace from the remote datastore, by its path
+ * relative to that namespace's root. Returns the bytes, or null when the file
+ * does not exist. Nothing is written to local storage.
+ */
+export type ForeignContentFetcher = (
+  namespace: string,
+  relPath: string,
+) => Promise<Uint8Array | null>;
+
+/**
  * Error thrown when ownership validation fails.
  */
 export class OwnershipValidationError extends Error {
@@ -114,6 +124,14 @@ export interface UnifiedDataRepository {
    * stamped with this namespace. SOLO_NAMESPACE ('') in solo mode.
    */
   readonly namespace: Namespace;
+
+  /**
+   * Reads the content behind a catalog row of another namespace, which this
+   * repository's own layout never holds. Unlike every other read here it is
+   * not scoped to {@link namespace} and never touches local storage. Absent
+   * when the datastore has no remote to read from (swamp-club#3306).
+   */
+  readonly fetchForeignContent?: ForeignContentFetcher;
 
   /**
    * Finds all data across all model types and models.
@@ -207,7 +225,7 @@ export interface UnifiedDataRepository {
     modelId: string,
     data: Data,
     content: Uint8Array,
-  ): Promise<{ version: number }>;
+  ): Promise<{ version: number; checksum?: string }>;
 
   /**
    * Appends content to streaming data.

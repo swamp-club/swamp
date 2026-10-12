@@ -39,7 +39,13 @@
 
 import { z } from "zod";
 import { generationFromKey } from "./continuation_claim.ts";
-import { isWaitKey, WAIT_KEY_FORM } from "./signal_wait.ts";
+import { isWaitKey, WAIT_KEY_FORM, WaitEarlySchema } from "./signal_wait.ts";
+import {
+  earliestReceipt,
+  earlyWaitRef,
+  type PendingSignalRecords,
+  takePendingSignal,
+} from "./pending_signal.ts";
 import type {
   StoredWaitRecord,
   WaitOutcome,
@@ -100,6 +106,8 @@ export const WaitKeyClaimSchema = z.object({
   stepName: z.string().min(1),
   /** The deadline of the wait, so a claimant can settle an overdue holder. */
   deadline: z.string().datetime(),
+  /** Set when the step declared `acceptEarly` (swamp-club#3212). */
+  early: WaitEarlySchema.optional(),
 });
 
 export type WaitKeyClaim = z.infer<typeof WaitKeyClaimSchema>;
@@ -193,6 +201,11 @@ export function decodeWaitKeyRecord(
   const parsed = WaitKeyRecordSchema.safeParse(raw);
   if (!parsed.success) return { kind: "unreadable" };
   const record = parsed.data;
+  // A claim reads the pending slots of its own generation and no other.
+  if (
+    record.kind === "claim" && record.early !== undefined &&
+    record.early.generation !== record.generation
+  ) return { kind: "unreadable" };
   return record.workflowId === expected.workflowId &&
       record.key === expected.key &&
       record.generation === expected.generation
@@ -207,6 +220,8 @@ export function waitRefOfClaim(claim: WaitKeyClaim): WaitRef {
     workflowId: claim.workflowId,
     runId: claim.runId,
     deadline: claim.deadline,
+    key: claim.key,
+    ...(claim.early !== undefined ? { early: claim.early } : {}),
   };
 }
 
@@ -262,7 +277,8 @@ export type HighestKeyRecord =
   | { readonly kind: "unreadable"; readonly generation: number };
 
 /** The store operations a claim needs. */
-export interface WaitKeyRecords {
+export interface WaitKeyRecords
+  extends Pick<PendingSignalRecords, "highestPendingRecord"> {
   /** The record of the highest generation of a key. */
   highestKeyRecord(workflowId: string, key: string): Promise<HighestKeyRecord>;
 
@@ -274,6 +290,9 @@ export interface WaitKeyRecords {
   createKeyRecord(
     record: WaitKeyRecord,
   ): Promise<StoredWaitRecord<WaitKeyRecord>>;
+
+  /** The record of one generation of a key. */
+  findKeyRecord(at: WaitKeyAddress): Promise<StoredWaitRecord<WaitKeyRecord>>;
 
   /** Every key record that can be read. */
   listKeyRecords(): Promise<WaitKeyRecord[]>;
@@ -302,6 +321,8 @@ export interface WaitKeyRequest {
   stepName: string;
   /** The deadline of the wait, as an ISO timestamp. */
   deadline: string;
+  /** The step's `acceptEarly`, in seconds, when it declared one. */
+  acceptEarly?: number;
 }
 
 export type WaitKeyAcquisition =
@@ -339,6 +360,11 @@ export function waitKeyRefusal(
  * The outcome of the wait `claim` names, settling it as timed out first
  * when it has none and its deadline has passed, as every reader of a wait
  * does. An outcome that names another run is not that wait's outcome.
+ *
+ * A wait whose step set `acceptEarly` is first given its key's pending
+ * signal (swamp-club#3212). The claim does not hold the schema the wait
+ * captured, so that needs the wait's registration; without one nothing is
+ * taken.
  */
 async function outcomeOfClaim(
   store: WaitKeyRecords,
@@ -353,10 +379,24 @@ async function outcomeOfClaim(
       ? { kind: "unreadable" }
       : stored;
   const stored = own(await store.findOutcome(ref.waitId));
-  if (
-    stored.kind !== "absent" ||
-    now.getTime() <= new Date(ref.deadline).getTime()
-  ) return stored;
+  if (stored.kind !== "absent") return stored;
+  if (claim.early !== undefined) {
+    const registration = await store.findRegistration(claim.waitId);
+    const early = registration.kind === "found" &&
+        registration.record.workflowId === claim.workflowId &&
+        registration.record.key === claim.key
+      ? earlyWaitRef({
+        ...ref,
+        schema: registration.record.schema,
+        workflowName: registration.record.workflowName,
+      })
+      : undefined;
+    if (early) {
+      const taken = own(await takePendingSignal(store, early));
+      if (taken.kind !== "absent") return taken;
+    }
+  }
+  if (now.getTime() <= new Date(ref.deadline).getTime()) return stored;
   return own(await store.settle(timedOutOutcome(ref, now)));
 }
 
@@ -440,6 +480,15 @@ export async function claimWaitKey(
       jobName: request.jobName,
       stepName: request.stepName,
       deadline: request.deadline,
+      ...(request.acceptEarly !== undefined
+        ? {
+          early: {
+            generation: (record?.generation ?? 0) + 1,
+            overRelease: record?.kind === "release",
+            from: earliestReceipt(now, request.acceptEarly),
+          },
+        }
+        : {}),
     };
     const stored = await store.createKeyRecord(claim);
     if (
@@ -547,19 +596,29 @@ export interface KeyClaimRemoval {
  *
  * Call it before the outcomes of those runs are removed: a claim whose
  * outcome is gone reads as an open wait.
+ *
+ * The pending signals of the slots a removed claim read go with it
+ * (swamp-club#3212), after the claim itself: a slot belongs to one claim, so
+ * nothing reads them once it is gone.
  */
 export async function releaseKeyClaims(
-  store: Pick<
-    WaitKeyRecords,
-    | "highestKeyRecord"
-    | "createKeyRecord"
-    | "listKeyRecords"
-    | "removeKeyRecord"
-  >,
+  store:
+    & Pick<
+      WaitKeyRecords,
+      | "highestKeyRecord"
+      | "createKeyRecord"
+      | "listKeyRecords"
+      | "removeKeyRecord"
+    >
+    & Pick<
+      PendingSignalRecords,
+      "listPendingAddresses" | "removePendingRecord"
+    >,
   shouldRemove: (claim: WaitKeyClaim) => boolean | Promise<boolean>,
   now: Date,
 ): Promise<KeyClaimRemoval> {
   const result: KeyClaimRemoval = { removed: 0, released: 0 };
+  const orphanedSlots = new Set<string>();
   const byKey = new Map<string, WaitKeyRecord[]>();
   for (const record of await store.listKeyRecords()) {
     const id = `${record.workflowId}/${record.key}`;
@@ -603,6 +662,18 @@ export async function releaseKeyClaims(
       if (record.generation >= floor) continue;
       await store.removeKeyRecord(record);
       result.removed++;
+      if (record.kind !== "claim") continue;
+      orphanedSlots.add(`${workflowId}/${key}/${record.generation}`);
+      if (record.early?.overRelease) {
+        orphanedSlots.add(`${workflowId}/${key}/${record.generation - 1}`);
+      }
+    }
+  }
+  if (orphanedSlots.size > 0) {
+    for (const at of await store.listPendingAddresses()) {
+      if (orphanedSlots.has(`${at.workflowId}/${at.key}/${at.slot}`)) {
+        await store.removePendingRecord(at);
+      }
     }
   }
   return result;

@@ -37,10 +37,13 @@
  *   their changes up and never push. CLI commands and serve handlers stop
  *   marking and pushing themselves.
  * - **Phase 3.** A second adapter commits the staged changes to the datastore
- *   commit log.
+ *   commit log. Each adapter binds the units it builds to the repository
+ *   context they serve through {@link UnitOfWorkBinding} (swamp-club#3240).
  *
  * @module
  */
+
+import type { MarkDirtyHook } from "./datastore_sync_service.ts";
 
 /**
  * One change a repository is about to make in the datastore.
@@ -106,4 +109,38 @@ export interface UnitOfWork {
    * calls, and changes the caller makes to its own objects, do not alter it.
    */
   staged(): readonly StagedChange[];
+}
+
+/**
+ * How a unit of work claims the repository context it serves: decisions 2
+ * and 3 of "v3 domain model" in `design/enablers/datastores.md`
+ * (swamp-club#3240).
+ *
+ * A repository context is known by its mark hook: every repository a
+ * context builds shares that one function. A repository stages into the
+ * ambient unit of work only when the unit is bound to its own hook
+ * (`signalChange` in `src/infrastructure/persistence/unit_of_work_scope.ts`).
+ * Each adapter binds the units it builds: the legacy adapter, and the v3
+ * commit-log adapter. Identity decides, so a unit bound to a wrapper of a
+ * hook never takes that hook's changes.
+ *
+ * A context on a v3 datastore has no fallback for a write made outside
+ * every unit bound to it: its hook is marked with {@link requireUnit}, and
+ * such a write is refused rather than marked.
+ */
+export interface UnitOfWorkBinding {
+  /**
+   * Records that `uow` serves the repository context behind `markDirty`.
+   * Throws when `uow` is already bound to another hook.
+   */
+  bind(uow: UnitOfWork, markDirty: MarkDirtyHook): void;
+  /** The hook `uow` is bound to, or undefined when it is bound to none. */
+  boundHook(uow: UnitOfWork): MarkDirtyHook | undefined;
+  /**
+   * Marks the context behind `markDirty` as one whose writes must run in a
+   * unit bound to it: a v3 datastore's. Never undone.
+   */
+  requireUnit(markDirty: MarkDirtyHook): void;
+  /** Whether {@link requireUnit} marked `markDirty`. */
+  requiresUnit(markDirty: MarkDirtyHook): boolean;
 }

@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import { type Span, trace } from "@opentelemetry/api";
 import { waitFor } from "@swamp-club/swamp-testing";
 import {
+  MAX_TOKENS_PER_SWEEP,
   type ServerTokenGcDeps,
   ServerTokenGcService,
   type TokenGcInfo,
@@ -354,4 +355,113 @@ Deno.test("ServerTokenGcService: a tick runs with no active span when started un
     assert(seen.length >= 2);
     for (const span of seen) assertEquals(span, undefined);
   });
+});
+
+// --- per-sweep cap (swamp-club#2535) ---
+
+function revokedTokens(count: number, prefix = "t"): TokenGcInfo[] {
+  return Array.from({ length: count }, (_, i) =>
+    makeToken({
+      name: `${prefix}${i}`,
+      state: "revoked",
+      revokedAt: new Date().toISOString(),
+    }));
+}
+
+Deno.test("runOnce: collects at most MAX_TOKENS_PER_SWEEP tokens, leaving the rest for the next sweep", async () => {
+  const tokens = revokedTokens(MAX_TOKENS_PER_SWEEP + 5);
+  const remaining = new Set(tokens.map((t) => t.name));
+  const deps = makeMockDeps([], {
+    listTokens: () =>
+      Promise.resolve(tokens.filter((t) => remaining.has(t.name))),
+  });
+  deps.collectToken = (token) => {
+    deps.collected.push(token.name);
+    remaining.delete(token.name);
+    return Promise.resolve("collected");
+  };
+  const service = new ServerTokenGcService(deps);
+
+  assertEquals(await service.runOnce(), MAX_TOKENS_PER_SWEEP);
+  assertEquals(await service.runOnce(), 5);
+  assertEquals(remaining.size, 0);
+});
+
+Deno.test("runOnce: skipped tokens do not count toward the per-sweep cap", async () => {
+  const skipped = revokedTokens(10, "gone");
+  const live = revokedTokens(MAX_TOKENS_PER_SWEEP, "live");
+  const skippedNames = new Set(skipped.map((t) => t.name));
+  const deps = makeMockDeps([...skipped, ...live]);
+  deps.collectToken = (token) => {
+    if (skippedNames.has(token.name)) return Promise.resolve("skipped");
+    deps.collected.push(token.name);
+    return Promise.resolve("collected");
+  };
+  const service = new ServerTokenGcService(deps);
+
+  assertEquals(await service.runOnce(), MAX_TOKENS_PER_SWEEP);
+});
+
+Deno.test("runOnce: failures count toward the cap and failed tokens are retried after the others", async () => {
+  const failing = revokedTokens(MAX_TOKENS_PER_SWEEP, "bad");
+  const good = revokedTokens(3, "good");
+  const failingNames = new Set(failing.map((t) => t.name));
+  const attempted: string[] = [];
+  const deps = makeMockDeps([...failing, ...good]);
+  deps.collectToken = (token) => {
+    attempted.push(token.name);
+    if (failingNames.has(token.name)) {
+      return Promise.reject(new Error("vault unavailable"));
+    }
+    return Promise.resolve("collected");
+  };
+  const service = new ServerTokenGcService(deps);
+
+  // The first sweep spends the cap on the failing block.
+  assertEquals(await service.runOnce(), 0);
+  assertEquals(attempted.length, MAX_TOKENS_PER_SWEEP);
+
+  // The next sweep tries the others first.
+  attempted.length = 0;
+  assertEquals(await service.runOnce(), 3);
+  assertEquals(attempted.slice(0, 3), ["good0", "good1", "good2"]);
+});
+
+Deno.test("runOnce: a failed token the cap left untried stays at the back", async () => {
+  const bad = makeToken({
+    name: "bad",
+    state: "revoked",
+    revokedAt: new Date().toISOString(),
+  });
+  const fresh = revokedTokens(MAX_TOKENS_PER_SWEEP, "new");
+  const later = makeToken({
+    name: "later",
+    state: "revoked",
+    revokedAt: new Date().toISOString(),
+  });
+  let tokens: TokenGcInfo[] = [bad];
+  const attempted: string[] = [];
+  const deps = makeMockDeps([], { listTokens: () => Promise.resolve(tokens) });
+  deps.collectToken = (token) => {
+    attempted.push(token.name);
+    return token.name === "bad"
+      ? Promise.reject(new Error("vault unavailable"))
+      : Promise.resolve("collected");
+  };
+  const service = new ServerTokenGcService(deps);
+
+  await service.runOnce();
+  assertEquals(attempted, ["bad"]);
+
+  // The fresh tokens fill the cap, so "bad" is not tried this sweep.
+  tokens = [bad, ...fresh];
+  attempted.length = 0;
+  await service.runOnce();
+  assert(!attempted.includes("bad"));
+
+  // It still goes after a token it was listed ahead of.
+  tokens = [bad, later];
+  attempted.length = 0;
+  await service.runOnce();
+  assertEquals(attempted, ["later", "bad"]);
 });

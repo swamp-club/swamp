@@ -34,6 +34,7 @@ CREATE TABLE active_runs (
   id            TEXT PRIMARY KEY,
   run_kind      TEXT NOT NULL,        -- 'model_method' | 'workflow'
   model_type    TEXT,
+  definition_id TEXT,                 -- method runs only; NULL before schema v5
   method_name   TEXT,
   workflow_name TEXT,
   pid           INTEGER NOT NULL,
@@ -61,7 +62,17 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 );
 ```
 
-(`src/infrastructure/persistence/run_tracker_store.ts`.) The
+(`src/infrastructure/persistence/run_tracker_store.ts`.) A method-run row
+records the definition it executes in `definition_id`, and
+`swamp model cancel <model>` selects a model's runs by it, never by
+`model_type` alone. A row an older swamp registered has none, and is
+attributed from what its run left behind (`findMethodRunsOfModel`,
+`src/cli/commands/model_cancel.ts`): its method-run record, which a workflow
+step saves while it runs and which carries the definition id; failing that,
+the model's own lock, which a mutating direct run holds, when the row's
+process holds it and runs no other method. A row neither places (a direct run
+of a method that does not mutate takes no lock) is no model's, and only
+`swamp model cancel --all` stops it. The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
 days are purged at startup, except a workflow or method row reaped
 `interrupted` with no reason (`cancel_reason` null): its workflow or method run

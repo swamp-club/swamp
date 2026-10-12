@@ -54,6 +54,13 @@ const JITTER_FACTOR = 0.25;
 export interface FileLockOptions extends LockOptions {
   /** Ceiling for the doubling retry backoff in ms (default: 8_000). */
   maxBackoffMs?: number;
+  /**
+   * Judge a holder on another host by its TTL alone, never by whether its
+   * pid runs here: on a shared mount another host's pid means nothing on
+   * this one. The v3 writer lock sets it (swamp-club#3279); other locks keep
+   * clearing a holder whose pid is not running.
+   */
+  sameHostPidCheck?: boolean;
 }
 
 /**
@@ -155,6 +162,7 @@ export class FileLock implements DistributedLock {
   /** Ceiling for the doubling backoff. Readable for the same reason. */
   readonly maxBackoffMs: number;
   private readonly maxWaitMs: number;
+  private readonly sameHostPidCheck: boolean;
   private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
@@ -174,6 +182,7 @@ export class FileLock implements DistributedLock {
       DEFAULT_RETRY_INTERVAL_MS;
     this.maxBackoffMs = options?.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+    this.sameHostPidCheck = options?.sameHostPidCheck ?? false;
   }
 
   async acquire(): Promise<void> {
@@ -475,7 +484,10 @@ export class FileLock implements DistributedLock {
     if (state.kind === "absent") return "cleared"; // Removed meanwhile
     if (state.kind === "readable") {
       const existing = state.info;
-      const isStale = isProcessDead(existing.pid) ||
+      const pidDead = this.sameHostPidCheck && existing.hostname !== hostname()
+        ? false
+        : isProcessDead(existing.pid);
+      const isStale = pidDead ||
         Date.now() - new Date(existing.acquiredAt).getTime() > existing.ttlMs;
       if (!isStale) return existing;
       try {

@@ -37,6 +37,7 @@ import {
   isAtomicControlPlaneStore,
 } from "./control_plane_signal_wait_store.ts";
 import { FileSystemControlPlaneStore } from "./fs_control_plane_store.ts";
+import type { PendingSignal } from "../../domain/workflows/pending_signal.ts";
 import {
   claimWaitKey,
   type WaitKeyClaim,
@@ -507,5 +508,127 @@ Deno.test("ControlPlaneSignalWaitStore.highestKeyRecord: a record removed betwee
   assertEquals(await racing.highestKeyRecord("wf-1", "verdict"), {
     kind: "found",
     record: kept,
+  });
+});
+
+// Pending signals (swamp-club#3212).
+
+function pendingSignal(
+  overrides: Partial<PendingSignal> = {},
+): PendingSignal {
+  return {
+    kind: "pending",
+    workflowId: "wf-1",
+    key: "verdict",
+    slot: 1,
+    number: 1,
+    receiptId: "33333333-3333-4333-8333-333333333333",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "camera",
+    payload: { verdict: "known" },
+    acceptEarly: 10,
+    ...overrides,
+  };
+}
+
+Deno.test("ControlPlaneSignalWaitStore: a pending signal is created once under its slot and number, and the first writer holds it", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  const first = pendingSignal();
+  assertEquals(await store.createPendingRecord(first), {
+    kind: "found",
+    record: first,
+  });
+  assertEquals([...backing.data.keys()], ["wait-pending/wf-1/verdict/1/1"]);
+  // A second create of the same number is answered with what is stored.
+  const second = pendingSignal({
+    receiptId: "44444444-4444-4444-8444-444444444444",
+  });
+  assertEquals(await store.createPendingRecord(second), {
+    kind: "found",
+    record: first,
+  });
+});
+
+Deno.test("ControlPlaneSignalWaitStore.highestPendingRecord: reads the highest number of one slot, and says so when it cannot be read", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  const slot = { workflowId: "wf-1", key: "verdict", slot: 1 };
+  assertEquals(await store.highestPendingRecord(slot), { kind: "none" });
+  await store.createPendingRecord(pendingSignal());
+  const newer = pendingSignal({ number: 2 });
+  await store.createPendingRecord(newer);
+  // Another slot and another key are not this slot's.
+  await store.createPendingRecord(pendingSignal({ slot: 2, number: 9 }));
+  await store.createPendingRecord(pendingSignal({ key: "other", number: 9 }));
+  assertEquals(await store.highestPendingRecord(slot), {
+    kind: "found",
+    record: newer,
+  });
+  backing.data.set(
+    "wait-pending/wf-1/verdict/1/3",
+    new TextEncoder().encode("{"),
+  );
+  assertEquals(await store.highestPendingRecord(slot), {
+    kind: "unreadable",
+    number: 3,
+  });
+});
+
+Deno.test("ControlPlaneSignalWaitStore: pending records are listed by address, readable or not, and removed one by one or with their workflow", async () => {
+  const backing = memoryStore();
+  const store = new ControlPlaneSignalWaitStore(backing);
+  await store.createPendingRecord(pendingSignal());
+  await store.createPendingRecord(pendingSignal({ workflowId: "wf-2" }));
+  backing.data.set(
+    "wait-pending/wf-1/verdict/1/2",
+    new TextEncoder().encode("{"),
+  );
+  backing.data.set("wait-pending/wf-1/not a key/1/1", new Uint8Array());
+  assertEquals(
+    (await store.listPendingAddresses()).map((at) =>
+      `${at.workflowId}/${at.slot}/${at.number}`
+    ).sort(),
+    ["wf-1/1/1", "wf-1/1/2", "wf-2/1/1"],
+  );
+  await store.removePendingRecord({
+    workflowId: "wf-1",
+    key: "verdict",
+    slot: 1,
+    number: 2,
+  });
+  assertEquals((await store.listPendingAddresses()).length, 2);
+  await store.removePendingRecordsOfWorkflow("wf-1");
+  assertEquals(
+    [...backing.data.keys()],
+    ["wait-pending/wf-2/verdict/1/1"],
+  );
+});
+
+Deno.test("ControlPlaneSignalWaitStore: pending signals are kept on a real filesystem store", async () => {
+  await withTempDir(async (dir) => {
+    const backing = new FileSystemControlPlaneStore(dir);
+    assert(isAtomicControlPlaneStore(backing));
+    const store = new ControlPlaneSignalWaitStore(backing);
+    const record = pendingSignal();
+    await store.createPendingRecord(record);
+    // Read by another instance over the same directory.
+    const other = new ControlPlaneSignalWaitStore(
+      new FileSystemControlPlaneStore(dir) as AtomicControlPlaneStore,
+    );
+    assertEquals(
+      await other.highestPendingRecord({
+        workflowId: "wf-1",
+        key: "verdict",
+        slot: 1,
+      }),
+      { kind: "found", record },
+    );
+    assertEquals(await other.listPendingAddresses(), [{
+      workflowId: "wf-1",
+      key: "verdict",
+      slot: 1,
+      number: 1,
+    }]);
   });
 });

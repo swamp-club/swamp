@@ -321,23 +321,37 @@ with another mint's secret (swamp-club#2482):
   since hashing the current secret would bless a pairing that may already be
   wrong.
 
-Two writers do not take the name lock. The OAuth login mint names each token
+The token GC takes the name lock too, around each token it collects (see
+below). One writer does not. The OAuth login mint names each token
 `oauth-<random>`, so it only shares a name with another mint by chance; it
-records the fingerprint, so a collision fails closed. The token GC deletes
-under the sync gate alone, as described below. A binary from before the lock
-takes neither precaution, and drops the fingerprint from a record it rewrites.
+records the fingerprint, so a collision fails closed. A binary from before the
+lock takes neither precaution, and drops the fingerprint from a record it
+rewrites.
 
 Serve garbage-collects server tokens in every auth mode
 (`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
 `src/serve/server_token_gc_deps.ts`). The first sweep runs just after boot,
-once token secret migration is done, then one runs every `--token-gc-interval`.
-A sweep deletes revoked tokens at once, and expired tokens once
-`--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
-`access token list`.
+after token secret migration in OAuth mode (the only mode that migrates), then
+one runs every `--token-gc-interval`. A sweep deletes revoked tokens at once,
+and expired tokens once `--token-gc-grace-period` has passed since `expiresAt`,
+so both drop out of `access token list`.
 
-Each token is collected as one unit holding the sync gate exclusively. Inside
-the unit the GC re-reads the token's `token-main` and skips the token if it is
-gone or no longer eligible. Then:
+A sweep stops after `MAX_TOKENS_PER_SWEEP` (100) tokens that it collected or
+failed to collect; a token skipped on re-read does not count. Each collection
+holds the sync gate for a push, so without the cap the first sweep after an
+upgrade, which finds every revoked or expired token ever minted, would hold
+the gate for a long time. A larger backlog drains over later sweeps. Tokens
+that failed in the last sweep are tried after the others, so a block of tokens
+that keep failing cannot use up the cap (swamp-club#2535).
+
+Each token is collected as one unit holding the token's name lock and, inside
+it, the sync gate exclusively. The lock is taken first, as the token handlers
+take it, so the GC never waits on it while holding the gate; a lock it cannot
+take fails the collection, and the token is retried next sweep. Inside the
+unit the GC first pulls, when serve has a remote datastore, as the token
+handlers do before they write; a failed pull fails the collection. It then
+re-reads the token's `token-main` and skips the token if it is gone or no
+longer eligible. Then:
 
 1. It deletes the secret. A failure keeps the token for the next sweep, so a
    stale copy of the records, such as an HA peer's local cache, can never
@@ -355,21 +369,48 @@ That key is shared by every definition that has carried the name. So when a
 record outlives its definition, and the name now belongs to another definition
 or to none, the GC deletes only that record's data and leaves the secret.
 
+The GC looks up the definition that owns the name through the shared
+definition repository, the one authentication reads through, so the two
+always agree. It searches `models/` first, then `.swamp/auto-definitions/`, so
+a server-token definition the boot migration left in `models/` is collected
+rather than treated as an orphan.
+
+For a token minted before swamp-club#1511, the GC also deletes the canonical
+key from the vault the record names, but only when that vault supports deletes
+and its listing holds the key. Anyone who can write the datastore can change
+the recorded vault, so a vault that does not hold the key is never touched.
+When the listing fails, the GC leaves that vault alone, logs the vault and key
+so an operator can remove it, and still collects the token: with its records
+and `_token-secrets` copy gone, the leftover secret cannot authenticate, and a
+vault whose credentials allow deletes but not listing would otherwise keep the
+token forever. A failed delete still keeps the token for the next sweep. Each
+such vault is listed at most once per sweep; a failed listing is not cached. The
+`_token-secrets` deletes do not match error messages: the control-plane
+store's delete of a missing key is a no-op, so any error is a real failure.
+
 Every replica sweeps on its own, and a token another replica already deleted
 is skipped.
 
-The re-read protects against token writes only where the gate covers them.
-Serve's own token mint, rotate and revoke, and the OAuth login mint, hold the
-gate while they write. So with a remote datastore, a write in the same process
-lands either before the re-read or after the unit. The gap is in two places:
+The re-read protects against token writes because the GC holds the same name
+lock as the writers. Mint, rotate and revoke, in serve and in the CLI, hold it
+across their writes, so a write lands either before the re-read or after the
+unit, with or without a remote datastore (swamp-club#2534). Serve only creates
+the sync gate with a remote datastore, so the lock, not the gate, is what
+serialises them. The OAuth login mint holds the gate but not the lock; its
+random names make a clash with a collected token a chance collision.
 
-- **No remote datastore.** Serve creates no gate at all, so a rotation or
-  re-mint can land between the re-read and the deletes (swamp-club#2534).
-- **Across replicas.** The gate is in-process only. A replica whose copy of a
-  record is older than another replica's re-mint or rotation of the same name
-  can still collect the new token.
+Across replicas the lock is the datastore's distributed lock, so it orders
+the GC after another replica's re-mint or rotation of the same name, and the
+pull before the re-read brings that write into the local copy the GC reads.
 
-Both fail closed: the token has to be minted again.
+The lock and the pull have a cost. With a remote datastore each collection
+takes a distributed lock and pulls, on top of its push, and holds the gate for
+the pull. A token whose lock another writer holds can make a sweep wait up to
+the lock timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), without holding
+the gate. `MAX_TOKENS_PER_SWEEP` caps the collections that succeed or fail,
+and a lock timeout is a failure. A token skipped on re-read still costs a lock
+and a pull but does not count toward the cap, so skips are bounded only by the
+number of tokens the sweep listed as eligible.
 
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
@@ -494,7 +535,10 @@ reloads the snapshot on any change
 (`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
-(`src/serve/collective_refresh_service.ts`). A token is refreshed only when an
+(`src/serve/collective_refresh_service.ts`). It applies a userinfo answer only
+when its subject matches the token's principal, and otherwise keeps the token's
+snapshot and logs a warning, so whoever can write a stored access token cannot
+choose whose collectives a token gets. A token is refreshed only when an
 OAuth login stored an access token for it. The lookup reads `_token-secrets`,
 and reads a user vault only for a token whose record still names one, so a
 manually minted or worker server token costs no user-vault read
@@ -574,14 +618,18 @@ transports to that. What it does, in order:
   refusals: a reader gets the use case's message and, for an already settled
   wait, the earlier receipt; a caller with `signal` alone gets a fixed sentence
   per refusal. So a signal-only caller that retries after a lost reply learns
-  the wait is settled but not by which signal; retries are not idempotent.
+  the wait is settled but not by which signal; a retry is idempotent only
+  under an idempotency key (below).
 - A delivery emits the audit event `workflow.signal.delivered` with the wait
   ID, the receipt ID and the run ID. The payload is never logged or audited.
 
 | Outcome | WebSocket error | HTTP status |
 | --- | --- | --- |
 | delivered | — (`workflow.signal` reply) | 200 |
+| by key: held as the key's pending signal (the reply carries the receipt and `heldUntil`, and no wait or run) | — (`workflow.signal` reply, `status: pending`) | 202 |
+| a retry under the idempotency key of a signal already received (the reply is that signal's, with `duplicate: true`; nothing is delivered or stored) | — (`workflow.signal` reply) | 200, or 202 while that signal is held |
 | unknown wait, unknown workflow or undeclared key, or not allowed | `not_found` | 404 |
+| by key: an earlier signal is pending for the key (the earlier receipt for a caller who may read the workflow) | `workflow_signal_refused`, `refusal: already_pending` | 409 |
 | by key: the key is declared and no open wait holds it (`lastWait` says how its last wait was settled) | `workflow_signal_refused`, `refusal: no_open_wait` | 409 |
 | payload refused (errors listed) | `workflow_signal_refused`, `refusal: invalid_payload` | 422 |
 | already settled | `workflow_signal_refused`, `refusal: already_settled` | 409 |
@@ -650,7 +698,31 @@ What differs by key, in order:
   to. This is what covers a workflow renamed since the wait was opened, whose
   wait is still authorized under the name the run recorded. A refusal here is
   `not_found` too.
-- A declared key that no open wait holds is refused `no_open_wait`. Only a
+- A declared key that no open wait holds, on a step that sets `acceptEarly`,
+  holds the signal as the key's pending signal (swamp-club#3212, "Early
+  signals" in [workflows](workflows.md)). It is stored only after the caller
+  was authorized for `signal` on the workflow, under the workflow ID that was
+  authorized, and it records the authorized workflow name: only a wait whose
+  run recorded that name takes it, which keeps the second authorization of a
+  signal by key (a workflow renamed since the wait's run started) for a
+  signal that arrived before the wait did. The reply is `pending`; no run is continued, since none took the
+  signal yet. It is audited as `workflow.signal.pending` with the receipt ID,
+  the key and until when it is held, never the payload. A second signal while
+  one is held is refused `already_pending` with `pending.heldUntil`, and the
+  earlier receipt for a caller who may read the workflow. Over the WebSocket
+  a signal is held only for a request that sets `acceptsPending`: a client
+  from before the pending reply reads `data` of every reply, so it is refused
+  `no_open_wait` as it was before, and nothing is stored. The HTTP route
+  always holds.
+- A request may carry an idempotency key: `idempotencyKey` over the WebSocket,
+  the `Idempotency-Key` header over HTTP (400 for one not in the form
+  `isIdempotencyKey` accepts). One that matches a signal the same principal
+  already sent for the wait or its key is answered with that signal's receipt
+  and `duplicate: true`, and nothing is delivered or stored; a key another
+  principal used is not a match, so no caller is shown a receipt that is not
+  their own; the audit detail carries `duplicate=true`. See "Idempotency keys" in
+  [workflows](workflows.md) for where it is looked for and for how long.
+- A declared key that no open wait holds is otherwise refused `no_open_wait`. Only a
   caller who may signal the workflow gets this far, and such a caller already
   learns whether a wait is open from whether a delivery succeeds. A caller who
   may also read the workflow gets the use case's message; one with `signal`
@@ -676,8 +748,13 @@ What differs by key, in order:
   server does not know the address a client reached it by.
   Several senders racing for one open wait can still get `already_settled`
   instead: each resolved the key while the wait was open. Both are 409, and
-  neither makes a retry idempotent; a sender that needs that sends one signal
-  and reads `lastWait` before sending again.
+  neither makes a retry idempotent; a sender that needs that sends an
+  idempotency key, or sends one signal and reads `lastWait` before sending
+  again.
+  On a step with `acceptEarly` a retry by key with no idempotency key is not
+  refused: it is held as a second signal for the next run (202). The pending reply carries the same
+  `lastWait`, with the earlier `receipt` only for a caller who may read the
+  workflow, so the sender can still tell that the first signal landed.
 - The key is resolved from claim records only (`findKeyHolder`). Run records
   are not scanned, as they are not for a wait ID.
 - The reply is the by-ID reply: the wait ID and the receipt, and for a caller
@@ -909,6 +986,7 @@ as its instance id. The coordination records:
 | `waits/<waitId>`                            | The executor, when a `wait_for_signal` step starts waiting      | `workflow signal`, `workflow waits`; removed when the run ends            |
 | `wait-outcomes/<waitId>`                    | `putIfAbsent` by whichever of a signal, a timeout or a cancel settles the wait first | The resume that applies it; removed with the run record |
 | `wait-keys/<workflowId>/<key>/<generation>` | `putIfAbsent` by a `wait_for_signal` step that declares a `key`, before it registers its wait; a release by whoever removes the highest claim | The next step that claims the key; removed with the run record, or with the workflow |
+| `wait-pending/<workflowId>/<key>/<slot>/<number>` | `putIfAbsent` by a signal by key that finds no open wait on a step with `acceptEarly`; a lapse by the sweep over one no wait took | The step that claims the slot, and whoever settles its wait; removed with the claim, or with the workflow |
 | `token-secrets/*`                           | `ControlPlaneVaultProvider`; `encryption-key` is the co-located key, or a marker with `token-secrets` set | Token auth on every instance                                               |
 
 **Boot.** Before accepting traffic an instance
@@ -1008,8 +1086,13 @@ together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
 aborted and gets 5 s more. It marks aborted API workflow runs
 `interrupted("server_shutdown")` in the run repository (aborted webhook and cron
-runs end `cancelled`), deletes its heartbeat and exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 10 s, and
+runs end `cancelled`) and, on a remote datastore, pushes those records under the
+shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
+swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
+a push that fails or misses it is logged as a warning, and the datastore keeps
+the run's last pushed status. It then deletes its heartbeat and exits. Set the pod's
+`terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
+abort grace and the 5 s interrupt push), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. Peers see no stale heartbeat, so nothing is reaped.

@@ -47,6 +47,7 @@ import {
 } from "../../libswamp/extensions/managed_lockfile_transaction.ts";
 import {
   createDatastoreSetupDeps,
+  type DatastoreSetupDeps,
   datastoreSetupExtension,
 } from "../../libswamp/datastores/setup.ts";
 import {
@@ -112,7 +113,10 @@ import {
   createWorkerTokenRevokeDeps,
   workerTokenRevoke,
 } from "../../libswamp/worker/token_revoke.ts";
-import { datastoreNamespaceList } from "../../libswamp/datastores/namespace_list.ts";
+import {
+  createNamespaceListDeps,
+  datastoreNamespaceList,
+} from "../../libswamp/datastores/namespace_list.ts";
 import {
   doctorDatastores,
   type DoctorDatastoresDeps,
@@ -154,22 +158,17 @@ import { fleetMemberSuffix } from "../worker_gateway.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
-  type CustomDatastoreConfig,
+  externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
-import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 
 import {
-  datastoreBasePath,
   resolveConfigTierPath,
   resolveDatastoreConfig,
 } from "../../cli/resolve_datastore.ts";
-import {
-  listNamespaceManifests,
-} from "../../infrastructure/persistence/namespace_manifest.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
 import { loadIdentity } from "../../cli/load_identity.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
@@ -200,6 +199,7 @@ import {
 } from "../../infrastructure/persistence/installed_entries.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -241,6 +241,9 @@ import {
 } from "../extension_reload.ts";
 import { isReservedVaultName } from "./vault_handlers.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../../domain/vaults/control_plane_vault_provider.ts";
+import { createV3LockfileSync } from "../../infrastructure/datastore_v3/v3_lockfile_sync.ts";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 /**
  * Derives the extension lockfile path from the connection context's
@@ -293,10 +296,41 @@ function extensionLockfileTransaction(
 ): LockfileTransaction | undefined {
   const { syncService, datastoreConfig } = ctx;
   const markDirty = ctx.repoContext.markDirty;
+  const logger = getSwampLogger(["serve", "extension", "lockfile"]);
+  // A v3 repo commits its managed lockfile through the commit log
+  // (swamp-club#3279); serve holds the writer lock for its lifetime.
+  if (
+    markDirty && ctx.repoContext.commitLog !== undefined &&
+    marker?.datastore?.managedConfig === true
+  ) {
+    return new ManagedLockfileTransaction({
+      lockfilePath,
+      inRoot: (fn) =>
+        runInRootUnitOfWork(
+          ctx.repoContext,
+          { flush: undefined, checkpoint: () => Promise.resolve() },
+          () => fn(),
+        ),
+      // The global lock serialises concurrent extension changes in serve,
+      // as on v2.
+      lock: datastoreGlobalLock(datastoreConfig),
+      sync: createV3LockfileSync({
+        markDirty,
+        lockfilePath,
+        configBase: ctx.datastoreResolver.resolvePath("config"),
+      }),
+      pending: createRepoPendingLockfileStore(ctx.repoDir),
+      publishFailure: "defer",
+      onWarning: (message, error) =>
+        error === undefined ? logger.warn(message) : logger.warn(
+          `${message}: {error}`,
+          { error: error instanceof Error ? error.message : String(error) },
+        ),
+    });
+  }
   if (!syncService || !markDirty || !isExtensionBackedDatastore(marker)) {
     return undefined;
   }
-  const logger = getSwampLogger(["serve", "extension", "lockfile"]);
   const namespace = isCustomDatastoreConfig(datastoreConfig)
     ? datastoreConfig.namespace
     : undefined;
@@ -536,7 +570,16 @@ export async function handleDatastoreStatus(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createDatastoreStatusDeps(ctx.datastoreResolver);
+    const config = ctx.datastoreResolver.config();
+    const deps = await createDatastoreStatusDeps(ctx.datastoreResolver, {
+      ...(resolverEngine(ctx.datastoreResolver) === "v3" &&
+          !isCustomDatastoreConfig(config)
+        ? {
+          describeCommitLog: () =>
+            v3DatastoreFor(ctx.repoDir, config).describe(),
+        }
+        : {}),
+    });
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1223,6 +1266,25 @@ export async function handleExtensionUpdate(
   }
 }
 
+/**
+ * Datastore setup deps for serve. Serve holds the catalog open, so setup
+ * marks it for a rebuild instead of deleting its files: a delete fails on
+ * Windows after `.swamp.yaml` is already written, and on POSIX the open
+ * connection would later unlink the WAL a rebuilt catalog uses.
+ */
+export function serveDatastoreSetupDeps(
+  repoDir: string,
+  catalogStore: Pick<CatalogStore, "invalidate">,
+): DatastoreSetupDeps {
+  return {
+    ...createDatastoreSetupDeps(repoDir, resolveConfigTierPath),
+    invalidateCatalog: () => {
+      catalogStore.invalidate();
+      return Promise.resolve();
+    },
+  };
+}
+
 export async function handleDatastoreSetupExtension(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1247,7 +1309,20 @@ export async function handleDatastoreSetupExtension(
     const repoDir = ctx.repoDir;
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const deps = createDatastoreSetupDeps(repoDir, resolveConfigTierPath);
+    const deps = serveDatastoreSetupDeps(
+      repoDir,
+      ctx.repoContext.catalogStore,
+    );
+    // A filesystem datastore outside the repo is what setup moves from
+    // (swamp-club#3238). An unresolvable one leaves setup on .swamp/.
+    const outgoingDatastorePath = await resolveDatastoreConfig(
+      marker,
+      undefined,
+      repoDir,
+    ).then(
+      (config) => externalFilesystemDatastoreRoot(config, swampPath(repoDir)),
+      () => undefined,
+    );
 
     const MAX_TIMEOUT_SECONDS = 21600;
     const syncTimeoutMsOverride = payload.timeout != null
@@ -1268,6 +1343,7 @@ export async function handleDatastoreSetupExtension(
           | undefined,
         namespace: payload.namespace,
         syncTimeoutMsOverride,
+        outgoingDatastorePath,
       }),
       {
         validating: () => {},
@@ -2562,32 +2638,7 @@ export async function handleDatastoreNamespaceList(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const dsBasePath = datastoreBasePath(ctx.datastoreConfig);
-
-    let listProvider: DatastoreProvider | undefined;
-    if (isCustomDatastoreConfig(ctx.datastoreConfig)) {
-      await datastoreTypeRegistry.ensureLoaded();
-      await datastoreTypeRegistry.ensureTypeLoaded(ctx.datastoreConfig.type);
-      const typeInfo = datastoreTypeRegistry.get(ctx.datastoreConfig.type);
-      listProvider = typeInfo?.createProvider?.(ctx.datastoreConfig.config);
-    }
-
-    const deps = {
-      getCurrentNamespace: () => ctx.datastoreConfig.namespace,
-      listNamespaces: async () => {
-        if (listProvider?.listNamespaces) {
-          const slugs = await listProvider.listNamespaces(
-            (ctx.datastoreConfig as CustomDatastoreConfig).datastorePath,
-          );
-          return slugs.map((ns: string) => ({
-            namespace: ns,
-            repoId: "",
-            registeredAt: "",
-          }));
-        }
-        return await listNamespaceManifests(dsBasePath);
-      },
-    };
+    const deps = await createNamespaceListDeps(ctx.datastoreConfig);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

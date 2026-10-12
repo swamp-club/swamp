@@ -58,6 +58,14 @@ the specific requirements.
 
 ### Vault Access
 
+_Include this note when the repo still has a `local_encryption` vault (usually
+`default`, created by `swamp repo init`)._
+
+**Local vaults:** the `default` vault's key and secrets live only on the machine
+that wrote them, so your clone starts with an empty `default` vault and its own
+key. Ask the repo owner for any secrets you need, and store them with
+`swamp vault put default <KEY>`.
+
 _Include this section for each vault that is NOT `local_encryption`._
 
 **For `@swamp/aws-sm` vaults:**

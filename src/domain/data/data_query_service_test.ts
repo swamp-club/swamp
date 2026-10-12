@@ -37,6 +37,7 @@ import {
   computeLatestFlags,
   type DataQueryOptions,
   DataQueryService,
+  type ForeignContentFetcher,
   type ModelReferenceResolver,
   type ResolvedModelReference,
 } from "./data_query_service.ts";
@@ -992,24 +993,51 @@ Deno.test("DataQueryService: ns field is queryable for namespace filtering", () 
 
 // ── Phase 6d: foreign content fetch ─────────────────────────────────────────
 
-Deno.test("DataQueryService: foreign content fetcher hydrates attributes for foreign rows", async () => {
-  const { catalog, service } = setupTest();
+/** A service whose repository carries `fetcher`, as a repo context wires it. */
+function setupForeignTest(fetcher: ForeignContentFetcher): {
+  catalog: CatalogStore;
+  service: DataQueryService;
+} {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-foreign-" });
+  const catalog = new CatalogStore(
+    join(dir, ".swamp", "data", "_catalog.db"),
+  );
+  catalog.markPopulated();
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    fetcher,
+  );
+  return { catalog, service: new DataQueryService(catalog, dataRepo) };
+}
 
-  catalog.upsert(makeRow({
+function jsonBytes(value: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(value));
+}
+
+function foreignRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
+  return makeRow({
     namespace: "security",
     model_name: "scanner",
     data_name: "results",
     content_type: "application/json",
-  }));
+    ...overrides,
+  });
+}
 
+Deno.test("DataQueryService: foreign content fetcher hydrates attributes for foreign rows", async () => {
   const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
-  service.setForeignContentFetcher(
-    (namespace: string, relPath: string) => {
-      fetchCalls.push({ namespace, relPath });
-      const content = JSON.stringify({ severity: "high", count: 42 });
-      return Promise.resolve(new TextEncoder().encode(content));
-    },
-  );
+  const { catalog, service } = setupForeignTest((namespace, relPath) => {
+    fetchCalls.push({ namespace, relPath });
+    return Promise.resolve(jsonBytes({ severity: "high", count: 42 }));
+  });
+  catalog.upsert(foreignRow());
 
   const results = await service.query(
     'modelName == "scanner"',
@@ -1026,47 +1054,29 @@ Deno.test("DataQueryService: foreign content fetcher hydrates attributes for for
 });
 
 Deno.test("DataQueryService: foreign content fetcher caches results across queries", async () => {
-  const { catalog, service } = setupTest();
-
-  catalog.upsert(makeRow({
-    namespace: "foreign",
-    model_name: "model-a",
-    data_name: "data-a",
-    content_type: "application/json",
-  }));
-
   let fetchCount = 0;
-  service.setForeignContentFetcher(() => {
+  const { catalog, service } = setupForeignTest(() => {
     fetchCount++;
-    return Promise.resolve(
-      new TextEncoder().encode(JSON.stringify({ cached: true })),
-    );
+    return Promise.resolve(jsonBytes({ cached: true }));
   });
+  catalog.upsert(foreignRow());
 
-  await service.query('ns == "foreign"', { loadAttributes: true });
+  await service.query('ns == "security"', { loadAttributes: true });
   assertEquals(fetchCount, 1);
 
   // Second query should hit the cache, not fetch again
-  await service.query('ns == "foreign"', { loadAttributes: true });
+  await service.query('ns == "security"', { loadAttributes: true });
   assertEquals(fetchCount, 1);
 
   catalog.close();
 });
 
 Deno.test("DataQueryService: foreign content fetcher returns null gracefully", async () => {
-  const { catalog, service } = setupTest();
-
-  catalog.upsert(makeRow({
-    namespace: "unavailable",
-    model_name: "missing",
-    data_name: "data",
-    content_type: "application/json",
-  }));
-
-  service.setForeignContentFetcher(() => Promise.resolve(null));
+  const { catalog, service } = setupForeignTest(() => Promise.resolve(null));
+  catalog.upsert(foreignRow());
 
   const results = await service.query(
-    'modelName == "missing"',
+    'modelName == "scanner"',
     { loadAttributes: true },
   ) as DataRecord[];
 
@@ -1077,7 +1087,11 @@ Deno.test("DataQueryService: foreign content fetcher returns null gracefully", a
 });
 
 Deno.test("DataQueryService: foreign content fetcher does not fire for own namespace", async () => {
-  const { catalog, service } = setupTest();
+  let fetched = false;
+  const { catalog, service } = setupForeignTest(() => {
+    fetched = true;
+    return Promise.resolve(null);
+  });
 
   // Own namespace is "" (solo mode)
   catalog.upsert(makeRow({
@@ -1087,18 +1101,230 @@ Deno.test("DataQueryService: foreign content fetcher does not fire for own names
     content_type: "application/json",
   }));
 
-  let fetched = false;
-  service.setForeignContentFetcher(() => {
-    fetched = true;
-    return Promise.resolve(null);
-  });
-
   await service.query(
     'modelName == "local"',
     { loadAttributes: true },
   );
+  await service.getLatestRecord("local", "data", "");
 
   assertEquals(fetched, false);
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord: hydrates a foreign row's attributes through the fetcher (swamp-club#3306)", async () => {
+  const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
+  const { catalog, service } = setupForeignTest((namespace, relPath) => {
+    fetchCalls.push({ namespace, relPath });
+    return Promise.resolve(jsonBytes({ content: "security" }));
+  });
+  const row = foreignRow();
+  catalog.upsert(row);
+
+  const record = await service.getLatestRecord(
+    "scanner",
+    "results",
+    "security",
+  );
+
+  assertEquals(record?.namespace, "security");
+  assertEquals(record?.attributes, { content: "security" });
+  assertEquals(fetchCalls, [{
+    namespace: "security",
+    relPath:
+      `data/${row.type_normalized}/${row.model_id}/results/${row.version}/raw`,
+  }]);
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord: a foreign row reads empty attributes when the repository has no fetcher", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(foreignRow());
+
+  const record = await service.getLatestRecord(
+    "scanner",
+    "results",
+    "security",
+  );
+
+  assertEquals(record?.namespace, "security");
+  assertEquals(record?.attributes, {});
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a select over a foreign row reads its fetched attributes (swamp-club#3306)", async () => {
+  const { catalog, service } = setupForeignTest(() =>
+    Promise.resolve(jsonBytes({ content: "security" }))
+  );
+  catalog.upsert(foreignRow());
+
+  assertEquals(
+    await service.query('ns == "security"', { select: "attributes" }),
+    [{ content: "security" }],
+  );
+  assertEquals(
+    await service.query('ns == "security"', {
+      select: "attributes.content",
+    }),
+    ["security"],
+  );
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a foreign row the include filter rejects is never fetched", async () => {
+  const fetched: string[] = [];
+  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+    fetched.push(relPath);
+    return Promise.resolve(jsonBytes({ ok: true }));
+  });
+  catalog.upsert(foreignRow({
+    model_name: "visible",
+    data_name: "shown",
+    id: "uuid-shown",
+  }));
+  catalog.upsert(foreignRow({
+    model_name: "secret",
+    data_name: "hidden",
+    id: "uuid-hidden",
+  }));
+
+  const results = await service.query('ns == "security"', {
+    loadAttributes: true,
+    include: (record) => Promise.resolve(record.modelName !== "secret"),
+  }) as DataRecord[];
+
+  assertEquals(results.map((r) => r.name), ["shown"]);
+  assertEquals(fetched.length, 1);
+  assertEquals(fetched[0].includes("/shown/"), true);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a select that reads no attributes fetches no foreign content", async () => {
+  let fetchCount = 0;
+  const { catalog, service } = setupForeignTest(() => {
+    fetchCount++;
+    return Promise.resolve(jsonBytes({ content: "security" }));
+  });
+  catalog.upsert(foreignRow());
+
+  assertEquals(
+    await service.query('ns == "security"', { select: "name" }),
+    ["results"],
+  );
+  assertEquals(
+    await service.query('ns == "security"', { select: "version" }),
+    [1],
+  );
+  assertEquals(fetchCount, 0);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a foreign row whose fields would leave its namespace's data tree is never fetched", async () => {
+  const fetched: string[] = [];
+  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+    fetched.push(relPath);
+    return Promise.resolve(jsonBytes({ leaked: true }));
+  });
+  const escapes: Array<Partial<CatalogRow>> = [
+    { data_name: "../../../infra/data/x" },
+    { data_name: ".." },
+    { data_name: "a/b" },
+    { data_name: "a\\b" },
+    { model_id: "../other-model" },
+    { type_normalized: "test/../../infra" },
+    { type_normalized: "/abs" },
+  ];
+  for (const [i, fields] of escapes.entries()) {
+    catalog.upsert(foreignRow({
+      model_name: `escape-${i}`,
+      id: `uuid-escape-${i}`,
+      ...fields,
+    }));
+  }
+  // A multi-segment model type is an ordinary path and is still fetched.
+  catalog.upsert(foreignRow({
+    model_name: "ordinary",
+    id: "uuid-ordinary",
+    type_normalized: "command/shell",
+  }));
+
+  // Some of these rows are refused earlier, by the local read's own
+  // containment check; the rest reach the fetch. Either way nothing outside
+  // the namespace's data tree is asked for.
+  for (let i = 0; i < escapes.length; i++) {
+    let attributes: Record<string, unknown> = {};
+    try {
+      const [record] = await service.query(
+        `ns == "security" && modelName == "escape-${i}"`,
+      ) as DataRecord[];
+      attributes = record.attributes;
+    } catch {
+      // refused by the local containment check
+    }
+    assertEquals(attributes, {}, JSON.stringify(escapes[i]));
+  }
+  assertEquals(fetched, []);
+
+  const [ordinary] = await service.query(
+    'ns == "security" && modelName == "ordinary"',
+  ) as DataRecord[];
+  assertEquals(ordinary.attributes, { leaked: true });
+  assertEquals(fetched.length, 1);
+  assertEquals(fetched[0].startsWith("data/command/shell/"), true);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a failed foreign fetch is retried on the next read, a success is not", async () => {
+  let calls = 0;
+  const { catalog, service } = setupForeignTest(() => {
+    calls++;
+    if (calls === 1) return Promise.reject(new Error("remote unavailable"));
+    if (calls === 2) return Promise.resolve(null);
+    return Promise.resolve(jsonBytes({ ok: true }));
+  });
+  catalog.upsert(foreignRow());
+  const read = async () =>
+    (await service.getLatestRecord("scanner", "results", "security"))
+      ?.attributes;
+
+  assertEquals(await read(), {}, "a thrown fetch leaves attributes empty");
+  assertEquals(await read(), {}, "a missing body leaves attributes empty");
+  assertEquals(await read(), { ok: true });
+  assertEquals(await read(), { ok: true });
+  assertEquals(calls, 3, "the fetched body is reused");
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: the foreign content cache drops its oldest body past the cap", async () => {
+  const fetched: string[] = [];
+  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+    fetched.push(relPath);
+    return Promise.resolve(jsonBytes({ relPath }));
+  });
+  // One more row than the cache holds.
+  const count = 257;
+  const name = (i: number) => `item-${String(i).padStart(3, "0")}`;
+  for (let i = 0; i < count; i++) {
+    catalog.upsert(foreignRow({ data_name: name(i), id: `uuid-${i}` }));
+  }
+  const read = (i: number) =>
+    service.getLatestRecord("scanner", name(i), "security");
+
+  for (let i = 0; i < count; i++) await read(i);
+  assertEquals(fetched.length, count);
+
+  // The newest body is still held; the first one was dropped to make room.
+  await read(count - 1);
+  assertEquals(fetched.length, count);
+  await read(0);
+  assertEquals(fetched.length, count + 1);
 
   catalog.close();
 });

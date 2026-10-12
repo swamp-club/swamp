@@ -8,6 +8,7 @@ Source files:
 - `src/domain/datastore/distributed_lock.ts`
 - `src/domain/datastore/datastore_health.ts`
 - `src/domain/datastore/datastore_sync_service.ts`
+- `src/domain/datastore/datastore_storage.ts`
 
 ## DatastoreProvider
 
@@ -21,6 +22,8 @@ interface DatastoreProvider {
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
   resolveCachePath?(repoDir: string): string | undefined;
+  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  storage?(): DatastoreStorage;
 
   registerNamespace?(
     datastorePath: string,
@@ -86,6 +89,89 @@ Returns a local cache path for remote datastores, or `undefined` to accept
 core's `~/.swamp/repos/<repoId>` default. Convention details above. When a
 concrete path is returned, swamp uses it for local caching and syncs to/from the
 remote backend via the sync service.
+
+### `datastoreControlPlaneStore()?`
+
+Optional. Returns a read-only store, `{ get(key, { signal }?) }`, for records at
+the datastore-wide `_control/<key>`, whatever namespace a repo uses. Swamp reads
+the datastore format marker (`datastore-format`) through it before every command
+that opens the datastore, so keep it cheap:
+
+- build no sync service, bind no namespace, make no request until `get`;
+- make `get` one request, with no credentials preflight;
+- return `null` only when the record is missing; reject on access denied and
+  every other failure;
+- honour `signal`: stop the request and any retry backoff when it aborts.
+
+Without it, swamp reads the marker through a fresh sync service's
+`controlPlaneStore()`. Check an implementation with
+`assertDatastoreControlPlaneStoreConformance` (see testing.md).
+
+### `storage()?`
+
+Optional, and not called by swamp yet: it is the content storage of the coming
+v3 datastore. Returns a [`DatastoreStorage`](#datastorestorage) scoped to the
+datastore root, like `datastoreControlPlaneStore()`.
+
+## DatastoreStorage
+
+The `storage/1` contract: immutable chunks keyed by namespace and the SHA-256 of
+their bytes. Swamp cuts content into chunks of `min(16 MiB, maxChunkBytes)`,
+uploads each one after `has`, and verifies every chunk it reads, so the storage
+never hashes anything.
+
+```typescript
+interface DatastoreStorage {
+  readonly contract: "storage/1";
+  capabilities(): { maxChunkBytes: number; touch: boolean };
+  has(
+    ns: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>>;
+  put(
+    ns: string,
+    sha256: string,
+    bytes: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<void>;
+  get(
+    ns: string,
+    sha256: string,
+    signal: AbortSignal,
+  ): Promise<Uint8Array | null>;
+  touch?(
+    ns: string,
+    hashes: readonly string[],
+    signal: AbortSignal,
+  ): Promise<Set<string>>;
+  list(
+    ns: string,
+    signal: AbortSignal,
+  ): AsyncIterable<{ sha256: string; lastModified: Date }>;
+  delete(ns: string, sha256: string, signal: AbortSignal): Promise<void>;
+}
+```
+
+- **Key layout:** `<prefix>/_blobs/<ns>/sha256/<first two hex>/<sha256>`, beside
+  `_control/`. `ns` is the namespace slug, or `_default` for an unnamespaced
+  datastore (solo, or a team datastore with no namespace).
+- **`put`** replaces the chunk atomically (no reader sees half of one), sets
+  `lastModified` to now, and copies `bytes`. Concurrent puts of one hash must
+  leave one complete chunk.
+- **`get`** returns `null` only for a missing chunk; reject on every other
+  failure.
+- **`touch`** sets `lastModified` to now for present hashes and returns the ones
+  it did not find. Implement it exactly when `capabilities().touch` is true;
+  without it, swamp puts present chunks again instead.
+- **`delete`** of a missing chunk succeeds.
+- Every method returns a promise that rejects when `signal` has aborted. Do not
+  throw synchronously.
+- No range reads: swamp reads whole chunks so it can verify them.
+
+Validate `ns` and `sha256` before building a key. The filesystem reference
+implementation is `src/infrastructure/persistence/fs_datastore_storage.ts`.
+Check an implementation with `assertStorageConformance` (see testing.md).
 
 ## DistributedLock
 

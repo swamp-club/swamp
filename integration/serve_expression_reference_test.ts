@@ -484,6 +484,50 @@ Deno.test("serve expressions: run inputs are authorized against the caller", asy
   );
 });
 
+Deno.test("serve expressions: literalInputs runs untrusted text as data, unauthorized and unevaluated", async () => {
+  await withMockedEnv(
+    { SWAMP_EXPR_SENTINEL_RUN: "sentinel-3205" },
+    async () => {
+      await withEchoType(async (echoType, notes) => {
+        await withFixtures(async (f) => {
+          const echo = Definition.create({
+            name: "echo-x",
+            globalArguments: {},
+          });
+          await f.repo.repoContext.definitionRepo.save(echoType, echo);
+          const runOnly = createServeCtx(f.repo, [
+            grant({
+              actions: ["read", "run"],
+              resource: { kind: "model", pattern: "*" },
+            }),
+            ...GRANTS.slice(2),
+          ]);
+          const texts = [
+            "${{ env.SWAMP_EXPR_SENTINEL_RUN }}",
+            REFUSED_REFERENCES[0],
+          ];
+          for (const note of texts) {
+            assertAllowed(
+              await sendRequest(
+                runOnly,
+                request("model.method.run", {
+                  modelIdOrName: "echo-x",
+                  methodName: "echo",
+                  inputs: { note },
+                  literalInputs: true,
+                }),
+              ),
+              `literal ${note}`,
+            );
+          }
+          // The method received each text exactly; nothing was evaluated.
+          assertEquals(notes, texts);
+        });
+      });
+    },
+  );
+});
+
 Deno.test("serve expressions: evaluate and validate never resolve env", async () => {
   await withMockedEnv({ SWAMP_EXPR_SENTINEL: "sentinel-2786" }, async () => {
     await withFixtures(async (f) => {

@@ -29,6 +29,7 @@ import {
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import type { DeferredExpression } from "./deferred_expression.ts";
 import { extractExpressions } from "./expression_parser.ts";
+import { indexPath, keyPath } from "./provenance_map.ts";
 
 /** An evaluated definition as it is written to the evaluated cache. */
 export interface PersistedEvaluatedDefinition {
@@ -49,8 +50,12 @@ function cachedValuePath(sourcePaths: readonly string[]) {
     if (path[0] === "deferredExpressions" && path[2] === "bindings") {
       return true;
     }
-    const dotted = path.map((p) => typeof p === "number" ? `[${p}]` : `.${p}`)
-      .join("").replace(/^\./, "");
+    // Spelled the way expression extraction spells paths.
+    const dotted = path.reduce<string>(
+      (parent, p) =>
+        typeof p === "number" ? indexPath(parent, p) : keyPath(parent, p),
+      "",
+    );
     return sourcePaths.some((source) =>
       dotted === source || dotted.startsWith(`${source}.`) ||
       dotted.startsWith(`${source}[`)

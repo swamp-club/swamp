@@ -35,6 +35,7 @@ import { datastoreNamespacesCommand } from "./datastore_namespaces.ts";
 import { datastoreTypeSearchCommand } from "./datastore_type_search.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { datastoreConfigMigrateCommand } from "./datastore_config_migrate.ts";
+import { datastoreGcCommand } from "./datastore_gc.ts";
 
 export const datastoreTypeCommand = new Command()
   .name("type")
@@ -67,6 +68,7 @@ export const datastoreCommand = new Command()
   .command("sync", datastoreSyncCommand)
   .command("lock", datastoreLockCommand)
   .command("compact", datastoreCompactCommand)
+  .command("gc", datastoreGcCommand)
   .command("migrate-index", datastoreMigrateIndexCommand)
   .command("catalog", datastoreCatalogCommand)
   .command("namespace", datastoreNamespaceCommand)

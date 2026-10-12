@@ -140,9 +140,11 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 `data.query()` call. Execution differs in four ways
 (`src/domain/expressions/model_resolver.ts`):
 
-- `data.latest()` / `data.version()` without a `*:` wildcard look on the
-  filesystem first (`dataRepo.findByName` on the model's coordinates). They
-  fall back to the catalog only on a miss.
+- `data.latest()` with no namespace prefix looks on the filesystem first
+  (`dataRepo.findByName` on the model's coordinates) and falls back to the
+  catalog only on a miss. With an `ns:` prefix it reads the catalog with the
+  namespace clause and never the caller's own model of that name.
+  `data.version()` always queries the catalog.
 - Every helper except `data.query()` adds `&& ns == "<own namespace>"` unless
   the model name has a namespace prefix (`routeNamespace`).
 - `data.findBySpec()` and `data.findByTag()` keep only the newest record per
@@ -366,7 +368,8 @@ A `select` that references `content` or `contentEncoding` reads each item's
 bytes in the projection step, after `include` has run
 (`DataQueryService.projectedContents`). The async `query()` reads them with
 `getContent`, so a lazily-synced body is downloaded as `data get` downloads it;
-`querySync` (CEL `data.query()`) reads local disk only. Bytes are represented as `data get`
+`querySync` (CEL `data.listVersions()`) reads local disk only; CEL
+`data.query()` uses the async `query()`. Bytes are represented as `data get`
 represents them (`src/domain/data/content_encoding.ts` `encodeContent`): UTF-8
 text when the bytes are valid UTF-8, otherwise base64. `contentEncoding`
 (`utf-8` or `base64`) says which, and exists only in a projection — naming it
@@ -847,7 +850,7 @@ The projection's result type sets the output format:
 
 | Projection returns | Log mode | JSON mode |
 | --- | --- | --- |
-| string / number / bool | One value per line | Array of values |
+| string / number / bool | One value per line, written verbatim (no markdown rendering) | Array of values |
 | map (object) | Table with map keys as headers | Array of objects |
 | list (array) | Markdown table with positional numeric headers (`1`, `2`, …) | Array of arrays |
 | null | Empty line (scalar) or empty cells (map/list) | `null` in array |
@@ -1010,7 +1013,9 @@ Projection is a domain/application concern. `DataQueryService` still returns
 in the projection step, after `include`; see [Binary content](#binary-content)). The
 libswamp generator evaluates the projection on each result, classifies the
 output shape, and yields typed events. On the `--select` path the renderer
-builds markdown from the event data and passes it through
+writes scalar projections verbatim, one per line (objects as indented JSON), so
+content such as base64 file data reaches stdout unchanged at any size; map and
+list projections become a markdown table passed through
 `renderMarkdownToTerminal()`. The default path (no `--select`) builds a Cliffy
 `Table` directly.
 

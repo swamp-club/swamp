@@ -33,7 +33,10 @@
 
 import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
-import { runInUnitOfWork } from "../infrastructure/persistence/unit_of_work_scope.ts";
+import {
+  runInUnitOfWork,
+  takesTypedChanges,
+} from "../infrastructure/persistence/unit_of_work_scope.ts";
 import type { LibSwampContext } from "./context.ts";
 
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
@@ -48,9 +51,11 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   outside the scope.
  * - **Events** are re-yielded unchanged, in order.
  * - **Commit.** Once, after `inner` yields `completed` (and no `error`) and
- *   then finishes. Writes a use case makes after yielding `completed` are
+ *   then finishes; a v3 unit also on a reported `error` (see **Terminal
+ *   policy**). Writes a use case makes after yielding `completed` are
  *   inside the unit when the consumer drains the stream.
- * - **Abandon.** Once, on every other ending: `inner` yields `error`,
+ * - **Abandon.** Once, on every other ending: `inner` yields `error` (a
+ *   legacy unit),
  *   throws, ends on another terminal (`workflowRun` ends on `suspended` or
  *   `cancelled`), or the consumer stops early with `return()`. `result()`
  *   stops at `completed` that way, so most use cases end their unit through
@@ -63,10 +68,14 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   that error at `result()`.
  * - **Terminal policy.** For legacy units which ending is chosen does not
  *   change what is pushed: a use case's unit is a child of the command's or
- *   request's root (or has no flush), and the root decides the push. A
- *   Phase 3 unit that discards on abandon must decide what to commit on
- *   `suspended` and `cancelled` (the open item from swamp-club#3025's
- *   review), and must treat `completed` followed by `return()` as success.
+ *   request's root (or has no flush), and the root decides the push. A v3
+ *   commit-log unit, which discards on abandon, follows decision 5 instead
+ *   (swamp-club#3257): it commits once the stream yields an outcome
+ *   (`completed`, `suspended`, `cancelled`, or an `error` it reported),
+ *   including when the consumer then stops with `return()`, and abandons on
+ *   a throw or a stop before any of them. A reported `error` is an outcome
+ *   since swamp-club#3279: a failed method run reports one, and its record
+ *   is what v2 publishes too.
  * - **Nesting.** A use case run inside another opens its own unit, which is
  *   a child of the outer one when both are bound to the same hook; the
  *   innermost unit is ambient while it runs.
@@ -88,6 +97,8 @@ export async function* withUnitOfWork<E extends { kind: string }>(
   }
   let done = false;
   let completed = false;
+  // A run's terminal outcome: `completed`, `suspended` or `cancelled`.
+  let terminal = false;
   let failed = false;
   let succeeded = false;
   let thrown = false;
@@ -106,6 +117,7 @@ export async function* withUnitOfWork<E extends { kind: string }>(
         break;
       }
       if (result.value.kind === "completed") completed = true;
+      if (TERMINAL_KINDS.has(result.value.kind)) terminal = true;
       if (result.value.kind === "error") failed = true;
       yield result.value;
     }
@@ -126,12 +138,27 @@ export async function* withUnitOfWork<E extends { kind: string }>(
       }
       returned = true;
     } finally {
-      if (succeeded) await uow.commit();
+      // A v3 unit commits once the stream reached an outcome (a terminal
+      // event, or a reported error, since swamp-club#3279 reversed that part
+      // of decision 5), even when the consumer stopped there with return(),
+      // and abandons on a throw or an earlier stop. A legacy unit ends as
+      // before.
+      const commits = takesTypedChanges(uow)
+        ? (terminal || failed) && !thrown && returned
+        : succeeded;
+      if (commits) await uow.commit();
       else if (thrown || !returned) await abandonQuietly(uow);
       else await uow.abandon();
     }
   }
 }
+
+/** The events that end a use case with an outcome (decision 5). */
+const TERMINAL_KINDS: ReadonlySet<string> = new Set([
+  "completed",
+  "suspended",
+  "cancelled",
+]);
 
 /** Abandons `uow` while another error propagates, never masking it. */
 async function abandonQuietly(uow: UnitOfWork): Promise<void> {

@@ -26,6 +26,8 @@ import type {
 } from "../../domain/workflows/repositories.ts";
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
   isWaitKey,
   type SignalReceipt,
 } from "../../domain/workflows/signal_wait.ts";
@@ -48,11 +50,25 @@ import {
   declaredWaitKeyStep,
   findKeyHolder,
   findSettledKeyHolder,
+  type WaitKeyClaim,
 } from "../../domain/workflows/wait_key_claim.ts";
 import {
   ensureRegistered,
   outcomeAt,
+  removeSupersededPendingSignal,
 } from "../../domain/workflows/signal_wait_cleanup.ts";
+import {
+  type DeclaredEarlyWait,
+  declaredEarlyWait,
+  findSignalByIdempotencyKey,
+  holdEarlySignal,
+  validateEarlyPayload,
+} from "../../domain/workflows/early_signal.ts";
+import {
+  heldUntil,
+  type PendingSignal,
+} from "../../domain/workflows/pending_signal.ts";
+import { earlySlots } from "../../domain/workflows/signal_wait.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -89,11 +105,61 @@ export interface WorkflowSignalData {
   runRecordAvailable: boolean;
   /** The command that resumes the run. */
   resumeCommand: string;
+  /**
+   * True when the step took the signal as it opened its wait
+   * (swamp-club#3212): it succeeded inside its run, and no resume is needed
+   * to apply the signal.
+   */
+  taken?: true;
+  /**
+   * True when the signal carried an idempotency key a signal already
+   * received carries: `signal` is that one's receipt, and this one was
+   * neither delivered nor held.
+   */
+  duplicate?: true;
+}
+
+/** What swamp recorded about a signal it holds for a wait not yet open. */
+export interface PendingSignalReceipt {
+  id: string;
+  receivedAt: string;
+  submittedBy: string;
+  /** The idempotency key the sender gave, if any. */
+  idempotencyKey?: string;
+}
+
+/**
+ * A signal by key that arrived before its wait opened and is held as the
+ * key's pending signal (swamp-club#3212). No wait or run took it yet, so
+ * none is named. It is a hold, not a delivery: the step takes the signal
+ * only if it opens its wait by `heldUntil`.
+ */
+export interface WorkflowSignalPendingData {
+  pending: true;
+  key: string;
+  workflowId: string;
+  workflowName: string;
+  signal: PendingSignalReceipt;
+  /** When the signal stops being taken by a wait that opens, as an ISO timestamp. */
+  heldUntil: string;
+  /**
+   * The wait that last held the key, as on a `no_open_wait` refusal. A step
+   * with `acceptEarly` never refuses a retry by key, so this is how a sender
+   * who retries after a lost reply learns its first signal landed: the retry
+   * is then a second signal, held for the next run.
+   */
+  lastWait?: SignalLastWait;
+  /**
+   * True when the signal carried the idempotency key of the signal that is
+   * held: `signal` is that one's receipt, and nothing more was stored.
+   */
+  duplicate?: true;
 }
 
 export type WorkflowSignalEvent =
   | { kind: "resolving" }
   | { kind: "completed"; data: WorkflowSignalData }
+  | { kind: "pending"; data: WorkflowSignalPendingData }
   | { kind: "error"; error: SwampError };
 
 /**
@@ -129,6 +195,21 @@ export type WorkflowSignalInput = WorkflowSignalAddress & {
    * reaches it.
    */
   waitsCommand?: string;
+  /**
+   * False when the caller cannot be answered that the signal is held: a
+   * signal by key that finds no open wait is then refused `no_open_wait`
+   * and nothing is stored, whatever the step declares (swamp-club#3212).
+   * Defaults to true.
+   */
+  holdEarly?: boolean;
+  /**
+   * What names this signal across its sender's retries, in the form
+   * `isIdempotencyKey` accepts. A signal whose key matches one already
+   * received from the same sender for the wait or its key is answered with
+   * that signal's receipt,
+   * marked `duplicate`, and is neither delivered nor held again.
+   */
+  idempotencyKey?: string;
 };
 
 /** The command that lists the open waits of the repository a signal ran in. */
@@ -187,6 +268,7 @@ export type SignalRefusalKind =
   | "expired"
   | "invalid_payload"
   | "already_settled"
+  | "already_pending"
   | "closed"
   | "unreadable"
   | "unsupported";
@@ -197,6 +279,7 @@ const SIGNAL_REFUSAL_KINDS: ReadonlySet<string> = new Set<SignalRefusalKind>([
   "expired",
   "invalid_payload",
   "already_settled",
+  "already_pending",
   "closed",
   "unreadable",
   "unsupported",
@@ -251,6 +334,13 @@ export function createWorkflowSignalDeps(
     signalWaits,
     findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
   };
+}
+
+/** Who a signal is recorded as sent by. */
+function senderOf(input: Pick<WorkflowSignalInput, "submittedBy">): string {
+  // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
+  return input.submittedBy || Deno.env.get("USER") ||
+    Deno.env.get("USERNAME") || "unknown";
 }
 
 /** The step of `run` that holds the wait, in any status. */
@@ -616,6 +706,12 @@ interface SignalTarget {
    * there nor be answered with what is stored about that wait.
    */
   heldUnder?: { workflowId: string; key: string };
+  /**
+   * The receipt ID of the pending signal this caller stored for the key
+   * (swamp-club#3212). A wait settled by that signal took this caller's
+   * signal, whoever created the outcome, and is answered as delivered.
+   */
+  pendingReceiptId?: string;
 }
 
 /**
@@ -639,7 +735,7 @@ async function deliver(
   input: WorkflowSignalInput,
   target: SignalTarget,
 ): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
-  const { waitId, typedId, heldUnder } = target;
+  const { waitId, typedId, heldUnder, pendingReceiptId } = target;
   const resolved = await resolveRegistration(
     deps,
     store,
@@ -712,15 +808,15 @@ async function deliver(
     now,
   );
   let delivered: WaitOutcome | undefined;
+  let duplicate = false;
   if (stored.kind === "absent") {
-    // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
-    const submittedBy = input.submittedBy || Deno.env.get("USER") ||
-      Deno.env.get("USERNAME") || "unknown";
+    const submittedBy = senderOf(input);
     const decision = decideSignal(
       registration,
       input.payload,
       submittedBy,
       now,
+      input.idempotencyKey,
     );
     if (!decision.accepted) {
       const refusal = decision.refusal;
@@ -747,6 +843,25 @@ async function deliver(
     }
     delivered = decision.outcome;
     stored = await store.settle(decision.outcome);
+  } else if (
+    pendingReceiptId !== undefined && stored.kind === "found" &&
+    stored.record.kind === "accepted" &&
+    stored.record.receipt.id === pendingReceiptId
+  ) {
+    delivered = stored.record;
+  }
+  // The wait was settled by another copy of this signal, from the same
+  // sender under the same idempotency key: an earlier attempt, or one that
+  // won the create at the same moment. Answered with that one.
+  if (
+    input.idempotencyKey !== undefined && stored.kind === "found" &&
+    stored.record.kind === "accepted" &&
+    !(delivered && settledBy(stored, delivered)) &&
+    stored.record.receipt.idempotencyKey === input.idempotencyKey &&
+    stored.record.receipt.submittedBy === senderOf(input)
+  ) {
+    delivered = stored.record;
+    duplicate = true;
   }
 
   if (stored.kind !== "found") return { error: unreadableRecord(typedId) };
@@ -780,6 +895,7 @@ async function deliver(
         (await decideContinuation(run, store)).kind === "resumable",
       runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(registration),
+      ...(duplicate ? { duplicate: true as const } : {}),
     },
   };
 }
@@ -867,7 +983,11 @@ async function deliverByKey(
   deps: WorkflowSignalDeps,
   store: SignalWaitStore,
   input: WorkflowSignalInput & { workflow: string; key: string },
-): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
+): Promise<
+  | { error: SwampError }
+  | { data: WorkflowSignalData }
+  | { pending: WorkflowSignalPendingData }
+> {
   // An unknown workflow and a key it does not declare are answered alike.
   const named = namedByKey(input);
   const typedId = `holding ${named}`;
@@ -875,9 +995,47 @@ async function deliverByKey(
   if (!workflow || !declaredWaitKeyStep(workflow, input.key)) {
     return { error: unknownWait(named) };
   }
+  // A retry of a signal that was received is answered with that signal,
+  // before the key's holder is asked: the key may be free again, or held by
+  // the next run's wait, and neither is to take the signal a second time.
+  if (input.idempotencyKey !== undefined) {
+    const earlier = await findSignalByIdempotencyKey(
+      store,
+      { workflowId: workflow.id, key: input.key },
+      {
+        idempotencyKey: input.idempotencyKey,
+        submittedBy: senderOf(input),
+      },
+      deps.now?.() ?? new Date(),
+    );
+    // A caller that cannot be told a signal is held is not told this one
+    // is: it goes on to the refusal it can read.
+    if (earlier?.kind === "pending" && input.holdEarly !== false) {
+      const { pending } = pendingAnswer(input, workflow, earlier.record);
+      return { pending: { ...pending, duplicate: true } };
+    }
+    if (earlier?.kind === "settled") {
+      return await landedAnswer(
+        deps,
+        input,
+        workflow,
+        earlier.claim,
+        { ...earlier.outcome.receipt },
+        { duplicate: true, store },
+      );
+    }
+  }
   const holder = await findKeyHolder(store, workflow.id, input.key);
   if (holder.kind === "unreadable") {
     return { error: unreadableRecord(typedId) };
+  }
+  // A step that sets `acceptEarly` has a signal with no open wait held for
+  // its next one (swamp-club#3212).
+  // Only for a caller that can be told so.
+  const declaredEarly = declaredEarlyWait(workflow, input.key);
+  const early = input.holdEarly === false ? undefined : declaredEarly;
+  if (holder.kind === "free" && early) {
+    return await arriveEarly(deps, store, input, workflow, early);
   }
   if (holder.kind === "free") {
     // A sender who retries after a lost reply gets this refusal, as does one
@@ -895,16 +1053,49 @@ async function deliverByKey(
         "no_open_wait",
         `No open wait holds ${named}, so the signal was not delivered and nothing was stored.` +
           (last ? lastWaitSentence(last) : "") +
+          (declaredEarly
+            ? " The step holds a signal sent before its wait opens, but only for a client that can read that answer: upgrade swamp where the signal is sent."
+            : "") +
           ` Run "${waitsCommandOf(input)}" for the waits that are open.`,
         last ? { lastWait: last } : {},
       ),
     };
   }
-  const waitId = holder.claim.waitId;
+  const outcome = await deliverToHolder(
+    deps,
+    store,
+    input,
+    workflow,
+    holder.claim.waitId,
+  );
+  if (!("error" in outcome)) return outcome;
+  // The holder was past its deadline, or was closed in between: no open wait
+  // holds the key, so the signal is early for the next one, not late.
+  const refusal = signalRefusalKind(outcome.error);
+  return early && (refusal === "expired" || refusal === "closed")
+    ? await arriveEarly(deps, store, input, workflow, early)
+    : outcome;
+}
+
+/**
+ * Delivers a signal addressed by key to the wait the key resolved to, and
+ * words a refusal for a caller who never typed the wait's ID.
+ */
+async function deliverToHolder(
+  deps: WorkflowSignalDeps,
+  store: SignalWaitStore,
+  input: WorkflowSignalInput & { workflow: string; key: string },
+  workflow: Workflow,
+  waitId: string,
+  pendingReceiptId?: string,
+): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
+  const named = namedByKey(input);
+  const typedId = `holding ${named}`;
   const outcome = await deliver(deps, store, input, {
     waitId,
     typedId,
     heldUnder: { workflowId: workflow.id, key: input.key },
+    ...(pendingReceiptId !== undefined ? { pendingReceiptId } : {}),
   });
   if (!("error" in outcome)) return outcome;
   const kind = signalRefusalKind(outcome.error);
@@ -922,6 +1113,239 @@ async function deliverByKey(
       details: { ...(error.details as object), waitId },
     },
   };
+}
+
+function receiptOfPending(pending: PendingSignal): PendingSignalReceipt {
+  return {
+    id: pending.receiptId,
+    receivedAt: pending.receivedAt,
+    submittedBy: pending.submittedBy,
+    ...(pending.idempotencyKey !== undefined
+      ? { idempotencyKey: pending.idempotencyKey }
+      : {}),
+  };
+}
+
+/** The answer for a signal held as its key's pending signal. */
+function pendingAnswer(
+  input: { key: string },
+  workflow: Workflow,
+  record: PendingSignal,
+): { pending: WorkflowSignalPendingData } {
+  return {
+    pending: {
+      pending: true,
+      key: input.key,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      signal: receiptOfPending(record),
+      heldUntil: heldUntil(record).toISOString(),
+    },
+  };
+}
+
+/**
+ * The answer for a signal a wait took with nobody left to deliver it to:
+ * the step took it as it opened its wait, or it is the signal a retry
+ * repeats. The wait's run went on from there and may have ended by now, with
+ * the registration gone, so the claim says where the signal landed. The
+ * caller is authorized against that wait, as against any.
+ */
+async function landedAnswer(
+  deps: WorkflowSignalDeps,
+  input: WorkflowSignalInput & { workflow: string; key: string },
+  workflow: Workflow,
+  claim: WaitKeyClaim,
+  receipt: SignalReceipt,
+  how:
+    | { taken: true }
+    | { duplicate: true; store: SignalWaitStore },
+): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
+  const place: WaitPlace = {
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    runId: claim.runId,
+    jobName: claim.jobName,
+    stepName: claim.stepName,
+  };
+  const run = await runOf(deps, place);
+  if (
+    input.authorize && !(await input.authorize({
+      waitId: claim.waitId,
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      runId: claim.runId,
+      ...(run
+        ? {
+          runWorkflow: {
+            workflowId: run.workflowId,
+            workflowName: run.workflowName,
+          },
+        }
+        : {}),
+    }))
+  ) return { error: unknownWait(namedByKey(input)) };
+  return {
+    data: {
+      waitId: claim.waitId,
+      key: input.key,
+      ...place,
+      signal: receipt,
+      // A step that took the signal succeeded inside its run; no resume
+      // applies it. A signal delivered to an open wait may still need one.
+      awaitingResume: "taken" in how ? false : run !== null &&
+        (await decideContinuation(run, how.store)).kind === "resumable",
+      runRecordAvailable: run !== null,
+      resumeCommand: resumeCommandFor(place),
+      ..."taken" in how ? { taken: true } : { duplicate: true },
+    },
+  };
+}
+
+/**
+ * Holds a signal by key that found no open wait as the key's pending signal
+ * (swamp-club#3212), and answers for what the key holds once it is stored:
+ * pending, or delivered when a wait opened in the meantime and took it.
+ *
+ * Nothing here names a wait to authorize the caller against, because none
+ * exists yet: a caller that answers for a server authorizes the workflow
+ * before it runs the use case. A wait found on the way is authorized by
+ * `deliver`, as any wait is.
+ */
+async function arriveEarly(
+  deps: WorkflowSignalDeps,
+  store: SignalWaitStore,
+  input: WorkflowSignalInput & { workflow: string; key: string },
+  workflow: Workflow,
+  early: DeclaredEarlyWait,
+): Promise<
+  | { error: SwampError }
+  | { data: WorkflowSignalData }
+  | { pending: WorkflowSignalPendingData }
+> {
+  const named = namedByKey(input);
+  const now = deps.now?.() ?? new Date();
+  const validation = validateEarlyPayload(early.schema, input.payload, now);
+  if (!validation.valid) {
+    return {
+      error: refused(
+        "invalid_payload",
+        `Payload refused for ${named}; nothing was stored:\n` +
+          validation.errors.map((error) => `  - ${error}`).join("\n"),
+        // `early`: no wait was open, so none stays open.
+        { errors: validation.errors, early: true },
+      ),
+    };
+  }
+  const submittedBy = senderOf(input);
+  const arrival = await holdEarlySignal(store, {
+    workflowId: workflow.id,
+    key: input.key,
+    payload: validation.payload,
+    submittedBy,
+    acceptEarly: early.acceptEarly,
+    ...(input.idempotencyKey !== undefined
+      ? { idempotencyKey: input.idempotencyKey }
+      : {}),
+    // Only a wait whose run recorded the name the caller was authorized
+    // under takes the signal. The local command authorizes nobody.
+    ...(input.authorize ? { authorizedFor: workflow.name } : {}),
+  }, now);
+  // The signal it was stored over is read by nothing now. A failure here
+  // leaves that record for the sweep; the signal itself is stored.
+  if (
+    (arrival.kind === "pending" || arrival.kind === "held" ||
+      arrival.kind === "taken") && arrival.record
+  ) {
+    try {
+      await removeSupersededPendingSignal(store, arrival.record);
+    } catch {
+      // Left for the sweep.
+    }
+  }
+  switch (arrival.kind) {
+    case "pending": {
+      const answer = pendingAnswer(input, workflow, arrival.record);
+      const last = await lastWaitUnder(
+        deps,
+        store,
+        input,
+        workflow.id,
+        input.key,
+      );
+      return last ? { pending: { ...answer.pending, lastWait: last } } : answer;
+    }
+    case "already_pending":
+      // The same signal, sent twice at the same moment: one was stored.
+      if (
+        input.idempotencyKey !== undefined &&
+        arrival.record.idempotencyKey === input.idempotencyKey &&
+        arrival.record.submittedBy === submittedBy
+      ) {
+        const { pending } = pendingAnswer(input, workflow, arrival.record);
+        return { pending: { ...pending, duplicate: true } };
+      }
+      // Who sent it stays in the details: the message reaches telemetry.
+      return {
+        error: refused(
+          "already_pending",
+          `A signal is already pending for ${named}: signal ${arrival.record.receiptId}, held until ${
+            heldUntil(arrival.record).toISOString()
+          }. This one was not stored. A key holds one pending signal. Send again after that time if no step has taken it.`,
+          {
+            receipt: receiptOfPending(arrival.record),
+            heldUntil: heldUntil(arrival.record).toISOString(),
+          },
+        ),
+      };
+    case "unreadable":
+      return { error: unreadableRecord(`holding ${named}`) };
+    case "contended":
+      return {
+        error: refused(
+          "no_open_wait",
+          `The signal for ${named} was not held: the key changed hands while it arrived. Send it again.`,
+        ),
+      };
+    case "held": {
+      const { claim, record } = arrival;
+      // The step registers its wait before it reads the slot, so a wait not
+      // registered yet has not read it: it will find this signal there.
+      if (
+        record && claim.early !== undefined &&
+        earlySlots(claim.early).includes(record.slot) &&
+        (await store.findRegistration(claim.waitId)).kind === "absent"
+      ) return pendingAnswer(input, workflow, record);
+      // Otherwise the wait is signalled as any open wait is. One whose
+      // claim reads this signal's slot takes the stored signal first.
+      return await deliverToHolder(
+        deps,
+        store,
+        input,
+        workflow,
+        claim.waitId,
+        record?.receiptId,
+      );
+    }
+    case "duplicate":
+      return await landedAnswer(
+        deps,
+        input,
+        workflow,
+        arrival.claim,
+        { ...arrival.outcome.receipt },
+        { duplicate: true, store },
+      );
+    case "taken":
+      return await landedAnswer(
+        deps,
+        input,
+        workflow,
+        arrival.claim,
+        { ...receiptOfPending(arrival.record), waitId: arrival.claim.waitId },
+        { taken: true },
+      );
+  }
 }
 
 /**
@@ -957,6 +1381,18 @@ export async function* workflowSignal(
         yield { kind: "error", error: unknownWait(namedByKey(input)) };
         return;
       }
+      if (
+        input.idempotencyKey !== undefined &&
+        !isIdempotencyKey(input.idempotencyKey)
+      ) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `An idempotency key is ${IDEMPOTENCY_KEY_FORM}.`,
+          ),
+        };
+        return;
+      }
       if (!deps.signalWaits.supported) {
         yield {
           kind: "error",
@@ -974,6 +1410,10 @@ export async function* workflowSignal(
         : await deliverByKey(deps, store, byKey!);
       if ("error" in outcome) {
         yield { kind: "error", error: outcome.error };
+        return;
+      }
+      if ("pending" in outcome) {
+        yield { kind: "pending", data: outcome.pending };
         return;
       }
       yield { kind: "completed", data: outcome.data };

@@ -30,6 +30,25 @@
    swamp access token reveal <name>
    ```
 
+### "no vault is configured"
+
+**Symptom**:
+`Model "..." has sensitive resource output fields but no vault is
+configured`
+(or `Cannot persist data: ... but no vault is configured`)
+
+**Cause**: the repo has no user vault. New repos get a `default` vault from
+`swamp repo init`, so this means the repo was created with `--no-vault`, before
+swamp-club#3259, or its vaults were deleted.
+
+**Solution**: create one and make it the default:
+
+```bash
+swamp vault create local_encryption default --json
+```
+
+Then set `defaultVault: default` in `.swamp.yaml`.
+
 ### "Secret not found"
 
 **Symptom**: `Error: Secret 'API_KEY' not found in vault 'dev-secrets'`

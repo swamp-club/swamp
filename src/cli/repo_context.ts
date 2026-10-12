@@ -150,6 +150,7 @@ import type {
   SyncCapabilities,
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
+import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -203,6 +204,11 @@ export function createLockProgressWriter(
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
+import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
+import {
+  holdV3Writer,
+  v3RepositoryFactoryConfig,
+} from "../infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -274,7 +280,7 @@ export async function refreshExtensionWorkflowDirs(
  * read-only contexts) it behaves as `createLibSwampContext`.
  */
 export function libSwampContextForRepo(
-  repoContext: Pick<RepositoryContext, "markDirty">,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   options?: { logger?: Logger; signal?: AbortSignal },
 ): LibSwampContext {
   return createLibSwampContext({
@@ -338,6 +344,18 @@ export function cacheRelativeMarkPath(
     if (escapesRoot(rel)) return undefined;
   }
   return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+}
+
+/**
+ * The repository's foreign content fetcher over a sync service, or undefined
+ * when there is no sync service or it cannot read another namespace.
+ */
+function buildForeignContentFetcher(
+  syncService: DatastoreSyncService | undefined,
+): ForeignContentFetcher | undefined {
+  if (!syncService?.fetchForeignContent) return undefined;
+  return (namespace, relPath) =>
+    syncService.fetchForeignContent!(namespace, relPath);
 }
 
 function buildHydrateFileHook(
@@ -720,6 +738,8 @@ export interface DatastoreResolutionResult {
   repoDir: string;
   datastoreConfig: DatastoreConfig;
   marker: RepoMarkerData | null;
+  /** The engine the datastore's format marker chose (swamp-club#3279). */
+  engine: DatastoreEngine;
 }
 
 function redactHomePath(path: string): string {
@@ -780,9 +800,12 @@ export async function resolveDatastoreForRepo(
 
   // Before any caller locks, pulls, pushes or writes: refuse a datastore
   // marked with a format this binary cannot read (swamp-club#3189).
-  await ensureSupportedDatastoreFormat(repoPath.value, datastoreConfig);
+  const engine = await ensureSupportedDatastoreFormat(
+    repoPath.value,
+    datastoreConfig,
+  );
 
-  return { repoDir: repoPath.value, datastoreConfig, marker };
+  return { repoDir: repoPath.value, datastoreConfig, marker, engine };
 }
 
 /**
@@ -851,9 +874,10 @@ export async function requireInitializedRepoReadOnly(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
-  const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
-    options.repoDir,
-  );
+  const { repoDir, datastoreConfig, marker, engine } =
+    await resolveDatastoreForRepo(
+      options.repoDir,
+    );
 
   const repoPath = RepoPath.create(repoDir);
 
@@ -983,6 +1007,14 @@ export async function requireInitializedRepoReadOnly(
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
   // Create repository context with the validated directory and datastore resolver
+  // A v3 datastore's context commits through the commit log and reads the
+  // read model's catalog (swamp-club#3279).
+  const v3Factory = engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
+    ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
+      managedConfig: marker?.datastore?.managedConfig === true,
+      readOnly: true,
+    })
+    : {};
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
@@ -1000,8 +1032,10 @@ export async function requireInitializedRepoReadOnly(
     datastoreResolver,
     namespace: datastoreConfig.namespace,
     hydrateFile: hydrateFileHook,
+    fetchForeignContent: buildForeignContentFetcher(readOnlySyncService),
     autoGc: marker?.autoGc === true,
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+    ...v3Factory,
     ...factoryConfig,
   });
 
@@ -1013,13 +1047,6 @@ export async function requireInitializedRepoReadOnly(
   // so the context writes no wait record.
   if (!isCustomDatastoreConfig(datastoreConfig)) {
     repoContext.signalWaits = resolveSignalWaitSupport(datastoreConfig);
-  }
-
-  if (readOnlySyncService?.fetchForeignContent) {
-    const svc = readOnlySyncService;
-    repoContext.dataQueryService.setForeignContentFetcher(
-      (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
-    );
   }
 
   return {
@@ -1052,9 +1079,15 @@ export function requireInitializedRepo(
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
 ): Promise<RepoValidationContext> {
   return withSpan("swamp.repo.init", {}, async () => {
-    const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
-      options.repoDir,
-    );
+    const { repoDir, datastoreConfig, marker, engine } =
+      await resolveDatastoreForRepo(
+        options.repoDir,
+      );
+    // A v3 datastore takes one writing process at a time; join this
+    // process's hold before any other lock (swamp-club#3279).
+    if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
+      await holdV3Writer(datastoreConfig, repoDir);
+    }
 
     const repoPath = RepoPath.create(repoDir);
 
@@ -1230,6 +1263,14 @@ export function requireInitializedRepo(
     const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
     // Create repository context with the validated directory and datastore resolver
+    // A v3 datastore's context commits through the commit log and reads the
+    // read model's catalog (swamp-club#3279).
+    const v3Factory =
+      engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
+        ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
+          managedConfig: marker?.datastore?.managedConfig === true,
+        })
+        : {};
     const repoContext = createRepositoryContext({
       repoDir: repoPath.value,
       workflowsDir,
@@ -1262,9 +1303,11 @@ export function requireInitializedRepo(
           datastoreConfig.type,
         )
         : undefined,
+      fetchForeignContent: buildForeignContentFetcher(syncService),
       namespace: datastoreConfig.namespace,
       autoGc: marker?.autoGc === true,
       filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+      ...v3Factory,
       ...factoryConfig,
     });
     attachSignalWaits(
@@ -1283,13 +1326,6 @@ export function requireInitializedRepo(
     // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
       repoContext.catalogStore.invalidate();
-    }
-
-    if (syncService?.fetchForeignContent) {
-      const svc = syncService;
-      repoContext.dataQueryService.setForeignContentFetcher(
-        (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
-      );
     }
 
     return {
@@ -1334,9 +1370,15 @@ export async function requireInitializedRepoUnlocked(
     syncService?: DatastoreSyncService;
   }
 > {
-  const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
-    options.repoDir,
-  );
+  const { repoDir, datastoreConfig, marker, engine } =
+    await resolveDatastoreForRepo(
+      options.repoDir,
+    );
+  // A v3 datastore takes one writing process at a time; join this process's
+  // hold before any model lock (swamp-club#3279).
+  if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
+    await holdV3Writer(datastoreConfig, repoDir);
+  }
 
   const repoPath = RepoPath.create(repoDir);
 
@@ -1414,6 +1456,13 @@ export async function requireInitializedRepoUnlocked(
   const sourceWorkflowDirs = await getSourceWorkflowDirs(repoPath.value);
 
   // Create repository context with the validated directory and datastore resolver
+  // A v3 datastore's context commits through the commit log and reads the
+  // read model's catalog (swamp-club#3279).
+  const v3Factory = engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)
+    ? await v3RepositoryFactoryConfig(repoPath.value, datastoreConfig, {
+      managedConfig: marker?.datastore?.managedConfig === true,
+    })
+    : {};
   const repoContext = createRepositoryContext({
     repoDir: repoPath.value,
     workflowsDir,
@@ -1446,9 +1495,11 @@ export async function requireInitializedRepoUnlocked(
         datastoreConfig.type,
       )
       : undefined,
+    fetchForeignContent: buildForeignContentFetcher(syncService),
     namespace: datastoreConfig.namespace,
     autoGc: marker?.autoGc === true,
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
+    ...v3Factory,
     ...factoryConfig,
   });
   attachSignalWaits(

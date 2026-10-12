@@ -25,6 +25,7 @@ import {
   splitEnrollmentToken,
   WorkerGateway,
   type WorkerGatewayOptions,
+  WorkerNotDispatchableError,
   type WorkerSnapshot,
 } from "./worker_gateway.ts";
 import {
@@ -37,6 +38,7 @@ import {
   type DispatchParams,
   type EnrollResult,
   GATE_PASS_UNAVAILABLE,
+  PERMANENT_ENROLLMENT_ERROR_CODES,
   REMOTE_PROTOCOL_VERSION,
   RemoteMethod,
   WorkerMethod,
@@ -47,6 +49,7 @@ interface RecordedTransition {
   definitionName: string;
   methodName: string;
   inputs: Record<string, unknown>;
+  expectedDefinitionId?: string;
 }
 
 interface Harness {
@@ -96,6 +99,7 @@ function createHarness(
     // No expiry enforcement unless a test opts in with a real timestamp.
     readTokenExpiresAt: () => Promise.resolve(null),
     readTokenRecord: (name) => Promise.resolve(mintRecord(name, BASE_MINT)),
+    findTokenDefinitionId: (name) => Promise.resolve(`def-${name}`),
     ...overrides,
   });
   return {
@@ -223,6 +227,37 @@ Deno.test("WorkerGateway: failed redemption leaves no pool state behind", async 
   await assertRejects(() => enroll(workerChannel), RpcError, "stubbed failure");
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.idle.length, 0);
+});
+
+Deno.test("WorkerGateway: redeem runs pinned to the token's definition", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.transitions[0].methodName, "redeem");
+  assertEquals(h.transitions[0].expectedDefinitionId, "def-ci-runner-3");
+});
+
+Deno.test("WorkerGateway: a token whose record arrived before its definition is refused as retryable, without redeeming", async () => {
+  const h = createHarness({
+    findTokenDefinitionId: () => Promise.resolve(null),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const error = await assertRejects(() => enroll(workerChannel), RpcError);
+  assertEquals(error.code, "token_not_synced");
+  assertEquals(PERMANENT_ENROLLMENT_ERROR_CODES.has(error.code), false);
+  assertEquals(h.transitions.length, 0);
+  assertEquals(h.gateway.workers().length, 0);
+});
+
+Deno.test("WorkerGateway: a token with neither a definition nor a record is not found, without redeeming", async () => {
+  const h = createHarness({
+    findTokenDefinitionId: () => Promise.resolve(null),
+    readTokenRecord: () => Promise.resolve(null),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const error = await assertRejects(() => enroll(workerChannel), RpcError);
+  assertEquals(error.code, "token_not_found");
+  assertEquals(h.transitions.length, 0);
 });
 
 Deno.test("WorkerGateway: enrollment hands the worker this serve's gate pass", async () => {
@@ -368,6 +403,47 @@ Deno.test("WorkerGateway: dispatch to a busy worker rejects", async () => {
   await first;
 });
 
+Deno.test("WorkerGateway: onRegistered fires once, when the dispatch is already listed (swamp-club#3293)", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const gate = Promise.withResolvers<void>();
+  workerChannel.register(WorkerMethod.dispatch, async () => {
+    await gate.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+
+  const listedAtRegistration: string[][] = [];
+  const onRegistered = () =>
+    listedAtRegistration.push(
+      h.gateway.worker("ci-runner-3")?.activeDispatchIds ?? [],
+    );
+  const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"), {
+    onRegistered,
+  });
+  // Registered before dispatch() first yields, not at some later turn.
+  assertEquals(listedAtRegistration, [["d-1"]]);
+
+  // A dispatch refused on a precondition never took a slot.
+  await assertRejects(
+    () =>
+      h.gateway.dispatch("ci-runner-3", dispatchParams("d-2"), {
+        onRegistered,
+      }),
+    Error,
+    "at capacity",
+  );
+  await assertRejects(
+    () => h.gateway.dispatch("ghost", dispatchParams("d-3"), { onRegistered }),
+    Error,
+    "not in the pool",
+  );
+  gate.resolve();
+  await first;
+  assertEquals(listedAtRegistration, [["d-1"]]);
+});
+
 Deno.test("WorkerGateway: dispatch to an unknown worker rejects", async () => {
   const h = createHarness();
   await assertRejects(
@@ -460,6 +536,42 @@ Deno.test("WorkerGateway: token expiry removes the worker and revokes its creden
   assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
   assertEquals(h.disconnected.length, 0);
   assertEquals(h.graceExpired.length, 0);
+});
+
+Deno.test("WorkerGateway: token expiry skips the expire record when the token's definition is gone", async () => {
+  let definitionGone = false;
+  const h = createHarness({
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 30).toISOString()),
+    findTokenDefinitionId: (name) =>
+      Promise.resolve(definitionGone ? null : `def-${name}`),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  definitionGone = true;
+
+  await waitFor(() => h.removed.length === 1, "worker removed on expiry");
+  // The disconnect record is queued after the skipped expire record.
+  await waitFor(
+    () => h.transitions.some((t) => t.inputs.status === "disconnected"),
+    "disconnect recorded",
+  );
+  assertEquals(h.transitions.filter((t) => t.methodName === "expire"), []);
+});
+
+Deno.test("WorkerGateway: token expiry records expire pinned to the token's definition", async () => {
+  const h = createHarness({
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 30).toISOString()),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await waitFor(
+    () => h.transitions.some((t) => t.methodName === "expire"),
+    "expire recorded",
+  );
+  const expire = h.transitions.find((t) => t.methodName === "expire");
+  assertEquals(expire?.expectedDefinitionId, "def-ci-runner-3");
 });
 
 Deno.test("WorkerGateway: a different instance cannot enroll while a worker is connected", async () => {
@@ -791,6 +903,93 @@ Deno.test("WorkerGateway: worker.drain sets status to draining", async () => {
     setStatusCalls.some((t) => t.inputs.status === "draining"),
     true,
   );
+});
+
+Deno.test("WorkerGateway: a repeated worker.drain changes nothing", async () => {
+  const draining: WorkerSnapshot[] = [];
+  const h = createHarness({
+    onWorkerDraining: (w) => draining.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  await workerChannel.call(RemoteMethod.drain, {});
+  await workerChannel.call(RemoteMethod.drain, {});
+
+  assertEquals(draining.length, 1);
+  assertEquals(
+    h.transitions.filter((t) =>
+      t.methodName === "set_status" && t.inputs.status === "draining"
+    ).length,
+    1,
+  );
+});
+
+Deno.test("WorkerGateway: a refused dispatch names why the worker could not take it (swamp-club#3156)", async () => {
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    onWorkerDraining: () => {},
+  });
+
+  const unknown = await assertRejects(
+    () => h.gateway.dispatch("ghost", dispatchParams()),
+    WorkerNotDispatchableError,
+    "Worker 'ghost' is not in the pool",
+  );
+  assertEquals(unknown.reason, "not_in_pool");
+  assertEquals(unknown.workerName, "ghost");
+
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  const gate = Promise.withResolvers<void>();
+  first.workerChannel.register(WorkerMethod.dispatch, async () => {
+    await gate.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+  const inFlight = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"));
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "busy",
+    "the first dispatch to occupy the worker",
+  );
+  const full = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
+    WorkerNotDispatchableError,
+    "is at capacity",
+  );
+  assertEquals(full.reason, "at_capacity");
+
+  // A worker that announces its drain with work in flight stays draining
+  // when that work ends, and takes nothing new.
+  await first.workerChannel.call(RemoteMethod.drain, {});
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  gate.resolve();
+  await inFlight;
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  const draining = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-3")),
+    WorkerNotDispatchableError,
+    "is draining",
+  );
+  assertEquals(draining.reason, "draining");
+  h.gateway.dispose();
+});
+
+Deno.test("WorkerGateway: a dispatch to a disconnected worker is refused as disconnected", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the gateway to see the drop",
+  );
+  const error = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams()),
+    WorkerNotDispatchableError,
+    "is disconnected",
+  );
+  assertEquals(error.reason, "disconnected");
+  h.gateway.dispose();
 });
 
 Deno.test("WorkerGateway: draining worker disconnect skips grace window", async () => {

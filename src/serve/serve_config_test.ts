@@ -1233,6 +1233,36 @@ Deno.test("loadServeConfig: datastore-poll-interval is a known key", async () =>
   }
 });
 
+Deno.test("loadServeConfig: a number where a string is expected suggests quoting it (swamp-club#2535)", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "token-gc-grace-period": 0 });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      'expected string, got number; quote the value, e.g. "0"',
+    );
+  });
+  withTempDir((dir) => {
+    writeConfig(dir, { auth: { "group-refresh-interval": 300 } });
+    assertThrows(
+      () => loadServeConfig(undefined, dir),
+      Error,
+      'expected string, got number; quote the value, e.g. "300"',
+    );
+  });
+});
+
+Deno.test("loadServeConfig: a non-number where a string is expected gets no quoting hint", () => {
+  withTempDir((dir) => {
+    writeConfig(dir, { "token-gc-interval": true });
+    const err = assertThrows(() => loadServeConfig(undefined, dir), Error);
+    assertEquals(
+      err.message.endsWith("expected string, got boolean"),
+      true,
+    );
+  });
+});
+
 Deno.test("loadServeConfig: non-string datastore-poll-interval produces error", () => {
   withTempDir((dir) => {
     writeConfig(dir, { "datastore-poll-interval": 30 });

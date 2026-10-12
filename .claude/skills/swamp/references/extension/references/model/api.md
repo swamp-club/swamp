@@ -442,7 +442,15 @@ for (const r of [result, created]) {
 - Returns `{ ok: true, resources: DataHandle[] }` or
   `{ ok: false, error: { message, stack? } }`. It does not throw — check `ok`.
 - `arguments` is split between the target's global and method arguments by their
-  schemas (method arguments win on ambiguous keys; unknown keys fail).
+  schemas (method arguments win on ambiguous keys; unknown keys fail). Values
+  apply to this call only and are passed literally, never evaluated: a global
+  argument holding `${{ ... }}` swamp could evaluate (`vault.get`, `self.*`,
+  `data.*`, ...), at any depth, returns `{ ok: false }`; so does `${{ }}` text
+  that does not parse. Resolve values in your own method instead.
+- The target definition's own `${{ ... }}` expressions (`vault.get`, `self.*`,
+  CEL) resolve as in a standalone run, within the caller's vault scope (a
+  workflow's `vaults` list still applies); if that run would fail, the call
+  returns `{ ok: false }`.
 - The target's data belongs to the target definition, not the caller. The
   caller's vault secrets do not propagate.
 - **Authorization:** to call a model type from another extension, list that

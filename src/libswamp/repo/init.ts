@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
@@ -32,6 +33,7 @@ import {
   type ExtensionInstallDeps,
   type ExtensionInstallEvent,
 } from "../extensions/install.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -54,6 +56,12 @@ export interface RepoInitData {
   gitignoreAction: string;
   tools: string[];
   removedTools: string[];
+  /**
+   * The repository's default vault: `created` is false when a vault named
+   * `default` already existed and was kept. `null` when init was told not
+   * to set one up.
+   */
+  vault: { name: string; type: string; created: boolean } | null;
   /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
@@ -78,13 +86,26 @@ export interface RepoInitInput {
   tool?: string;
   version: string;
   serverAddress?: string;
+  /**
+   * Whether to set up the repository's default vault: a local_encryption
+   * vault named `default`, recorded as `defaultVault` (swamp-club#3259).
+   * Defaults to true, so every new repository has one; pass false to skip
+   * it (`swamp repo init --no-vault`).
+   */
+  vault?: boolean;
 }
 
 /** Dependencies for the repo init operation. */
 export interface RepoInitDeps {
   init: (
     repoPath: RepoPath,
-    options: { force?: boolean; tools?: string[]; serverAddress?: string },
+    options: {
+      force?: boolean;
+      tools?: string[];
+      serverAddress?: string;
+      /** Set up the default vault (see {@link RepoInitInput.vault}). */
+      defaultVault?: boolean;
+    },
   ) => Promise<RepoInitResult>;
 }
 
@@ -92,7 +113,19 @@ export interface RepoInitDeps {
 export function createRepoInitDeps(version: string): RepoInitDeps {
   const service = new RepoService(version);
   return {
-    init: (repoPath, options) => service.init(repoPath, options),
+    init: (repoPath, { defaultVault, ...options }) =>
+      service.init(repoPath, {
+        ...options,
+        // The repo's own vaults/ dir: a new repository has no datastore
+        // config tier to put it in.
+        defaultVaultStore: defaultVault
+          ? new YamlVaultConfigRepository(
+            repoPath.value,
+            undefined,
+            join(repoPath.value, "vaults"),
+          )
+          : undefined,
+      }),
   };
 }
 
@@ -118,6 +151,7 @@ export async function* repoInit(
           force: input.force,
           tools: resolveToolsInput(input.tools, input.tool),
           serverAddress: input.serverAddress,
+          defaultVault: input.vault ?? true,
         });
       } catch (error) {
         yield {
@@ -141,6 +175,7 @@ export async function* repoInit(
         gitignoreAction: result.gitignoreAction,
         tools: result.tools,
         removedTools: result.removedTools,
+        vault: result.vault,
         tool: legacyToolField(result.tools),
       };
 

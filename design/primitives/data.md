@@ -231,7 +231,7 @@ versions:
 
 | Mechanism                       | Removes                                                                                  | Source                                                                         |
 | ------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Write-time cap (`autoGc: true`) | On each save, versions beyond an **integer** `garbageCollection` cap                     | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
+| Write-time cap (`autoGc: true`) | On each save, and when a deferred write is promoted, versions beyond an **integer** `garbageCollection` cap — for direct runs and workflow steps alike | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
 | Post-run GC (`autoGc: true`)    | After each `model method run`: the model's `collectGarbage` plus lifetime expiry of its names | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
 | `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC              | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
 | `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model                     | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
@@ -391,6 +391,10 @@ workflow-runs/{workflow-id}/workflow-run-{run-id}.yaml
 - Write-time GC inside `save` enforces only integer version caps
   (`unified_data_repository.ts` `pruneExcessVersions`). Duration-based
   `garbageCollection` waits for the post-run `autoGc` pass or `swamp data gc`.
+- Workflow steps get the write-time cap — `WorkflowExecutionService` passes
+  the repo's `autoGc` to the data repositories it builds — but not the post-run
+  pass, so duration-based caps and lifetime expiry for data written by a
+  workflow wait for `swamp data gc`.
 - `job` and `workflow` lifetimes have no dependency tracking of their own; they
   expire when the run record is gone. Such data with no `workflowRunId` never
   expires

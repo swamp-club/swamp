@@ -19,10 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  defaultLocalEncryptionConfig,
   findChangedKeySourceFields,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
   serverDefaultKeySource,
+  withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "./local_encryption_key_source.ts";
 
@@ -108,8 +110,52 @@ Deno.test("withServerDefaultKeySource: replaces the key source and keeps other f
   assertEquals(
     withServerDefaultKeySource(
       { note: "x", key_file: "/k", ssh_key_path: "/s", auto_generate: false },
-      "/repo",
     ),
-    { note: "x", base_dir: "/repo", auto_generate: true },
+    { note: "x", auto_generate: true },
+  );
+});
+
+Deno.test("withServerDefaultKeySource: stores no base_dir, even the repo's own", () => {
+  assertEquals(
+    withServerDefaultKeySource({ base_dir: "/repo", auto_generate: true }),
+    { auto_generate: true },
+  );
+});
+
+Deno.test("defaultLocalEncryptionConfig: auto-generates the key and names no host path", () => {
+  assertEquals(defaultLocalEncryptionConfig(), { auto_generate: true });
+});
+
+Deno.test("withRuntimeBaseDir: fills an unset or empty base_dir with the repo dir", () => {
+  assertEquals(
+    withRuntimeBaseDir("local_encryption", { auto_generate: true }, "/repo"),
+    { auto_generate: true, base_dir: "/repo" },
+  );
+  assertEquals(
+    withRuntimeBaseDir("local_encryption", { base_dir: "" }, "/repo"),
+    { base_dir: "/repo" },
+  );
+});
+
+Deno.test("withRuntimeBaseDir: matches the local_encryption type in any case", () => {
+  assertEquals(
+    withRuntimeBaseDir("LOCAL_ENCRYPTION", {}, "/repo"),
+    { base_dir: "/repo" },
+  );
+  assertEquals(
+    withRuntimeBaseDir("Local_Encryption", {}, "/repo"),
+    { base_dir: "/repo" },
+  );
+});
+
+Deno.test("withRuntimeBaseDir: keeps a stored base_dir and other types' config", () => {
+  assertEquals(
+    withRuntimeBaseDir("local_encryption", { base_dir: "/other" }, "/repo"),
+    { base_dir: "/other" },
+  );
+  assertEquals(withRuntimeBaseDir("mock", {}, "/repo"), {});
+  assertEquals(
+    withRuntimeBaseDir("@swamp/aws-sm", { region: "eu-west-1" }, "/repo"),
+    { region: "eu-west-1" },
   );
 });

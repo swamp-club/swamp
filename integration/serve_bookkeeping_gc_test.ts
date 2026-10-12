@@ -24,6 +24,18 @@
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import type { FilesystemDatastoreConfig } from "../src/domain/datastore/datastore_config.ts";
+import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
+import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  initializeV3Datastore,
+  openV3Datastore,
+} from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import {
+  closeV3Datastores,
+  v3RepositoryFactoryConfig,
+} from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
+import { datastoreRecords } from "./usecase_v3_fixtures.ts";
 import "../src/domain/models/models.ts";
 import { buildMarkDirtyHook } from "../src/cli/repo_context.ts";
 import { Data } from "../src/domain/data/data.ts";
@@ -473,16 +485,29 @@ function foreignRow(
 Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another namespace's catalog rows", async () => {
   await withTempDir(async (dir) => {
     const { service } = createRecordingSyncService();
+    const reapNow = Date.now() + 2 * GRACE_MS;
+    const endedAt = new Date(Date.now()).toISOString();
+    let foreignFetches = 0;
     const ctx = createRepositoryContext({
       repoDir: dir,
       enableIndexing: false,
       namespace: "team-a",
       markDirty: buildMarkDirtyHook(service, swampPath(dir), dir),
+      fetchForeignContent: (_ns, relPath) => {
+        foreignFetches++;
+        const attrs = relPath.includes("step-lease")
+          ? {
+            ...acquireInputs("x"),
+            state: "completed",
+            hasWrites: false,
+            createdAt: endedAt,
+            endedAt,
+          }
+          : { name: "w1", status: "disconnected" };
+        return Promise.resolve(new TextEncoder().encode(JSON.stringify(attrs)));
+      },
     });
     try {
-      const reapNow = Date.now() + 2 * GRACE_MS;
-      const endedAt = new Date(Date.now()).toISOString();
-
       await saveRecord(
         ctx,
         WORKER_MODEL_TYPE,
@@ -501,20 +526,6 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
         foreignRow(STEP_LEASE_MODEL_TYPE, STEP_LEASE_INSTANCE_NAME, "lease-x"),
         foreignRow(WORKER_MODEL_TYPE, "worker-w1", "state-main"),
       ]);
-      let foreignFetches = 0;
-      ctx.dataQueryService.setForeignContentFetcher((_ns, relPath) => {
-        foreignFetches++;
-        const attrs = relPath.includes("step-lease")
-          ? {
-            ...acquireInputs("x"),
-            state: "completed",
-            hasWrites: false,
-            createdAt: endedAt,
-            endedAt,
-          }
-          : { name: "w1", status: "disconnected" };
-        return Promise.resolve(new TextEncoder().encode(JSON.stringify(attrs)));
-      });
 
       const result = await reapEndedBookkeepingRecords(
         {
@@ -601,6 +612,72 @@ Deno.test("reapEndedBookkeepingRecords: an unreadable record body on disk does n
       );
     } finally {
       ctx.catalogStore.close();
+    }
+  });
+});
+
+Deno.test("reapEndedBookkeepingRecords: on a v3 datastore the reap commits, and a second checkout reads the same records (swamp-club#3279)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const config: FilesystemDatastoreConfig = {
+      type: "filesystem",
+      path: datastorePath,
+      namespace: "team-a",
+    };
+    const repoA = join(dir, "a");
+    await Deno.mkdir(repoA, { recursive: true });
+    const ctx = createRepositoryContext({
+      repoDir: repoA,
+      enableIndexing: false,
+      namespace: "team-a",
+      datastoreResolver: new DefaultDatastorePathResolver(repoA, config, {
+        engine: "v3",
+      }),
+      ...await v3RepositoryFactoryConfig(repoA, config),
+    });
+    try {
+      const realNow = Date.now();
+      const reapNow = realNow + 2 * GRACE_MS;
+      await runInRootUnitOfWork(ctx, { flush: undefined }, async () => {
+        await lease(repoA, ctx, "acquire", acquireInputs("done"));
+        await lease(repoA, ctx, "complete", { leaseId: "done" });
+        await lease(repoA, ctx, "acquire", acquireInputs("live"));
+      });
+
+      // Serve's reaper opens its root over the hook alone; on v3 that is a
+      // commit-log root.
+      const result = await reapEndedBookkeepingRecords(
+        {
+          query: reaperQuery(ctx),
+          repo: ctx.unifiedDataRepo,
+          markDirty: ctx.markDirty,
+          now: () => reapNow,
+        },
+        GRACE_MS,
+      );
+      assertEquals(result.leasesDeleted, 1);
+      assertEquals(
+        await dataNames(ctx, STEP_LEASE_MODEL_TYPE, STEP_LEASE_INSTANCE_NAME),
+        ["lease-live"],
+      );
+
+      const repoB = join(dir, "b");
+      const b = openV3Datastore({
+        repoDir: repoB,
+        datastorePath,
+        namespace: "team-a",
+      });
+      try {
+        await b.catchUp();
+      } finally {
+        await b.close();
+      }
+      const records = await datastoreRecords(repoA, "team-a");
+      assert(records.size > 0, "the live lease is committed");
+      assertEquals(await datastoreRecords(repoB, "team-a"), records);
+    } finally {
+      await closeV3Datastores();
     }
   });
 });

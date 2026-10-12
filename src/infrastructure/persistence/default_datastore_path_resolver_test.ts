@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { DefaultDatastorePathResolver } from "./default_datastore_path_resolver.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
@@ -341,4 +342,51 @@ Deno.test("DefaultDatastorePathResolver - exclude patterns match the un-prefixed
     resolver.resolvePath("data", "keep", "v.json"),
     "/data/store/infra/data/keep/v.json",
   );
+});
+
+Deno.test("DefaultDatastorePathResolver - a v3 datastore resolves records in the checkout, not at the datastore path", () => {
+  const resolver = new DefaultDatastorePathResolver("/repo", {
+    type: "filesystem",
+    path: "/shared/v3",
+  }, { engine: "v3" });
+  assertEquals(resolver.engine(), "v3");
+  assertPathEquals(
+    resolver.resolvePath("data", "x"),
+    join("/repo", ".swamp", "data", "x"),
+  );
+  assertEquals(resolver.config().type, "filesystem");
+});
+
+Deno.test("DefaultDatastorePathResolver - a namespaced v3 datastore resolves under the checkout's namespace directory", () => {
+  const resolver = new DefaultDatastorePathResolver("/repo", {
+    type: "filesystem",
+    path: "/shared/v3",
+    namespace: "team",
+  }, { engine: "v3" });
+  assertPathEquals(
+    resolver.resolvePath("data", "x"),
+    join("/repo", ".swamp", "team", "data", "x"),
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - an unchecked config reads its engine from the datastore's marker", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-resolver-engine-" });
+  try {
+    await Deno.writeTextFile(
+      join(dir, "datastore-format.json"),
+      '{"format":3,"minReaderFormat":3}',
+    );
+    const v3 = new DefaultDatastorePathResolver("/repo", {
+      type: "filesystem",
+      path: dir,
+    });
+    assertEquals(v3.engine(), "v3");
+    const v2 = new DefaultDatastorePathResolver("/repo", {
+      type: "filesystem",
+      path: join(dir, "elsewhere"),
+    });
+    assertEquals(v2.engine(), "v2");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });

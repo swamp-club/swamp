@@ -28,6 +28,10 @@ const POWERSHELL_COMPATIBILITY_PREFIX =
   "Remove-Item Alias:echo -Force; " +
   "function echo { Write-Output ($args -join ' ') }; ";
 
+Deno.test("PowerShellStrategy.normalizesCrlfOutput: normalises PowerShell's CRLF line endings", () => {
+  assertEquals(new PowerShellStrategy().normalizesCrlfOutput, true);
+});
+
 Deno.test("PowerShellStrategy.buildInvocation: wraps command in a PowerShell compatibility prelude", () => {
   const strategy = new PowerShellStrategy();
   assertEquals(

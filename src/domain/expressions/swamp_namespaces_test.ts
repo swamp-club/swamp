@@ -24,6 +24,7 @@ import {
   isForeignExpression,
   isSwampExpression,
   parsesAsCel,
+  readsSwampBinding,
   type SwampScope,
   WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
@@ -153,6 +154,51 @@ Deno.test("isForeignExpression: false for text that does not parse", () => {
   assertEquals(parsesAsCel("github.?sha"), true);
   assertEquals(isForeignExpression("github.?sha"), false);
   assertEquals(isForeignExpression("inputs.?version"), false);
+});
+
+Deno.test("readsSwampBinding: true when any root is a swamp namespace", () => {
+  for (
+    const cel of [
+      'vault.get("v", "k")',
+      "vault.get(v, k)",
+      "self.name",
+      '"label-" + self.name',
+      "inputs.region",
+      "env.HOME",
+      'file.contents("m", "f")',
+      'data.latest("m", "d")',
+      "model.other.resource.x",
+      "steps.build.outputs.sha",
+      // A foreign root does not hide a swamp one.
+      'github.sha || data.latest("m", "d")',
+      "[1].exists(x, self.name == x)",
+    ]
+  ) {
+    assertEquals(readsSwampBinding(cel), true, cel);
+  }
+});
+
+Deno.test("readsSwampBinding: true for text the attribution grammar cannot parse", () => {
+  assertEquals(readsSwampBinding("not valid cel !!!"), true);
+  assertEquals(readsSwampBinding('"a'), true);
+  assertEquals(readsSwampBinding("inputs.?x"), true);
+  assertEquals(readsSwampBinding("github.?sha"), true);
+});
+
+Deno.test("readsSwampBinding: false when every root is foreign or there is none", () => {
+  for (
+    const cel of [
+      "github.sha",
+      "secrets.TOKEN",
+      "matrix.os",
+      // Macro-bound variables are not roots.
+      "[1, 2].map(x, x + 1)",
+      "1",
+      '"a" + "b"',
+    ]
+  ) {
+    assertEquals(readsSwampBinding(cel), false, cel);
+  }
 });
 
 Deno.test("containsSwampExpression: false when every expression is foreign", () => {

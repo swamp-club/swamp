@@ -46,6 +46,18 @@ function configError(path: string, message: string): UserError {
   return markErrorPaths(new UserError(message), [path]);
 }
 
+/**
+ * The error for a serve.yaml field that must be a string. YAML reads an
+ * unquoted `0` or `3600` as a number, so a number gets a quoting hint.
+ */
+function stringTypeMessage(name: string, path: string, value: unknown): string {
+  const message =
+    `Invalid ${name} in ${path}: expected string, got ${typeof value}`;
+  return typeof value === "number"
+    ? `${message}; quote the value, e.g. "${value}"`
+    : message;
+}
+
 const logger = getSwampLogger(["serve", "config"]);
 
 // ── Env Var Map ───────────────────────────────────────────────────────
@@ -558,7 +570,7 @@ function validateConfigValues(
     if (value !== undefined && typeof value !== "string") {
       throw configError(
         path,
-        `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+        stringTypeMessage(name, path, value),
       );
     }
   }
@@ -577,7 +589,7 @@ function validateConfigValues(
       if (value !== undefined && typeof value !== "string") {
         throw configError(
           path,
-          `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+          stringTypeMessage(name, path, value),
         );
       }
     }
@@ -607,7 +619,7 @@ function validateConfigValues(
       if (value !== undefined && typeof value !== "string") {
         throw configError(
           path,
-          `Invalid ${name} in ${path}: expected string, got ${typeof value}`,
+          stringTypeMessage(name, path, value),
         );
       }
     }

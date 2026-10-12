@@ -35,6 +35,7 @@ import { repoUnitOfWorkFactory } from "../infrastructure/persistence/repo_unit_o
 import { createLibSwampContext } from "../libswamp/context.ts";
 import { createWorkerModelRunDeps } from "../libswamp/worker/run_deps.ts";
 import { modelMethodRun } from "../libswamp/models/run.ts";
+import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import {
   ChannelClosedError,
   RpcChannel,
@@ -190,7 +191,45 @@ export type ModelMethodRunner = (input: {
   definitionName: string;
   methodName: string;
   inputs: Record<string, unknown>;
+  /**
+   * The id of the definition the caller resolved. When set, the run is
+   * refused rather than auto-creating a definition if the name no longer
+   * resolves to that id.
+   */
+  expectedDefinitionId?: string;
 }) => Promise<void>;
+
+/** Why the gateway refused to send a dispatch to a worker. */
+export type WorkerNotDispatchableReason =
+  | "not_in_pool"
+  | "disconnected"
+  | "at_capacity"
+  | "unverified"
+  | "draining";
+
+const NOT_DISPATCHABLE_PHRASES: Record<WorkerNotDispatchableReason, string> = {
+  not_in_pool: "is not in the pool",
+  disconnected: "is disconnected",
+  at_capacity: "is at capacity",
+  unverified: "is unverified",
+  draining: "is draining",
+};
+
+/**
+ * The gateway refused a dispatch before sending it: the attempt never
+ * reached the worker, so nothing ran and nothing was written.
+ */
+export class WorkerNotDispatchableError extends Error {
+  readonly workerName: string;
+  readonly reason: WorkerNotDispatchableReason;
+
+  constructor(workerName: string, reason: WorkerNotDispatchableReason) {
+    super(`Worker '${workerName}' ${NOT_DISPATCHABLE_PHRASES[reason]}`);
+    this.name = "WorkerNotDispatchableError";
+    this.workerName = workerName;
+    this.reason = reason;
+  }
+}
 
 export interface WorkerGatewayOptions {
   repoDir: string;
@@ -241,6 +280,12 @@ export interface WorkerGatewayOptions {
   /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
   /**
+   * Test seam: the id of an enrollment token's definition in the local
+   * repo, or null when this repo has none. Defaults to a definition lookup
+   * by name.
+   */
+  findTokenDefinitionId?: (tokenName: string) => Promise<string | null>;
+  /**
    * Test seam: reads a token's current record, or null when it does not
    * exist or no longer parses. Throws on read failures (I/O). Enrollment
    * reads it once after redemption and fails when it cannot. Defaults to a
@@ -278,6 +323,9 @@ export class WorkerGateway {
   readonly #sessions: SessionCredentialService;
   readonly #graceWindowMs: number;
   readonly #runModelMethod: ModelMethodRunner;
+  readonly #findTokenDefinitionId: (
+    tokenName: string,
+  ) => Promise<string | null>;
   readonly #readTokenExpiresAt: (
     tokenName: string,
     record: EnrollmentToken,
@@ -299,6 +347,12 @@ export class WorkerGateway {
     this.#graceWindowMs = options.graceWindowMs ?? DEFAULT_GRACE_WINDOW_MS;
     this.#runModelMethod = options.runModelMethod ??
       ((input) => this.#defaultRunModelMethod(input));
+    this.#findTokenDefinitionId = options.findTokenDefinitionId ??
+      (async (tokenName) =>
+        (await findDefinitionByIdOrName(
+          options.repoContext.definitionRepo,
+          tokenName,
+        ))?.definition.id ?? null);
     this.#readTokenExpiresAt = options.readTokenExpiresAt ??
       ((_tokenName, record) => Promise.resolve(record.expiresAt));
     this.#readTokenMaxEnrollments = options.readTokenMaxEnrollments ??
@@ -423,8 +477,9 @@ export class WorkerGateway {
 
   /**
    * Dispatch one execution request to a named worker. Resolves with the
-   * worker's result; rejects when the worker is unknown, busy, disconnected,
-   * or the control socket drops mid-dispatch (the caller owns grace-window
+   * worker's result; rejects with a WorkerNotDispatchableError when the
+   * worker is unknown, busy, disconnected, unverified or draining, or when
+   * the control socket drops mid-dispatch (the caller owns grace-window
    * failure semantics — see DispatchService).
    */
   async dispatch(
@@ -433,23 +488,24 @@ export class WorkerGateway {
     options?: {
       signal?: AbortSignal;
       onEvent?: (event: RpcStreamEvent) => void;
+      onRegistered?: () => void;
     },
   ): Promise<DispatchResult> {
     const entry = this.#workers.get(name);
     if (!entry) {
-      throw new Error(`Worker '${name}' is not in the pool`);
+      throw new WorkerNotDispatchableError(name, "not_in_pool");
     }
     if (entry.channel === null) {
-      throw new Error(`Worker '${name}' is disconnected`);
+      throw new WorkerNotDispatchableError(name, "disconnected");
     }
     if (entry.activeDispatchIds.length >= entry.capacity) {
-      throw new Error(`Worker '${name}' is at capacity`);
+      throw new WorkerNotDispatchableError(name, "at_capacity");
     }
     if (entry.status === "unverified" && !params.probeMarker) {
-      throw new Error(`Worker '${name}' is unverified`);
+      throw new WorkerNotDispatchableError(name, "unverified");
     }
     if (entry.status === "draining") {
-      throw new Error(`Worker '${name}' is draining`);
+      throw new WorkerNotDispatchableError(name, "draining");
     }
 
     logger.info(
@@ -465,6 +521,10 @@ export class WorkerGateway {
     const dispatchStart = performance.now();
     entry.activeDispatchIds.push(params.dispatchId);
     entry.status = "busy";
+    // Kept in the same synchronous turn as the push: the dispatcher drops
+    // its reservation here, and an await in between would count the
+    // dispatch twice.
+    options?.onRegistered?.();
     await this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,
@@ -619,6 +679,7 @@ export class WorkerGateway {
       // appends a binding on first enrollment or re-auths a known machine.
       // Must happen before the already-connected check because the worker
       // name depends on maxEnrollments (fleet vs single-machine).
+      const definitionId = await this.#requireTokenDefinition(name);
       try {
         await this.#runModelMethod({
           typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
@@ -628,6 +689,8 @@ export class WorkerGateway {
             presentedToken: secret,
             machineId: params.machineId,
           },
+          // Pinned so a token this repo lacks is never auto-created.
+          expectedDefinitionId: definitionId,
         });
       } catch (error) {
         throw codedRedeemFailure(error);
@@ -812,7 +875,9 @@ export class WorkerGateway {
 
   async #handleDrain(workerName: string): Promise<void> {
     const entry = this.#workers.get(workerName);
-    if (!entry) return;
+    // A worker calls again when its in-flight work ends, to confirm its last
+    // response arrived before it closes; the repeat changes nothing.
+    if (!entry || entry.status === "draining") return;
     logger.info("Worker {worker} is draining", { worker: workerName });
     entry.status = "draining";
     await this.#recordTransition(() =>
@@ -924,15 +989,26 @@ export class WorkerGateway {
       worker: workerName,
     });
     // Bookkeeping only: redeem independently rejects on time, so a failure
-    // here just delays the durable record catching up.
-    this.#recordTransition(() =>
-      this.#runModelMethod({
+    // here just delays the durable record catching up. A token whose
+    // definition is gone has nothing to record, and running `expire` by
+    // name would auto-create one.
+    this.#recordTransition(async () => {
+      const definitionId = await this.#findTokenDefinitionId(entry.tokenName);
+      if (definitionId === null) {
+        logger.debug(
+          "Enrollment token {token} has no definition; skipping expiry record",
+          { token: entry.tokenName },
+        );
+        return;
+      }
+      await this.#runModelMethod({
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
         definitionName: entry.tokenName,
         methodName: "expire",
         inputs: {},
-      })
-    ).catch((error: unknown) => {
+        expectedDefinitionId: definitionId,
+      });
+    }).catch((error: unknown) => {
       logger.warn("Failed to record token expiry for {worker}: {error}", {
         worker: workerName,
         error: error instanceof Error ? error.message : String(error),
@@ -1121,6 +1197,29 @@ export class WorkerGateway {
     return record;
   }
 
+  /**
+   * The id of the token's definition in this repo. Redeem runs pinned to
+   * it, so enrollment never creates a token definition (swamp-club#3074).
+   * Without one, a token whose record is already here was minted on an HA
+   * peer whose definition this replica has not pulled yet: that refusal is
+   * retryable. Otherwise the token does not exist.
+   */
+  async #requireTokenDefinition(tokenName: string): Promise<string> {
+    const definitionId = await this.#findTokenDefinitionId(tokenName);
+    if (definitionId !== null) return definitionId;
+    if (await this.#readTokenRecord(tokenName) !== null) {
+      throw new RpcError({
+        code: "token_not_synced",
+        message:
+          `Enrollment token '${tokenName}' has a record but no definition on this orchestrator yet; retry the connection`,
+      });
+    }
+    throw new RpcError({
+      code: "token_not_found",
+      message: `Enrollment token '${tokenName}' does not exist — mint it first`,
+    });
+  }
+
   /** Finds one token's current record; null when there is no usable one. */
   async #findTokenRecord(tokenName: string): Promise<EnrollmentToken | null> {
     return (await this.#scanTokenRecords()).get(tokenName) ?? null;
@@ -1165,12 +1264,9 @@ export class WorkerGateway {
     return records;
   }
 
-  async #defaultRunModelMethod(input: {
-    typeArg: string;
-    definitionName: string;
-    methodName: string;
-    inputs: Record<string, unknown>;
-  }): Promise<void> {
+  async #defaultRunModelMethod(
+    input: Parameters<ModelMethodRunner>[0],
+  ): Promise<void> {
     const deps = await createWorkerModelRunDeps(
       this.#options.repoDir,
       this.#options.repoContext,
@@ -1189,6 +1285,7 @@ export class WorkerGateway {
           lastEvaluated: false,
           typeArg: input.typeArg,
           definitionName: input.definitionName,
+          expectedDefinitionId: input.expectedDefinitionId,
           // Control-plane bookkeeping: skip per-run report artifacts so pool
           // churn stays bounded to the state records themselves.
           skipAllReports: true,

@@ -29,6 +29,7 @@ import {
   findDefinitionByIdOrName,
 } from "../../domain/models/model_lookup.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import {
   RunSensitiveValues,
   type WrittenReference,
@@ -49,6 +50,7 @@ import { selectLookup } from "../lookup_by_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { withUnitOfWork } from "../unit_of_work.ts";
 import { notFound, type SwampError } from "../errors.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 
 /** Evaluation result for a single model. */
 export interface ModelEvaluateItemData {
@@ -123,6 +125,8 @@ export interface ModelEvaluateDeps {
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
+    /** Where data sits in the definition's raw copy (swamp-club#3205). */
+    provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
@@ -136,6 +140,12 @@ export function createModelEvaluateDeps(
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedCatalogStore?: CatalogStore,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  /**
+   * The repository context's foreign content fetcher, so expressions that
+   * read another namespace's data see its attributes (swamp-club#3306). Used
+   * only by the repository built here; an injected repository carries its own.
+   */
+  fetchForeignContent?: ForeignContentFetcher,
 ): ModelEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -154,6 +164,9 @@ export function createModelEvaluateDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    fetchForeignContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluationService = new ExpressionEvaluationService(
@@ -178,12 +191,14 @@ export function createModelEvaluateDeps(
     saveEvaluatedDefinition: (
       type,
       definition,
+      provenance,
       authoredExpressions,
       writtenReferences,
     ) =>
       evaluatedDefRepo.save(
         type,
         definition,
+        provenance,
         authoredExpressions,
         undefined,
         writtenReferences,
@@ -212,6 +227,7 @@ async function saveWithoutSecrets(
   await deps.saveEvaluatedDefinition(
     result.type,
     persisted.definition,
+    result.provenance ?? ProvenanceMap.authored(),
     result.authoredExpressions,
     persisted.writtenReferences,
   );

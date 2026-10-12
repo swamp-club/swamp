@@ -36,6 +36,11 @@ export interface ActiveRunData {
   readonly id: string;
   readonly runKind: RunKind;
   readonly modelType: string | null;
+  /**
+   * The definition a method run executes. Absent on workflow rows and on
+   * method rows registered before the tracker recorded it (swamp-club#3244).
+   */
+  readonly definitionId?: string | null;
   readonly methodName: string | null;
   readonly workflowName: string | null;
   readonly pid: number;
@@ -64,6 +69,7 @@ export class ActiveRun {
   readonly id: string;
   readonly runKind: RunKind;
   readonly modelType: string | null;
+  readonly definitionId: string | null;
   readonly methodName: string | null;
   readonly workflowName: string | null;
   readonly pid: number;
@@ -80,6 +86,7 @@ export class ActiveRun {
     this.id = data.id;
     this.runKind = data.runKind;
     this.modelType = data.modelType;
+    this.definitionId = data.definitionId ?? null;
     this.methodName = data.methodName;
     this.workflowName = data.workflowName;
     this.pid = data.pid;
@@ -123,6 +130,7 @@ export class ActiveRun {
   static createModelMethodRun(opts: {
     id: string;
     modelType: string;
+    definitionId: string;
     methodName: string;
     pid: number;
     hostname: string;
@@ -134,6 +142,7 @@ export class ActiveRun {
       id: opts.id,
       runKind: "model_method",
       modelType: opts.modelType,
+      definitionId: opts.definitionId,
       methodName: opts.methodName,
       workflowName: null,
       pid: opts.pid,
@@ -180,6 +189,7 @@ export class ActiveRun {
       id: this.id,
       runKind: this.runKind,
       modelType: this.modelType,
+      definitionId: this.definitionId,
       methodName: this.methodName,
       workflowName: this.workflowName,
       pid: this.pid,

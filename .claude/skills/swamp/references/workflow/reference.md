@@ -486,8 +486,10 @@ steps:
 ### Inputs Are Inert and Recorded — Never Pass Secrets
 
 Workflow input values are never evaluated as expressions: a `${{ ... }}` passed
-with `--input` stays literal text. They are also **recorded** (after type
-coercion and schema defaults) in the run record, the history index that
+with `--input` stays literal text, even when it is identical to an expression
+the workflow itself contains (data from `data.latest`, step outputs and forEach
+items behaves the same way). They are also **recorded** (after type coercion and
+schema defaults) in the run record, the history index that
 `workflow history search --input` filters on, any child workflow run they are
 forwarded to, evaluated model definitions, and the data of any model that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,
@@ -630,9 +632,11 @@ jobs:
 **Key behaviors:**
 
 - Workflow-level affinity scopes to the entire run; job-level scopes to the job
-- If the pinned worker disconnects mid-group, steps fail with a
-  `WorkerAffinityLostError` instead of silently re-dispatching — preserving the
-  co-location guarantee
+- If the pinned worker disconnects or starts draining mid-group, steps fail with
+  a `WorkerAffinityLostError` instead of silently re-dispatching — preserving
+  the co-location guarantee
+- The pin binds when the first step completes; before that, a first step that
+  loses its worker without writing re-dispatches to another worker
 - Validation warns when `affinity: true` is set without any placement (a no-op
   since there are no remote steps to co-locate)
 - Requires `swamp serve` (same as all placement features)
@@ -884,6 +888,7 @@ it. Use it when a step needs a value, not a yes or no:
     type: wait_for_signal
     timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
     key: release-verdict # Optional: one open wait of the workflow holds a key at a time
+    acceptEarly: 10 # Optional, needs key: seconds a signal by key may arrive before the wait opens (max 3600)
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -905,6 +910,7 @@ swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
 swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'   # by key, in place of the wait ID
+swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}' --idempotency-key build-812   # safe to send again
 swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
@@ -947,6 +953,31 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   found; new key: `no_open_wait`, no `lastWait`): signal it by wait ID, or let
   it settle first. Upgrade every host before adding a key: an older swamp
   ignores it and opens the wait unclaimed.
+- `acceptEarly` holds a signal by key that arrives before the wait opens,
+  instead of refusing it `no_open_wait`. The signal's result then has
+  `pending: true`, the receipt and `heldUntil`, and names no wait or run: it is
+  a hold, not a delivery. A step that opens its wait within `acceptEarly`
+  seconds of the signal takes it, succeeds at once with the usual outputs, and
+  the run does not suspend there; a signal older than that is ignored and the
+  wait opens as usual. A key holds one pending signal: a second while the first
+  is held is refused `already_pending`, and the error's `--json` form carries
+  `pending.heldUntil`, the time after which to send again. On such a step
+  `no_open_wait` means only that the key changed hands while the signal arrived:
+  send it again. A retry by key after the step took the first signal is held as
+  a second one, for the next run, unless both carry the same `--idempotency-key`
+  (1 to 128 letters, digits, `.`, `:`, `-`, `_`): the retry is then answered
+  with the first signal's receipt and `duplicate: true`, and nothing is
+  delivered or held twice. Give every signal a sender may retry its own key.
+  Without one, the result carries `lastWait` (how and when the key's last wait
+  was settled), so read that before sending again. The payload is checked on
+  arrival against the schema as written, so the schema of such a step may hold
+  no expression, `inputs.*` included (`workflow validate` refuses one). A
+  pending signal is stored in plaintext like any payload, and `workflow waits`
+  does not list it. Upgrade every host that runs, resumes or lists the workflow
+  before adding `acceptEarly`, and every client that signals it with `--server`:
+  an older swamp never takes a held signal, and a server holds nothing for an
+  older client, which is refused `no_open_wait`. A server older than
+  `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

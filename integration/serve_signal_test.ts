@@ -1131,24 +1131,37 @@ function signalByKey(
   workflow: string,
   key: string,
   payload: unknown,
+  // False for a client from before the pending reply (swamp-club#3212).
+  acceptsPending = true,
 ): Promise<Frame[]> {
   return sendRequest(ctx, {
     type: "workflow.signal",
     id: `signal-${crypto.randomUUID()}`,
-    payload: { workflow, key, payload },
+    payload: {
+      workflow,
+      key,
+      payload,
+      ...(acceptsPending ? { acceptsPending: true } : {}),
+    },
   });
 }
 
 async function postByKey(
   ctx: ConnectionContext,
   body: unknown,
+  idempotencyKey?: string,
 ): Promise<{ status: number; body: Record<string, unknown> | string }> {
   const matched = matchSignalRoute("/api/v1/signal");
   assert(matched, "the path is the by-key signal route");
   const response = await handleSignalHttpRequest(
     new Request("http://serve.test/api/v1/signal", {
       method: "POST",
-      headers: { authorization: `Bearer ${TOKEN}` },
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        ...(idempotencyKey !== undefined
+          ? { "idempotency-key": idempotencyKey }
+          : {}),
+      },
       body: JSON.stringify(body),
     }),
     matched,
@@ -1702,6 +1715,134 @@ Deno.test({
       assertEquals(last.waitId, w.waitId);
       assertEquals(last.settledAs, "accepted");
       assertEquals("receipt" in last, false);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "serve signal by key: a signal before the wait opens is held (202 over HTTP), and a second is refused as already pending",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const early = (name: string) =>
+        Workflow.create({
+          name,
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "review",
+                  task: StepTask.waitForSignal(3600, SCHEMA, KEY, 600),
+                }),
+              ],
+            }),
+          ],
+        });
+      const overSocket = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
+      const overHttp = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
+      await repo.repoContext.workflowRepo.save(overSocket);
+      await repo.repoContext.workflowRepo.save(overHttp);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      const payload = { verdict: "ship" };
+
+      // A client from before the pending reply reads `data` of every reply,
+      // so nothing is held for it: it is refused as it was before.
+      const old = refusalOf(
+        await signalByKey(ctx, overSocket.name, KEY, payload, false),
+      );
+      assertEquals(old.code, "workflow_signal_refused");
+      assertEquals(old.details, { refusal: "no_open_wait" });
+
+      // Over the WebSocket the reply carries `pending` in place of `data`.
+      const frames = await signalByKey(ctx, overSocket.name, KEY, payload);
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const reply = frames.find((f) => f.type === "workflow.signal");
+      assert(reply, JSON.stringify(frames));
+      const held = reply.payload!.pending as Record<string, unknown>;
+      assert(held, JSON.stringify(reply));
+      assertEquals("data" in reply.payload!, false);
+      // A caller with `signal` alone is told the receipt and until when.
+      assertEquals(Object.keys(held).sort(), ["heldUntil", "signal"]);
+
+      const again = refusalOf(
+        await signalByKey(ctx, overSocket.name, KEY, payload),
+      );
+      assertEquals(again.code, "workflow_signal_refused");
+      assertEquals(again.details, {
+        refusal: "already_pending",
+        pending: { heldUntil: held.heldUntil },
+      });
+
+      // Over HTTP: accepted and not yet acted on.
+      const address = { workflow: overHttp.name, key: KEY };
+      const posted = await postByKey(ctx, { ...address, payload });
+      assertEquals(posted.status, 202);
+      const body = posted.body as Record<string, unknown>;
+      assertEquals(body.status, "pending");
+      assertEquals(Object.keys(body).sort(), ["data", "status"]);
+      assertEquals(
+        Object.keys(body.data as Record<string, unknown>).sort(),
+        ["heldUntil", "signal"],
+      );
+      const second = await postByKey(ctx, { ...address, payload });
+      assertEquals(second.status, 409);
+      assertEquals(
+        (second.body as Record<string, unknown>).status,
+        "already_pending",
+      );
+      // A retry under the first signal's idempotency key is answered with
+      // that signal, over either transport, and stores nothing.
+      const keyed = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
+      await repo.repoContext.workflowRepo.save(keyed);
+      const keyedAddress = { workflow: keyed.name, key: KEY };
+      const sent = await postByKey(ctx, { ...keyedAddress, payload }, "ord-1");
+      assertEquals(sent.status, 202);
+      const sentData = (sent.body as Record<string, unknown>).data as Record<
+        string,
+        unknown
+      >;
+      assertEquals("duplicate" in sentData, false);
+      const retried = await postByKey(
+        ctx,
+        { ...keyedAddress, payload },
+        "ord-1",
+      );
+      assertEquals(retried.status, 202);
+      const retriedData = (retried.body as Record<string, unknown>)
+        .data as Record<string, unknown>;
+      assertEquals(retriedData.duplicate, true);
+      assertEquals(retriedData.signal, sentData.signal);
+      const overWs = await sendRequest(ctx, {
+        type: "workflow.signal",
+        id: `signal-${crypto.randomUUID()}`,
+        payload: {
+          ...keyedAddress,
+          payload,
+          acceptsPending: true,
+          idempotencyKey: "ord-1",
+        },
+      });
+      assertEquals(errorFrame(overWs), undefined, JSON.stringify(overWs));
+      const wsReply = overWs.find((f) => f.type === "workflow.signal");
+      assert(wsReply, JSON.stringify(overWs));
+      const wsHeld = wsReply.payload!.pending as Record<string, unknown>;
+      assertEquals(wsHeld.duplicate, true);
+      assertEquals(wsHeld.signal, sentData.signal);
+      assertEquals(
+        (await postByKey(ctx, { ...keyedAddress, payload }, "ord-2")).status,
+        409,
+      );
+
+      // A payload the schema refuses stores nothing.
+      const refused = await postByKey(ctx, {
+        workflow: overHttp.name,
+        key: KEY,
+        payload: { verdict: "maybe" },
+      });
+      assertEquals(refused.status, 422);
     });
   },
 });

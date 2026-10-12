@@ -36,18 +36,33 @@ import {
   isGuardPath,
   isTaskGlobalArgsPath,
   isTaskInputsPath,
-  replaceExpressions,
+  replaceExpressionsTracked,
+  type SpliceOrigin,
 } from "../../domain/expressions/expression_parser.ts";
 import { maskLiteralCalls } from "../../domain/expressions/cel_string_lexer.ts";
 import { scanExpressions } from "../../domain/expressions/expression_scanner.ts";
 import {
   containsRuntimeExpression,
+  partitionAuthoredAt,
 } from "../../domain/expressions/expression_evaluation_service.ts";
 import {
   collectWorkflowAuthoredExpressions,
   createTaskTargetDeferral,
 } from "../../domain/workflows/expression_evaluators.ts";
-import { resolveAvailableExpressions } from "../../domain/expressions/available_expression_resolver.ts";
+import { resolveAvailableExpressionsTracked } from "../../domain/expressions/available_expression_resolver.ts";
+import {
+  keySegment,
+  ProvenanceMap,
+} from "../../domain/expressions/provenance_map.ts";
+import {
+  attachBindingProvenance,
+  bindingProvenanceOf,
+  spliceOrigin,
+} from "../../domain/expressions/splice_origin.ts";
+import {
+  attachInputsProvenance,
+  workflowInputsProvenance,
+} from "../../domain/workflows/input_provenance.ts";
 import {
   hasStepOutputDependency,
   hasStepsNamespaceReference,
@@ -71,6 +86,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import {
   RunSensitiveValues,
   type WrittenReference,
@@ -168,6 +184,8 @@ export interface WorkflowEvaluateDeps {
   ) => Promise<unknown>;
   saveEvaluatedWorkflow: (
     workflow: Workflow,
+    /** Where data sits in the workflow's raw copy (swamp-club#3205). */
+    provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
@@ -186,6 +204,11 @@ export function createWorkflowEvaluateDeps(
    * that would be saved into the evaluated workflow (swamp-club#3179).
    */
   hydrateFile?: HydrateFileHook,
+  /**
+   * The repository context's foreign content fetcher, so expressions that
+   * read another namespace's data see its attributes (swamp-club#3306).
+   */
+  fetchForeignContent?: ForeignContentFetcher,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -199,6 +222,9 @@ export function createWorkflowEvaluateDeps(
     undefined,
     hydrateFile,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    fetchForeignContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
@@ -224,9 +250,15 @@ export function createWorkflowEvaluateDeps(
       celEvaluator.evaluate(expression, context),
     evaluateCelAsync: (expression, context) =>
       celEvaluator.evaluateAsync(expression, context),
-    saveEvaluatedWorkflow: (workflow, authoredExpressions, writtenReferences) =>
+    saveEvaluatedWorkflow: (
+      workflow,
+      provenance,
+      authoredExpressions,
+      writtenReferences,
+    ) =>
       evaluatedWorkflowRepo.save(
         workflow,
+        provenance,
         authoredExpressions,
         undefined,
         writtenReferences,
@@ -255,7 +287,11 @@ async function evaluateWorkflowInternal(
 
   if (expressions.length === 0 && Object.keys(inputs).length === 0) {
     // No expressions and no inputs - still save for consistency
-    await deps.saveEvaluatedWorkflow(workflow, authoredExpressions);
+    await deps.saveEvaluatedWorkflow(
+      workflow,
+      ProvenanceMap.authored(),
+      authoredExpressions,
+    );
     return {
       id: workflow.id,
       name: workflow.name,
@@ -274,6 +310,11 @@ async function evaluateWorkflowInternal(
     sensitiveValues,
   );
   context.inputs = coercedInputs;
+  // Where data sits in the inputs, as on the run path (swamp-club#3205).
+  attachInputsProvenance(
+    context,
+    workflowInputsProvenance(coercedInputs, workflow),
+  );
 
   // Collect forEach.in expressions to skip during evaluation
   const forEachInExpressions = new Set<string>();
@@ -293,6 +334,7 @@ async function evaluateWorkflowInternal(
 
   // Evaluate CEL-only expressions; skip vault, self.*, and forEach.in expressions
   const evaluatedValues = new Map<string, unknown>();
+  const origins = new Map<string, SpliceOrigin>();
   for (const expr of expressions) {
     if (containsRuntimeExpression(expr.celExpression)) {
       continue;
@@ -334,6 +376,7 @@ async function evaluateWorkflowInternal(
       await prepareExpressionContext(expr.celExpression, context);
       const value = deps.evaluateCel(expr.celExpression, context);
       evaluatedValues.set(expr.raw, value);
+      origins.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     } catch (error) {
       // Skip expressions that fail to evaluate (might depend on runtime context)
       const message = error instanceof Error ? error.message : String(error);
@@ -344,23 +387,33 @@ async function evaluateWorkflowInternal(
   }
 
   // Replace only CEL-only expressions with evaluated values
-  const evaluatedData = replaceExpressions(
+  const evaluated = replaceExpressionsTracked(
     workflowData,
     evaluatedValues,
+    ProvenanceMap.authored(),
+    (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
     (path) => isAssertExprPath(path) || deferredTargetPaths.has(path),
   );
+  const evaluatedData = evaluated.data;
+  // The expanded workflow's map: each step's map at its new index.
+  let expandedProvenance = evaluated.provenance;
 
   // Create new Workflow from evaluated data
   const evaluatedWorkflow = Workflow.fromData(evaluatedData as WorkflowData);
 
   // Expand forEach steps
   const expandedWorkflowData = evaluatedWorkflow.toData();
-  for (const jobData of expandedWorkflowData.jobs) {
+  for (const [jobIndex, jobData] of expandedWorkflowData.jobs.entries()) {
     const expandedSteps: typeof jobData.steps = [];
+    const expandedStepMaps: ProvenanceMap[] = [];
 
-    for (const stepData of jobData.steps) {
+    for (const [stepIndex, stepData] of jobData.steps.entries()) {
+      const stepMap = evaluated.provenance.subtree(
+        `jobs[${jobIndex}].steps[${stepIndex}]`,
+      );
       if (!stepData.forEach) {
         expandedSteps.push(stepData);
+        expandedStepMaps.push(stepMap);
         continue;
       }
 
@@ -368,16 +421,25 @@ async function evaluateWorkflowInternal(
       const inSpan = scanExpressions(stepData.forEach.in)[0];
       if (!inSpan) {
         expandedSteps.push(stepData);
+        expandedStepMaps.push(stepMap);
         continue;
       }
 
       // Async so data.* helpers that return Promises (latest, findByTag,
       // findBySpec, query, etc.) resolve before we iterate. cel-js
       // propagates Promises through its evaluator natively.
-      if (!authoredExpressions.has(inSpan.raw)) {
+      // Gated by position as on the run path: forEach.in may hold data
+      // spliced by the evaluation above (swamp-club#3205).
+      const allowedIn = partitionAuthoredAt(
+        extractExpressions(stepData.forEach.in),
+        authoredExpressions,
+        stepMap.subtree("forEach.in"),
+      );
+      if (allowedIn.length !== 1 || allowedIn[0].start !== inSpan.start) {
         throw new UserError("forEach.in must be an authored expression");
       }
       const items = await deps.evaluateCelAsync(inSpan.inner, context);
+      const itemsProvenance = spliceOrigin(inSpan.inner, context, items).map;
       const itemName = stepData.forEach.item;
       const nameHasExpression = containsExpression(stepData.name);
       // Each item's step is resolved synchronously against a context that
@@ -402,8 +464,18 @@ async function evaluateWorkflowInternal(
         stepContext: Record<string, unknown>,
         fallbackSuffix: string,
         index: number,
+        itemProvenance: ProvenanceMap,
       ) => {
-        const resolved = resolveAvailableExpressions(
+        attachBindingProvenance(stepContext, {
+          self: (bindingProvenanceOf(context).self ?? ProvenanceMap.authored())
+            .graft(keySegment(itemName), itemProvenance),
+        });
+        const fields = ["name", "task", "target", "labels", "platform"];
+        let fieldsMap = ProvenanceMap.authored();
+        for (const field of fields) {
+          fieldsMap = fieldsMap.graft(field, stepMap.subtree(field));
+        }
+        const tracked = resolveAvailableExpressionsTracked(
           {
             name: stepData.name,
             task: stepData.task,
@@ -411,11 +483,21 @@ async function evaluateWorkflowInternal(
             labels: stepData.labels,
             platform: stepData.platform,
           },
+          fieldsMap,
           stepContext,
           deps.evaluateCel,
           authoredExpressions,
           isAssertExprPath,
-        ) as {
+        );
+        let expandedMap = stepMap;
+        for (const field of fields) {
+          expandedMap = expandedMap.graft(
+            field,
+            tracked.provenance.subtree(field),
+          );
+        }
+        expandedStepMaps.push(expandedMap);
+        const resolved = tracked.data as {
           name: string;
           task: typeof stepData.task;
           target: typeof stepData.target;
@@ -458,7 +540,12 @@ async function evaluateWorkflowInternal(
             self: { ...context.self, _index: index, [itemName]: item },
           };
           expandedSteps.push(
-            buildExpandedStep(stepContext, String(item), index),
+            buildExpandedStep(
+              stepContext,
+              String(item),
+              index,
+              itemsProvenance.subtree(`[${index}]`),
+            ),
           );
         }
       } else if (items && typeof items === "object") {
@@ -468,15 +555,40 @@ async function evaluateWorkflowInternal(
             ...context,
             self: { ...context.self, _index: index, [itemName]: objItem },
           };
-          expandedSteps.push(buildExpandedStep(stepContext, key, index));
+          expandedSteps.push(
+            buildExpandedStep(
+              stepContext,
+              key,
+              index,
+              ProvenanceMap.authored()
+                .graft(
+                  "key",
+                  itemsProvenance.isAuthored
+                    ? ProvenanceMap.authored()
+                    : ProvenanceMap.data(),
+                )
+                .graft("value", itemsProvenance.subtree(keySegment(key))),
+            ),
+          );
         }
       } else {
         // Not iterable — keep original step
         expandedSteps.push(stepData);
+        expandedStepMaps.push(stepMap);
       }
     }
 
     jobData.steps = expandedSteps;
+    expandedProvenance = expandedProvenance.graft(
+      `jobs[${jobIndex}].steps`,
+      ProvenanceMap.authored(),
+    );
+    for (const [index, map] of expandedStepMaps.entries()) {
+      expandedProvenance = expandedProvenance.graft(
+        `jobs[${jobIndex}].steps[${index}]`,
+        map,
+      );
+    }
   }
 
   const forEachExpanded = expandedWorkflowData.jobs.some(
@@ -500,6 +612,8 @@ async function evaluateWorkflowInternal(
   );
   await deps.saveEvaluatedWorkflow(
     persisted.workflow,
+    // In raw-copy coordinates, which rehydrate restores exactly.
+    expandedProvenance,
     authoredExpressions,
     persisted.writtenReferences,
   );

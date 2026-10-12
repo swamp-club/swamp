@@ -20,7 +20,13 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
+import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import {
@@ -78,6 +84,28 @@ import {
 } from "../../domain/workflows/nested_run_ref.ts";
 
 const logger = getLogger(["swamp", "persistence", "workflow-run-index"]);
+
+/**
+ * How long a repo-local run log with no run record must have gone unwritten
+ * before run GC treats it as orphaned. A run writes its log before it first
+ * saves its record, and the log's mtime moves with every line written, so
+ * only a run silent this long could lose its log. Matches the floor output
+ * GC uses for orphaned method run logs.
+ */
+const ORPHAN_LOG_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a run record may exist at `path`. Only a definite NotFound counts
+ * as absent, so an error reading it keeps the run's log.
+ */
+async function recordMayExist(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    return !(error instanceof Deno.errors.NotFound);
+  }
+}
 
 /**
  * YAML-based implementation of WorkflowRunRepository.
@@ -578,11 +606,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     await this.beforeSave?.(run);
     const path = this.getPath(workflowId, run.id);
-    await signalChange(this.markDirty, { kind: "write", path });
+    await signalChange(this.markDirty, { kind: "write", path }, {
+      typed: true,
+    });
 
     const dir = this.getRunsDir(workflowId);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
+    // On v3, whether the save creates the run's record or updates it.
+    const created = typedStagingActive(this.markDirty) &&
+      !(await fileExists(path));
 
     // Get the previous status to detect state changes
     let previousStatus: string | undefined;
@@ -602,6 +635,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
+    // A stream of the file just written: a later save of the run in the
+    // same unit supersedes it before it is read.
+    await stageTyped(this.markDirty, () => [
+      new RunChanges(workflowId, run.id).write(
+        created ? "run.create" : "run.update",
+        this.keyOf(path),
+        async () => (await Deno.open(path)).readable,
+      ),
+    ]);
 
     await this.updateIndexEntry(workflowId, run, path, content);
 
@@ -656,11 +698,38 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return join(this.baseDir, workflowId);
   }
 
+  private getLocalRunsDir(): string {
+    return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
+  }
+
+  /** The record key of a run file: its path under the namespace root. */
+  private keyOf(path: string) {
+    return keyUnder(SWAMP_SUBDIRS.workflowRuns, this.baseDir, path);
+  }
+
+  /**
+   * On v3, the tombstone of a run record removed from `dir`, one batch per
+   * run. Removals find runs by directory and file name, so a workflow or
+   * run id that is not a UUID stages nothing (no repository put it) rather
+   * than abort the removal.
+   */
+  private async stageRunRemoval(
+    workflowId: string,
+    runId: string,
+    dir: string,
+  ): Promise<void> {
+    await stageTyped(this.markDirty, () => {
+      const change = unlessUnpartitionable(() =>
+        new RunChanges(workflowId, runId).remove(
+          this.keyOf(join(dir, `workflow-run-${runId}.yaml`)),
+        )
+      );
+      return change === undefined ? [] : [change];
+    });
+  }
+
   private getLocalIndexDir(workflowId: WorkflowId): string {
-    return join(
-      swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
-      workflowId,
-    );
+    return join(this.getLocalRunsDir(), workflowId);
   }
 
   async deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
@@ -674,7 +743,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    await signalChange(this.markDirty, { kind: "remove", path: dir });
+    await signalChange(this.markDirty, { kind: "remove", path: dir }, {
+      typed: true,
+    });
+    // On v3, the runs the directory holds, listed before the removal: each
+    // record's removal is its own run's tombstone.
+    const runIds = typedStagingActive(this.markDirty)
+      ? await this.listRunIdsInDir(dir)
+      : [];
 
     try {
       await Deno.remove(dir, { recursive: true });
@@ -684,7 +760,35 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
-    await deleteRunIndex(this.getLocalIndexDir(workflowId));
+    for (const runId of runIds) {
+      await this.stageRunRemoval(workflowId, runId, dir);
+    }
+
+    const localDir = this.getLocalIndexDir(workflowId);
+    await deleteRunIndex(localDir);
+
+    // Run logs are written repo-local whichever datastore holds the records,
+    // so remove them here too when the records live elsewhere
+    // (swamp-club#3266).
+    if (localDir !== dir) {
+      for (const entry of await listDirEntries(localDir)) {
+        if (
+          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+          !entry.name.endsWith(".log")
+        ) {
+          continue;
+        }
+        try {
+          await Deno.remove(join(localDir, entry.name));
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+      }
+      await cleanupEmptyParentDirs(
+        join(localDir, "workflow-run.log"),
+        this.getLocalRunsDir(),
+      );
+    }
 
     return count;
   }
@@ -750,6 +854,9 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     let bytesReclaimed = 0;
     const deletedRunIds: string[] = [];
     const affectedDirs = new Set<string>();
+    // Repo-local workflow dirs a log was removed from, each with one removed
+    // log path, so the dirs left empty can be removed once their index is.
+    const localLogDirs = new Map<string, string>();
 
     try {
       for await (const entry of Deno.readDir(this.baseDir)) {
@@ -776,31 +883,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               const content = await Deno.readTextFile(yamlPath);
               const data = parseYaml(content) as WorkflowRunData | null;
               if (!data) {
-                const logPath = yamlPath.replace(/\.yaml$/, ".log");
                 let fileBytes = stat.size ?? 0;
-                try {
-                  const logStat = await Deno.stat(logPath);
-                  fileBytes += logStat.size ?? 0;
-                } catch {
-                  // log file may not exist
-                }
                 if (!options?.dryRun) {
                   await signalChange(this.markDirty, {
                     kind: "remove",
                     path: yamlPath,
-                  });
+                  }, { typed: true });
                   try {
                     await Deno.remove(yamlPath);
                   } catch (error) {
                     if (!(error instanceof Deno.errors.NotFound)) throw error;
                   }
-                  try {
-                    await Deno.remove(logPath);
-                  } catch (error) {
-                    if (!(error instanceof Deno.errors.NotFound)) throw error;
-                  }
+                }
+                fileBytes += await this.removeRunLogs(
+                  workflowId,
+                  yamlPath,
+                  options?.dryRun ?? false,
+                  localLogDirs,
+                );
+                if (!options?.dryRun) {
                   await cleanupEmptyParentDirs(yamlPath, this.baseDir);
                   affectedDirs.add(dir);
+                  await this.stageRunRemoval(
+                    workflowId,
+                    runIdFromFileName(fileEntry.name),
+                    dir,
+                  );
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
@@ -827,32 +935,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               if (await keepForParent(data)) continue;
               if (await keepForChild(data)) continue;
 
-              const logPath = yamlPath.replace(/\.yaml$/, ".log");
               let fileBytes = stat.size ?? 0;
-              try {
-                const logStat = await Deno.stat(logPath);
-                fileBytes += logStat.size ?? 0;
-              } catch {
-                // log file may not exist
-              }
-
               if (!options?.dryRun) {
                 await signalChange(this.markDirty, {
                   kind: "remove",
                   path: yamlPath,
-                });
+                }, { typed: true });
                 try {
                   await Deno.remove(yamlPath);
                 } catch (error) {
                   if (!(error instanceof Deno.errors.NotFound)) throw error;
                 }
-                try {
-                  await Deno.remove(logPath);
-                } catch (error) {
-                  if (!(error instanceof Deno.errors.NotFound)) throw error;
-                }
+              }
+              fileBytes += await this.removeRunLogs(
+                workflowId,
+                yamlPath,
+                options?.dryRun ?? false,
+                localLogDirs,
+              );
+              if (!options?.dryRun) {
                 await cleanupEmptyParentDirs(yamlPath, this.baseDir);
                 affectedDirs.add(dir);
+                await this.stageRunRemoval(
+                  workflowId,
+                  runIdFromFileName(fileEntry.name),
+                  dir,
+                );
               }
 
               deleted++;
@@ -879,6 +987,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
+    bytesReclaimed += await this.sweepOrphanLogs(
+      cutoffMs,
+      options?.dryRun ?? false,
+      localLogDirs,
+    );
+
     for (const dir of affectedDirs) {
       await deleteRunIndex(dir);
       const workflowId = basename(dir) as WorkflowId;
@@ -887,7 +1001,108 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       }
     }
 
+    for (const logPath of localLogDirs.values()) {
+      await cleanupEmptyParentDirs(logPath, this.getLocalRunsDir());
+    }
+
     return { deleted, bytesReclaimed, deletedRunIds };
+  }
+
+  /**
+   * Removes the run log of a deleted run record, returning its bytes. The
+   * executor always writes the log under the repo-local workflow-runs dir,
+   * whichever datastore holds the record (swamp-club#3266); a log beside the
+   * record covers the default datastore and logs a datastore migration moved.
+   * Both paths come from directory entry names, never the record's logFile,
+   * which a peer on a shared datastore could point anywhere. On a dry run
+   * nothing is touched and only bytes are counted.
+   */
+  private async removeRunLogs(
+    workflowId: WorkflowId,
+    yamlPath: string,
+    dryRun: boolean,
+    localLogDirs: Map<string, string>,
+  ): Promise<number> {
+    const localDir = this.getLocalIndexDir(workflowId);
+    const localLog = join(
+      localDir,
+      basename(yamlPath).replace(/\.yaml$/, ".log"),
+    );
+    const paths = new Set([localLog, yamlPath.replace(/\.yaml$/, ".log")]);
+    let bytes = 0;
+    for (const logPath of paths) {
+      try {
+        const logStat = await Deno.stat(logPath);
+        bytes += logStat.size ?? 0;
+      } catch {
+        // log file may not exist
+      }
+      if (dryRun) continue;
+      try {
+        await Deno.remove(logPath);
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+      }
+    }
+    if (!dryRun) localLogDirs.set(localDir, localLog);
+    return bytes;
+  }
+
+  /**
+   * Removes repo-local run logs whose run record no longer exists: logs that
+   * run GC and workflow delete left behind before they removed the log the
+   * run wrote (swamp-club#3266). A log must be older than both the cutoff
+   * and ORPHAN_LOG_MIN_AGE_MS, since a run writes its log before it first
+   * saves its record. A record that cannot be checked keeps its log.
+   */
+  private async sweepOrphanLogs(
+    cutoffMs: number,
+    dryRun: boolean,
+    localLogDirs: Map<string, string>,
+  ): Promise<number> {
+    const localRoot = this.getLocalRunsDir();
+    const thresholdMs = Math.min(cutoffMs, Date.now() - ORPHAN_LOG_MIN_AGE_MS);
+    let bytes = 0;
+    for (const entry of await listDirEntries(localRoot)) {
+      if (!entry.isDirectory) continue;
+      const localDir = join(localRoot, entry.name);
+      const storeDir = join(this.baseDir, entry.name);
+      for (const fileEntry of await listDirEntries(localDir)) {
+        if (
+          !fileEntry.isFile ||
+          !fileEntry.name.startsWith("workflow-run-") ||
+          !fileEntry.name.endsWith(".log")
+        ) {
+          continue;
+        }
+        const recordName = fileEntry.name.replace(/\.log$/, ".yaml");
+        if (
+          await recordMayExist(join(storeDir, recordName)) ||
+          await recordMayExist(join(localDir, recordName))
+        ) {
+          continue;
+        }
+        const logPath = join(localDir, fileEntry.name);
+        let stat: Deno.FileInfo;
+        try {
+          stat = await Deno.stat(logPath);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+        const mtimeMs = stat.mtime?.getTime();
+        if (mtimeMs === undefined || mtimeMs >= thresholdMs) continue;
+        bytes += stat.size ?? 0;
+        if (dryRun) continue;
+        try {
+          await Deno.remove(logPath);
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+        localLogDirs.set(localDir, logPath);
+      }
+    }
+    return bytes;
   }
 
   /**
@@ -1421,4 +1636,14 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
 /** Extracts the run ID from a `workflow-run-{runId}.yaml` filename. */
 function runIdFromFileName(fileName: string): string {
   return fileName.slice("workflow-run-".length, -".yaml".length);
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }

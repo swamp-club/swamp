@@ -18,8 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { Definition } from "../../domain/definitions/definition.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoService } from "../../domain/repo/repo_service.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { VERSION } from "./version.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -186,6 +193,212 @@ Deno.test({
         { effect: "allow", grantId: "grant-1" },
       ]),
       0,
+    );
+  },
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-access-check-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+async function initRepo(dir: string): Promise<void> {
+  const homeDir = join(dir, "test-home");
+  await new RepoService(VERSION, {
+    homeDir,
+    configDir: join(homeDir, ".config", "swamp"),
+  }).init(RepoPath.create(dir), { tools: [] });
+}
+
+/** Runs `access <command> <args> --json` locally; returns output and exit code. */
+async function runAccess(
+  command: "check" | "grant",
+  args: string[],
+): Promise<{ output: string; exitCode: number }> {
+  const root = new Command().globalOption("--json", "JSON output");
+  if (command === "check") {
+    root.command(
+      "check",
+      (await import("./access_check.ts")).accessCheckCommand,
+    );
+  } else {
+    root.command(
+      "grant",
+      (await import("./access_grant.ts")).accessGrantCommand,
+    );
+  }
+  const printed: string[] = [];
+  const originalLog = console.log;
+  const previousExitCode = Deno.exitCode;
+  console.log = (...data: unknown[]) => printed.push(data.join(" "));
+  Deno.exitCode = 0;
+  try {
+    await root.parse([command, ...args, "--json"]);
+    return { output: printed.join("\n"), exitCode: Deno.exitCode };
+  } finally {
+    console.log = originalLog;
+    Deno.exitCode = previousExitCode;
+  }
+}
+
+/** A repo holding a command/shell model named team-x-probe, plus grants. */
+async function withShellModelRepo(
+  grants: string[][],
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    await initRepo(dir);
+    await new YamlDefinitionRepository(dir).save(
+      ModelType.create("command/shell"),
+      Definition.create({ name: "team-x-probe", tags: { team: "team-x" } }),
+    );
+    for (const grant of grants) {
+      await runAccess("grant", ["create", ...grant, "--repo-dir", dir]);
+    }
+    await fn(dir);
+  });
+}
+
+function checkEffect(output: string): string {
+  return (JSON.parse(output) as { effect: string }).effect;
+}
+
+const ALLOW_PREFIX_WRITE = [
+  "--subject",
+  "user:alice",
+  "--allow",
+  "write",
+  "--on",
+  "model:team-x-*",
+];
+const DENY_SHELL_WRITE = [
+  "--subject",
+  "user:alice",
+  "--deny",
+  "write",
+  "--on",
+  "model:command/shell",
+];
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local check applies a deny on the named model's stored type (swamp-club#3224)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo(
+      [ALLOW_PREFIX_WRITE, DENY_SHELL_WRITE],
+      async (dir) => {
+        const { output, exitCode } = await runAccess("check", [
+          "--subject",
+          "user:alice",
+          "--action",
+          "write",
+          "--on",
+          "model:team-x-probe",
+          "--repo-dir",
+          dir,
+        ]);
+        assertEquals(checkEffect(output), "deny");
+        assertEquals(exitCode, 1);
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local check evaluates conditions on the named model's stored tags (swamp-club#3224)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo(
+      [[
+        "--subject",
+        "user:alice",
+        "--allow",
+        "run",
+        "--on",
+        "model:*",
+        "--when",
+        'tags.team == "team-x"',
+      ]],
+      async (dir) => {
+        const { output, exitCode } = await runAccess("check", [
+          "--subject",
+          "user:alice",
+          "--action",
+          "run",
+          "--on",
+          "model:team-x-probe",
+          "--repo-dir",
+          dir,
+        ]);
+        assertEquals(checkEffect(output), "allow");
+        assertEquals(exitCode, 0);
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: --field overrides the field resolved from the repo (swamp-club#3224)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo(
+      [ALLOW_PREFIX_WRITE, DENY_SHELL_WRITE],
+      async (dir) => {
+        const { output } = await runAccess("check", [
+          "--subject",
+          "user:alice",
+          "--action",
+          "write",
+          "--on",
+          "model:team-x-probe",
+          "--field",
+          "modelType=@scope/tracker",
+          "--repo-dir",
+          dir,
+        ]);
+        assertEquals(checkEffect(output), "allow");
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "accessCheckCommand: a local check on a model that does not exist is judged by name (swamp-club#3224)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withShellModelRepo(
+      [ALLOW_PREFIX_WRITE, DENY_SHELL_WRITE],
+      async (dir) => {
+        const { output } = await runAccess("check", [
+          "--subject",
+          "user:alice",
+          "--action",
+          "write",
+          "--on",
+          "model:team-x-new",
+          "--repo-dir",
+          dir,
+        ]);
+        assertEquals(checkEffect(output), "allow");
+      },
     );
   },
 });

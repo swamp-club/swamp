@@ -24,6 +24,7 @@ Deno.test("ActiveRun.createModelMethodRun: creates with running status", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -43,6 +44,7 @@ Deno.test("ActiveRun.markCompleted: transitions from running to completed", () =
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -56,6 +58,7 @@ Deno.test("ActiveRun.markFailed: transitions from running to failed", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -69,6 +72,7 @@ Deno.test("ActiveRun.markCancelled: transitions from running to cancelled", () =
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -82,6 +86,7 @@ Deno.test("ActiveRun.markCompleted: throws from non-running status", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -99,6 +104,7 @@ Deno.test("ActiveRun.markFailed: throws from non-running status", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -116,6 +122,7 @@ Deno.test("ActiveRun.recordHeartbeat: updates heartbeat time", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -133,6 +140,7 @@ Deno.test("ActiveRun.recordHeartbeat: throws from non-running status", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -150,6 +158,7 @@ Deno.test("ActiveRun.isStale: returns false when heartbeat is fresh", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -179,6 +188,7 @@ Deno.test("ActiveRun.isStale: returns false for non-running status", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -192,6 +202,7 @@ Deno.test("ActiveRun.toData: roundtrips through fromData", () => {
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -203,6 +214,7 @@ Deno.test("ActiveRun.toData: roundtrips through fromData", () => {
   assertEquals(restored.id, run.id);
   assertEquals(restored.runKind, run.runKind);
   assertEquals(restored.modelType, run.modelType);
+  assertEquals(restored.definitionId, "def-1");
   assertEquals(restored.methodName, run.methodName);
   assertEquals(restored.pid, run.pid);
   assertEquals(restored.hostname, run.hostname);
@@ -213,6 +225,7 @@ Deno.test("ActiveRun.createModelMethodRun: sets initiatedBy when provided", () =
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -227,6 +240,7 @@ Deno.test("ActiveRun.createModelMethodRun: initiatedBy defaults to null", () => 
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -285,6 +299,7 @@ Deno.test("ActiveRun.isServeOwned: true when a serve instance owns the run", () 
   const run = ActiveRun.createModelMethodRun({
     id: "test-id",
     modelType: "@test/model",
+    definitionId: "def-1",
     methodName: "start",
     pid: 1234,
     hostname: "test-host",
@@ -303,4 +318,34 @@ Deno.test("ActiveRun.isServeOwned: false for a run with no serve instance", () =
   });
 
   assertEquals(run.isServeOwned, false);
+});
+
+Deno.test("ActiveRun.fromData: definitionId absent defaults to null", () => {
+  const now = new Date().toISOString();
+  const run = ActiveRun.fromData({
+    id: "legacy-row",
+    runKind: "model_method",
+    modelType: "@test/model",
+    methodName: "start",
+    workflowName: null,
+    pid: 1234,
+    hostname: "test-host",
+    startedAt: now,
+    heartbeatAt: now,
+    status: "running",
+  });
+
+  assertEquals(run.definitionId, null);
+});
+
+Deno.test("ActiveRun.createWorkflowRun: carries no definitionId", () => {
+  const run = ActiveRun.createWorkflowRun({
+    id: "wf-run",
+    workflowName: "deploy",
+    pid: 1234,
+    hostname: "test-host",
+  });
+
+  assertEquals(run.definitionId, null);
+  assertEquals(run.toData().definitionId, null);
 });

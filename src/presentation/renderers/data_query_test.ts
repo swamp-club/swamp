@@ -321,6 +321,59 @@ Deno.test("renderQueryResultsTerminal: base64 content survives log output unchan
   assertEquals(output.replace(/\x1b\[[0-9;]*m/g, "").trim(), BASE64_CONTENT);
 });
 
+Deno.test("renderQueryResultsTerminal: a multi-megabyte scalar is written unchanged", () => {
+  // One line this long overflows marked's stack (swamp-club#3253).
+  const content = "A".repeat(14_000_000);
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "screenshot"',
+    select: "content",
+    results: [],
+    projected: { shape: "scalar", values: [content] },
+    total: 1,
+    limited: false,
+  });
+  assertEquals(output.length, content.length);
+  assertEquals(output === content, true);
+});
+
+Deno.test("renderQueryResultsTerminal: markdown syntax in a scalar is not rendered", () => {
+  const content =
+    "# Title\n\n*emphasis* and __bold__ with a_b_c and `code`\n- item";
+  const output = renderQueryResultsTerminal({
+    predicate: 'name == "notes"',
+    select: "content",
+    results: [],
+    projected: { shape: "scalar", values: [content] },
+    total: 1,
+    limited: false,
+  });
+  assertEquals(output, content);
+});
+
+Deno.test("renderQueryResultsTerminal: null scalars print as empty lines and objects as JSON", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "attributes.value",
+    results: [],
+    projected: { shape: "scalar", values: ["first", null, { a: 1 }, 2] },
+    total: 4,
+    limited: false,
+  });
+  assertEquals(output, 'first\n\n{\n  "a": 1\n}\n2');
+});
+
+Deno.test("renderQueryResultsTerminal: scalar limit footer is plain text", () => {
+  const output = renderQueryResultsTerminal({
+    predicate: "true",
+    select: "name",
+    results: [],
+    projected: { shape: "scalar", values: ["a", "b"] },
+    total: 2,
+    limited: true,
+  });
+  assertEquals(output, "a\nb\n\nShowing 2 results (limit reached)");
+});
+
 Deno.test("renderJson: projected base64 content and its encoding pass through", () => {
   const renderer = createDataQueryRenderer("json");
   const output = captureJsonOutput(() => {

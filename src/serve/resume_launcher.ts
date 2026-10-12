@@ -79,7 +79,10 @@ import {
   suspensionKeyOf,
 } from "../domain/workflows/continuation_claim.ts";
 import { decideContinuation } from "../domain/workflows/run_continuation.ts";
-import { settleExpiredWaits } from "../domain/workflows/signal_wait_cleanup.ts";
+import {
+  settleExpiredWaits,
+  takePendingSignalsOfRun,
+} from "../domain/workflows/signal_wait_cleanup.ts";
 import type { SignalWaitStore } from "../domain/workflows/signal_wait_store.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -1016,6 +1019,10 @@ export async function continueSettledRun(
     verdict.kind === "blocked" && verdict.reason === "wait_unsettled" &&
     waits?.supported
   ) {
+    // A wait can be open over a pending signal that applies to it, left by
+    // a signaller that stopped before it read the key again
+    // (swamp-club#3212). It is taken here, before any wait is timed out.
+    const signalsTaken = await takePendingSignalsOfRun(waits.store, run);
     waitsTimedOut = await settleExpiredWaits(
       waits.store,
       run,
@@ -1026,6 +1033,8 @@ export async function continueSettledRun(
         "Run {runId} of workflow {workflow}: {count} wait(s) for a signal passed their deadline and were settled as timed out",
         { runId: run.id, workflow: run.workflowName, count: waitsTimedOut },
       );
+    }
+    if (waitsTimedOut > 0 || signalsTaken > 0) {
       verdict = await decideContinuation(run, outcomesOf(ctx));
     }
   }

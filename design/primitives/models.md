@@ -67,6 +67,16 @@ loads.
 `DefinitionUpgradeService` (`src/domain/models/definition_upgrade_service.ts`).
 The upgraded definition is saved, so each upgrade runs only once.
 
+Validation reads static global arguments the way the next method run will.
+`DefaultModelValidationService` (`src/domain/models/validation_service.ts`)
+applies the same chain to an in-memory copy before it checks global arguments
+and runs pre-flight checks, and never saves it. That covers both
+`swamp model validate` and the check before each workflow step, so a stale
+definition is not refused before the run that would migrate it. An upgrade that
+throws fails the Global arguments item. Arguments holding a swamp expression are
+not upgraded in validation: the run upgrades their evaluated values, and the
+schema check skips them until then (swamp-club#3196).
+
 That save happens on whichever method runs first, including one that only reads.
 It changes the definition file and nothing else about it:
 `YamlDefinitionRepository.save()` merges the new values onto the file's existing
@@ -273,6 +283,14 @@ vocabulary (swamp-club#3265).
 `@swamp/aws/ec2/vpc` and runs `create`. The type's schemas route the `--input`
 values to global or method arguments; method arguments win on ambiguous keys.
 
+**Inputs are operator-written.** `--input`, `--input-file` and `--stdin` values
+are evaluated: a `${{ vault.get(...) }}` in them resolves. `--literal-inputs`
+makes them data instead (see `design/enablers/expressions.md`, "Position and
+Value Provenance"): they reach the method verbatim, `@` is not read as a file,
+and a routed global argument holding expression text is refused before it is
+persisted. Over `swamp serve` the client sends it only to a server whose
+`server.version` lists the `literal-inputs` capability.
+
 **Subsequent runs:** Swamp finds `my-vpc`, checks that its type matches
 `@swamp/aws/ec2/vpc` (a safety check), and runs. If the routed global arguments
 differ from the stored definition, the definition is updated and saved. This
@@ -377,10 +395,21 @@ Returns a discriminated result:
 - `{ ok: false, error: { message, stack? } }` on failure
 
 **Argument routing:** The target type's Zod schemas route the `arguments` object
-between globalArguments and method arguments, as with CLI `--input`. Method
-arguments win on ambiguous keys. Unknown keys return `{ ok: false }`. For direct
-type execution, only global-arg values are saved in the auto-created
-definition; method-arg values apply only to that invocation.
+between globalArguments and method arguments. Method arguments win on ambiguous
+keys. Unknown keys return `{ ok: false }`. Routed values of both kinds apply to
+that invocation and are never saved to an existing definition. For direct type
+execution, only global-arg values are saved in the auto-created definition.
+
+Unlike CLI `--input`, `arguments` are not author-written: they come from
+extension code at run time. They are applied after the target definition is
+evaluated, as literal values, and are never evaluated as expressions. A
+global-arg value holding `${{ ... }}` text that swamp could evaluate (any text
+reading a swamp namespace such as `vault`, `data`, `self` or `inputs`, or that
+swamp cannot attribute) returns `{ ok: false }` before anything is saved. The
+check fails closed and reaches values nested inside object-typed arguments:
+`${{ }}` text that does not parse, and expressions that read no namespace at all
+(`${{ 1 }}`), are refused too. Another templating system's text, such as
+`${{ github.sha }}`, passes through.
 
 **Data ownership:** When model X calls model Y, Y's writes belong to Y's
 definition, not X's. This holds whether Y runs standalone, from a workflow or
@@ -395,7 +424,14 @@ At most 100 total `runModel` calls per top-level execution, matching follow-up
 action limits.
 
 **Vault isolation:** The caller's `VaultSecretBag` is not passed to the nested
-model. Each nested execution resolves its own vault expressions.
+model. Each nested execution evaluates its target definition's CEL and runtime
+(`vault.get`, `env`) expressions as a standalone run of that definition does,
+into its own bag, within the caller's vault access scope: a workflow's `vaults`
+list and a serve principal's grants still apply. The evaluated definition is
+not persisted. Wherever the standalone run would fail — a refused vault, a
+missing key, a failed expression in the invoked method's arguments — the call
+returns `{ ok: false }`. Resolved sensitive values are registered with the
+caller's run redactor.
 
 **Runtime authorization:** Extension models must declare dependencies in
 `manifest.yaml` to invoke models from other extensions. Built-in types and

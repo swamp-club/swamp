@@ -32,6 +32,7 @@ import {
 } from "./process_executor.ts";
 import { setProcessGroupIsolation } from "./process_group_policy.ts";
 import { isProcessAlive } from "./process_kill.ts";
+import type { ProcessJob } from "./windows_job.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 
 Deno.test("streamLines processes complete lines", async () => {
@@ -95,6 +96,146 @@ Deno.test("streamLines works without callback", async () => {
   const result = await streamLines(stream);
   assertEquals(result, "hello\nworld");
 });
+
+/** A stream that delivers each string as its own chunk. */
+function chunkedStream(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+}
+
+Deno.test("streamLines: normalizeCrlf reads CRLF output exactly as LF output", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["goodbye\r\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "goodbye");
+  assertEquals(lines, ["goodbye"]);
+});
+
+Deno.test("streamLines: normalizeCrlf drops the CR from every CRLF line", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r\ntwo\r\nthree\r\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "one\ntwo\nthree");
+  assertEquals(lines, ["one", "two", "three"]);
+});
+
+Deno.test("streamLines: normalizeCrlf drops a CR whose LF arrives in the next chunk", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r", "\ntwo\r", "\n"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "one\ntwo");
+  assertEquals(lines, ["one", "two"]);
+});
+
+Deno.test("streamLines: normalizeCrlf keeps a mid-line CR and an unterminated final CR", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["10%\r50%\r\n", "done\r"]),
+    (line) => lines.push(line),
+    undefined,
+    { normalizeCrlf: true },
+  );
+
+  assertEquals(result, "10%\r50%\ndone\r");
+  assertEquals(lines, ["10%\r50%", "done\r"]);
+});
+
+Deno.test("streamLines: keeps every CR by default", async () => {
+  const lines: string[] = [];
+  const result = await streamLines(
+    chunkedStream(["one\r\ntwo\r\n"]),
+    (line) => lines.push(line),
+  );
+
+  assertEquals(result, "one\r\ntwo\r");
+  assertEquals(lines, ["one\r", "two\r"]);
+});
+
+/** The three capture paths of executeProcess. */
+const CAPTURE_PATHS = [
+  { name: "buffered", logger: false, timeoutMs: undefined },
+  { name: "streaming", logger: true, timeoutMs: undefined },
+  { name: "streaming with timeout", logger: true, timeoutMs: 30_000 },
+] as const;
+
+for (const path of CAPTURE_PATHS) {
+  Deno.test({
+    name:
+      `executeProcess: normalizeCrlf captures CRLF output as LF (${path.name})`,
+    // printf through sh writes the CRLF bytes; POSIX only.
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const streamed: string[] = [];
+      const logged: string[] = [];
+      const logger = {
+        info: (message: string) => logged.push(message),
+        warn: (message: string) => logged.push(message),
+      } as unknown as import("@logtape/logtape").Logger;
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "printf 'one\\r\\ntwo\\r\\n'; printf 'err\\r\\n' >&2"],
+        normalizeCrlf: true,
+        timeoutMs: path.timeoutMs,
+        ...(path.logger
+          ? { logger, onOutput: (line: string) => streamed.push(line) }
+          : {}),
+      });
+
+      assertEquals(result.stdout, "one\ntwo");
+      assertEquals(result.stderr, "err");
+      if (path.logger) {
+        assertEquals(streamed.sort(), ["err", "one", "two"]);
+        assertEquals(logged.some((line) => line.includes("\r")), false);
+      }
+    },
+  });
+
+  Deno.test({
+    name:
+      `executeProcess: keeps CRLF output byte for byte by default (${path.name})`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const streamed: string[] = [];
+      const logger = {
+        info: () => {},
+        warn: () => {},
+      } as unknown as import("@logtape/logtape").Logger;
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "printf 'one\\r\\ntwo\\r\\n'"],
+        timeoutMs: path.timeoutMs,
+        ...(path.logger
+          ? { logger, onOutput: (line: string) => streamed.push(line) }
+          : {}),
+      });
+
+      assertEquals(result.stdout, "one\r\ntwo\r");
+      if (path.logger) assertEquals(streamed, ["one\r", "two\r"]);
+    },
+  });
+}
 
 Deno.test("executeProcess runs simple command", async () => {
   const result = await executeProcess({
@@ -883,4 +1024,145 @@ Deno.test({
       await Deno.remove(dir, { recursive: true }).catch(() => {});
     }
   },
+});
+
+/** A fake Job Object factory recording what happened to each job. */
+function recordingJobs(): {
+  attachJob: (pid: number) => ProcessJob;
+  events: string[];
+} {
+  const events: string[] = [];
+  return {
+    events,
+    attachJob: (pid) => {
+      events.push("attach");
+      assert(pid > 0);
+      return {
+        terminate: () => events.push("terminate"),
+        release: () => events.push("release"),
+      };
+    },
+  };
+}
+
+for (
+  const [label, options] of [
+    ["timeout", { timeoutMs: 60_000 }],
+    ["streaming", { logger: silentLogger }],
+    ["buffered", {}],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `executeProcess (${label}): a command that exits on its own releases its job`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const { attachJob, events } = recordingJobs();
+
+      const result = await executeProcess({
+        command: "sh",
+        args: ["-c", "exit 0"],
+        terminateProcessTree: true,
+        attachJob,
+        ...options,
+      });
+
+      assertEquals(result.exitCode, 0);
+      assertEquals(events, ["attach", "release"]);
+    },
+  });
+
+  Deno.test({
+    name: `executeProcess (${label}): an aborted command terminates its job`,
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const { attachJob, events } = recordingJobs();
+      const controller = new AbortController();
+      const run = executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        signal: controller.signal,
+        terminateProcessTree: true,
+        killGraceMs: 200,
+        attachJob,
+        ...options,
+      });
+      await waitFor(() => events.length > 0, "job to be attached");
+
+      controller.abort();
+
+      await assertRejects(() => run);
+      assertEquals(events, ["attach", "terminate"]);
+    },
+  });
+}
+
+Deno.test({
+  name: "executeProcess: a timed-out command terminates its job",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const { attachJob, events } = recordingJobs();
+
+    await assertRejects(() =>
+      executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        timeoutMs: 200,
+        terminateProcessTree: true,
+        killGraceMs: 200,
+        attachJob,
+      })
+    );
+
+    assertEquals(events, ["attach", "terminate"]);
+  },
+});
+
+Deno.test({
+  name: "executeProcess: attaches no job without tree termination",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const { attachJob, events } = recordingJobs();
+
+    await executeProcess({ command: "sh", args: ["-c", "exit 0"], attachJob });
+
+    assertEquals(events, []);
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: an aborted command's job is terminated after its tree is killed",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withIsolatedGroups(async () => {
+      // On Windows the tree kill walks parent links from the live child, so
+      // ending the job first would leave it nothing to walk.
+      let childPid = 0;
+      let aliveAtTerminate: boolean | undefined;
+      const controller = new AbortController();
+      const run = executeProcess({
+        command: "sh",
+        args: ["-c", "sleep 30"],
+        signal: controller.signal,
+        terminateProcessTree: true,
+        attachJob: (pid) => {
+          childPid = pid;
+          return {
+            // Probes the group the child leads, as the tree kill does: the
+            // child itself can linger as an unreaped zombie.
+            terminate: () => {
+              aliveAtTerminate = isProcessAlive(-childPid);
+            },
+            release: () => {},
+          };
+        },
+      });
+      await waitFor(() => childPid > 0, "job to be attached");
+
+      controller.abort();
+
+      await assertRejects(() => run);
+      assertEquals(aliveAtTerminate, false);
+    }),
 });

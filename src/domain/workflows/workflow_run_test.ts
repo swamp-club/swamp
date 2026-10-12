@@ -3277,3 +3277,88 @@ Deno.test("WorkflowRun.recordAllowedVaults: survives a save and load, and is abs
   none.recordAllowedVaults([]);
   assertEquals(WorkflowRun.fromData(none.toData()).allowedVaults, []);
 });
+
+// ── failStepsNamingRefusedData (swamp-club#3257) ──────────
+
+function succeededRun(): WorkflowRun {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  for (const job of run.jobs) {
+    job.start();
+    for (const step of job.steps) {
+      step.start();
+      step.succeed();
+    }
+    job.succeed();
+  }
+  run.complete();
+  return run;
+}
+
+const REFUSED_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+
+Deno.test("WorkflowRun.failStepsNamingRefusedData: fails the steps naming a refused version, their job, and a succeeded run", () => {
+  const run = succeededRun();
+  const step2 = run.getJob("job1")!.getStep("step2")!;
+  step2.addDataArtifact({
+    dataId: REFUSED_ID,
+    name: "state",
+    version: 2,
+    tags: {},
+  });
+  // The same data at a version that landed is not refused.
+  run.getJob("job2")!.getStep("step3")!.addDataArtifact({
+    dataId: REFUSED_ID,
+    name: "state",
+    version: 1,
+    tags: {},
+  });
+
+  const failed = run.failStepsNamingRefusedData(
+    [{ dataId: REFUSED_ID, version: 2 }],
+    "refused",
+  );
+
+  assertEquals(failed.map((step) => step.stepName), ["step2"]);
+  assertEquals(step2.status, "failed");
+  assertEquals(step2.error, "refused");
+  assertEquals(run.getJob("job1")!.status, "failed");
+  assertEquals(run.getJob("job2")!.status, "succeeded");
+  assertEquals(run.status, "failed");
+});
+
+Deno.test("WorkflowRun.failStepsNamingRefusedData: a run naming no refused version is unchanged; a report artifact fails the run", () => {
+  const run = succeededRun();
+  assertEquals(
+    run.failStepsNamingRefusedData([{ dataId: REFUSED_ID, version: 1 }], "x"),
+    [],
+  );
+  assertEquals(run.status, "succeeded");
+
+  run.addWorkflowDataArtifact({
+    dataId: REFUSED_ID,
+    name: "report",
+    version: 1,
+    tags: {},
+  });
+  assertEquals(
+    run.failStepsNamingRefusedData([{ dataId: REFUSED_ID, version: 1 }], "x"),
+    [],
+  );
+  assertEquals(run.status, "failed");
+});
+
+Deno.test("WorkflowRun.failStepsNamingRefusedData: a step that already failed keeps its own error", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const step = run.getJob("job1")!.getStep("step1")!;
+  step.start();
+  step.addDataArtifact({ dataId: REFUSED_ID, name: "s", version: 1, tags: {} });
+  step.fail("the method failed");
+
+  assertEquals(
+    run.failStepsNamingRefusedData([{ dataId: REFUSED_ID, version: 1 }], "x"),
+    [],
+  );
+  assertEquals(step.error, "the method failed");
+});
