@@ -25,6 +25,7 @@ import {
   splitEnrollmentToken,
   WorkerGateway,
   type WorkerGatewayOptions,
+  WorkerNotDispatchableError,
   type WorkerSnapshot,
 } from "./worker_gateway.ts";
 import {
@@ -791,6 +792,73 @@ Deno.test("WorkerGateway: worker.drain sets status to draining", async () => {
     setStatusCalls.some((t) => t.inputs.status === "draining"),
     true,
   );
+});
+
+Deno.test("WorkerGateway: a refused dispatch names why the worker could not take it (swamp-club#3156)", async () => {
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    onWorkerDraining: () => {},
+  });
+
+  const unknown = await assertRejects(
+    () => h.gateway.dispatch("ghost", dispatchParams()),
+    WorkerNotDispatchableError,
+    "Worker 'ghost' is not in the pool",
+  );
+  assertEquals(unknown.reason, "not_in_pool");
+  assertEquals(unknown.workerName, "ghost");
+
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  const gate = Promise.withResolvers<void>();
+  first.workerChannel.register(WorkerMethod.dispatch, async () => {
+    await gate.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+  const inFlight = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"));
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.status === "busy",
+    "the first dispatch to occupy the worker",
+  );
+  const full = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
+    WorkerNotDispatchableError,
+    "is at capacity",
+  );
+  assertEquals(full.reason, "at_capacity");
+
+  // A worker that announces its drain with work in flight stays draining
+  // when that work ends, and takes nothing new.
+  await first.workerChannel.call(RemoteMethod.drain, {});
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  gate.resolve();
+  await inFlight;
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "draining");
+  const draining = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-3")),
+    WorkerNotDispatchableError,
+    "is draining",
+  );
+  assertEquals(draining.reason, "draining");
+  h.gateway.dispose();
+});
+
+Deno.test("WorkerGateway: a dispatch to a disconnected worker is refused as disconnected", async () => {
+  const h = createHarness({ graceWindowMs: 60_000 });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  dropSocket();
+  await waitFor(
+    () => h.gateway.worker("ci-runner-3")?.connected === false,
+    "the gateway to see the drop",
+  );
+  const error = await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams()),
+    WorkerNotDispatchableError,
+    "is disconnected",
+  );
+  assertEquals(error.reason, "disconnected");
+  h.gateway.dispose();
 });
 
 Deno.test("WorkerGateway: draining worker disconnect skips grace window", async () => {

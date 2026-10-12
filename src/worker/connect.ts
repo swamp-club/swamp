@@ -204,18 +204,18 @@ export async function runWorker(
     const channel = currentChannel;
     const close = currentCloseConnection;
     if (handle) {
+      // Announce the drain before waiting on in-flight work, so the
+      // orchestrator stops scheduling onto this worker for the whole drain
+      // (swamp-club#3156). A failed announcement must not hold up the drain.
+      const announced = channel
+        ? channel.call(RemoteMethod.drain, {}).then(() => {}, () => {})
+        : Promise.resolve();
       _drainPromise = handle.drain().then(() => {
         options.onStatus?.({ kind: "drain_complete" });
-        if (!channel) {
-          close?.();
-          return;
-        }
-        return channel.call(RemoteMethod.drain, {}).then(() => {
-          close?.();
-        }).catch(() => {
-          close?.();
-        });
-      }).catch(() => {
+        return announced;
+      }).then(() => {
+        close?.();
+      }, () => {
         close?.();
       });
     } else {

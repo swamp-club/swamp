@@ -121,6 +121,79 @@ Deno.test("runWorker: connects, enrolls, and reports status", async () => {
   assertEquals(kinds.at(-1), "stopped");
 });
 
+Deno.test("runWorker: a drain announces itself to the orchestrator before the connection closes (swamp-club#3156)", async () => {
+  const order: string[] = [];
+  let requestDrain: ((reason: "signal") => void) | null = null;
+
+  const result = await runWorker({
+    url: "ws://test:1",
+    token: "ci-runner-3.s3cret",
+    labels: {},
+    swampVersion: "1.2.3",
+    onDrainAvailable: (drain) => {
+      requestDrain = drain;
+    },
+    onStatus: (event) => {
+      if (event.kind === "enrolled") {
+        queueMicrotask(() => requestDrain!("signal"));
+      }
+    },
+    createSocket: () => {
+      const socket = new FakeSocket((channel) => {
+        channel.register(
+          RemoteMethod.enroll,
+          () => Promise.resolve(enrollResult("ci-runner-3")),
+        );
+        channel.register(RemoteMethod.drain, () => {
+          order.push("drain");
+          return Promise.resolve();
+        });
+      });
+      const close = socket.close.bind(socket);
+      socket.close = () => {
+        order.push("close");
+        close();
+      };
+      return socket as unknown as WebSocket;
+    },
+  });
+
+  assertEquals(result.reason, "signal");
+  assertEquals(order.slice(0, 2), ["drain", "close"]);
+});
+
+Deno.test("runWorker: a drain the orchestrator does not acknowledge still stops the worker", async () => {
+  let requestDrain: ((reason: "signal") => void) | null = null;
+
+  const result = await runWorker({
+    url: "ws://test:1",
+    token: "ci-runner-3.s3cret",
+    labels: {},
+    swampVersion: "1.2.3",
+    onDrainAvailable: (drain) => {
+      requestDrain = drain;
+    },
+    onStatus: (event) => {
+      if (event.kind === "enrolled") {
+        queueMicrotask(() => requestDrain!("signal"));
+      }
+    },
+    createSocket: () =>
+      new FakeSocket((channel) => {
+        channel.register(
+          RemoteMethod.enroll,
+          () => Promise.resolve(enrollResult("ci-runner-3")),
+        );
+        channel.register(
+          RemoteMethod.drain,
+          () => Promise.reject(new RpcError({ code: "boom", message: "no" })),
+        );
+      }) as unknown as WebSocket,
+  });
+
+  assertEquals(result.reason, "signal");
+});
+
 Deno.test("runWorker: reconnects with the same instance uuid after a drop", async () => {
   const enrollments: EnrollParams[] = [];
   const sockets: FakeSocket[] = [];

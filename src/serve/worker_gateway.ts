@@ -192,6 +192,38 @@ export type ModelMethodRunner = (input: {
   inputs: Record<string, unknown>;
 }) => Promise<void>;
 
+/** Why the gateway refused to send a dispatch to a worker. */
+export type WorkerNotDispatchableReason =
+  | "not_in_pool"
+  | "disconnected"
+  | "at_capacity"
+  | "unverified"
+  | "draining";
+
+const NOT_DISPATCHABLE_PHRASES: Record<WorkerNotDispatchableReason, string> = {
+  not_in_pool: "is not in the pool",
+  disconnected: "is disconnected",
+  at_capacity: "is at capacity",
+  unverified: "is unverified",
+  draining: "is draining",
+};
+
+/**
+ * The gateway refused a dispatch before sending it: the attempt never
+ * reached the worker, so nothing ran and nothing was written.
+ */
+export class WorkerNotDispatchableError extends Error {
+  readonly workerName: string;
+  readonly reason: WorkerNotDispatchableReason;
+
+  constructor(workerName: string, reason: WorkerNotDispatchableReason) {
+    super(`Worker '${workerName}' ${NOT_DISPATCHABLE_PHRASES[reason]}`);
+    this.name = "WorkerNotDispatchableError";
+    this.workerName = workerName;
+    this.reason = reason;
+  }
+}
+
 export interface WorkerGatewayOptions {
   repoDir: string;
   repoContext: RepositoryContext;
@@ -423,8 +455,9 @@ export class WorkerGateway {
 
   /**
    * Dispatch one execution request to a named worker. Resolves with the
-   * worker's result; rejects when the worker is unknown, busy, disconnected,
-   * or the control socket drops mid-dispatch (the caller owns grace-window
+   * worker's result; rejects with a WorkerNotDispatchableError when the
+   * worker is unknown, busy, disconnected, unverified or draining, or when
+   * the control socket drops mid-dispatch (the caller owns grace-window
    * failure semantics — see DispatchService).
    */
   async dispatch(
@@ -437,19 +470,19 @@ export class WorkerGateway {
   ): Promise<DispatchResult> {
     const entry = this.#workers.get(name);
     if (!entry) {
-      throw new Error(`Worker '${name}' is not in the pool`);
+      throw new WorkerNotDispatchableError(name, "not_in_pool");
     }
     if (entry.channel === null) {
-      throw new Error(`Worker '${name}' is disconnected`);
+      throw new WorkerNotDispatchableError(name, "disconnected");
     }
     if (entry.activeDispatchIds.length >= entry.capacity) {
-      throw new Error(`Worker '${name}' is at capacity`);
+      throw new WorkerNotDispatchableError(name, "at_capacity");
     }
     if (entry.status === "unverified" && !params.probeMarker) {
-      throw new Error(`Worker '${name}' is unverified`);
+      throw new WorkerNotDispatchableError(name, "unverified");
     }
     if (entry.status === "draining") {
-      throw new Error(`Worker '${name}' is draining`);
+      throw new WorkerNotDispatchableError(name, "draining");
     }
 
     logger.info(

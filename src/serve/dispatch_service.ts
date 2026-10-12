@@ -74,6 +74,7 @@ import type {
 } from "../domain/remote/remote_dispatch.ts";
 import type { ModelMethodRunner } from "./worker_gateway.ts";
 import type { WorkerSnapshot } from "./worker_gateway.ts";
+import { WorkerNotDispatchableError } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -161,7 +162,7 @@ export class DispatchService {
    * Worker affinity pins: maps an affinity key to the worker that
    * executed the first step in the group. Subsequent steps with the
    * same key are forced onto that worker; if the worker disconnects,
-   * the step fails with a WorkerAffinityLostError.
+   * or starts draining, the step fails with a WorkerAffinityLostError.
    */
   readonly #affinityPins = new Map<string, string>();
   /**
@@ -312,9 +313,11 @@ export class DispatchService {
     try {
       const affinityKey = request.placement.affinityKey;
       let effectivePlacement = request.placement;
+      // The worker this step's affinity group is bound to, when it is bound.
+      let pinnedWorker: string | undefined;
 
       if (affinityKey) {
-        let pinnedWorker = this.#affinityPins.get(affinityKey);
+        pinnedWorker = this.#affinityPins.get(affinityKey);
         if (!pinnedWorker) {
           const inflight = this.#affinityInflight.get(affinityKey);
           if (inflight) {
@@ -330,14 +333,19 @@ export class DispatchService {
           }
         }
         if (pinnedWorker) {
-          const pool = this.#poolSnapshot();
-          const worker = pool.find((w) => w.name === pinnedWorker);
-          if (!worker || !worker.connected) {
-            throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
-          }
           effectivePlacement = { ...request.placement, target: pinnedWorker };
         }
       }
+      // A bound pin whose worker has left or is draining can never be
+      // honoured, so the step fails rather than queueing until its timeout.
+      const assertPinHeld = () => {
+        if (
+          affinityKey && pinnedWorker && this.#pinnedWorkerLost(pinnedWorker)
+        ) {
+          throw new WorkerAffinityLostError(pinnedWorker, affinityKey);
+        }
+      };
+      assertPinHeld();
 
       if (effectivePlacement.target) {
         const pool = this.#poolSnapshot();
@@ -376,6 +384,7 @@ export class DispatchService {
             request.signal,
             deadline,
             emitQueued,
+            assertPinHeld,
           );
         try {
           const result = await this.#dispatchOnce(workerName, request);
@@ -393,7 +402,9 @@ export class DispatchService {
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
-            if (affinityKey) {
+            // Before the pin binds, no other step of the group has run on
+            // the lost worker, so a no-write first step re-dispatches below.
+            if (affinityKey && (pinnedWorker || error.hadWrites)) {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
               });
@@ -418,24 +429,51 @@ export class DispatchService {
             });
             continue;
           }
-          if (
-            error instanceof RpcError &&
-            (error.code === "worker_busy" ||
-              error.code === "worker_draining")
-          ) {
+          // The attempt never ran: the gateway refused to send it, or the
+          // worker refused to take it. A probe names one worker and has no
+          // other to fall back on, so the gateway's refusal fails it.
+          const refusal = error instanceof WorkerNotDispatchableError
+            ? (request.skipScheduler ? null : error.reason)
+            : error instanceof RpcError &&
+                (error.code === "worker_busy" ||
+                  error.code === "worker_draining")
+            ? error.code
+            : null;
+          if (refusal !== null) {
+            assertPinHeld();
+            if (
+              refusal === "not_in_pool" || refusal === "disconnected" ||
+              refusal === "draining"
+            ) {
+              // The scheduler no longer offers this worker, so the step goes
+              // straight back to it instead of waiting on a pool change.
+              logger.warn(
+                "Worker {worker} was {code} on dispatch; re-scheduling step",
+                { worker: workerName, code: refusal },
+              );
+              endQueue("mark_dispatched", {
+                dispatchId: lastDispatchId ?? "unknown",
+              });
+              continue;
+            }
+            const remaining = deadline !== null
+              ? deadline - Date.now()
+              : WAIT_FOREVER_POLL_CAP_MS;
+            if (remaining <= 0) {
+              throw new Error(
+                `Timed out waiting for a worker matching ${
+                  describePlacement(effectivePlacement)
+                } to become available`,
+              );
+            }
             logger.warn(
               "Worker {worker} reported {code} on dispatch; re-queueing step",
-              { worker: workerName, code: error.code },
+              { worker: workerName, code: refusal },
             );
             endQueue("mark_dispatched", {
               dispatchId: lastDispatchId ?? "unknown",
             });
-            await this.#waitForPoolChange(
-              deadline !== null
-                ? Math.max(deadline - Date.now(), 0)
-                : WAIT_FOREVER_POLL_CAP_MS,
-              request.signal,
-            );
+            await this.#waitForPoolChange(remaining, request.signal);
             continue;
           }
           throw error;
@@ -730,9 +768,11 @@ export class DispatchService {
     signal: AbortSignal | undefined,
     deadline: number | null,
     onQueued?: () => void,
+    assertPlaceable?: () => void,
   ): Promise<string> {
     while (true) {
       signal?.throwIfAborted();
+      assertPlaceable?.();
       const decision: ScheduleDecision = scheduleStep(
         placement,
         this.#poolSnapshot(),
@@ -757,6 +797,17 @@ export class DispatchService {
         await this.#waitForPoolChange(WAIT_FOREVER_POLL_CAP_MS, signal);
       }
     }
+  }
+
+  /**
+   * Whether an affinity group's pinned worker can no longer take its steps:
+   * gone from the pool, disconnected, or draining. Read from the gateway
+   * directly — the reservation overlay reports a full draining worker as busy.
+   */
+  #pinnedWorkerLost(workerName: string): boolean {
+    const worker = this.#gateway!.worker(workerName);
+    return worker === null || !worker.connected ||
+      worker.status === "draining";
   }
 
   /** The live pool with reservation counts overlaid onto active dispatch counts. */
