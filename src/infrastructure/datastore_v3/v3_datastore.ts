@@ -409,6 +409,8 @@ export function listV3Namespaces(datastorePath: string): string[] {
 /** The non-empty namespaces of the partition heads in `db`, which it closes. */
 function queryNamespaces(db: DatabaseSync): string[] {
   try {
+    // A reader can meet a writer's lock while the WAL index is rebuilt.
+    db.exec("PRAGMA busy_timeout=5000");
     // A partition head is written with every commit and never deleted, so
     // it names each namespace that ever committed, compacted or not.
     const rows = db.prepare(

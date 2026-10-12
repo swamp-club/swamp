@@ -4836,7 +4836,8 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    migrate --confirm`. Every setup keeps the namespace: v2 filesystem setup
    creates the datastore subdirs under `{path}/{namespace}` and registers the
    namespace there, refusing one another repo registered; extension setup
-   skips only the copy into the cache. A v2 namespaced datastore that holds
+   skips only the copy into the cache. The namespace is kept with or without
+   `--skip-migration`. A v2 namespaced datastore that holds
    data still moves to the new root without its namespace, as before. A
    destination whose real path is the migration
    source (for example `--path .swamp` on a repo already there) has nothing to
