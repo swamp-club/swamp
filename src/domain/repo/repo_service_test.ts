@@ -1028,6 +1028,97 @@ Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", asyn
   });
 });
 
+/** Returns the body of the managed `## Getting Started` section. */
+function gettingStartedSection(content: string): string {
+  const start = content.indexOf("## Getting Started");
+  const end = content.indexOf("## Commands", start);
+  return content.substring(start, end);
+}
+
+Deno.test("RepoService.init generates CLAUDE.md without a session-start model search", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const content = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    const section = gettingStartedSection(content);
+
+    assertEquals(content.includes("At the start of every conversation"), false);
+    assertEquals(section.includes("swamp model search"), false);
+    assertStringIncludes(section, "invoke the\n`swamp-getting-started` skill");
+    assertStringIncludes(section, "use the `swamp` skill");
+  });
+});
+
+Deno.test("RepoService.init: path-style custom tool instructions point at getting-started without a session-start model search", async () => {
+  await withTempDir(async (tempDir) => {
+    await writeCustomTools(tempDir, [{
+      name: "myagent",
+      skillsDir: ".myagent/skills",
+      instructionsFile: "AGENTS.md",
+      instructionsMode: "shared",
+      skillReferenceStyle: "path",
+    }]);
+
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["myagent"] });
+
+    const content = await Deno.readTextFile(join(tempDir, "AGENTS.md"));
+    const section = gettingStartedSection(content);
+
+    assertEquals(content.includes("At the start of every conversation"), false);
+    assertEquals(section.includes("swamp model search"), false);
+    assertStringIncludes(
+      section,
+      "`.myagent/skills/swamp-getting-started/SKILL.md`",
+    );
+    assertStringIncludes(section, "`.myagent/skills/swamp/SKILL.md`");
+  });
+});
+
+Deno.test("RepoService.upgrade replaces the old session-start model search instruction", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Swap the current Getting Started body for the pre-#3206 wording
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const current = await Deno.readTextFile(claudeMdPath);
+    const section = gettingStartedSection(current);
+    const legacy = current.replace(
+      section,
+      `## Getting Started
+
+**IMPORTANT:** At the start of every conversation, run
+\`swamp model search --json\`. If no models are returned (empty result), you MUST
+immediately invoke the \`swamp-getting-started\` skill before doing anything else.
+This walks new users through an interactive onboarding tutorial.
+
+If models already exist, start by using the \`swamp\` skill to work with
+swamp models.
+
+`,
+    );
+    await Deno.writeTextFile(claudeMdPath, legacy);
+
+    const upgradeService = testService("0.2.0", tempDir);
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+    const upgraded = await Deno.readTextFile(claudeMdPath);
+    assertEquals(
+      upgraded.includes("At the start of every conversation"),
+      false,
+    );
+    assertEquals(gettingStartedSection(upgraded), section);
+  });
+});
+
 Deno.test("RepoService.init always creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = testService("0.1.0", tempDir);
