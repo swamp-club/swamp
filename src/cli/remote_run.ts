@@ -579,7 +579,12 @@ export function requestServerResponse<T>(
       err.message.startsWith("Could not connect to")
     ) {
       throw new UserError(
-        await classifyConnectionError(baseUrl, err.message),
+        await classifyConnectionError(
+          baseUrl,
+          err.message,
+          headers,
+          options.caCerts,
+        ),
       );
     }
     throw err;
@@ -889,59 +894,101 @@ export function serverReloadCommand(server: string): string {
   return `swamp serve reload${formatCommandTarget({ server })}`;
 }
 
-/** Timeout for the health probe on connection failure (ms). */
-const HEALTH_PROBE_TIMEOUT_MS = 3_000;
+/** Timeout for the handshake probe on connection failure (ms). */
+const HANDSHAKE_PROBE_TIMEOUT_MS = 3_000;
 
 /**
- * Probes the server's unauthenticated /health endpoint to check if the
- * server is reachable and healthy. A healthy probe only shows the server is
- * up — not that it rejected the credentials — so a connection failure that
- * carries no HTTP status keeps its own message and gains an auth hint
- * (swamp-club#3276).
+ * Repeats a failed WebSocket handshake as an HTTP/1.1 request carrying the
+ * same headers, and returns the status the server answers with — or
+ * `undefined` when it does not answer.
+ *
+ * Over TLS, Deno's WebSocket client negotiates HTTP/2, and a handshake the
+ * server rejects (401, 429, …) surfaces as an opaque stream error with no
+ * status in it (swamp-club#1482). Over HTTP/1.1 the same rejection comes back
+ * as a status, so the error can be classified from what the server said
+ * rather than guessed (swamp-club#3276).
  */
-export async function probeServerHealth(wsUrl: string): Promise<boolean> {
-  const httpUrl = toHttpUrl(wsUrl);
+export async function probeHandshakeStatus(
+  wsUrl: string,
+  headers: Record<string, string> = {},
+  caCerts?: string[],
+): Promise<number | undefined> {
+  let client: Deno.HttpClient | undefined;
   try {
-    const healthUrl = new URL("/health", httpUrl);
-    const fetchClient = getCaCertFetchClient();
-    const fetchOpts: Record<string, unknown> = {
-      signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
-    };
-    if (fetchClient) fetchOpts.client = fetchClient;
-    const response = await fetch(healthUrl, fetchOpts);
-    if (!response.ok) return false;
-    const body = await response.json();
-    return typeof body === "object" && body !== null &&
-      (body as Record<string, unknown>).status === "ok";
+    const effectiveCaCerts = caCerts ?? getEnvCaCerts();
+    client = createTlsHttpClient({
+      http1: true,
+      http2: false,
+      ...(effectiveCaCerts?.length ? { caCerts: effectiveCaCerts } : {}),
+    });
+    const key = btoa(
+      String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))),
+    );
+    const response = await fetch(toHttpUrl(wsUrl), {
+      client,
+      headers: {
+        ...headers,
+        "Upgrade": "websocket",
+        "Connection": "Upgrade",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": key,
+      },
+      signal: AbortSignal.timeout(HANDSHAKE_PROBE_TIMEOUT_MS),
+    });
+    await response.body?.cancel();
+    return response.status;
   } catch {
-    return false;
+    return undefined;
+  } finally {
+    client?.close();
   }
+}
+
+/**
+ * The message for a handshake the server answered with `statusCode`.
+ * Statuses with no guidance of their own keep the original message.
+ */
+function describeHandshakeStatus(
+  wsUrl: string,
+  statusCode: number,
+  originalMessage: string,
+): string {
+  if (statusCode === 429) {
+    return "Rate-limited by server — try again later";
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+  }
+  if (statusCode >= 500) {
+    return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
+  }
+  return originalMessage;
 }
 
 async function classifyConnectionError(
   wsUrl: string,
   originalMessage: string,
+  headers: Record<string, string>,
+  caCerts: string[] | undefined,
 ): Promise<string> {
   const statusMatch = originalMessage.match(/Invalid status code: (\d+)/);
   if (statusMatch) {
-    const statusCode = parseInt(statusMatch[1], 10);
-    if (statusCode === 429) {
-      return "Rate-limited by server — try again later";
-    }
-    if (statusCode === 401 || statusCode === 403) {
-      return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
-    }
-    if (statusCode >= 500) {
-      return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
-    }
-    // The server answered with a status of its own; the health probe below
-    // only disambiguates connections that never got one (swamp-club#2383).
-    return originalMessage;
+    // The server answered with a status of its own; the probe below only
+    // covers connections that never got one (swamp-club#2383).
+    return describeHandshakeStatus(
+      wsUrl,
+      parseInt(statusMatch[1], 10),
+      originalMessage,
+    );
   }
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
-  if (await probeServerHealth(wsUrl)) {
-    return `${originalMessage} — ${wsUrl} is reachable; if this keeps happening, re-authenticate: swamp auth server-login --server ${wsUrl}`;
+  // A probe that is not rejected (e.g. 101) means the handshake works now,
+  // so the failure was something other than the server refusing it — keep
+  // the original error rather than guessing at a cause (swamp-club#3276).
+  const probedStatus = await probeHandshakeStatus(wsUrl, headers, caCerts);
+  if (probedStatus !== undefined && probedStatus >= 400) {
+    return describeHandshakeStatus(wsUrl, probedStatus, originalMessage);
   }
   return originalMessage;
 }
@@ -1041,17 +1088,6 @@ export function getEnvCaCerts(): string[] | undefined {
 }
 
 let cachedCaCertClient: Deno.HttpClient | undefined;
-
-let cachedCaCertFetchClient: Deno.HttpClient | undefined;
-
-function getCaCertFetchClient(): Deno.HttpClient | undefined {
-  const caCerts = getEnvCaCerts();
-  if (!caCerts?.length) return undefined;
-  if (!cachedCaCertFetchClient) {
-    cachedCaCertFetchClient = createTlsHttpClient({ caCerts });
-  }
-  return cachedCaCertFetchClient;
-}
 
 function createSocket(
   url: string,
@@ -1274,7 +1310,12 @@ async function* singleConnectionStream(
         )
       ) {
         throw new UserError(
-          await classifyConnectionError(baseUrl, err.message),
+          await classifyConnectionError(
+            baseUrl,
+            err.message,
+            headers,
+            options.caCerts,
+          ),
         );
       }
       throw err;
