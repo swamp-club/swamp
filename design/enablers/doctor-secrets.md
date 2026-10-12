@@ -99,8 +99,10 @@ size of the value even when union members overlap in a recursive schema.
   written as `\uXXXX` escapes. A path naming an array element is not a
   `--global-arg` key; the refusal says to pass the whole array with
   `<name>:json=[...]`. A suggested vault key built from a path or from a quoted
-  key holds only letters, digits, `_` and `-`, and gets a numeric suffix when
-  it equals another key suggested for the same definition.
+  key holds only letters, digits, `_` and `-`. A key that is not declared gets a
+  numeric suffix when it equals another key suggested for the same definition;
+  fields that declare the same `vaultKey` share it. Keys already in the vault
+  are not consulted.
 
 The redaction and vaulting primitives in the same module
 (`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)

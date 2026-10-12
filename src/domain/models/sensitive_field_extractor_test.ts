@@ -1218,3 +1218,50 @@ Deno.test("buildSensitiveArgRemediations: an element key differs from a key of a
     },
   );
 });
+
+Deno.test("buildSensitiveArgRemediations: derived keys that come out the same get distinct keys", () => {
+  const schema = z.object({
+    "api key": z.string().meta({ sensitive: true }),
+    "api.key": z.string().meta({ sensitive: true }),
+    "日本": z.string().meta({ sensitive: true }),
+    "中国": z.string().meta({ sensitive: true }),
+    a: z.object({ token: z.string().meta({ sensitive: true }) }),
+    b: z.object({ token: z.string().meta({ sensitive: true }) }),
+  });
+  const args = {
+    "api key": "1",
+    "api.key": "2",
+    "日本": "3",
+    "中国": "4",
+    a: { token: "5" },
+    b: { token: "6" },
+  };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(remediations.map((r) => r.vaultKey), [
+    "api-key",
+    "api-key-2",
+    "secret",
+    "secret-2",
+    "token",
+    "token-2",
+  ]);
+});
+
+Deno.test("buildSensitiveArgRemediations: a derived key steps aside for a declared one", () => {
+  const schema = z.object({
+    token: z.string().meta({ sensitive: true }),
+    other: z.string().meta({ sensitive: true, vaultKey: "token" }),
+    twin: z.string().meta({ sensitive: true, vaultKey: "token" }),
+  });
+  const args = { token: "1", other: "2", twin: "3" };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(remediations.map((r) => r.vaultKey), [
+    "token-2",
+    "token",
+    "token",
+  ]);
+});

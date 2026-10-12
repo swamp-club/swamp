@@ -342,8 +342,8 @@ function vaultKeyForElementPath(path: string): string {
  * so its key is built from the whole path (`users[0].password` gives
  * `users-0-password`) rather than from a declared `vaultKey` or the leaf
  * segment, either of which would point every element at the same secret.
- * When such a key equals another key suggested in the same call, it gets a
- * numeric suffix.
+ * A key that is not declared gets a numeric suffix when it equals another
+ * key suggested in the same call. Keys already in the vault are not consulted.
  * These paths, and any path holding a quoted key, are only matched to their
  * field's metadata when `args` is given.
  *
@@ -382,19 +382,22 @@ export function buildSensitiveArgRemediations(
       }
     }
   }
-  const onceKey = (path: string) =>
-    fieldsByPath.get(path)?.vaultKey ?? lastKeyOf(path);
-  // An element key must differ from every other key suggested here, the
-  // keys of fields that occur once included.
+  // A declared key is used as written, and fields that declare the same key
+  // share it. Every other key is derived, and must differ from every key
+  // suggested here.
+  const declaredKey = (path: string) =>
+    elementPaths.has(path) ? undefined : fieldsByPath.get(path)?.vaultKey;
   const takenKeys = new Set(
-    leakedPaths.filter((path) => !elementPaths.has(path)).map(onceKey),
+    leakedPaths.map(declaredKey).filter((key) => key !== undefined),
   );
   return leakedPaths.map((path) => {
-    const meta = fieldsByPath.get(path);
-    const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    let vaultKey = onceKey(path);
-    if (elementPaths.has(path)) {
-      const base = vaultKeyForElementPath(path);
+    const vaultName = fieldsByPath.get(path)?.vaultName ??
+      DEFAULT_REMEDIATION_VAULT;
+    let vaultKey = declaredKey(path);
+    if (vaultKey === undefined) {
+      const base = elementPaths.has(path)
+        ? vaultKeyForElementPath(path)
+        : lastKeyOf(path);
       vaultKey = base;
       for (let n = 2; takenKeys.has(vaultKey); n++) {
         vaultKey = `${base}-${n}`;

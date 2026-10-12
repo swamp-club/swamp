@@ -46,7 +46,6 @@ interface ZodDef {
   element?: z.ZodTypeAny;
   valueType?: z.ZodTypeAny;
   options?: z.ZodTypeAny[];
-  discriminator?: string;
   items?: z.ZodTypeAny[];
   rest?: z.ZodTypeAny | null;
   left?: z.ZodTypeAny;
@@ -364,7 +363,9 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
     if (memberType === "enum") {
       return def.entries ? Object.values(def.entries).includes(value) : true;
     }
-    return typeof value === memberType;
+    return (memberType === "number" && typeof value === "number") ||
+      (memberType === "boolean" && typeof value === "boolean") ||
+      (memberType === "bigint" && typeof value === "bigint");
   }
   return true;
 }
@@ -561,9 +562,8 @@ function visitValue(
  * `.transform()`, `.readonly()` and `z.lazy()` wrappers. It reads the value
  * as stored: a `z.preprocess()` that turns a string into a container is not
  * run, so fields inside that string are not reached. A matching node is
- * reported once, and its children are still visited. When union members
- * reach one path in different ways, the first member decides `perElement`.
- * Metadata on the root schema itself is not reported.
+ * reported once, and its children are still visited. Metadata on the root
+ * schema itself is not reported.
  *
  * The walk follows the value, so it visits at most what the value holds and
  * ends on a recursive schema; a value that contains itself is not entered
