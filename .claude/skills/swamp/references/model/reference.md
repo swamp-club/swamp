@@ -400,21 +400,27 @@ swamp model evaluate --all --json
 Execute a method on a model input.
 
 ```bash
-swamp model method run my-shell execute
-swamp model method run my-deploy create --input environment=prod
-swamp model method run my-deploy create --input environment=prod --input replicas=3
-swamp model method run my-deploy create --input config.timeout=30  # dot notation for nesting
-swamp model method run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
-swamp model method run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
-swamp model method run my-deploy create --input-file inputs.yaml
-echo '{"environment": "prod"}' | swamp model method run my-deploy create --stdin
-printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy create --stdin  # NDJSON: one run per line
-swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp model method run my-deploy create --stdin
-swamp model method run my-deploy create --last-evaluated
-swamp model method run my-deploy create --skip-checks
-swamp model method run my-deploy create --skip-check valid-region
-swamp model method run my-deploy create --skip-check-label live
+swamp behavior run my-shell execute
+swamp behavior run my-deploy create --input environment=prod
+swamp behavior run my-deploy create --input environment=prod --input replicas=3
+swamp behavior run my-deploy create --input config.timeout=30  # dot notation for nesting
+swamp behavior run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
+swamp behavior run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
+swamp behavior run my-deploy create --input-file inputs.yaml
+echo '{"environment": "prod"}' | swamp behavior run my-deploy create --stdin
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp behavior run my-deploy create --stdin  # NDJSON: one run per line
+swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp behavior run my-deploy create --stdin
+swamp behavior run my-deploy create --last-evaluated
+swamp behavior run my-deploy create --skip-checks
+swamp behavior run my-deploy create --skip-check valid-region
+swamp behavior run my-deploy create --skip-check-label live
 ```
+
+**Compatibility.** `swamp behavior run` is the preferred spelling (the British
+`swamp behaviour run` is an alias). The legacy forms remain supported and are
+equivalent: `swamp model method run <name> <method>` and
+`swamp model @<type> method run <method> <name>`. Same arguments, flags, output
+and audit action; only the words differ.
 
 **Inputs are evaluated.** `--input`, `--input-file`, and `--stdin` values are
 treated as operator-written: any `${{ vault.get(...) }}` or `${{ env.X }}` in
@@ -545,7 +551,7 @@ run concurrently. See
 7. **Check warnings** — if the validation output has non-empty `warnings`, stop
    and ask the user before proceeding (see
    [Handling Validation Warnings](#important-handling-validation-warnings))
-8. **Run** the method: `swamp model method run my-shell execute`
+8. **Run** the method: `swamp behavior run my-shell execute`
 9. **View** the output: `swamp model output get my-shell --json`
 
 ## Data Ownership

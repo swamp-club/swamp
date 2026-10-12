@@ -53,7 +53,7 @@ re-run with `--json` to see the structured shape — error messages, validation
 details, and per-item status are all surfaced explicitly.
 
 ```bash
-swamp model method run my-model my-method --json
+swamp behavior run my-model my-method --json
 ```
 
 JSON output is also stable — fields rarely change between releases, so it's the
@@ -131,7 +131,7 @@ Source loading code:
 
 ## Recipe: model method or workflow run failed
 
-Symptom: `swamp model method run` or `swamp workflow run` exits non-zero and the
+Symptom: `swamp behavior run` or `swamp workflow run` exits non-zero and the
 stderr message doesn't point to an obvious fix.
 
 Reports run automatically after both successful and failed executions, capturing
@@ -164,7 +164,7 @@ escalate to Tier 3 (tracing) for execution flow analysis.
 
 ## Recipe: method preflight check failed
 
-Symptom: `swamp model method run` fails with `Pre-flight check failed: …`.
+Symptom: `swamp behavior run` fails with `Pre-flight check failed: …`.
 
 This is a different concept from `swamp doctor` — it's a per-method validation
 check (e.g. "AWS credentials are valid", "API is reachable"), not an integration

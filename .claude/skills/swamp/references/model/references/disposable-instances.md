@@ -38,7 +38,7 @@ Direct execution auto-creates the instance and routes `--input` values to
 
 ```bash
 # First run auto-creates asdlc-plan-PLT-1041 with routed global args
-swamp model @acme/plan method run generate asdlc-plan-PLT-1041 \
+swamp behavior run @acme/plan generate asdlc-plan-PLT-1041 \
   --input contextFiles="src/,docs/" \
   --input workItemId=PLT-1041
 ```
@@ -60,7 +60,7 @@ swamp model create @acme/plan asdlc-plan-PLT-1041 \
   --global-arg 'contextFiles=src/,docs/' \
   --global-arg 'workItemId=PLT-1041'
 
-swamp model method run asdlc-plan-PLT-1041 generate
+swamp behavior run asdlc-plan-PLT-1041 generate
 ```
 
 CEL expressions like `${{ vault.get(...) }}` must go through `--global-arg` —
@@ -88,7 +88,7 @@ swamp model create @acme/plan "$INSTANCE" \
   --global-arg "workItemId=${INPUT}"
 
 # Run the method — this instance has its own lock
-swamp model method run "$INSTANCE" generate
+swamp behavior run "$INSTANCE" generate
 
 # Clean up when done
 swamp model delete "$INSTANCE"

@@ -167,7 +167,7 @@ any machine (no local repo needed):
 
 ```bash
 swamp workflow run my-workflow --server ws://orchestrator:4000 --input env=prod
-swamp model my-model method run create --server ws://orchestrator:4000
+swamp behavior run my-model create --server ws://orchestrator:4000
 ```
 
 Events stream back live through the same renderers as a local run; Ctrl-C

@@ -101,14 +101,14 @@ function buildContextSuggestions(
       `swamp model get ${unknownName}`,
     );
     suggestions.push(
-      `swamp model method run ${unknownName} <method>`,
+      `swamp behavior run ${unknownName} <method>`,
     );
     suggestions.push(
       `swamp model validate ${unknownName}`,
     );
-  } else if (parentName === "method") {
+  } else if (parentName === "method" || parentName === "behavior") {
     suggestions.push(
-      `swamp model method run ${unknownName} <method>`,
+      `swamp behavior run ${unknownName} <method>`,
     );
   } else if (parentName === "workflow") {
     suggestions.push(

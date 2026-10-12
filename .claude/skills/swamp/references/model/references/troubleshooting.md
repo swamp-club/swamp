@@ -148,7 +148,7 @@ swamp model validate my-model --json
    To fix, run the referenced model first:
 
    ```bash
-   swamp model method run my-vpc create
+   swamp behavior run my-vpc create
    ```
 
 3. **Hyphen in spec name** (CEL interprets as subtraction):
@@ -187,7 +187,7 @@ method argument instead, where it passes through unchanged.
 1. **Run the referenced model first** so its data is available:
 
    ```bash
-   swamp model method run <referenced-model> create
+   swamp behavior run <referenced-model> create
    ```
 
 2. **Use a workflow** that runs models in the correct order — dependencies are
@@ -216,8 +216,8 @@ templating system (`${{ github.sha }}`, or `${{ inputs.version }}` when
    `.?field` when the record may legitimately be absent.
 3. **Supply the value directly.** For a declared input, pass it
    (`--input <input>=<value>`, or the step's `inputs:`). For any other argument,
-   `--input <argument>=<value>` on `model method run` or the step's `inputs:` in
-   a workflow replaces the failing argument itself.
+   `--input <argument>=<value>` on `behavior run` or the step's `inputs:` in a
+   workflow replaces the failing argument itself.
 
 ### "Unsupported vault expression"
 

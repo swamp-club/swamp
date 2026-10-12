@@ -28,8 +28,9 @@ import "../../domain/models/models.ts";
 // Initialize logging for tests
 await initializeLogging({});
 
-// Note: Full CLI integration tests are in integration/echo_model_test.ts
-// These tests verify the command module loads correctly
+// Note: local-run parity between this command and `behavior run` is covered
+// in integration/behavior_run_parity_test.ts. These tests verify the command
+// module loads correctly and drive its --server path in-process.
 
 Deno.test("modelMethodRunCommand module loads", async () => {
   const { modelMethodRunCommand } = await import("./model_method_run.ts");
@@ -76,6 +77,16 @@ Deno.test("modelMethodRunCommand has --timeout option (swamp-club#235)", async (
       `expected --timeout option, got: ${names.join(", ")}`,
     );
   }
+});
+
+Deno.test("createModelMethodRunCommand: returns a new instance per call (swamp-club#3265)", async () => {
+  const { createModelMethodRunCommand, MODEL_METHOD_RUN_SYNTAX } = await import(
+    "./model_method_run.ts"
+  );
+  const first = createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX);
+  const second = createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX);
+  assertEquals(first !== second, true);
+  assertEquals(first.getName(), second.getName());
 });
 
 Deno.test("modelMethodRunCommand has --server option", async () => {

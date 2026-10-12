@@ -216,6 +216,37 @@ Deno.test("extractCommandInfo records categorical args for model method", () => 
   assertEquals(info.args, ["run", "<REDACTED>", "train"]);
 });
 
+Deno.test("extractCommandInfo records categorical args for behavior run (swamp-club#3265)", () => {
+  const info = extractCommandInfo(["behavior", "run", "my-model", "train"]);
+
+  assertEquals(info.command, "behavior");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.args, ["<REDACTED>", "train"]);
+});
+
+Deno.test("extractCommandInfo classifies the behaviour alias spelling the same way", () => {
+  const info = extractCommandInfo(["behaviour", "run", "my-model", "train"]);
+
+  assertEquals(info.command, "behaviour");
+  assertEquals(info.subcommand, "run");
+  assertEquals(info.args, ["<REDACTED>", "train"]);
+});
+
+Deno.test("extractCommandInfo redacts the type and definition name of a direct-type behavior run", () => {
+  const info = extractCommandInfo([
+    "behavior",
+    "run",
+    "@swamp/echo",
+    "echo",
+    "my-def",
+    "--input",
+    "k=v",
+  ]);
+
+  assertEquals(info.args, ["<REDACTED>", "echo", "<REDACTED>"]);
+  assertEquals(info.optionKeys, ["--input"]);
+});
+
 Deno.test("extractCommandInfo redacts all args for commands without schema", () => {
   const info = extractCommandInfo(["model", "get", "my-model"]);
 

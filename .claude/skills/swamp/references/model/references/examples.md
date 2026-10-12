@@ -81,7 +81,7 @@ methods:
 **Step 3: Run and access output**
 
 ```bash
-swamp model method run my-shell execute
+swamp behavior run my-shell execute
 ```
 
 **Output data path**: `model.my-shell.resource.result.result.attributes.stdout`
@@ -110,7 +110,7 @@ methods:
 ```
 
 ```bash
-swamp model method run vpc-lookup execute
+swamp behavior run vpc-lookup execute
 ```
 
 **Step 2: Subnet Lookup (references VPC)**
@@ -193,33 +193,33 @@ methods:
 
 ```bash
 # Key-value inputs (preferred for simple values)
-swamp model method run my-deploy deploy --input environment=production
+swamp behavior run my-deploy deploy --input environment=production
 
 # Multiple inputs
-swamp model method run my-deploy deploy --input environment=production --input dryRun=true
+swamp behavior run my-deploy deploy --input environment=production --input dryRun=true
 
 # Dot notation for nested values
-swamp model method run my-deploy deploy --input config.timeout=30
+swamp behavior run my-deploy deploy --input config.timeout=30
 
 # JSON input (useful for complex structures)
-swamp model method run my-deploy deploy --input '{"environment": "production"}'
+swamp behavior run my-deploy deploy --input '{"environment": "production"}'
 
 # YAML file input
-swamp model method run my-deploy deploy --input-file inputs.yaml
+swamp behavior run my-deploy deploy --input-file inputs.yaml
 
 # Piped stdin (explicit --stdin flag required)
-echo '{"environment": "production"}' | swamp model method run my-deploy deploy --stdin
+echo '{"environment": "production"}' | swamp behavior run my-deploy deploy --stdin
 
 # NDJSON from stdin: one run per line
-printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy deploy --stdin
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp behavior run my-deploy deploy --stdin
 
 # Pipe from data query via jq
 swamp data query 'modelName == "source"' --json \
   | jq -c '.results[] | {environment: .attributes.env}' \
-  | swamp model method run my-deploy deploy --stdin
+  | swamp behavior run my-deploy deploy --stdin
 
 # Stdin + --input overrides (--input wins on conflict)
-echo '{"environment": "dev"}' | swamp model method run my-deploy deploy --stdin --input dryRun=true
+echo '{"environment": "dev"}' | swamp behavior run my-deploy deploy --stdin --input dryRun=true
 ```
 
 **Input file format (inputs.yaml)**:

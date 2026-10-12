@@ -53,7 +53,7 @@ Route to the right guide based on what the user needs.
 ```bash
 # Models
 swamp model create <type> <name>               # create a model definition
-swamp model @<type> method run <method> <name> # run a method on a model
+swamp behavior run @<type> <method> <name> # run a method on a model
 swamp model get <name> --json                  # inspect current model state
 swamp model type search [query]                # find available model types
 swamp model list                               # list all models in the repo
@@ -96,7 +96,7 @@ swamp extension init <name>                    # scaffold a new extension
    `swamp model get <name> --json` to confirm the target exists and is in the
    expected state. Proceed only when validation passes.
 4. **Verify args** — run `swamp help <subcommand>` (e.g.
-   `swamp help model method run`) to confirm exact flags and arguments before
+   `swamp help behavior run`) to confirm exact flags and arguments before
    executing. The output is structured JSON — the canonical CLI schema.
 5. **Execute** — run the command.
 6. **On failure** — load

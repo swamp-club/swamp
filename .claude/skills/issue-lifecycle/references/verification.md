@@ -12,7 +12,7 @@ configuration.
 Transition the lifecycle to the `verifying` phase:
 
 ```
-swamp model @swamp/issue-lifecycle method run verify issue-<N> \
+swamp behavior run @swamp/issue-lifecycle verify issue-<N> \
   --input commit=$(git rev-parse HEAD) \
   --input branch=$(git branch --show-current)
 ```
@@ -81,7 +81,7 @@ failed" below.
 2. Call `verification_passed` with the attestation data:
 
    ```
-   swamp model @swamp/issue-lifecycle method run verification_passed issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle verification_passed issue-<N> \
      --input workflowRunId=<run-id> \
      --input commit=<SHA> \
      --input branch=<branch> \
@@ -112,7 +112,7 @@ failed" below.
    JSON value:
 
    ```
-   swamp model @swamp/issue-lifecycle method run post_attestation issue-<N> \
+   swamp behavior run @swamp/issue-lifecycle post_attestation issue-<N> \
      --input attestation="$(cat <path-to-attestation.json>)" \
      --repo-dir <repo-root>
    ```
@@ -144,7 +144,7 @@ failed" below.
 Call `verification_failed` with the failure details:
 
 ```
-swamp model @swamp/issue-lifecycle method run verification_failed issue-<N> \
+swamp behavior run @swamp/issue-lifecycle verification_failed issue-<N> \
   --input workflowRunId=<run-id> \
   --input commit=<SHA> \
   --input branch=<branch> \

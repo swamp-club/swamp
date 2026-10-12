@@ -100,7 +100,7 @@ Deno.test("buildUnknownCommandMessage - non-typo suggests model get/method run/v
   const msg = buildUnknownCommandMessage("hetzner-server", cmd);
   assertStringIncludes(msg, "is not a subcommand");
   assertStringIncludes(msg, "swamp model get hetzner-server");
-  assertStringIncludes(msg, "swamp model method run hetzner-server");
+  assertStringIncludes(msg, "swamp behavior run hetzner-server");
   assertStringIncludes(msg, "swamp model validate hetzner-server");
 });
 
@@ -122,7 +122,13 @@ Deno.test("buildUnknownCommandMessage - generic fallback for unknown context", (
 Deno.test("buildUnknownCommandMessage - method context suggestions", () => {
   const cmd = buildCommand("method", ["run", "history"]);
   const msg = buildUnknownCommandMessage("my-server", cmd);
-  assertStringIncludes(msg, "swamp model method run my-server");
+  assertStringIncludes(msg, "swamp behavior run my-server");
+});
+
+Deno.test("buildUnknownCommandMessage - behavior context suggestions (swamp-club#3265)", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("my-server", cmd);
+  assertStringIncludes(msg, "swamp behavior run my-server <method>");
 });
 
 Deno.test("buildUnknownCommandMessage - vault context suggestions", () => {

@@ -85,7 +85,7 @@ steps:
 Then record it:
 
 ```
-swamp model @swamp/issue-lifecycle method run code_conformance_review issue-<N> \
+swamp behavior run @swamp/issue-lifecycle code_conformance_review issue-<N> \
   --input-file /tmp/conformance-issue-<N>.yaml
 ```
 
@@ -124,7 +124,7 @@ justifications:
 ```
 
 ```
-swamp model @swamp/issue-lifecycle method run justify_deviations issue-<N> \
+swamp behavior run @swamp/issue-lifecycle justify_deviations issue-<N> \
   --input-file /tmp/justifications-issue-<N>.yaml
 ```
 

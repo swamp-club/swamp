@@ -7,12 +7,12 @@ workflows, and any case where you don't need a persistent definition.
 ## CLI Syntax
 
 ```bash
-swamp model @<type> method run <method> <name> --input key=value
+swamp behavior run @<type> <method> <name> --input key=value
 ```
 
 ```bash
-swamp model @command/shell method run execute my-shell --input 'run=echo hello'
-swamp model @test/greeter method run greet my-greeter \
+swamp behavior run @command/shell execute my-shell --input 'run=echo hello'
+swamp behavior run @test/greeter greet my-greeter \
   --input greeting=Hi --input name=World
 ```
 
@@ -34,7 +34,7 @@ requiring a hand-authored definition file.
 
 - Not git-tracked (local runtime state)
 - Not visible in `swamp model search` or `swamp model list` (by design)
-- Findable by name for `model get`, `model method run`, workflows
+- Findable by name for `model get`, `behavior run`, workflows
 - `swamp model get` shows `Auto-created: yes` for these definitions
 - Synced via datastores when configured (shared across team)
 

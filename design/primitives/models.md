@@ -257,9 +257,17 @@ one-shot CLI calls, and workflow steps where all values are dynamic.
 **CLI syntax:**
 
 ```sh
-swamp model @swamp/aws/ec2/vpc method run create my-vpc \
+swamp behavior run @swamp/aws/ec2/vpc create my-vpc \
   --input region=us-east-1 --input cidr=10.0.0.0/16
 ```
+
+`swamp behavior run` (alias `behaviour`) is the preferred spelling of a method
+invocation; `swamp model @swamp/aws/ec2/vpc method run create my-vpc` is the
+equivalent legacy form and stays supported. _Behavior_ is an agent-facing name
+for running a model method, not a primitive: both spellings are built by one
+command factory and share one application path, so the serve protocol, the
+audit action `model.method.run` and every persisted contract keep the model
+vocabulary (swamp-club#3265).
 
 **First run:** `my-vpc` does not exist yet. Swamp creates it with type
 `@swamp/aws/ec2/vpc` and runs `create`. The type's schemas route the `--input`
@@ -273,7 +281,7 @@ way parameterized workflows that vary inputs per run always use current values.
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/`, not
 `models/`. They give model data an ownership boundary without a hand-written
 definition file. They are local runtime state, are not tracked in git, and do
-not appear in `swamp model search` results. `model get`, `model method run`
+not appear in `swamp model search` results. `model get`, `behavior run`
 and workflow references can find them by name. `model get` shows
 `Auto-created: yes` for them. Saving an existing auto-definition, whether a lazy
 `typeVersion` upgrade or `model edit`, writes it back to
@@ -548,7 +556,8 @@ appliesTo: ["create"],
 
 ### Skip Options
 
-Users can bypass checks at runtime with these `model method run` flags:
+Users can bypass checks at runtime with these run flags (`swamp behavior run`
+and `swamp model method run` take the same set):
 
 | Flag                         | Behavior                                   |
 | ---------------------------- | ------------------------------------------ |

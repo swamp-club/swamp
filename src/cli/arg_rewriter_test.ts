@@ -40,6 +40,16 @@ Deno.test("rewriteDirectTypeArgs: rewrites model @type method run to model metho
   assertEquals(rewriteDirectTypeArgs(input), expected);
 });
 
+Deno.test("rewriteDirectTypeArgs: leaves behavior run @type untouched (swamp-club#3265)", () => {
+  const args = ["behavior", "run", "@swamp/echo", "echo", "my-def"];
+  assertEquals(rewriteDirectTypeArgs(args), args);
+});
+
+Deno.test("rewriteDirectTypeArgs: leaves the behaviour alias untouched, even after global options", () => {
+  const args = ["--json", "behaviour", "run", "@swamp/echo", "echo", "my-def"];
+  assertEquals(rewriteDirectTypeArgs(args), args);
+});
+
 Deno.test("rewriteDirectTypeArgs: no-op when no @type present", () => {
   const input = ["model", "method", "run", "my-server", "getSystemInfo"];
   assertEquals(rewriteDirectTypeArgs(input), input);
