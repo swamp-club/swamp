@@ -36,7 +36,7 @@ import {
   type WaitRegistration,
 } from "./signal_wait_records.ts";
 import { settledBy, type SignalWaitStore } from "./signal_wait_store.ts";
-import { releaseKeyClaims } from "./wait_key_claim.ts";
+import { claimsReadingSlot, releaseKeyClaims } from "./wait_key_claim.ts";
 import {
   earlyWaitRef,
   heldUntil,
@@ -487,7 +487,11 @@ export async function removeSupersededPendingSignal(
  * returns how many records it removed. It reads key records and never a run
  * record, so it is safe on every datastore.
  *
- * A slot the key has passed, whose claim is gone, is removed whole. In a slot
+ * A slot the key has passed, whose claim is gone, is removed whole. Whether a
+ * claim still reads such a slot is answered by {@link claimsReadingSlot}, in
+ * at most two reads of the slot's own key: the sweep never lists the key
+ * records of other workflows (swamp-club#3308). A slot is left as it is when
+ * one of those two records cannot be read. In a slot
  * the next claim will still read, a pending signal past its age limit plus
  * {@link PENDING_SIGNAL_LAPSE_GRACE_MS} is superseded by a lapse at the next
  * number, and the numbers below the slot's highest are then removed. The
@@ -505,20 +509,8 @@ export async function sweepPendingSignals(
     const id = `${at.workflowId}/${at.key}/${at.slot}`;
     bySlot.set(id, [...(bySlot.get(id) ?? []), at]);
   }
-  if (bySlot.size === 0) return 0;
-  // The claims that still read a slot: their own, and the one below for a
-  // claim created over a release. Their records go with them.
-  const read = new Set<string>();
-  for (const record of await store.listKeyRecords()) {
-    if (record.kind !== "claim") continue;
-    read.add(`${record.workflowId}/${record.key}/${record.generation}`);
-    if (record.early?.overRelease) {
-      read.add(`${record.workflowId}/${record.key}/${record.generation - 1}`);
-    }
-  }
-
   let removed = 0;
-  for (const [id, addresses] of bySlot) {
+  for (const addresses of bySlot.values()) {
     const { workflowId, key, slot } = addresses[0];
     const highest = await store.highestKeyRecord(workflowId, key);
     if (highest.kind === "unreadable") continue;
@@ -527,15 +519,16 @@ export async function sweepPendingSignals(
       (generation === slot && highest.kind === "found" &&
         highest.record.kind === "release");
     if (!live) {
-      // A claim made since the listing above is not in `read`. Generations
-      // only grow, so such a claim that reads this slot is the key's highest
-      // record now, and its step may be about to take the signal.
-      const claimed = highest.kind === "found" &&
-        highest.record.kind === "claim" &&
-        (generation === slot ||
-          (generation === slot + 1 &&
-            highest.record.early?.overRelease === true));
-      if (read.has(id) || claimed) continue;
+      // A claim that reads this slot exists by now or never will:
+      // generations only grow, and a claim reads no further than one below
+      // its own. So no claim made after the read above is missed here, and
+      // one that is the key's highest record is not read a second time.
+      const readers = await claimsReadingSlot(
+        store,
+        { workflowId, key, slot },
+        highest.kind === "found" ? highest.record : undefined,
+      );
+      if (readers.unreadable || readers.claims.length > 0) continue;
       for (const at of addresses) {
         await store.removePendingRecord(at);
         removed++;

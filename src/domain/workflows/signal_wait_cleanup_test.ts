@@ -59,7 +59,11 @@ import {
   type PendingSignal,
 } from "./pending_signal.ts";
 import { holdEarlySignal } from "./early_signal.ts";
-import { claimWaitKey, type WaitKeyClaim } from "./wait_key_claim.ts";
+import {
+  claimWaitKey,
+  type WaitKeyClaim,
+  waitKeyRecordKey,
+} from "./wait_key_claim.ts";
 
 const OPENED = new Date("2026-01-01T00:00:00.000Z");
 const IN_TIME = new Date("2026-01-01T00:00:30.000Z");
@@ -1054,7 +1058,7 @@ Deno.test("sweepPendingSignals: the records of a slot whose claim still exists a
   assertEquals((await store.listPendingAddresses()).length, 1);
 });
 
-Deno.test("sweepPendingSignals: a signal whose slot is claimed after the sweep listed the claims is left for that step to take", async () => {
+Deno.test("sweepPendingSignals: a signal whose slot is claimed after the sweep listed the pending signals is left for that step to take", async () => {
   const store = new InMemorySignalWaitStore();
   const workflow = earlyWorkflow();
   await store.createPendingRecord(pendingFor(workflow));
@@ -1062,19 +1066,22 @@ Deno.test("sweepPendingSignals: a signal whose slot is claimed after the sweep l
   // the slot's key.
   const racing = new Proxy(store, {
     get(target, property, receiver) {
-      if (property !== "listKeyRecords") {
+      if (property !== "listPendingAddresses") {
         const value = Reflect.get(target, property, receiver);
         return typeof value === "function" ? value.bind(target) : value;
       }
       return async () => {
-        const listed = await target.listKeyRecords();
+        const listed = await target.listPendingAddresses();
         await suspendedAtEarlyWait(target, workflow, OPENED);
         return listed;
       };
     },
   });
-  assertEquals(await sweepPendingSignals(racing, IN_TIME), 0);
-  assertEquals((await store.listPendingAddresses()).length, 1);
+  assertEquals(await sweepPendingSignals(racing, LONG_AFTER), 0);
+  assertEquals(
+    await store.listPendingAddresses(),
+    [{ workflowId: workflow.id, key: EARLY_KEY, slot: 1, number: 1 }],
+  );
 });
 
 Deno.test("sweepPendingSignals: a slot the key has passed, with no claim left to read it, is removed whole", async () => {
@@ -1102,6 +1109,158 @@ Deno.test("sweepPendingSignals: a slot the key has passed, with no claim left to
     (await store.listPendingAddresses()).map((at) => at.slot),
     [3],
   );
+});
+
+/** `store`, and the names of the methods called on it, in order. */
+function recordingCalls(
+  store: InMemorySignalWaitStore,
+): { store: InMemorySignalWaitStore; calls: string[] } {
+  const calls: string[] = [];
+  const recording = new Proxy(store, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        calls.push(String(property));
+        return value.apply(target, args);
+      };
+    },
+  });
+  return { store: recording, calls };
+}
+
+/** A claim of the early key stored at `generation`, as `claimWaitKey` writes one. */
+async function storeClaimAt(
+  store: InMemorySignalWaitStore,
+  workflow: Workflow,
+  generation: number,
+  early?: { overRelease: boolean },
+): Promise<void> {
+  const stored = await store.createKeyRecord({
+    kind: "claim",
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    generation,
+    recordedAt: OPENED.toISOString(),
+    waitId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    jobName: "main",
+    stepName: "identify",
+    deadline: TOO_LATE.toISOString(),
+    ...(early
+      ? {
+        early: {
+          generation,
+          overRelease: early.overRelease,
+          from: OPENED.toISOString(),
+        },
+      }
+      : {}),
+  });
+  assertEquals(stored.kind, "found");
+}
+
+Deno.test("sweepPendingSignals: slots that hold only a lapse are swept without listing key records, however many keys are claimed", async () => {
+  const store = new InMemorySignalWaitStore();
+  const retired = earlyWorkflow();
+  await store.createPendingRecord(pendingFor(retired));
+  assertEquals(await sweepPendingSignals(store, LONG_AFTER), 1);
+  // Other workflows hold their keys; none of them has a pending signal.
+  for (let other = 0; other < 5; other++) {
+    await suspendedAtEarlyWait(store, earlyWorkflow(), OPENED);
+  }
+
+  const { store: recording, calls } = recordingCalls(store);
+  assertEquals(await sweepPendingSignals(recording, LONG_AFTER), 0);
+  assertEquals(await sweepPendingSignals(recording, LONG_AFTER), 0);
+  // One listing of the pending signals, then the lapsed slot's own key and
+  // its own highest record, on each pass. No other key is read.
+  assertEquals(calls, [
+    "listPendingAddresses",
+    "highestKeyRecord",
+    "highestPendingRecord",
+    "listPendingAddresses",
+    "highestKeyRecord",
+    "highestPendingRecord",
+  ]);
+  assertEquals(
+    await store.listPendingAddresses(),
+    [{ workflowId: retired.id, key: EARLY_KEY, slot: 1, number: 2 }],
+  );
+});
+
+Deno.test("sweepPendingSignals: a slot the key has passed is kept for its claim without listing key records", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  // The slot's own claim has no early block: any claim keeps its slot.
+  await storeClaimAt(store, workflow, 1);
+  await storeClaimAt(store, workflow, 2, { overRelease: false });
+  await storeClaimAt(store, workflow, 3, { overRelease: false });
+  await store.createPendingRecord(pendingFor(workflow, { slot: 1 }));
+
+  const { store: recording, calls } = recordingCalls(store);
+  assertEquals(await sweepPendingSignals(recording, LONG_AFTER), 0);
+  assertEquals(calls.includes("listKeyRecords"), false);
+  assertEquals((await store.listPendingAddresses()).length, 1);
+});
+
+Deno.test("sweepPendingSignals: the claim one generation up keeps a slot only when it was created over a release", async () => {
+  for (const overRelease of [true, false]) {
+    const store = new InMemorySignalWaitStore();
+    const workflow = earlyWorkflow();
+    // Generation 1 is gone; 2 is the release a signal wrote its slot under.
+    assertEquals(
+      (await store.createKeyRecord({
+        kind: "release",
+        workflowId: workflow.id,
+        key: EARLY_KEY,
+        generation: 2,
+        recordedAt: OPENED.toISOString(),
+      })).kind,
+      "found",
+    );
+    await storeClaimAt(store, workflow, 3, { overRelease });
+    await storeClaimAt(store, workflow, 4, { overRelease: false });
+    await store.createPendingRecord(pendingFor(workflow, { slot: 2 }));
+
+    assertEquals(
+      await sweepPendingSignals(store, LONG_AFTER),
+      overRelease ? 0 : 1,
+    );
+    assertEquals(
+      (await store.listPendingAddresses()).length,
+      overRelease ? 1 : 0,
+    );
+  }
+});
+
+Deno.test("sweepPendingSignals: a slot whose claim cannot be read is left as it is", async () => {
+  for (const damaged of [1, 2]) {
+    const store = new InMemorySignalWaitStore();
+    const workflow = earlyWorkflow();
+    for (let generation = 1; generation <= 3; generation++) {
+      await storeClaimAt(store, workflow, generation, { overRelease: false });
+    }
+    // Without the damage neither generation 1 nor 2 would keep slot 1 once
+    // generation 1 is gone.
+    await store.removeKeyRecord({
+      workflowId: workflow.id,
+      key: EARLY_KEY,
+      generation: 1,
+    });
+    store.keyRecords.set(
+      waitKeyRecordKey({
+        workflowId: workflow.id,
+        key: EARLY_KEY,
+        generation: damaged,
+      }),
+      new TextEncoder().encode("{"),
+    );
+    await store.createPendingRecord(pendingFor(workflow, { slot: 1 }));
+
+    assertEquals(await sweepPendingSignals(store, LONG_AFTER), 0);
+    assertEquals((await store.listPendingAddresses()).length, 1);
+  }
 });
 
 Deno.test("sweepWaitRecords: pending signals are swept where run records say nothing about a wait", async () => {
