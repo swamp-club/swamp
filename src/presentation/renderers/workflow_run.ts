@@ -1375,3 +1375,43 @@ export function createWorkflowRunRenderer(
       return new ConsoleWorkflowRunRenderer(opts);
   }
 }
+
+/** A run a server has started and the client has stopped following. */
+export interface WorkflowRunAcceptedData {
+  runId: string;
+  workflowName: string;
+  status: "running";
+  detached: true;
+}
+
+/**
+ * Reports a detached run (`swamp workflow run --detach`): the run's id, and in
+ * log mode the commands that follow it up. `commandTarget` is appended to each
+ * so it targets the same server.
+ */
+export function renderWorkflowRunAccepted(
+  run: { runId: string; workflowName: string },
+  mode: OutputMode,
+  commandTarget = "",
+): void {
+  const data: WorkflowRunAcceptedData = {
+    runId: run.runId,
+    workflowName: run.workflowName,
+    status: "running",
+    detached: true,
+  };
+  if (mode === "json") {
+    unguardedConsole.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  // Both come from the server; neither reaches the terminal unescaped.
+  const workflowName = escapeControlCharacters(data.workflowName);
+  const runId = escapeControlCharacters(data.runId);
+  writeOutput([
+    `${green("Accepted")} workflow ${workflowName} (run: ${runId})`,
+    dim("  The run continues on the server."),
+    dim(`  Status: swamp workflow history get ${runId}${commandTarget}`),
+    dim(`  Logs:   swamp workflow history logs ${runId}${commandTarget}`),
+    dim(`  Cancel: swamp workflow cancel --run ${runId}${commandTarget}`),
+  ].join("\n"));
+}

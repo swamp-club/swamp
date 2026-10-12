@@ -20204,3 +20204,67 @@ Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions ca
 
   assertEquals(error, UNPUBLISHED);
 });
+
+Deno.test("run: the run is recorded by the time started is yielded (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    let recordedAtStarted: string | undefined;
+    let startedRunId: string | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "started") {
+        startedRunId = event.runId;
+        const recorded = await runRepo.findById(
+          workflow.id,
+          event.runId as WorkflowRunId,
+        );
+        recordedAtStarted = recorded?.id;
+      }
+    }
+
+    assertEquals(typeof startedRunId, "string");
+    assertEquals(recordedAtStarted, startedRunId);
+  });
+});
+
+Deno.test("run: a first save that fails yields no started event (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SpyWorkflowRunRepository();
+    runRepo.allowSaves = 0;
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const kinds: string[] = [];
+    await assertRejects(
+      async () => {
+        for await (const event of service.run(workflow.name)) {
+          kinds.push(event.kind);
+        }
+      },
+      Error,
+      "datastore unavailable",
+    );
+
+    assertEquals(kinds.includes("started"), false);
+  });
+});

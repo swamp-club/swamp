@@ -565,6 +565,33 @@ run in the `ActiveRunRegistry` with its own `AbortController` and a 10 000-event
 `RunEventBuffer` (`src/serve/handlers/*`, `DEFAULT_BUFFER_CAPACITY`). The
 requesting socket is only a subscriber; the run continues if it drops.
 
+`swamp workflow run --server <url> --detach` uses that on purpose
+(swamp-club#1090). The client reads the stream up to the run's own `started`
+event, prints the run id, and closes its socket without sending `cancel`
+(`runWorkflowOverServer` with `detach`, `src/cli/remote_run.ts`). The execution
+service saves the run record before it yields `started`, so the id names a
+recorded run by the time the command returns. A request refused before that
+(unknown workflow, invalid inputs, no `run` grant, over `--max-concurrent-runs`,
+shutting down) fails the command as it does without `--detach`.
+
+What a detached caller does not get:
+
+- A result. The exit code says the run started, not how it ended. Follow it
+  with `swamp workflow history get <run-id>` or `run.attach`.
+- Backpressure beyond the run limits. Each accepted run holds a slot in the
+  `ActiveRunRegistry` until it ends, so a caller that submits faster than runs
+  finish is refused with `Too many concurrent runs` and must handle it.
+- A guarantee across a crash. A detached run is an API run: it is not a pending
+  run and is not replayed. If its instance dies, reconciliation marks it
+  `interrupted` like any other (see [High availability](#high-availability)).
+- `--timeout` or `--junit`, which the command refuses: the deadline would be
+  enforced by a client that has already left, and there is no result to
+  report. `--max-run-duration` limits the run on the server.
+
+The request's audit `response` event is written when the client leaves, as it
+is for any subscriber that drops, so it records that the run was accepted, not
+how it ended.
+
 A client resumes with `run.attach { runId, afterSeq }`; the buffer replays
 events with `seq > afterSeq`, then streams live ones
 (`src/serve/run_event_buffer.ts`). `run.attach` needs a `run` grant on the run's
@@ -955,6 +982,12 @@ custom HTTP response, optionally without starting a run. Core keeps every
 security decision: hooks run only after verification, `transform` sees only
 redacted headers, and a missing type or failing hook returns a generic `500`
 before anything is queued. Hooks run inline with no timeout.
+
+Verified requests on every route join one queue and run one at a time, in
+arrival order (`WebhookService.processQueue`), so a delivery waits for every
+run queued ahead of it to complete or suspend. A workflow that must start long
+work without holding the queue submits it with
+`swamp workflow run --server --detach` and returns (swamp-club#1090).
 
 A verified request becomes a pending run before it executes, so a crash between
 receipt and completion is replayed at next boot (`src/serve/webhook.ts`). Each
