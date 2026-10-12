@@ -29,6 +29,7 @@ import {
   useState,
 } from "react";
 import {
+  draftForQuery,
   type FacetDef,
   parseFacetInput,
   type Suggestion,
@@ -132,11 +133,11 @@ export function SearchBar(
   const [active, setActive] = useState(0);
 
   // Follow outside changes to the query (Clear filters, Back/Forward), but
-  // not every keystroke.
+  // not every keystroke: runs on `query` alone, reading the latest box text
+  // and facets through `latest`.
   useEffect(() => {
-    if (parseFacetInput(draft, facets) === null && draft !== query) {
-      setDraft(query);
-    }
+    const { draft, facets } = latest.current;
+    setDraft(draftForQuery(draft, query, facets));
   }, [query]);
 
   // Single-value facets drop off the list once set; multi-value ones stay
@@ -174,11 +175,11 @@ export function SearchBar(
     const d = doc();
     if (!d) return;
     const onDown = (e: EventLike) => {
-      if (!el(rootRef.current)?.contains(e.target)) close();
+      if (!el(rootRef.current)?.contains(e.target)) latest.current.close();
     };
     d.addEventListener("pointerdown", onDown);
     return () => d.removeEventListener("pointerdown", onDown);
-  }, [open, draft]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -194,6 +195,10 @@ export function SearchBar(
     setOpen(false);
     if (parseFacetInput(draft, facets) !== null) setDraft("");
   };
+
+  // This render's values, for effects that must not re-run when they change.
+  const latest = useRef({ draft, facets, close });
+  latest.current = { draft, facets, close };
 
   const setText = (text: string) => {
     setDraft(text);

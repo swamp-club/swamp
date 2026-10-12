@@ -63,6 +63,18 @@ export function parseFacetInput(
   return facet ? { facet, partial: m[2] } : null;
 }
 
+/**
+ * The search box's text once the query changed from outside (Clear filters,
+ * Back/Forward): the query, unless the box holds an unfinished `key:`.
+ */
+export function draftForQuery(
+  draft: string,
+  query: string,
+  facets: readonly FacetDef[],
+): string {
+  return parseFacetInput(draft, facets) === null ? query : draft;
+}
+
 const MAX_VALUES = 60;
 const MAX_CROSS_VALUES = 6;
 
