@@ -1,0 +1,145 @@
+/* MiniDag: a small left-to-right DAG (see components/MiniDag.tsx). */
+
+.mini-dag {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 4px 2px 6px;
+}
+.mini-dag-canvas {
+  position: relative;
+  flex: none;
+}
+.mini-dag-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.mini-dag-edge {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.mini-dag-edge.hl {
+  stroke: var(--warning);
+  stroke-width: 1.75;
+}
+.mini-dag-arrow {
+  fill: var(--border);
+}
+.mini-dag-arrow.hl {
+  fill: var(--warning);
+}
+.mini-dag-nodes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.mini-dag-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-1);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  transition: opacity 0.15s ease;
+}
+.mini-dag-node::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.mini-dag-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mini-dag-node.muted {
+  opacity: 0.6;
+}
+.mini-dag-node.hl {
+  font-weight: 600;
+}
+
+/* Tones follow run statuses, plus "waiting" for held-back work */
+.mini-dag-node.tone-succeeded::before {
+  background: var(--success);
+}
+.mini-dag-node.tone-failed {
+  border-color: var(--danger);
+}
+.mini-dag-node.tone-failed::before {
+  background: var(--danger);
+}
+.mini-dag-node.tone-running {
+  border-color: var(--running);
+}
+.mini-dag-node.tone-running::before {
+  background: var(--running);
+}
+.mini-dag-node.tone-cancelled::before {
+  background: var(--cancelled);
+}
+.mini-dag-node.tone-pending::before {
+  background: var(--info);
+}
+.mini-dag-node.tone-suspended {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+  box-shadow: 0 0 0 2px var(--warning-bg);
+}
+.mini-dag-node.tone-suspended::before {
+  background: var(--warning);
+}
+.mini-dag-node.tone-waiting {
+  border-style: dashed;
+  border-color: var(--warning);
+}
+.mini-dag-node.tone-waiting::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--warning);
+}
+
+.mini-dag-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.mini-dag-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mini-dag-swatch {
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.mini-dag-swatch.tone-suspended {
+  border-color: var(--warning);
+  background: var(--warning-bg);
+}
+.mini-dag-swatch.tone-waiting {
+  border-style: dashed;
+  border-color: var(--warning);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mini-dag-node {
+    transition: none;
+  }
+}
