@@ -45,6 +45,14 @@ export type RunStatusFilter = "" | RunStatus;
 /** What started a run, as serve records it in `triggerSource`. */
 export const RUN_SOURCES = ["schedule", "webhook", "api", "manual"] as const;
 export type RunSource = typeof RUN_SOURCES[number];
+
+export function isRunStatus(value: string): value is RunStatus {
+  return (RUN_STATUSES as readonly string[]).includes(value);
+}
+
+export function isRunSource(value: string): value is RunSource {
+  return (RUN_SOURCES as readonly string[]).includes(value);
+}
 /** "" means any source. */
 export type RunSourceFilter = "" | RunSource;
 
@@ -100,8 +108,10 @@ export function filterRowsByWorkflow<T>(
 export interface RunSearchQuery {
   page: number;
   pageSize: number;
-  status: RunStatusFilter;
-  source: RunSourceFilter;
+  /** Any of these statuses; empty lists every status. */
+  statuses: readonly RunStatus[];
+  /** Any of these trigger sources; empty lists every source. */
+  sources: readonly RunSource[];
   /** From {@link workflowNamesForFilter}; null sends no workflow filter. */
   workflows: readonly string[] | null;
   since?: string;
@@ -114,8 +124,8 @@ export function runSearchPayload(q: RunSearchQuery): Record<string, unknown> {
     limit: q.pageSize,
     offset: q.page * q.pageSize,
   };
-  if (q.status) payload.status = q.status;
-  if (q.source) payload.triggerSource = q.source;
+  if (q.statuses.length > 0) payload.statuses = [...q.statuses];
+  if (q.sources.length > 0) payload.triggerSources = [...q.sources];
   if (q.workflows !== null) payload.workflows = [...q.workflows];
   if (q.since) payload.since = q.since;
   if (q.until) payload.until = q.until;

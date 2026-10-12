@@ -76,7 +76,7 @@ Deno.test("applyWorkflowFilter: facets combine with AND", () => {
     names(
       applyWorkflowFilter(
         workflows,
-        { ...EMPTY_FILTER, prefix: "deploy" },
+        { ...EMPTY_FILTER, prefixes: ["deploy"] },
         id,
         facets,
       ),
@@ -87,7 +87,7 @@ Deno.test("applyWorkflowFilter: facets combine with AND", () => {
     names(
       applyWorkflowFilter(
         workflows,
-        { ...EMPTY_FILTER, trigger: "schedule" },
+        { ...EMPTY_FILTER, triggers: ["schedule"] },
         id,
         facets,
       ),
@@ -98,7 +98,7 @@ Deno.test("applyWorkflowFilter: facets combine with AND", () => {
     names(
       applyWorkflowFilter(
         workflows,
-        { ...EMPTY_FILTER, trigger: "manual" },
+        { ...EMPTY_FILTER, triggers: ["manual"] },
         id,
         facets,
       ),
@@ -109,7 +109,7 @@ Deno.test("applyWorkflowFilter: facets combine with AND", () => {
     names(
       applyWorkflowFilter(
         workflows,
-        { ...EMPTY_FILTER, webhook: "/hooks/push" },
+        { ...EMPTY_FILTER, webhooks: ["/hooks/push"] },
         id,
         facets,
       ),
@@ -120,7 +120,7 @@ Deno.test("applyWorkflowFilter: facets combine with AND", () => {
     names(
       applyWorkflowFilter(
         workflows,
-        { ...EMPTY_FILTER, prefix: "deploy", trigger: "schedule" },
+        { ...EMPTY_FILTER, prefixes: ["deploy"], triggers: ["schedule"] },
         id,
         facets,
       ),
@@ -154,10 +154,54 @@ Deno.test("applyWorkflowFilter: fuzzy query matches names and routes", () => {
   );
 });
 
+Deno.test("applyWorkflowFilter: values within a facet combine with OR", () => {
+  assertEquals(
+    names(
+      applyWorkflowFilter(
+        workflows,
+        { ...EMPTY_FILTER, prefixes: ["deploy", "sync"] },
+        id,
+        facets,
+      ),
+    ),
+    ["deploy-api", "deploy-web", "sync-crm"],
+  );
+  assertEquals(
+    names(
+      applyWorkflowFilter(
+        workflows,
+        { ...EMPTY_FILTER, triggers: ["webhook", "manual"] },
+        id,
+        facets,
+      ),
+    ),
+    ["deploy-api", "sync-crm", "standalone"],
+  );
+  // OR within prefix, AND with trigger.
+  assertEquals(
+    names(
+      applyWorkflowFilter(
+        workflows,
+        {
+          ...EMPTY_FILTER,
+          prefixes: ["deploy", "sync"],
+          triggers: ["schedule"],
+        },
+        id,
+        facets,
+      ),
+    ),
+    ["deploy-web", "sync-crm"],
+  );
+});
+
 Deno.test("isFilterActive: only when something narrows", () => {
   assertEquals(isFilterActive(EMPTY_FILTER), false);
   assertEquals(isFilterActive({ ...EMPTY_FILTER, query: "  " }), false);
-  assertEquals(isFilterActive({ ...EMPTY_FILTER, trigger: "webhook" }), true);
+  assertEquals(
+    isFilterActive({ ...EMPTY_FILTER, triggers: ["webhook"] }),
+    true,
+  );
 });
 
 Deno.test("groupWorkflows: by prefix with Other last", () => {

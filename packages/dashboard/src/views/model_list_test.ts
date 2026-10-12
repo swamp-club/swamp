@@ -36,7 +36,7 @@ const models: ModelSummary[] = [
   { id: "4", name: "data-export-pipeline", type: "@acme/aws/s3" },
 ];
 
-const none = { query: "", type: null, prefix: null };
+const none = { query: "", types: [], prefixes: [] };
 
 Deno.test("filterModels: fuzzy matches the name or the type", () => {
   assertEquals(
@@ -51,11 +51,13 @@ Deno.test("filterModels: fuzzy matches the name or the type", () => {
 
 Deno.test("filterModels: narrows by exact type and by name prefix", () => {
   assertEquals(
-    filterModels(models, { ...none, type: "command/shell" }).map((m) => m.id),
+    filterModels(models, { ...none, types: ["command/shell"] }).map((m) =>
+      m.id
+    ),
     ["1", "3"],
   );
   assertEquals(
-    filterModels(models, { ...none, prefix: "deploy" }).map((m) => m.id),
+    filterModels(models, { ...none, prefixes: ["deploy"] }).map((m) => m.id),
     ["1", "2"],
   );
 });

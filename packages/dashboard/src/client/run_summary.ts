@@ -72,6 +72,8 @@ export interface RunSummaryData {
 export interface RunSummaryQuery {
   workflows?: string[];
   triggerSource?: string;
+  /** Any of these trigger sources. */
+  triggerSources?: string[];
   recentLimit?: number;
   timeline?: boolean;
   /** Override the dashboard time range (e.g. a calendar's own window). */

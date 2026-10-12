@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { applyRowFacets, type RowFacetSpec } from "../lib/row_facets.ts";
+import { workflowPrefix } from "../lib/workflow_facets.ts";
+
 import { useMemo } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
@@ -24,7 +27,10 @@ import { HealthUnavailable } from "../components/HealthUnavailable";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { SkeletonPills, SkeletonTable } from "../components/Skeleton.tsx";
 import { type Stat, StatPills } from "../components/StatPills.tsx";
-import { TriggerFilterBar } from "../components/TriggerFilterBar.tsx";
+import {
+  rowSearchFacets,
+  TriggerFilterBar,
+} from "../components/TriggerFilterBar.tsx";
 import {
   webhookColumns,
   webhookRoute,
@@ -32,7 +38,11 @@ import {
   WebhookTable,
 } from "../components/TriggerTables.tsx";
 import { navigateTo } from "../hooks/useRouter.ts";
-import { asString, useQueryState } from "../client/useQueryState.ts";
+import {
+  asString,
+  useFacetParams,
+  useQueryState,
+} from "../client/useQueryState.ts";
 import { useTriggerRunSummaries } from "../client/trigger_runs.ts";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
@@ -65,6 +75,55 @@ export function useResolvedWebhooks(health: HealthSnapshot | null) {
     }));
   }, [webhooks, data]);
 }
+
+const LAST_RUN_LABELS: Record<string, string> = {
+  succeeded: "Succeeded",
+  failed: "Failed",
+  running: "Running",
+  suspended: "Suspended",
+  cancelled: "Cancelled",
+  never: "No runs in range",
+};
+
+/** What the webhook table can be filtered by, beyond free text. */
+const WEBHOOK_FACETS: readonly RowFacetSpec<WebhookRow>[] = [
+  {
+    key: "workflow",
+    label: "Workflow",
+    description: "Webhooks that start a given workflow",
+    valueOf: (r) => r.workflowName,
+  },
+  {
+    key: "last",
+    label: "Last run",
+    description: "How the latest webhook run in range ended",
+    valueOf: (r) => r.recent[0]?.status ?? "never",
+    labelOf: (v) => LAST_RUN_LABELS[v] ?? v,
+    order: Object.keys(LAST_RUN_LABELS),
+  },
+  {
+    key: "scheme",
+    label: "Verification",
+    description: "How the request signature is checked",
+    valueOf: (r) => r.scheme ?? "none",
+    labelOf: (v) => (v === "none" ? "Not reported" : v),
+  },
+  {
+    key: "prefix",
+    label: "Prefix",
+    description: "Webhooks whose workflow name starts with a prefix",
+    valueOf: (r) => workflowPrefix(r.workflowName),
+  },
+  {
+    key: "shared",
+    label: "Shared",
+    description: "Whether other routes start the same workflow",
+    valueOf: (r) => (r.sharedWith.length > 0 ? "shared" : "only"),
+    labelOf: (v) =>
+      v === "shared" ? "Workflow shared with other routes" : "Only route",
+  },
+];
+const WEBHOOK_FACET_KEYS = WEBHOOK_FACETS.map((f) => f.key);
 
 export function Webhooks(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
@@ -99,7 +158,12 @@ export function Webhooks(
       };
     })
     .sort((a, b) => a.route.localeCompare(b.route));
-  const filtered = filterWebhooks(rows, query);
+  const [selected, select] = useFacetParams(WEBHOOK_FACET_KEYS);
+  const filtered = filterWebhooks(
+    applyRowFacets(rows, WEBHOOK_FACETS, selected),
+    query,
+  );
+  const facets = rowSearchFacets(rows, WEBHOOK_FACETS, selected, select);
 
   const rangeLabel = describeTimeRange(range);
   const stats: Stat[] = [
@@ -134,11 +198,15 @@ export function Webhooks(
         <TriggerFilterBar
           query={query}
           onQuery={setQuery}
-          placeholder="Search webhook routes and workflows…"
+          placeholder="Search routes, or filter by workflow, last run…"
           shown={filtered.length}
           total={rows.length}
           noun="webhooks"
-          onClear={() => setQuery("")}
+          facets={facets}
+          onClear={() => {
+            setQuery("");
+            for (const key of WEBHOOK_FACET_KEYS) select(key, []);
+          }}
         />
       )}
 

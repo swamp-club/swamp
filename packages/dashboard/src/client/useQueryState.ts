@@ -113,3 +113,77 @@ export const asNullableString = (raw: string | null): string | null =>
 export const asFlag = (raw: string | null): boolean => raw === "1";
 export const flagParam = (v: boolean): string | null => (v ? "1" : null);
 export const nullableParam = (v: string | null): string | null => v;
+
+/** Every `?key=` value in a query string, de-duplicated, in order. */
+export function queryListValue(search: string, key: string): string[] {
+  try {
+    return [
+      ...new Set(new URLSearchParams(search).getAll(key).filter(Boolean)),
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function writeList(key: string, values: readonly string[]): void {
+  try {
+    const url = new URL(globalThis.location.href);
+    url.searchParams.delete(key);
+    for (const v of values) url.searchParams.append(key, v);
+    const history = (globalThis as {
+      history?: {
+        state: unknown;
+        replaceState(state: unknown, unused: string, url: string): void;
+      };
+    }).history;
+    history?.replaceState(history.state, "", url.toString());
+  } catch {
+    // No history API (tests, sandboxed frames): state lives in memory only.
+  }
+}
+
+/**
+ * A list of values mirrored to repeated params (`?prefix=a&prefix=b`), for
+ * multi-value filters. An empty list removes the param.
+ */
+export function useQueryList(
+  key: string,
+): [readonly string[], (next: readonly string[]) => void] {
+  const [value, setValue] = useState<readonly string[]>(() =>
+    queryListValue(currentSearch(), key)
+  );
+  useEffect(() => {
+    const onPop = () => setValue(queryListValue(currentSearch(), key));
+    globalThis.addEventListener("popstate", onPop);
+    return () => globalThis.removeEventListener("popstate", onPop);
+  }, [key]);
+  const set = useCallback((next: readonly string[]) => {
+    const unique = [...new Set(next)];
+    setValue(unique);
+    writeList(key, unique);
+  }, [key]);
+  return [value, set];
+}
+
+/**
+ * Several multi-value facet selections, each mirrored to repeated
+ * `?<key>=` params. `keys` must be a constant list (one hook per key, in a
+ * fixed order).
+ */
+export function useFacetParams(
+  keys: readonly string[],
+): [
+  Record<string, readonly string[]>,
+  (key: string, values: readonly string[]) => void,
+] {
+  // One hook per key; `keys` is a module constant so the order never moves.
+  // deno-lint-ignore react-rules-of-hooks
+  const entries = keys.map((key) => [key, useQueryList(key)] as const);
+  const values: Record<string, readonly string[]> = {};
+  const setters: Record<string, (v: readonly string[]) => void> = {};
+  for (const [key, [value, set]] of entries) {
+    values[key] = value;
+    setters[key] = set;
+  }
+  return [values, (key, next) => setters[key]?.(next)];
+}

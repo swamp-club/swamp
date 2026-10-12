@@ -33,7 +33,7 @@ import {
   type TimeRange,
   useTimeRange,
 } from "../client/time_range";
-import { oneOf, useQueryState } from "../client/useQueryState";
+import { useQueryList } from "../client/useQueryState";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { Pager } from "../components/Pager";
@@ -51,13 +51,13 @@ import {
 } from "../components/Skeleton";
 import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
 import {
+  isRunSource,
+  isRunStatus,
   RUN_SOURCE_LABELS,
   RUN_SOURCES,
   RUN_STATUSES,
   runSearchPayload,
   runSearchWindow,
-  type RunSourceFilter,
-  type RunStatusFilter as StatusValue,
   splitWorkflowFilter,
   statusCounts,
   totalsOfWorkflows,
@@ -102,8 +102,6 @@ const COLUMNS: SkeletonColumn[] = [
   { header: "Started", cell: 96 },
 ];
 
-const STATUS_PARAM = oneOf<StatusValue>(["", ...RUN_STATUSES], "");
-
 const STATUS_LABELS: Record<(typeof RUN_STATUSES)[number], string> = {
   succeeded: "Succeeded",
   failed: "Failed",
@@ -111,7 +109,6 @@ const STATUS_LABELS: Record<(typeof RUN_STATUSES)[number], string> = {
   suspended: "Suspended",
   cancelled: "Cancelled",
 };
-const SOURCE_PARAM = oneOf<RunSourceFilter>(["", ...RUN_SOURCES], "");
 
 /** "in the last 7 days", "of all time", "between Oct 3 and Oct 9". */
 function rangePhrase(range: TimeRange): string {
@@ -125,15 +122,15 @@ function rangePhrase(range: TimeRange): string {
 export function Executions({ health, onOpenRun }: ExecutionsProps) {
   const catalog = useWorkflowCatalog(health ?? null);
   const [filter, setFilter] = useWorkflowFilter();
-  const [status, setStatus] = useQueryState<StatusValue>(
-    "status",
-    "",
-    STATUS_PARAM,
+  const [rawStatuses, setStatuses] = useQueryList("status");
+  const [rawSources, setSources] = useQueryList("source");
+  const statuses = useMemo(
+    () => rawStatuses.filter(isRunStatus),
+    [rawStatuses],
   );
-  const [source, setSource] = useQueryState<RunSourceFilter>(
-    "source",
-    "",
-    SOURCE_PARAM,
+  const sources = useMemo(
+    () => rawSources.filter(isRunSource),
+    [rawSources],
   );
   const { range } = useTimeRange();
   const searchWindow = runSearchWindow(range);
@@ -161,7 +158,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
 
   // Any change to what is listed starts again at the first page. Keyed on
   // the chosen range, not its resolved bounds, which move every minute.
-  const filterKey = JSON.stringify([workflowNames, status, source, range]);
+  const filterKey = JSON.stringify([workflowNames, statuses, sources, range]);
   const [paging, setPaging] = useState({ key: filterKey, page: 0 });
   const page = paging.key === filterKey ? paging.page : 0;
   const setPage = useCallback(
@@ -174,8 +171,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     runSearchPayload({
       page,
       pageSize: PAGE_SIZE,
-      status,
-      source,
+      statuses,
+      sources,
       workflows: serverNames,
       since: searchWindow.since,
       until: searchWindow.until,
@@ -200,7 +197,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   // workflows, source and time range.
   const totalsQuery: RunSummaryQuery = {};
   if (serverNames !== null) totalsQuery.workflows = [...serverNames];
-  if (source) totalsQuery.triggerSource = source;
+  if (sources.length > 0) totalsQuery.triggerSources = [...sources];
   const totalsRequest = useRunSummary(totalsQuery, { enabled });
   const summary = useKeepPrevious(totalsRequest.summary, !enabled);
   const totals = summary
@@ -233,11 +230,12 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     historyRequest.refetch();
   }, [search.refetch, totalsRequest.refetch, historyRequest.refetch]);
 
-  const anyFilter = workflowFilterActive || status !== "" || source !== "";
+  const anyFilter = workflowFilterActive || statuses.length > 0 ||
+    sources.length > 0;
   const clearAll = () => {
     setFilter(EMPTY_FILTER);
-    setStatus("");
-    setSource("");
+    setStatuses([]);
+    setSources([]);
   };
 
   const stats: Stat[] | null = totals
@@ -500,8 +498,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
               label: STATUS_LABELS[st],
               hint: statusTotals ? formatCount(statusTotals[st]) : undefined,
             })),
-            selected: status || null,
-            onSelect: (v) => setStatus((v ?? "") as StatusValue),
+            selected: statuses,
+            onSelect: setStatuses,
           },
           {
             key: "started",
@@ -511,8 +509,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
               value: src,
               label: RUN_SOURCE_LABELS[src],
             })),
-            selected: source || null,
-            onSelect: (v) => setSource((v ?? "") as RunSourceFilter),
+            selected: sources,
+            onSelect: setSources,
           },
         ]}
       />

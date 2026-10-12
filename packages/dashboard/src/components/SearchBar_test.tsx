@@ -22,11 +22,14 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SearchBar, type SearchFacet } from "./SearchBar.tsx";
 
-const facets = (selected: string | null): SearchFacet[] => [{
+const facets = (selected: readonly string[]): SearchFacet[] => [{
   key: "prefix",
   label: "Prefix",
   description: "Name prefix",
-  values: [{ value: "deploy", label: "deploy", hint: "12" }],
+  values: [
+    { value: "deploy", label: "deploy", hint: "12" },
+    { value: "sync", label: "sync", hint: "10" },
+  ],
   selected,
   onSelect: () => {},
 }];
@@ -36,7 +39,7 @@ Deno.test("SearchBar: one search box, no selects, a / shortcut when idle", () =>
     <SearchBar
       query=""
       onQuery={() => {}}
-      facets={facets(null)}
+      facets={facets([])}
       onClear={() => {}}
     />,
   );
@@ -53,7 +56,7 @@ Deno.test("SearchBar: applied filters show as removable chips", () => {
     <SearchBar
       query=""
       onQuery={() => {}}
-      facets={facets("deploy")}
+      facets={facets(["deploy", "sync"])}
       onClear={() => {}}
       shown={3}
       total={141}
@@ -61,8 +64,9 @@ Deno.test("SearchBar: applied filters show as removable chips", () => {
     />,
   );
   assertStringIncludes(html, '<span class="qchip-key">Prefix</span>');
-  assertStringIncludes(html, '<span class="qchip-val">deploy</span>');
-  assertStringIncludes(html, 'aria-label="Remove Prefix: deploy"');
+  // Several values of one filter read as OR.
+  assertStringIncludes(html, '<span class="qchip-val">deploy or sync</span>');
+  assertStringIncludes(html, 'aria-label="Remove Prefix: deploy or sync"');
   assertStringIncludes(html, "3 of 141 workflows");
   assertStringIncludes(html, "Clear");
 });

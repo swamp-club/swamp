@@ -36,10 +36,15 @@ import {
 } from "../lib/search_facets.ts";
 import { formatCount } from "../lib/format.ts";
 
-/** A facet the bar can filter by, with its current value. */
+/**
+ * A facet the bar can filter by, with its current values. Values within a
+ * facet combine with OR; facets combine with AND.
+ */
 export interface SearchFacet extends FacetDef {
-  selected: string | null;
-  onSelect: (value: string | null) => void;
+  selected: readonly string[];
+  onSelect: (values: readonly string[]) => void;
+  /** False for facets that can only hold one value. */
+  multi?: boolean;
 }
 
 interface SearchBarProps {
@@ -67,17 +72,17 @@ interface ElLike {
     selector: string,
   ): { scrollIntoView(options: { block: "nearest" }): void } | null;
 }
-interface DocLike {
-  addEventListener(type: string, fn: (e: KeyEventLike) => void): void;
-  removeEventListener(type: string, fn: (e: KeyEventLike) => void): void;
-}
-interface KeyEventLike {
+interface EventLike {
   key: string;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
   target: unknown;
   preventDefault(): void;
+}
+interface DocLike {
+  addEventListener(type: string, fn: (e: EventLike) => void): void;
+  removeEventListener(type: string, fn: (e: EventLike) => void): void;
 }
 const el = (node: unknown): ElLike | null => node as ElLike | null;
 const doc = (): DocLike | undefined =>
@@ -92,12 +97,21 @@ function isTyping(target: unknown): boolean {
   );
 }
 
+/** "deploy or sync" for a facet's selected values. */
+export function selectionText(facet: SearchFacet): string {
+  return facet.selected
+    .map((v) => facet.values.find((x) => x.value === v)?.label ?? v)
+    .join(" or ");
+}
+
 /**
  * One search box that guides filtering. Focus it to see what you can
  * filter by; pick a facet (or type `prefix:`) to see its values; or just
- * type to search names, with matching facet values suggested alongside.
- * Applied filters sit in the box as removable chips. "/" focuses it from
- * anywhere; Backspace in an empty box removes the last chip.
+ * type to search names, with matching values suggested alongside.
+ * Values are checkboxes: clicking (or Enter on) a value ticks or unticks
+ * it and keeps the list open, so several can be chosen in one go. Applied filters sit in the box as chips joined by
+ * "and"; click a chip to change it. "/" focuses the box from anywhere and
+ * Backspace in an empty box removes the last chip.
  */
 export function SearchBar(
   {
@@ -124,16 +138,23 @@ export function SearchBar(
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
 
-  // Follow outside changes to the query (Clear filters, Back/Forward).
+  // Follow outside changes to the query (Clear filters, Back/Forward), but
+  // not every keystroke.
   useEffect(() => {
     if (parseFacetInput(draft, facets) === null && draft !== query) {
       setDraft(query);
     }
-    // Only when the query changes from outside, not on every keystroke.
   }, [query]);
 
+  // Single-value facets drop off the list once set; multi-value ones stay
+  // so more values can be added.
   const applied = useMemo(
-    () => new Set(facets.filter((f) => f.selected !== null).map((f) => f.key)),
+    () =>
+      new Set(
+        facets
+          .filter((f) => f.multi === false && f.selected.length > 0)
+          .map((f) => f.key),
+      ),
     [facets],
   );
   const suggestions = useMemo(
@@ -145,7 +166,7 @@ export function SearchBar(
   useEffect(() => {
     const d = doc();
     if (!d) return;
-    const onKey = (e: KeyEventLike) => {
+    const onKey = (e: EventLike) => {
       if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
       if (isTyping(e.target)) return;
       e.preventDefault();
@@ -159,7 +180,7 @@ export function SearchBar(
     if (!open) return;
     const d = doc();
     if (!d) return;
-    const onDown = (e: KeyEventLike) => {
+    const onDown = (e: EventLike) => {
       if (!el(rootRef.current)?.contains(e.target)) setOpen(false);
     };
     d.addEventListener("pointerdown", onDown);
@@ -173,6 +194,8 @@ export function SearchBar(
       ?.scrollIntoView({ block: "nearest" });
   }, [open, active]);
 
+  const focusInput = () => el(inputRef.current)?.focus();
+
   const setText = (text: string) => {
     setDraft(text);
     setActive(0);
@@ -183,30 +206,49 @@ export function SearchBar(
     else if (query) onQuery("");
   };
 
+  const showFacet = (key: string) => {
+    setDraft(`${key}:`);
+    if (query) onQuery("");
+    setActive(0);
+    setOpen(true);
+    focusInput();
+  };
+
+  /**
+   * Applies a suggestion. A value ticks or unticks in its facet (or, for a
+   * single-value facet, replaces it) and the facet's list stays open so
+   * more can be ticked; Escape or a click outside closes it.
+   */
   const pick = (s: Suggestion | undefined) => {
     if (!s) return;
     if (s.kind === "facet") {
-      setDraft(`${s.facet.key}:`);
-      setActive(0);
-      setOpen(true);
-      // Whatever was typed was only finding the facet.
-      if (query) onQuery("");
-    } else if (s.kind === "value") {
-      const facet = facets.find((f) => f.key === s.facet.key);
-      facet?.onSelect(s.value.value);
-      setDraft("");
-      if (query) onQuery("");
-      setActive(0);
-      setOpen(true);
-    } else {
-      setOpen(false);
+      showFacet(s.facet.key);
+      return;
     }
-    el(inputRef.current)?.focus();
+    if (s.kind === "text") {
+      setOpen(false);
+      focusInput();
+      return;
+    }
+    const facet = facets.find((f) => f.key === s.facet.key);
+    if (!facet) return;
+    const value = s.value.value;
+    facet.onSelect(
+      facet.multi === false
+        ? [value]
+        : facet.selected.includes(value)
+        ? facet.selected.filter((v) => v !== value)
+        : [...facet.selected, value],
+    );
+    // Picked from free-text suggestions: switch to that facet's list, so
+    // the rest of its values are a click away.
+    if (!parsed) showFacet(facet.key);
+    else focusInput();
   };
 
   const removeLast = () => {
-    const last = [...facets].reverse().find((f) => f.selected !== null);
-    last?.onSelect(null);
+    const last = [...facets].reverse().find((f) => f.selected.length > 0);
+    last?.onSelect([]);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -238,11 +280,12 @@ export function SearchBar(
     }
   };
 
-  const chips = facets.filter((f) => f.selected !== null);
+  const chips = facets.filter((f) => f.selected.length > 0);
   const anyActive = chips.length > 0 || query.trim() !== "";
   const activeId = open && suggestions[active]
     ? `${id}-s-${active}`
     : undefined;
+  const searchable = facets.some((f) => f.values.length > 0);
 
   return (
     <div className="qbar" role="search" ref={rootRef}>
@@ -252,7 +295,7 @@ export function SearchBar(
           // Clicking the field's padding focuses the input.
           if (e.target === e.currentTarget) {
             e.preventDefault();
-            el(inputRef.current)?.focus();
+            focusInput();
           }
         }}
       >
@@ -269,35 +312,47 @@ export function SearchBar(
           <circle cx="7" cy="7" r="5" />
           <path d="M11 11l3.5 3.5" strokeLinecap="round" />
         </svg>
-        {chips.map((f) => {
-          const v = f.values.find((x) => x.value === f.selected);
+        {chips.map((f, i) => {
+          const text = selectionText(f);
           return (
-            <span className="qchip" key={f.key}>
-              <span className="qchip-key">{f.label}</span>
-              <span className="qchip-val">{v?.label ?? f.selected}</span>
-              <button
-                type="button"
-                className="qchip-x"
-                aria-label={`Remove ${f.label}: ${v?.label ?? f.selected}`}
-                onClick={() => {
-                  f.onSelect(null);
-                  el(inputRef.current)?.focus();
-                }}
-              >
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 10 10"
-                  aria-hidden="true"
+            <span className="qchip-group" key={f.key}>
+              {i > 0 && (
+                <span className="qchip-and" aria-hidden="true">and</span>
+              )}
+              <span className="qchip">
+                <button
+                  type="button"
+                  className="qchip-body"
+                  title={`Change ${f.label.toLowerCase()}`}
+                  onClick={() => showFacet(f.key)}
                 >
-                  <path
-                    d="M2.5 2.5l5 5M7.5 2.5l-5 5"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
+                  <span className="qchip-key">{f.label}</span>
+                  <span className="qchip-val">{text}</span>
+                </button>
+                <button
+                  type="button"
+                  className="qchip-x"
+                  aria-label={`Remove ${f.label}: ${text}`}
+                  onClick={() => {
+                    f.onSelect([]);
+                    focusInput();
+                  }}
+                >
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M2.5 2.5l5 5M7.5 2.5l-5 5"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              </span>
             </span>
           );
         })}
@@ -306,7 +361,7 @@ export function SearchBar(
           type="text"
           className="qbar-input"
           value={draft}
-          placeholder={chips.length ? "Add a filter or search…" : placeholder}
+          placeholder={chips.length ? "and…" : placeholder}
           aria-label={placeholder}
           role="combobox"
           aria-autocomplete="list"
@@ -329,7 +384,7 @@ export function SearchBar(
               onClick={() => {
                 setDraft("");
                 onClear();
-                el(inputRef.current)?.focus();
+                focusInput();
               }}
             >
               Clear
@@ -345,7 +400,9 @@ export function SearchBar(
               ? `${parsed.facet.label} · ${parsed.facet.description}`
               : draft.trim()
               ? "Suggestions"
-              : "Filter by"}
+              : searchable
+              ? "Filter by"
+              : "Search"}
           </div>
           <ul ref={listRef} id={listId} role="listbox" className="qbar-list">
             {suggestions.map((s, i) => (
@@ -355,6 +412,10 @@ export function SearchBar(
                 data-index={i}
                 role="option"
                 aria-selected={i === active}
+                aria-checked={s.kind === "value"
+                  ? facets.find((f) => f.key === s.facet.key)?.selected
+                    .includes(s.value.value) ?? false
+                  : undefined}
                 className={`qbar-opt${i === active ? " is-active" : ""}`}
                 onPointerMove={() => i !== active && setActive(i)}
                 onMouseDown={(e) => e.preventDefault()}
@@ -367,7 +428,7 @@ export function SearchBar(
               <li className="qbar-empty" role="presentation">
                 {parsed
                   ? `No ${parsed.facet.label.toLowerCase()} matches`
-                  : "Nothing to suggest"}
+                  : `Type to search ${noun}`}
               </li>
             )}
           </ul>
@@ -377,13 +438,13 @@ export function SearchBar(
               <kbd>↓</kbd> choose
             </span>
             <span>
-              <kbd>↵</kbd> apply
+              <kbd>↵</kbd> tick / untick
             </span>
             <span>
-              <kbd>⌫</kbd> remove last filter
+              <kbd>⌫</kbd> remove last
             </span>
             <span>
-              <kbd>esc</kbd> close
+              <kbd>esc</kbd> done
             </span>
           </div>
         </div>
@@ -419,26 +480,41 @@ function SuggestionRow(
       </>
     );
   }
+  const facet = facets.find((f) => f.key === s.facet.key);
   if (s.kind === "facet") {
+    const n = facet?.selected.length ?? 0;
     return (
       <>
         <span className="qbar-opt-key">{s.facet.key}:</span>
         <span className="qbar-opt-main">{s.facet.description}</span>
         <span className="qbar-opt-hint">
-          {formatCount(s.facet.values.length)}
+          {n > 0 ? `${n} selected` : formatCount(s.facet.values.length)}
         </span>
       </>
     );
   }
-  const current = facets.find((f) => f.key === s.facet.key)?.selected;
+  const chosen = facet?.selected.includes(s.value.value) ?? false;
   return (
     <>
       <span className="qbar-opt-key">{s.facet.key}:</span>
-      <span
-        className={`qbar-opt-main${
-          current === s.value.value ? " is-current" : ""
-        }`}
-      >
+      <span className={`qbar-opt-main${chosen ? " is-current" : ""}`}>
+        <span
+          className={`qbar-check${chosen ? " is-on" : ""}`}
+          aria-hidden="true"
+        >
+          {chosen && (
+            <svg width="10" height="10" viewBox="0 0 12 12">
+              <path
+                d="M2.5 6.2 5 8.5 9.5 3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </span>
         {s.value.label}
       </span>
       {s.value.hint && <span className="qbar-opt-hint">{s.value.hint}</span>}

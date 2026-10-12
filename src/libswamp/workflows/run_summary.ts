@@ -310,6 +310,8 @@ export interface WorkflowRunSummaryInput {
   workflows?: string[];
   /** Counts only runs with this trigger source, ignoring case. */
   triggerSource?: string;
+  /** Counts only runs with any of these trigger sources, ignoring case. */
+  triggerSources?: string[];
   /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
   /** Include hourly buckets. */
@@ -357,6 +359,7 @@ export async function* workflowRunSummary(
           until,
           workflows: input.workflows,
           triggerSource: input.triggerSource,
+          triggerSources: input.triggerSources,
         })
       ) {
         if (event.kind === "error") {

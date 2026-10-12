@@ -99,23 +99,28 @@ export function facetIndex(
 
 export type TriggerFilter = "all" | TriggerKind;
 
+/**
+ * What the workflow pages filter by. Values within one facet combine with
+ * OR (prefix deploy or sync); facets combine with AND. An empty list
+ * doesn't narrow.
+ */
 export interface WorkflowFilter {
   query: string;
-  prefix: string | null;
-  trigger: TriggerFilter;
-  webhook: string | null;
+  prefixes: readonly string[];
+  triggers: readonly TriggerKind[];
+  webhooks: readonly string[];
 }
 
 export const EMPTY_FILTER: WorkflowFilter = {
   query: "",
-  prefix: null,
-  trigger: "all",
-  webhook: null,
+  prefixes: [],
+  triggers: [],
+  webhooks: [],
 };
 
 export function isFilterActive(filter: WorkflowFilter): boolean {
-  return filter.query.trim() !== "" || filter.prefix !== null ||
-    filter.trigger !== "all" || filter.webhook !== null;
+  return filter.query.trim() !== "" || filter.prefixes.length > 0 ||
+    filter.triggers.length > 0 || filter.webhooks.length > 0;
 }
 
 /** True when the facets pass every facet filter (the query is separate). */
@@ -123,13 +128,18 @@ export function matchesFacets(
   facets: WorkflowFacets,
   filter: WorkflowFilter,
 ): boolean {
-  if (filter.prefix !== null && facets.prefix !== filter.prefix) return false;
-  if (filter.trigger !== "all" && !facets.kinds.includes(filter.trigger)) {
-    return false;
-  }
-  if (filter.webhook !== null && !facets.webhooks.includes(filter.webhook)) {
-    return false;
-  }
+  if (
+    filter.prefixes.length > 0 &&
+    (facets.prefix === null || !filter.prefixes.includes(facets.prefix))
+  ) return false;
+  if (
+    filter.triggers.length > 0 &&
+    !filter.triggers.some((t) => facets.kinds.includes(t))
+  ) return false;
+  if (
+    filter.webhooks.length > 0 &&
+    !filter.webhooks.some((w) => facets.webhooks.includes(w))
+  ) return false;
   return true;
 }
 

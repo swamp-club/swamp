@@ -16,26 +16,18 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
 import type { ReactNode } from "react";
 import { SearchBar, type SearchFacet } from "./SearchBar.tsx";
-import { formatCount } from "../lib/format.ts";
+import { buildRowFacets, type RowFacetSpec } from "../lib/row_facets.ts";
 
 interface TriggerFilterBarProps {
   query: string;
   onQuery: (query: string) => void;
   placeholder: string;
-  /** Prefix choices; the select hides when empty. */
-  prefixes?: ReadonlyArray<{ prefix: string; count: number }>;
-  prefix?: string | null;
-  onPrefix?: (prefix: string | null) => void;
-  /** A segmented control (e.g. All / Active / Paused). */
-  segments?: ReadonlyArray<{ value: string; label: string }>;
-  segment?: string;
-  onSegment?: (value: string) => void;
+  facets: readonly SearchFacet[];
   shown: number;
   total: number;
   noun: string;
@@ -43,21 +35,13 @@ interface TriggerFilterBarProps {
   children?: ReactNode;
 }
 
-/**
- * The trigger pages' guided search: names plus a state and prefix facet,
- * through the same search box as the workflow pages.
- */
+/** The trigger pages' guided search, the same box as the workflow pages. */
 export function TriggerFilterBar(
   {
     query,
     onQuery,
     placeholder,
-    prefixes = [],
-    prefix = null,
-    onPrefix,
-    segments,
-    segment,
-    onSegment,
+    facets,
     shown,
     total,
     noun,
@@ -65,32 +49,6 @@ export function TriggerFilterBar(
     children,
   }: TriggerFilterBarProps,
 ) {
-  const facets: SearchFacet[] = [];
-  if (segments && onSegment) {
-    const [all, ...rest] = segments;
-    facets.push({
-      key: "state",
-      label: "State",
-      description: `Only ${noun} in a given state`,
-      values: rest.map((s) => ({ value: s.value, label: s.label })),
-      selected: segment && segment !== all.value ? segment : null,
-      onSelect: (v) => onSegment(v ?? all.value),
-    });
-  }
-  if (onPrefix && prefixes.length > 0) {
-    facets.push({
-      key: "prefix",
-      label: "Prefix",
-      description: "Workflows whose name starts with a prefix",
-      values: prefixes.map((p) => ({
-        value: p.prefix,
-        label: p.prefix,
-        hint: formatCount(p.count),
-      })),
-      selected: prefix,
-      onSelect: onPrefix,
-    });
-  }
   return (
     <SearchBar
       query={query}
@@ -104,4 +62,21 @@ export function TriggerFilterBar(
       trailing={children}
     />
   );
+}
+
+/**
+ * Search facets for a table's rows, wired to selections held elsewhere
+ * (usually `useFacetParams`).
+ */
+export function rowSearchFacets<R>(
+  rows: readonly R[],
+  specs: readonly RowFacetSpec<R>[],
+  selected: Readonly<Record<string, readonly string[]>>,
+  select: (key: string, values: readonly string[]) => void,
+): SearchFacet[] {
+  return buildRowFacets(rows, specs).map((f) => ({
+    ...f,
+    selected: selected[f.key] ?? [],
+    onSelect: (values: readonly string[]) => select(f.key, values),
+  }));
 }

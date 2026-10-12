@@ -22,65 +22,63 @@ import { useMemo } from "react";
 import { SearchBar, type SearchFacet } from "./SearchBar.tsx";
 import { ViewMenu, type ViewSection } from "./ViewMenu.tsx";
 import {
-  asNullableString,
   asString,
-  nullableParam,
-  oneOf,
+  useQueryList,
   useQueryState,
 } from "../client/useQueryState.ts";
 import {
   EMPTY_FILTER,
-  type TriggerFilter,
+  type TriggerKind,
   type WorkflowFilter,
 } from "../lib/workflow_facets.ts";
 import { formatCount } from "../lib/format.ts";
 
-const TRIGGERS: readonly TriggerFilter[] = [
-  "all",
-  "schedule",
-  "webhook",
-  "manual",
-];
+const TRIGGERS: readonly TriggerKind[] = ["schedule", "webhook", "manual"];
 
-const TRIGGER_LABELS: Record<TriggerFilter, string> = {
-  all: "All",
+const TRIGGER_LABELS: Record<TriggerKind, string> = {
   schedule: "Cron",
   webhook: "Webhook",
   manual: "Manual",
 };
 
-/** The shared workflow filter, mirrored to ?q=&prefix=&trigger=&webhook=. */
+const TRIGGER_DESCRIPTIONS: Record<TriggerKind, string> = {
+  schedule: "Runs on a cron schedule",
+  webhook: "Started by a webhook",
+  manual: "Only run by hand or the API",
+};
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/**
+ * The shared workflow filter, mirrored to `?q=` and repeated
+ * `?prefix=&trigger=&webhook=` params (several values per facet).
+ */
 export function useWorkflowFilter(): [
   WorkflowFilter,
   (next: WorkflowFilter) => void,
 ] {
   const [query, setQuery] = useQueryState("q", "", asString);
-  const [prefix, setPrefix] = useQueryState<string | null>(
-    "prefix",
-    null,
-    asNullableString,
-    nullableParam,
-  );
-  const [trigger, setTrigger] = useQueryState<TriggerFilter>(
-    "trigger",
-    "all",
-    oneOf(TRIGGERS, "all"),
-  );
-  const [webhook, setWebhook] = useQueryState<string | null>(
-    "webhook",
-    null,
-    asNullableString,
-    nullableParam,
+  const [prefixes, setPrefixes] = useQueryList("prefix");
+  const [rawTriggers, setTriggers] = useQueryList("trigger");
+  const [webhooks, setWebhooks] = useQueryList("webhook");
+  const triggers = useMemo(
+    () =>
+      rawTriggers.filter((t): t is TriggerKind =>
+        (TRIGGERS as readonly string[]).includes(t)
+      ),
+    [rawTriggers],
   );
   const filter = useMemo(
-    () => ({ query, prefix, trigger, webhook }),
-    [query, prefix, trigger, webhook],
+    () => ({ query, prefixes, triggers, webhooks }),
+    [query, prefixes, triggers, webhooks],
   );
   const set = (next: WorkflowFilter) => {
     if (next.query !== query) setQuery(next.query);
-    if (next.prefix !== prefix) setPrefix(next.prefix);
-    if (next.trigger !== trigger) setTrigger(next.trigger);
-    if (next.webhook !== webhook) setWebhook(next.webhook);
+    if (!sameList(next.prefixes, prefixes)) setPrefixes(next.prefixes);
+    if (!sameList(next.triggers, triggers)) setTriggers(next.triggers);
+    if (!sameList(next.webhooks, webhooks)) setWebhooks(next.webhooks);
   };
   return [filter, set];
 }
@@ -103,12 +101,6 @@ interface FilterBarProps {
   view?: readonly ViewSection[];
 }
 
-const TRIGGER_DESCRIPTIONS: Record<Exclude<TriggerFilter, "all">, string> = {
-  schedule: "Runs on a cron schedule",
-  webhook: "Started by a webhook",
-  manual: "Only run by hand or the API",
-};
-
 /** The workflow facets every workflow-based page filters by. */
 export function workflowFacets(
   filter: WorkflowFilter,
@@ -126,30 +118,28 @@ export function workflowFacets(
         label: p.prefix,
         hint: formatCount(p.count),
       })),
-      selected: filter.prefix,
-      onSelect: (v) => onChange({ ...filter, prefix: v }),
+      selected: filter.prefixes,
+      onSelect: (v) => onChange({ ...filter, prefixes: v }),
     },
     {
       key: "trigger",
       label: "Trigger",
       description: "What starts the workflow: cron, webhook or manual",
-      values: TRIGGERS.filter((t) => t !== "all").map((t) => ({
+      values: TRIGGERS.map((t) => ({
         value: t,
-        label: `${TRIGGER_LABELS[t]} — ${
-          TRIGGER_DESCRIPTIONS[t as Exclude<TriggerFilter, "all">]
-        }`,
+        label: `${TRIGGER_LABELS[t]} — ${TRIGGER_DESCRIPTIONS[t]}`,
       })),
-      selected: filter.trigger === "all" ? null : filter.trigger,
+      selected: filter.triggers,
       onSelect: (v) =>
-        onChange({ ...filter, trigger: (v ?? "all") as TriggerFilter }),
+        onChange({ ...filter, triggers: v as readonly TriggerKind[] }),
     },
     {
       key: "webhook",
       label: "Webhook",
       description: "Workflows a webhook route starts",
       values: webhooks.map((w) => ({ value: w, label: w })),
-      selected: filter.webhook,
-      onSelect: (v) => onChange({ ...filter, webhook: v }),
+      selected: filter.webhooks,
+      onSelect: (v) => onChange({ ...filter, webhooks: v }),
     },
   ];
 }
@@ -188,7 +178,7 @@ export function FilterBar(
       noun={noun}
       onClear={() => {
         onChange(EMPTY_FILTER);
-        for (const f of extraFacets) f.onSelect(null);
+        for (const f of extraFacets) f.onSelect([]);
       }}
       trailing={view && view.length > 0 ? <ViewMenu sections={view} /> : null}
     />

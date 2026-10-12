@@ -462,6 +462,77 @@ Deno.test("workflowRunSearch: triggerSource keeps runs with that source, ignorin
   assertEquals(completedRunIds(events), ["run-s"]);
 });
 
+function mixedRunsDeps() {
+  const run = (
+    id: string,
+    status: string,
+    triggerSource: string | undefined,
+    ago: number,
+  ) => ({
+    ...makeRun({
+      id,
+      workflowId: "wf-1",
+      workflowName: "deploy",
+      status,
+      startedAt: new Date(now - ago),
+    }),
+    ...(triggerSource ? { triggerSource } : {}),
+  });
+  return makeDeps({
+    findAllRunsByWorkflowId: (id: string) =>
+      Promise.resolve(
+        id === "wf-1"
+          ? [
+            run("ok-sched", "succeeded", "schedule", 1000),
+            run("fail-hook", "failed", "webhook", 2000),
+            run("int-api", "interrupted", "api", 3000),
+            run("run-cli", "running", "manual", 4000),
+            run("ok-none", "succeeded", undefined, 5000),
+          ]
+          : [],
+      ),
+  });
+}
+
+Deno.test("workflowRunSearch: statuses keeps runs with any of them, by bucket", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), mixedRunsDeps(), {
+      statuses: ["FAILED", "running"],
+    }),
+  );
+  // "failed" also keeps interrupted runs.
+  assertEquals(completedRunIds(events), ["fail-hook", "int-api", "run-cli"]);
+});
+
+Deno.test("workflowRunSearch: triggerSources keeps runs with any of them", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), mixedRunsDeps(), {
+      triggerSources: ["Schedule", "webhook"],
+    }),
+  );
+  assertEquals(completedRunIds(events), ["ok-sched", "fail-hook"]);
+});
+
+Deno.test("workflowRunSearch: list filters combine with AND", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), mixedRunsDeps(), {
+      statuses: ["succeeded", "failed"],
+      triggerSources: ["webhook", "api"],
+    }),
+  );
+  assertEquals(completedRunIds(events), ["fail-hook", "int-api"]);
+});
+
+Deno.test("workflowRunSearch: empty lists filter nothing", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), mixedRunsDeps(), {
+      statuses: [],
+      triggerSources: [],
+    }),
+  );
+  assertEquals(completedRunIds(events).length, 5);
+});
+
 Deno.test("workflowRunSearch: new filters left out change nothing", async () => {
   const events = await collect<WorkflowRunSearchEvent>(
     workflowRunSearch(createLibSwampContext(), makeDeps(), {

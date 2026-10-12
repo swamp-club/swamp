@@ -35,10 +35,10 @@ export interface ModelSummary {
 
 export interface ModelFilter {
   query: string;
-  /** Exact model type. */
-  type: string | null;
-  /** Name prefix, as `workflowPrefix` derives it. */
-  prefix: string | null;
+  /** Any of these exact model types; empty keeps every type. */
+  types: readonly string[];
+  /** Any of these name prefixes; empty keeps every prefix. */
+  prefixes: readonly string[];
 }
 
 export type ModelSort = "name" | "recent" | "busy";
@@ -49,8 +49,9 @@ export function filterModels(
   filter: ModelFilter,
 ): ModelSummary[] {
   const narrowed = models.filter((m) =>
-    (filter.type === null || m.type === filter.type) &&
-    (filter.prefix === null || workflowPrefix(m.name) === filter.prefix)
+    (filter.types.length === 0 || filter.types.includes(m.type)) &&
+    (filter.prefixes.length === 0 ||
+      filter.prefixes.includes(workflowPrefix(m.name) ?? ""))
   );
   return fuzzyFilter(narrowed, filter.query, (m) => [m.name, m.type]);
 }

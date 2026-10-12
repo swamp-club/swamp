@@ -53,7 +53,7 @@ Deno.test("workflowNamesForFilter: facets and query narrow to sorted names", () 
   assertEquals(
     workflowNamesForFilter(
       workflows,
-      { ...EMPTY_FILTER, prefix: "deploy" },
+      { ...EMPTY_FILTER, prefixes: ["deploy"] },
       facetsOf,
     ),
     ["deploy-api", "deploy-web"],
@@ -61,7 +61,7 @@ Deno.test("workflowNamesForFilter: facets and query narrow to sorted names", () 
   assertEquals(
     workflowNamesForFilter(
       workflows,
-      { ...EMPTY_FILTER, trigger: "schedule" },
+      { ...EMPTY_FILTER, triggers: ["schedule"] },
       facetsOf,
     ),
     ["deploy-api"],
@@ -69,7 +69,7 @@ Deno.test("workflowNamesForFilter: facets and query narrow to sorted names", () 
   assertEquals(
     workflowNamesForFilter(
       workflows,
-      { ...EMPTY_FILTER, webhook: "/hooks/web" },
+      { ...EMPTY_FILTER, webhooks: ["/hooks/web"] },
       facetsOf,
     ),
     ["deploy-web"],
@@ -77,7 +77,7 @@ Deno.test("workflowNamesForFilter: facets and query narrow to sorted names", () 
   assertEquals(
     workflowNamesForFilter(
       workflows,
-      { ...EMPTY_FILTER, trigger: "manual" },
+      { ...EMPTY_FILTER, triggers: ["manual"] },
       facetsOf,
     ),
     ["etl-orders", "standalone"],
@@ -132,7 +132,7 @@ Deno.test("filterRowsByWorkflow: keeps incoming order and unknown workflows matc
   assertEquals(
     filterRowsByWorkflow(
       rows,
-      { ...EMPTY_FILTER, trigger: "webhook" },
+      { ...EMPTY_FILTER, triggers: ["webhook"] },
       (r) => r.workflowName,
       catalog,
       facetsOf,
@@ -146,8 +146,8 @@ Deno.test("runSearchPayload: sends only the filters that are set", () => {
     runSearchPayload({
       page: 0,
       pageSize: 25,
-      status: "",
-      source: "",
+      statuses: [],
+      sources: [],
       workflows: null,
     }),
     { limit: 25, offset: 0 },
@@ -156,8 +156,8 @@ Deno.test("runSearchPayload: sends only the filters that are set", () => {
     runSearchPayload({
       page: 2,
       pageSize: 25,
-      status: "failed",
-      source: "webhook",
+      statuses: ["failed", "suspended"],
+      sources: ["webhook"],
       workflows: ["a", "b"],
       since: "2026-10-05T00:00:00.000Z",
       until: "2026-10-12T00:00:00.000Z",
@@ -165,8 +165,8 @@ Deno.test("runSearchPayload: sends only the filters that are set", () => {
     {
       limit: 25,
       offset: 50,
-      status: "failed",
-      triggerSource: "webhook",
+      statuses: ["failed", "suspended"],
+      triggerSources: ["webhook"],
       workflows: ["a", "b"],
       since: "2026-10-05T00:00:00.000Z",
       until: "2026-10-12T00:00:00.000Z",

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { applyRowFacets, type RowFacetSpec } from "../lib/row_facets.ts";
 import { useEffect, useMemo, useState } from "react";
 import type { HealthSnapshot, ScheduleEntry } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
@@ -24,7 +25,10 @@ import { HealthUnavailable } from "../components/HealthUnavailable";
 import { EmptyState } from "../components/EmptyState.tsx";
 import { SkeletonPills, SkeletonTable } from "../components/Skeleton.tsx";
 import { type Stat, StatPills } from "../components/StatPills.tsx";
-import { TriggerFilterBar } from "../components/TriggerFilterBar.tsx";
+import {
+  rowSearchFacets,
+  TriggerFilterBar,
+} from "../components/TriggerFilterBar.tsx";
 import { ScheduleControls } from "../components/ScheduleControls.tsx";
 import {
   SCHEDULE_COLUMNS,
@@ -34,10 +38,8 @@ import {
 } from "../components/TriggerTables.tsx";
 import { navigateTo } from "../hooks/useRouter.ts";
 import {
-  asNullableString,
   asString,
-  nullableParam,
-  oneOf,
+  useFacetParams,
   useQueryState,
 } from "../client/useQueryState.ts";
 import {
@@ -51,25 +53,63 @@ import {
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import { describeCron } from "../lib/cron.ts";
 import { fuzzyFilter } from "../lib/fuzzy.ts";
-import { prefixOptions, workflowPrefix } from "../lib/workflow_facets.ts";
+import { workflowPrefix } from "../lib/workflow_facets.ts";
 import { formatCount } from "../lib/format.ts";
 import { scheduleQueueLabel } from "./schedule_queue.ts";
 import { ScheduleEditDialog } from "./ScheduleEditDialog.tsx";
 import "../styles/triggers.css";
 
-type StateFilter = "all" | "active" | "paused" | "running";
-const STATE_FILTERS: readonly StateFilter[] = [
-  "all",
-  "active",
-  "paused",
-  "running",
+const LAST_RUN_LABELS: Record<string, string> = {
+  succeeded: "Succeeded",
+  failed: "Failed",
+  running: "Running",
+  suspended: "Suspended",
+  cancelled: "Cancelled",
+  never: "No runs in range",
+};
+
+/** What the schedule table can be filtered by, beyond free text. */
+const SCHEDULE_FACETS: readonly RowFacetSpec<ScheduleRow>[] = [
+  {
+    key: "state",
+    label: "State",
+    description: "Active or paused schedules",
+    valueOf: (r) => (r.paused === true ? "paused" : "active"),
+    labelOf: (v) => (v === "paused" ? "Paused" : "Active"),
+    order: ["active", "paused"],
+  },
+  {
+    key: "activity",
+    label: "Activity",
+    description: "Running now, waiting in the queue, or idle",
+    valueOf: (r) => (r.running ? "running" : r.queueLabel ? "queued" : "idle"),
+    labelOf: (v) =>
+      v === "running" ? "Running now" : v === "queued" ? "Queued" : "Idle",
+    order: ["running", "queued", "idle"],
+  },
+  {
+    key: "last",
+    label: "Last run",
+    description: "How the latest scheduled run in range ended",
+    valueOf: (r) => r.recent[0]?.status ?? "never",
+    labelOf: (v) => LAST_RUN_LABELS[v] ?? v,
+    order: Object.keys(LAST_RUN_LABELS),
+  },
+  {
+    key: "prefix",
+    label: "Prefix",
+    description: "Schedules whose workflow name starts with a prefix",
+    valueOf: (r) => workflowPrefix(r.workflowName),
+  },
+  {
+    key: "source",
+    label: "Source",
+    description: "Schedule from the workflow file, or a serve override",
+    valueOf: (r) => r.source ?? null,
+    labelOf: (v) => (v === "override" ? "Override" : "Workflow file"),
+  },
 ];
-const STATE_SEGMENTS = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "running", label: "Running" },
-];
+const SCHEDULE_FACET_KEYS = SCHEDULE_FACETS.map((f) => f.key);
 
 /** The pause state the page shows: unconfirmed changes win. */
 function pausedOf(entry: ScheduleEntry, mutations: ScheduleMutations) {
@@ -104,17 +144,7 @@ export function Schedules(
 
   const [editing, setEditing] = useState<string | null>(null);
   const [query, setQuery] = useQueryState("q", "", asString);
-  const [prefix, setPrefix] = useQueryState<string | null>(
-    "prefix",
-    null,
-    asNullableString,
-    nullableParam,
-  );
-  const [stateFilter, setStateFilter] = useQueryState<StateFilter>(
-    "state",
-    "all",
-    oneOf(STATE_FILTERS, "all"),
-  );
+  const [selected, select] = useFacetParams(SCHEDULE_FACET_KEYS);
   const { range } = useTimeRange();
   const now = Date.now();
 
@@ -135,20 +165,14 @@ export function Schedules(
   });
 
   const filtered = fuzzyFilter(
-    rows.filter((r) =>
-      (prefix === null || workflowPrefix(r.workflowName) === prefix) &&
-      (stateFilter === "all" ||
-        (stateFilter === "paused" && r.paused === true) ||
-        (stateFilter === "active" && r.paused !== true) ||
-        (stateFilter === "running" && r.running))
-    ),
+    applyRowFacets(rows, SCHEDULE_FACETS, selected),
     query,
     (r) => [r.workflowName, r.cron, r.description ?? ""],
   );
+  const facets = rowSearchFacets(rows, SCHEDULE_FACETS, selected, select);
   const clearFilters = () => {
     setQuery("");
-    setPrefix(null);
-    setStateFilter("all");
+    for (const key of SCHEDULE_FACET_KEYS) select(key, []);
   };
 
   const pausedCount = rows.filter((r) => r.paused === true).length;
@@ -203,13 +227,8 @@ export function Schedules(
         <TriggerFilterBar
           query={query}
           onQuery={setQuery}
-          placeholder="Search schedules or filter by state, prefix…"
-          prefixes={prefixOptions(names)}
-          prefix={prefix}
-          onPrefix={setPrefix}
-          segments={STATE_SEGMENTS}
-          segment={stateFilter}
-          onSegment={(v) => setStateFilter(v as StateFilter)}
+          placeholder="Search schedules, or filter by state, last run, prefix…"
+          facets={facets}
           shown={filtered.length}
           total={rows.length}
           noun="schedules"

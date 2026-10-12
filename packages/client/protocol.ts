@@ -267,6 +267,10 @@ export interface WorkflowRunSearchPayload {
   workflows?: string[];
   /** Runs with this trigger source (`schedule`, `api`…), ignoring case. */
   triggerSource?: string;
+  /** Runs with any of these statuses; with `status`, both must hold. */
+  statuses?: string[];
+  /** Runs with any of these trigger sources; with `triggerSource`, both hold. */
+  triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
   /** Page size; the server applies a default of 500 when omitted. */
@@ -288,6 +292,8 @@ export interface WorkflowRunSummaryPayload {
   workflows?: string[];
   /** Only runs with this trigger source, ignoring case. */
   triggerSource?: string;
+  /** Only runs with any of these trigger sources, ignoring case. */
+  triggerSources?: string[];
   /** Runs kept per workflow in `recent`; clamped to 0..100, default 20. */
   recentLimit?: number;
   /** Include hourly buckets. */

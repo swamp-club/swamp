@@ -148,6 +148,16 @@ export interface WorkflowRunSearchInput {
   workflows?: string[];
   /** Keeps runs with this trigger source (`schedule`, `api`…), ignoring case. */
   triggerSource?: string;
+  /**
+   * Keeps runs with any of these statuses (each matched like `status`). An
+   * empty list filters nothing; with `status` both must hold.
+   */
+  statuses?: string[];
+  /**
+   * Keeps runs with any of these trigger sources, ignoring case. An empty
+   * list filters nothing; with `triggerSource` both must hold.
+   */
+  triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
   limit?: number;
@@ -376,6 +386,23 @@ export async function* workflowRunSearch(
         const source = input.triggerSource.toLowerCase();
         results = results.filter((r) =>
           r.triggerSource?.toLowerCase() === source
+        );
+      }
+
+      if (input.statuses && input.statuses.length > 0) {
+        const wanted = input.statuses.map((s) => s.toLowerCase());
+        results = results.filter((r) =>
+          wanted.some((s) => runStatusMatches(r.status, s))
+        );
+      }
+
+      if (input.triggerSources && input.triggerSources.length > 0) {
+        const wanted = new Set(
+          input.triggerSources.map((s) => s.toLowerCase()),
+        );
+        results = results.filter((r) =>
+          r.triggerSource !== undefined &&
+          wanted.has(r.triggerSource.toLowerCase())
         );
       }
 

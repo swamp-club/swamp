@@ -21,10 +21,9 @@ import { type MouseEvent, useMemo } from "react";
 import { useRequest } from "../client/useRequest.ts";
 import { extractArray } from "../client/extract.ts";
 import {
-  asNullableString,
   asString,
-  nullableParam,
   oneOf,
+  useQueryList,
   useQueryState,
 } from "../client/useQueryState.ts";
 import {
@@ -88,27 +87,17 @@ type UsageState = "loading" | "loaded" | "failed";
 
 function useModelFilter(): [ModelFilter, (next: ModelFilter) => void] {
   const [query, setQuery] = useQueryState("q", "", asString);
-  const [type, setType] = useQueryState<string | null>(
-    "type",
-    null,
-    asNullableString,
-    nullableParam,
-  );
-  const [prefix, setPrefix] = useQueryState<string | null>(
-    "prefix",
-    null,
-    asNullableString,
-    nullableParam,
-  );
-  const filter = useMemo(() => ({ query, type, prefix }), [
+  const [types, setTypes] = useQueryList("type");
+  const [prefixes, setPrefixes] = useQueryList("prefix");
+  const filter = useMemo(() => ({ query, types, prefixes }), [
     query,
-    type,
-    prefix,
+    types,
+    prefixes,
   ]);
   const set = (next: ModelFilter) => {
     if (next.query !== query) setQuery(next.query);
-    if (next.type !== type) setType(next.type);
-    if (next.prefix !== prefix) setPrefix(next.prefix);
+    if (next.types !== types) setTypes(next.types);
+    if (next.prefixes !== prefixes) setPrefixes(next.prefixes);
   };
   return [filter, set];
 }
@@ -249,7 +238,7 @@ export function Models({ onOpenModel }: ModelsProps) {
                         type="button"
                         className="btn-sm"
                         onClick={() =>
-                          setFilter({ query: "", type: null, prefix: null })}
+                          setFilter({ query: "", types: [], prefixes: [] })}
                       >
                         Clear filters
                       </button>
@@ -296,16 +285,16 @@ function ModelFilterBar(
       label: "Type",
       description: "Models of one model type",
       values: types.length > 1 ? types : [],
-      selected: filter.type,
-      onSelect: (v) => onChange({ ...filter, type: v }),
+      selected: filter.types,
+      onSelect: (v) => onChange({ ...filter, types: v }),
     },
     {
       key: "prefix",
       label: "Prefix",
       description: "Models whose name starts with a prefix",
       values: prefixes.length > 1 ? prefixes : [],
-      selected: filter.prefix,
-      onSelect: (v) => onChange({ ...filter, prefix: v }),
+      selected: filter.prefixes,
+      onSelect: (v) => onChange({ ...filter, prefixes: v }),
     },
   ];
   return (
@@ -317,7 +306,7 @@ function ModelFilterBar(
       shown={shown}
       total={models.length}
       noun="models"
-      onClear={() => onChange({ query: "", type: null, prefix: null })}
+      onClear={() => onChange({ query: "", types: [], prefixes: [] })}
       trailing={
         <ViewMenu
           sections={[{
