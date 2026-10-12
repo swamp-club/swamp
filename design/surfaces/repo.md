@@ -142,7 +142,7 @@ options are:
 - `garbageCollection`: repository defaults for manual `swamp run gc` cleanup.
   `workflowRuns` and `outputs` take positive durations such as `7d` or `2w`;
   omitted values keep the 30-day default. It does not run cleanup on its own or
-  change behavior data's `autoGc` behavior.
+  change the `autoGc` setting of behavior data.
 - `serverAddress`: default `swamp serve` URL for the repo. When set, every
   serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
   Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >

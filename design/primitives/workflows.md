@@ -2466,7 +2466,7 @@ jobs:
   # ... jobs run automatically at 3am and noon
 ```
 
-**Schedule behavior:**
+**Scheduling:**
 
 - Uses [croner](https://github.com/Hexagon/croner) grammar. Standard cron has 5
   fields (minute, hour, day-of-month, month, day-of-week). A 6-field expression
@@ -2542,7 +2542,7 @@ time. A workflow with no built-in trigger block gets one from the override.
 (`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
 
-**Override behavior:**
+**Overrides:**
 
 - Applied when `ScheduledExecutionService` starts, in two phases. Every
   workflow with a schedule (built-in or override, resolved through
@@ -2934,14 +2934,14 @@ syntax.
 Workflow runs support the same pre-flight check skip options as direct method
 runs. The flags apply to every method step in the workflow:
 
-| Flag                         | Behavior                                   |
+| Flag                         | Effect                                     |
 | ---------------------------- | ------------------------------------------ |
 | `--skip-checks`              | Skip all pre-flight checks                 |
 | `--skip-check <name>`        | Skip a specific check by name (repeatable) |
 | `--skip-check-label <label>` | Skip all checks with a label (repeatable)  |
 
 The options pass from the CLI through `WorkflowRunInput` →
-`StepExecutionContext` → `MethodContext`, so behavior matches
+`StepExecutionContext` → `MethodContext`, so the effect matches
 `swamp model method run`.
 
 ## Workflow Runs

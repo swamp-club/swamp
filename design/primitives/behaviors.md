@@ -143,8 +143,9 @@ upgrade chain could ever migrate that instance (swamp-club#900).
 
 An architecture fitness test pins the rule that every `Definition.create` call
 site supplies the field (`integration/definition_type_version_rules_test.ts`).
-A behavioural test would not catch a regression, because the creation paths that
-relied on the old behaviour are for behavior types with no upgrade chain.
+A test that runs the creation paths would not catch a regression, because the
+paths that relied on the old persistence code are for behavior types with no
+upgrade chain.
 
 ### Staleness
 
@@ -636,7 +637,7 @@ appliesTo: ["create"],
 Users can bypass checks at runtime with these run flags (`swamp behavior run`
 and `swamp model method run` take the same set):
 
-| Flag                         | Behavior                                   |
+| Flag                         | Effect                                     |
 | ---------------------------- | ------------------------------------------ |
 | `--skip-checks`              | Skip all pre-flight checks                 |
 | `--skip-check <name>`        | Skip a specific check by name (repeatable) |
@@ -893,7 +894,7 @@ By default, outputs persist until removed manually with `swamp run gc`. That
 command uses the repository's `.swamp.yaml` `garbageCollection.outputs`
 retention (30 days when unset); `--older-than` overrides it for one run. A
 method can declare an `outputLifetime` as a retention ceiling: a duration string
-like `"1d"` or `"7d"`, or `"infinite"` for the default behavior. The scoped
+like `"1d"` or `"7d"`, or `"infinite"` for the default. The scoped
 lifetimes `"ephemeral"`, `"job"` and `"workflow"` are not valid for outputs,
 since outputs are not scoped to a process or workflow run.
 

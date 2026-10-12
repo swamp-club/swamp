@@ -690,7 +690,7 @@ a wait ID keeps working. Only a request with no `waitId` is read as a key
 address, and a `waitId` that is not a UUID is malformed whatever is beside it.
 Over HTTP the path says which form a request is: `/api/v1/signal/{waitId}`
 ignores a `workflow` or `key` in the body, and `/api/v1/signal`, which has no
-earlier behaviour to keep, answers 400 to a body that carries a `waitId`.
+earlier contract to keep, answers 400 to a body that carries a `waitId`.
 
 What differs by key, in order:
 

@@ -990,11 +990,11 @@ reflected.
 
 ### Compatibility
 
-- **Behaviour change: data denies on vaults.** A deny on `data:vault` or
+- **Changed: data denies on vaults.** A deny on `data:vault` or
   `data:<vault name>` now refuses every request on the vault, whichever name
   the request was checked under before. Move vault denies to `vault:<name>`;
   a `data` deny has no effect on runs.
-- **Behaviour change: reserved vaults.** Serve runs can no longer read
+- **Changed: reserved vaults.** Serve runs can no longer read
   reserved vaults, except for principals with `admin` on `access:*`.
 - **Upgrade first.** Write vault grants, or workflows that set `vaults:`, only
   once every serve replica on the datastore runs a release that supports them.

@@ -175,7 +175,7 @@ same way as for annotations.
 The value is stale when `Date.now() - lastRefreshedAt.getTime() >= ttlMs`. Both
 sides are UTC, so the local timezone plays no part.
 
-### Refresh-on-Read Behavior
+### Refresh on Read
 
 When `VaultService.get()` is called with refresh options configured:
 
@@ -693,7 +693,7 @@ therefore warns (`local_default_vault`) when `defaultVault` names a
 `local_encryption` vault, since other machines sharing the datastore cannot
 read what it holds.
 
-### Processing Behavior
+### Processing
 
 - Values are snapshotted before processing, so several sensitive fields do
   not contaminate each other.
@@ -837,7 +837,7 @@ String and string-array values are both supported. For arrays, each element is
 registered with the redactor on its own, so any element found in log output is
 scrubbed.
 
-### Behavior Comparison
+### Comparison by Location
 
 | Location | Output schema `sensitive: true` | Argument schema `sensitive: true` |
 | -------- | ------------------------------- | --------------------------------- |

@@ -426,7 +426,7 @@ Isolation and environment used to come from `docker` and custom drivers. They
 now come from **how a worker is deployed**: a container for container
 isolation, a GPU host for GPU access, a locked-down VM for a strong sandbox.
 Labels describe the deployment and the scheduler matches on them. The only
-behavior lost
+capability lost
 is isolating locally on one host without a worker. Running a local
 containerized worker beside the orchestrator brings it back.
 
@@ -973,7 +973,7 @@ the same name: 5 s, for the serve run-cancel endpoint.)
 **Crash isolation**: a runner crash (non-zero exit or stdio channel close)
 fails only that dispatch. The worker stays enrolled and takes the next one.
 
-Phase 4a shipped at capacity 1: the same behavior as the earlier in-process
+Phase 4a shipped at capacity 1: the same results as the earlier in-process
 path, plus crash isolation and clean environment handling.
 
 ### Concurrent dispatch (phase 4b)
@@ -1095,7 +1095,7 @@ Two `DataWriter` modes need their own remote shape:
   it is a **worker-local spool file** that `finalize()` uploads as one streamed
   `POST`. For this mode only, durability moves from write time to finalize
   time. A worker that dies mid-spool leaves no write rather than a partial
-  file, the safer of the two divergences. Local behavior is unchanged.
+  file, the safer of the two divergences. Local runs are unchanged.
 
 ### Data is versioned-immutable, not content-addressed
 

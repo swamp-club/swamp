@@ -72,8 +72,8 @@ The effective intent is stored in the packaged manifest and the package cache
 key. Private intent is sent on both initiation and confirmation. Public or
 default intent omits the wire field, since the registry accepts only explicit
 private. Preview and dry-run show the requested `visibility` as `public`,
-`private` or `default` (registry decides); public is labelled as registry-default
-behavior. Dry-run does not establish the applied visibility; private intent adds
+`private` or `default` (registry decides); public is labelled as the registry
+default. Dry-run does not establish the applied visibility; private intent adds
 the private-entitlement registry check described below. Successful output
 reports the actual `public`/`private` visibility from the confirmation response.
 Explicit private requests require a private confirmation and never fall back to
@@ -438,7 +438,7 @@ Registry API endpoints are `POST /api/v1/extensions/{name}/deprecate` (body:
 body). The extension info view returns `deprecatedAt`, `deprecatedByUserId`,
 `deprecationReason` and `supersededBy`.
 
-### Cache and registry behavior
+### Cache and registry
 
 Both commands share a 24-hour on-disk cache at
 `.swamp/extension-update-checks.json`. The TTL matches `CHECK_INTERVAL_MS` in
@@ -571,7 +571,7 @@ push:
 - **`typedDir` (default)**: typed entries resolve relative to their configured
   directory from the repo marker (`modelsDir`, `vaultsDir`, etc., or environment
   overrides like `SWAMP_MODELS_DIR`). `additionalFiles` resolves relative to the
-  manifest's own directory. This is the original behavior, kept by every
+  manifest's own directory. This is the original rule, kept by every
   manifest without `paths.base`.
 - **`manifest`**: every typed entry and `additionalFiles` resolve relative to
   the manifest's own directory. Use it when each extension has its own
@@ -723,7 +723,7 @@ them.
 | **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
 | **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
 | **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
-| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default behavior                                                                                                 |
+| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default                                                                                                          |
 
 Every lint of extension code (push, `extension quality`, `extension fmt`)
 passes `--rules-exclude=no-import-prefix`: with a project config Deno's
@@ -1088,7 +1088,7 @@ additively, so an existing manifest never packages a different set of files:
 3. Otherwise probe every typed entry under both bases. An entry present under
    both at different real paths is an error naming both paths and the flag.
    If any entry resolves under the repo dir, the repo dir stays the root
-   (today's behaviour). Only a manifest that resolves nothing under the repo
+   (as today). Only a manifest that resolves nothing under the repo
    dir moves to the inferred root.
 
 The `deno.json` / `package.json` walk up from the manifest stops at the repo
@@ -1975,7 +1975,7 @@ Sibling extensions from one collective (e.g. `@swamp/aws/ec2` and
 second pull either fails with `ConflictError` or, with `--force`, silently
 overwrites the first. The silent overwrite is the dangerous case. Behavior
 bundles import `_lib/*` helpers transitively, so swapping `_lib/aws.ts` between
-ec2 and eks gives wrong runtime behavior with no type or load error.
+ec2 and eks gives wrong runtime results with no type or load error.
 
 In the extension-first layout, each extension's files live in their own subtree
 keyed on its scoped name, so this cannot happen. The registry already uses the
@@ -2858,7 +2858,7 @@ has been fully indexed.
      and moves the row back to `Indexed`. This covers only the steady-state
      `rebundleAndUpdateCatalog` hot path. The cold-start parses (initial
      `loadModels` Pass 1, the by-name `loadSingleType`, and the
-     extension-attach predicate) keep their existing failure behavior, as they
+     extension-attach predicate) keep their existing failure handling, as they
      are outside the read-only steady-state loop.
    - **Fingerprint preservation on build failure (issue #265).** When
      `bundleWithCache` returns the cached `.js` instead of a fresh bundle

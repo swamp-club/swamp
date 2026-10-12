@@ -997,7 +997,7 @@ Runs and evaluated caches persist these scoped records alongside provenance.
 They do not capture the process environment, service objects, or resolved
 vault secrets. Execution rebuilds service-backed namespaces and resolves vault
 values through the secret bag. Scope metadata is optional: older artifacts keep
-their existing provenance behavior, and missing parent bindings are never
+their existing provenance handling, and missing parent bindings are never
 rebuilt from child inputs.
 
 The parameter carrying the set is required and typed `ReadonlySet<string> |
@@ -1037,7 +1037,7 @@ exactly as expression extraction reports it, so a caller-chosen key can never
 collide with a nested path or an array index.
 
 The gate is strictly narrower than the raw-text rule: it never evaluates an
-occurrence that rule refuses. The only behaviour it changes is refusing
+occurrence that rule refuses. The only thing it changes is refusing
 expression text that sits inside data. Substitution stays keyed on raw text, so
 authored copies of an evaluated expression at other paths still receive the
 run-start value, as they always have. The one exception is an occurrence inside
@@ -1089,7 +1089,7 @@ are authored at their new positions.
 parameter is required, and `integration/expression_provenance_rules_test.ts`
 fails on a production save passing `undefined` or an empty map, and on any
 caller of the raw-text gate other than `partitionAuthoredAt`. In memory, a
-binding with no map is authored, which is the behaviour before this rule.
+binding with no map is authored, which is how it worked before this rule.
 Data is marked where it enters `inputs`, `self` or `run`: workflow caller
 inputs, spliced step inputs, routed direct-execution globals, forEach items,
 child inputs, and `--literal-inputs`. A transform that rewrites a value holding

@@ -262,7 +262,7 @@ remote. Other push errors are still downgraded to warnings, as before, so a
 brief S3 failure does not kill a run. Managed-config writes are the exception:
 any failed push exits non-zero (see "Where mutations write").
 
-**Setup timeout behavior.** In `datastore setup extension`, a push or pull
+**Setup timeouts.** In `datastore setup extension`, a push or pull
 timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
 and the user resumes with `swamp datastore sync --push --timeout <big>`. Hard
 failures (auth, network, config) still block writing the type. Otherwise a slow
@@ -554,7 +554,7 @@ namespace:
 A refusal is a `UserError` with that code in `--json` output and exit code 1,
 and says nothing was changed. A garbled marker is refused because treating it
 as format 2 is the unsafe direction. A failed read passes because blocking
-offline or degraded use would change behaviour for every v2 datastore, and the
+offline or degraded use would change how every v2 datastore works, and the
 command meets the same outage itself. The remote read is bounded by
 `DATASTORE_FORMAT_READ_TIMEOUT_MS` (3 s) through a provider's datastore-wide
 store, and by `DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS` (4 s) on the
@@ -727,7 +727,7 @@ extension gets `pullChanged()` / `pushChanged()` with no arguments, as today.
 **Graceful degradation.** If `capabilities()` throws, core falls back to full
 sync. The try/catch wraps only the `capabilities()` call, not pull/push.
 
-**Per-behavior loop behavior.** `acquireModelLocks` calls `pullChanged()` once
+**Per-behavior loop.** `acquireModelLocks` calls `pullChanged()` once
 per behavior as it takes each lock. With `scopedSync`, each call's context holds
 only the behavior whose lock was taken, so the extension pulls one behavior per
 call.
@@ -800,7 +800,7 @@ without syncing each other's data.
 
 #### Per-namespace index partitioning
 
-> **Extension behaviour.** This section describes the `@swamp/s3-datastore`
+> **Extension design.** This section describes the `@swamp/s3-datastore`
 > extension's index design; none of it is implemented in this repo.
 
 > **See also:** The [shard-first index](#shard-first-index) design extends
@@ -933,7 +933,7 @@ Extensions that do not advertise `twoPhaseSync`, or lack
 
 ### Shard-First Index
 
-> **Extension behaviour.** This section describes the `@swamp/s3-datastore`
+> **Extension design.** This section describes the `@swamp/s3-datastore`
 > extension's index design and is not implemented in this repo. Core's only
 > part is the optional `migrateMonolithToShards?()` method on
 > `DatastoreSyncService`, its `MigrateIndexResult`, and the
@@ -1047,7 +1047,7 @@ Rules:
    hashes with a streaming hasher (`node:crypto.createHash`), not by reading
    whole files with `Deno.readFile`.
 
-These rules are convention only; the interface cannot express memory behavior.
+These rules are convention only; the interface cannot express memory use.
 The conformance suite in `packages/testing/` documents the expectation.
 
 #### Shard cleanup
@@ -1097,7 +1097,7 @@ Edge cases:
   version that supports shard-first indexing.
 - **Empty datastore**: recovers from the `_index/` listing if shards exist.
 
-**Pre-migration behavior:** When `_meta.json` is missing or `version: 1`,
+**Before migration:** When `_meta.json` is missing or `version: 1`,
 `commitPush` and `pullChanged` use the monolithic path, as before shard-first.
 An info-level log says migration is available via
 `swamp datastore migrate-index`. Upgrading the extension alone causes no
@@ -1322,7 +1322,7 @@ each see their own unit, and a promise started inside a scope keeps it after the
 scope returns. A write that lands after its unit committed is rejected. No
 production code opens a scope yet (pinned empty in
 `integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
-and behaviour is unchanged. Phase 2 opens scopes from use cases.
+and nothing else changes. Phase 2 opens scopes from use cases.
 
 **End of Phase 1 (swamp-club#2996).** Every hooked datastore-tier repository
 stages typed changes through `signalChange`. Two rules in
@@ -1842,7 +1842,7 @@ Six properties of the gate are easy to misread:
   so the handler runs and then reports `cancelled` from its own abort check. A
   handler mutation or run push waiting longer than `GATE_WAIT_TIMEOUT_MS`
   proceeds without the gate and logs a warning, so a stuck holder falls back to
-  pre-gate behaviour instead of stalling the server. A poller never falls back:
+  the pre-gate path instead of stalling the server. A poller never falls back:
   it skips the cycle, so the pull side of the race never runs ungated. Runs wait
   on a poller only during its escalated cycle, and only for as long as the
   pushes already ahead of it (at most `GATE_WAIT_TIMEOUT_MS`).
@@ -2606,7 +2606,7 @@ when they run on v3, for every write they make. It is the first of three
 repository staging groups; definition, workflow and evaluated staging, and
 run and vault config staging, add builders to the same route. It is dormant:
 nothing reaches it until a hook requires a unit, which only a commit-log root
-marks. v2 behaviour does not change: the builders never run on v2.
+marks. Nothing changes on v2: the builders never run there.
 
 **The shared route: two calls.** The issue sketched one pre-write call with a
 lazy builder, `signalChange(markDirty, pathChange, () => typedChanges)`. The
@@ -3535,7 +3535,7 @@ swamp-club#3278 answers where `audit/`, `telemetry/`, `logs/` and `files/`
 live on v3. swamp-club#3233 recorded them as synced, append-only streams with
 no v3 home. A trace of every writer and reader in `src/` shows that none of
 them is written through the datastore on any backend, so the answer is that
-they stay repo-local, on v3 as on v2. No v2 behaviour changes.
+they stay repo-local, on v3 as on v2. Nothing changes on v2.
 
 **Ubiquitous language.**
 
@@ -4283,7 +4283,7 @@ version, owner, etc.) work.
 
 ### Index
 
-> **Extension behaviour.** This and the next three sections describe the
+> **Extension design.** This and the next three sections describe the
 > `@swamp/s3-datastore` extension; none of it is implemented in this repo.
 
 A metadata index (`.datastore-index.json`) tracks every file in the S3 bucket.
@@ -4293,7 +4293,7 @@ during rapid command sequences.
 
 ### Change Detection
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 
 Changes are detected by comparing `stat.size` and `stat.mtime`:
 
@@ -4308,15 +4308,15 @@ is unchanged.
 
 ### Transfer Concurrency
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 
 Pull and push transfer files concurrently in bounded batches. Overlapping S3
 round trips speeds up syncs with many files; the limit avoids overloading the
 network or hitting S3 rate limits.
 
-### Offline Behavior
+### Offline Operation
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 > Core's own contribution is the sync timeout above and the diagnostics in
 > `src/infrastructure/persistence/sync_error_diagnostic.ts`.
 
@@ -4365,7 +4365,7 @@ Lock metadata (`LockInfo`) is stored as JSON:
 
 ### Extension Locks
 
-> **Extension behaviour.** The S3 mechanism below is the
+> **Extension design.** The S3 mechanism below is the
 > `@swamp/s3-datastore` extension's design, not implemented in this repo.
 
 Extension datastores supply their own `DistributedLock` via
@@ -4434,7 +4434,7 @@ per-behavior retry settings, is named `.lock`, and sits outside `data/`. It is
 taken before a per-behavior lock, never after. See "Tokens" in
 `design/primitives/serve.md` for what takes it.
 
-### Lock Timeout and Retry Behavior
+### Lock Timeouts and Retries
 
 The default lock timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`). That is
 enough for most workloads, because per-step locking gives each method step

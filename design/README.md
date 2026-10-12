@@ -44,7 +44,7 @@ last-verified: 2026-08-28 @ 4bde205b # date and commit someone checked it
 ```
 
 `last-verified` means a person spot-checked the doc against the code at that
-commit. A PR that changes a subsystem's behaviour should bump the date on its
+commit. A PR that changes what a subsystem does should bump the date on its
 doc.
 
 ## Writing style
