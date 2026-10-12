@@ -29,19 +29,33 @@ export interface WorkflowTriggerSetData {
   readonly paused?: boolean;
 }
 
+export interface WorkflowTriggerSetRenderOptions {
+  /**
+   * The command set a schedule (`--schedule`). Without one, a pause or
+   * resume reports only that, not the stored schedule it left alone.
+   * Defaults to true unless the command asked for a pause state.
+   */
+  readonly scheduleSet?: boolean;
+}
+
 export function renderWorkflowTriggerSet(
   mode: OutputMode,
   data: WorkflowTriggerSetData,
+  options: WorkflowTriggerSetRenderOptions = {},
 ): void {
+  const scheduleSet = options.scheduleSet ?? data.paused === undefined;
   if (mode === "json") {
     console.log(JSON.stringify(data, null, 2));
   } else {
     const logger = getSwampLogger(["workflow", "trigger", "set"]);
-    if (data.entry.schedule !== undefined) {
+    if (scheduleSet && data.entry.schedule !== undefined) {
       logger
         .info`Set trigger override for ${data.workflowName}: schedule ${data.entry.schedule}`;
     }
-    if (data.entry.inputs && Object.keys(data.entry.inputs).length > 0) {
+    if (
+      scheduleSet && data.entry.inputs &&
+      Object.keys(data.entry.inputs).length > 0
+    ) {
       logger.info`  inputs: ${
         Object.entries(data.entry.inputs).map(([k, v]) => `${k}=${v}`).join(
           ", ",

@@ -156,7 +156,7 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       workflowName: response.data.workflowName,
       entry: response.data.entry,
       ...(paused !== undefined ? { paused } : {}),
-    });
+    }, { scheduleSet: schedule !== undefined });
     return;
   }
 
@@ -191,7 +191,7 @@ export const workflowTriggerSetCommand = withRemoteOptions(
     workflowName,
     entry: entry ?? {},
     ...(paused !== undefined ? { paused } : {}),
-  });
+  }, { scheduleSet: schedule !== undefined });
 
   cliCtx.logger.debug("Workflow trigger set command completed");
 });
