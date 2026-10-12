@@ -86,6 +86,10 @@ function makeDeps(
     findLocalDefaultVault: () => Promise.resolve(undefined),
     collapseEnvVars: (path: string) => path,
     assertDatastoreFormat: () => Promise.resolve(),
+    inspectV3Target: () => Promise.resolve({ kind: "absent" }),
+    hasDatastoreRecords: () => Promise.resolve(false),
+    createV3Datastore: () => Promise.resolve(),
+    currentDatastore: () => Promise.resolve({ engine: "v2" }),
     ...overrides,
   };
 }
@@ -3750,4 +3754,232 @@ Deno.test("datastoreSetupExtension: an empty external datastore root (an unmount
     assertEquals(await pathExists(remoteDir), false);
     assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
   });
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 creates a v3 datastore and records the format, migrating nothing", async () => {
+  const created: string[] = [];
+  const saved: Record<string, unknown>[] = [];
+  let migrated = false;
+  const deps = makeDeps({
+    createV3Datastore: (path) => {
+      created.push(path);
+      return Promise.resolve();
+    },
+    updateRepoConfig: (_repoDir, config) => {
+      saved.push(config);
+      return Promise.resolve();
+    },
+    migrateData: () => {
+      migrated = true;
+      return Promise.reject(new Error("v3 setup must not migrate"));
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  assertEquals(events.map((e) => e.kind), ["validating", "completed"]);
+  const completed = events[1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.format, 3);
+  assertEquals(created, ["/tmp/datastore"]);
+  assertEquals(saved[0].format, 3);
+  assertEquals(migrated, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses a target that is not new and empty", async () => {
+  let created = false;
+  const deps = makeDeps({
+    inspectV3Target: () =>
+      Promise.resolve({
+        kind: "refused",
+        reason: "/tmp/datastore is not empty",
+      }),
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "new, empty directory");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses while the current datastore holds records", async () => {
+  let created = false;
+  const deps = makeDeps({
+    hasDatastoreRecords: () => Promise.resolve(true),
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3 }),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "holds records");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 refuses when the current datastore cannot be read", async () => {
+  let created = false;
+  const deps = makeDeps({
+    createV3Datastore: () => {
+      created = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({
+        format: 3,
+        outgoingDatastorePath: `/no/such/datastore-${crypto.randomUUID()}`,
+      }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(created, false);
+});
+
+Deno.test("datastoreSetupFilesystem: a repo on a v3 datastore is not moved, to v2 or to another v3", async () => {
+  for (const format of [undefined, 3] as const) {
+    let changed = false;
+    const deps = makeDeps({
+      currentDatastore: () => Promise.resolve({ engine: "v3" }),
+      updateRepoConfig: () => {
+        changed = true;
+        return Promise.resolve();
+      },
+      createV3Datastore: () => {
+        changed = true;
+        return Promise.resolve();
+      },
+    });
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        deps,
+        makeFilesystemInput(format === undefined ? {} : { format }),
+      ),
+    );
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "uses a v3 datastore");
+    assertEquals(changed, false);
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 keeps a namespace set before setup, and checks its records too", async () => {
+  const saved: Record<string, unknown>[] = [];
+  const checked: string[] = [];
+  const deps = makeDeps({
+    currentDatastore: () =>
+      Promise.resolve({ engine: "v2", namespace: "team" }),
+    hasDatastoreRecords: (dir) => {
+      checked.push(dir);
+      return Promise.resolve(false);
+    },
+    updateRepoConfig: (_repoDir, config) => {
+      saved.push(config);
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput({ format: 3, skipMigration: true }),
+    ),
+  );
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(saved[0].namespace, "team");
+  assertEquals(saved[0].format, 3);
+  assertEquals(
+    checked.map((dir) => dir.split(/[\\/]/).slice(-2).join("/")),
+    ["repo/.swamp", ".swamp/team"],
+  );
+});
+
+Deno.test("datastoreSetupExtension: a repo on a v3 datastore is not moved to an extension datastore", async () => {
+  let changed = false;
+  const deps = makeDeps({
+    currentDatastore: () => Promise.resolve({ engine: "v3" }),
+    updateRepoConfig: () => {
+      changed = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(
+      createLibSwampContext(),
+      deps,
+      makeExtensionInput(),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "uses a v3 datastore");
+  assertEquals(changed, false);
+});
+
+Deno.test("datastoreSetupFilesystem: a v2 setup onto a datastore that is already v3 is refused", async () => {
+  let changed = false;
+  const deps = makeDeps({
+    assertDatastoreFormat: () => Promise.resolve("v3"),
+    migrateData: () => {
+      changed = true;
+      return Promise.reject(new Error("must not migrate"));
+    },
+    updateRepoConfig: () => {
+      changed = true;
+      return Promise.resolve();
+    },
+  });
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(
+      createLibSwampContext(),
+      deps,
+      makeFilesystemInput(),
+    ),
+  );
+  const error = events.at(-1) as Extract<
+    DatastoreSetupEvent,
+    { kind: "error" }
+  >;
+  assertEquals(error.kind, "error");
+  assertStringIncludes(error.error.message, "is a v3 datastore");
+  assertEquals(changed, false);
 });

@@ -53,6 +53,88 @@ import {
 import type { RepositoryContext } from "./repository_factory.ts";
 import { currentUnitOfWork, runInUnitOfWork } from "./unit_of_work_scope.ts";
 
+/**
+ * The v3 commit log a repository context commits through (swamp-club#3279),
+ * when its datastore is v3. The v3 opt-in builds it over the context's own
+ * hook; this module only calls it, so the persistence layer never imports
+ * the v3 engine. Absent on every v2 context, which keeps today's legacy
+ * units unchanged.
+ */
+export interface CommitLogEngine {
+  /** Opens a use case's commit-log unit: a child of the open unit for this context, or a root. */
+  openUnit(): UnitOfWork;
+  /** Whether a commit-log unit for this context is open around the call. */
+  hasOpenUnit(): boolean;
+  /**
+   * Runs `fn` in a commit-log root for this context and ends it as
+   * `options.disposition` decides; see `runInCommitLogRoot`.
+   */
+  runRoot<T>(
+    options: CommitLogRootRunOptions<T>,
+    fn: (root: CommitLogRootView) => Promise<T>,
+  ): Promise<T>;
+}
+
+/** What a commit-log root gives the code it runs. */
+export interface CommitLogRootView
+  extends Pick<UnitOfWork, "stage" | "staged"> {
+  /** Commits what was staged so far and keeps the root open. */
+  checkpoint(): Promise<void>;
+}
+
+/** How the operation a commit-log root ran ended. */
+export type CommitLogRunOutcome<T> =
+  | { readonly completed: true; readonly value: T }
+  | { readonly completed: false; readonly error: unknown };
+
+/** Options for {@link CommitLogEngine.runRoot}. */
+export interface CommitLogRootRunOptions<T> {
+  /**
+   * Whether the root commits or discards, from how `fn` ended. By default
+   * it commits when `fn` resolved and discards when it threw.
+   */
+  disposition?: (outcome: CommitLogRunOutcome<T>) => "commit" | "discard";
+  /**
+   * Settles a refused partition by failing the workflow-run steps that name
+   * refused data, before the root commits (`reconcileRefusedRuns`). Set on
+   * the root of every operation that runs a workflow or a model method.
+   */
+  reconcileRuns?: boolean;
+}
+
+/**
+ * The commit-log engine of each v3 context, by the context's hook. Hook
+ * identity already decides which unit a write stages into; it decides which
+ * engine a root or unit opens through too, so code that holds only the hook
+ * (`{ markDirty }`) opens v3 roots on a v3 context.
+ */
+const engines = new WeakMap<MarkDirtyHook, CommitLogEngine>();
+
+/**
+ * Records that the context whose hook is `markDirty` commits through
+ * `engine` (swamp-club#3279). `createRepositoryContext` calls it when it
+ * builds a v3 context; a hook is bound to one engine for good.
+ */
+export function bindCommitLogEngine(
+  markDirty: MarkDirtyHook,
+  engine: CommitLogEngine,
+): void {
+  if (engines.has(markDirty)) {
+    throw new Error("a repository context's hook already has a commit log");
+  }
+  engines.set(markDirty, engine);
+}
+
+/** The commit-log engine of the v3 context `repoContext` names, if any. */
+function commitLogOf(
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
+): CommitLogEngine | undefined {
+  return repoContext.commitLog ??
+    (repoContext.markDirty === undefined
+      ? undefined
+      : engines.get(repoContext.markDirty));
+}
+
 /** What production chose for a unit the test seam builds. */
 export interface BoundUnitOfWorkOptions {
   /** The push the unit runs when it ends; undefined for every child. */
@@ -127,6 +209,8 @@ function openUnit(
 export function openRepoUnitOfWork(
   markDirty: MarkDirtyHook | undefined,
 ): UnitOfWork {
+  const engine = markDirty === undefined ? undefined : engines.get(markDirty);
+  if (engine !== undefined) return engine.openUnit();
   return openUnit(markDirty, {
     flush: undefined,
     parent: ambientFor(markDirty),
@@ -141,8 +225,10 @@ export function openRepoUnitOfWork(
  * read-only contexts) the unit is unbound and stages nothing.
  */
 export function repoUnitOfWorkFactory(
-  repoContext: Pick<RepositoryContext, "markDirty">,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
 ): () => UnitOfWork {
+  const commitLog = commitLogOf(repoContext);
+  if (commitLog !== undefined) return () => commitLog.openUnit();
   return () => openRepoUnitOfWork(repoContext.markDirty);
 }
 
@@ -216,6 +302,12 @@ export interface RootUnitOfWorkOptions {
    * error is the one rethrown. Without it the push error is logged at warn.
    */
   onFlushError?: (error: unknown) => void;
+  /**
+   * How the root ends on a v3 context, which commits rather than pushes
+   * (swamp-club#3279). Ignored on v2. The flush still runs after the root
+   * ends, since it also releases the command's locks.
+   */
+  commitLog?: CommitLogRootRunOptions<unknown>;
 }
 
 /**
@@ -247,10 +339,19 @@ export interface RootUnitOfWorkOptions {
  *   every mid-operation push.
  */
 export async function runInRootUnitOfWork<T>(
-  repoContext: Pick<RepositoryContext, "markDirty">,
+  repoContext: Pick<RepositoryContext, "markDirty" | "commitLog">,
   options: RootUnitOfWorkOptions,
   fn: (root: RootUnitOfWork) => Promise<T>,
 ): Promise<T> {
+  const commitLog = commitLogOf(repoContext);
+  if (commitLog !== undefined) {
+    return await runInCommitLogEngineRoot(
+      repoContext.markDirty,
+      commitLog,
+      options,
+      fn,
+    );
+  }
   const markDirty = repoContext.markDirty;
   const parent = ambientFor(markDirty);
   if (parent !== undefined && options.flush !== undefined) {
@@ -329,6 +430,101 @@ export async function runInRootUnitOfWork<T>(
   ended = true;
   completed = true;
   await root.commit();
+  return value;
+}
+
+/**
+ * {@link runInRootUnitOfWork} on a v3 context: the same contract, with a
+ * commit-log root in place of the legacy one (swamp-club#3279). The root
+ * commits instead of pushing; the flush still runs once after it ends, as
+ * it releases the locks the command took, and a nested call or checkpoint
+ * is refused exactly as on v2.
+ */
+async function runInCommitLogEngineRoot<T>(
+  markDirty: MarkDirtyHook | undefined,
+  engine: CommitLogEngine,
+  options: RootUnitOfWorkOptions,
+  fn: (root: RootUnitOfWork) => Promise<T>,
+): Promise<T> {
+  const nested = engine.hasOpenUnit();
+  if (nested && options.flush !== undefined) {
+    throw new Error(
+      "a root unit of work was opened inside another for the same hook with " +
+        "its own push; give that push to the outer root, or run it outside",
+    );
+  }
+  if (nested && options.checkpoint !== undefined) {
+    throw new Error(
+      "a root unit of work was opened inside another for the same hook with " +
+        "its own checkpoint; give that checkpoint to the outer root",
+    );
+  }
+  const pushWhen = options.pushWhen ?? "always";
+  let ended = false;
+  let value: T;
+  try {
+    // The root commits when the v2 root would push: on every outcome, or
+    // only when `fn` resolved under `pushWhen: "completed"` (swamp-club#3279).
+    // So a failed operation's records reach the commit log as v2 publishes
+    // them. Refused partitions are settled for every root: only a root
+    // holding a run record has anything to reconcile.
+    const rootOptions: CommitLogRootRunOptions<T> = {
+      disposition: (outcome) =>
+        outcome.completed || pushWhen === "always" ? "commit" : "discard",
+      reconcileRuns: true,
+      ...(options.commitLog as CommitLogRootRunOptions<T> | undefined),
+    };
+    value = await engine.runRoot(
+      rootOptions,
+      (root) => {
+        const view: RootUnitOfWork = {
+          stage: (change) => root.stage(change),
+          staged: () => root.staged(),
+          async checkpoint(checkpointOptions: CheckpointOptions = {}) {
+            if (ended) {
+              throw new Error(
+                "checkpoint called after its root unit of work ended",
+              );
+            }
+            if (nested) {
+              throw new Error(
+                "checkpoint called on a nested root unit of work, which is a " +
+                  "child of the outer root; the outer root owns the checkpoint",
+              );
+            }
+            if (options.checkpoint === undefined) {
+              throw new Error(
+                "checkpoint called on a root unit of work opened without a " +
+                  "checkpoint option",
+              );
+            }
+            await root.checkpoint();
+            return await options.checkpoint(checkpointOptions);
+          },
+        };
+        return nested ? fn(view) : ambientRoots.run(
+          [...(ambientRoots.getStore() ?? []), { markDirty, root: view }],
+          () => fn(view),
+        );
+      },
+    );
+  } catch (error) {
+    ended = true;
+    if (options.flush !== undefined && pushWhen === "always") {
+      try {
+        await options.flush({ completed: false });
+      } catch (flushError) {
+        if (options.onFlushError !== undefined) {
+          options.onFlushError(flushError);
+        } else {
+          logger.warn`Push after a failed operation also failed: ${flushError}`;
+        }
+      }
+    }
+    throw error;
+  }
+  ended = true;
+  if (options.flush !== undefined) await options.flush({ completed: true });
   return value;
 }
 

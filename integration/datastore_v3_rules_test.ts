@@ -155,6 +155,33 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // swamp-club#3257, the persistence test helper's typed recording unit: a
   // type-only import of the `TypedChange` batches it records.
   "src/infrastructure/persistence/test_helpers/staged_change_helpers.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  // swamp-club#3279, the v3 opt-in: the one place outside the v3
+  // directories that opens a v3 datastore for a repository context
+  // (v3_repo_context.ts), and the code that reaches it: the CLI's context
+  // builders and teardown, serve's compaction timer and status handler,
+  // `datastore gc`, `datastore status` and `datastore lock`.
+  "src/cli/commands/datastore_gc.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/datastore_lock.ts -> src/infrastructure/datastore_v3/v3_writer_lock.ts",
+  "src/cli/commands/datastore_status.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/commands/serve.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/mod.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_repo_context.ts",
+  // swamp-club#3279, the managed lockfile's v3 publish, CLI and serve: it
+  // commits the lockfile at its transaction root's checkpoint.
+  "src/cli/managed_config_sync.ts -> src/infrastructure/datastore_v3/v3_lockfile_sync.ts",
+  "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_lockfile_sync.ts",
+  // swamp-club#3279: catalogDbPath returns the read model's catalog on a v3
+  // datastore, and setup leaves the stream directories out of its
+  // records check.
+  "src/infrastructure/persistence/repository_factory.ts -> src/infrastructure/datastore_v3/record_path_guard.ts",
+  "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/record_path_guard.ts",
+  // swamp-club#3279: `datastore setup --format 3` creates the datastore.
+  "src/libswamp/datastores/setup.ts -> src/infrastructure/datastore_v3/v3_datastore.ts",
+  // swamp-club#3279: run-record artifacts resolve through the resolver on
+  // v3, where a removed version can be written again.
+  "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
+  "src/libswamp/models/output_data.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {
@@ -261,7 +288,11 @@ Deno.test("datastore v3: partition keys are built only by partitionOf()", async 
 const FS_STORAGE = "src/infrastructure/persistence/fs_datastore_storage.ts";
 
 /** Production imports of the filesystem storage. */
-const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [];
+const PINNED_FS_STORAGE_IMPORTERS: readonly string[] = [
+  // swamp-club#3279: a filesystem v3 datastore stores its chunks in the
+  // filesystem storage.
+  "src/infrastructure/datastore_v3/v3_datastore.ts -> src/infrastructure/persistence/fs_datastore_storage.ts",
+];
 
 Deno.test("datastore v3: no production code imports the filesystem storage", async () => {
   const edges = await collectImportEdges(
@@ -524,7 +555,12 @@ const COMPACTION_MODULES = [
 ];
 
 /** Production imports of the compaction modules from outside v3. */
-const PINNED_COMPACTION_IMPORTERS: readonly string[] = [];
+const PINNED_COMPACTION_IMPORTERS: readonly string[] = [
+  // swamp-club#3279: run-record artifacts resolve through the resolver on
+  // v3, where a removed version can be written again.
+  "src/libswamp/data/run_artifact_check.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
+  "src/libswamp/models/output_data.ts -> src/domain/datastore_v3/run_artifact_resolution.ts",
+];
 
 Deno.test("datastore v3: no production code outside v3 imports history compaction", async () => {
   const edges = await collectImportEdges(

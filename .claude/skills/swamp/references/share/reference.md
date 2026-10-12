@@ -112,7 +112,9 @@ swamp datastore setup filesystem --path /shared/storage/project --json
 ```
 
 Moves data to a shared filesystem path. Simpler than S3 but requires all
-teammates to have access to the same path.
+teammates to have access to the same path. `--format 3` creates a v3 datastore
+instead, which takes one writing process at a time; see the repo reference's
+"Setting Up a v3 Filesystem Datastore".
 
 ### Verify after setup
 

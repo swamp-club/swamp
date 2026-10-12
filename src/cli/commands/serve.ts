@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -489,6 +490,10 @@ import {
   type VaultClassification,
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
+import {
+  v3DatastoreFor,
+  V3MaintenanceTimer,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
@@ -2890,6 +2895,7 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
+      datastoreResolver: repoDatastoreResolver,
       syncService,
       lockfilePath: managedLockfilePath,
       vaultsDir,
@@ -2903,6 +2909,14 @@ export const serveCommand = new Command()
     // land between a local delete and its push (swamp-club#2247). Only
     // meaningful with a sync service — without one nothing syncs.
     const syncGate = syncService ? createSyncGate() : undefined;
+
+    // A v3 datastore is maintained by its writer: serve compacts history and
+    // sweeps chunks while it runs (swamp-club#3279).
+    const v3Maintenance = !isCustomDatastoreConfig(datastoreConfig) &&
+        resolverEngine(repoDatastoreResolver) === "v3"
+      ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
+      : undefined;
+    v3Maintenance?.start();
 
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
@@ -6819,6 +6833,7 @@ export const serveCommand = new Command()
         await configPoller.stop();
       }
       await policySnapshotLoader.dispose();
+      await v3Maintenance?.stop();
       // Final telemetry flush, after runs have drained so their entries are
       // included. Must happen BEFORE ac.abort(), which releases
       // `await server.finished` and with it the CLI's own teardown flush.

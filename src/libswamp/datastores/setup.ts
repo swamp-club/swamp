@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ensureDir } from "@std/fs";
+import { ensureDir, walk } from "@std/fs";
 import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import {
   CATALOG_FILES,
@@ -55,7 +55,16 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { removeCatalogDb } from "../../infrastructure/persistence/repository_factory.ts";
-import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
+import {
+  datastoreBlockEngine,
+  ensureSupportedDatastoreFormat,
+} from "../../infrastructure/persistence/datastore_format_guard.ts";
+import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
+import { REPO_LOCAL_STREAM_SUBDIRS } from "../../infrastructure/datastore_v3/record_path_guard.ts";
+import {
+  initializeV3Datastore,
+  isFreshV3Skeleton,
+} from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import {
   getSwampDataDir,
   swampPath,
@@ -98,6 +107,8 @@ export interface DatastoreSetupData {
    * left in place there, which setup never cleans up (swamp-club#3238).
    */
   sourceKept?: boolean;
+  /** The format the datastore was created in, when setup chose v3. */
+  format?: 3;
 }
 
 /** A warning raised during datastore setup, keyed by `code`. */
@@ -174,7 +185,19 @@ export interface DatastoreSetupFilesystemInput {
    * (swamp-club#3238).
    */
   outgoingDatastorePath?: string;
+  /**
+   * The format to create the datastore in: 2 (files, the default) or 3, the
+   * v3 commit log (swamp-club#3279). Format 3 needs a new, empty path and a
+   * current datastore with no records to migrate.
+   */
+  format?: 2 | 3;
 }
+
+/** What a filesystem datastore path holds, for a v3 setup. */
+export type V3TargetState =
+  | { readonly kind: "absent" }
+  | { readonly kind: "empty" }
+  | { readonly kind: "refused"; readonly reason: string };
 
 /** Dependencies for datastore setup operations. */
 export interface DatastoreSetupDeps {
@@ -265,8 +288,49 @@ export interface DatastoreSetupDeps {
     repoDir: string,
     config: DatastoreConfig,
     provider?: DatastoreProvider,
-  ) => Promise<void>;
+  ) => Promise<DatastoreEngine | void>;
+  /**
+   * Whether a v3 datastore may be created at `path`: absent or an empty
+   * directory, never a symlink (swamp-club#3279).
+   */
+  inspectV3Target: (path: string) => Promise<V3TargetState>;
+  /**
+   * Whether `sourceDir` holds any record under the datastore `subdirs`,
+   * other than the `skip` paths (relative to `sourceDir`).
+   */
+  hasDatastoreRecords: (
+    sourceDir: string,
+    subdirs: readonly string[],
+    skip: readonly string[],
+  ) => Promise<boolean>;
+  /**
+   * Creates a v3 datastore at `path`: the format marker first, then
+   * `commits.db` and `_blobs/`, so a crash part-way leaves a marked but
+   * empty datastore or an unmarked empty directory, never v3 files without
+   * a marker.
+   */
+  createV3Datastore: (path: string) => Promise<void>;
+  /**
+   * The datastore the repo uses now (swamp-club#3279): its engine, since
+   * setup refuses to move a repo off a v3 datastore, and its namespace,
+   * which a v3 setup keeps.
+   */
+  currentDatastore: (
+    repoDir: string,
+  ) => Promise<{ engine: DatastoreEngine; namespace?: string }>;
 }
+
+/** The refusal for a setup that would move a repo off a v3 datastore. */
+const MOVE_OFF_V3_REFUSAL: DatastoreSetupEvent = {
+  kind: "error",
+  error: {
+    code: "validation_failed",
+    message: "This repository uses a v3 datastore. Moving it to another " +
+      "datastore is not supported yet: its records live in the checkout and " +
+      "its commit log, and migrating v3 data is not available. Nothing was " +
+      "changed.",
+  },
+};
 
 /** The error event for a datastore format check that refused. */
 function formatRefusal(err: unknown): DatastoreSetupEvent {
@@ -304,13 +368,40 @@ export async function* datastoreSetupFilesystem(
         return;
       }
 
+      if ((await deps.currentDatastore(input.repoDir)).engine === "v3") {
+        yield MOVE_OFF_V3_REFUSAL;
+        return;
+      }
+
+      let targetEngine: DatastoreEngine | void;
       try {
-        await deps.assertDatastoreFormat(input.repoDir, {
+        targetEngine = await deps.assertDatastoreFormat(input.repoDir, {
           type: "filesystem",
           path: input.datastorePath,
         });
       } catch (err) {
         yield formatRefusal(err);
+        return;
+      }
+      // A target that is already a v3 datastore takes no v2 setup: v2's
+      // migration would copy the repo's records into it, where a v3 checkout
+      // never reads them (swamp-club#3279).
+      if (targetEngine === "v3" && input.format !== 3) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: `${input.datastorePath} is a v3 datastore. Set it up ` +
+              "with `swamp datastore setup filesystem --path <dir> --format 3`" +
+              " (a v3 datastore takes a repository with no records). Nothing " +
+              "was changed.",
+          },
+        };
+        return;
+      }
+
+      if (input.format === 3) {
+        yield* setupV3Filesystem(ctx, deps, input);
         return;
       }
 
@@ -508,6 +599,103 @@ export async function* datastoreSetupFilesystem(
   );
 }
 
+/**
+ * The v3 part of filesystem setup (swamp-club#3279): a new, empty datastore
+ * in the commit-log format, with nothing migrated. Migrating v2 records is
+ * Phase 6, so setup refuses while the current datastore holds any; their
+ * files would sit in the checkout with no commit behind them.
+ */
+async function* setupV3Filesystem(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  input: DatastoreSetupFilesystemInput,
+): AsyncIterable<DatastoreSetupEvent> {
+  const refuse = (message: string): DatastoreSetupEvent => ({
+    kind: "error",
+    error: { code: "validation_failed", message },
+  });
+
+  const target = await deps.inspectV3Target(input.datastorePath);
+  if (target.kind === "refused") {
+    yield refuse(
+      `A v3 datastore needs a new, empty directory: ${target.reason}. ` +
+        "Migrating an existing datastore to v3 is not supported yet.",
+    );
+    return;
+  }
+
+  // Records the repo uses now would be left behind: their files stay where
+  // they are and no commit names them. The checkout's own .swamp is where a
+  // v3 datastore materialises records, so it must hold none even under
+  // --skip-migration.
+  const source = await resolveMigrationSource(ctx, input);
+  // A current datastore that cannot be read may hold records: refuse, as v2
+  // setup does, rather than leave them behind (swamp-club#3238).
+  if (!input.skipMigration && "error" in source) {
+    yield { kind: "error", error: source.error };
+    return;
+  }
+  const sourceDir = "error" in source ? source.currentPath : source.sourceDir;
+  const { namespace } = await deps.currentDatastore(input.repoDir);
+  const repoSwampDir = swampPath(input.repoDir);
+  const subdirs = deps.getDatastoreDirectories({ type: "filesystem" })
+    .filter((subdir) =>
+      !(REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir)
+    );
+  // The checkout's own .swamp is always checked, even under
+  // --skip-migration: a record left there would be materialised in the v3
+  // checkout with no commit behind it. The current datastore is checked too
+  // unless the user skips migration.
+  const dirs = [
+    repoSwampDir,
+    ...(namespace ? [swampPath(input.repoDir, namespace)] : []),
+  ];
+  if (
+    !input.skipMigration && !("error" in source) &&
+    !await isSamePath(sourceDir, repoSwampDir)
+  ) {
+    dirs.push(sourceDir);
+  }
+  for (const dir of dirs) {
+    if (await deps.hasDatastoreRecords(dir, subdirs, CATALOG_FILES)) {
+      yield refuse(
+        `${dir} holds records. A v3 datastore starts empty, and migrating ` +
+          "existing records to v3 is not supported yet. Set up v3 in a " +
+          "repository with no data.",
+      );
+      return;
+    }
+  }
+
+  await deps.createV3Datastore(input.datastorePath);
+  const collapsedPath = deps.collapseEnvVars(input.datastorePath);
+  await deps.updateRepoConfig(input.repoDir, {
+    type: "filesystem",
+    path: collapsedPath,
+    directories: input.directories ?? undefined,
+    // A namespace set before setup is the datastore's namespace: setup owns
+    // the key, so leaving it out would drop it.
+    ...(namespace ? { namespace } : {}),
+    format: 3,
+  });
+  // The v2 catalog indexes the old datastore; the v3 one is the read model's.
+  await deps.invalidateCatalog(input.repoDir);
+
+  yield {
+    kind: "completed",
+    data: {
+      type: "filesystem",
+      path: input.datastorePath,
+      format: 3,
+      filesCopied: 0,
+      filesPulled: 0,
+      bytesCopied: 0,
+      directoriesMigrated: [],
+      errors: [],
+    },
+  };
+}
+
 /** Input for extension datastore setup. */
 export interface DatastoreSetupExtensionInput {
   type: string;
@@ -550,6 +738,11 @@ export async function* datastoreSetupExtension(
             message: err instanceof Error ? err.message : String(err),
           },
         };
+        return;
+      }
+
+      if ((await deps.currentDatastore(input.repoDir)).engine === "v3") {
+        yield MOVE_OFF_V3_REFUSAL;
         return;
       }
 
@@ -1376,6 +1569,10 @@ export type ResolveConfigTierPath = (
 export function createDatastoreSetupDeps(
   _repoDir: string,
   resolveConfigTierPath: ResolveConfigTierPath,
+  options: {
+    /** Recorded as `writtenBy` in a v3 datastore's format marker. */
+    readonly swampVersion?: string;
+  } = {},
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo,
@@ -1486,6 +1683,11 @@ export function createDatastoreSetupDeps(
         : undefined;
     },
     collapseEnvVars,
+    inspectV3Target,
+    hasDatastoreRecords,
+    currentDatastore,
+    createV3Datastore: (path) =>
+      initializeV3Datastore(path, options.swampVersion ?? "unknown"),
     assertDatastoreFormat: (repoDir, config, provider) =>
       ensureSupportedDatastoreFormat(
         repoDir,
@@ -1596,4 +1798,71 @@ async function removeExcept(
   } catch {
     // Non-fatal: source dir may already be gone
   }
+}
+
+/** Whether a v3 datastore may be created at `path` (swamp-club#3279). */
+async function inspectV3Target(path: string): Promise<V3TargetState> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
+    throw error;
+  }
+  if (info.isSymlink) {
+    return { kind: "refused", reason: `${path} is a symbolic link` };
+  }
+  if (!info.isDirectory) {
+    return { kind: "refused", reason: `${path} is not a directory` };
+  }
+  // A setup that stopped after writing the marker leaves a fresh skeleton;
+  // a re-run completes it.
+  if (await isFreshV3Skeleton(path)) return { kind: "empty" };
+  for await (const entry of Deno.readDir(path)) {
+    return {
+      kind: "refused",
+      reason: `${path} is not empty (it holds ${entry.name})`,
+    };
+  }
+  return { kind: "empty" };
+}
+
+/**
+ * Whether `sourceDir` holds a file under any of `subdirs`, other than the
+ * `skip` paths (relative to `sourceDir`). Stops at the first one.
+ */
+async function hasDatastoreRecords(
+  sourceDir: string,
+  subdirs: readonly string[],
+  skip: readonly string[],
+): Promise<boolean> {
+  const skipped = new Set(skip.map((path) => resolve(sourceDir, path)));
+  for (const subdir of subdirs) {
+    const root = join(sourceDir, subdir);
+    try {
+      for await (
+        const entry of walk(root, { includeDirs: false, followSymlinks: false })
+      ) {
+        if (!skipped.has(resolve(entry.path))) return true;
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+  }
+  return false;
+}
+
+/** The datastore `.swamp.yaml` names: its engine and namespace. */
+async function currentDatastore(
+  repoDir: string,
+): Promise<{ engine: DatastoreEngine; namespace?: string }> {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  const namespace = marker?.datastore?.namespace;
+  return {
+    engine: datastoreBlockEngine(repoDir, marker?.datastore),
+    ...(namespace ? { namespace } : {}),
+  };
 }

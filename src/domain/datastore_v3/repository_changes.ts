@@ -560,3 +560,22 @@ function isRemoval(
 ): why is { readonly kind: DataRemoval } {
   return why.kind === "data.delete" || why.kind === "data.gc";
 }
+
+/**
+ * The typed change of the managed-config extension lockfile
+ * (swamp-club#3279): one put in its single partition. The lockfile is only
+ * ever rewritten, never removed.
+ */
+export class LockfileChanges {
+  readonly partition: PartitionKey = partitionOf({ kind: "lockfile" });
+
+  /** The lockfile as written. */
+  write(key: RecordKey, content: ContentSource): TypedChange {
+    return putChange(
+      this.partition,
+      createIntent({ kind: "lockfile.write" }),
+      key,
+      content,
+    );
+  }
+}

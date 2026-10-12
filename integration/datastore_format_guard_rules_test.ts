@@ -37,11 +37,12 @@ const ROOT = join(fromFileUrl(import.meta.url), "..", "..");
 const SRC_DIR = join(ROOT, "src");
 
 /**
- * A call that opens a datastore: a sync service, one of its locks, or the
- * provider's datastore-wide control-plane store.
+ * A call that opens a datastore: a sync service, one of its locks, the
+ * provider's datastore-wide control-plane store, or a v3 datastore's commit
+ * log or writer lock (swamp-club#3279).
  */
 const DATASTORE_OPEN =
-  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(|\.datastoreControlPlaneStore(\?\.)?\s*\(/;
+  /\.createSyncService(\?\.)?\s*\(|\.createLock\s*\(|\bcreateDatastoreLock\s*\(|\bcreateServerTokenLock\s*\(|\bresolveCustomProvider\s*\(|\.datastoreControlPlaneStore(\?\.)?\s*\(|\bopenV3Datastore\s*\(|\bv3DatastoreFor\s*\(|\bacquireV3WriterLock\s*\(|\bv3WriterLockHandle\s*\(/;
 
 /** A function declaration, which names the call without making it. */
 const DECLARATION = /^\s*(export\s+)?(async\s+)?function\b/;
@@ -118,13 +119,24 @@ async function openingOwners(): Promise<string[]> {
  */
 const GUARDED_PINNED = [
   "src/cli/commands/datastore_catalog_pull.ts:datastoreCatalogPullCommand",
-  "src/cli/commands/datastore_lock.ts:datastoreLockReleaseCommand",
-  "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand",
+  // swamp-club#3279: v3 opens (the commit log, the writer lock). Each is
+  // handed a config resolveDatastoreForRepo or requireInitializedRepo* has
+  // already checked: gc, lock, status, serve's maintenance timer and status
+  // handler, and the v3 context helpers repo_context calls after its check.
+  "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
+  "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
+  "src/serve/handlers/admin_handlers.ts:handleDatastoreStatus",
+  "src/cli/commands/datastore_lock.ts:datastoreLockReleaseCommand (x2)",
+  "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand (x2)",
   "src/cli/commands/datastore_namespace.ts:buildMigrateDeps",
   "src/cli/commands/datastore_sync.ts:datastoreSyncCommand",
   "src/cli/commands/doctor_datastores.ts:createDoctorDatastoresDeps",
   "src/cli/commands/doctor_datastores.ts:createRepairDeps",
-  "src/cli/commands/serve.ts:serveCommand (x2)",
+  "src/cli/commands/serve.ts:serveCommand (x3)",
   "src/cli/managed_config_sync.ts:coordinatedGlobalLock",
   "src/cli/repo_context.ts:acquireModelLocks (x5)",
   "src/cli/repo_context.ts:createModelLock (x2)",

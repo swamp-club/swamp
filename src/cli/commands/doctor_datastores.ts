@@ -522,8 +522,20 @@ export const doctorDatastoresCommand = withRemoteOptions(
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
-  await resolveDatastoreForRepo(repoDir);
+  const { engine } = await resolveDatastoreForRepo(repoDir);
   const libCtx = createLibSwampContext();
+
+  // The repairs are v2's: they rewrite datastore directories and the v2
+  // catalog, which a v3 datastore does not have, and none takes the v3
+  // writer lock (swamp-club#3279).
+  if (options.repair && engine === "v3") {
+    throw new UserError(
+      "`swamp doctor datastores --repair` is not available for v3 " +
+        "datastores yet. A v3 checkout rebuilds its records and catalog from " +
+        "the commit log; run `swamp doctor datastores` to check it. Nothing " +
+        "was changed.",
+    );
+  }
 
   if (options.repair) {
     let exitCode = 0;

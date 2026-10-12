@@ -888,6 +888,9 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/run.ts: runDoctorCommand",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
   "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
+  // swamp-club#3279: `datastore gc` sweeps chunks under the global lock's
+  // coordinator root, as `datastore compact` runs.
+  "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
 ];
 
 // Callers of ModelLockResult.flush (push, then release) whose push is not a
@@ -951,6 +954,11 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   "src/libswamp/data/gc.ts: createDataGcDeps",
   "src/libswamp/data/prune.ts: createDataPruneDeps",
   "src/libswamp/datastores/compact.ts: datastoreCompact",
+  // swamp-club#3279: a v3 root's checkpoint commits the partitions touched
+  // so far, then runs the checkpoint option it was given; the managed
+  // lockfile's v3 publish commits the lockfile at its root's checkpoint.
+  "src/infrastructure/persistence/repo_unit_of_work.ts: runInCommitLogEngineRoot (x2)",
+  "src/infrastructure/datastore_v3/v3_lockfile_sync.ts: createV3LockfileSync",
 ];
 
 // ---------------------------------------------------------------------------
@@ -982,10 +990,12 @@ const PINNED_UNIT_OF_WORK_BINDERS: readonly string[] = [
 // legacy-only view of the binding.
 const PINNED_BOUND_HOOK_READERS: readonly string[] = [
   "src/infrastructure/persistence/legacy_unit_of_work.ts: legacyUnitOfWorkTarget",
-  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange (x2)",
   // swamp-club#3250: the typed route (stageTyped and typedStagingActive),
   // which stages only into a unit bound to the repository's hook.
-  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager",
+  // (x2) since swamp-club#3279: an unbound unit does not hide the v3 unit
+  // around it that is bound to the write's hook.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager (x2)",
 ];
 
 // Who registers a unit as taking typed changes: only the v3 commit-log
@@ -997,17 +1007,27 @@ const PINNED_TYPED_STAGER_REGISTRARS: readonly string[] = [
 // Who asks whether a unit takes typed changes: the routing in signalChange
 // (a typed declaration stages no path) and the typed route's lookup.
 const PINNED_TYPED_STAGER_LOOKUPS: readonly string[] = [
-  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager",
-  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+  // (x2) since swamp-club#3279: an unbound unit does not hide the v3 unit
+  // around it that is bound to the write's hook.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager (x2)",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange (x2)",
   // swamp-club#3257: whether a unit is v3, which withUnitOfWork asks to end
   // it as decision 5 says.
   "src/infrastructure/persistence/unit_of_work_scope.ts: takesTypedChanges",
+  // swamp-club#3279: the innermost v3 unit around a call, which a
+  // repository with no hook stages into (adoptingStager), tracked when a
+  // unit that takes typed changes runs (runInUnitOfWork).
+  "src/infrastructure/persistence/unit_of_work_scope.ts: adoptingStager",
+  "src/infrastructure/persistence/unit_of_work_scope.ts: runInUnitOfWork",
 ];
 
 // Who marks a context as one that refuses writes outside a unit: only the
 // v3 commit-log root. The v3 opt-in adds the context factory here.
 const PINNED_REQUIRE_UNIT_CALLERS: readonly string[] = [
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
+  // swamp-club#3279: a v3 repository context is marked when it is built,
+  // so a write before any root opens is refused too.
+  "src/infrastructure/persistence/repository_factory.ts: createRepositoryContext",
 ];
 
 // legacyUnitOfWorkTarget, the legacy-only view: its definition, the legacy
@@ -1500,5 +1520,84 @@ Deno.test("datastore write seams: legacyUnitOfWorkTarget stays inside the legacy
     "signalChange asks the binding registry (unit_of_work_binding.ts), which\n" +
       "every adapter binds through. legacyUnitOfWorkTarget is the legacy-only\n" +
       "view of it.",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The v3 opt-in's engine choice (swamp-club#3279)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every read of which engine a datastore opens with. The marker decides it
+ * once, at the format guard; code past that point follows the repository
+ * context (its commit-log engine, its resolver), so the choice cannot spread
+ * through the codebase. A new read here needs a reason.
+ */
+const ENGINE_READ =
+  /\b(?:checkedDatastoreEngine|datastoreEngineOf|resolverEngine)\s*\(/g;
+
+const PINNED_ENGINE_READERS: readonly string[] = [
+  // The definitions, and the guard's own cache read.
+  "src/domain/datastore/datastore_path_resolver.ts: resolverEngine",
+  "src/infrastructure/persistence/datastore_format_guard.ts: checkedDatastoreEngine",
+  "src/infrastructure/persistence/datastore_format_guard.ts: datastoreEngineOf",
+  // The engine of the datastore a .swamp.yaml block names, which setup (to
+  // refuse moving off v3) and the CLI's managed lockfile transaction read.
+  "src/infrastructure/persistence/datastore_format_guard.ts: datastoreBlockEngine",
+  // A resolver resolves records into the checkout on v3.
+  "src/infrastructure/persistence/default_datastore_path_resolver.ts: DefaultDatastorePathResolver",
+  // The catalog is the read model's on v3; no shared-datastore write
+  // tracker there.
+  "src/infrastructure/persistence/repository_factory.ts: catalogDbPath",
+  "src/infrastructure/persistence/repository_factory.ts: sharedDatastoreWriteTracker",
+  // Commands that act on the v3 datastore itself: chunk GC, status, and
+  // serve's compaction timer and status handler.
+  "src/cli/commands/datastore_gc.ts: datastoreGcCommand",
+  "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
+  "src/cli/commands/serve.ts: serveCommand",
+  "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
+  // Run-record artifacts resolve through resolveRunArtifact on v3.
+  "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
+  "src/libswamp/models/output_data.ts: createModelOutputDataDeps",
+];
+
+Deno.test("datastore write seams: reads of the datastore engine are pinned (swamp-club#3279)", () => {
+  assertPinnedSet(
+    referenceKeys(files, ENGINE_READ, () => true),
+    PINNED_ENGINE_READERS,
+    "Reads of the datastore engine",
+    "The engine is chosen once, from the format marker. Code past the guard\n" +
+      "follows the repository context; add a new read here only with a\n" +
+      "reason.",
+  );
+});
+
+/**
+ * Every production CatalogStore (swamp-club#3279). The catalog a repository
+ * reads must be the one `catalogDbPath` names for its engine: on v3 the read
+ * model's, so a new construction on another path could reopen the v2
+ * catalog over a v3 datastore and answer from a disk walk.
+ */
+const CATALOG_STORE_CONSTRUCTION = /\bnew CatalogStore\s*\(/g;
+
+const PINNED_CATALOG_STORE_CONSTRUCTIONS: readonly string[] = [
+  // The one route for a repository: catalogDbPath chooses by engine.
+  "src/infrastructure/persistence/repository_factory.ts: createCatalogStore",
+  // An in-memory catalog for ephemeral stores, never a repository's.
+  "src/infrastructure/persistence/ephemeral_store.ts: createEphemeralStore",
+  // The read model's own catalog, at v3CatalogPath, the path catalogDbPath
+  // returns on v3.
+  "src/infrastructure/datastore_v3/v3_catalog.ts: V3Catalog",
+  "src/infrastructure/datastore_v3/v3_datastore.ts: openV3Datastore",
+];
+
+Deno.test("datastore write seams: catalog stores are built on the catalog path for their engine (swamp-club#3279)", () => {
+  assertPinnedSet(
+    referenceKeys(files, CATALOG_STORE_CONSTRUCTION, () => true),
+    PINNED_CATALOG_STORE_CONSTRUCTIONS,
+    "CatalogStore constructions",
+    "Build a repository's catalog with createCatalogStore, which takes its\n" +
+      "path from catalogDbPath, so a v3 datastore reads the read model's\n" +
+      "catalog.",
   );
 });

@@ -39,6 +39,7 @@ import {
   parseModelSpec,
 } from "../../libswamp/datastores/lock.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
+import { v3WriterLockHandle } from "../../infrastructure/datastore_v3/v3_writer_lock.ts";
 import {
   createDatastoreLockReleaseRenderer,
   createDatastoreLockStatusRenderer,
@@ -64,11 +65,15 @@ const datastoreLockStatusCommand = new Command()
       "status",
     ]);
 
-    const { datastoreConfig: config } = await resolveDatastoreForRepo(
+    const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
       resolveRepoDir(options.repoDir),
     );
 
-    const lock = await createDatastoreLock(config);
+    // A v3 datastore's lock that matters across processes is its writer
+    // lock (swamp-club#3279).
+    const lock = engine === "v3" && !isCustomDatastoreConfig(config)
+      ? v3WriterLockHandle(config.path)
+      : await createDatastoreLock(config);
     const deps = createDatastoreLockStatusDeps(lock, config);
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
@@ -122,7 +127,7 @@ const datastoreLockReleaseCommand = new Command()
       );
     }
 
-    const { datastoreConfig: config } = await resolveDatastoreForRepo(
+    const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
       resolveRepoDir(options.repoDir),
     );
 
@@ -138,6 +143,8 @@ const datastoreLockReleaseCommand = new Command()
         );
       }
       lock = await createModelLock(config, parsed.modelType, parsed.modelId);
+    } else if (engine === "v3" && !isCustomDatastoreConfig(config)) {
+      lock = v3WriterLockHandle(config.path);
     } else {
       lock = await createDatastoreLock(config);
     }

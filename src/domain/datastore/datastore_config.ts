@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join, resolve } from "@std/path";
+import { UserError } from "../errors.ts";
 import { MIGRATION_SENTINEL } from "./managed_config_migration.ts";
 
 /**
@@ -120,6 +121,13 @@ export interface FilesystemDatastoreConfig {
   readonly exclude?: string[];
   /** Namespace for giga-swamp multi-repo shared datastores */
   readonly namespace?: string;
+  /**
+   * The format `swamp datastore setup` created the datastore in: 2 (files,
+   * the default) or 3 (the v3 commit log, swamp-club#3279). It records the
+   * choice; the datastore's format marker decides which engine opens it, and
+   * a config that disagrees with its marker is refused.
+   */
+  readonly format?: 2 | 3;
 }
 
 /**
@@ -189,6 +197,8 @@ export interface DatastoreConfigData {
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
   namespace?: string;
+  /** Filesystem only: the format setup created the datastore in (2 or 3). */
+  format?: number;
   /**
    * When `true`, model definitions, workflow definitions, vault configs and
    * the extension lockfile are stored in the datastore's `config/` tier
@@ -198,6 +208,36 @@ export interface DatastoreConfigData {
    * from it on startup and a ConfigPoller refreshes periodically.
    */
   managedConfig?: boolean;
+}
+
+/**
+ * Reads the `format` key of a `.swamp.yaml` datastore block, or the
+ * `--format` flag of `swamp datastore setup`. It must be 2 or 3, and 3 only
+ * on a filesystem datastore: v3 for S3, GCS and extension datastores arrives
+ * with Phase 4 (swamp-club#3279). Format 2 on another type is the default
+ * and is read as no key.
+ *
+ * @throws UserError for any other value, or format 3 on another type
+ */
+export function readDatastoreFormatKey(
+  type: string,
+  value: unknown,
+): 2 | 3 | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value !== 2 && value !== 3) {
+    throw new UserError(
+      `The datastore format must be 2 or 3, got ${JSON.stringify(value)}.`,
+    );
+  }
+  if (type === "filesystem") return value;
+  if (value === 3) {
+    throw new UserError(
+      `Datastore format 3 is only supported on filesystem datastores; it ` +
+        `is not supported yet for S3, GCS or extension datastores. The ` +
+        `"${type}" datastore stays on format 2.`,
+    );
+  }
+  return undefined;
 }
 
 /**

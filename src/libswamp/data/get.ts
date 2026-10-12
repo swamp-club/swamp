@@ -55,6 +55,7 @@ import type { SwampError } from "../errors.ts";
 import { notFound, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { v3RunArtifactCheck } from "./run_artifact_check.ts";
 /**
  * Data structure for the data get output.
  */
@@ -327,7 +328,11 @@ export function createDataGetDeps(
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
-  const workflowDataService = new WorkflowDataService(definitionRepo, dataRepo);
+  const workflowDataService = new WorkflowDataService(
+    definitionRepo,
+    dataRepo,
+    v3RunArtifactCheck(datastoreResolver, dataRepo),
+  );
   return {
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),

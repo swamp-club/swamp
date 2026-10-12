@@ -22,6 +22,7 @@ import fc from "fast-check";
 import {
   assertSupportedDatastoreFormat,
   InvalidDatastoreFormatMarkerError,
+  supportedDatastoreFormatsFor,
   UnsupportedDatastoreFormatError,
 } from "./datastore_format.ts";
 
@@ -47,13 +48,33 @@ Deno.test("assertSupportedDatastoreFormat: passes exactly when the reader format
     fc.property(marker, (m) => {
       const required = m.minReaderFormat ?? m.format;
       if (required <= 2) {
-        assertEquals(assertSupportedDatastoreFormat(read(m)), {
+        assertEquals(assertSupportedDatastoreFormat(read(m), [2]), {
           kind: "supported",
           format: m.format,
         });
       } else {
         assertThrows(
-          () => assertSupportedDatastoreFormat(read(m)),
+          () => assertSupportedDatastoreFormat(read(m), [2]),
+          UnsupportedDatastoreFormatError,
+        );
+      }
+    }),
+  );
+});
+
+Deno.test("assertSupportedDatastoreFormat: a filesystem datastore passes exactly when the reader format required is at most 3", () => {
+  fc.assert(
+    fc.property(marker, (m) => {
+      const required = m.minReaderFormat ?? m.format;
+      const supported = supportedDatastoreFormatsFor("filesystem");
+      if (required <= 3) {
+        assertEquals(assertSupportedDatastoreFormat(read(m), supported), {
+          kind: "supported",
+          format: m.format,
+        });
+      } else {
+        assertThrows(
+          () => assertSupportedDatastoreFormat(read(m), supported),
           UnsupportedDatastoreFormatError,
         );
       }

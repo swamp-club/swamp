@@ -122,6 +122,19 @@ function matchAmong(
 }
 
 /**
+ * Whether the version a run's artifact names is still the content that run
+ * produced. On a v3 datastore (swamp-club#3279) history compaction can leave
+ * a later re-save of the same version live; v2 never writes a version again
+ * and passes none.
+ */
+export type RunArtifactCheck = (
+  artifact: DataArtifactRef,
+  data: Data,
+  owner: { readonly modelType: ModelType; readonly modelId: string },
+  run: WorkflowRun,
+) => Promise<boolean>;
+
+/**
  * Service for resolving data produced by workflow runs.
  *
  * Walks the workflow run's job/step/artifact structure and resolves
@@ -131,6 +144,7 @@ export class WorkflowDataService {
   constructor(
     private readonly definitionRepo: YamlDefinitionRepository,
     private readonly dataRepo: UnifiedDataRepository,
+    private readonly checkArtifact?: RunArtifactCheck,
   ) {}
 
   /**
@@ -163,7 +177,7 @@ export class WorkflowDataService {
         for (const artifact of step.dataArtifacts) {
           const resolved = await this.resolveArtifact(
             artifact,
-            run.id,
+            run,
             ownersByName.get(artifact.name) ?? [],
           );
           if (!resolved) continue;
@@ -188,7 +202,7 @@ export class WorkflowDataService {
       name: run.workflowName,
     };
     for (const artifact of run.workflowDataArtifacts) {
-      const resolved = await this.resolveArtifact(artifact, run.id, [
+      const resolved = await this.resolveArtifact(artifact, run, [
         workflowOwner,
       ]);
       if (resolved) {
@@ -211,9 +225,10 @@ export class WorkflowDataService {
    */
   private async resolveArtifact(
     artifact: DataArtifactRef,
-    runId: string,
+    run: WorkflowRun,
     owners: DataOwner[],
   ): Promise<Omit<WorkflowDataItem, "jobName" | "stepName"> | null> {
+    const runId = run.id;
     let found: { data: Data; owner: DataOwner } | undefined;
     const runMatches: Array<{ data: Data; owner: DataOwner }> = [];
     for (const owner of owners) {
@@ -248,6 +263,14 @@ export class WorkflowDataService {
       found = runMatches[0];
     }
     if (!found) return null;
+    if (
+      this.checkArtifact !== undefined &&
+      !await this.checkArtifact(artifact, found.data, found.owner, run)
+    ) {
+      // A later re-save holds this version now: as for a GC'd version, the
+      // run's content is no longer available, and nothing else stands in.
+      return null;
+    }
 
     const { data, owner } = found;
     const modelName = owner.name ??

@@ -574,6 +574,8 @@ export interface DataHandle {
   version: number;
   /** Size in bytes. */
   size: number;
+  /** The SHA-256 of the content, when the save reported one (swamp-club#3279). */
+  sha256?: string;
   /** Tags applied to the data. */
   tags: Record<string, string>;
   /** Metadata excluding auto-generated fields. */

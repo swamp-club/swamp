@@ -775,6 +775,22 @@ export class SqliteCommitStore implements CommitStore {
     return changes;
   }
 
+  /**
+   * How much history the store holds, for `datastore status`
+   * (swamp-club#3279): the commits stored above the compaction point, and
+   * the point itself.
+   */
+  history(): Promise<{ storedCommits: number; compactedThrough: number }> {
+    if (this.#closed) return Promise.reject(closedError());
+    return Promise.resolve(this.#readTransaction(() => {
+      const point = this.#point();
+      const stored = (this.#db.prepare(
+        "SELECT COUNT(*) AS n FROM commits WHERE cursor > ?",
+      ).get(point) as { n: number }).n;
+      return { storedCommits: stored, compactedThrough: point };
+    }));
+  }
+
   compactionStatus(
     retention: CompactionRetention,
   ): Promise<CompactionCandidate> {

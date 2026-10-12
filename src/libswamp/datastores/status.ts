@@ -40,6 +40,18 @@ export interface DatastoreStatusData {
   latencyMs: number;
   directories: string[];
   exclude?: string[];
+  /** Set to 3 on a v3 datastore (swamp-club#3279); absent on v2. */
+  format?: 3;
+  /** The v3 commit log, on a v3 datastore. */
+  commitLog?: DatastoreCommitLogStatus;
+}
+
+/** What `datastore status` reports of a v3 datastore's commit log. */
+export interface DatastoreCommitLogStatus {
+  /** Commits stored above the compaction point. */
+  storedCommits: number;
+  /** The cursor history is compacted through; 0 before any compaction. */
+  compactedThrough: number;
 }
 
 export type DatastoreStatusEvent =
@@ -53,14 +65,23 @@ export interface DatastoreStatusDeps {
     config: DatastoreConfig,
   ) => Promise<{ healthy: boolean; message: string; latencyMs: number }>;
   getDirectories: (config: DatastoreConfig) => string[];
+  /** Describes the commit log of a v3 datastore; absent on v2. */
+  describeCommitLog?: () => Promise<DatastoreCommitLogStatus>;
 }
 
 /** Wires real infrastructure into DatastoreStatusDeps. */
 export async function createDatastoreStatusDeps(
   datastoreResolver: DatastorePathResolver,
+  options: {
+    /** The commit log's description, given by the caller on a v3 datastore. */
+    readonly describeCommitLog?: () => Promise<DatastoreCommitLogStatus>;
+  } = {},
 ): Promise<DatastoreStatusDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   return {
+    ...(options.describeCommitLog !== undefined
+      ? { describeCommitLog: options.describeCommitLog }
+      : {}),
     loadConfig: () => datastoreResolver.config(),
     verifyHealth: async (config: DatastoreConfig) => {
       if (isCustomDatastoreConfig(config)) {
@@ -111,6 +132,10 @@ export async function* datastoreStatus(
         directories,
         exclude: config.exclude,
       };
+      if (deps.describeCommitLog !== undefined) {
+        data.format = 3;
+        data.commitLog = await deps.describeCommitLog();
+      }
 
       ctx.logger.debug`Datastore status complete`;
 

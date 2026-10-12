@@ -2478,6 +2478,7 @@ export class DefaultStepExecutor implements StepExecutor {
           name: handle.name,
           version: handle.version,
           tags: handle.tags,
+          ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
         };
         output.addDataArtifact(artifactRef);
         savedArtifacts.push(artifactRef);
@@ -2643,6 +2644,7 @@ export class DefaultStepExecutor implements StepExecutor {
           name: handle.name,
           version: handle.version,
           tags: handle.tags,
+          ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
         };
         output.addDataArtifact(artifactRef);
         savedArtifacts.push(artifactRef);

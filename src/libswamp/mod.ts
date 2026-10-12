@@ -1766,6 +1766,13 @@ export {
   type DatastoreCompactEvent,
 } from "./datastores/compact.ts";
 export {
+  datastoreGc,
+  type DatastoreGcChunkReport,
+  type DatastoreGcData,
+  type DatastoreGcDeps,
+  type DatastoreGcEvent,
+} from "./datastores/gc.ts";
+export {
   createMigrateIndexDeps,
   type CreateMigrateIndexDepsOptions,
   datastoreMigrateIndex,

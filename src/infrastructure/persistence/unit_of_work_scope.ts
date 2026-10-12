@@ -66,6 +66,15 @@ import { typedStagers, unitOfWorkBinding } from "./unit_of_work_binding.ts";
 
 const ambientUnitOfWork = new AsyncLocalStorage<UnitOfWork>();
 
+/**
+ * The innermost unit that takes typed changes (a v3 commit-log unit) around
+ * the call, kept apart from {@link ambientUnitOfWork} so a unit that takes
+ * none (a use case's unbound unit) opened inside it does not hide it. A
+ * repository with no hook stages into it (swamp-club#3279). On v2 no such
+ * unit exists, so this is always empty there.
+ */
+const ambientTypedUnit = new AsyncLocalStorage<UnitOfWork>();
+
 const logger = getSwampLogger(["datastore", "unit-of-work"]);
 
 /**
@@ -76,6 +85,9 @@ export function runInUnitOfWork<T>(
   uow: UnitOfWork,
   fn: () => Promise<T>,
 ): Promise<T> {
+  if (typedStagers.stagerOf(uow) !== undefined) {
+    return ambientTypedUnit.run(uow, () => ambientUnitOfWork.run(uow, fn));
+  }
   return ambientUnitOfWork.run(uow, fn);
 }
 
@@ -117,7 +129,15 @@ export async function signalChange(
   change: StagedChange,
   options: { readonly typed?: boolean } = {},
 ): Promise<void> {
-  if (markDirty === undefined) return;
+  if (markDirty === undefined) {
+    // A repository built without a hook marks nothing on v2. Inside a v3
+    // commit-log unit its write belongs to that unit (swamp-club#3279): a
+    // typed write stages through stageTyped, and any other is offered to
+    // the unit, which refuses a path-only change rather than drop it.
+    const adopter = adoptingUnit();
+    if (adopter !== undefined && !options.typed) await adopter.stage(change);
+    return;
+  }
   const uow = currentUnitOfWork();
   const requiresUnit = unitOfWorkBinding.requiresUnit(markDirty);
   if (
@@ -131,6 +151,17 @@ export async function signalChange(
     return;
   }
   if (requiresUnit) {
+    // An unbound unit a use case opened (no repository context) does not
+    // hide the v3 unit around it that is bound to this hook
+    // (swamp-club#3279).
+    const outer = adoptingUnit();
+    if (
+      outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
+    ) {
+      if (options.typed && typedStagers.stagerOf(outer) !== undefined) return;
+      await outer.stage(change);
+      return;
+    }
     throw new UnscopedWriteRefusedError(change, callerOfThisWrite());
   }
   await markDirty(change.kind === "bulk" ? undefined : change.path);
@@ -156,7 +187,14 @@ export async function stageTyped(
   markDirty: MarkDirtyHook | undefined,
   build: () => readonly TypedChange[] | Promise<readonly TypedChange[]>,
 ): Promise<void> {
-  if (markDirty === undefined) return;
+  if (markDirty === undefined) {
+    // See signalChange: a hookless write stages into the ambient v3 unit.
+    const adopter = adoptingStager();
+    if (adopter === undefined) return;
+    const changes = await build();
+    if (changes.length > 0) await adopter(changes);
+    return;
+  }
   if (!unitOfWorkBinding.requiresUnit(markDirty)) return;
   const stage = boundTypedStager(markDirty);
   if (stage === undefined) {
@@ -176,6 +214,7 @@ export async function stageTyped(
 export function typedStagingActive(
   markDirty: MarkDirtyHook | undefined,
 ): boolean {
+  if (markDirty === undefined) return adoptingStager() !== undefined;
   return markDirty !== undefined &&
     unitOfWorkBinding.requiresUnit(markDirty) &&
     boundTypedStager(markDirty) !== undefined;
@@ -190,11 +229,36 @@ export function takesTypedChanges(uow: UnitOfWork): boolean {
   return typedStagers.stagerOf(uow) !== undefined;
 }
 
+/**
+ * The typed stager of the innermost v3 unit around the call, which a
+ * repository with no hook stages into; undefined on v2.
+ */
+function adoptingStager() {
+  const uow = adoptingUnit();
+  return uow === undefined ? undefined : typedStagers.stagerOf(uow);
+}
+
+/**
+ * The open v3 unit a hookless write in this scope belongs to: the innermost
+ * typed unit around the call while it is open, else its nearest open
+ * ancestor. None when every one has ended: a callback that outlived its
+ * operation then marks nothing, as on v2.
+ */
+function adoptingUnit(): UnitOfWork | undefined {
+  const uow = ambientTypedUnit.getStore();
+  return uow === undefined ? undefined : typedStagers.openTargetOf(uow);
+}
+
 /** The ambient unit's typed stager, when that unit is bound to the hook. */
 function boundTypedStager(markDirty: MarkDirtyHook) {
   const uow = currentUnitOfWork();
-  return uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty
-    ? typedStagers.stagerOf(uow)
+  if (uow !== undefined && unitOfWorkBinding.boundHook(uow) === markDirty) {
+    return typedStagers.stagerOf(uow);
+  }
+  // As in signalChange: an unbound unit does not hide the v3 unit around it.
+  const outer = adoptingUnit();
+  return outer !== undefined && unitOfWorkBinding.boundHook(outer) === markDirty
+    ? typedStagers.stagerOf(outer)
     : undefined;
 }
 

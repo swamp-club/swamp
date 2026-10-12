@@ -77,11 +77,14 @@ export interface CommitLogRootOptions<T>
 
 /**
  * What `fn` gets of its root: it stages typed changes and can commit
- * partway through, but never ends the root.
+ * partway through, but never ends the root. `stage` takes the path-only
+ * changes a v2 root takes and refuses them (`PathOnlyChangeRefusedError`),
+ * so code written against a v2 root fails loudly on v3 rather than losing
+ * its change.
  */
 export type CommitLogRoot = Pick<
   CommitLogUnitOfWork,
-  "stageOp" | "stageOps" | "stagedOps" | "checkpoint"
+  "stage" | "staged" | "stageOp" | "stageOps" | "stagedOps" | "checkpoint"
 >;
 
 /** Commits when `fn` resolved, discards when it threw. */
@@ -152,6 +155,8 @@ export async function runInCommitLogRoot<T>(
   const parent = commitLogParentFor(markDirty, currentUnitOfWork());
   const root = createCommitLogUnitOfWork(markDirty, { ...unitOptions, parent });
   const view: CommitLogRoot = {
+    stage: (change) => root.stage(change),
+    staged: () => root.staged(),
     stageOp: (change) => root.stageOp(change),
     stageOps: (changes) => root.stageOps(changes),
     stagedOps: () => root.stagedOps(),

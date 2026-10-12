@@ -242,6 +242,24 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 Migrates existing `.swamp/` runtime data to the new path and updates
 `.swamp.yaml`. Use `--skip-migration` to skip the data copy.
 
+### Setting Up a v3 Filesystem Datastore
+
+`--format 3` creates a v3 datastore: every change is committed to a commit log
+(`commits.db`) and each checkout keeps its records in its own `.swamp/`.
+
+```bash
+swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
+```
+
+- The path must be new or an empty directory, and the repo must hold no data
+  yet: existing data is not migrated to v3.
+- Filesystem only: `--format 3` on S3, GCS or extension datastores is refused.
+- One writing process at a time. A write command fails while another process
+  (e.g. `swamp serve`) writes the datastore; run it through serve instead.
+- `swamp datastore gc --json` deletes content chunks no commit names; on a v2
+  datastore it reports there is nothing to collect.
+- `swamp datastore status --json` shows `format: 3` and the commit log.
+
 ### Setting Up an Extension Datastore (e.g., S3)
 
 Store runtime data in S3 for team collaboration using the `@swamp/s3-datastore`
