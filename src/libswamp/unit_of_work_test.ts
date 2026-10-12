@@ -400,8 +400,8 @@ Deno.test("withUnitOfWork: a v3 unit commits a reported error, and abandons on a
 });
 
 Deno.test("withUnitOfWork: a v3 unit commits when the use case marks an outcome it reports through no event, and a legacy unit ignores the mark (swamp-club#3299)", async () => {
-  // A model method run cancelled by its signal saves its record and ends
-  // its stream without an event.
+  // A model method run cancelled by its signal saves its record and marks
+  // the outcome before its stream reports it; a consumer may stop first.
   async function* cancelledSilently(): AsyncGenerator<Event> {
     yield { kind: "step", seen: undefined };
     markOutcomeReported();
