@@ -127,7 +127,8 @@ export function workflowFacets(
       description: "What starts the workflow: cron, webhook or manual",
       values: TRIGGERS.map((t) => ({
         value: t,
-        label: `${TRIGGER_LABELS[t]} — ${TRIGGER_DESCRIPTIONS[t]}`,
+        label: TRIGGER_LABELS[t],
+        detail: TRIGGER_DESCRIPTIONS[t],
       })),
       selected: filter.triggers,
       onSelect: (v) =>

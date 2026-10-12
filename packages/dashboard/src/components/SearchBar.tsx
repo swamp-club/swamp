@@ -97,13 +97,6 @@ function isTyping(target: unknown): boolean {
   );
 }
 
-/** "deploy or sync" for a facet's selected values. */
-export function selectionText(facet: SearchFacet): string {
-  return facet.selected
-    .map((v) => facet.values.find((x) => x.value === v)?.label ?? v)
-    .join(" or ");
-}
-
 /**
  * One search box that guides filtering. Focus it to see what you can
  * filter by; pick a facet (or type `prefix:`) to see its values; or just
@@ -181,11 +174,11 @@ export function SearchBar(
     const d = doc();
     if (!d) return;
     const onDown = (e: EventLike) => {
-      if (!el(rootRef.current)?.contains(e.target)) setOpen(false);
+      if (!el(rootRef.current)?.contains(e.target)) close();
     };
     d.addEventListener("pointerdown", onDown);
     return () => d.removeEventListener("pointerdown", onDown);
-  }, [open]);
+  }, [open, draft]);
 
   useEffect(() => {
     if (!open) return;
@@ -195,6 +188,12 @@ export function SearchBar(
   }, [open, active]);
 
   const focusInput = () => el(inputRef.current)?.focus();
+
+  /** Closes the menu; an unfinished `key:` in the box goes with it. */
+  const close = () => {
+    setOpen(false);
+    if (parseFacetInput(draft, facets) !== null) setDraft("");
+  };
 
   const setText = (text: string) => {
     setDraft(text);
@@ -226,7 +225,7 @@ export function SearchBar(
       return;
     }
     if (s.kind === "text") {
-      setOpen(false);
+      close();
       focusInput();
       return;
     }
@@ -246,9 +245,10 @@ export function SearchBar(
     else focusInput();
   };
 
+  /** Backspace in an empty box: the last value chip goes. */
   const removeLast = () => {
     const last = [...facets].reverse().find((f) => f.selected.length > 0);
-    last?.onSelect([]);
+    last?.onSelect(last.selected.slice(0, -1));
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -271,12 +271,12 @@ export function SearchBar(
     } else if (e.key === "Escape") {
       // Close the menu, then clear the text; never leave the page.
       if (open || draft) e.stopPropagation();
-      if (open) setOpen(false);
+      if (open) close();
       else if (draft) setText("");
     } else if (e.key === "Backspace" && draft === "") {
       removeLast();
     } else if (e.key === "Tab") {
-      setOpen(false);
+      close();
     }
   };
 
@@ -312,50 +312,55 @@ export function SearchBar(
           <circle cx="7" cy="7" r="5" />
           <path d="M11 11l3.5 3.5" strokeLinecap="round" />
         </svg>
-        {chips.map((f, i) => {
-          const text = selectionText(f);
-          return (
-            <span className="qchip-group" key={f.key}>
-              {i > 0 && (
-                <span className="qchip-and" aria-hidden="true">and</span>
-              )}
-              <span className="qchip">
-                <button
-                  type="button"
-                  className="qchip-body"
-                  title={`Change ${f.label.toLowerCase()}`}
-                  onClick={() => showFacet(f.key)}
-                >
-                  <span className="qchip-key">{f.label}</span>
-                  <span className="qchip-val">{text}</span>
-                </button>
-                <button
-                  type="button"
-                  className="qchip-x"
-                  aria-label={`Remove ${f.label}: ${text}`}
-                  onClick={() => {
-                    f.onSelect([]);
-                    focusInput();
-                  }}
-                >
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 10 10"
-                    aria-hidden="true"
+        {chips.flatMap((f, fi) =>
+          f.selected.map((value, vi) => {
+            const label = f.values.find((x) => x.value === value)?.label ??
+              value;
+            return (
+              <span className="qchip-group" key={`${f.key}:${value}`}>
+                {(fi > 0 || vi > 0) && (
+                  <span className="qchip-and" aria-hidden="true">
+                    {vi > 0 ? "or" : "and"}
+                  </span>
+                )}
+                <span className="qchip">
+                  <button
+                    type="button"
+                    className="qchip-body"
+                    title={`${f.label}: ${label} — click to change`}
+                    onClick={() => showFacet(f.key)}
                   >
-                    <path
-                      d="M2.5 2.5l5 5M7.5 2.5l-5 5"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
+                    <span className="qchip-key">{f.key}</span>
+                    <span className="qchip-val">{label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="qchip-x"
+                    aria-label={`Remove ${f.label}: ${label}`}
+                    onClick={() => {
+                      f.onSelect(f.selected.filter((v) => v !== value));
+                      focusInput();
+                    }}
+                  >
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 10 10"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M2.5 2.5l5 5M7.5 2.5l-5 5"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                </span>
               </span>
-            </span>
-          );
-        })}
+            );
+          })
+        )}
         <input
           ref={inputRef}
           type="text"
@@ -516,6 +521,9 @@ function SuggestionRow(
           )}
         </span>
         {s.value.label}
+        {s.value.detail && (
+          <span className="qbar-opt-detail">{s.value.detail}</span>
+        )}
       </span>
       {s.value.hint && <span className="qbar-opt-hint">{s.value.hint}</span>}
     </>

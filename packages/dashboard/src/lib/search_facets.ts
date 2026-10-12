@@ -30,6 +30,8 @@ export interface FacetValue {
   label: string;
   /** Muted right-aligned text, e.g. a count. */
   hint?: string;
+  /** Longer explanation shown in the suggestion list, never on chips. */
+  detail?: string;
 }
 
 export interface FacetDef {

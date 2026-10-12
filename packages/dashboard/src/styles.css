@@ -659,7 +659,8 @@ body {
   min-width: 0;
   max-width: 720px;
   min-height: 36px;
-  padding: 4px 8px 4px 32px;
+  /* Room on the right for the pinned Clear / "/" hint. */
+  padding: 4px 60px 4px 32px;
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -681,8 +682,8 @@ body {
   pointer-events: none;
 }
 .qbar-input {
-  flex: 1 1 140px;
-  min-width: 120px;
+  flex: 1 1 80px;
+  min-width: 80px;
   border: none;
   outline: none;
   background: transparent;
@@ -703,6 +704,13 @@ body {
   border-radius: 4px;
   color: var(--text-3);
   background: var(--surface);
+}
+.qbar-field > kbd,
+.qbar-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .qbar-clear {
   font: inherit;
@@ -867,6 +875,11 @@ body {
 }
 .qbar-opt-main.is-current {
   font-weight: 600;
+}
+.qbar-opt-detail {
+  margin-left: 8px;
+  color: var(--text-3);
+  font-size: 0.75rem;
 }
 .qbar-opt-hint {
   font-family: "JetBrains Mono", monospace;

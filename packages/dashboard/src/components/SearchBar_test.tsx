@@ -63,10 +63,13 @@ Deno.test("SearchBar: applied filters show as removable chips", () => {
       noun="workflows"
     />,
   );
-  assertStringIncludes(html, '<span class="qchip-key">Prefix</span>');
-  // Several values of one filter read as OR.
-  assertStringIncludes(html, '<span class="qchip-val">deploy or sync</span>');
-  assertStringIncludes(html, 'aria-label="Remove Prefix: deploy or sync"');
+  // One chip per value, each removable on its own, joined by "or".
+  assertStringIncludes(html, '<span class="qchip-key">prefix</span>');
+  assertStringIncludes(html, '<span class="qchip-val">deploy</span>');
+  assertStringIncludes(html, '<span class="qchip-val">sync</span>');
+  assertStringIncludes(html, 'aria-label="Remove Prefix: deploy"');
+  assertStringIncludes(html, 'aria-label="Remove Prefix: sync"');
+  assertStringIncludes(html, ">or</span>");
   assertStringIncludes(html, "3 of 141 workflows");
   assertStringIncludes(html, "Clear");
 });
