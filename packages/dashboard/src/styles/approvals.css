@@ -191,8 +191,7 @@
 .approvals-page .approval-actions[aria-busy="true"] .btn-sm {
   cursor: progress;
 }
-.approvals-page
-  .btn-sm:not(.btn-approve):not(.btn-reject):hover:not(:disabled) {
+.approvals-page .btn-sm:not(.btn-approve):not(.btn-reject):hover:not(:disabled) {
   color: var(--text-1);
   border-color: var(--text-3);
 }
