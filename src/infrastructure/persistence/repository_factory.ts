@@ -86,6 +86,7 @@ import {
 } from "./shared_datastore_write_tracker.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { dirname, join, resolve } from "@std/path";
+import { ensureDir } from "@std/fs";
 
 // =============================================================================
 // Catalog Store Factory
@@ -210,12 +211,11 @@ export async function writeCatalogExport(
   cachePath: string,
   namespace: string,
 ): Promise<number> {
-  const exportPath = join(cachePath, namespace, ".catalog-export.json");
-  const tmpPath = join(
-    cachePath,
-    namespace,
-    `.${crypto.randomUUID()}.tmp`,
-  );
+  const namespaceDir = join(cachePath, namespace);
+  const exportPath = join(namespaceDir, ".catalog-export.json");
+  const tmpPath = join(namespaceDir, `.${crypto.randomUUID()}.tmp`);
+  // A checkout with no local data has not created the namespace dir yet.
+  await ensureDir(namespaceDir);
   const encoder = new TextEncoder();
   const file = await Deno.open(tmpPath, {
     write: true,
