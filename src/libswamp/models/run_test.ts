@@ -48,6 +48,8 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import type { ActiveRun } from "../../domain/models/active_run.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
 import type { ModelOutput } from "../../domain/models/model_output.ts";
+import type { UnitOfWork } from "../../domain/datastore/unit_of_work.ts";
+import { typedStagers } from "../../infrastructure/persistence/unit_of_work_binding.ts";
 
 await initializeLogging({});
 
@@ -473,6 +475,56 @@ Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   // The output should have been saved as cancelled
   const cancelledSaves = savedOutputs.filter((o) => o.status === "cancelled");
   assertEquals(cancelledSaves.length > 0, true);
+});
+
+Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields no new event (swamp-club#3299)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () =>
+      createFailingExecutionService(
+        new DOMException("The operation was aborted.", "AbortError"),
+      ),
+  };
+  const ends: string[] = [];
+  const unit = (typed: boolean): UnitOfWork => {
+    const uow: UnitOfWork = {
+      stage: () => Promise.resolve(),
+      commit: () => {
+        ends.push(`${typed ? "v3" : "legacy"} commit`);
+        return Promise.resolve();
+      },
+      abandon: () => {
+        ends.push(`${typed ? "v3" : "legacy"} abandon`);
+        return Promise.resolve();
+      },
+      staged: () => [],
+    };
+    // A unit that takes typed changes is a v3 commit-log unit.
+    if (typed) typedStagers.register(uow, () => Promise.resolve());
+    return uow;
+  };
+
+  const kinds: string[][] = [];
+  for (const typed of [true, false]) {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = createLibSwampContext({
+      signal: controller.signal,
+      openUnitOfWork: () => unit(typed),
+    });
+    const events = await collect(
+      modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+    );
+    kinds.push(events.map((e) => e.kind));
+  }
+
+  assertEquals(ends, ["v3 commit", "legacy abandon"]);
+  // The stream is the same on both: no cancelled or error event.
+  assertEquals(kinds[0], kinds[1]);
+  assertEquals(kinds[0].includes("cancelled"), false);
+  assertEquals(kinds[0].includes("error"), false);
 });
 
 /**

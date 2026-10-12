@@ -259,6 +259,10 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
 - `swamp datastore gc --json` deletes content chunks no commit names; on a v2
   datastore it reports there is nothing to collect.
 - `swamp datastore status --json` shows `format: 3` and the commit log.
+- A run cancelled by Ctrl+C or SIGTERM commits its `cancelled` record and the
+  outputs it wrote. After a hard kill, a crash or a second Ctrl+C, the next
+  command in that checkout removes the run's uncommitted files and logs a
+  warning; there is nothing to clean up by hand.
 
 ### Setting Up an Extension Datastore (e.g., S3)
 

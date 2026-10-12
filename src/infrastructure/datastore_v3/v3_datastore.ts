@@ -170,6 +170,16 @@ export interface V3Datastore {
   /** Applies every commit this checkout has not applied yet. */
   catchUp(signal?: AbortSignal): Promise<void>;
   /**
+   * Rebuilds this checkout from the commit log after a writer ended without
+   * tearing down, removing the files it wrote since `since` (epoch
+   * milliseconds) that no commit owns (swamp-club#3299). Resolves with their
+   * record keys. Run it only while this process holds the writer lock.
+   */
+  recoverInterruptedWriter(
+    since: number,
+    signal?: AbortSignal,
+  ): Promise<string[]>;
+  /**
    * The commit-log engine for a repository context whose hook is
    * `markDirty`; `runRepo` gives the context's workflow run repository,
    * which settles refused run records.
@@ -264,6 +274,13 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     writer,
     async catchUp(signal) {
       await readModel.catchUp(signal ?? lifetime.signal);
+    },
+    recoverInterruptedWriter(since, signal) {
+      return readModel.recover(namespace, {
+        since,
+        admits,
+        signal: signal ?? lifetime.signal,
+      });
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
       const unitOptions = {

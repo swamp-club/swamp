@@ -87,7 +87,12 @@ import {
   type FileOwnership,
   ReadModelState,
 } from "./read_model_state.ts";
-import { CATALOG_V3_FILE, refusedKeyReason } from "./record_path_guard.ts";
+import {
+  CATALOG_V3_FILE,
+  isCheckoutLocalKey,
+  MATERIALISED_SUBDIRS,
+  refusedKeyReason,
+} from "./record_path_guard.ts";
 import { type ReadModelCatalog, V3Catalog } from "./v3_catalog.ts";
 
 const logger = getLogger(["swamp", "datastore", "read-model"]);
@@ -169,33 +174,118 @@ export class SqliteReadModel implements ReadModel {
   }
 
   catchUp(signal: AbortSignal): Promise<CatchUpResult> {
+    return this.#exclusive(() => this.#catchUpFeed(signal));
+  }
+
+  /**
+   * Recovers the checkout of a writer that ended without tearing down
+   * (swamp-club#3299): a SIGKILL, a crash or a forced exit left local files
+   * and catalog rows its uncommitted units wrote. In one exclusive section,
+   * empties the catalog, resets the state and replays every commit, which
+   * puts back the committed version of every file the writer overwrote, then
+   * removes each file no commit owns that the writer may have written.
+   * Resolves with the removed files' record keys.
+   *
+   * Only the materialised subdirectories of `namespace`'s cache root are
+   * swept, and in them only files `admits` admits, last modified at or after
+   * `since` (epoch milliseconds), that are not the checkout's own
+   * (`isCheckoutLocalKey`: dot paths, run logs, pulled extension sources).
+   * Run it only while this process holds the writer lock.
+   */
+  recover(
+    namespace: string,
+    options: {
+      readonly since: number;
+      readonly admits: (key: string) => boolean;
+      readonly signal: AbortSignal;
+    },
+  ): Promise<string[]> {
     return this.#exclusive(async () => {
-      let applied = 0;
-      for (;;) {
+      // Every namespace's rows are judged by this checkout's filter: the
+      // replay below rebuilds every namespace, and a checkout writes one.
+      const generation = this.#catalog.clear(options.admits);
+      this.#state.reset(generation);
+      this.#catalog.markPopulated(generation);
+      await this.#catchUpFeed(options.signal);
+      return await this.#sweepUnowned(namespace, options);
+    });
+  }
+
+  /** Applies the feed past the cursor; runs inside {@link #exclusive}. */
+  async #catchUpFeed(signal: AbortSignal): Promise<CatchUpResult> {
+    let applied = 0;
+    for (;;) {
+      signal.throwIfAborted();
+      let page;
+      try {
+        page = await this.#commitStore.changesSince(
+          this.#state.cursor(),
+          this.#pageSize,
+        );
+      } catch (error) {
+        if (!(error instanceof CommitsCompactedError)) throw error;
+        await this.#loadBase(signal);
+        continue;
+      }
+      for (const change of page) {
         signal.throwIfAborted();
-        let page;
-        try {
-          page = await this.#commitStore.changesSince(
-            this.#state.cursor(),
-            this.#pageSize,
-          );
-        } catch (error) {
-          if (!(error instanceof CommitsCompactedError)) throw error;
-          await this.#loadBase(signal);
+        if (await this.#apply(change, true, signal)) applied++;
+      }
+      if (page.length < this.#pageSize) break;
+    }
+    // The whole feed is applied: the index holds every live record. This is
+    // its own transaction; a crash before it leaves the index marked
+    // incomplete until the next catch-up, which only delays reads.
+    this.#state.markComplete();
+    return { applied, cursor: this.#state.cursor() };
+  }
+
+  async #sweepUnowned(
+    namespace: string,
+    options: {
+      readonly since: number;
+      readonly admits: (key: string) => boolean;
+      readonly signal: AbortSignal;
+    },
+  ): Promise<string[]> {
+    const root = this.#cacheRoot(namespace);
+    const removed: string[] = [];
+    const visit = async (dir: string, segments: string[]): Promise<void> => {
+      let entries: Deno.DirEntry[];
+      try {
+        entries = await Array.fromAsync(Deno.readDir(dir));
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return;
+        throw error;
+      }
+      for (const entry of entries) {
+        options.signal.throwIfAborted();
+        // A symlink is never followed or removed: the read model writes none.
+        if (entry.isSymlink) continue;
+        const path = join(dir, entry.name);
+        const keySegments = [...segments, entry.name];
+        if (isCheckoutLocalKey(keySegments)) continue;
+        if (entry.isDirectory) {
+          await visit(path, keySegments);
           continue;
         }
-        for (const change of page) {
-          signal.throwIfAborted();
-          if (await this.#apply(change, true, signal)) applied++;
+        if (!entry.isFile) continue;
+        const key = keySegments.join("/");
+        if (!options.admits(key)) continue;
+        if (this.#state.fileOwnership(namespace, key)?.present === true) {
+          continue;
         }
-        if (page.length < this.#pageSize) break;
+        const modified = (await Deno.lstat(path)).mtime?.getTime();
+        if (modified === undefined || modified < options.since) continue;
+        await removeRecordFile(path);
+        await cleanupEmptyParentDirs(path, root);
+        removed.push(key);
       }
-      // The whole feed is applied: the index holds every live record. This is
-      // its own transaction; a crash before it leaves the index marked
-      // incomplete until the next catch-up, which only delays reads.
-      this.#state.markComplete();
-      return { applied, cursor: this.#state.cursor() };
-    });
+    };
+    for (const subdir of MATERIALISED_SUBDIRS) {
+      await visit(join(root, subdir), [subdir]);
+    }
+    return removed;
   }
 
   catchUpPartition(

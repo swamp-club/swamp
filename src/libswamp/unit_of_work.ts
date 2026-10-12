@@ -34,6 +34,7 @@
 import type { UnitOfWork } from "../domain/datastore/unit_of_work.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
+  currentUnitOfWork,
   runInUnitOfWork,
   takesTypedChanges,
 } from "../infrastructure/persistence/unit_of_work_scope.ts";
@@ -75,7 +76,10 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   including when the consumer then stops with `return()`, and abandons on
  *   a throw or a stop before any of them. A reported `error` is an outcome
  *   since swamp-club#3279: a failed method run reports one, and its record
- *   is what v2 publishes too.
+ *   is what v2 publishes too. A use case that reaches an outcome it reports
+ *   through no event (a model method run cancelled by its signal, whose
+ *   stream ends without one) calls {@link markOutcomeReported} instead
+ *   (swamp-club#3299).
  * - **Nesting.** A use case run inside another opens its own unit, which is
  *   a child of the outer one when both are bound to the same hook; the
  *   innermost unit is ambient while it runs.
@@ -144,7 +148,8 @@ export async function* withUnitOfWork<E extends { kind: string }>(
       // and abandons on a throw or an earlier stop. A legacy unit ends as
       // before.
       const commits = takesTypedChanges(uow)
-        ? (terminal || failed) && !thrown && returned
+        ? (terminal || failed || outcomeReported.has(uow)) && !thrown &&
+          returned
         : succeeded;
       if (commits) await uow.commit();
       else if (thrown || !returned) await abandonQuietly(uow);
@@ -159,6 +164,20 @@ const TERMINAL_KINDS: ReadonlySet<string> = new Set([
   "suspended",
   "cancelled",
 ]);
+
+/** Units whose use case reported an outcome without an event. */
+const outcomeReported = new WeakSet<UnitOfWork>();
+
+/**
+ * Records that the use case running in the ambient unit reached an outcome
+ * its stream reports through no event, so a v3 unit commits when the stream
+ * ends as it would after a terminal event (decision 5). A legacy unit
+ * ignores it. Outside a unit it does nothing.
+ */
+export function markOutcomeReported(): void {
+  const uow = currentUnitOfWork();
+  if (uow !== undefined) outcomeReported.add(uow);
+}
 
 /** Abandons `uow` while another error propagates, never masking it. */
 async function abandonQuietly(uow: UnitOfWork): Promise<void> {

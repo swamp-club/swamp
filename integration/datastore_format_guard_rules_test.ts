@@ -127,6 +127,11 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  // swamp-club#3299: interrupted-writer recovery opens the handle and
+  // inspects the writer lock of the datastore v3RepositoryFactoryConfig or
+  // holdV3Writer passes it, after the same check.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:recoverAndMark",
+  "src/infrastructure/datastore_v3/interrupted_writer_recovery.ts:lockHeldByLiveProcess",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
   // swamp-club#3300: config adoption reads partition heads through the

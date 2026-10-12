@@ -23,7 +23,7 @@ import { inputValidationFailed } from "../workflows/run.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
-import { withUnitOfWork } from "../unit_of_work.ts";
+import { markOutcomeReported, withUnitOfWork } from "../unit_of_work.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { createModelUpdated } from "../../domain/events/types.ts";
@@ -1222,6 +1222,10 @@ export async function* modelMethodRun(
                 if (deps.runTracker) {
                   deps.runTracker.complete(output.id, "cancelled", cause);
                 }
+                // The stream ends without an event here, so tell the unit the
+                // run reached its cancelled outcome: on v3 the record and the
+                // outputs written before the abort commit (swamp-club#3299).
+                markOutcomeReported();
               } else {
                 output.markFailed({ message: errorMessage, stack: errorStack });
                 await deps.outputRepo.save(modelType, input.methodName, output);

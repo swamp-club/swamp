@@ -495,6 +495,7 @@ import {
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
 import {
+  keepV3WriterMarkers,
   v3DatastoreFor,
   V3MaintenanceTimer,
 } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
@@ -6788,6 +6789,10 @@ export const serveCommand = new Command()
           }
         },
       });
+      // A run still registered past the abort grace may still be writing:
+      // on v3 the next command must recover what it leaves uncommitted
+      // (swamp-club#3299).
+      if ((activeRunRegistry?.size ?? 0) > 0) keepV3WriterMarkers();
       // Before the pollers stop: the push of the interrupted runs takes the
       // shared sync gate, as a run's post-run push does (swamp-club#3252).
       await interruptShutdownRuns(remaining, {
