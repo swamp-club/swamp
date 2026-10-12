@@ -1797,6 +1797,7 @@ export {
   type NamespaceUnsetEvent,
 } from "./datastores/namespace_unset.ts";
 export {
+  createNamespaceListDeps,
   datastoreNamespaceList,
   type NamespaceInfo,
   type NamespaceListData,

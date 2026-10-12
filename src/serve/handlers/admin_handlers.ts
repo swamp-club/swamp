@@ -113,7 +113,10 @@ import {
   createWorkerTokenRevokeDeps,
   workerTokenRevoke,
 } from "../../libswamp/worker/token_revoke.ts";
-import { datastoreNamespaceList } from "../../libswamp/datastores/namespace_list.ts";
+import {
+  createNamespaceListDeps,
+  datastoreNamespaceList,
+} from "../../libswamp/datastores/namespace_list.ts";
 import {
   doctorDatastores,
   type DoctorDatastoresDeps,
@@ -155,23 +158,17 @@ import { fleetMemberSuffix } from "../worker_gateway.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { DEFAULT_WORKER_GC_GRACE_PERIOD_MS } from "../worker_gc_service.ts";
 import {
-  type CustomDatastoreConfig,
   externalFilesystemDatastoreRoot,
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
-import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 
 import {
-  datastoreBasePath,
   resolveConfigTierPath,
   resolveDatastoreConfig,
 } from "../../cli/resolve_datastore.ts";
-import {
-  listNamespaceManifests,
-} from "../../infrastructure/persistence/namespace_manifest.ts";
 import { createExtensionInstallDeps } from "../../cli/create_extension_install_deps.ts";
 import { loadIdentity } from "../../cli/load_identity.ts";
 import { resolveModelsDir } from "../../cli/resolve_models_dir.ts";
@@ -2641,32 +2638,7 @@ export async function handleDatastoreNamespaceList(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const dsBasePath = datastoreBasePath(ctx.datastoreConfig);
-
-    let listProvider: DatastoreProvider | undefined;
-    if (isCustomDatastoreConfig(ctx.datastoreConfig)) {
-      await datastoreTypeRegistry.ensureLoaded();
-      await datastoreTypeRegistry.ensureTypeLoaded(ctx.datastoreConfig.type);
-      const typeInfo = datastoreTypeRegistry.get(ctx.datastoreConfig.type);
-      listProvider = typeInfo?.createProvider?.(ctx.datastoreConfig.config);
-    }
-
-    const deps = {
-      getCurrentNamespace: () => ctx.datastoreConfig.namespace,
-      listNamespaces: async () => {
-        if (listProvider?.listNamespaces) {
-          const slugs = await listProvider.listNamespaces(
-            (ctx.datastoreConfig as CustomDatastoreConfig).datastorePath,
-          );
-          return slugs.map((ns: string) => ({
-            namespace: ns,
-            repoId: "",
-            registeredAt: "",
-          }));
-        }
-        return await listNamespaceManifests(dsBasePath);
-      },
-    };
+    const deps = await createNamespaceListDeps(ctx.datastoreConfig);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

@@ -26,9 +26,11 @@ import {
 import type { CommitLogUnitOfWork } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { swampPath } from "../persistence/paths.ts";
 import {
+  COMMITS_DB_FILE,
   datastoreKeyFilter,
   initializeV3Datastore,
   isFreshV3Skeleton,
+  listV3Namespaces,
   openV3Datastore,
 } from "./v3_datastore.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
@@ -154,5 +156,84 @@ Deno.test("initializeV3Datastore: completes a fresh skeleton, and refuses a data
     }
     assertEquals(await isFreshV3Skeleton(dir), false);
     await assertRejects(() => initializeV3Datastore(dir, "test"));
+  });
+});
+
+/** Commits one auto-definition to `datastorePath` in `namespace`. */
+async function commitIn(
+  dir: string,
+  datastorePath: string,
+  namespace: string,
+): Promise<void> {
+  const datastore = openV3Datastore({
+    repoDir: join(dir, `checkout-${crypto.randomUUID()}`),
+    datastorePath,
+    namespace,
+  });
+  try {
+    const engine = datastore.engineFor(() => Promise.resolve(), () => {
+      throw new Error("no run repository needed");
+    });
+    await engine.runRoot({}, async () => {
+      const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+      await unit.stageOps([
+        new AutoDefinitionChanges(crypto.randomUUID()).write(
+          recordKeyOf(["auto-definitions", "x.yaml"]),
+          new TextEncoder().encode("name: x\n"),
+        ),
+      ]);
+      await unit.commit();
+    });
+  } finally {
+    await datastore.close();
+  }
+}
+
+Deno.test("listV3Namespaces: names each namespace with commits, never the unnamespaced one", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    assertEquals(listV3Namespaces(datastorePath), []);
+
+    await commitIn(dir, datastorePath, "");
+    assertEquals(listV3Namespaces(datastorePath), []);
+
+    await commitIn(dir, datastorePath, "team");
+    await commitIn(dir, datastorePath, "infra");
+    assertEquals(listV3Namespaces(datastorePath), ["infra", "team"]);
+  });
+});
+
+Deno.test("listV3Namespaces: a datastore with no commits.db lists nothing and gains none", async () => {
+  await withTempDir((dir) => {
+    assertEquals(listV3Namespaces(dir), []);
+    assertEquals(
+      [...Deno.readDirSync(dir)].map((entry) => entry.name),
+      [],
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("listV3Namespaces: reads a checkpointed commits.db without writing to it", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    await commitIn(dir, datastorePath, "team");
+    const dbPath = join(datastorePath, COMMITS_DB_FILE);
+    // The writer's close checkpoints the WAL away.
+    assertEquals(
+      [...Deno.readDirSync(datastorePath)].map((entry) => entry.name)
+        .filter((name) => name.startsWith(`${COMMITS_DB_FILE}-`)),
+      [],
+    );
+    const before = await Deno.readFile(dbPath);
+
+    assertEquals(listV3Namespaces(datastorePath), ["team"]);
+
+    assertEquals(await Deno.readFile(dbPath), before);
+    // A writer opens it afterwards as before.
+    await commitIn(dir, datastorePath, "infra");
+    assertEquals(listV3Namespaces(datastorePath), ["infra", "team"]);
   });
 });
