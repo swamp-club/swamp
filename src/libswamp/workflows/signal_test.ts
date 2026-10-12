@@ -2307,3 +2307,86 @@ Deno.test("workflowSignal: an early signal whose other copy was delivered to the
     [1],
   );
 });
+
+Deno.test("workflowSignal: a copy that reads the key as free because its other copy just settled the open wait is not held for the next run", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const opened = await suspendedAtEarlyWait(workflow, waits, OPENED);
+  const fixture = await fixtureOf([opened.run], {
+    waits,
+    workflows: [workflow],
+  });
+  const payload = { verdict: "ship" };
+  // The other copy is delivered between this copy's lookup by idempotency
+  // key, which reads the key first, and its read of the key's holder.
+  let delivered: WorkflowSignalEvent | undefined;
+  let reads = 0;
+  const racing = new Proxy(waits, {
+    get(target, property, receiver) {
+      if (property !== "highestKeyRecord") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (workflowId: string, key: string) => {
+        if (++reads === 2) {
+          delivered = await sendByKey(
+            fixture,
+            "release",
+            KEY,
+            payload,
+            "order-1",
+          );
+        }
+        return await target.highestKeyRecord(workflowId, key);
+      };
+    },
+  });
+  const late = await sendByKey(
+    {
+      deps: {
+        ...fixture.deps,
+        signalWaits: { supported: true, store: racing },
+      },
+    },
+    "release",
+    KEY,
+    payload,
+    "order-1",
+  );
+  assert(delivered?.kind === "completed", `got ${delivered?.kind}`);
+  assertEquals(delivered.data.duplicate, undefined);
+  assert(late.kind === "completed", `got ${late.kind}`);
+  assertEquals(late.data.duplicate, true);
+  assertEquals(late.data.waitId, opened.waitId);
+  assertEquals(late.data.signal, delivered.data.signal);
+
+  // What it stored before it found out is superseded: the next run's wait
+  // opens over a lapse and takes nothing.
+  const head = await waits.highestPendingRecord({
+    workflowId: workflow.id,
+    key: KEY,
+    slot: 2,
+  });
+  assertEquals(head.kind === "found" && head.record.kind, "lapse");
+  const next = await suspendedAtEarlyWait(
+    workflow,
+    waits,
+    new Date(IN_TIME.getTime() + 1_000),
+  );
+  const again = await fixtureOf([opened.run, next.run], {
+    waits,
+    workflows: [workflow],
+    now: new Date(IN_TIME.getTime() + 2_000),
+  });
+  const registration = await waits.findRegistration(next.waitId);
+  assert(registration.kind === "found");
+  assertEquals(
+    (await outcomeAt(
+      waits,
+      registration.record,
+      new Date(IN_TIME.getTime() + 2_000),
+    )).kind,
+    "absent",
+  );
+  assertEquals(again.calls, []);
+});
