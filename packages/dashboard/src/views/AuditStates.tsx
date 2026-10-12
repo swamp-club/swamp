@@ -27,8 +27,18 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { AuditStatus } from "../client/audit_state.ts";
 import { Skeleton, SkeletonRegion, widthAt } from "../components/Skeleton.tsx";
 
-/** The swamp manual; there is no audit-specific page to link to yet. */
-export const MANUAL_URL = "https://swamp-club.com/manual";
+/** Manual pages on audit: how it works, and reading it from a server. */
+export const AUDIT_MANUAL_LINKS = [
+  {
+    label: "How swamp's audit system works",
+    href: "https://swamp-club.com/manual/explanation/the-audit-system",
+  },
+  {
+    label: "Read the audit timeline on a server",
+    href:
+      "https://swamp-club.com/manual/how-to/use-the-audit-timeline#view-the-timeline-on-a-server",
+  },
+] as const;
 
 /** The default serve config path (`swamp serve --config`). */
 export const SERVE_CONFIG_PATH = ".swamp/serve.yaml";
@@ -219,16 +229,22 @@ export function AuditDisabledState({ copy }: { copy: CopyFn }) {
             <code>access:audit</code>.
           </li>
         </ol>
-        <a
-          className="act-doc-link"
-          href={MANUAL_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Read the swamp manual
-          <span aria-hidden="true">↗</span>
-          <span className="visually-hidden">(opens in a new tab)</span>
-        </a>
+        <ul className="act-doc-links">
+          {AUDIT_MANUAL_LINKS.map((link) => (
+            <li key={link.href}>
+              <a
+                className="act-doc-link"
+                href={link.href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {link.label}
+                <span aria-hidden="true">↗</span>
+                <span className="visually-hidden">(opens in a new tab)</span>
+              </a>
+            </li>
+          ))}
+        </ul>
       </div>
     </section>
   );

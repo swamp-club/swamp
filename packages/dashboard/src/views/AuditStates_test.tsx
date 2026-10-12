@@ -23,13 +23,13 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   AUDIT_CONFIG_SNIPPET,
+  AUDIT_MANUAL_LINKS,
   AuditDeniedState,
   AuditDisabledState,
   AuditErrorState,
   AuditFeedSkeleton,
   auditFeedView,
   AuditLiveToggle,
-  MANUAL_URL,
 } from "./AuditStates.tsx";
 
 Deno.test("AuditDisabledState: explains the log, shows the config to copy and links the manual", () => {
@@ -43,7 +43,9 @@ Deno.test("AuditDisabledState: explains the log, shows the config to copy and li
   assertStringIncludes(html, "target: security-audit");
   assertStringIncludes(html, "Copy serve.yaml snippet");
   assertStringIncludes(html, "swamp serve check-config");
-  assertStringIncludes(html, `href="${MANUAL_URL}"`);
+  for (const link of AUDIT_MANUAL_LINKS) {
+    assertStringIncludes(html, `href="${link.href}"`);
+  }
   assertStringIncludes(html, 'rel="noopener noreferrer"');
   // Never pretends a feed is coming.
   assertEquals(html.includes("Connecting"), false);
