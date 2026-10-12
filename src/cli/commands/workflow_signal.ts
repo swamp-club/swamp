@@ -165,8 +165,15 @@ export function renderSignalResult(
     return;
   }
   if (data.taken) {
+    // The step took the signal as it opened its wait, or another reader gave
+    // it to a wait that was open already. Only the run tells the two apart.
     writeOutput(
-      "The step took the signal as it opened its wait, and its run went on without waiting.",
+      data.awaitingResume
+        ? `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${data.resumeCommand}`
+        : !data.runRecordAvailable
+        ? `The step's wait took the signal. This host has no copy of the run, so it cannot tell whether the run went on by itself. ` +
+          `Check with "swamp workflow waits", and if the run is suspended resume it where it is: ${data.resumeCommand}`
+        : "The step took the signal, and its run has nothing to resume: it went on without waiting, or it still waits on something else.",
     );
     return;
   }
@@ -332,9 +339,10 @@ export function renderRemoteSignalResult(
     );
     return;
   }
-  // The server does not say which run this was; it still has to be resumed.
+  // The server does not say which run this was, or whether its step took
+  // the signal as it opened its wait and went on.
   writeOutput(
-    "The signal takes effect when the run is next resumed, by someone who may resume it.",
+    "If the run is suspended at this wait, the signal takes effect when it is next resumed, by someone who may resume it.",
   );
 }
 

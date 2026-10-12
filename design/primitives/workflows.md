@@ -1149,8 +1149,18 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
    - a claim holds the key and reads this slot: the pending signal is taken
      for that wait (below), and the answer is the one a delivered signal gets.
      If the wait is not registered yet its captured schema cannot be read, so
-     nothing is taken and the answer is pending: the step registers before it
-     reads the slot, and so has not read it yet;
+     nothing is taken: the step registers before it reads the slot, and so
+     has not read it yet. The claim keeps the wait's `early` and deadline, so
+     the signaller applies the part of the taking rule they decide
+     (`isReceivedForWait`, which `pendingOutcome` calls too). A signal
+     received inside that window is answered pending. One received before it
+     is refused `no_open_wait` and told to send again once the wait is open:
+     every reader of that wait refuses the stored record the same way, so
+     nothing takes it afterwards, and the record stays in a slot no later
+     claim reads (swamp-club#3307). The workflow name the run recorded and
+     the schema it captured are not on the claim. A signal the wait will
+     refuse for either one is still answered pending here, and the wait runs
+     to its deadline unless it is signalled again;
    - a claim holds the key and reads another slot, which takes a claim made
      and settled some other way than by this signal, and a second claim
      made: the signal is delivered to that open wait as a signal by key is
@@ -1158,7 +1168,8 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      with that slot;
    - the key's highest generation has reached the slot, and a claim that
      reads the slot was settled by this very signal: a step took it on
-     opening its wait and its run went on. This is looked for among every
+     opening its wait and its run went on, or another reader gave it to a
+     wait that was open already. This is looked for among every
      claim of the key and not only the highest (`findTakerOf`), because the
      key may have been claimed again since: a signal a wait took is never
      delivered to another wait or stored a second time. The key's holder is
@@ -1167,8 +1178,10 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      slot written already, so a step cannot take the signal between the two
      reads and be missed by both. The answer
      is the one a delivered signal gets, built from the claim, since the run
-     may have ended and its registration with it. The result says `taken`,
-     and the command suggests no resume;
+     may have ended and its registration with it. The result says `taken`.
+     Its `awaitingResume` is read from the run as for any delivered signal:
+     false for a step that took the signal and went on, true for a wait
+     whose run is suspended still, and the command then prints the resume;
    - the key is free and its highest generation has reached the slot some
      other way: the arrival runs again from 2 at the new slot, with the same
      receipt ID and received time, at most eight times

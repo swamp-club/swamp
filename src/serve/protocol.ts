@@ -1357,7 +1357,10 @@ export interface WorkflowSignalResponseData {
   awaitingResume?: boolean;
   runRecordAvailable?: boolean;
   resumeCommand?: string;
-  /** True when the step took the signal as it opened its wait. */
+  /**
+   * True when a wait took the signal from where it was held. `awaitingResume`
+   * says whether its run went on from there or is suspended still.
+   */
   taken?: true;
 }
 

@@ -295,6 +295,23 @@ export function heldUntil(pending: PendingSignal): Date {
 }
 
 /**
+ * True when `pending` is in a slot the wait reads and was received no
+ * earlier than the wait allows and no later than its deadline. `wait` is the
+ * wait itself or the claim of its key: both keep `early` and the deadline, so
+ * a signaller that finds only the claim decides this part as the step will
+ * (swamp-club#3307). {@link pendingOutcome} decides the rest.
+ */
+export function isReceivedForWait(
+  pending: Pick<PendingSignal, "slot" | "receivedAt">,
+  wait: { early: WaitEarly; deadline: string },
+): boolean {
+  if (!earlySlots(wait.early).includes(pending.slot)) return false;
+  const received = new Date(pending.receivedAt).getTime();
+  return received >= new Date(wait.early.from).getTime() &&
+    received <= new Date(wait.deadline).getTime();
+}
+
+/**
  * The outcome a pending signal gives a wait, or undefined when it does not
  * apply. Decided from stored facts alone, so every reader reaches the same
  * answer whenever it looks: the record names the wait's workflow and key in a
@@ -314,12 +331,7 @@ export function pendingOutcome(
     pending.authorizedFor !== undefined &&
     pending.authorizedFor !== ref.workflowName
   ) return undefined;
-  if (!earlySlots(ref.early).includes(pending.slot)) return undefined;
-  const received = new Date(pending.receivedAt).getTime();
-  if (
-    received < new Date(ref.early.from).getTime() ||
-    received > new Date(ref.deadline).getTime()
-  ) return undefined;
+  if (!isReceivedForWait(pending, ref)) return undefined;
   const validation = SignalWait.fromData({
     kind: "signal",
     id: ref.waitId,
