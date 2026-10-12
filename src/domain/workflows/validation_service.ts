@@ -828,7 +828,8 @@ export class DefaultWorkflowValidationService
     // Skip dynamic CEL references — cannot resolve statically.
     // For factory-pattern steps (modelType is set), only the modelType
     // matters for type/method resolution — a CEL modelName does not
-    // prevent resolving the extension type.
+    // prevent resolving the extension type. A CEL methodName still
+    // resolves the model and type; only the method lookup is skipped below.
     if (modelType) {
       if (modelType.includes("${{")) {
         return [WorkflowValidationResult.pass(checkName)];
@@ -868,6 +869,9 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "method_not_found":
+        if (methodName.includes("${{")) {
+          return [WorkflowValidationResult.pass(checkName)];
+        }
         return [
           WorkflowValidationResult.fail(
             checkName,
