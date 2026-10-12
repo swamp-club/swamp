@@ -68,7 +68,8 @@ export function filterOutputs(
       const t = Date.parse(o.startedAt);
       if (Number.isNaN(t)) return since === null && until === null;
       if (since !== null && t < since) return false;
-      if (until !== null && t > until) return false;
+      // `until` is exclusive, as serve reads it.
+      if (until !== null && t >= until) return false;
       return true;
     })
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));

@@ -136,7 +136,10 @@ export interface ModelOutputSearchInput {
   model?: string;
   /** Only outputs started at or after this ISO 8601 instant. */
   since?: string;
-  /** Only outputs started at or before this ISO 8601 instant. */
+  /**
+   * Only outputs started before this ISO 8601 instant (exclusive), as run
+   * search and the run summary read `until`.
+   */
   until?: string;
   /** At most this many results, most recent first. */
   limit?: number;
@@ -220,7 +223,7 @@ export async function* modelOutputSearch(
       for (const { output, type, modelName: knownName } of candidates) {
         const startedMs = output.startedAt.getTime();
         if (since && startedMs < since.getTime()) continue;
-        if (until && startedMs > until.getTime()) continue;
+        if (until && startedMs >= until.getTime()) continue;
 
         const modelName = knownName ??
           await modelNameOf(type, output.definitionId);

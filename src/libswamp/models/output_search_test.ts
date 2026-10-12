@@ -226,7 +226,7 @@ Deno.test("modelOutputSearch: reads only the named model's outputs when it can l
   ]]);
 });
 
-Deno.test("modelOutputSearch: filters by since and until, inclusive", async () => {
+Deno.test("modelOutputSearch: filters by since (inclusive) and until (exclusive)", async () => {
   const run = async (input: { since?: string; until?: string }) =>
     completedOf(
       await collect(
@@ -235,13 +235,14 @@ Deno.test("modelOutputSearch: filters by since and until, inclusive", async () =
     ).results.map((r) => r.id);
 
   assertEquals(await run({ since: "2026-01-15T10:30:00Z" }), ["out-2"]);
-  assertEquals(await run({ until: "2026-01-15T10:00:00Z" }), ["out-1"]);
+  assertEquals(await run({ until: "2026-01-15T10:00:00Z" }), []);
+  assertEquals(await run({ until: "2026-01-15T10:00:01Z" }), ["out-1"]);
   assertEquals(
     await run({
       since: "2026-01-15T10:00:00Z",
       until: "2026-01-15T11:00:00Z",
     }),
-    ["out-2", "out-1"],
+    ["out-1"],
   );
 });
 

@@ -76,6 +76,15 @@ Deno.test("filterOutputs: applies the time window when serve did not", () => {
   );
 });
 
+Deno.test("filterOutputs: until is exclusive, like serve's", () => {
+  assertEquals(
+    filterOutputs(outputs, { until: "2026-10-12T10:00:00.000Z" }).map((o) =>
+      o.id
+    ),
+    ["3", "1"],
+  );
+});
+
 Deno.test("outputPips: a workflow-run output links to its run", () => {
   const [pip] = outputPips([outputs[3]]);
   assertEquals(pip.runId, "run-1");

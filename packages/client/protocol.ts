@@ -192,7 +192,7 @@ export interface ModelOutputSearchPayload {
   model?: string;
   /** Only outputs started at or after this ISO 8601 instant. */
   since?: string;
-  /** Only outputs started at or before this ISO 8601 instant. */
+  /** Only outputs started before this ISO 8601 instant (exclusive). */
   until?: string;
   /**
    * At most this many results, most recent first, counted among the outputs
