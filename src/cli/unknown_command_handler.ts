@@ -126,9 +126,15 @@ function buildContextSuggestions(
   // (and a `run` after it) is the command word, not the method the user meant.
   const legacyDirectType = parentName === "model" &&
     unknownName.startsWith("@") && trailing[0] === "method";
-  const afterCommandWords = legacyDirectType
-    ? trailing.slice(trailing[1] === "run" ? 2 : 1)
-    : trailing;
+  // `swamp behavior my-server run deploy` — `run` after the model instead of
+  // before it. Here too `run` is the command word, not the method.
+  const misorderedRun = parentName === "behavior" && trailing[0] === "run";
+  let afterCommandWords = trailing;
+  if (legacyDirectType) {
+    afterCommandWords = trailing.slice(trailing[1] === "run" ? 2 : 1);
+  } else if (misorderedRun) {
+    afterCommandWords = trailing.slice(1);
+  }
   const runSuggestion = runSuggestionFor(unknownName, afterCommandWords);
 
   if (parentName === "model") {
