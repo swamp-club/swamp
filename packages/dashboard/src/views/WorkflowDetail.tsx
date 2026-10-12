@@ -24,6 +24,22 @@ import { useRequest } from "../client/useRequest";
 import { StatusDot } from "../components/StatusDot";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
+import "../styles/workflows.css";
+import { RouteLink } from "../components/RouteLink";
+import { RunHistoryBar } from "../components/RunHistoryBar";
+import { EmptyState } from "../components/EmptyState";
+import {
+  SkeletonList,
+  SkeletonPanel,
+  SkeletonRunHistory,
+  SkeletonStats,
+} from "../components/Skeleton";
+import {
+  formatAbsoluteTime,
+  formatCount,
+  formatDuration,
+  formatRelativeTime,
+} from "../lib/format";
 
 interface WorkflowDetailProps {
   workflowName: string;
@@ -35,7 +51,7 @@ interface RunSummary {
   runId: string;
   workflowName: string;
   status: string;
-  startedAt: string;
+  startedAt?: string;
   duration?: number;
   triggerSource?: string;
 }
@@ -69,13 +85,17 @@ interface WorkflowData {
 export function WorkflowDetail(
   { workflowName, onBack, onOpenRun }: WorkflowDetailProps,
 ) {
-  const { data: wfData } = useRequest("workflow.get", {
+  const { data: wfData, loading: wfLoading } = useRequest("workflow.get", {
     workflowIdOrName: workflowName,
   });
-  const { data: runsData } = useRequest("workflow.run.search", {
-    workflow: workflowName,
-    limit: 20,
-  });
+  const { data: runsData, loading: runsLoading } = useRequest(
+    "workflow.run.search",
+    {
+      workflow: workflowName,
+      limit: 20,
+    },
+  );
+  const runsPending = runsLoading && runsData === null;
 
   const workflow = extractObject<WorkflowData>(wfData);
   const recentRuns = extractArray<RunSummary>(runsData);
@@ -98,6 +118,7 @@ export function WorkflowDetail(
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {/* Stats row */}
+        {runsPending && <SkeletonStats count={3} />}
         {total > 0 && (
           <div
             className="stats-grid"
@@ -105,24 +126,27 @@ export function WorkflowDetail(
           >
             <div className="stat-card">
               <div className="stat-label">Total Runs</div>
-              <div className="stat-value">{total}</div>
+              <div className="stat-value">{formatCount(total)}</div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Succeeded</div>
               <div className="stat-value" style={{ color: "var(--success)" }}>
-                {succeeded}
+                {formatCount(succeeded)}
               </div>
             </div>
             <div className="stat-card">
               <div className="stat-label">Failed</div>
               <div className="stat-value" style={{ color: "var(--danger)" }}>
-                {failed}
+                {formatCount(failed)}
               </div>
             </div>
           </div>
         )}
 
         {/* Workflow structure */}
+        {!workflow && wfLoading && (
+          <SkeletonPanel title="Structure" rows={4} label="Loading workflow" />
+        )}
         {workflow && (
           <div className="panel">
             <div className="panel-header">
@@ -209,28 +233,73 @@ export function WorkflowDetail(
           <div className="panel-header">
             <div className="panel-title">
               Run History
-              <span className="panel-count">{recentRuns.length}</span>
+              {!runsPending && (
+                <span className="panel-count">
+                  {formatCount(recentRuns.length)}
+                </span>
+              )}
             </div>
           </div>
+          {recentRuns.length > 0 && (
+            <div className="wf-detail-history">
+              <RunHistoryBar runs={recentRuns} workflowName={workflowName} />
+            </div>
+          )}
+          {runsPending && (
+            <>
+              <div className="wf-detail-history">
+                <SkeletonRunHistory height={14} />
+              </div>
+              <SkeletonList rows={5} label="Loading runs" />
+            </>
+          )}
           <div>
-            {recentRuns.length === 0 && (
-              <div className="loading">No runs recorded</div>
+            {!runsPending && recentRuns.length === 0 && (
+              <EmptyState title="No runs yet">
+                Runs of this workflow will appear here.
+              </EmptyState>
             )}
             {recentRuns.map((run) => (
               <div
                 className="run-row"
                 key={run.runId}
-                onClick={() => onOpenRun?.(run.workflowName, run.runId)}
+                onClick={(e) => {
+                  // The run link handles its own clicks.
+                  if ((e.target as Element).closest("a")) return;
+                  onOpenRun?.(run.workflowName, run.runId);
+                }}
               >
                 <StatusDot status={run.status} />
                 <div className="run-info">
-                  <div className="run-name">{run.runId?.slice(0, 8)}</div>
-                  <div className="run-detail">
-                    {formatRelativeTime(run.startedAt)}
+                  <div className="run-name">
+                    <RouteLink
+                      className="wf-detail-run-link mono"
+                      to={{
+                        view: "workflows",
+                        detail: {
+                          kind: "run",
+                          workflowName: run.workflowName,
+                          runId: run.runId,
+                        },
+                      }}
+                    >
+                      {run.runId?.slice(0, 8)}
+                    </RouteLink>
                   </div>
+                  {run.startedAt && (
+                    <time
+                      className="run-detail"
+                      dateTime={run.startedAt}
+                      title={formatAbsoluteTime(run.startedAt)}
+                    >
+                      {formatRelativeTime(run.startedAt)}
+                    </time>
+                  )}
                 </div>
                 <span className="run-duration">
-                  {formatDuration(run.duration)}
+                  {run.duration !== undefined
+                    ? formatDuration(run.duration)
+                    : ""}
                 </span>
                 <StatusPill status={run.status} />
               </div>
@@ -261,22 +330,4 @@ export function WorkflowDetail(
       </div>
     </>
   );
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "";
-  if (ms < 1000) return `${ms}ms`;
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem = secs % 60;
-  return `${mins}m ${rem.toString().padStart(2, "0")}s`;
-}
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
 }
