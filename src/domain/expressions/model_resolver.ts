@@ -1284,10 +1284,13 @@ export class ModelResolver {
         const ns = routeNamespace(rawModelName, ownNamespace);
 
         if (!ns.isWildcard) {
+          // A namespaced name is never read through the caller's own
+          // definition of that name: its coordinates select this repository's
+          // data whatever namespace was asked for (swamp-club#3295).
           const coords =
             parseNamespacedModelName(rawModelName).namespace === undefined
               ? await resolveIdentities(ns.modelName)
-              : coordsMap.get(ns.modelName);
+              : undefined;
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
               if (isControlPlaneModelType(modelType.normalized)) continue;

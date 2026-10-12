@@ -140,9 +140,11 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 `data.query()` call. Execution differs in four ways
 (`src/domain/expressions/model_resolver.ts`):
 
-- `data.latest()` / `data.version()` without a `*:` wildcard look on the
-  filesystem first (`dataRepo.findByName` on the model's coordinates). They
-  fall back to the catalog only on a miss.
+- `data.latest()` with no namespace prefix looks on the filesystem first
+  (`dataRepo.findByName` on the model's coordinates) and falls back to the
+  catalog only on a miss. With an `ns:` prefix it reads the catalog with the
+  namespace clause and never the caller's own model of that name.
+  `data.version()` always queries the catalog.
 - Every helper except `data.query()` adds `&& ns == "<own namespace>"` unless
   the model name has a namespace prefix (`routeNamespace`).
 - `data.findBySpec()` and `data.findByTag()` keep only the newest record per

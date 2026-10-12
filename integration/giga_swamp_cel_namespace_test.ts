@@ -29,6 +29,7 @@ import { RunSensitiveValues } from "../src/domain/secrets/mod.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { Data } from "../src/domain/data/data.ts";
+import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import {
@@ -256,6 +257,59 @@ Deno.test("giga-swamp CEL Phase 4: cross-namespace point lookup with ns:model sy
       const crossResult = await latestFn("security:scanner", "output");
       assertEquals(crossResult !== null, true);
       assertEquals(crossResult!.namespace, "security");
+    } finally {
+      setup.catalog.close();
+    }
+  });
+});
+
+// --- Test 2b: a prefixed name that collides with a local model ---
+// The caller owns a definition named "scanner", so the full context has
+// coordinates for that name. A namespaced lookup must not read through them.
+
+Deno.test("giga-swamp CEL Phase 4: ns:model never returns the caller's own record of that name (swamp-club#3295)", async () => {
+  await withTempDir(async (root) => {
+    const dsDir = join(root, "shared-ds");
+    const repoDir = join(root, "repo-infra");
+    const setup = setupRepo(repoDir, dsDir, "infra");
+
+    try {
+      const definition = Definition.create({
+        name: "scanner",
+        globalArguments: {},
+      });
+      await new YamlDefinitionRepository(join(repoDir, ".swamp", "models"))
+        .save(modelType, definition);
+      await setup.dataRepo.save(
+        modelType,
+        definition.id,
+        makeData("output", "scanner"),
+        new TextEncoder().encode('{"source":"infra"}'),
+      );
+      setup.catalog.markPopulated();
+
+      const data = await buildDataContext(setup);
+      const latestFn = data.latest as (
+        m: string,
+        n: string,
+      ) => Promise<DataRecord | null>;
+
+      // Nothing in "security" yet, and "nosuchns" does not exist.
+      assertEquals(await latestFn("security:scanner", "output"), null);
+      assertEquals(await latestFn("nosuchns:scanner", "output"), null);
+      assertEquals(
+        (await latestFn("infra:scanner", "output"))?.namespace,
+        "infra",
+      );
+      assertEquals((await latestFn("scanner", "output"))?.namespace, "infra");
+
+      // Once "security" holds the record, its row is the one returned.
+      const foreign = makeCrossNamespaceRow("security", "scanner", "output");
+      setup.catalog.upsert(foreign);
+      const crossResult = await latestFn("security:scanner", "output");
+      assertEquals(crossResult?.namespace, "security");
+      assertEquals(crossResult?.modelId, foreign.model_id);
+      assertEquals((await latestFn("scanner", "output"))?.namespace, "infra");
     } finally {
       setup.catalog.close();
     }
