@@ -76,7 +76,8 @@ Each schema is walked once per place in the value, so the cost grows with the
 size of the value even when union members overlap in a recursive schema.
 
 - **Unions.** No member's validation runs. Every member the value could belong
-  to is checked: members of the wrong container kind are dropped, and a
+  to is checked: members of the wrong container kind are dropped (a coerced
+  scalar or a member behind `z.preprocess()` fits any value and is kept), and a
   discriminated union is narrowed by its discriminator when the value carries a
   literal one. A value is refused if any remaining member marks it sensitive.
 - **Vault keys.** A field inside an array element or record value occurs once
@@ -88,10 +89,11 @@ size of the value even when union members overlap in a recursive schema.
 - **Paths.** A path names one place in the stored value. A key made of
   letters, digits, `_` and `-` is joined with a dot. Any other key is written
   quoted and escaped (`accounts["eu.west"].token`), so it cannot read as nesting
-  or as an array index, and a control character in a key is not printed raw. A
-  path naming an array element is not a `--global-arg` key; the refusal says to
-  pass the whole array with `<name>:json=[...]`. Suggested vault keys that come
-  out the same get a numeric suffix.
+  or as an array index. Control characters and bidirectional marks in a key are
+  written as `\uXXXX` escapes. A path naming an array element is not a
+  `--global-arg` key; the refusal says to pass the whole array with
+  `<name>:json=[...]`. Suggested vault keys that come out the same get a numeric
+  suffix.
 
 The redaction and vaulting primitives in the same module
 (`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)

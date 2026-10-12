@@ -569,3 +569,62 @@ Deno.test("findValuesWithMetadata: keeps a union member behind a preprocess for 
   });
   assertEquals(markedPaths(schema, { auth: { user: "u" } }), ["auth"]);
 });
+
+Deno.test("findValuesWithMetadata: keeps a coerced scalar union member for a value of any shape", () => {
+  // Zod tries the coerced member first and accepts an array by converting it.
+  const schema = z.object({
+    pw: z.union([
+      z.coerce.string().meta({ marked: true }),
+      z.array(z.string()),
+    ]),
+    n: z.union([
+      z.coerce.number().meta({ marked: true }),
+      z.object({ v: z.string() }),
+    ]),
+    plain: z.union([z.string().meta({ marked: true }), z.array(z.string())]),
+  });
+  assertEquals(
+    markedPaths(schema, { pw: ["hunter2"], n: { v: "1" }, plain: ["x"] }),
+    ["pw", "n"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: escapes control and bidirectional characters in a key", () => {
+  const schema = z.object({
+    rec: z.record(z.string(), z.string().meta({ marked: true })),
+  });
+  const keys = [
+    "del\u007f",
+    "csi\u009b2J",
+    "rtl\u202eevil",
+    "ls\u2028ps\u2029",
+    "iso\u2066\u2069",
+    "mark\u200e\u200f",
+    "esc\u001b[31m",
+  ];
+  const paths = markedPaths(schema, {
+    rec: Object.fromEntries(keys.map((k) => [k, "v"])),
+  });
+  assertEquals(paths, [
+    'rec["del\\u007f"]',
+    'rec["csi\\u009b2J"]',
+    'rec["rtl\\u202eevil"]',
+    'rec["ls\\u2028ps\\u2029"]',
+    'rec["iso\\u2066\\u2069"]',
+    'rec["mark\\u200e\\u200f"]',
+    'rec["esc\\u001b[31m"]',
+  ]);
+  for (const path of paths) {
+    // Nothing outside printable ASCII is left in the path.
+    assertEquals(/^[\x20-\x7e]+$/.test(path), true);
+  }
+});
+
+Deno.test("findValuesWithMetadata: leaves printable non-ASCII characters in a key as they are", () => {
+  const schema = z.object({
+    rec: z.record(z.string(), z.string().meta({ marked: true })),
+  });
+  assertEquals(markedPaths(schema, { rec: { "clé-日本": "v" } }), [
+    'rec["clé-日本"]',
+  ]);
+});

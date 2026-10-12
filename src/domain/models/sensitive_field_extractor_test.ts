@@ -1077,3 +1077,28 @@ Deno.test("findLiteralSensitiveGlobalArgs: flags a literal under a sensitive cat
     ["env.TOKEN"],
   );
 });
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags an array a coerced sensitive union member would accept", () => {
+  const schema = z.object({
+    pw: z.union([
+      z.coerce.string().meta({ sensitive: true }),
+      z.array(z.string()),
+    ]),
+  });
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { pw: ["hunter2"] }), [
+    "pw",
+  ]);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { pw: [VAULT_REF] }), []);
+});
+
+Deno.test("buildSensitiveArgRemediations: reads back a key written with escapes", () => {
+  const schema = z.object({
+    "rtl\u202ekey": z.string().meta({ sensitive: true }),
+  });
+  const args = { "rtl\u202ekey": "literal" };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(paths, ['["rtl\\u202ekey"]']);
+  assertEquals(remediations[0].vaultKey, "rtl\u202ekey");
+});

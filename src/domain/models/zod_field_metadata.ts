@@ -53,6 +53,7 @@ interface ZodDef {
   right?: z.ZodTypeAny;
   getter?: () => z.ZodTypeAny;
   catchall?: z.ZodTypeAny;
+  coerce?: boolean;
   in?: z.ZodTypeAny;
   out?: z.ZodTypeAny;
   values?: unknown[];
@@ -220,14 +221,28 @@ const INNER_TYPE_WRAPPERS = new Set([
 ]);
 
 /**
+ * Characters `JSON.stringify` leaves as they are that can still move the
+ * cursor, clear the screen or reorder the text of a terminal line.
+ */
+const UNPRINTABLE =
+  /[\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
  * Appends a key to a path. A key made of letters, digits, `_` and `-` is
  * joined with a dot; any other key is written as a quoted, escaped index
- * (`accounts["eu.west"]`), so a path names exactly one place in a value and a
- * `[0]` segment is always an array index.
+ * (`accounts["eu.west"]`), so a path names exactly one place in a value, a
+ * `[0]` segment is always an array index, and no control or bidirectional
+ * character from a key reaches the terminal.
  */
 function appendKey(path: string, key: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(key)) {
-    return `${path}[${JSON.stringify(key)}]`;
+    // JSON escapes the C0 controls; DEL, the C1 controls, the line and
+    // paragraph separators and the bidirectional marks are escaped here.
+    const quoted = JSON.stringify(key).replace(
+      UNPRINTABLE,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
+    return `${path}[${quoted}]`;
   }
   return path ? `${path}.${key}` : key;
 }
@@ -311,8 +326,8 @@ const SCALAR_TYPES = [
 /**
  * Reports whether a value has the container kind a union member describes: an
  * object for an object or record, an array for an array or tuple, neither for
- * a scalar. A member of any other type, or one behind a `z.preprocess()`, is
- * taken to fit every value.
+ * a scalar. A member of any other type, a coerced scalar, or one behind a
+ * `z.preprocess()`, is taken to fit every value.
  */
 function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
   const core = coreSchema(member);
@@ -327,7 +342,8 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
     return Array.isArray(value);
   }
   if (SCALAR_TYPES.includes(memberType)) {
-    return typeof value !== "object";
+    // `z.coerce.string()` accepts an array or object by converting it.
+    return getSchemaDef(core).coerce === true || typeof value !== "object";
   }
   return true;
 }
