@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
+
 const STATUS_STYLES: Record<string, { bg: string; color: string }> = {
   succeeded: { bg: "var(--success-bg)", color: "var(--success)" },
   failed: { bg: "var(--danger-bg)", color: "var(--danger)" },

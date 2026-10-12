@@ -17,6 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
+
 import { buildPath, isPlainLeftClick, type RouteState } from "../routes.ts";
 import { navigateTo } from "../hooks/useRouter.ts";
 import { formatDuration, formatShortDateTime } from "../lib/format.ts";
