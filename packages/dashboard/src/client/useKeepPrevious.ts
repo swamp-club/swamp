@@ -19,15 +19,40 @@
 
 import { useRef } from "react";
 
+interface Held<T> {
+  key: string;
+  value: T;
+}
+
+/**
+ * The held value after a render: the new value when there is one, else the
+ * previous one only if it was held under the same `key`.
+ */
+export function holdLatest<T>(
+  held: Held<T> | null,
+  value: T | null,
+  key: string,
+  reset = false,
+): Held<T> | null {
+  if (reset) return null;
+  if (value !== null) return { key, value };
+  return held?.key === key ? held : null;
+}
+
 /**
  * The latest non-null value, held through the gaps where a new request
  * has not answered yet — so paging or refiltering a server-backed list
  * keeps the previous rows on screen instead of flashing empty. `reset`
- * drops the held value (e.g. when there is nothing to request).
+ * drops the held value (e.g. when there is nothing to request). A changed
+ * `key` (e.g. a new time range) drops it too, so a different question
+ * never shows the previous question's answer.
  */
-export function useKeepPrevious<T>(value: T | null, reset = false): T | null {
-  const held = useRef<T | null>(null);
-  if (reset) held.current = null;
-  else if (value !== null) held.current = value;
-  return reset ? null : held.current;
+export function useKeepPrevious<T>(
+  value: T | null,
+  reset = false,
+  key = "",
+): T | null {
+  const held = useRef<Held<T> | null>(null);
+  held.current = holdLatest(held.current, value, key, reset);
+  return held.current?.value ?? null;
 }

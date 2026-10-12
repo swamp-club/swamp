@@ -38,7 +38,7 @@ import { Skeleton, SkeletonList } from "../components/Skeleton";
 import { loadState } from "../client/load_state.ts";
 import { useRunSummary } from "../client/run_summary.ts";
 import { useKeepPrevious } from "../client/useKeepPrevious.ts";
-import { useTimeBounds } from "../client/time_range.ts";
+import { useTimeBounds, useTimeRange } from "../client/time_range.ts";
 import { chartAxis, type ChartBar, chartBars } from "./overview_chart.ts";
 import {
   formatCount,
@@ -101,9 +101,15 @@ export function Overview(
   // time range, so they are exact rather than "the newest 500 runs".
   const bounds = useTimeBounds();
   const summaryReq = useRunSummary({ timeline: true, recentLimit: 0 });
-  // The time window moves every minute, re-keying the request: hold the
-  // last answer meanwhile so the stats and chart don't flash skeletons.
-  const summary = useKeepPrevious(summaryReq.summary);
+  // A preset's window moves every minute, re-keying the request: hold the
+  // last answer meanwhile so the stats and chart don't flash skeletons. A
+  // different range is a different question, so it shows a skeleton.
+  const { range } = useTimeRange();
+  const summary = useKeepPrevious(
+    summaryReq.summary,
+    false,
+    JSON.stringify(range),
+  );
   const totals = summary?.totals;
   const summaryState = loadState(
     { data: summary, loading: summaryReq.loading, error: summaryReq.error },
