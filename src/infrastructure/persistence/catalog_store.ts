@@ -183,6 +183,15 @@ function rowKey(row: {
   return `${row.namespace}\0${row.type_normalized}\0${row.model_id}\0${row.data_name}\0${row.version}`;
 }
 
+/** What identifies a catalog row: a rename row has no version. */
+export interface CatalogRowKey {
+  readonly namespace: string;
+  readonly type_normalized: string;
+  readonly model_id: string;
+  readonly data_name: string;
+  readonly version?: number;
+}
+
 export class CatalogStore {
   private db: DatabaseSync;
   private readonly dbPath: string;
@@ -1087,6 +1096,58 @@ export class CatalogStore {
       "DELETE FROM catalog_meta WHERE key = 'populated'",
     );
     stmt.run();
+  }
+
+  /**
+   * Deletes the catalog and rename rows `clears` selects and advances
+   * {@link generation}, keeping the populated mark, so a reader never sees
+   * an unpopulated catalog and backfills it from disk while the caller
+   * rebuilds it. The v3 read model recovers an interrupted writer's checkout
+   * this way (swamp-club#3299). A rename row is offered without a version.
+   * Resolves with the new generation.
+   */
+  clearRows(clears: (row: CatalogRowKey) => boolean): number {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db.prepare(
+        "SELECT namespace, type_normalized, model_id, data_name, version FROM catalog",
+      ).all() as unknown as Required<CatalogRowKey>[];
+      const deleteRow = this.db.prepare(
+        "DELETE FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?",
+      );
+      for (const row of rows) {
+        if (!clears(row)) continue;
+        deleteRow.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.version,
+        );
+      }
+      const renames = this.db.prepare(
+        "SELECT namespace, type_normalized, model_id, data_name FROM catalog_renames",
+      ).all() as unknown as CatalogRowKey[];
+      const deleteRename = this.db.prepare(
+        "DELETE FROM catalog_renames WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
+      );
+      for (const row of renames) {
+        if (!clears(row)) continue;
+        deleteRename.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+        );
+      }
+      const generation = this.generation() + 1;
+      this.writeMeta("generation", String(generation));
+      this.db.exec("COMMIT");
+      return generation;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** Counts invalidations; see {@link markPopulated}. */

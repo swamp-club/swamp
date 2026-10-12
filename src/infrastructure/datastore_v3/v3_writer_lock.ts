@@ -29,7 +29,9 @@
  * one to finish releases it: serve holds it from start-up to shutdown, a CLI
  * write command for as long as it runs. Roots never take it themselves, so a
  * long workflow run does not queue every other root in serve behind it.
- * Read-only commands never take it.
+ * Read-only commands take it only to recover a checkout whose writer ended
+ * without tearing down, without waiting, and release it before they read
+ * (swamp-club#3299).
  *
  * A holder on another host is treated as alive until its TTL expires, never
  * judged by its pid. A holder paused past its TTL is not fenced: its later
@@ -135,6 +137,27 @@ export async function acquireV3WriterLock(
     if (held.get(key) === holding) held.delete(key);
     await holding.lock.release();
   };
+}
+
+/**
+ * Takes the writer lock of the v3 datastore at `datastorePath` without
+ * waiting, for a read-only command that must recover an interrupted
+ * writer's checkout (swamp-club#3299). Resolves with the release, or
+ * undefined when another process holds the lock or this process already
+ * does (its writer path recovers instead). The hold is not shared: nothing
+ * else in the process joins it, and the caller releases it before reading.
+ */
+export async function tryAcquireV3WriterLock(
+  datastorePath: string,
+): Promise<(() => Promise<void>) | undefined> {
+  const key = resolve(datastorePath);
+  if (held.has(key)) return undefined;
+  const lock = new FileLock(key, {
+    lockKey: V3_WRITER_LOCK_KEY,
+    sameHostPidCheck: true,
+  });
+  if (!await lock.tryAcquire()) return undefined;
+  return () => lock.release();
 }
 
 /** Whether this process holds the writer lock of the datastore at `datastorePath`. */

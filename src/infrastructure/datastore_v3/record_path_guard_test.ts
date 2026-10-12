@@ -23,6 +23,7 @@ import fc from "fast-check";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { swampPath } from "../persistence/paths.ts";
 import {
+  isCheckoutLocalKey,
   MATERIALISED_SUBDIRS,
   READ_MODEL_STATE_DIR,
   readModelStateDir,
@@ -159,4 +160,29 @@ Deno.test("refusedKeyReason: no record key reaches the read model's state direct
     }),
     { numRuns: 2000 },
   );
+});
+
+Deno.test("isCheckoutLocalKey: dot paths, run logs and pulled extension sources are the checkout's own (swamp-club#3299)", () => {
+  const local = [
+    "workflow-runs/w1/.runs-index.json",
+    "config/.lock",
+    "data/t/m/.0f.tmp",
+    "config/pulled-extensions/.swamp-staging/x/journal.json",
+    "config/pulled-extensions/@x/y/mod.ts",
+    "outputs/t/run/r-1.log",
+    "workflow-runs/w1/workflow-run-1.log",
+  ];
+  for (const key of local) {
+    assertEquals(isCheckoutLocalKey(key.split("/")), true, key);
+  }
+  const committed = [
+    "data/t/m/result/1/raw",
+    "outputs/t/run/r-1.yaml",
+    "config/upstream_extensions.json",
+    "data/t/m/notes.log",
+    "auto-definitions/t/m.yaml",
+  ];
+  for (const key of committed) {
+    assertEquals(isCheckoutLocalKey(key.split("/")), false, key);
+  }
 });

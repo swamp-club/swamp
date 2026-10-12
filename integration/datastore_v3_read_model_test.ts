@@ -32,7 +32,8 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
+import { DatabaseSync } from "node:sqlite";
 import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
 import type { CatalogAction } from "../src/domain/datastore_v3/catalog_projection.ts";
 import {
@@ -172,6 +173,9 @@ class FailingCatalog implements ReadModelCatalog {
   }
   markPopulated(generation: number): void {
     this.inner.markPopulated(generation);
+  }
+  clear(admits: (key: string) => boolean): number {
+    return this.inner.clear(admits);
   }
   apply(
     namespace: string,
@@ -433,6 +437,122 @@ Deno.test("read model: a rebuilt catalog makes it replay every commit", async ()
       await second.close();
     }
     assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: recover replays a compacted history and removes only the unowned files written since the mark (swamp-club#3299)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    await env.store.compactHistory(3);
+    const readModel = env.openReadModel();
+    try {
+      await readModel.catchUp(signal());
+      const root = env.cacheRoot("");
+      const write = async (key: string, text: string) => {
+        const path = join(root, ...key.split("/"));
+        await Deno.mkdir(dirname(path), { recursive: true });
+        await Deno.writeTextFile(path, text);
+        return path;
+      };
+      // Older than the mark: left alone, as a file no recovery owns.
+      const older = await write("data/stray/older/1/raw", "older");
+      await Deno.utime(older, new Date(0), new Date(0));
+      const since = Date.now() - 1_000;
+      const committed = Object.keys(
+        (await observeReadModel(env, readModel, PARTITIONS) as {
+          files: Record<string, Record<string, string>>;
+        }).files[""],
+      ).find((key) => key.startsWith("data/"))!;
+      await write(committed, "overwritten");
+      await write("data/stray/uncommitted/1/raw", "uncommitted");
+      await write("outputs/stray/run/run.log", "log");
+      await write("data/stray/.lock", "lock");
+      await write("audit/commands.jsonl", "audit");
+      // Pulled extension sources under managed config are never committed.
+      await write("config/pulled-extensions/@x/y/mod.ts", "source");
+      await write(
+        "config/pulled-extensions/.swamp-staging/abc/journal.json",
+        "{}",
+      );
+
+      const removed = await readModel.recover("", {
+        since,
+        admits: () => true,
+        signal: signal(),
+      });
+      assertEquals(removed, ["data/stray/uncommitted/1/raw"]);
+      for (
+        const key of [
+          "outputs/stray/run/run.log",
+          "data/stray/.lock",
+          "config/pulled-extensions/@x/y/mod.ts",
+          "config/pulled-extensions/.swamp-staging/abc/journal.json",
+        ]
+      ) {
+        // Each kept file is still there.
+        await Deno.remove(join(root, ...key.split("/")));
+      }
+      await Deno.remove(join(root, "config"), { recursive: true });
+      await Deno.remove(join(root, "audit"), { recursive: true });
+      await Deno.remove(older);
+      await Deno.remove(join(root, "data", "stray"), { recursive: true });
+    } finally {
+      await readModel.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
+Deno.test("read model: recover rebuilds the catalog rows of committed data and keeps the rows of data the datastore keeps local (swamp-club#3299)", async () => {
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const readModel = env.openReadModel();
+    try {
+      await readModel.catchUp(signal());
+      const insert = (type: string, name: string) => {
+        const db = new DatabaseSync(catalogV3Path(env));
+        try {
+          db.prepare(
+            `INSERT INTO catalog (namespace, type_normalized, model_id,
+               data_name, id, version, model_name, created_at)
+             VALUES ('', ?, 'm', ?, ?, 1, 'm', ?)`,
+          ).run(type, name, crypto.randomUUID(), new Date().toISOString());
+          db.prepare(
+            `INSERT INTO catalog_renames (namespace, type_normalized,
+               model_id, data_name, renamed_to) VALUES ('', ?, 'm', ?, 'x')`,
+          ).run(type, name);
+        } finally {
+          db.close();
+        }
+      };
+      // A row an uncommitted write left, and one for data `directories`
+      // or `exclude` keep local, which no commit ever carries.
+      insert("residue/type", "uncommitted");
+      insert("local/type", "kept");
+      const before = readCatalog(catalogV3Path(env)).rows;
+
+      await readModel.recover("", {
+        since: Date.now(),
+        admits: (key) => !key.startsWith("data/local/"),
+        signal: signal(),
+      });
+      const db = new DatabaseSync(catalogV3Path(env), { readOnly: true });
+      try {
+        const names = (table: string) =>
+          (db.prepare(`SELECT data_name FROM ${table} ORDER BY data_name`)
+            .all() as { data_name: string }[]).map((r) => r.data_name);
+        assertEquals(names("catalog_renames"), ["kept"]);
+        const rows = names("catalog");
+        assert(rows.includes("kept"), "the local data's row is kept");
+        assert(!rows.includes("uncommitted"), "the residue's row is gone");
+        assertEquals(rows.length, before.length - 1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      await readModel.close();
+    }
   });
 });
 

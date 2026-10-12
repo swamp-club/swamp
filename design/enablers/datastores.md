@@ -3631,12 +3631,15 @@ from start-up to shutdown. Another process that cannot take it within
 `SWAMP_LOCK_TIMEOUT_MS` is refused with `V3WriterBusyError`, which names the
 holder and, when that is serve, says to run the command through serve. So a
 CLI write against a repository whose serve is running is refused on v3, unlike
-v2. Read-only commands never take it, and a root that stages nothing (a
-dry-run `data gc`) commits nothing and needs no lock. The writer also records
+v2. Read-only commands take it only to recover a checkout whose writer
+ended without tearing down, without waiting, and release it before they read
+(see **Interrupted runs**); a root that stages nothing (a dry-run `data gc`)
+commits nothing and needs no lock. The writer also records
 which checkout it writes (`_control/writer.checkout.json`); a reader in that
 same checkout does not catch up while the writer runs, because the writer's
 files there are newer than its last commit and replaying older commits over
-them would undo its work. `swamp datastore lock
+them would undo its work; a recorded writer on this host whose pid is gone
+writes nothing, whatever its TTL says. `swamp datastore lock
 status|release --force` act on the writer lock on v3. A holder on another
 host is treated as alive until its TTL expires, never judged by its pid,
 which means nothing on this host (`FileLock`'s `sameHostPidCheck`). A holder
@@ -3677,8 +3680,13 @@ model, catalog), catches the read model up whenever a context opens, and
   publishes too. It abandons on a throw or a stop before any outcome. This
   changes decision 5's ending of #3257, which abandoned on a reported
   `error`, so a failed run's records reach the commit log as v2 publishes
-  them. Every root settles refusals with `reconcileRefusedRuns`; only a root
-  holding a run record has anything to reconcile.
+  them. A use case that reaches an outcome its stream reports through no
+  event calls `markOutcomeReported()`, which the v3 unit counts as one: a
+  method run cancelled by its signal saves its `cancelled` record and ends
+  without an event, so its record and the outputs it wrote commit
+  (swamp-club#3299). The stream is unchanged, so v2 and the CLI's and serve's
+  output are too. Every root settles refusals with `reconcileRefusedRuns`;
+  only a root holding a run record has anything to reconcile.
 - The managed extension lockfile is committed as a typed `lockfile.write` put
   in `config--lockfile--upstream_extensions` at its transaction root's
   checkpoint (`v3_lockfile_sync.ts`), in the CLI and serve, under the global
@@ -3724,7 +3732,9 @@ is reported as no longer available. v2 records and outputs carry no `sha256`.
 - A use case that throws, and a success-only root whose operation threw,
   commit nothing, but their repositories already wrote the writer's files and
   catalog rows. That checkout keeps them until a later write replaces them;
-  no other checkout ever sees them.
+  no other checkout ever sees them. A process that then ends without tearing
+  down has them removed by the next command (**Interrupted runs**); one that
+  tears down keeps them.
 - Run logs, the run index and the stream directories are the checkout's own;
   they are never committed.
 - Serve's start-up migrations of legacy grant and token layouts move files on
@@ -3734,6 +3744,62 @@ is reported as no longer available. v2 records and outputs carry no `sha256`.
   same checkout can still replay a commit over a file the writer has just
   rewritten; the next write of that file restores it. The window is one
   catch-up long, on one host.
+
+**Interrupted runs** (swamp-club#3299)**.** A run interrupted on v3 must
+leave every checkout with the same records.
+
+- *A catchable signal.* SIGINT or SIGTERM aborts the run's signal. A workflow
+  run then yields `cancelled` and commits. A method run saves its
+  `cancelled` record and marks its outcome (`markOutcomeReported()`, above),
+  so its unit commits the record and the outputs written before the abort
+  before teardown releases the writer lock. Serve's model cancel and its
+  shutdown drain abort the same way. A method that ignores its signal is not
+  interrupted: the run finishes and commits as usual.
+- *No teardown.* A SIGKILL, a crash, or a second signal (which exits at once
+  with 130, `registerShutdownHandler`'s `forceExitOnRepeat`) ends the process
+  with units that never commit, so the checkout keeps files and catalog rows
+  no commit names. The first writing context of a process writes
+  `_read_model_v3/writer.json` (host, pid, a per-process token, and a start floored to the second
+  less two seconds), and teardown removes it after every unit has ended, so a
+  marker that outlives its process means the process ended without teardown.
+  A signal that arrives after a command disposed its shutdown handler, and
+  the hook-mode and worker exec-dispatch paths, which skip teardown, take this
+  path too.
+- *Recovery removes, it does not commit.* The run never completed, so its
+  leftovers are removed rather than committed as recovered outputs, and the
+  checkouts agree without the user doing anything: detection alone would
+  leave them disagreeing. The next command in that checkout recovers when the
+  marker names a process on this host that is gone (`isProcessGone`), or names this process's own pid under another token, as a restarted container's predecessor does (a
+  zombie reads as alive, so the killed process must have been reaped). A
+  writing command recovers under the writer lock it has just taken; a
+  read-only command takes the lock without waiting (`tryAcquireV3WriterLock`)
+  and skips recovery when a live process holds it, or when it holds it past
+  its TTL; while it recovers it holds the lock, so a writer that starts then
+  waits for the replay. Under the read model's lock, recovery deletes the
+  catalog rows of the data commits carry, keeping the rows of data the
+  datastore's `directories` or `exclude` keep local, which no replay could
+  rebuild, and keeping the catalog marked populated, so no reader backfills
+  it from disk; it then resets
+  the state, replays every commit, which puts back the committed version of
+  any file the writer overwrote, then removes each file in the materialised
+  directories that no commit owns and that changed since the marker's start.
+  Run logs, any path with a dot segment (run indexes, locks, temporary
+  files, install staging), pulled extension sources under managed config
+  (`config/pulled-extensions`), files the datastore's `directories` or
+  `exclude` keep local, and the stream directories are never touched
+  (`isCheckoutLocalKey`). The marker goes last, so a recovery cut short runs again in full.
+  While the replay runs, a process reading the catalog directly sees it empty
+  or partial; that lasts one recovery, after a crash, and is the price of
+  never backfilling it from disk. A recovery that keeps failing (a file it
+  cannot remove, say) fails each writing command with a `UserError` naming
+  the marker, which a user deletes to keep the checkout's files as they are.
+  A marker from another host, or one naming a process that is still
+  running, is left in place: a writing command keeps it rather than writing
+  its own, since its start already covers that command's writes. Serve keeps
+  its marker when its shutdown drain leaves runs past the abort grace
+  (`keepV3WriterMarkers`).
+- The Phase 4 outbox makes an interrupted commit durable instead; this is the
+  Phase 3 answer.
 
 Serve's background writes are pinned on v3 too
 (`integration/serve_v3_background_writes_test.ts`,

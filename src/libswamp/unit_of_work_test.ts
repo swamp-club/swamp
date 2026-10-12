@@ -39,7 +39,7 @@ import {
 } from "../infrastructure/persistence/unit_of_work_scope.ts";
 import { createLibSwampContext, type LibSwampContext } from "./context.ts";
 import { result } from "./stream.ts";
-import { withUnitOfWork } from "./unit_of_work.ts";
+import { markOutcomeReported, withUnitOfWork } from "./unit_of_work.ts";
 
 type Event =
   | { kind: "step"; seen: UnitOfWork | undefined }
@@ -397,4 +397,46 @@ Deno.test("withUnitOfWork: a v3 unit commits a reported error, and abandons on a
   }
   for await (const _event of withUnitOfWork(stopped.ctx, body)) break;
   assertEquals([stopped.units[0].commits, stopped.units[0].abandons], [0, 1]);
+});
+
+Deno.test("withUnitOfWork: a v3 unit commits when the use case marks an outcome it reports through no event, and a legacy unit ignores the mark (swamp-club#3299)", async () => {
+  // A model method run cancelled by its signal saves its record and ends
+  // its stream without an event.
+  async function* cancelledSilently(): AsyncGenerator<Event> {
+    yield { kind: "step", seen: undefined };
+    markOutcomeReported();
+  }
+  const v3 = countingContext({ typed: true });
+  await drain(withUnitOfWork(v3.ctx, cancelledSilently));
+  assertEquals([v3.units[0].commits, v3.units[0].abandons], [1, 0]);
+
+  const legacy = countingContext();
+  await drain(withUnitOfWork(legacy.ctx, cancelledSilently));
+  assertEquals([legacy.units[0].commits, legacy.units[0].abandons], [0, 1]);
+
+  // Without the mark, the same silent ending abandons on v3.
+  async function* endsSilently(): AsyncGenerator<Event> {
+    yield { kind: "step", seen: undefined };
+  }
+  const unmarked = countingContext({ typed: true });
+  await drain(withUnitOfWork(unmarked.ctx, endsSilently));
+  assertEquals([unmarked.units[0].commits, unmarked.units[0].abandons], [
+    0,
+    1,
+  ]);
+
+  // A throw after the mark still abandons.
+  async function* marksThenThrows(): AsyncGenerator<Event> {
+    markOutcomeReported();
+    yield { kind: "step", seen: undefined };
+    throw new Error("boom");
+  }
+  const thrown = countingContext({ typed: true });
+  await assertRejects(() => drain(withUnitOfWork(thrown.ctx, marksThenThrows)));
+  assertEquals([thrown.units[0].commits, thrown.units[0].abandons], [0, 1]);
+});
+
+Deno.test("markOutcomeReported: outside a unit it does nothing", () => {
+  // Nothing to observe: the call must simply not throw.
+  markOutcomeReported();
 });

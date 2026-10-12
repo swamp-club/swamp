@@ -41,7 +41,11 @@ import {
   garbageCollectionToColumn,
 } from "../../domain/data/data_metadata.ts";
 import { computeLatestFlags } from "../../domain/data/data_query_service.ts";
-import { type CatalogRow, CatalogStore } from "../persistence/catalog_store.ts";
+import {
+  type CatalogRow,
+  type CatalogRowKey,
+  CatalogStore,
+} from "../persistence/catalog_store.ts";
 
 /** The catalog the read model writes. {@link V3Catalog} is the real one. */
 export interface ReadModelCatalog {
@@ -58,6 +62,13 @@ export interface ReadModelCatalog {
   isPopulated(): boolean;
   /** Records that the read model owns the catalog at `generation`. */
   markPopulated(generation: number): void;
+  /**
+   * Deletes the rows of the data whose record keys `admits` admits, which
+   * commits carry and a replay rebuilds, and advances the generation,
+   * keeping the populated mark and the rows of data the datastore keeps
+   * local; resolves with the new generation (swamp-club#3299).
+   */
+  clear(admits: (key: string) => boolean): number;
   /** Applies one commit's catalog actions, in order, on a model partition. */
   apply(
     namespace: string,
@@ -95,6 +106,10 @@ export class V3Catalog implements ReadModelCatalog {
 
   markPopulated(generation: number): void {
     this.#store.markPopulated(generation);
+  }
+
+  clear(admits: (key: string) => boolean): number {
+    return this.#store.clearRows((row) => admits(catalogRowRecordKey(row)));
   }
 
   apply(
@@ -187,4 +202,15 @@ export function catalogRow(
     step_name: data.ownerDefinition.stepName ?? "",
     source: data.ownerDefinition.source ?? "",
   };
+}
+
+/**
+ * The record key a catalog row's data lives under: its version's metadata,
+ * or for a rename row (no version), the name's latest marker.
+ */
+export function catalogRowRecordKey(row: CatalogRowKey): string {
+  const name = `data/${row.type_normalized}/${row.model_id}/${row.data_name}`;
+  return row.version === undefined
+    ? `${name}/latest`
+    : `${name}/${row.version}/metadata.yaml`;
 }

@@ -48,7 +48,16 @@ import {
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
-import { UserError } from "../../domain/errors.ts";
+import { isProcessGone } from "../runtime/process.ts";
+import {
+  type ProcessGoneProbe,
+  readWriterMarker,
+  recoverInterruptedWriter,
+  removeOwnWriterMarker,
+  writerMarkerPath,
+  writeWriterMarker,
+} from "./interrupted_writer_recovery.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 
@@ -59,6 +68,29 @@ const opened = new Map<string, V3Datastore>();
 /** Handles this process caught up while holding their writer lock. */
 const caughtUpWriters = new WeakSet<V3Datastore>();
 const releases: (() => Promise<void>)[] = [];
+
+/**
+ * Checkouts this process recovers and marks as their writer, since it last
+ * closed: the first hold's recovery and marker write, which later holds
+ * wait for.
+ */
+const markedCheckouts = new Map<string, Promise<void>>();
+
+/** Teardown keeps the writer markers: work may still be uncommitted. */
+let keepMarkers = false;
+
+/** The liveness probe for recorded pids. */
+const processGone: ProcessGoneProbe = isProcessGone;
+
+/**
+ * Tells this process's next {@link closeV3Datastores} to keep the writer
+ * markers (swamp-club#3299): serve calls it when its shutdown drain leaves
+ * runs that may still be writing, so the next command recovers the checkout.
+ * The close resets it.
+ */
+export function keepV3WriterMarkers(): void {
+  keepMarkers = true;
+}
 
 function handleKey(repoDir: string, config: FilesystemDatastoreConfig): string {
   return [resolve(repoDir), resolve(config.path), config.namespace ?? ""]
@@ -104,6 +136,19 @@ export async function holdV3Writer(
     maxWaitMs: resolveLockTimeoutMs(),
   });
   const sidecar = writerCheckoutPath(config.path);
+  const checkout = handleKey(repoDir, config);
+  let marking = markedCheckouts.get(checkout);
+  const marks = marking === undefined;
+  if (marking === undefined) {
+    // A writer that ended without tearing down left files no commit names:
+    // recover them before this process writes (swamp-club#3299). Later holds
+    // in this process wait for the same recovery.
+    marking = recoverAndMark(config, repoDir);
+    // Handled here, awaited below: a recovery that fails while the sidecar
+    // write is still pending must not reject unhandled.
+    marking.catch(() => {});
+    markedCheckouts.set(checkout, marking);
+  }
   try {
     await atomicWriteTextFile(
       sidecar,
@@ -113,14 +158,80 @@ export async function holdV3Writer(
         pid: Deno.pid,
       }),
     );
+    await marking;
   } catch (error) {
+    if (marks) {
+      if (await marking.then(() => true, () => false)) {
+        // The marker landed and another hold in this process may already
+        // rely on it: it goes at teardown, not now.
+        releases.push(async () => {
+          if (!keepMarkers) {
+            await removeOwnWriterMarker(repoDir).catch(() => {});
+          }
+        });
+      } else {
+        markedCheckouts.delete(checkout);
+      }
+    }
     await release();
     throw error;
   }
   releases.push(async () => {
+    // The marker goes once every unit has ended, before the lock does. A
+    // marker that cannot be removed costs one needless recovery, never the
+    // lock.
+    if (marks && !keepMarkers) {
+      try {
+        await removeOwnWriterMarker(repoDir);
+      } catch (error) {
+        logger
+          .warn`Removing the v3 writer marker of ${repoDir} failed; the next command will run an unnecessary recovery: ${error}`;
+      }
+    }
     await removeOwnWriterCheckout(sidecar);
     await release();
   });
+}
+
+/**
+ * Recovers the checkout's interrupted writer, then marks this process. A
+ * recovery that fails names the marker, so a user can clear it when the
+ * failure persists.
+ */
+async function recoverAndMark(
+  config: FilesystemDatastoreConfig,
+  repoDir: string,
+): Promise<void> {
+  try {
+    await recoverInterruptedWriter(v3DatastoreFor(repoDir, config), repoDir, {
+      holdsWriterLock: true,
+      processGone,
+    });
+  } catch (error) {
+    const markerPath = writerMarkerPath(repoDir);
+    const recoveryError = markErrorPaths(
+      new UserError(
+        `Recovering ${repoDir} after a swamp process ended without finishing ` +
+          `its v3 datastore writes failed: ${errorMessage(error)}. Fix the ` +
+          `cause and run the command again. To give up the recovery and keep ` +
+          `the checkout's files as they are, delete ${markerPath}.`,
+      ),
+      [repoDir, markerPath],
+    );
+    recoveryError.cause = error;
+    throw recoveryError;
+  }
+  // A marker that is left stays: another host's, or a still-running
+  // process's, whose writer may yet leave uncommitted files, or this
+  // process's own from before a kept close. Its start is no later than this
+  // process's writes, so it covers them too.
+  if (await readWriterMarker(repoDir) === undefined) {
+    await writeWriterMarker(repoDir);
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -182,6 +293,9 @@ async function anotherProcessWritesCheckout(
   ) {
     return false;
   }
+  // A holder on this host whose process is gone writes nothing, whatever
+  // its TTL says (swamp-club#3299).
+  if (processGone(recorded.pid)) return false;
   return Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();
 }
 
@@ -224,6 +338,21 @@ export async function v3RepositoryFactoryConfig(
   // and a context it opens mid-command must not replay a commit over a file
   // it has rewritten since.
   const writer = holdsV3WriterLock(config.path);
+  if (!writer) {
+    // A read-only command recovers a checkout whose writer ended without
+    // tearing down, when it can take the writer lock (swamp-club#3299). A
+    // recovery that fails leaves the marker for the next command, and the
+    // read goes on.
+    try {
+      await recoverInterruptedWriter(handle, repoDir, {
+        holdsWriterLock: false,
+        processGone,
+      });
+    } catch (error) {
+      logger
+        .warn`Recovering ${repoDir} after an interrupted v3 writer failed; the next command retries: ${error}`;
+    }
+  }
   if (writer && caughtUpWriters.has(handle)) {
     // Caught up when this process's first context opened.
   } else if (!await anotherProcessWritesCheckout(repoDir, config.path)) {
@@ -246,6 +375,7 @@ export async function v3RepositoryFactoryConfig(
  */
 export async function closeV3Datastores(): Promise<void> {
   const pending = releases.splice(0);
+  markedCheckouts.clear();
   const handles = [...opened.values()];
   opened.clear();
   // A writer folds history the policy no longer retains before it lets go
@@ -261,6 +391,7 @@ export async function closeV3Datastores(): Promise<void> {
   const released = await Promise.allSettled(
     pending.map((release) => release()),
   );
+  keepMarkers = false;
   const failed = [...closed, ...released].find((result) =>
     result.status === "rejected"
   );

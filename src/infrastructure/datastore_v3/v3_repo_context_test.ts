@@ -163,7 +163,8 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
     const repoDir = join(dir, "repo");
     await Deno.mkdir(repoDir);
     // Another process on this host holds the writer lock for this checkout.
-    const otherPid = Deno.pid + 1;
+    // A live process that is not this one.
+    const otherPid = Deno.ppid;
     await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
     await Deno.writeTextFile(
       join(datastorePath, V3_WRITER_LOCK_KEY),
@@ -234,6 +235,76 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
   });
 });
 
+Deno.test("v3RepositoryFactoryConfig: a reader catches up when the recorded writer on this host is gone, whatever its TTL (swamp-club#3299)", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const repoDir = join(dir, "repo");
+    await Deno.mkdir(repoDir);
+    // A writer on this host that was killed: its lock is within its TTL.
+    const otherPid = 99_999_999;
+    await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
+    await Deno.writeTextFile(
+      join(datastorePath, V3_WRITER_LOCK_KEY),
+      JSON.stringify({
+        holder: "other",
+        hostname: Deno.hostname(),
+        pid: otherPid,
+        acquiredAt: new Date().toISOString(),
+        ttlMs: 60_000,
+        nonce: crypto.randomUUID(),
+      }),
+    );
+    await Deno.writeTextFile(
+      join(datastorePath, "_control", "writer.checkout.json"),
+      JSON.stringify({
+        repoDir: await Deno.realPath(repoDir),
+        hostname: Deno.hostname(),
+        pid: otherPid,
+      }),
+    );
+    // A commit exists that a catch-up would materialise.
+    const key = recordKeyOf(["auto-definitions", "x.yaml"]);
+    const writer = openV3Datastore({
+      repoDir: join(dir, "writer"),
+      datastorePath,
+    });
+    try {
+      const hook = () => Promise.resolve();
+      const engine = writer.engineFor(hook, () => {
+        throw new Error("no run repository needed");
+      });
+      await engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(crypto.randomUUID()).write(
+            key,
+            new TextEncoder().encode("x"),
+          ),
+        ]);
+        await unit.commit();
+      });
+    } finally {
+      await writer.close();
+    }
+    const materialised = (repo: string) =>
+      Deno.stat(swampPath(repo, "auto-definitions", "x.yaml")).then(
+        () => true,
+        () => false,
+      );
+
+    await v3RepositoryFactoryConfig(repoDir, {
+      type: "filesystem",
+      path: datastorePath,
+    });
+    assertEquals(
+      await materialised(repoDir),
+      true,
+      "the checkout of a gone writer catches up",
+    );
+  });
+});
+
 Deno.test("collectChunksQuietly: a failing sweep is logged, not thrown", async () => {
   await collectChunksQuietly({
     datastorePath: "/fake",
@@ -280,7 +351,8 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
     });
     const linkedRepo = join(dir, "repo-link");
     await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
-    const otherPid = Deno.pid + 1;
+    // A live process that is not this one.
+    const otherPid = Deno.ppid;
     await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
     await Deno.writeTextFile(
       join(datastorePath, V3_WRITER_LOCK_KEY),

@@ -37,6 +37,8 @@ import { join, resolve, SEPARATOR } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
+  isRunLogFile,
+  PULLED_EXTENSIONS_SUBDIR,
   REPO_LOCAL_STREAM_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
 import { lexicalRefusal } from "../../domain/datastore_v3/materialisation.ts";
@@ -89,6 +91,20 @@ export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
     !(REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(dir)
   ),
 );
+
+/**
+ * Whether a file under the materialised subdirectories is the checkout's own
+ * and never committed, so recovering an interrupted writer must leave it
+ * (swamp-club#3299): any path segment starting with a dot (locks, indexes,
+ * temporary files, install staging), a run log, or pulled extension sources
+ * under managed config. `segments` is the key's path from the cache root.
+ */
+export function isCheckoutLocalKey(segments: readonly string[]): boolean {
+  if (segments.some((segment) => segment.startsWith("."))) return true;
+  const name = segments.at(-1) ?? "";
+  if (isRunLogFile(segments[0], name)) return true;
+  return segments[0] === "config" && segments[1] === PULLED_EXTENSIONS_SUBDIR;
+}
 
 /**
  * Why the read model must not write or remove `key` under `root`, or
