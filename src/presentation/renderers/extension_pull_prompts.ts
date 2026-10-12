@@ -80,8 +80,7 @@ export function replacementSummary(r: ExtensionReplacement): string[] {
         `Same version: ${incoming} is already installed; its files will be rewritten.`;
       break;
     default:
-      relation =
-        "Installed version unknown: no lockfile entry or manifest records it.";
+      relation = "Installed version unknown: it could not be determined.";
   }
   if (r.channelChanged && r.current) {
     relation +=
@@ -104,7 +103,7 @@ export function unoptedPrereleaseWarning(
   const article = publishedChannel === "rc" ? "an" : "a";
   return `${name}@${version} is ${article} ${publishedChannel} release, ${why}: ` +
     `swamp extension update keeps following stable for ${name}. ` +
-    `Pull it with --channel ${publishedChannel} to follow ${publishedChannel}.`;
+    `Run swamp extension pull ${name} --channel ${publishedChannel} to follow ${publishedChannel}.`;
 }
 
 /** The overwrite prompt, saying what each answer does. */

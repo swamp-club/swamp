@@ -92,7 +92,7 @@ Deno.test("replacementSummary: an unknown installed version says so", () => {
     replacementSummary(replace(null, side("2026.10.01.1", "beta", "beta"))),
     [
       `${NAME}: installed unknown -> incoming 2026.10.01.1 (beta)`,
-      "Installed version unknown: no lockfile entry or manifest records it.",
+      "Installed version unknown: it could not be determined.",
     ],
   );
 });
@@ -116,7 +116,7 @@ Deno.test("unoptedPrereleaseWarning: a top-level pull without --channel", () => 
     }),
     `${NAME}@2026.10.01.1 is a beta release, and --channel was not passed: ` +
       `swamp extension update keeps following stable for ${NAME}. ` +
-      "Pull it with --channel beta to follow beta.",
+      `Run swamp extension pull ${NAME} --channel beta to follow beta.`,
   );
 });
 
@@ -130,7 +130,7 @@ Deno.test("unoptedPrereleaseWarning: a dependency names the parent that pins it"
     }),
     "@a/dep@2026.10.01.1 is an rc release, installed because @a/parent pins it: " +
       "swamp extension update keeps following stable for @a/dep. " +
-      "Pull it with --channel rc to follow rc.",
+      "Run swamp extension pull @a/dep --channel rc to follow rc.",
   );
 });
 

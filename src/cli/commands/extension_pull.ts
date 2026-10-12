@@ -171,8 +171,21 @@ export async function pullExtension(
     installExtensionFn: ctx.installExtensionFn,
   };
   const renderer = createExtensionPullRenderer(outputMode);
-  deps.onReplacing = (r) => renderer.renderReplacement(r);
-  deps.onUnoptedPrerelease = (n) => renderer.renderUnoptedPrerelease(n);
+  // The forced retry after a conflict reaches the same extensions again;
+  // each summary and warning is stated once.
+  const replacementsShown = new Set<string>();
+  const noticesShown = new Set<string>();
+  deps.onReplacing = (r) => {
+    if (replacementsShown.has(r.name)) return;
+    replacementsShown.add(r.name);
+    renderer.renderReplacement(r);
+  };
+  deps.onUnoptedPrerelease = (n) => {
+    const key = `${n.name}@${n.version}`;
+    if (noticesShown.has(key)) return;
+    noticesShown.add(key);
+    renderer.renderUnoptedPrerelease(n);
+  };
 
   try {
     await consumeStream(
@@ -185,6 +198,7 @@ export async function pullExtension(
     );
   } catch (error) {
     if (error instanceof ConflictError) {
+      if (error.replacement) replacementsShown.add(error.replacement.name);
       renderer.renderConflicts(
         error.conflicts,
         error.skillDirs,
@@ -209,11 +223,6 @@ export async function pullExtension(
       }
       // Retry with force, reset alreadyPulled so the extension can be retried
       deps.alreadyPulled.delete(ref.name);
-      // The conflict already stated this replacement; state the others.
-      const shown = error.replacement?.name;
-      deps.onReplacing = (r) => {
-        if (r.name !== shown) renderer.renderReplacement(r);
-      };
       await consumeStream(
         extensionPull(libCtx, deps, {
           ref,

@@ -268,7 +268,11 @@ async function pullWithConflict(answer: boolean): Promise<{
     console.log = original.log;
     console.info = original.info;
     console.warn = original.warn;
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
   return { out: lines.join("\n"), installs, asked };
 }
@@ -295,4 +299,73 @@ Deno.test("pullExtension: answering N cancels without installing", async () => {
   assertEquals(installs, [false]);
   assertStringIncludes(out, HEADLINE);
   assertStringIncludes(out, "Pull cancelled.");
+});
+
+Deno.test("pullExtension: a dependency's conflict states each replacement once across the retry", async () => {
+  const depReplacement = ExtensionReplacement.create({
+    name: "@test/dep",
+    current: null,
+    incoming: {
+      version: "2026.10.01.1",
+      channel: "stable",
+      publishedChannel: "stable",
+    },
+  });
+  const dir = await Deno.makeTempDir({ prefix: "swamp_pull_prompt_" });
+  const lines: string[] = [];
+  const original = { log: console.log, info: console.info, warn: console.warn };
+  const capture = (...args: unknown[]) =>
+    lines.push(args.map(String).join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    await pullExtension({ name: "@test/ext", version: null }, {
+      getExtension: () => Promise.resolve(null),
+      downloadArchive: () => Promise.reject(new Error("unused")),
+      getChecksum: () => Promise.resolve(null),
+      logger: getSwampLogger(["extension", "pull"]),
+      lockfileRepository: await LockfileRepository.create(
+        join(dir, "upstream_extensions.json"),
+      ),
+      skillsDirs: [],
+      repoDir: dir,
+      force: false,
+      outputMode: "log",
+      alreadyPulled: new Set(),
+      depth: 0,
+      confirm: () => Promise.resolve(true),
+      // The parent goes ahead, then its dependency conflicts; the retry
+      // reaches both again.
+      installExtensionFn: (_ref, c: InstallContext) => {
+        c.onReplacing?.(REPLACEMENT);
+        c.onUnoptedPrerelease?.({
+          name: "@test/ext",
+          version: "2026.10.01.1",
+          publishedChannel: "beta",
+          parent: null,
+        });
+        if (!c.force) {
+          return Promise.reject(
+            new ConflictError(["d.ts"], [], depReplacement),
+          );
+        }
+        c.onReplacing?.(depReplacement);
+        return Promise.resolve(stubResult());
+      },
+    });
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+  const out = lines.join("\n");
+  assertEquals(out.split(HEADLINE).length - 1, 1);
+  assertEquals(out.split("@test/dep: installed unknown").length - 1, 1);
+  assertEquals(out.split("is a beta release").length - 1, 1);
 });
