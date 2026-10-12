@@ -1338,6 +1338,18 @@ export interface WorkflowSignalPendingResponseData {
   key?: string;
   workflowId?: string;
   workflowName?: string;
+  /**
+   * The wait that last held the key, when its claim is still the key's
+   * highest record: how a sender that retries after a lost reply tells its
+   * first signal landed. The receipt is present only for a caller who may
+   * read the workflow.
+   */
+  lastWait?: {
+    waitId: string;
+    settledAs: "accepted" | "timed_out" | "cancelled";
+    settledAt: string;
+    receipt?: { id: string; receivedAt: string; submittedBy: string };
+  };
 }
 
 /** `data` for a delivered signal; `pending` for one that is held. */

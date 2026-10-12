@@ -955,12 +955,17 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   seconds of the signal takes it, succeeds at once with the usual outputs, and
   the run does not suspend there; a signal older than that is ignored and the
   wait opens as usual. A key holds one pending signal: a second while the first
-  is held is refused `already_pending`. The payload is checked on arrival
-  against the schema as written, so the schema of such a step may hold no
-  expression, `inputs.*` included (`workflow validate` refuses one). A pending
-  signal is stored in plaintext like any payload, and `workflow waits` does not
-  list it. Upgrade every host that runs, resumes or lists the workflow before
-  adding `acceptEarly`: an older swamp never takes a held signal.
+  is held is refused `already_pending`. A retry by key after the step took the
+  first signal is held as a second one, for the next run: its result carries
+  `lastWait` (how and when the key's last wait was settled), so read that before
+  sending again. The payload is checked on arrival against the schema as
+  written, so the schema of such a step may hold no expression, `inputs.*`
+  included (`workflow validate` refuses one). A pending signal is stored in
+  plaintext like any payload, and `workflow waits` does not list it. Upgrade
+  every host that runs, resumes or lists the workflow before adding
+  `acceptEarly`, and every client that signals it with `--server`: an older
+  swamp never takes a held signal, and an older client fails on the pending
+  reply.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

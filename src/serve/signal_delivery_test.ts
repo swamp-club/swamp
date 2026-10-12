@@ -42,7 +42,11 @@ import {
   encodeWaitRecord,
   registrationOf,
 } from "../domain/workflows/signal_wait_records.ts";
-import { InMemorySignalWaitStore } from "../domain/workflows/signal_wait_store_test_helpers.ts";
+import {
+  acceptedOutcomeFor,
+  InMemorySignalWaitStore,
+} from "../domain/workflows/signal_wait_store_test_helpers.ts";
+import { claimWaitKey } from "../domain/workflows/wait_key_claim.ts";
 
 const SCHEMA = {
   type: "object" as const,
@@ -722,6 +726,47 @@ Deno.test("deliverSignalForCaller: by key, a caller with signal alone is told th
   );
   assert(result.status === "pending", `got ${result.status}`);
   assertEquals(Object.keys(result.data).sort(), ["heldUntil", "signal"]);
+});
+
+Deno.test("deliverSignalForCaller: by key, a retry held after the key's last wait was signalled names that wait, and only a reader is shown its receipt", async () => {
+  for (const actions of [["signal", "read"], ["signal"]] as Action[][]) {
+    const f = await fixture();
+    const workflow = withEarlyWorkflow(f);
+    // The step of an earlier run took a signal and its run went on.
+    const at = new Date(Date.now() - 1000);
+    const wait = SignalWait.open(SCHEMA, 3600, at, undefined, EARLY_KEY);
+    const runId = crypto.randomUUID();
+    const claimed = await claimWaitKey(f.waits, {
+      workflowId: workflow.id,
+      key: EARLY_KEY,
+      waitId: wait.id,
+      runId,
+      jobName: "main",
+      stepName: "identify",
+      deadline: wait.deadline.toISOString(),
+      acceptEarly: 600,
+    }, at);
+    assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+    const settled = {
+      ...acceptedOutcomeFor(wait, { verdict: "ship" }, { at, runId }),
+      workflowId: workflow.id,
+    };
+    await f.waits.settle(settled);
+
+    const result = await deliverByKey(
+      f.ctxWith([grantOf(actions)]),
+      workflow.name,
+      EARLY_KEY,
+    );
+    assert(result.status === "pending", `got ${result.status}`);
+    const readable = actions.includes("read");
+    assertEquals(result.data.lastWait, {
+      waitId: wait.id,
+      settledAs: "accepted",
+      settledAt: settled.settledAt,
+      ...(readable ? { receipt: settled.receipt } : {}),
+    });
+  }
 });
 
 Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workflow has no early signal stored", async () => {

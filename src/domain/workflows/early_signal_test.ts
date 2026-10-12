@@ -375,6 +375,49 @@ Deno.test("holdEarlySignal: a step that took the signal on opening is reported a
   assertEquals(outcome.record.receipt.id, arrival.record.receiptId);
 });
 
+Deno.test("holdEarlySignal: a signal a step took is not given to the wait a later run opened under the key", async () => {
+  const store = new InMemorySignalWaitStore();
+  let taker: WaitKeyClaim | undefined;
+  let later: WaitKeyClaim | undefined;
+  const arrival = await holdEarlySignal(
+    afterFirstCreate(store, async () => {
+      const step = await claim(store, NOW);
+      taker = step.claim;
+      const registration = await store.findRegistration(step.claim.waitId);
+      assert(registration.kind === "found");
+      await takePendingSignal(store, earlyWaitRef(registration.record)!);
+      // The key is free again, and a second run opens its wait.
+      later = (await claim(store, NOW)).claim;
+    }),
+    signal(),
+    NOW,
+  );
+  assert(arrival.kind === "taken", `got ${arrival.kind}`);
+  assertEquals(arrival.claim, taker);
+  assertEquals((await store.findOutcome(later!.waitId)).kind, "absent");
+});
+
+Deno.test("holdEarlySignal: a signal a step took is not stored again when the key was claimed and settled since", async () => {
+  const store = new InMemorySignalWaitStore();
+  let taker: WaitKeyClaim | undefined;
+  const arrival = await holdEarlySignal(
+    afterFirstCreate(store, async () => {
+      const step = await claim(store, NOW);
+      taker = step.claim;
+      const registration = await store.findRegistration(step.claim.waitId);
+      assert(registration.kind === "found");
+      await takePendingSignal(store, earlyWaitRef(registration.record)!);
+      const second = await claim(store, NOW);
+      await store.settle(cancelledOutcome(waitRefOfClaim(second.claim), NOW));
+    }),
+    signal(),
+    NOW,
+  );
+  assert(arrival.kind === "taken", `got ${arrival.kind}`);
+  assertEquals(arrival.claim, taker);
+  assertEquals(store.pendingRecords.size, 1);
+});
+
 Deno.test("holdEarlySignal: a wait opened under a later claim is reported, though the signal sits in a slot it does not read", async () => {
   const store = new InMemorySignalWaitStore();
   let second: WaitKeyClaim | undefined;

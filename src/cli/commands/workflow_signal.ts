@@ -181,6 +181,16 @@ export function renderPendingSignalResult(
   writeOutput(
     "No wait holds the key yet. A step that opens its wait by then takes the signal and does not wait; after that the signal is ignored.",
   );
+  // A retry after a lost reply is held as a second signal. The wait that
+  // last held the key says whether the first one landed.
+  const last = data.lastWait;
+  if (last?.settledAs === "accepted") {
+    writeOutput(
+      `The last wait under the key was settled by ${
+        last.receipt ? `signal ${last.receipt.id}` : "a signal"
+      } at ${last.settledAt}. If this is a retry of a signal sent at about that time, the first one landed and this one is held for the next run.`,
+    );
+  }
 }
 
 /**

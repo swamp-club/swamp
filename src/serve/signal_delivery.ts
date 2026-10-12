@@ -634,6 +634,18 @@ export async function deliverSignalForCaller(
             workflowName: held.workflowName,
           }
           : {}),
+        ...(held.lastWait
+          ? {
+            lastWait: {
+              waitId: held.lastWait.waitId,
+              settledAs: held.lastWait.settledAs,
+              settledAt: held.lastWait.settledAt,
+              ...(readable && held.lastWait.receipt
+                ? { receipt: { ...held.lastWait.receipt } }
+                : {}),
+            },
+          }
+          : {}),
       },
     };
   }

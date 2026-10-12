@@ -35,11 +35,10 @@ import {
   type PendingSignal,
   type PendingSignalRecords,
 } from "./pending_signal.ts";
-import { SignalWait } from "./signal_wait.ts";
+import { earlySlots, SignalWait } from "./signal_wait.ts";
 import type { PayloadValidation } from "./signal_wait.ts";
 import {
   findKeyHolder,
-  findSettledKeyHolder,
   type HighestKeyRecord,
   WAIT_KEY_CLAIM_ATTEMPTS,
   type WaitKeyClaim,
@@ -204,6 +203,33 @@ export type EarlyArrival =
   | { readonly kind: "contended" };
 
 /**
+ * The claim whose wait took `stored`, if one did: a claim that reads the
+ * signal's slot (its own generation, or the one below for a claim created
+ * over a release) and whose outcome is this signal's receipt. It is looked
+ * for among every claim of the key, not only the highest, because the key
+ * may have been claimed again since.
+ */
+async function findTakerOf(
+  store: Pick<WaitKeyRecords, "listKeyRecords" | "findOutcome">,
+  stored: PendingSignal,
+): Promise<WaitKeyClaim | undefined> {
+  for (const record of await store.listKeyRecords()) {
+    if (
+      record.kind !== "claim" || record.workflowId !== stored.workflowId ||
+      record.key !== stored.key || record.early === undefined ||
+      !earlySlots(record.early).includes(stored.slot)
+    ) continue;
+    const outcome = await store.findOutcome(record.waitId);
+    if (
+      outcome.kind === "found" && outcome.record.runId === record.runId &&
+      outcome.record.kind === "accepted" &&
+      outcome.record.receipt.id === stored.receiptId
+    ) return record;
+  }
+  return undefined;
+}
+
+/**
  * Stores `signal` as the pending signal of its key, then reads the key
  * again. Called when no open wait holds the key. The receipt ID and the
  * received time are fixed before the first attempt, so a signal that has to
@@ -211,7 +237,10 @@ export type EarlyArrival =
  */
 export async function holdEarlySignal(
   store:
-    & Pick<WaitKeyRecords, "highestKeyRecord" | "findOutcome">
+    & Pick<
+      WaitKeyRecords,
+      "highestKeyRecord" | "findOutcome" | "listKeyRecords"
+    >
     & Pick<
       PendingSignalRecords,
       "highestPendingRecord" | "createPendingRecord"
@@ -285,15 +314,16 @@ export async function holdEarlySignal(
         again.record.kind === "release")
     ) return { kind: "pending", record: stored };
 
+    // The key has reached the slot. A claim that reads the slot may have
+    // taken this signal already, with the key held or settled again since:
+    // a signal a wait took is never delivered or stored a second time.
+    const taker = await findTakerOf(store, stored);
+    if (taker) return { kind: "taken", claim: taker, record: stored };
+
     const holding = await findKeyHolder(store, workflowId, key);
     if (holding.kind === "held") {
       return { kind: "held", claim: holding.claim, record: stored };
     }
-    const settled = await findSettledKeyHolder(store, workflowId, key);
-    if (
-      settled && settled.outcome.kind === "accepted" &&
-      settled.outcome.receipt.id === receiptId
-    ) return { kind: "taken", claim: settled.claim, record: stored };
     // The slot was claimed and its wait settled some other way, with the
     // key free again: the signal is early for the next claim, and arrives
     // again at that slot.

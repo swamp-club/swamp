@@ -503,7 +503,15 @@ export async function sweepPendingSignals(
       (generation === slot && highest.kind === "found" &&
         highest.record.kind === "release");
     if (!live) {
-      if (read.has(id)) continue;
+      // A claim made since the listing above is not in `read`. Generations
+      // only grow, so such a claim that reads this slot is the key's highest
+      // record now, and its step may be about to take the signal.
+      const claimed = highest.kind === "found" &&
+        highest.record.kind === "claim" &&
+        (generation === slot ||
+          (generation === slot + 1 &&
+            highest.record.early?.overRelease === true));
+      if (read.has(id) || claimed) continue;
       for (const at of addresses) {
         await store.removePendingRecord(at);
         removed++;

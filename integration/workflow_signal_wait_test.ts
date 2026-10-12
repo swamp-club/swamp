@@ -3213,10 +3213,14 @@ Deno.test("early signal: a signal sent before the run reaches its wait is the st
       ).sort(),
     );
 
-    // A retry of the early signal finds no open wait, and is told its
-    // signal landed.
+    // A retry of the early signal finds no open wait and is held as a
+    // second signal, for the next run. Its answer names the wait the first
+    // one settled, which is how the sender tells the first one landed.
     const retry = await signalByKeyAt(h, workflow, { verdict: "ship" });
-    assertEquals(retry.kind, "pending");
+    assert(retry.kind === "pending", `got ${retry.kind}`);
+    assertEquals(retry.data.lastWait?.waitId, waitIdOf(run));
+    assertEquals(retry.data.lastWait?.settledAs, "accepted");
+    assertEquals(retry.data.lastWait?.receipt?.id, sent.data.signal.id);
   });
 });
 

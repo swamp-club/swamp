@@ -129,6 +129,13 @@ export interface WorkflowSignalPendingData {
   signal: PendingSignalReceipt;
   /** When the signal stops being taken by a wait that opens, as an ISO timestamp. */
   heldUntil: string;
+  /**
+   * The wait that last held the key, as on a `no_open_wait` refusal. A step
+   * with `acceptEarly` never refuses a retry by key, so this is how a sender
+   * who retries after a lost reply learns its first signal landed: the retry
+   * is then a second signal, held for the next run.
+   */
+  lastWait?: SignalLastWait;
 }
 
 export type WorkflowSignalEvent =
@@ -1083,8 +1090,17 @@ async function arriveEarly(
     },
   });
   switch (arrival.kind) {
-    case "pending":
-      return pendingAnswer(arrival.record);
+    case "pending": {
+      const answer = pendingAnswer(arrival.record);
+      const last = await lastWaitUnder(
+        deps,
+        store,
+        input,
+        workflow.id,
+        input.key,
+      );
+      return last ? { pending: { ...answer.pending, lastWait: last } } : answer;
+    }
     case "already_pending":
       // Who sent it stays in the details: the message reaches telemetry.
       return {

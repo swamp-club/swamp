@@ -423,6 +423,43 @@ Deno.test("renderPendingSignalResult: log mode says the signal is held, not deli
   );
 });
 
+Deno.test("renderPendingSignalResult: a held signal says when the key's last wait was settled by a signal, so a retry is recognised", () => {
+  const lastWait = {
+    waitId: "b0f6f0c2-5d0e-4a51-9d0b-1f6f8f0f3a11",
+    settledAs: "accepted" as const,
+    settledAt: "2025-12-31T23:59:58.000Z",
+    receipt: {
+      id: "7a1f6f0c-2d5e-4a51-9d0b-1f6f8f0f3a22",
+      receivedAt: "2025-12-31T23:59:50.000Z",
+      submittedBy: "tester",
+    },
+  };
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), { ...HELD, lastWait })
+  );
+  assertEquals(lines.length, 2);
+  assertStringIncludes(lines[1], lastWait.receipt.id);
+  assertStringIncludes(lines[1], lastWait.settledAt);
+  assertStringIncludes(lines[1], "held for the next run");
+  // A caller who may only signal is told when, not by which signal.
+  const { receipt: _receipt, ...withoutReceipt } = lastWait;
+  const generic = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), {
+      ...HELD,
+      lastWait: withoutReceipt,
+    })
+  );
+  assertStringIncludes(generic[1], "settled by a signal at");
+  // A wait that timed out says nothing of an earlier signal landing.
+  const expired = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), {
+      ...HELD,
+      lastWait: { ...withoutReceipt, settledAs: "timed_out" },
+    })
+  );
+  assertEquals(expired.length, 1);
+});
+
 Deno.test("renderPendingSignalResult: json mode prints the receipt and until when the signal is held", () => {
   const lines = captureStdout(() =>
     renderPendingSignalResult(hintTestContext({ outputMode: "json" }), HELD)

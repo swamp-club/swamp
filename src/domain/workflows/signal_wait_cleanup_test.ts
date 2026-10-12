@@ -1054,6 +1054,29 @@ Deno.test("sweepPendingSignals: the records of a slot whose claim still exists a
   assertEquals((await store.listPendingAddresses()).length, 1);
 });
 
+Deno.test("sweepPendingSignals: a signal whose slot is claimed after the sweep listed the claims is left for that step to take", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  await store.createPendingRecord(pendingFor(workflow));
+  // The step claims the key between the sweep's listing and its read of
+  // the slot's key.
+  const racing = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property !== "listKeyRecords") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async () => {
+        const listed = await target.listKeyRecords();
+        await suspendedAtEarlyWait(target, workflow, OPENED);
+        return listed;
+      };
+    },
+  });
+  assertEquals(await sweepPendingSignals(racing, IN_TIME), 0);
+  assertEquals((await store.listPendingAddresses()).length, 1);
+});
+
 Deno.test("sweepPendingSignals: a slot the key has passed, with no claim left to read it, is removed whole", async () => {
   const store = new InMemorySignalWaitStore();
   const workflow = earlyWorkflow();

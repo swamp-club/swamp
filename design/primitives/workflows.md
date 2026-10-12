@@ -1057,7 +1057,7 @@ Each refusal has its own message:
 | Refusal           | When                                                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | not found         | No registration, outcome or run record holds a wait with that ID. By key: the workflow does not exist, or no step of it declares the key. |
-| no open wait      | By key only: the workflow declares the key on a step without `acceptEarly` and no open wait holds it. Nothing is stored. With `acceptEarly` the signal is held instead (see "Early signals"). While the claim of the wait that last held the key is still the key's highest record, the error's details carry `lastWait` (the wait ID, how and when it was settled, and the receipt of a signal that settled it) and the message says how and when, which is how a sender that retries after a lost reply tells its signal landed from being early for the next run (`findSettledKeyHolder`, swamp-club#3211). The command's `--json` error carries `refusal` and `lastWait`. |
+| no open wait      | By key only: the workflow declares the key on a step without `acceptEarly` and no open wait holds it. Nothing is stored. With `acceptEarly` the signal is held instead (see "Early signals"). While the claim of the wait that last held the key is still the key's highest record, the error's details carry `lastWait` (the wait ID, how and when it was settled, and the receipt of a signal that settled it) and the message says how and when, which is how a sender that retries after a lost reply tells its signal landed from being early for the next run (`findSettledKeyHolder`, swamp-club#3211). The command's `--json` error carries `refusal` and `lastWait`. A pending answer on a step with `acceptEarly` carries the same `lastWait`. |
 | expired           | The deadline has passed. The wait is settled as `timed_out` on the spot; the message names the resume that fails the step. |
 | payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                |
 | already settled   | A signal already settled the wait. The stored receipt is shown.                                                      |
@@ -1149,16 +1149,19 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      nothing is taken and the answer is pending: the step registers before it
      reads the slot, and so has not read it yet;
    - a claim holds the key and reads another slot, which takes a claim made
-     and settled and a second claim made, all between the read in 2 and the
-     create in 3: the signal is delivered to that open wait as a signal by key
-     is today. The record it created stays in a slot nothing reads and goes
+     and settled some other way than by this signal, and a second claim
+     made: the signal is delivered to that open wait as a signal by key is
+     today. The record it created stays in a slot nothing reads and goes
      with that slot;
-   - the key is free and its highest generation has reached the slot, with
-     the claim of that generation settled by this very signal: a step took
-     it on opening its wait and its run went on. The answer is the one a
-     delivered signal gets, built from the claim, since the run may have
-     ended and its registration with it. The result says `taken`, and the
-     command suggests no resume;
+   - the key's highest generation has reached the slot, and a claim that
+     reads the slot was settled by this very signal: a step took it on
+     opening its wait and its run went on. This is looked for first, among
+     every claim of the key and not only the highest (`findTakerOf`),
+     because the key may have been claimed again since: a signal a wait took
+     is never delivered to another wait or stored a second time. The answer
+     is the one a delivered signal gets, built from the claim, since the run
+     may have ended and its registration with it. The result says `taken`,
+     and the command suggests no resume;
    - the key is free and its highest generation has reached the slot some
      other way: the arrival runs again from 2 at the new slot, with the same
      receipt ID and received time, at most eight times
@@ -1208,8 +1211,12 @@ same run read them as after a resume. It emits `step_completed` and no
 `signal_wait_requested`. The run does not suspend on it. If the slot cannot be
 read when the step opens its wait, the step waits and logs a warning: the wait
 is open and registered, and its next reader takes the signal.
-Its registration stays until the run ends, so a retry of the signal is
-answered already settled.
+Its registration stays until the run ends, so a retry of the signal by wait
+ID is answered already settled. A retry by key is not: the key is free once
+its wait is settled, so the retry is a second signal and is held for the
+next run. Its pending answer carries `lastWait`, as a `no_open_wait` refusal
+does, which is how the sender tells that the first one landed (see
+"Limits").
 
 _Every reader finishes the job._ Whoever settles a wait takes an applicable
 pending signal first, whether the deadline has passed or not: `outcomeAt`,
@@ -1276,7 +1283,10 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
 - A slot the key has passed, with no claim left that reads it, is removed
   whole. A build from before pending signals leaves such slots when it
   collects a run. A slot whose claim still exists is left for that claim's
-  removal.
+  removal. The claims are listed once, before the slots are looked at, so a
+  claim made after the listing is checked for at each slot: when the key's
+  highest record is a claim that reads the slot, the slot is left, because
+  its step may be about to take the signal.
 
 This part of the sweep reads key records and never a run record, so unlike
 the rest it runs on every datastore. Nothing is audited: the sweep runs from
@@ -1712,6 +1722,15 @@ every iteration would claim it.
   held.
 - `workflow waits` lists open waits, not pending signals. A held signal shows
   only in the answer its sender got, until a step takes it.
+- A retry by key after a lost reply is held as a second signal, and the next
+  run that opens its wait within `acceptEarly` takes it. Nothing refuses it:
+  the key is free, and a signal for the next run looks the same. The pending
+  answer's `lastWait` says how and when the key's last wait was settled, and
+  a sender that needs a signal to land once reads it before sending again.
+- A `swamp workflow signal --server` client from before pending signals does
+  not understand a pending reply and fails after the signal was stored.
+  Upgrade the clients that signal a workflow before one of its waits sets
+  `acceptEarly`, as well as the hosts.
 - A signal that found another wait open on its second read (the third case of
   "Arrival") leaves its pending record, payload included, in a slot nothing
   reads until that slot's claim is removed with its run.

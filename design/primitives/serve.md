@@ -730,6 +730,10 @@ What differs by key, in order:
   instead: each resolved the key while the wait was open. Both are 409, and
   neither makes a retry idempotent; a sender that needs that sends one signal
   and reads `lastWait` before sending again.
+  On a step with `acceptEarly` a retry by key is not refused: it is held as a
+  second signal for the next run (202). The pending reply carries the same
+  `lastWait`, with the earlier `receipt` only for a caller who may read the
+  workflow, so the sender can still tell that the first signal landed.
 - The key is resolved from claim records only (`findKeyHolder`). Run records
   are not scanned, as they are not for a wait ID.
 - The reply is the by-ID reply: the wait ID and the receipt, and for a caller
