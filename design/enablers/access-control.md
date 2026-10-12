@@ -471,6 +471,12 @@ type that names a resource, and
 | `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else |
 | `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored; see below), and any operation on a control-plane record |
 
+**Renaming through an edit**: `model.edit` and `workflow.edit` refuse content
+whose `name` differs from the stored one unless the request sets
+`allowRename`, and refuse a name another model or workflow holds even then
+(swamp-club#3302). `allowRename` states the client's intent and grants
+nothing: the edited name is still authorized as below.
+
 **Restricted model types**: a model whose stored type is listed in
 `--restricted-model-types` needs `admin` on `access:*` to be created, run,
 edited (including a rename or retag) or deleted, by id or by name, for its

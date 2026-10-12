@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -427,6 +427,7 @@ Deno.test("workflowEdit: stdin rename asks authorizeUpdate with the edited name 
     workflowEdit(createLibSwampContext(), deps, {
       workflowIdOrName: testWorkflow.id,
       stdinContent: "name: renamed-workflow\n",
+      allowRename: true,
       authorizeUpdate: (before, after) => {
         asked.push({ before, after });
         return true;
@@ -633,4 +634,102 @@ Deno.test("createWorkflowEditDeps: resolveSymlink looks in the managed config wo
     assertPathEquals(await deps.resolveSymlink("legacy-wf") ?? "", expected);
     assertEquals(await deps.resolveSymlink("repo-only-wf"), null);
   });
+});
+
+function renamedCandidate(): Workflow {
+  return {
+    ...testWorkflow,
+    name: "renamed-workflow",
+    tags: { team: "ops" },
+  } as unknown as Workflow;
+}
+
+function lastError(events: WorkflowEditEvent[]) {
+  const last = events[events.length - 1] as Extract<
+    WorkflowEditEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  return last.error;
+}
+
+Deno.test("workflowEdit: stdin update with a different name is refused without allowRename", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  let asked = 0;
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+      stdinContent: "name: renamed-workflow\n",
+      authorizeUpdate: () => {
+        asked++;
+        return true;
+      },
+    }),
+  );
+
+  const error = lastError(events);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "'deploy-workflow'");
+  assertStringIncludes(error.message, "'renamed-workflow'");
+  assertStringIncludes(error.message, "--allow-rename");
+  assertEquals(saved, []);
+  assertEquals(asked, 0);
+});
+
+Deno.test("workflowEdit: a workflow addressed by id is not renamed by the piped name either", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: testWorkflow.id,
+      stdinContent: "name: renamed-workflow\n",
+    }),
+  );
+
+  assertEquals(lastError(events).code, "validation_failed");
+  assertEquals(saved, []);
+});
+
+Deno.test("workflowEdit: allowRename renames when the new name is free", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  const findStored = deps.findByName;
+  deps.findByName = (name) =>
+    name === "renamed-workflow" ? Promise.resolve(null) : findStored(name);
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+      stdinContent: "name: renamed-workflow\n",
+      allowRename: true,
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(saved.length, 1);
+});
+
+Deno.test("workflowEdit: allowRename refuses a name another workflow holds", async () => {
+  const { deps, saved } = makeAuthorizeDeps(renamedCandidate());
+  const findStored = deps.findByName;
+  const other = {
+    ...testWorkflow,
+    id: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    name: "renamed-workflow",
+  } as unknown as Workflow;
+  deps.findByName = (name) =>
+    name === "renamed-workflow" ? Promise.resolve(other) : findStored(name);
+
+  const events = await collect<WorkflowEditEvent>(
+    workflowEdit(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-workflow",
+      stdinContent: "name: renamed-workflow\n",
+      allowRename: true,
+    }),
+  );
+
+  const error = lastError(events);
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "already has that name");
+  assertEquals(saved, []);
 });

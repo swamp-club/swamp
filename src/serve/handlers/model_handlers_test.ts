@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertGreater } from "@std/assert";
+import { assertEquals, assertGreater, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { join } from "@std/path";
@@ -535,6 +535,7 @@ Deno.test("handleModelEdit: a rename into a denied name sends one error and writ
       {
         modelIdOrName: "dev-x",
         content: editYaml(definition, { name: "prod-x" }),
+        allowRename: true,
       },
       new AbortController(),
       EDITOR,
@@ -565,6 +566,7 @@ Deno.test("handleModelEdit: an allowed rename saves the edited model", async () 
       {
         modelIdOrName: definition.id,
         content: editYaml(definition, { name: "dev-z" }),
+        allowRename: true,
       },
       new AbortController(),
       EDITOR,
@@ -658,3 +660,70 @@ for (
     });
   });
 }
+
+Deno.test("handleModelEdit: a rename without allowRename is refused and writes nothing", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const definition = await saveEditModel(repo, "keep-me");
+    const ctx = createPolicyEditCtx(dir, repo, [grant({})]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-rename-unasked",
+      {
+        modelIdOrName: "keep-me",
+        content: editYaml(definition, { name: "keep-me-template" }),
+      },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertStringIncludes(sent[0].error.message, "--allow-rename");
+    assertEquals(
+      (await repo.findByNameGlobal("keep-me"))?.definition.id,
+      definition.id,
+    );
+    assertEquals(await repo.findByNameGlobal("keep-me-template"), null);
+  });
+});
+
+Deno.test("handleModelEdit: an allowed rename onto another model's name leaves both intact", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir, undefined, undefined, false);
+    const mover = await saveEditModel(repo, "mover");
+    const holder = await saveEditModel(repo, "holder");
+    const ctx = createPolicyEditCtx(dir, repo, [grant({})]);
+    const socket = createMockSocket();
+
+    await handleModelEdit(
+      socket,
+      ctx,
+      "req-rename-taken",
+      {
+        modelIdOrName: "mover",
+        content: editYaml(mover, { name: "holder" }),
+        allowRename: true,
+      },
+      new AbortController(),
+      EDITOR,
+    );
+
+    const sent = frames(socket);
+    assertEquals(sent.length, 1);
+    assertEquals(sent[0].type, "error");
+    assertStringIncludes(sent[0].error.message, "already has that name");
+    assertEquals(
+      (await repo.findByNameGlobal("mover"))?.definition.id,
+      mover.id,
+    );
+    assertEquals(
+      (await repo.findByNameGlobal("holder"))?.definition.id,
+      holder.id,
+    );
+  });
+});

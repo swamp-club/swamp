@@ -67,9 +67,17 @@ export const modelEditCommand = withRemoteOptions(
       "cat my-server.yaml | swamp model edit my-server",
     )
     .arguments("[model_id_or_name:model_name]")
+    .example(
+      "Rename from stdin",
+      "cat renamed.yaml | swamp model edit my-server --allow-rename",
+    )
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--allow-rename",
+      "Allow a stdin update to change the model's name; refused otherwise",
     ),
 ).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -91,7 +99,11 @@ export const modelEditCommand = withRemoteOptions(
         { server, token },
         {
           type: "model.edit",
-          payload: { modelIdOrName, content },
+          payload: {
+            modelIdOrName,
+            content,
+            allowRename: options.allowRename === true,
+          },
         },
       );
       const renderer = createModelEditRenderer(cliCtx.outputMode);
@@ -158,6 +170,7 @@ export const modelEditCommand = withRemoteOptions(
           modelEdit(libCtx, deps, {
             modelIdOrName,
             stdinContent,
+            allowRename: options.allowRename === true,
           }),
           renderer.handlers(),
         ),

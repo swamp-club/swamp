@@ -120,6 +120,13 @@ export interface ModelEditInput {
    */
   expectedName?: string;
   /**
+   * Lets a stdin update change the model's name. Without it an update whose
+   * `name` differs from the stored one is refused, so a content patch cannot
+   * rename its target as a side effect (swamp-club#3302). It states intent
+   * only: a rename onto a name another model holds is refused either way.
+   */
+  allowRename?: boolean;
+  /**
    * Called before every stdin update is saved, with the stored and the edited
    * definition. Returning false leaves the file untouched. Serve uses it to
    * authorize the edited definition; it runs on every save, not only when the
@@ -268,13 +275,32 @@ export async function* modelEdit(
             const before = editTarget(definition, type);
             const stored = definition;
             const { authorizeUpdate, authorizeContent } = input;
-            const beforeSave = authorizeUpdate || authorizeContent
-              ? async (candidate: Definition) =>
-                (!authorizeUpdate ||
-                  await authorizeUpdate(before, editTarget(candidate, type))) &&
+            // Set when the rename guard, rather than an authorization hook,
+            // is what stopped the save.
+            let renameRefusal: SwampError | undefined;
+            const beforeSave = async (candidate: Definition) => {
+              if (candidate.name !== stored.name) {
+                if (!input.allowRename) {
+                  renameRefusal = validationFailed(
+                    `Refusing to rename model '${stored.name}' to '${candidate.name}': the 'name' in the piped definition differs from the model being edited. Pass --allow-rename to rename it, or set 'name: ${stored.name}' to keep the name.`,
+                  );
+                  return false;
+                }
+                // Catches the mistake, not a race: the check and the save are
+                // separate steps, so this does not make names unique.
+                const holder = await deps.lookupDefinition(candidate.name);
+                if (holder && holder.definition.id !== stored.id) {
+                  renameRefusal = validationFailed(
+                    `Cannot rename model '${stored.name}' to '${candidate.name}': another model already has that name.`,
+                  );
+                  return false;
+                }
+              }
+              return (!authorizeUpdate ||
+                await authorizeUpdate(before, editTarget(candidate, type))) &&
                 (!authorizeContent ||
-                  await authorizeContent(stored, candidate))
-              : undefined;
+                  await authorizeContent(stored, candidate));
+            };
             const updated = await deps.updateFromStdin(
               definition,
               modelType,
@@ -282,6 +308,10 @@ export async function* modelEdit(
               beforeSave,
             );
             if (!updated) {
+              if (renameRefusal) {
+                yield { kind: "error", error: renameRefusal };
+                return;
+              }
               yield {
                 kind: "error",
                 error: forbidden(

@@ -88,6 +88,14 @@ export interface WorkflowEditInput {
    */
   expectedName?: string;
   /**
+   * Lets a stdin update change the workflow's name. Without it an update
+   * whose `name` differs from the stored one is refused, so a content patch
+   * cannot rename its target as a side effect (swamp-club#3302). It states
+   * intent only: a rename onto a name another workflow holds is refused
+   * either way.
+   */
+  allowRename?: boolean;
+  /**
    * Called before every stdin update is saved, with the stored and the edited
    * workflow. Returning false leaves the file untouched. Serve uses it to
    * authorize the edited workflow; it runs on every save, not only when the
@@ -284,19 +292,42 @@ export async function* workflowEdit(
             const before = editTarget(workflow);
             const stored = workflow;
             const { authorizeUpdate, authorizeContent } = input;
-            const beforeSave = authorizeUpdate || authorizeContent
-              ? async (candidate: Workflow) =>
-                (!authorizeUpdate ||
-                  await authorizeUpdate(before, editTarget(candidate))) &&
+            // Set when the rename guard, rather than an authorization hook,
+            // is what stopped the save.
+            let renameRefusal: SwampError | undefined;
+            const beforeSave = async (candidate: Workflow) => {
+              if (candidate.name !== stored.name) {
+                if (!input.allowRename) {
+                  renameRefusal = validationFailed(
+                    `Refusing to rename workflow '${stored.name}' to '${candidate.name}': the 'name' in the piped workflow differs from the workflow being edited. Pass --allow-rename to rename it, or set 'name: ${stored.name}' to keep the name.`,
+                  );
+                  return false;
+                }
+                // Catches the mistake, not a race: the check and the save are
+                // separate steps, so this does not make names unique.
+                const holder = await deps.findByName(candidate.name);
+                if (holder && holder.id !== stored.id) {
+                  renameRefusal = validationFailed(
+                    `Cannot rename workflow '${stored.name}' to '${candidate.name}': another workflow already has that name.`,
+                  );
+                  return false;
+                }
+              }
+              return (!authorizeUpdate ||
+                await authorizeUpdate(before, editTarget(candidate))) &&
                 (!authorizeContent ||
-                  await authorizeContent(stored, candidate))
-              : undefined;
+                  await authorizeContent(stored, candidate));
+            };
             const updated = await deps.updateFromStdin(
               workflow,
               stdinContent,
               beforeSave,
             );
             if (!updated) {
+              if (renameRefusal) {
+                yield { kind: "error", error: renameRefusal };
+                return;
+              }
               yield {
                 kind: "error",
                 error: forbidden(

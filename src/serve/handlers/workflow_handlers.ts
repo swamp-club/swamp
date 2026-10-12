@@ -2630,6 +2630,7 @@ export async function handleWorkflowEdit(
             byId: true,
             expectedName: workflow.name,
             stdinContent: payload.content,
+            allowRename: payload.allowRename === true,
             // Every save is authorized against the edited workflow too, so a
             // rename or retag needs write on the result. It runs on every save
             // rather than only on a detected change, so a concurrent retag
