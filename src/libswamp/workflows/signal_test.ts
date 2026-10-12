@@ -2360,14 +2360,8 @@ Deno.test("workflowSignal: a copy that reads the key as free because its other c
   assertEquals(late.data.waitId, opened.waitId);
   assertEquals(late.data.signal, delivered.data.signal);
 
-  // What it stored before it found out is superseded: the next run's wait
-  // opens over a lapse and takes nothing.
-  const head = await waits.highestPendingRecord({
-    workflowId: workflow.id,
-    key: KEY,
-    slot: 2,
-  });
-  assertEquals(head.kind === "found" && head.record.kind, "lapse");
+  // It stored nothing: the next run's wait opens over an empty slot.
+  assertEquals(waits.pendingRecords.size, 0);
   const next = await suspendedAtEarlyWait(
     workflow,
     waits,

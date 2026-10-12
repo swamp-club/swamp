@@ -1335,11 +1335,10 @@ for a key someone else used. It is looked for:
   is not its own, under its key and sender (`findTakerOf`), and is answered
   with that one instead of arriving again for the next claim.
 - A copy that reads the key as free because another copy just settled the
-  open wait: it looked the key up before that outcome existed, so it stores
-  itself for the next claim. Once stored it looks again
-  (`settledUnderKey`); the outcome was written before the key read as free,
-  so it is found, the stored copy is superseded by a lapse, and the answer is
-  the other copy's.
+  open wait: it looked the key up before that outcome existed. A key that
+  reads as free has the outcome of its last claim written already, so
+  `holdEarlySignal` looks again once it reads the key as free and before it
+  stores anything (`settledUnderKey`), and is answered with the other copy.
 
 The answer is the first signal's: `pending` with its `heldUntil` while it is
 held, or the wait and run that took it. A key is remembered until the run that

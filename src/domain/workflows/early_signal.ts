@@ -32,7 +32,6 @@ import type { InputsSchema } from "../definitions/definition.ts";
 import {
   type HighestPendingRecord,
   isPendingHeld,
-  type PendingLapse,
   type PendingSignal,
   type PendingSignalRecords,
 } from "./pending_signal.ts";
@@ -204,16 +203,17 @@ export type EarlyArrival =
     readonly record: PendingSignal;
   }
   /**
-   * A wait that reads the stored signal's slot was settled by another copy
-   * of this signal: one from the same sender under the same idempotency
-   * key, delivered to the wait while this one arrived. `outcome` holds that
+   * A wait of the key was settled by another copy of this signal: one from
+   * the same sender under the same idempotency key, delivered to a wait
+   * while this one arrived. `outcome` holds that
    * copy's receipt. This one is not stored again for the next claim.
    */
   | {
     readonly kind: "duplicate";
     readonly claim: WaitKeyClaim;
     readonly outcome: AcceptedWaitOutcome;
-    readonly record: PendingSignal;
+    /** What this signal stored before it found that out, if anything. */
+    readonly record?: PendingSignal;
   }
   /** A record of the key cannot be read, so nothing can be decided. */
   | { readonly kind: "unreadable" }
@@ -297,6 +297,30 @@ export async function holdEarlySignal(
       };
     }
 
+    // The key is free. Another copy of this signal may be why: delivered to
+    // the wait that held the key after this copy was looked up by its
+    // idempotency key. A key that reads as free has the outcome of its last
+    // claim written already, so that copy is found here, before anything is
+    // stored for the next claim to take.
+    if (signal.idempotencyKey !== undefined) {
+      const landed = await settledUnderKey(
+        store,
+        { workflowId, key },
+        highest,
+        {
+          idempotencyKey: signal.idempotencyKey,
+          submittedBy: signal.submittedBy,
+        },
+      );
+      if (landed) {
+        return {
+          kind: "duplicate",
+          ...landed,
+          ...(stored ? { record: stored } : {}),
+        };
+      }
+    }
+
     const { slot, live } = liveSlotsOf(highest);
     const heads: HighestPendingRecord[] = [];
     for (const each of live) {
@@ -350,35 +374,7 @@ export async function holdEarlySignal(
       generation < slot ||
       (generation === slot && again.kind === "found" &&
         again.record.kind === "release")
-    ) {
-      // Another copy of this signal may have settled the wait that held the
-      // key between this one's lookup by idempotency key and its read of
-      // the holder as free: that outcome was written before the key read as
-      // free, so it is there to be found now. This copy is then superseded
-      // where it was stored, so the next claim does not take it.
-      const landed = signal.idempotencyKey === undefined
-        ? undefined
-        : await settledUnderKey(store, { workflowId, key }, again, {
-          idempotencyKey: signal.idempotencyKey,
-          submittedBy: signal.submittedBy,
-        });
-      if (!landed) return { kind: "pending", record: stored };
-      const lapse: PendingLapse = {
-        kind: "lapse",
-        workflowId,
-        key,
-        slot,
-        number: stored.number + 1,
-        recordedAt: now.toISOString(),
-      };
-      await store.createPendingRecord(lapse);
-      // A step that claimed the slot and took this copy before the lapse
-      // is the one answer that is truer than "duplicate".
-      const taker = await findTakerOf(store, stored);
-      return taker && taker.outcome.receipt.id === stored.receiptId
-        ? { kind: "taken", claim: taker.claim, record: stored }
-        : { kind: "duplicate", ...landed, record: stored };
-    }
+    ) return { kind: "pending", record: stored };
 
     // The key has reached the slot. Its holder is read before the taker is
     // looked for: a key that reads as free, or as held by a later claim,
