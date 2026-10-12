@@ -1153,6 +1153,21 @@ class PreparedInstall {
 export type { PreparedInstall };
 
 /**
+ * Whether an extension is installed on this checkout: its extension root
+ * exists. A lockfile entry alone is not enough, since a managed lockfile
+ * can list an extension whose files another checkout holds. Prepare and
+ * apply both decide "this pull replaces an install" here.
+ */
+async function isInstalledOnDisk(
+  repoDir: string,
+  name: string,
+): Promise<boolean> {
+  return await pathExistsNoFollow(
+    extensionInstallRoots(repoDir, name).extensionRoot,
+  );
+}
+
+/**
  * Resolves which channel the registry lists the incoming version on, and,
  * when an install already exists, the installed version too, so a version
  * promoted since it was pulled is reported where it is now.
@@ -1178,17 +1193,19 @@ async function resolvePublishedChannels(
     return null;
   };
 
-  // The lockfile snapshot read before the lock: it decides whether a
-  // lookup failure is fatal and which installed version to look up.
-  // applyInstall re-reads the entry under the lock.
+  // Whether this replaces an install decides whether a lookup failure is
+  // fatal; applyInstall decides it the same way under the lock. The
+  // lockfile snapshot names the installed version to look up, when it
+  // pins one.
+  const replacing = await isInstalledOnDisk(ctx.repoDir, ref.name);
   const entry = ctx.lockfileRepository.getEntry(ref.name);
-  const replacing = entry !== null ||
-    await pathExistsNoFollow(
-      extensionInstallRoots(ctx.repoDir, ref.name).extensionRoot,
-    );
+  const installedVersion = replacing && entry?.version &&
+      !isVersionConstraint(entry.version)
+    ? entry.version
+    : null;
 
   const wanted: string[] = [];
-  for (const v of entry ? [version, entry.version] : [version]) {
+  for (const v of installedVersion ? [version, installedVersion] : [version]) {
     const channel = fromLatest(v);
     if (channel) known.set(v, channel);
     else if (!wanted.includes(v)) wanted.push(v);
@@ -1211,7 +1228,7 @@ async function resolvePublishedChannels(
   if (!known.has(version)) {
     if (replacing) {
       throw new UserError(
-        `Could not determine which release channel ${ref.name}@${version} is published on (${reason}), so what it would replace cannot be stated. Nothing was changed.`,
+        `Could not determine which release channel ${ref.name}@${version} is published on (${reason}), so what it would replace cannot be stated. Nothing was changed. Retry when the registry is reachable, or pull without an exact version to install the latest on a channel.`,
       );
     }
     if (ctx.logger) {
@@ -1940,8 +1957,9 @@ export async function applyInstall(
 
   // The channel the lockfile will record: the one this install follows.
   const followedChannel = ctx.channel ?? "stable";
-  const replacement = oldEntry !== null || conflicts.length > 0 ||
-      await pathExistsNoFollow(absoluteExtRoot)
+  // Conflicts alone (a user's skill dir, stray files) do not make this a
+  // replacement: nothing of this extension is installed to describe.
+  const replacement = await isInstalledOnDisk(repoDir, ref.name)
     ? ExtensionReplacement.create({
       name: ref.name,
       current: installedIdentity(

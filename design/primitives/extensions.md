@@ -246,7 +246,10 @@ what is coming before writing anything, for example
 following stable)`, followed by whether it is an upgrade, a downgrade, the same
 version or an unknown installed version, and any change of published channel.
 The overwrite prompt shows this above the file list and says what y and N do;
-`--yes` and `--force` log the same lines. The installed version comes from the
+`--yes` and `--force` log the same lines. A pull replaces an install when the
+extension's root is on this checkout: a lockfile entry alone (a managed lockfile
+can list an extension another checkout holds) or a conflict alone (a user's
+skill dir) is not one. The installed version comes from the
 lockfile entry, else from a `manifest.yaml` under the extension root that names
 the extension, else it is unknown and said to be. A replacement whose incoming
 channel cannot be looked up fails, as what it replaces cannot be stated; a

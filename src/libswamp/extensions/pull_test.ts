@@ -2835,6 +2835,10 @@ Deno.test(
       );
       assertStringIncludes(error.message, "registry unavailable");
       assertStringIncludes(error.message, "Nothing was changed");
+      assertStringIncludes(
+        error.message,
+        "Retry when the registry is reachable",
+      );
       assertEquals(ctx.replacements, []);
       assertEquals(lockfile.getEntry(name)?.version, OLD);
     });
@@ -3028,6 +3032,91 @@ Deno.test(
       assertEquals(result?.publishedChannel, null);
       assertEquals(lockfile.getEntry(name)?.publishedChannel, "beta");
       assertEquals(lockfile.getEntry(name)?.channel, "beta");
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a lockfile entry whose files are not on this checkout is not a replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      // As a managed lockfile lists an extension another checkout holds.
+      await lockfile.writeEntry(name, OLD, [
+        `.swamp/pulled-extensions/${name}/models/a.ts`,
+      ]);
+      await lockfile.refresh();
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, {
+        name,
+        archives: await channelFixture(name, [OLD]),
+        info: { latestVersion: NEW },
+        lookupFails: true,
+      }, { lookups });
+      const result = await installExtension({ name, version: OLD }, ctx);
+      // A failed lookup only warns, and only the incoming version is asked.
+      assertEquals(lookups, [[OLD]]);
+      assertEquals(result?.version, OLD);
+      assertEquals(ctx.replacements, []);
+      assertEquals(result?.previous, null);
+      assertEquals(result?.change, undefined);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: a conflict with nothing of the extension installed carries no replacement",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const userSkill = join(repoDir, ".claude", "skills", "foo");
+      await ensureDir(userSkill);
+      await Deno.writeTextFile(join(userSkill, "notes.md"), "mine");
+      const archive = await buildSkillArchive({
+        name,
+        skills: { foo: { "SKILL.md": "from ext" } },
+      });
+      const error = await assertRejects(
+        () =>
+          installExtension(
+            { name, version: null },
+            skillInstallContext(repoDir, lockfile, { [name]: archive }),
+          ),
+        ConflictError,
+      );
+      assertEquals(error.replacement, undefined);
+    });
+  },
+);
+
+Deno.test(
+  "installExtension: an installed entry pinning a version constraint is not looked up",
+  async () => {
+    await withSkillRepo(async (repoDir, lockfile) => {
+      const name = uniqueExtName();
+      const fixture: ChannelFixture = {
+        name,
+        archives: await channelFixture(name, [OLD, NEW]),
+        info: { latestVersion: OLD },
+        published: { [NEW]: "beta" },
+      };
+      await installOld(repoDir, lockfile, fixture);
+      await lockfile.writeEntry(
+        name,
+        ">=2026.01.01.1",
+        lockfile.getEntry(name)!.files!,
+      );
+      await lockfile.refresh();
+
+      const lookups: string[][] = [];
+      const ctx = channelContext(repoDir, lockfile, fixture, {
+        force: true,
+        lookups,
+      });
+      await installExtension({ name, version: NEW }, ctx);
+      assertEquals(lookups, [[NEW]]);
+      assertEquals(ctx.replacements[0].current, null);
+      assertEquals(ctx.replacements[0].change, "unknown");
     });
   },
 );
