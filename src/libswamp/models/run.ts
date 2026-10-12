@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { DeferredExpression } from "../../domain/expressions/deferred_expression.ts";
-import { cancelled, type SwampError, validationFailed } from "../errors.ts";
+import { type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import { selectLookup } from "../lookup_by_id.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -1222,9 +1222,10 @@ export async function* modelMethodRun(
                 if (deps.runTracker) {
                   deps.runTracker.complete(output.id, "cancelled", cause);
                 }
-                // The stream ends without an event here, so tell the unit the
-                // run reached its cancelled outcome: on v3 the record and the
-                // outputs written before the abort commit (swamp-club#3299).
+                // Tell the unit the run reached its cancelled outcome before
+                // the stream says so, so on v3 the record and the outputs
+                // written before the abort commit even if the consumer stops
+                // short of the cancelled event below (swamp-club#3299).
                 markOutcomeReported();
               } else {
                 output.markFailed({ message: errorMessage, stack: errorStack });
@@ -1326,13 +1327,26 @@ export async function* modelMethodRun(
               ], "failed");
 
               if (output.status === "cancelled") {
-                return;
-              }
-
-              if (
-                error instanceof DOMException && error.name === "AbortError"
-              ) {
-                yield { kind: "error", error: cancelled(error) };
+                // The caller learns of a cancelled run from this event: ending
+                // the stream silently reads as a success (swamp-club#3317).
+                yield {
+                  kind: "cancelled",
+                  run: {
+                    modelId: definition.id,
+                    modelName: definition.name,
+                    modelType: modelType.normalized,
+                    methodName: input.methodName,
+                    status: "cancelled",
+                    duration: output.durationMs,
+                    outputId: output.id,
+                    logFile: logFilePath,
+                    dataArtifacts: [],
+                    globalArguments: reportGlobalArgs,
+                    methodArguments: reportMethodArgs,
+                    initiatedBy: input.initiatedBy,
+                  },
+                  reason: output.error?.message,
+                };
                 return;
               }
 

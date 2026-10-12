@@ -3739,12 +3739,13 @@ model, catalog), catches the read model up whenever a context opens, and
   publishes too. It abandons on a throw or a stop before any outcome. This
   changes decision 5's ending of #3257, which abandoned on a reported
   `error`, so a failed run's records reach the commit log as v2 publishes
-  them. A use case that reaches an outcome its stream reports through no
-  event calls `markOutcomeReported()`, which the v3 unit counts as one: a
-  method run cancelled by its signal saves its `cancelled` record and ends
-  without an event, so its record and the outputs it wrote commit
-  (swamp-club#3299). The stream is unchanged, so v2 and the CLI's and serve's
-  output are too. Every root settles refusals with `reconcileRefusedRuns`;
+  them. A use case that reaches an outcome before its stream reports it
+  calls `markOutcomeReported()`, which the v3 unit counts as one: a method
+  run cancelled by its signal saves its `cancelled` record and marks the
+  outcome, so its record and the outputs it wrote commit (swamp-club#3299).
+  It then yields a `cancelled` event, so the CLI and serve report the
+  cancellation and the command exits 1 (swamp-club#3317). Every root settles
+  refusals with `reconcileRefusedRuns`;
   only a root holding a run record has anything to reconcile.
 - The managed extension lockfile is committed as a typed `lockfile.write` put
   in `config--lockfile--upstream_extensions` at its transaction root's

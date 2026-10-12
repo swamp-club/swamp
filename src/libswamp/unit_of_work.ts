@@ -76,10 +76,10 @@ const logger = getSwampLogger(["datastore", "unit-of-work"]);
  *   including when the consumer then stops with `return()`, and abandons on
  *   a throw or a stop before any of them. A reported `error` is an outcome
  *   since swamp-club#3279: a failed method run reports one, and its record
- *   is what v2 publishes too. A use case that reaches an outcome it reports
- *   through no event (a model method run cancelled by its signal, whose
- *   stream ends without one) calls {@link markOutcomeReported} instead
- *   (swamp-club#3299).
+ *   is what v2 publishes too. A use case that reaches an outcome before its
+ *   stream reports it (a model method run cancelled by its signal, which
+ *   saves its record and only then yields `cancelled`) calls
+ *   {@link markOutcomeReported} as well (swamp-club#3299).
  * - **Nesting.** A use case run inside another opens its own unit, which is
  *   a child of the outer one when both are bound to the same hook; the
  *   innermost unit is ambient while it runs.
@@ -165,14 +165,14 @@ const TERMINAL_KINDS: ReadonlySet<string> = new Set([
   "cancelled",
 ]);
 
-/** Units whose use case reported an outcome without an event. */
+/** Units whose use case reported an outcome ahead of, or without, an event. */
 const outcomeReported = new WeakSet<UnitOfWork>();
 
 /**
  * Records that the use case running in the ambient unit reached an outcome
- * its stream reports through no event, so a v3 unit commits when the stream
- * ends as it would after a terminal event (decision 5). A legacy unit
- * ignores it. Outside a unit it does nothing.
+ * its stream has not reported yet, or reports through no event, so a v3 unit
+ * commits when the stream ends as it would after a terminal event
+ * (decision 5). A legacy unit ignores it. Outside a unit it does nothing.
  */
 export function markOutcomeReported(): void {
   const uow = currentUnitOfWork();

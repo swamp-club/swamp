@@ -472,12 +472,17 @@ Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   // No error event should be yielded — the output is marked cancelled
   const errorEvents = events.filter((e) => e.kind === "error");
   assertEquals(errorEvents.length, 0);
+  // The stream says so itself, so a caller never reads the run as a success
+  const cancelledEvents = events.filter((e) => e.kind === "cancelled");
+  assertEquals(cancelledEvents.length, 1);
+  assertEquals(events.at(-1)?.kind, "cancelled");
+  assertEquals(events.some((e) => e.kind === "completed"), false);
   // The output should have been saved as cancelled
   const cancelledSaves = savedOutputs.filter((o) => o.status === "cancelled");
   assertEquals(cancelledSaves.length > 0, true);
 });
 
-Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields no new event (swamp-club#3299)", async () => {
+Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields the same stream on both layouts (swamp-club#3299)", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");
   const deps: ModelMethodRunDeps = {
@@ -521,9 +526,10 @@ Deno.test("modelMethodRun: a cancelled run commits its v3 unit and yields no new
   }
 
   assertEquals(ends, ["v3 commit", "legacy abandon"]);
-  // The stream is the same on both: no cancelled or error event.
+  // The stream is the same on both: it ends on the cancelled event
+  // (swamp-club#3317), with no error event.
   assertEquals(kinds[0], kinds[1]);
-  assertEquals(kinds[0].includes("cancelled"), false);
+  assertEquals(kinds[0].at(-1), "cancelled");
   assertEquals(kinds[0].includes("error"), false);
 });
 
@@ -602,6 +608,36 @@ Deno.test("modelMethodRun: a cancel with a reason records that reason (swamp-clu
     message: "No longer needed",
     reason: "No longer needed",
   });
+});
+
+Deno.test("modelMethodRun: a timed-out run yields a cancelled event naming the timeout (swamp-club#3317)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const controller = new AbortController();
+  controller.abort(new DOMException("Signal timed out.", "TimeoutError"));
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () =>
+      createFailingExecutionService(controller.signal.reason),
+  };
+
+  const events = await collect(
+    modelMethodRun(
+      createLibSwampContext({ signal: controller.signal }),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  const last = events.at(-1);
+  assertEquals(last?.kind, "cancelled");
+  if (last?.kind === "cancelled") {
+    assertEquals(last.reason, "timed out");
+    assertEquals(last.run.status, "cancelled");
+    assertEquals(last.run.modelName, "test-model");
+    assertEquals(last.run.methodName, "run");
+    assertEquals(last.run.dataArtifacts, []);
+  }
 });
 
 // --- Error factory tests ---
