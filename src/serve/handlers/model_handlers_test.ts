@@ -24,8 +24,17 @@ import { join } from "@std/path";
 import {
   handleModelDelete,
   handleModelEdit,
+  handleModelOutputSearch,
   isMethodMutating,
+  redactWorkflowLinks,
 } from "./model_handlers.ts";
+import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
+import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
+import { Workflow } from "../../domain/workflows/workflow.ts";
+import { Job } from "../../domain/workflows/job.ts";
+import { Step } from "../../domain/workflows/step.ts";
+import { StepTask } from "../../domain/workflows/step_task.ts";
+import { ModelOutput } from "../../domain/models/model_output.ts";
 import type { ConnectionContext } from "./shared.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -658,3 +667,134 @@ for (
     });
   });
 }
+
+// --- handleModelOutputSearch workflow linkage (swamp-club#2736) ---
+
+function linkedWorkflow(name: string): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "gate",
+            task: StepTask.manualApproval("Approve"),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose workflow the principal may not read", async () => {
+  await withTempDir(async (dir) => {
+    const definitionRepo = new YamlDefinitionRepository(dir);
+    const outputRepo = new YamlOutputRepository(dir);
+    const workflowRepo = new YamlWorkflowRepository(dir);
+    const definition = await saveEditModel(definitionRepo, "watched");
+    const readable = linkedWorkflow("readable-wf");
+    const hidden = linkedWorkflow("hidden-wf");
+    await workflowRepo.save(readable);
+    await workflowRepo.save(hidden);
+
+    const save = (
+      startedAt: string,
+      provenance: Record<string, unknown>,
+    ) =>
+      outputRepo.save(
+        EDIT_TEST_TYPE,
+        "execute",
+        ModelOutput.create({
+          definitionId: definition.id,
+          methodName: "execute",
+          status: "succeeded",
+          startedAt: new Date(startedAt),
+          provenance: {
+            definitionHash: "h",
+            modelVersion: "1",
+            ...provenance,
+          } as ModelOutput["provenance"],
+        }),
+      );
+    await save("2026-01-01T00:00:00Z", { triggeredBy: "manual" });
+    await save("2026-01-02T00:00:00Z", {
+      triggeredBy: "workflow",
+      workflowId: readable.id,
+      workflowRunId: "run-readable",
+      stepName: "step-a",
+    });
+    await save("2026-01-03T00:00:00Z", {
+      triggeredBy: "workflow",
+      workflowId: hidden.id,
+      workflowRunId: "run-hidden",
+      stepName: "step-b",
+    });
+
+    const base = createPolicyEditCtx(dir, definitionRepo, [
+      grant({ actions: ["read"], resource: { kind: "model", pattern: "*" } }),
+      grant({
+        actions: ["read"],
+        resource: { kind: "workflow", pattern: "readable-wf" },
+      }),
+    ]);
+    const ctx = {
+      ...base,
+      repoContext: {
+        definitionRepo,
+        outputRepo,
+        workflowRepo,
+      } as unknown as ConnectionContext["repoContext"],
+    };
+    const socket = createMockSocket();
+    await handleModelOutputSearch(
+      socket,
+      ctx,
+      "req-1",
+      new AbortController(),
+      EDITOR,
+      { model: "watched", limit: 2 },
+    );
+
+    const [response] = frames(socket);
+    assertEquals(response.type, "model.output.search");
+    const results = response.payload.data.results;
+    assertEquals(results.length, 2);
+    // Most recent first: the hidden workflow's run keeps only triggeredBy.
+    assertEquals(results[0].triggeredBy, "workflow");
+    assertEquals(results[0].workflowId, undefined);
+    assertEquals(results[0].workflowName, undefined);
+    assertEquals(results[0].workflowRunId, undefined);
+    assertEquals(results[0].stepName, undefined);
+    assertEquals(results[1].workflowId, readable.id);
+    assertEquals(results[1].workflowName, "readable-wf");
+    assertEquals(results[1].workflowRunId, "run-readable");
+    assertEquals(results[1].stepName, "step-a");
+  });
+});
+
+Deno.test("redactWorkflowLinks: keeps every linkage without authorization, drops an unresolved one with it", async () => {
+  const items = () => [{
+    id: "o1",
+    definitionId: "d1",
+    type: "command/shell",
+    methodName: "execute",
+    status: "succeeded",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    triggeredBy: "workflow" as const,
+    workflowId: "gone",
+    workflowRunId: "r1",
+    stepName: "s1",
+  }];
+  const denyAll = () => Promise.resolve(false);
+
+  const open = items();
+  await redactWorkflowLinks(open, true, denyAll);
+  assertEquals(open[0].workflowRunId, "r1");
+
+  const restricted = items();
+  await redactWorkflowLinks(restricted, false, () => Promise.resolve(true));
+  assertEquals(restricted[0].workflowId, undefined);
+  assertEquals(restricted[0].workflowRunId, undefined);
+  assertEquals(restricted[0].stepName, undefined);
+});

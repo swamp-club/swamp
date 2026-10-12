@@ -242,6 +242,8 @@ export {
   type ModelGetData,
   type ModelGetDeps,
   type ModelGetEvent,
+  type ModelGetExtension,
+  type ModelGetReport,
   type StalenessState,
 } from "./models/get.ts";
 export {
@@ -304,6 +306,8 @@ export {
   type ModelOutputSearchEvent,
   type ModelOutputSearchInput,
   type ModelOutputSearchItem,
+  type ModelOutputSearchModel,
+  type ModelOutputSearchOutput,
 } from "./models/output_search.ts";
 export {
   type ArtifactsData,
