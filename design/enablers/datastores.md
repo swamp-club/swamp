@@ -3690,11 +3690,57 @@ model, catalog), catches the read model up whenever a context opens, and
 v2's sync machinery runs: no pull or push at the locks, no sync gate, no access,
 runtime or config pull in serve, no lazy hydration. `datastore sync`,
 `datastore catalog pull` and `datastore migrate-index` refuse a filesystem
-datastore already. On v3, `datastore config migrate` and `datastore namespace
-set|unset|migrate` refuse too: moving existing config or records, or a
-checkout, between namespaces is Phase 6. A namespace is chosen by running
-`namespace set` before `setup filesystem --format 3`, which needs no
-`--skip-migration` (swamp-club#3301).
+datastore already. On v3, `datastore namespace set|unset|migrate` refuse
+too: moving existing records, or a checkout, between namespaces is Phase 6.
+A namespace is chosen by running `namespace set` before `setup filesystem
+--format 3`, which needs no `--skip-migration` (swamp-club#3301).
+`datastore config migrate` has a v3 form of its own (below).
+
+**Managed config on v3** (swamp-club#3300). With managedConfig on, model
+definitions, workflows and vault configs are read from the config tier, so a
+repo that turns it on must commit the config it already has, or that config
+disappears from view (the default vault `repo init` writes among it).
+`v3_config_adoption.ts` reads the repo-local `models/`, `workflows/` and
+`vaults/` trees and commits each file into its managed-config partition as
+`definition.create`, expecting its key absent, through
+`definitionSaveBatches` with no priors. The file lands at the same relative
+path under the config base, so a later save of it stages the same key.
+
+- **The commit log is the migration record.** v2's sentinel file has no v3
+  intent. A name is adopted only while its partition has no commit
+  (`CommitStore.head`, whose rows compaction never deletes). So a re-run
+  adopts nothing, a name deleted from the tier after adoption is never
+  brought back, and a name another checkout committed is never overwritten.
+  A file whose config-tier copy already holds the same bytes is skipped
+  before it is parsed or the commit log read, so a repo adopted long ago pays
+  one read per file.
+- **Stale writes are refused.** A checkout whose view of the commit log is
+  stale creates a key that exists, and its `absent` precondition refuses the
+  commit (`ConfigAdoptionRefusedError`, a `UserError` saying to run the
+  command again). The single writer lock already rules this out within one
+  datastore today; the precondition is what holds once there are more
+  writers.
+- **Only regular files are read.** Symlinks in the repo's trees are neither
+  read nor followed, so a repo-controlled link never commits bytes from
+  outside the repo, and every target is checked to stay in the config base.
+  Secrets are never read: only vault configs are committed.
+- **`datastore config migrate` on v3** runs adoption, then sets
+  `managedConfig: true`. Its JSON keeps the v2 shape: `copiedLockfile` and
+  `copiedPulledExtensions` are always false (the lockfile is committed by its
+  own transaction, and pulled extensions stay in the checkout), `pushed` is
+  false, and it adds `committed` and `skipped` (files declaring no name, or a
+  name an earlier file of their kind declares).
+- **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
+  command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
+  adoption in a root of their own, with no flush (on v3 a root's flush
+  releases the command's locks), before the command's own root. Adopt rather
+  than refuse, because the user asked to keep what they have, and the hand
+  path and `config migrate` then share one implementation. A refused
+  adoption there is a warning and the command goes on; the next one adopts
+  nothing for those names. A read-only context cannot commit, so it warns
+  that the config is not in the tier yet. Serve opens its context once, so a
+  by-hand change made while serve runs is adopted at its next start (a CLI
+  write is refused while serve holds the writer lock anyway).
 
 **Tier rules.** A record key outside the repository's configured `directories`
 or matching its `exclude` stays in the checkout and is never committed: the

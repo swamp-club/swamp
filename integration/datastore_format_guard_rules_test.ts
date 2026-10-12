@@ -129,6 +129,10 @@ const GUARDED_PINNED = [
   "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3DatastoreFor",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:v3RepositoryFactoryConfig",
+  // swamp-club#3300: config adoption reads partition heads through the
+  // handle a checked context already opened; its callers (config migrate,
+  // repo_context's context helpers) pass a config the helpers checked.
+  "src/infrastructure/datastore_v3/v3_config_adoption.ts:planV3ConfigAdoption",
   "src/serve/handlers/admin_handlers.ts:handleDatastoreStatus",
   "src/cli/commands/datastore_lock.ts:datastoreLockReleaseCommand (x2)",
   "src/cli/commands/datastore_lock.ts:datastoreLockStatusCommand (x2)",

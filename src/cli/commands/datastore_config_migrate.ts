@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { isAbsolute, join, resolve } from "@std/path";
-import { createContext, resolveRepoDir } from "../context.ts";
+import {
+  type CommandContext,
+  createContext,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { pushNamespace } from "../../infrastructure/persistence/push_paths.ts";
 import {
@@ -44,6 +48,10 @@ import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { ManagedConfigUnpublishedError } from "../managed_config_sync.ts";
+import {
+  adoptV3Config,
+  type ConfigAdoptionPlan,
+} from "../../infrastructure/datastore_v3/v3_config_adoption.ts";
 
 /**
  * Pulls the datastore's config tier into the cache, so the migration
@@ -100,6 +108,64 @@ export async function ensureManagedConfig(
   return true;
 }
 
+/**
+ * Reports a v3 migration (swamp-club#3300) in the v2 output's shape: the
+ * lockfile is committed by its own transaction on v3, and pulled extensions
+ * stay in the checkout, so neither is ever copied here. `skipped` names the
+ * repo-local files that were not committed and why.
+ */
+function renderV3Migration(
+  ctx: CommandContext,
+  plan: ConfigAdoptionPlan,
+  managedConfigSet: boolean,
+  configRoot: string,
+): void {
+  const adopted = (kind: string) =>
+    plan.adoptions.filter((a) => a.kind === kind).length;
+  const skipped = plan.skipped.map((s) => ({
+    kind: s.kind,
+    path: s.path,
+    name: s.name ?? null,
+    reason: s.reason,
+  }));
+  const alreadyMigrated = plan.adoptions.length === 0;
+  if (ctx.outputMode === "json") {
+    writeOutput(JSON.stringify(
+      alreadyMigrated ? { alreadyMigrated: true, managedConfigSet, skipped } : {
+        alreadyMigrated: false,
+        copiedModels: adopted("model") > 0,
+        copiedWorkflows: adopted("workflow") > 0,
+        copiedVaults: adopted("vault") > 0,
+        copiedLockfile: false,
+        copiedPulledExtensions: false,
+        managedConfigSet,
+        configRoot,
+        pushed: false,
+        committed: plan.adoptions.length,
+        skipped,
+      },
+    ));
+    return;
+  }
+  if (managedConfigSet) {
+    ctx.logger.info`Set managedConfig: true in .swamp.yaml`;
+  }
+  for (const s of plan.skipped) {
+    ctx.logger.warn`Skipped ${s.path}: ${
+      s.reason === "duplicate-name"
+        ? "another file declares the same name"
+        : "it declares no usable name"
+    }`;
+  }
+  if (alreadyMigrated) {
+    ctx.logger.info`Config migration already completed`;
+    return;
+  }
+  ctx.logger.info`Committed ${adopted("model")} model(s), ${
+    adopted("workflow")
+  } workflow(s) and ${adopted("vault")} vault(s) into datastore config tier`;
+}
+
 export const datastoreConfigMigrateCommand = new Command()
   .description(
     "Migrate configuration into the datastore.\n\n" +
@@ -109,7 +175,10 @@ export const datastoreConfigMigrateCommand = new Command()
       "set, including when another repo has already migrated the datastore.\n" +
       "Idempotent — safe to re-run: the datastore's migration sentinel\n" +
       "prevents duplicate work, and a re-run after a failed push publishes\n" +
-      "the migration.",
+      "the migration.\n\n" +
+      "On a v3 datastore it commits the model definitions, workflow\n" +
+      "definitions and vault configs the commit log has never held; a\n" +
+      "re-run commits nothing.",
   )
   .option("--repo-dir <dir:string>", "Path to the swamp repository")
   // deno-lint-ignore no-explicit-any
@@ -138,16 +207,26 @@ export const datastoreConfigMigrateCommand = new Command()
       );
     }
 
-    // Moving existing definitions into a v3 datastore's config tier would
-    // need each one committed; migrating existing data to v3 is Phase 6 of
-    // the datastore rework (swamp-club#3279).
-    if (repoContext.commitLog !== undefined) {
-      throw new UserError(
-        "Migrating existing config into a v3 datastore is not supported " +
-          "yet. Set managedConfig: true in .swamp.yaml before creating " +
-          "models, workflows and vaults, and they are committed as they are " +
-          "created.",
+    // A v3 config tier is what its commits say, so the repo's existing
+    // config is committed rather than copied (swamp-club#3300).
+    if (
+      repoContext.commitLog !== undefined &&
+      !isCustomDatastoreConfig(datastoreConfig)
+    ) {
+      const configBase = datastoreResolver.resolvePath("config");
+      const plan = await adoptV3Config({
+        repoContext,
+        repoDir,
+        config: datastoreConfig,
+        configBase,
+      });
+      const managedConfigSet = await ensureManagedConfig(
+        markerRepo,
+        repoPath,
+        marker,
       );
+      renderV3Migration(ctx, plan, managedConfigSet, configBase);
+      return;
     }
 
     if (

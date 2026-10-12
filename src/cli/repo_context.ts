@@ -132,6 +132,7 @@ import {
 import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
+  type FilesystemDatastoreConfig,
   isCustomDatastoreConfig,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
@@ -209,6 +210,11 @@ import {
   holdV3Writer,
   v3RepositoryFactoryConfig,
 } from "../infrastructure/datastore_v3/v3_repo_context.ts";
+import {
+  adoptV3Config,
+  ConfigAdoptionRefusedError,
+  planV3ConfigAdoption,
+} from "../infrastructure/datastore_v3/v3_config_adoption.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -1049,6 +1055,17 @@ export async function requireInitializedRepoReadOnly(
     repoContext.signalWaits = resolveSignalWaitSupport(datastoreConfig);
   }
 
+  if (
+    engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
+    managedActive
+  ) {
+    await warnUnadoptedManagedConfig(
+      repoPath.value,
+      datastoreConfig,
+      configBase,
+    );
+  }
+
   return {
     repoDir: repoPath.value,
     marker,
@@ -1058,6 +1075,56 @@ export async function requireInitializedRepoReadOnly(
     managedConfig: managedActive,
     vaultsDir,
   };
+}
+
+/**
+ * Commits the repo's existing definitions, workflows and vault configs into
+ * a v3 datastore's config tier when managedConfig is on and the commit log
+ * has never held them (swamp-club#3300): managedConfig set by hand in
+ * `.swamp.yaml` keeps the config the repo already has, as `swamp datastore
+ * config migrate` does. Once adopted, a name has commits and is never
+ * adopted again. A refusal (another checkout committed a name first) is a
+ * warning: the command goes on, and the next one adopts nothing for those
+ * names.
+ */
+async function adoptManagedConfigOnV3(
+  repoContext: RepositoryContext,
+  repoDir: string,
+  config: FilesystemDatastoreConfig,
+  configBase: string,
+): Promise<void> {
+  const logger = getSwampLogger(["cli", "managed-config"]);
+  try {
+    const plan = await adoptV3Config({
+      repoContext,
+      repoDir,
+      config,
+      configBase,
+    });
+    if (plan.adoptions.length > 0) {
+      logger
+        .info`Committed ${plan.adoptions.length} existing definition(s), workflow(s) and vault config(s) into the datastore config tier`;
+    }
+  } catch (error) {
+    if (!(error instanceof ConfigAdoptionRefusedError)) throw error;
+    logger.warn`${error.message}`;
+  }
+}
+
+/**
+ * Warns a read-only command that managedConfig hides repo config the v3
+ * commit log has never held: it cannot commit, so it says what will
+ * (swamp-club#3300).
+ */
+async function warnUnadoptedManagedConfig(
+  repoDir: string,
+  config: FilesystemDatastoreConfig,
+  configBase: string,
+): Promise<void> {
+  const plan = await planV3ConfigAdoption(repoDir, config, configBase);
+  if (plan.adoptions.length === 0) return;
+  getSwampLogger(["cli", "managed-config"])
+    .warn`${plan.adoptions.length} existing definition(s), workflow(s) or vault config(s) in this repo are not in the datastore config tier yet. The next writing command, or 'swamp datastore config migrate', commits them`;
 }
 
 /**
@@ -1328,6 +1395,18 @@ export function requireInitializedRepo(
       repoContext.catalogStore.invalidate();
     }
 
+    if (
+      engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
+      managedActive
+    ) {
+      await adoptManagedConfigOnV3(
+        repoContext,
+        repoPath.value,
+        datastoreConfig,
+        configBase,
+      );
+    }
+
     return {
       repoDir: repoPath.value,
       marker,
@@ -1513,6 +1592,18 @@ export async function requireInitializedRepoUnlocked(
     repoPath.value,
     syncService,
   );
+
+  if (
+    engine === "v3" && !isCustomDatastoreConfig(datastoreConfig) &&
+    managedActive
+  ) {
+    await adoptManagedConfigOnV3(
+      repoContext,
+      repoPath.value,
+      datastoreConfig,
+      configBase,
+    );
+  }
 
   return {
     repoDir: repoPath.value,

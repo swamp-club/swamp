@@ -441,7 +441,6 @@ Deno.test("v3 opt-in: every v2 sync path is skipped or refused", async () => {
           [["datastore", "migrate-index", ...json], ""],
           [["datastore", "namespace", "set", "team", ...json], "v3"],
           [["datastore", "namespace", "migrate", "--confirm", ...json], "v3"],
-          [["datastore", "config", "migrate", ...json], "v3"],
         ] as const
       ) {
         const error = await runCliRejecting({ args: [...args] });
