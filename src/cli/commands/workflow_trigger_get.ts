@@ -37,6 +37,7 @@ import {
 } from "../remote_run.ts";
 import type {
   EffectiveTrigger,
+  EffectiveTriggerState,
   WorkflowTriggerGetResponse,
 } from "../../serve/protocol.ts";
 
@@ -113,12 +114,13 @@ export const workflowTriggerGetCommand = withRemoteOptions(
     );
   }
 
-  const effective: EffectiveTrigger = {
+  const effective: EffectiveTriggerState = {
     schedule: override?.schedule ?? builtIn?.schedule ?? null,
     inputs: {
       ...(builtIn?.inputs ?? {}),
       ...(override?.inputs ?? {}),
     },
+    paused: override?.paused === true,
   };
 
   renderWorkflowTriggerGet(cliCtx.outputMode, {

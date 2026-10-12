@@ -81,7 +81,7 @@ it the default file is optional.
 | `--no-schedule` / `schedule` | — | `true` | Disables cron triggers |
 | `--max-concurrent-scheduled-runs` / `max-concurrent-scheduled-runs` | `SWAMP_MAX_CONCURRENT_SCHEDULED_RUNS` | `1` | Scheduled runs in flight at once; a workflow never overlaps itself. Separate from `--max-concurrent-runs`. Set at startup, not on reload |
 | `--webhook <route:workflow:secret[:scheme[:header[:prefix]]]>` / `webhooks[]` | — | none | Flags replace the file list entirely |
-| `triggers.<workflow>.{schedule,inputs}` | — | none | yaml only; overrides a workflow's own trigger |
+| `triggers.<workflow>.{schedule,inputs,paused}` | — | none | yaml only; overrides a workflow's own trigger; `paused: true` holds its schedule |
 | `--trust-proxy`, `--trusted-hosts` | `SWAMP_TRUSTED_HOSTS` | `false`, unset | `X-Forwarded-For` and WebSocket `Origin` handling |
 | `--ws-idle-timeout`, `--queue-timeout` | `SWAMP_WS_IDLE_TIMEOUT`, `SWAMP_QUEUE_TIMEOUT` | unset | Worker-facing |
 | `--verify-on-enroll` | `SWAMP_VERIFY_ON_ENROLL` | `false` | Fleet probe on each enrolling worker; failures marked unverified |
@@ -927,7 +927,20 @@ queue state (`queueStatus`): `queued` (fires waiting to start),
 visible) and `lastQueueDelayMs` (fire-to-start delay of the last run that
 started). `schedule_started` carries the same delay as `queueDelayMs`. Queue
 state is per schedule, so the per-token health view filters it with its
-schedule.
+schedule. Each entry also carries `paused` and `source` (`"workflow"` when the
+cron comes from the workflow's `trigger.schedule`, `"override"` when from a
+`triggers.*` override); a paused entry has a null `nextRun`.
+
+**Pausing.** A trigger override with `paused: true` holds the workflow's
+schedule, built-in or overridden. The service keeps no cron job for it, so it
+neither fires nor queues, but still lists it (and emits `schedule_paused`
+instead of `schedule_registered`). A fire already queued or replayed when the
+pause lands is dropped with its pending-run entry; a run in progress is left
+to finish. Resuming registers a fresh cron job, so the next run is the next
+tick from then and fires missed while paused are not caught up.
+`workflow.trigger.set` with `paused` is authorized like any other set (write on
+the workflow) and audited as `workflow.trigger.pause` or
+`workflow.trigger.resume`.
 
 If the control-plane store supports `putIfAbsent`, each fire first races to
 create `fire-records/<workflowId>/<fireTime>` (ISO time truncated to the

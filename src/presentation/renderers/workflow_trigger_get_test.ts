@@ -32,7 +32,7 @@ Deno.test("renderWorkflowTriggerGet: json mode outputs complete data", () => {
       workflowName: "scan-cves",
       builtIn: { schedule: "0 6 * * *", inputs: {} },
       override: { schedule: "0 3 * * *" },
-      effective: { schedule: "0 3 * * *", inputs: {} },
+      effective: { schedule: "0 3 * * *", inputs: {}, paused: false },
     });
   } finally {
     console.log = origLog;
@@ -53,7 +53,7 @@ Deno.test("renderWorkflowTriggerGet: json mode with no trigger", () => {
       workflowName: "nonexistent",
       builtIn: null,
       override: null,
-      effective: { schedule: null, inputs: {} },
+      effective: { schedule: null, inputs: {}, paused: false },
     });
   } finally {
     console.log = origLog;
@@ -62,4 +62,32 @@ Deno.test("renderWorkflowTriggerGet: json mode with no trigger", () => {
   assertEquals(parsed.workflowName, "nonexistent");
   assertEquals(parsed.builtIn, null);
   assertEquals(parsed.override, null);
+});
+
+Deno.test("renderWorkflowTriggerGet: json mode reports a paused override", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+  try {
+    renderWorkflowTriggerGet("json", {
+      workflowName: "scan-cves",
+      builtIn: { schedule: "0 3 * * *", inputs: {} },
+      override: { paused: true },
+      effective: { schedule: "0 3 * * *", inputs: {}, paused: true },
+    });
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output[0]);
+  assertEquals(parsed.override.paused, true);
+  assertEquals(parsed.effective.paused, true);
+});
+
+Deno.test("renderWorkflowTriggerGet: log mode renders a paused trigger", () => {
+  renderWorkflowTriggerGet("log", {
+    workflowName: "scan-cves",
+    builtIn: { schedule: "0 3 * * *", inputs: {} },
+    override: { paused: true },
+    effective: { schedule: "0 3 * * *", inputs: {}, paused: true },
+  });
 });

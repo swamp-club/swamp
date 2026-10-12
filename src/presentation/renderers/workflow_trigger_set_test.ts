@@ -57,3 +57,29 @@ Deno.test("renderWorkflowTriggerSet: json mode without inputs", () => {
   assertEquals(parsed.workflowName, "daily-report");
   assertEquals(parsed.entry.inputs, undefined);
 });
+
+Deno.test("renderWorkflowTriggerSet: json mode reports the pause asked for", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+  try {
+    renderWorkflowTriggerSet("json", {
+      workflowName: "daily-report",
+      entry: { schedule: "0 8 * * 1-5", paused: true },
+      paused: true,
+    });
+  } finally {
+    console.log = origLog;
+  }
+  const parsed = JSON.parse(output[0]);
+  assertEquals(parsed.paused, true);
+  assertEquals(parsed.entry.paused, true);
+});
+
+Deno.test("renderWorkflowTriggerSet: log mode renders a resume with nothing stored", () => {
+  renderWorkflowTriggerSet("log", {
+    workflowName: "daily-report",
+    entry: {},
+    paused: false,
+  });
+});

@@ -20,9 +20,9 @@
 import { Command } from "@cliffy/command";
 import { join } from "@std/path";
 import {
+  mergeTriggerOverride,
   readServeConfigFile,
   SERVE_CONFIG_PATH,
-  type TriggerOverrideEntry,
   validateTriggerOverrideEntry,
   writeServeConfigFile,
 } from "../../serve/serve_config.ts";
@@ -71,11 +71,18 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       "Override schedule with inputs",
       'swamp workflow trigger set @swamp/cve/researcher/scan --schedule "0 12 * * 1" --input channel=#security',
     )
+    .example(
+      "Pause a workflow's schedule",
+      "swamp workflow trigger set scan-cves --paused",
+    )
+    .example(
+      "Resume a paused schedule",
+      "swamp workflow trigger set scan-cves --resume",
+    )
     .arguments("<workflow_name:string>")
     .option(
       "--schedule <cron:string>",
-      "Cron expression for the trigger schedule",
-      { required: true },
+      "Cron expression for the trigger schedule (replaces the override's schedule and inputs)",
     )
     .option(
       "--input <value:string>",
@@ -83,6 +90,15 @@ export const workflowTriggerSetCommand = withRemoteOptions(
       {
         collect: true,
       },
+    )
+    .option(
+      "--paused",
+      "Pause the workflow's schedule (built-in or overridden) until resumed",
+      { conflicts: ["resume"] },
+    )
+    .option(
+      "--resume",
+      "Resume a paused schedule; the next run is the next cron tick from now",
     )
     .option(
       "--repo-dir <dir:string>",
@@ -103,6 +119,21 @@ export const workflowTriggerSetCommand = withRemoteOptions(
     }
   }
 
+  const schedule = options.schedule as string | undefined;
+  const paused: boolean | undefined = options.paused
+    ? true
+    : options.resume
+    ? false
+    : undefined;
+  if (schedule === undefined && paused === undefined) {
+    throw new UserError(
+      "Specify --schedule, --paused or --resume.",
+    );
+  }
+  if (schedule === undefined && Object.keys(inputs).length > 0) {
+    throw new UserError("--input requires --schedule.");
+  }
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerTokenFromOptions(
@@ -115,43 +146,51 @@ export const workflowTriggerSetCommand = withRemoteOptions(
         type: "workflow.trigger.set",
         payload: {
           workflowName,
-          schedule: options.schedule as string,
+          ...(schedule !== undefined ? { schedule } : {}),
           ...(Object.keys(inputs).length > 0 ? { inputs } : {}),
+          ...(paused !== undefined ? { paused } : {}),
         },
       },
     );
     renderWorkflowTriggerSet(cliCtx.outputMode, {
       workflowName: response.data.workflowName,
       entry: response.data.entry,
+      ...(paused !== undefined ? { paused } : {}),
     });
     return;
   }
 
   const repoDir = resolveRepoDir(options.repoDir);
 
-  const entry: TriggerOverrideEntry = {
-    schedule: options.schedule as string,
-  };
-
-  const entryWithInputs: TriggerOverrideEntry = Object.keys(inputs).length > 0
-    ? { ...entry, inputs }
-    : entry;
-
-  const configPath = join(repoDir, SERVE_CONFIG_PATH);
-  validateTriggerOverrideEntry(entryWithInputs, configPath, workflowName);
-
   cliCtx.logger.debug`Setting trigger override for workflow ${workflowName}`;
 
   const config = await readServeConfigFile(repoDir) ?? {};
   const triggers = config.triggers ?? {};
-  triggers[workflowName] = entryWithInputs;
-  config.triggers = triggers;
+  const entry = mergeTriggerOverride(triggers[workflowName], {
+    schedule,
+    inputs,
+    paused,
+  });
+
+  const configPath = join(repoDir, SERVE_CONFIG_PATH);
+  if (entry) {
+    validateTriggerOverrideEntry(entry, configPath, workflowName);
+    triggers[workflowName] = entry;
+  } else {
+    delete triggers[workflowName];
+  }
+  if (Object.keys(triggers).length > 0) {
+    config.triggers = triggers;
+  } else {
+    delete config.triggers;
+  }
 
   await writeServeConfigFile(repoDir, config);
 
   renderWorkflowTriggerSet(cliCtx.outputMode, {
     workflowName,
-    entry: entryWithInputs,
+    entry: entry ?? {},
+    ...(paused !== undefined ? { paused } : {}),
   });
 
   cliCtx.logger.debug("Workflow trigger set command completed");

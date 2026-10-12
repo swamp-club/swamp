@@ -5171,6 +5171,12 @@ export const serveCommand = new Command()
                 { name: event.workflowName },
               );
               break;
+            case "schedule_paused":
+              logger.info(
+                "Paused scheduled workflow {name} ({cron})",
+                { name: event.workflowName, cron: event.cronExpression },
+              );
+              break;
             case "schedule_fired":
               logger.info(
                 "Running scheduled workflow {name}",
@@ -6626,6 +6632,8 @@ export const serveCommand = new Command()
               cronExpression: s.cronExpression,
               nextRun: s.nextRun?.toISOString() ?? null,
               running: scheduledExecution!.isRunning(s.workflowId),
+              paused: s.paused,
+              source: s.source,
               ...scheduledExecution!.queueStatus(s.workflowId),
             })) ?? [];
 

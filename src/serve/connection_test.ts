@@ -31,6 +31,7 @@ import {
   handleMessage,
   lockTimeoutErrorForClient,
   sanitizeErrorForClient,
+  triggerSetAuditAction,
   validateServerRequest,
 } from "./connection.ts";
 import {
@@ -5177,4 +5178,23 @@ Deno.test("handleMessage: server.version lists the literal-inputs capability (sw
     payload: { capabilities?: string[] };
   };
   assertEquals(reply.payload.capabilities, ["literal-inputs"]);
+});
+
+Deno.test("triggerSetAuditAction: names a pause and a resume apart from a set", () => {
+  assertEquals(triggerSetAuditAction(true), "workflow.trigger.pause");
+  assertEquals(triggerSetAuditAction(false), "workflow.trigger.resume");
+  assertEquals(triggerSetAuditAction(undefined), "workflow.trigger.set");
+});
+
+Deno.test("validateServerRequest: accepts a workflow.trigger.set with only paused", () => {
+  const result = validateServerRequest({
+    type: "workflow.trigger.set",
+    id: "r1",
+    payload: { workflowName: "sweep", paused: true },
+  });
+  assertEquals(typeof result, "object");
+  assertEquals(
+    (result as { payload: { paused?: boolean } }).payload.paused,
+    true,
+  );
 });

@@ -61,6 +61,9 @@ export function renderWorkflowTriggerGet(
         logger.info`    input ${key}: ${value}`;
       }
     }
+    if (data.override.paused) {
+      logger.info("    paused: true");
+    }
   }
 
   logger.info("  effective:");
@@ -69,6 +72,9 @@ export function renderWorkflowTriggerGet(
     logger.info`    schedule: ${data.effective.schedule} (${source})`;
   } else {
     logger.info("    schedule: (none)");
+  }
+  if (data.effective.paused) {
+    logger.info("    paused: the schedule does not fire");
   }
   if (Object.keys(data.effective.inputs).length > 0) {
     for (const [key, value] of Object.entries(data.effective.inputs)) {

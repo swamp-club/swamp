@@ -87,6 +87,16 @@ export type ScheduledExecutionEvent =
     workflowName: string;
   }
   | {
+    /**
+     * A trigger override paused the workflow's schedule: it stays listed but
+     * does not fire. Clearing the pause emits `schedule_registered`.
+     */
+    kind: "schedule_paused";
+    workflowId: WorkflowId;
+    workflowName: string;
+    cronExpression: string;
+  }
+  | {
     kind: "schedule_fired";
     workflowId: WorkflowId;
     workflowName: string;
@@ -219,6 +229,24 @@ export type ScheduledRunAuthorizer = (
 export interface TriggerOverride {
   readonly schedule?: string;
   readonly inputs?: Record<string, unknown>;
+  /** True holds the workflow's schedule: it neither fires nor queues. */
+  readonly paused?: boolean;
+}
+
+/** Where a schedule's effective cron expression comes from. */
+export type ScheduleSource = "workflow" | "override";
+
+/** A schedule as the service lists it, paused ones included. */
+export interface ListedSchedule extends ScheduleEntry {
+  readonly workflowName: string;
+  /** True while a trigger override pauses it; `nextRun` is then null. */
+  readonly paused: boolean;
+  readonly source: ScheduleSource;
+}
+
+interface PausedSchedule {
+  readonly workflowName: string;
+  readonly cronExpression: string;
 }
 
 export interface ScheduledExecutionDeps {
@@ -271,6 +299,8 @@ export class ScheduledExecutionService {
     { controller: AbortController; runId: string }
   >();
   private readonly workflowNames = new Map<WorkflowId, string>();
+  /** Schedules a trigger override holds; never registered with the cron. */
+  private readonly pausedSchedules = new Map<WorkflowId, PausedSchedule>();
   private readonly runQueue: QueuedRun[] = [];
   private readonly maxConcurrentRuns: number;
   private readonly now: () => number;
@@ -402,6 +432,7 @@ export class ScheduledExecutionService {
 
     this.running.clear();
     this.workflowNames.clear();
+    this.pausedSchedules.clear();
     this.eventHandler = null;
 
     logger.info("Scheduled execution service stopped");
@@ -424,14 +455,46 @@ export class ScheduledExecutionService {
   }
 
   /**
-   * Returns all registered schedules and their next fire times.
+   * Returns all schedules and their next fire times, paused ones included
+   * with a null `nextRun`.
    */
-  listSchedules(): Array<ScheduleEntry & { workflowName: string }> {
-    return this.scheduler.listSchedules().map((entry) => ({
-      ...entry,
-      workflowName: this.workflowNames.get(entry.workflowId) ??
-        entry.workflowId,
+  listSchedules(): ListedSchedule[] {
+    const active = this.scheduler.listSchedules().map((entry) => {
+      const workflowName = this.workflowNames.get(entry.workflowId) ??
+        entry.workflowId;
+      return {
+        ...entry,
+        workflowName,
+        paused: false,
+        source: this.scheduleSource(workflowName),
+      };
+    });
+    const paused = [...this.pausedSchedules].map(([workflowId, entry]) => ({
+      workflowId,
+      workflowName: entry.workflowName,
+      cronExpression: entry.cronExpression,
+      nextRun: null,
+      paused: true,
+      source: this.scheduleSource(entry.workflowName),
     }));
+    return [...active, ...paused];
+  }
+
+  private scheduleSource(workflowName: string): ScheduleSource {
+    return this.triggerOverrides.get(workflowName)?.schedule !== undefined
+      ? "override"
+      : "workflow";
+  }
+
+  /** Whether a queue entry's workflow is paused, by id or by name. */
+  private isPaused(entry: QueuedRun): boolean {
+    if (this.triggerOverrides.get(entry.workflowName)?.paused === true) {
+      return true;
+    }
+    for (const key of this.identityOf(entry)) {
+      if (this.pausedSchedules.has(key as WorkflowId)) return true;
+    }
+    return false;
   }
 
   /**
@@ -541,7 +604,28 @@ export class ScheduledExecutionService {
     workflowName: string,
   ): void {
     const effective = this.resolveSchedule(workflowName, schedule);
-    if (effective) {
+    if (effective && this.triggerOverrides.get(workflowName)?.paused) {
+      // Paused: no cron job, so nothing fires or queues. Resuming registers
+      // a fresh job, which computes its next run from then on — fires missed
+      // while paused are not caught up.
+      this.scheduler.unregister(workflowId);
+      this.workflowNames.set(workflowId, workflowName);
+      this.pausedSchedules.set(workflowId, {
+        workflowName,
+        cronExpression: effective,
+      });
+      this.emit({
+        kind: "schedule_paused",
+        workflowId,
+        workflowName,
+        cronExpression: effective,
+      });
+      logger.info(
+        "Paused schedule for workflow {name}: {schedule} (serve.yaml override)",
+        { name: workflowName, schedule: effective },
+      );
+    } else if (effective) {
+      this.pausedSchedules.delete(workflowId);
       this.scheduler.register(workflowId, effective);
       this.workflowNames.set(workflowId, workflowName);
       this.emit({
@@ -560,6 +644,7 @@ export class ScheduledExecutionService {
       );
     } else {
       this.scheduler.unregister(workflowId);
+      this.pausedSchedules.delete(workflowId);
       const name = this.workflowNames.get(workflowId) ?? workflowName;
       this.workflowNames.delete(workflowId);
       this.lastQueueDelayMs.delete(name);
@@ -582,7 +667,7 @@ export class ScheduledExecutionService {
       if (!override.schedule) {
         if (!registeredNames.has(workflowName)) {
           logger.warn(
-            "Trigger override for workflow {name} has only inputs but workflow has no schedule — override is a no-op",
+            "Trigger override for workflow {name} sets no schedule and the workflow has none — override is a no-op",
             { name: workflowName },
           );
         }
@@ -633,6 +718,7 @@ export class ScheduledExecutionService {
 
       if (
         oldOverride?.schedule === newOverride.schedule &&
+        (oldOverride?.paused === true) === (newOverride.paused === true) &&
         JSON.stringify(oldOverride?.inputs) ===
           JSON.stringify(newOverride.inputs)
       ) {
@@ -684,6 +770,10 @@ export class ScheduledExecutionService {
     fireTime: Date,
   ): Promise<void> {
     const workflowName = this.workflowNames.get(workflowId) ?? workflowId;
+
+    // A paused schedule has no cron job; a fire already under way when the
+    // pause landed is dropped here, before it queues.
+    if (this.pausedSchedules.has(workflowId)) return;
 
     // Overlap prevention — skip if this specific workflow is already running.
     // Replayed runs are keyed by name (not UUID), so check both.
@@ -855,6 +945,15 @@ export class ScheduledExecutionService {
       if (this.draining) return;
       if (pendingRunId && this.deps.pendingRunHook) {
         await this.deps.pendingRunHook.delete(pendingRunId);
+      }
+      // A fire queued (or replayed) before its schedule was paused is
+      // dropped, pending entry and all, rather than run.
+      if (this.isPaused(entry)) {
+        logger.info(
+          "Dropped a queued scheduled run for workflow {name}: its schedule is paused",
+          { name: entry.workflowName },
+        );
+        return;
       }
       // Each entry starts outside any vault scope: the run enters its own
       // principal's scope, and the queue's inherited context never carries
