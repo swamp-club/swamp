@@ -111,7 +111,7 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
                 <span>{w.stepCount} steps</span>
               </div>
               <div style={{ marginTop: 12 }}>
-                <RunHistoryBar runs={wRuns} />
+                <RunHistoryBar runs={wRuns} workflowName={w.name} />
               </div>
             </div>
           );

@@ -29,6 +29,7 @@
   --info-bg: #eff6ff;
   --running: #7c3aed;
   --running-bg: #f5f3ff;
+  --skel-shine: rgba(255, 255, 255, 0.65);
   --cancelled: #4b5563;
   --cancelled-bg: #f3f4f6;
   --chart-bar-1: #059669;
@@ -70,6 +71,7 @@
     --info-bg: #0e1a30;
     --running: #a78bfa;
     --running-bg: #1a1430;
+    --skel-shine: rgba(255, 255, 255, 0.05);
     --cancelled: #9ca3af;
     --cancelled-bg: #1a1c22;
     --chart-bar-1: #34d399;
@@ -111,6 +113,7 @@
   --info-bg: #0e1a30;
   --running: #a78bfa;
   --running-bg: #1a1430;
+  --skel-shine: rgba(255, 255, 255, 0.05);
   --cancelled: #9ca3af;
   --cancelled-bg: #1a1c22;
   --chart-bar-1: #34d399;
@@ -633,19 +636,315 @@ body {
   transition: width 0.5s ease;
 }
 
-/* Per-workflow run history: one segment per run */
+/* Filter bar shared by workflow-based pages */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 240px;
+  max-width: 360px;
+  color: var(--text-3);
+}
+.filter-search svg {
+  position: absolute;
+  left: 10px;
+  pointer-events: none;
+}
+.filter-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 30px 6px 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-1);
+}
+.filter-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.filter-search kbd {
+  position: absolute;
+  right: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+.filter-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.filter-select > span {
+  font-family: "JetBrains Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.62rem;
+}
+.filter-select select {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-1);
+  max-width: 220px;
+  cursor: pointer;
+}
+.filter-select select:focus-visible,
+.time-range button:focus-visible,
+.filter-toggle input:focus-visible,
+.filter-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.filter-toggle input {
+  accent-color: var(--accent);
+}
+
+.filter-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.filter-clear {
+  font: inherit;
+  font-size: 0.75rem;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Group headings in grouped lists */
+.group-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 20px 0 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.group-heading:first-child {
+  margin-top: 0;
+}
+
+/* Empty states */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 0.85rem;
+}
+.empty-state strong {
+  color: var(--text-1);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.empty-state button,
+.empty-state a {
+  margin-top: 6px;
+}
+
+/* Header stat pills */
+.stat-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+}
+.stat-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.75rem;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.stat-pill dd {
+  margin: 0;
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.stat-pill dt {
+  margin: 0;
+}
+.stat-pill.tone-success dd {
+  color: var(--success);
+}
+.stat-pill.tone-danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: var(--danger-bg);
+}
+.stat-pill.tone-danger dd {
+  color: var(--danger);
+}
+.stat-pill.tone-warning dd {
+  color: var(--warning);
+}
+.stat-pill.tone-running dd {
+  color: var(--running);
+}
+
+/* Run history: one pip per run, oldest left, newest right */
 .run-history {
   display: flex;
   gap: 2px;
-  height: 6px;
+  align-items: stretch;
 }
 
-.run-history-seg {
+.run-pip {
   flex: 1;
-  border-radius: 1px;
+  min-width: 3px;
+  max-width: 14px;
+  border-radius: 2px;
+  background: var(--text-3);
+  transition: transform 0.1s ease, opacity 0.1s ease;
 }
-.run-history-seg.empty {
+a.run-pip:hover,
+a.run-pip:focus-visible {
+  transform: scaleY(1.25);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--text-2);
+}
+.run-pip.empty {
   background: var(--surface-inset);
+}
+.run-pip.ok {
+  background: var(--success);
+}
+.run-pip.fail {
+  background: var(--danger);
+}
+.run-pip.suspended {
+  background: var(--warning);
+}
+.run-pip.cancelled {
+  background: var(--cancelled);
+  opacity: 0.6;
+}
+.run-pip.pending {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--info) 0 2px,
+    transparent 2px 4px
+  );
+  box-shadow: inset 0 0 0 1px var(--info);
+}
+.run-pip.running {
+  background: var(--running);
+  animation: pip-pulse 1.4s ease-in-out infinite;
+}
+
+/* In-progress marker: one run pulses a dot; several stack dots + count */
+.running-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  background: var(--running-bg);
+  color: var(--running);
+}
+.running-badge.multi {
+  box-shadow: inset 0 0 0 1px var(--running);
+}
+.running-dots {
+  display: inline-flex;
+}
+.running-dots > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--running);
+  box-shadow: 0 0 0 1.5px var(--running-bg);
+  animation: pulse-dot 1.5s infinite;
+}
+.running-dots > span + span {
+  margin-left: -3px;
+  animation-delay: 0.25s;
+}
+.running-dots > span + span + span {
+  animation-delay: 0.5s;
+}
+
+/* Shared by StatusDot and the running badge */
+@keyframes pulse-dot {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--running) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@keyframes pip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-pip.running,
+  .running-dots > span {
+    animation: none;
+  }
 }
 
 /* Schedule rows */
@@ -936,6 +1235,85 @@ body {
   padding: 48px;
   color: var(--text-3);
   font-size: 0.88rem;
+}
+
+/* Skeletons: one shimmer pinned to the viewport so every block pulses
+   together; fades in late so fast loads never flash placeholders. */
+.skel {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 4px;
+  background-color: var(--surface-inset);
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    var(--skel-shine) 50%,
+    transparent 70%
+  );
+  background-size: 200vw 100%;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  animation: skel-shimmer 1.6s linear infinite;
+}
+
+.skel-region {
+  animation: skel-in 0.3s ease 0.12s both;
+}
+
+.skel-card {
+  cursor: default;
+}
+.skel-card:hover {
+  border-color: var(--border);
+}
+
+.skel-row:hover td {
+  background: transparent;
+}
+
+.skel-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.skel-list-row:last-child {
+  border-bottom: none;
+}
+
+@keyframes skel-shimmer {
+  from {
+    background-position: -100vw 0;
+  }
+  to {
+    background-position: 100vw 0;
+  }
+}
+
+@keyframes skel-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel,
+  .skel-region {
+    animation: none;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 /* Login */

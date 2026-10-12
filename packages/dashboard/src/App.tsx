@@ -32,6 +32,7 @@ import {
   SIDEBAR_COLLAPSED_KEY,
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
+import { TimeRangeProvider } from "./client/time_range.ts";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Workflows } from "./views/Workflows";
@@ -74,7 +75,11 @@ function AppShell() {
     return <div className="loading">Connecting to swamp serve...</div>;
   }
 
-  return <Dashboard onLogout={logout} />;
+  return (
+    <TimeRangeProvider>
+      <Dashboard onLogout={logout} />
+    </TimeRangeProvider>
+  );
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
