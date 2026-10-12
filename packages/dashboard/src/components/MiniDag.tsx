@@ -19,7 +19,7 @@
 
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import {
   type DagLayoutOptions,
   layoutDag,
@@ -28,6 +28,12 @@ import {
 } from "../lib/mini_dag_layout.ts";
 
 export type { MiniDagEdge, MiniDagNode } from "../lib/mini_dag_layout.ts";
+
+interface ScrollBox {
+  scrollWidth: number;
+  clientWidth: number;
+  scrollLeft: number;
+}
 
 interface MiniDagProps {
   nodes: readonly MiniDagNode[];
@@ -57,8 +63,19 @@ export function MiniDag(
   { nodes, edges, highlight = [], label, layout: options }: MiniDagProps,
 ) {
   const markerId = `mini-dag-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const scrollRef = useRef<HTMLDivElement>(null);
   const layout = layoutDag(nodes, edges, options);
   const emphasised = new Set(highlight);
+  // A graph wider than its box opens scrolled to the first highlighted
+  // node, so on a narrow screen the part that matters is in view.
+  const firstHighlight = layout.nodes.find((n) => emphasised.has(n.id));
+  const focusX = firstHighlight?.x ?? 0;
+  useEffect(() => {
+    // Typed structurally: the component also type-checks without DOM libs.
+    const el = scrollRef.current as unknown as ScrollBox | null;
+    if (!el || focusX === 0 || el.scrollWidth <= el.clientWidth) return;
+    el.scrollLeft = Math.max(0, focusX - el.clientWidth / 4);
+  }, [focusX]);
   const focusing = emphasised.size > 0;
   const predecessors = new Map<string, string[]>();
   for (const e of layout.edges) {
@@ -70,7 +87,14 @@ export function MiniDag(
   if (layout.nodes.length === 0) return null;
 
   return (
-    <div className="mini-dag" role="group" aria-label={label}>
+    <div
+      className="mini-dag"
+      role="group"
+      aria-label={label}
+      ref={scrollRef}
+      // Scrollable regions must be reachable by keyboard.
+      tabIndex={layout.width > 0 ? 0 : undefined}
+    >
       <div
         className="mini-dag-canvas"
         style={{ width: layout.width, height: layout.height }}
