@@ -24,6 +24,7 @@ import {
   type FieldMetadata,
   findFieldMetadata,
   findValuesWithMetadata,
+  schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
 
 const isMarked = (meta: FieldMetadata) => meta.marked === true;
@@ -757,4 +758,53 @@ Deno.test("findValuesWithMetadata: a coerced date member is kept for a value of 
     at: z.union([z.coerce.date().meta({ marked: true }), z.number()]),
   });
   assertEquals(markedPaths(schema, { at: 1700000000 }), ["at"]);
+});
+
+Deno.test("schemaHoldsMetadata: finds a mark anywhere the value walk can report", () => {
+  const leaf = () => z.string().meta({ marked: true });
+  const holders: z.ZodTypeAny[] = [
+    z.object({ a: leaf() }),
+    z.object({ a: z.object({ b: leaf().optional() }) }),
+    z.array(z.object({ a: leaf() })),
+    z.record(z.string(), leaf()),
+    z.tuple([z.string(), leaf()]),
+    z.tuple([z.string()]).rest(leaf()),
+    z.object({}).catchall(leaf()),
+    z.union([z.number(), z.object({ a: leaf() })]),
+    z.intersection(z.object({ a: z.string() }), z.object({ b: leaf() })),
+    z.string().pipe(leaf()),
+    z.lazy(() => z.object({ a: leaf() })),
+    z.object({ a: z.string().transform((v) => v).meta({ marked: true }) }),
+  ];
+  for (const schema of holders) {
+    assertEquals(schemaHoldsMetadata(schema, isMarked), true);
+  }
+});
+
+Deno.test("schemaHoldsMetadata: answers false for a schema that marks nothing, recursive or not", () => {
+  type Node = { next?: Node };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({ next: node.optional() })
+  );
+  const plain = z.object({
+    a: z.string().meta({ note: "x" }),
+    list: z.array(z.object({ b: z.number() })),
+    node,
+  });
+  assertEquals(schemaHoldsMetadata(plain, isMarked), false);
+});
+
+Deno.test("schemaHoldsMetadata: searches a schema once per matches function", () => {
+  const schema = z.object({ a: z.string().meta({ marked: true }) });
+  let calls = 0;
+  const counting = (meta: Record<string, unknown>) => {
+    calls++;
+    return Boolean(meta.marked);
+  };
+  assertEquals(schemaHoldsMetadata(schema, counting), true);
+  const afterFirst = calls;
+  assertEquals(schemaHoldsMetadata(schema, counting), true);
+  assertEquals(calls, afterFirst);
+  // Another function gets its own answer.
+  assertEquals(schemaHoldsMetadata(schema, () => false), false);
 });

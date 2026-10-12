@@ -27,6 +27,7 @@ import {
   extractFieldsWithMetadata,
   type FieldMetadata,
   findValuesWithMetadata,
+  schemaHoldsMetadata,
 } from "./zod_field_metadata.ts";
 
 /**
@@ -436,6 +437,11 @@ export function redactSensitiveValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Most schemas mark nothing; this is answered once per schema, and spares
+  // walking the value on every call.
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return data;
+  }
   // The schema-only pass also masks a field holding null, which the walk
   // skips as absent.
   const fields = extractSensitiveFields(schema).filter((field) =>
@@ -531,6 +537,9 @@ export function extractSensitiveFieldValues(
   schema: z.ZodTypeAny,
   data: Record<string, unknown>,
 ): string[] {
+  if (!schemaHoldsMetadata(schema, isSensitive)) {
+    return [];
+  }
   const secrets: string[] = [];
 
   for (const field of extractSensitiveFields(schema)) {

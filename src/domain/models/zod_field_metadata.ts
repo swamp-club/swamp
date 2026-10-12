@@ -737,3 +737,48 @@ export function findValuesWithMetadata(
   visitValue(walk, schema, value, "", [], false, true);
   return walk.found;
 }
+
+/**
+ * Answers of {@link schemaHoldsMetadata}, per `matches` function and schema.
+ * Weak on both, so an entry lasts no longer than the schema it describes.
+ */
+const heldAnswers = new WeakMap<
+  (meta: FieldMetadata) => boolean,
+  WeakMap<z.ZodTypeAny, boolean>
+>();
+
+/**
+ * Reports whether `schema`, or any schema reachable from it, carries metadata
+ * that satisfies `matches`. It reads the schema alone, and covers every place
+ * {@link findValuesWithMetadata} can report, so a false answer means that
+ * walk would find nothing in any value.
+ *
+ * The answer is kept per `matches` function and schema: pass the same
+ * function each time, and expect metadata registered on a schema after its
+ * first lookup to go unseen.
+ */
+export function schemaHoldsMetadata(
+  schema: z.ZodTypeAny,
+  matches: (meta: FieldMetadata) => boolean,
+): boolean {
+  let answers = heldAnswers.get(matches);
+  if (!answers) {
+    answers = new WeakMap();
+    heldAnswers.set(matches, answers);
+  }
+  const known = answers.get(schema);
+  if (known !== undefined) {
+    return known;
+  }
+  const walk: ValueWalk = {
+    matches,
+    found: [],
+    foundPaths: new Set(),
+    visited: new Map(),
+    ancestors: new Set(),
+    within: new Map(),
+  };
+  const held = matchWithin(walk, schema) !== undefined;
+  answers.set(schema, held);
+  return held;
+}

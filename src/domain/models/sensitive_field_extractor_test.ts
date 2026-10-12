@@ -1399,3 +1399,18 @@ Deno.test("redactSensitiveValues: does not add a key for an absent field named l
   assertEquals(Object.keys(redacted), ["region"]);
   assertEquals(findLiteralSensitiveGlobalArgs(schema, { region: "x" }), []);
 });
+
+Deno.test("redactSensitiveValues and extractSensitiveFieldValues: a schema that marks nothing is answered without reading the value", () => {
+  const schema = z.object({ region: z.string(), list: z.array(z.string()) });
+  // Reading any property of this value throws.
+  const data = new Proxy({}, {
+    get: () => {
+      throw new Error("value was read");
+    },
+    ownKeys: () => {
+      throw new Error("value was read");
+    },
+  }) as Record<string, unknown>;
+  assertEquals(redactSensitiveValues(schema, data) === data, true);
+  assertEquals(extractSensitiveFieldValues(schema, data), []);
+});

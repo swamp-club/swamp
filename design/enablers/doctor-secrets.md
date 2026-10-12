@@ -118,7 +118,10 @@ size of the value even when union members overlap in a recursive schema.
 
 `redactSensitiveValues` (`model get`, reports) and `extractSensitiveFieldValues`
 (the values registered for masking in logs before a method runs) use the same
-walk, so a field the guard sends to a vault is masked once it is resolved.
+walk, so a field the guard sends to a vault is masked once it is resolved. Both
+first ask whether the schema marks anything at all (`schemaHoldsMetadata`,
+answered once per schema and kept), and skip the walk when it does not. The
+guard itself always walks.
 Vaulting of sensitive fields in resource data still reads the schema alone and
 sees object-nested fields only (swamp-club#3038).
 
