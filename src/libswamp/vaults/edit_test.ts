@@ -916,6 +916,42 @@ Deno.test("createVaultEditDeps: an empty base_dir falls back to the repo dir, as
   });
 });
 
+Deno.test("createVaultEditDeps: a rename moves the secrets of a local_encryption vault whose type is in another case", async () => {
+  await withTempDir(async (repoDir) => {
+    const repo = new YamlVaultConfigRepository(repoDir);
+    await repo.save(
+      VaultConfig.fromData({
+        ...existingData,
+        type: "LOCAL_ENCRYPTION",
+        config: { auto_generate: true },
+      }),
+    );
+    await new LocalEncryptionVaultProvider("my-vault", {
+      auto_generate: true,
+      base_dir: repoDir,
+    }).put("API_KEY", "s3cret");
+
+    const events = await collect<VaultEditEvent>(
+      vaultEdit(createLibSwampContext(), createVaultEditDeps(repoDir), {
+        vaultNameOrId: "my-vault",
+        stdinContent:
+          `name: renamed\ntype: LOCAL_ENCRYPTION\nconfig:\n  auto_generate: true\n`,
+      }),
+    );
+
+    const last = events[events.length - 1] as Extract<
+      VaultEditEvent,
+      { kind: "completed" }
+    >;
+    assertEquals(last.data.secretsMoved, true);
+    const renamed = new LocalEncryptionVaultProvider("renamed", {
+      auto_generate: true,
+      base_dir: repoDir,
+    });
+    assertEquals(await renamed.get("API_KEY"), "s3cret");
+  });
+});
+
 // --- vaults whose config does not parse (swamp-club#2693) ---
 
 const BROKEN_YAML = "name: [broken\n  : : :\n";
@@ -1467,7 +1503,7 @@ Deno.test("vaultEdit: an untrusted repair gets the server's key source", async (
 
     assertEquals(completedData(lastEvent(events)).repaired, true);
     const reread = await repo.findById("local_encryption", BROKEN_ID);
-    assertEquals(reread?.config, { auto_generate: true, base_dir: repoDir });
+    assertEquals(reread?.config, { auto_generate: true });
   });
 });
 

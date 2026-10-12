@@ -27,7 +27,18 @@ import {
   SEPARATOR,
 } from "@std/path";
 import { getLogger } from "@logtape/logtape";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import {
+  definitionDeleteBatches,
+  definitionSaveBatches,
+  type PriorFile,
+  readPriors,
+  stagingTierOf,
+} from "./config_staging.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { isIoError } from "./io_errors.ts";
@@ -745,11 +756,22 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await ensureDir(dir);
 
     const targetPath = this.resolveWritePath(type, definition, writeBaseDir);
-    await signalChange(this.markDirtyHook, { kind: "write", path: targetPath });
+    await signalChange(
+      this.markDirtyHook,
+      { kind: "write", path: targetPath },
+      { typed: true },
+    );
     const previousPath = this.idToActualPath.get(definition.id);
 
     // Check if this is a new definition or an update
     const legacyPath = this.getLegacyPath(type, definition.id, writeBaseDir);
+    // On v3 (swamp-club#3256), what each file held before this save replaces
+    // or removes it: its digest for an edit's precondition, and the name it
+    // declared, which tells a rename apart. Read before readMergeSource,
+    // which removes a corrupt target.
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([targetPath, previousPath, legacyPath])
+      : new Map<string, PriorFile>();
     const isNew = !(await this.exists(targetPath)) &&
       !(previousPath && await this.exists(previousPath)) &&
       !(await this.exists(legacyPath));
@@ -845,13 +867,14 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
       await atomicWriteTextFile(targetPath, content);
 
-      await this.cleanupOldPaths(
+      const removed = await this.cleanupOldPaths(
         definition.id,
         targetPath,
         previousPath,
         legacyPath,
       );
       this.idToActualPath.set(definition.id, targetPath);
+      await this.stageSave(definition, targetPath, content, removed, priors);
       if (this.eventBus) {
         await this.eventBus.publish(
           createDefinitionUpdated(
@@ -867,7 +890,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     const content = stringifyYaml(cleanData);
     await atomicWriteTextFile(targetPath, content);
 
-    await this.cleanupOldPaths(
+    const removed = await this.cleanupOldPaths(
       definition.id,
       targetPath,
       previousPath,
@@ -875,6 +898,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     );
 
     this.idToActualPath.set(definition.id, targetPath);
+    await this.stageSave(definition, targetPath, content, removed, priors);
 
     // Emit event
     if (this.eventBus) {
@@ -891,6 +915,46 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         );
       await this.eventBus.publish(event);
     }
+  }
+
+  /**
+   * Stages a save on v3 (swamp-club#3256), outside the cleanup's catch
+   * blocks so a refusal surfaces. The batches, in commit order, are in
+   * {@link definitionSaveBatches}.
+   */
+  private async stageSave(
+    definition: Definition,
+    targetPath: string,
+    content: string,
+    removed: readonly string[],
+    priors: ReadonlyMap<string, PriorFile>,
+  ): Promise<void> {
+    const batches = typedStagingActive(this.markDirtyHook)
+      ? definitionSaveBatches({
+        kind: "model",
+        id: definition.id,
+        name: definition.name,
+        targetPath,
+        content: new TextEncoder().encode(content),
+        removed,
+        priors,
+        tierOf: (path) => this.stagingTierOf(path),
+      })
+      : [[]];
+    for (const batch of batches) {
+      await stageTyped(this.markDirtyHook, () => batch);
+    }
+  }
+
+  /**
+   * A definition file's tier and record key for v3: managed config, or an
+   * auto-definitions directory; undefined for a git-tracked definition.
+   */
+  private stagingTierOf(path: string) {
+    return stagingTierOf(this.repoDir, [
+      this.baseDir,
+      this.secondaryBaseDir,
+    ], path);
   }
 
   /**
@@ -960,9 +1024,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     await signalChange(this.markDirtyHook, {
       kind: kept ? "write" : "remove",
       path: resolvedPath,
-    });
+    }, { typed: true });
+    const priors = typedStagingActive(this.markDirtyHook)
+      ? await readPriors([...pathsToTry])
+      : new Map<string, PriorFile>();
 
     let deleted = false;
+    const removed: string[] = [];
     for (const path of pathsToTry) {
       // The id-named path is also where a definition named with this UUID
       // lives, and a copied file can share the id; never remove another
@@ -970,10 +1038,13 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       if (await this.declaresOther(path, id, name)) continue;
       try {
         if (path !== resolvedPath && await this.exists(path)) {
-          await signalChange(this.markDirtyHook, { kind: "remove", path });
+          await signalChange(this.markDirtyHook, { kind: "remove", path }, {
+            typed: true,
+          });
         }
         await Deno.remove(path);
         deleted = true;
+        removed.push(path);
 
         // Clean up empty parent directories
         await cleanupEmptyParentDirs(path, this.ownerBaseDir(path));
@@ -997,6 +1068,19 @@ export class YamlDefinitionRepository implements DefinitionRepository {
       }
     } else {
       logger.debug`No definition file found to delete for ${id}`;
+    }
+    const batches = typedStagingActive(this.markDirtyHook)
+      ? definitionDeleteBatches({
+        kind: "model",
+        id,
+        name: definitionName,
+        removed,
+        priors,
+        tierOf: (path) => this.stagingTierOf(path),
+      })
+      : [[]];
+    for (const batch of batches) {
+      await stageTyped(this.markDirtyHook, () => batch);
     }
   }
 
@@ -1130,20 +1214,23 @@ export class YamlDefinitionRepository implements DefinitionRepository {
    * Removes the files a definition moved away from. A path that now holds a
    * different definition is left alone, as delete() leaves it. The check is on
    * id alone: a renamed definition's old file declares its old name, so the
-   * name cannot tell a rename apart from another definition.
+   * name cannot tell a rename apart from another definition. Returns the
+   * paths it removed, for their v3 tombstones (swamp-club#3256).
    */
   private async cleanupOldPaths(
     id: DefinitionId,
     targetPath: string,
     previousPath: string | undefined,
     legacyPath: string,
-  ): Promise<void> {
+  ): Promise<string[]> {
+    const removed: string[] = [];
     if (
       previousPath && previousPath !== targetPath &&
       !(await this.declaresOther(previousPath, id))
     ) {
       try {
         await Deno.remove(previousPath);
+        removed.push(previousPath);
         logger.debug`Migrated definition file from ${
           basename(previousPath)
         } to ${basename(targetPath)}`;
@@ -1163,6 +1250,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     ) {
       try {
         await Deno.remove(legacyPath);
+        removed.push(legacyPath);
         logger.debug`Migrated definition file from ${basename(legacyPath)} to ${
           basename(targetPath)
         }`;
@@ -1174,6 +1262,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
         }
       }
     }
+    return removed;
   }
 
   private resolveWritePath(

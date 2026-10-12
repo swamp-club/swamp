@@ -85,3 +85,37 @@ Deno.test("datastoreExtensionCandidates: a lookup failure keeps the static candi
     "@acme/pg",
   ]);
 });
+
+Deno.test("datastoreExtensionCandidates: leaves out a search hit whose metadata lacks the type", async () => {
+  const withDetail = (datastoreTypes: string[]): ExtensionLookupPort => ({
+    ...lookup([], "@acme/postgres-datastore"),
+    getLatestVersionDetail: () =>
+      Promise.resolve({
+        contentMetadata: {
+          models: [],
+          extensions: [],
+          workflows: [],
+          vaults: [],
+          datastores: datastoreTypes.map((type) => ({
+            fileName: "pg.ts",
+            type,
+            name: type,
+            description: "",
+            hasConfigSchema: false,
+            configFields: [],
+          })),
+          reports: [],
+          webhooks: [],
+          skills: [],
+        },
+      }),
+  });
+  assertEquals(
+    await datastoreExtensionCandidates("@acme/pg", withDetail(["@acme/other"])),
+    ["@acme/pg"],
+  );
+  assertEquals(
+    await datastoreExtensionCandidates("@acme/pg", withDetail(["@acme/pg"])),
+    ["@acme/pg", "@acme/postgres-datastore"],
+  );
+});

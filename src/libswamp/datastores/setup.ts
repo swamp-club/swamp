@@ -17,9 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { ensureDir } from "@std/fs";
-import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
+import { ensureDir, walk } from "@std/fs";
 import {
+  basename,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
+import {
+  CATALOG_FILES,
   classifyInRepoConfig,
   type ConfigTierConflict,
   type DatastoreConfig,
@@ -29,6 +37,8 @@ import {
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
   type InRepoConfigRole,
+  isRunLogFile,
+  mayHoldRunLogs,
   mergeSetupDatastoreBlock,
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
@@ -53,7 +63,17 @@ import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
-import { ensureSupportedDatastoreFormat } from "../../infrastructure/persistence/datastore_format_guard.ts";
+import { removeCatalogDb } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  datastoreBlockEngine,
+  ensureSupportedDatastoreFormat,
+} from "../../infrastructure/persistence/datastore_format_guard.ts";
+import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
+import { REPO_LOCAL_STREAM_SUBDIRS } from "../../infrastructure/datastore_v3/record_path_guard.ts";
+import {
+  initializeV3Datastore,
+  isFreshV3Skeleton,
+} from "../../infrastructure/datastore_v3/v3_datastore.ts";
 import {
   getSwampDataDir,
   swampPath,
@@ -63,6 +83,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { isLocalEncryptionType } from "../../domain/vaults/local_encryption_key_source.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { writeNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -89,6 +111,13 @@ export interface DatastoreSetupData {
   namespace?: string;
   sourcePath?: string;
   destinationPath?: string;
+  /**
+   * True when the data was copied from an external filesystem datastore and
+   * left in place there, which setup never cleans up (swamp-club#3238).
+   */
+  sourceKept?: boolean;
+  /** The format the datastore was created in, when setup chose v3. */
+  format?: 3;
 }
 
 /** A warning raised during datastore setup, keyed by `code`. */
@@ -118,6 +147,15 @@ export type DatastoreSetupWarningData =
     /** Paths relative to `localConfigPath`. */
     keptPaths: string[];
     localConfigPath: string;
+  }
+  | {
+    /**
+     * The repo's default vault is a local_encryption vault, whose key and
+     * secrets stay on this machine (swamp-club#3259).
+     */
+    code: "local_default_vault";
+    message: string;
+    vaultName: string;
   };
 
 /**
@@ -149,7 +187,26 @@ export interface DatastoreSetupFilesystemInput {
    * instead of {repoDir}/.swamp.
    */
   outgoingCachePath?: string;
+  /**
+   * When the current datastore is a filesystem datastore outside the repo,
+   * its root (see externalFilesystemDatastoreRoot). Migration reads from
+   * it instead of {repoDir}/.swamp, and setup stops when it is missing
+   * (swamp-club#3238).
+   */
+  outgoingDatastorePath?: string;
+  /**
+   * The format to create the datastore in: 2 (files, the default) or 3, the
+   * v3 commit log (swamp-club#3279). Format 3 needs a new, empty path and a
+   * current datastore with no records to migrate.
+   */
+  format?: 2 | 3;
 }
+
+/** What a filesystem datastore path holds, for a v3 setup. */
+export type V3TargetState =
+  | { readonly kind: "absent" }
+  | { readonly kind: "empty" }
+  | { readonly kind: "refused"; readonly reason: string };
 
 /** Dependencies for datastore setup operations. */
 export interface DatastoreSetupDeps {
@@ -214,10 +271,21 @@ export interface DatastoreSetupDeps {
   inspectManagedConfigTier: (
     repoDir: string,
   ) => Promise<ManagedConfigTierInspection>;
+  /**
+   * The name of the repo's `defaultVault` when it is a local_encryption
+   * vault, or undefined when there is no default vault or it is another
+   * type (swamp-club#3259).
+   */
+  findLocalDefaultVault: (repoDir: string) => Promise<string | undefined>;
   updateRepoConfig: (
     repoDir: string,
     datastoreConfig: Record<string, unknown>,
   ) => Promise<void>;
+  /**
+   * Removes the repo's local catalog, so the next command rebuilds it from
+   * the datastore `.swamp.yaml` now names (swamp-club#3238).
+   */
+  invalidateCatalog: (repoDir: string) => Promise<void>;
   collapseEnvVars: (path: string) => string;
   /**
    * Refuses the target datastore when its format marker names a format this
@@ -229,8 +297,49 @@ export interface DatastoreSetupDeps {
     repoDir: string,
     config: DatastoreConfig,
     provider?: DatastoreProvider,
-  ) => Promise<void>;
+  ) => Promise<DatastoreEngine | void>;
+  /**
+   * Whether a v3 datastore may be created at `path`: absent or an empty
+   * directory, never a symlink (swamp-club#3279).
+   */
+  inspectV3Target: (path: string) => Promise<V3TargetState>;
+  /**
+   * Whether `sourceDir` holds any record under the datastore `subdirs`,
+   * other than the `skip` paths (relative to `sourceDir`).
+   */
+  hasDatastoreRecords: (
+    sourceDir: string,
+    subdirs: readonly string[],
+    skip: readonly string[],
+  ) => Promise<boolean>;
+  /**
+   * Creates a v3 datastore at `path`: the format marker first, then
+   * `commits.db` and `_blobs/`, so a crash part-way leaves a marked but
+   * empty datastore or an unmarked empty directory, never v3 files without
+   * a marker.
+   */
+  createV3Datastore: (path: string) => Promise<void>;
+  /**
+   * The datastore the repo uses now (swamp-club#3279): its engine, since
+   * setup refuses to move a repo off a v3 datastore, and its namespace,
+   * which a v3 setup keeps.
+   */
+  currentDatastore: (
+    repoDir: string,
+  ) => Promise<{ engine: DatastoreEngine; namespace?: string }>;
 }
+
+/** The refusal for a setup that would move a repo off a v3 datastore. */
+const MOVE_OFF_V3_REFUSAL: DatastoreSetupEvent = {
+  kind: "error",
+  error: {
+    code: "validation_failed",
+    message: "This repository uses a v3 datastore. Moving it to another " +
+      "datastore is not supported yet: its records live in the checkout and " +
+      "its commit log, and migrating v3 data is not available. Nothing was " +
+      "changed.",
+  },
+};
 
 /** The error event for a datastore format check that refused. */
 function formatRefusal(err: unknown): DatastoreSetupEvent {
@@ -268,13 +377,40 @@ export async function* datastoreSetupFilesystem(
         return;
       }
 
+      if ((await deps.currentDatastore(input.repoDir)).engine === "v3") {
+        yield MOVE_OFF_V3_REFUSAL;
+        return;
+      }
+
+      let targetEngine: DatastoreEngine | void;
       try {
-        await deps.assertDatastoreFormat(input.repoDir, {
+        targetEngine = await deps.assertDatastoreFormat(input.repoDir, {
           type: "filesystem",
           path: input.datastorePath,
         });
       } catch (err) {
         yield formatRefusal(err);
+        return;
+      }
+      // A target that is already a v3 datastore takes no v2 setup: v2's
+      // migration would copy the repo's records into it, where a v3 checkout
+      // never reads them (swamp-club#3279).
+      if (targetEngine === "v3" && input.format !== 3) {
+        yield {
+          kind: "error",
+          error: {
+            code: "validation_failed",
+            message: `${input.datastorePath} is a v3 datastore. Set it up ` +
+              "with `swamp datastore setup filesystem --path <dir> --format 3`" +
+              " (a v3 datastore takes a repository with no records). Nothing " +
+              "was changed.",
+          },
+        };
+        return;
+      }
+
+      if (input.format === 3) {
+        yield* setupV3Filesystem(ctx, deps, input);
         return;
       }
 
@@ -292,6 +428,45 @@ export async function* datastoreSetupFilesystem(
         return;
       }
 
+      // Where the current datastore's data is. A missing filesystem
+      // datastore stops setup: migrating from .swamp/ instead would report
+      // success and leave the data behind (swamp-club#3238).
+      const source = await resolveMigrationSource(ctx, input);
+      if (!input.skipMigration && "error" in source) {
+        yield { kind: "error", error: source.error };
+        return;
+      }
+      // Under --skip-migration an unreadable source is still the current
+      // datastore: nothing is read from it, but a switch away from it must
+      // still drop the catalog.
+      const sourceDir = "error" in source
+        ? source.currentPath
+        : source.sourceDir;
+      const fromOutgoingCache = !("error" in source) &&
+        source.fromOutgoingCache;
+      const ontoSource = await isSamePath(sourceDir, input.datastorePath);
+
+      if (!input.skipMigration && !ontoSource) {
+        const nested = await migratedSubdirHolding(
+          sourceDir,
+          input.datastorePath,
+          deps.getDatastoreDirectories({ type: "filesystem" }),
+        );
+        if (nested) {
+          yield {
+            kind: "error",
+            error: {
+              code: "validation_failed",
+              message:
+                `Datastore path ${input.datastorePath} is inside ${nested}, ` +
+                `which setup moves from the current datastore. Choose a path ` +
+                `outside it.`,
+            },
+          };
+          return;
+        }
+      }
+
       // Create datastore subdirectory structure
       const directories = deps.getDatastoreDirectories({
         type: "filesystem",
@@ -306,42 +481,24 @@ export async function* datastoreSetupFilesystem(
       let bytesCopied = 0;
       let directoriesMigrated: string[] = [];
       const errors: string[] = [];
-      let sourceDir = `${input.repoDir}/.swamp`;
       let migrationSkips: readonly string[] = [];
 
       if (!input.skipMigration) {
         yield { kind: "migrating" };
 
-        // When switching from a remote/sync-based datastore, content lives
-        // in the local cache, not under .swamp/. Use the cache path when
-        // it was provided and actually exists on disk.
-        if (input.outgoingCachePath) {
-          try {
-            const stat = await Deno.stat(input.outgoingCachePath);
-            if (stat.isDirectory) {
-              sourceDir = input.outgoingCachePath;
-              ctx.logger
-                .debug`Migrating from outgoing datastore cache at ${sourceDir}`;
-            }
-          } catch {
-            ctx.logger
-              .warn`Outgoing cache path ${input.outgoingCachePath} not found, falling back to ${sourceDir}`;
-          }
-        }
-
         // An outgoing cache's config dir is the real config tier. The
         // repo's own .swamp/config may hold instance-local state that must
         // not move (swamp-club#2837).
-        if (sourceDir === `${input.repoDir}/.swamp`) {
+        if (!fromOutgoingCache) {
           migrationSkips = inRepoConfigMigrationSkips(
-            await deps.resolveInRepoConfigRole(input.repoDir),
+            await sourceConfigRole(deps, input.repoDir, sourceDir),
           );
         }
 
         // Setup onto the migration source itself (e.g. --path .swamp) has
         // nothing to move. Copying would fail on every open file, and with
         // no failures cleanup would delete the datastore (swamp-club#3162).
-        if (await isSamePath(sourceDir, input.datastorePath)) {
+        if (ontoSource) {
           ctx.logger
             .info`Datastore path ${input.datastorePath} is the current datastore; nothing to migrate`;
         } else {
@@ -350,11 +507,13 @@ export async function* datastoreSetupFilesystem(
             type: "filesystem" as const,
             path: input.datastorePath,
           };
+          // The catalog is a local index: never copied, rebuilt below.
+          const copySkips = [...migrationSkips, ...CATALOG_FILES];
           const result = await deps.migrateData(
             sourceDir,
             input.datastorePath,
             config,
-            migrationSkips,
+            copySkips,
           );
           filesCopied = result.filesCopied;
           bytesCopied = result.bytesCopied;
@@ -366,11 +525,11 @@ export async function* datastoreSetupFilesystem(
             sourceDir,
             input.datastorePath,
             config,
-            migrationSkips,
+            copySkips,
           );
           if (!verification.valid) {
             errors.push(
-              `Migration verification: source has ${verification.sourceCount} files, destination has ${verification.destCount}`,
+              `Migration verification: ${verification.destCount} of ${verification.sourceCount} source files arrived at the destination`,
             );
           }
         }
@@ -389,16 +548,30 @@ export async function* datastoreSetupFilesystem(
         });
       }
 
-      // Clean up migrated directories from source after config is persisted
+      // Clean up migrated directories from source after config is persisted.
+      // An external filesystem datastore is copied, never cleaned up: other
+      // repositories may share it (swamp-club#3238).
       if (
         !input.skipMigration && errors.length === 0 &&
         directoriesMigrated.length > 0
       ) {
-        await deps.cleanupSourceDirs(
-          sourceDir,
-          directoriesMigrated,
-          migrationSkips,
-        );
+        if (input.outgoingDatastorePath) {
+          ctx.logger
+            .info`Left the previous datastore's data in place at ${sourceDir}`;
+        } else {
+          await deps.cleanupSourceDirs(
+            sourceDir,
+            directoriesMigrated,
+            migrationSkips,
+          );
+        }
+      }
+
+      // The catalog indexes the old datastore. Drop it so the next command
+      // rebuilds it from the new one; a kept catalog misses whatever the
+      // new datastore already held (swamp-club#3238).
+      if (errors.length === 0 && !ontoSource) {
+        await deps.invalidateCatalog(input.repoDir);
       }
 
       if (errors.length === 0) {
@@ -426,12 +599,110 @@ export async function* datastoreSetupFilesystem(
             ? {
               sourcePath: sourceDir,
               destinationPath: input.datastorePath,
+              ...(input.outgoingDatastorePath ? { sourceKept: true } : {}),
             }
             : {}),
         },
       };
     })(),
   );
+}
+
+/**
+ * The v3 part of filesystem setup (swamp-club#3279): a new, empty datastore
+ * in the commit-log format, with nothing migrated. Migrating v2 records is
+ * Phase 6, so setup refuses while the current datastore holds any; their
+ * files would sit in the checkout with no commit behind them.
+ */
+async function* setupV3Filesystem(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  input: DatastoreSetupFilesystemInput,
+): AsyncIterable<DatastoreSetupEvent> {
+  const refuse = (message: string): DatastoreSetupEvent => ({
+    kind: "error",
+    error: { code: "validation_failed", message },
+  });
+
+  const target = await deps.inspectV3Target(input.datastorePath);
+  if (target.kind === "refused") {
+    yield refuse(
+      `A v3 datastore needs a new, empty directory: ${target.reason}. ` +
+        "Migrating an existing datastore to v3 is not supported yet.",
+    );
+    return;
+  }
+
+  // Records the repo uses now would be left behind: their files stay where
+  // they are and no commit names them. The checkout's own .swamp is where a
+  // v3 datastore materialises records, so it must hold none even under
+  // --skip-migration.
+  const source = await resolveMigrationSource(ctx, input);
+  // A current datastore that cannot be read may hold records: refuse, as v2
+  // setup does, rather than leave them behind (swamp-club#3238).
+  if (!input.skipMigration && "error" in source) {
+    yield { kind: "error", error: source.error };
+    return;
+  }
+  const sourceDir = "error" in source ? source.currentPath : source.sourceDir;
+  const { namespace } = await deps.currentDatastore(input.repoDir);
+  const repoSwampDir = swampPath(input.repoDir);
+  const subdirs = deps.getDatastoreDirectories({ type: "filesystem" })
+    .filter((subdir) =>
+      !(REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(subdir)
+    );
+  // The checkout's own .swamp is always checked, even under
+  // --skip-migration: a record left there would be materialised in the v3
+  // checkout with no commit behind it. The current datastore is checked too
+  // unless the user skips migration.
+  const dirs = [
+    repoSwampDir,
+    ...(namespace ? [swampPath(input.repoDir, namespace)] : []),
+  ];
+  if (
+    !input.skipMigration && !("error" in source) &&
+    !await isSamePath(sourceDir, repoSwampDir)
+  ) {
+    dirs.push(sourceDir);
+  }
+  for (const dir of dirs) {
+    if (await deps.hasDatastoreRecords(dir, subdirs, CATALOG_FILES)) {
+      yield refuse(
+        `${dir} holds records. A v3 datastore starts empty, and migrating ` +
+          "existing records to v3 is not supported yet. Set up v3 in a " +
+          "repository with no data.",
+      );
+      return;
+    }
+  }
+
+  await deps.createV3Datastore(input.datastorePath);
+  const collapsedPath = deps.collapseEnvVars(input.datastorePath);
+  await deps.updateRepoConfig(input.repoDir, {
+    type: "filesystem",
+    path: collapsedPath,
+    directories: input.directories ?? undefined,
+    // A namespace set before setup is the datastore's namespace: setup owns
+    // the key, so leaving it out would drop it.
+    ...(namespace ? { namespace } : {}),
+    format: 3,
+  });
+  // The v2 catalog indexes the old datastore; the v3 one is the read model's.
+  await deps.invalidateCatalog(input.repoDir);
+
+  yield {
+    kind: "completed",
+    data: {
+      type: "filesystem",
+      path: input.datastorePath,
+      format: 3,
+      filesCopied: 0,
+      filesPulled: 0,
+      bytesCopied: 0,
+      directoriesMigrated: [],
+      errors: [],
+    },
+  };
 }
 
 /** Input for extension datastore setup. */
@@ -450,6 +721,8 @@ export interface DatastoreSetupExtensionInput {
    */
   namespaceAlreadyBound?: boolean;
   syncTimeoutMsOverride?: number;
+  /** See {@link DatastoreSetupFilesystemInput.outgoingDatastorePath}. */
+  outgoingDatastorePath?: string;
 }
 
 /** Sets up an extension-provided datastore. */
@@ -474,6 +747,11 @@ export async function* datastoreSetupExtension(
             message: err instanceof Error ? err.message : String(err),
           },
         };
+        return;
+      }
+
+      if ((await deps.currentDatastore(input.repoDir)).engine === "v3") {
+        yield MOVE_OFF_V3_REFUSAL;
         return;
       }
 
@@ -643,7 +921,19 @@ export async function* datastoreSetupExtension(
       // them. A cache left by an earlier failed setup can hold every one,
       // so a copy of nothing still needs its push and cleanup.
       let skippedConfigFiles = 0;
-      const sourceDir = `${input.repoDir}/.swamp`;
+      // A filesystem datastore outside the repo is the source, not .swamp/
+      // (swamp-club#3238).
+      const sourceDir = input.outgoingDatastorePath ??
+        swampPath(input.repoDir);
+      if (input.outgoingDatastorePath && !input.skipMigration) {
+        const error = await inaccessibleSourceError(
+          input.outgoingDatastorePath,
+        );
+        if (error) {
+          yield { kind: "error", error };
+          return;
+        }
+      }
 
       if (!input.skipMigration && syncService) {
         yield { kind: "migrating" };
@@ -653,7 +943,7 @@ export async function* datastoreSetupExtension(
         // transitional lockfile). Instance-local state must never reach the
         // cache: the push below would upload it over the remote config tier
         // (swamp-club#2837).
-        const role = await deps.resolveInRepoConfigRole(input.repoDir);
+        const role = await sourceConfigRole(deps, input.repoDir, sourceDir);
         migrationSkips = inRepoConfigMigrationSkips(role);
         cleanupKeeps = migrationSkips;
 
@@ -709,11 +999,12 @@ export async function* datastoreSetupExtension(
 
         if (errors.length === 0) {
           const config = { type: "filesystem" as const, path: migrationDest };
+          // The catalog is a local index: never copied, rebuilt below.
           const result = await deps.migrateData(
             sourceDir,
             migrationDest,
             config,
-            migrationSkips,
+            [...migrationSkips, ...CATALOG_FILES],
           );
           for (const error of result.errors) errors.push(error);
           if (result.errors.length > 0) onlyTimeouts = false;
@@ -798,18 +1089,25 @@ export async function* datastoreSetupExtension(
 
       // Clean up migrated directories from .swamp/ only after BOTH push
       // and pull have succeeded. Pull failure must keep .swamp/ intact
-      // so the user can retry setup without losing local data.
+      // so the user can retry setup without losing local data. An external
+      // filesystem datastore is copied, never cleaned up: other
+      // repositories may share it (swamp-club#3238).
       if (
         migrationResult &&
         errors.length === 0 &&
         (migrationResult.filesCopied > 0 || skippedConfigFiles > 0) &&
         migrationResult.directoriesMigrated.length > 0
       ) {
-        await deps.cleanupSourceDirs(
-          `${input.repoDir}/.swamp`,
-          migrationResult.directoriesMigrated,
-          cleanupKeeps,
-        );
+        if (input.outgoingDatastorePath) {
+          ctx.logger
+            .info`Left the previous datastore's data in place at ${sourceDir}`;
+        } else {
+          await deps.cleanupSourceDirs(
+            sourceDir,
+            migrationResult.directoriesMigrated,
+            cleanupKeeps,
+          );
+        }
       }
 
       if (errors.length === 0 && keptConfigPaths.length > 0) {
@@ -850,6 +1148,9 @@ export async function* datastoreSetupExtension(
           persistedConfig.namespace = ns;
         }
         await deps.updateRepoConfig(input.repoDir, persistedConfig);
+        // The catalog indexes the old datastore; rebuild it from the new
+        // one (swamp-club#3238).
+        await deps.invalidateCatalog(input.repoDir);
       }
 
       // Only after a complete transfer: a timeout-only commit may leave the
@@ -906,6 +1207,13 @@ export async function* datastoreSetupExtension(
         }
       }
 
+      const vaultWarning = await localDefaultVaultWarning(
+        ctx,
+        deps,
+        input.repoDir,
+      );
+      if (vaultWarning) yield vaultWarning;
+
       const migratedDirs = migrationResult?.directoriesMigrated ?? [];
       const migratedBytes = migrationResult?.bytesCopied ?? 0;
 
@@ -927,8 +1235,9 @@ export async function* datastoreSetupExtension(
             : {}),
           ...(migratedDirs.length > 0
             ? {
-              sourcePath: `${input.repoDir}/.swamp`,
+              sourcePath: sourceDir,
               destinationPath: cachePath,
+              ...(input.outgoingDatastorePath ? { sourceKept: true } : {}),
             }
             : {}),
         },
@@ -943,14 +1252,189 @@ export async function* datastoreSetupExtension(
  * resolved is compared as given.
  */
 async function isSamePath(a: string, b: string): Promise<boolean> {
-  const real = async (path: string) => {
-    try {
-      return await Deno.realPath(path);
-    } catch {
-      return resolve(path);
-    }
+  return await realOrResolved(a) === await realOrResolved(b);
+}
+
+/** `path` through `Deno.realPath`, or resolved as given when it cannot be. */
+async function realOrResolved(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The error for a current datastore root setup cannot read, or undefined
+ * when it is a readable directory.
+ */
+async function inaccessibleSourceError(
+  path: string,
+): Promise<SwampError | undefined> {
+  let reason: string | undefined;
+  try {
+    if (!(await Deno.stat(path)).isDirectory) reason = "not a directory";
+  } catch (error) {
+    reason = error instanceof Error ? error.message : String(error);
+  }
+  // Setup creates every datastore subdir when it first moves data to a
+  // path, so a root holding none of them is not a datastore: typically an
+  // unmounted mount point, whose empty directory would otherwise migrate
+  // as zero files.
+  if (!reason && !(await holdsDatastoreSubdir(path))) {
+    reason = "it holds no datastore data; if it is a mount point, mount it";
+  }
+  if (!reason) return undefined;
+  return {
+    code: "validation_failed",
+    message:
+      `The current datastore at ${path} is not accessible (${reason}), ` +
+      `so its data cannot be moved. Make it available and re-run, or ` +
+      `switch without moving any data with 'swamp datastore setup ` +
+      `filesystem' or 'swamp datastore setup extension' and ` +
+      `--skip-migration.`,
   };
-  return await real(a) === await real(b);
+}
+
+/** Whether `root` holds at least one datastore subdir. */
+async function holdsDatastoreSubdir(root: string): Promise<boolean> {
+  for (
+    const subdir of getDatastoreDirectories({ type: "filesystem", path: root })
+  ) {
+    try {
+      if ((await Deno.stat(join(root, subdir))).isDirectory) return true;
+    } catch {
+      // Not there; try the next one.
+    }
+  }
+  return false;
+}
+
+/**
+ * Where setup migrates from: an external filesystem datastore's root, the
+ * outgoing extension datastore's cache when it exists, or the repo's own
+ * `.swamp/`. An external root that is missing or not a directory is an
+ * error, never a fallback to `.swamp/` (swamp-club#3238).
+ */
+async function resolveMigrationSource(
+  ctx: LibSwampContext,
+  input: DatastoreSetupFilesystemInput,
+): Promise<
+  | { sourceDir: string; fromOutgoingCache: boolean }
+  | { error: SwampError; currentPath: string }
+> {
+  if (input.outgoingDatastorePath) {
+    const path = input.outgoingDatastorePath;
+    const error = await inaccessibleSourceError(path);
+    if (error) return { error, currentPath: path };
+    return { sourceDir: path, fromOutgoingCache: false };
+  }
+
+  // When switching from a remote/sync-based datastore, content lives
+  // in the local cache, not under .swamp/. Use the cache path when
+  // it was provided and actually exists on disk.
+  const swampDir = swampPath(input.repoDir);
+  if (input.outgoingCachePath) {
+    try {
+      const stat = await Deno.stat(input.outgoingCachePath);
+      if (stat.isDirectory) {
+        ctx.logger
+          .debug`Migrating from outgoing datastore cache at ${input.outgoingCachePath}`;
+        return { sourceDir: input.outgoingCachePath, fromOutgoingCache: true };
+      }
+    } catch {
+      ctx.logger
+        .warn`Outgoing cache path ${input.outgoingCachePath} not found, falling back to ${swampDir}`;
+    }
+  }
+  return { sourceDir: swampDir, fromOutgoingCache: false };
+}
+
+/**
+ * What the `config` dir under `sourceDir` holds. The repo's own `.swamp/`
+ * is classified by `resolveInRepoConfigRole`. An external filesystem
+ * datastore's `config` is the managed config tier when `.swamp.yaml` says
+ * so; an inspection that fails counts as instance-local, so nothing moves.
+ */
+async function sourceConfigRole(
+  deps: DatastoreSetupDeps,
+  repoDir: string,
+  sourceDir: string,
+): Promise<InRepoConfigRole> {
+  if (await isSamePath(sourceDir, swampPath(repoDir))) {
+    return await deps.resolveInRepoConfigRole(repoDir);
+  }
+  try {
+    const tier = await deps.inspectManagedConfigTier(repoDir);
+    if (!tier.managed) return "unmanaged";
+    return classifyInRepoConfig(
+      true,
+      tier.tierPath && await realOrResolved(tier.tierPath),
+      await realOrResolved(join(sourceDir, "config")),
+    );
+  } catch {
+    return "instance_local";
+  }
+}
+
+/**
+ * The migrated subdir of `sourceDir` that holds `destPath`, if any. Copying
+ * into one would recurse into its own output, and cleanup would then delete
+ * the destination.
+ */
+async function migratedSubdirHolding(
+  sourceDir: string,
+  destPath: string,
+  subdirs: readonly string[],
+): Promise<string | undefined> {
+  const dest = await realOrResolved(destPath);
+  const source = await realOrResolved(sourceDir);
+  for (const subdir of subdirs) {
+    const dir = join(source, subdir);
+    const rel = relative(dir, dest);
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+      return join(sourceDir, subdir);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The warning for a repo whose default vault is a local_encryption vault,
+ * or undefined when there is nothing to warn about. Its key and secrets stay
+ * on this machine, so other machines sharing the datastore cannot read the
+ * values it holds (swamp-club#3259). The check is advisory: a failed lookup
+ * is logged and skipped rather than failing setup.
+ */
+async function localDefaultVaultWarning(
+  ctx: LibSwampContext,
+  deps: DatastoreSetupDeps,
+  repoDir: string,
+): Promise<DatastoreSetupEvent | undefined> {
+  let vaultName: string | undefined;
+  try {
+    vaultName = await deps.findLocalDefaultVault(repoDir);
+  } catch (error) {
+    ctx.logger.debug`Could not inspect the default vault: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return undefined;
+  }
+  if (vaultName === undefined) return undefined;
+  return {
+    kind: "warning",
+    data: {
+      code: "local_default_vault",
+      message:
+        `The default vault '${vaultName}' is a local_encryption vault: its ` +
+        `key and secrets stay on this machine, so other machines using this ` +
+        `datastore cannot read secrets or sensitive outputs stored in it. ` +
+        `To share them, migrate it with 'swamp vault migrate ${vaultName}', ` +
+        `or create a vault with a shared provider and set it as ` +
+        `defaultVault in .swamp.yaml.`,
+      vaultName,
+    },
+  };
 }
 
 /**
@@ -1094,6 +1578,10 @@ export type ResolveConfigTierPath = (
 export function createDatastoreSetupDeps(
   _repoDir: string,
   resolveConfigTierPath: ResolveConfigTierPath,
+  options: {
+    /** Recorded as `writtenBy` in a v3 datastore's format marker. */
+    readonly swampVersion?: string;
+  } = {},
 ): DatastoreSetupDeps {
   return {
     requireUpgradedRepo,
@@ -1125,9 +1613,15 @@ export function createDatastoreSetupDeps(
     ) => {
       const kept = keep.map((p) => resolve(sourceDir, p));
       for (const subdir of dirs) {
-        await removeExcept(resolve(sourceDir, subdir), kept);
+        // Run logs stay with the checkout: their records point at them in
+        // .swamp whatever the datastore (swamp-club#3281).
+        const keepFile = mayHoldRunLogs(subdir)
+          ? (name: string) => isRunLogFile(subdir, name)
+          : undefined;
+        await removeExcept(resolve(sourceDir, subdir), kept, keepFile);
       }
     },
+    invalidateCatalog: (repoDir: string) => removeCatalogDb(repoDir),
     updateRepoConfig: async (
       dir: string,
       datastoreConfig: Record<string, unknown>,
@@ -1185,7 +1679,29 @@ export function createDatastoreSetupDeps(
           await isConfigTierPopulated(tierPath),
       };
     },
+    findLocalDefaultVault: async (repoDir: string) => {
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      if (!marker?.defaultVault) return undefined;
+      const tierPath = marker.datastore?.managedConfig === true
+        ? await resolveConfigTierPath(repoDir, marker)
+        : undefined;
+      const vault = await new YamlVaultConfigRepository(
+        repoDir,
+        undefined,
+        join(tierPath ?? repoDir, "vaults"),
+      ).findByName(marker.defaultVault, true);
+      return vault && isLocalEncryptionType(vault.type)
+        ? vault.name
+        : undefined;
+    },
     collapseEnvVars,
+    inspectV3Target,
+    hasDatastoreRecords,
+    currentDatastore,
+    createV3Datastore: (path) =>
+      initializeV3Datastore(path, options.swampVersion ?? "unknown"),
     assertDatastoreFormat: (repoDir, config, provider) =>
       ensureSupportedDatastoreFormat(
         repoDir,
@@ -1272,28 +1788,118 @@ async function configFileDiffers(
 
 /**
  * Removes `path` recursively, except any `kept` path inside it, which stays
- * with its ancestors. A symlink is never descended into: with nothing kept
- * inside, only the link is removed; with a kept path inside, the link is
- * left in place so cleanup never deletes the files of its target and the
- * kept path stays reachable. Removal failures are non-fatal: the source may
- * already be gone.
+ * with its ancestors, and any regular file whose name `keepFile` accepts.
+ * When `keepFile` is given the tree is walked file by file and directories
+ * it leaves empty are removed. A symlink is never descended into: with
+ * nothing kept inside, only the link is removed; with a kept path inside,
+ * the link is left in place so cleanup never deletes the files of its
+ * target and the kept path stays reachable. Removal failures are non-fatal:
+ * the source may already be gone.
  */
 async function removeExcept(
   path: string,
   kept: readonly string[],
+  keepFile?: (name: string) => boolean,
 ): Promise<void> {
   if (kept.includes(path)) return;
   const keptInside = kept.filter((k) => k.startsWith(path + SEPARATOR));
   try {
-    if (keptInside.length === 0) {
+    if (keptInside.length === 0 && !keepFile) {
       await Deno.remove(path, { recursive: true });
       return;
     }
-    if ((await Deno.lstat(path)).isSymlink) return;
+    const stat = await Deno.lstat(path);
+    if (stat.isSymlink) {
+      if (keptInside.length === 0) await Deno.remove(path);
+      return;
+    }
+    if (!stat.isDirectory) {
+      if (!keepFile?.(basename(path))) await Deno.remove(path);
+      return;
+    }
     for await (const entry of Deno.readDir(path)) {
-      await removeExcept(join(path, entry.name), keptInside);
+      await removeExcept(join(path, entry.name), keptInside, keepFile);
     }
   } catch {
     // Non-fatal: source dir may already be gone
+    return;
   }
+  if (keepFile) await removeIfEmpty(path);
+}
+
+/** Removes the directory `path` when nothing is left in it. */
+async function removeIfEmpty(path: string): Promise<void> {
+  try {
+    for await (const _ of Deno.readDir(path)) return;
+    await Deno.remove(path);
+  } catch {
+    // Non-fatal: already gone, or not empty
+  }
+}
+
+/** Whether a v3 datastore may be created at `path` (swamp-club#3279). */
+async function inspectV3Target(path: string): Promise<V3TargetState> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return { kind: "absent" };
+    throw error;
+  }
+  if (info.isSymlink) {
+    return { kind: "refused", reason: `${path} is a symbolic link` };
+  }
+  if (!info.isDirectory) {
+    return { kind: "refused", reason: `${path} is not a directory` };
+  }
+  // A setup that stopped after writing the marker leaves a fresh skeleton;
+  // a re-run completes it.
+  if (await isFreshV3Skeleton(path)) return { kind: "empty" };
+  for await (const entry of Deno.readDir(path)) {
+    return {
+      kind: "refused",
+      reason: `${path} is not empty (it holds ${entry.name})`,
+    };
+  }
+  return { kind: "empty" };
+}
+
+/**
+ * Whether `sourceDir` holds a file under any of `subdirs`, other than the
+ * `skip` paths (relative to `sourceDir`). Stops at the first one.
+ */
+async function hasDatastoreRecords(
+  sourceDir: string,
+  subdirs: readonly string[],
+  skip: readonly string[],
+): Promise<boolean> {
+  const skipped = new Set(skip.map((path) => resolve(sourceDir, path)));
+  for (const subdir of subdirs) {
+    const root = join(sourceDir, subdir);
+    try {
+      for await (
+        const entry of walk(root, { includeDirs: false, followSymlinks: false })
+      ) {
+        if (!skipped.has(resolve(entry.path))) return true;
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+  }
+  return false;
+}
+
+/** The datastore `.swamp.yaml` names: its engine and namespace. */
+async function currentDatastore(
+  repoDir: string,
+): Promise<{ engine: DatastoreEngine; namespace?: string }> {
+  const marker = await new RepoMarkerRepository().read(
+    RepoPath.create(repoDir),
+  );
+  const namespace = marker?.datastore?.namespace;
+  return {
+    engine: datastoreBlockEngine(repoDir, marker?.datastore),
+    ...(namespace ? { namespace } : {}),
+  };
 }

@@ -34,6 +34,24 @@ swamp repo init --json
 swamp repo init ./my-automation --json
 ```
 
+### The default vault
+
+Init creates a `local_encryption` vault named `default`
+(`vaults/local_encryption/<id>.yaml`, config `auto_generate: true`) and sets
+`defaultVault: default` in `.swamp.yaml`, so secrets and sensitive outputs work
+without creating a vault first. The `--json` output reports it as
+`"vault": { "name": "default", "type": "local_encryption", "created": true }`.
+
+```bash
+# Skip the default vault ("vault": null)
+swamp repo init --no-vault --json
+```
+
+`--force` keeps an existing vault named `default` (`"created": false`) and the
+`defaultVault` already in `.swamp.yaml`. `swamp repo upgrade` never adds the
+vault to an existing repo. The vault's key and secrets stay on the machine
+(`.swamp/secrets/`), so a clone starts with an empty `default` vault.
+
 ### Multi-tool repos
 
 `--tool` is repeatable to enroll multiple AI agent tools (Claude Code, Kiro,
@@ -223,6 +241,24 @@ swamp datastore setup filesystem --path /mnt/shared/swamp-data --json
 
 Migrates existing `.swamp/` runtime data to the new path and updates
 `.swamp.yaml`. Use `--skip-migration` to skip the data copy.
+
+### Setting Up a v3 Filesystem Datastore
+
+`--format 3` creates a v3 datastore: every change is committed to a commit log
+(`commits.db`) and each checkout keeps its records in its own `.swamp/`.
+
+```bash
+swamp datastore setup filesystem --path /mnt/shared/swamp-v3 --format 3 --json
+```
+
+- The path must be new or an empty directory, and the repo must hold no data
+  yet: existing data is not migrated to v3.
+- Filesystem only: `--format 3` on S3, GCS or extension datastores is refused.
+- One writing process at a time. A write command fails while another process
+  (e.g. `swamp serve`) writes the datastore; run it through serve instead.
+- `swamp datastore gc --json` deletes content chunks no commit names; on a v2
+  datastore it reports there is nothing to collect.
+- `swamp datastore status --json` shows `format: 3` and the commit log.
 
 ### Setting Up an Extension Datastore (e.g., S3)
 

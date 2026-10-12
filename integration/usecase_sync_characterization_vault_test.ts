@@ -36,6 +36,7 @@ import {
   type RowRepos,
   runCli,
 } from "./usecase_sync_fixtures.ts";
+import { checkRowsOnV3 } from "./usecase_v3_fixtures.ts";
 
 await initializeLogging({});
 
@@ -343,6 +344,38 @@ Deno.test("use case sync characterization: vault use cases mark and push today's
   });
   try {
     await checkRows(t, ROWS, EXPECTED);
+  } finally {
+    vaultTypeRegistry.invalidateType(migrateSourceType);
+  }
+});
+
+Deno.test("use-case sync characterization: on a v3 datastore every vault row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  migrateSourceType = `@test/usecase-vault-${crypto.randomUUID()}`;
+  vaultTypeRegistry.register({
+    type: migrateSourceType,
+    name: "Migrate source",
+    description: "In-memory vault the migrate rows move away from",
+    isBuiltIn: false,
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    await checkRowsOnV3(t, ROWS);
+  } finally {
+    vaultTypeRegistry.invalidateType(migrateSourceType);
+  }
+});
+
+Deno.test("use-case sync characterization: on a namespaced v3 datastore every vault row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  migrateSourceType = `@test/usecase-vault-${crypto.randomUUID()}`;
+  vaultTypeRegistry.register({
+    type: migrateSourceType,
+    name: "Migrate source",
+    description: "In-memory vault the migrate rows move away from",
+    isBuiltIn: false,
+    createProvider: (name) => new MockVaultProvider(name),
+  });
+  try {
+    await checkRowsOnV3(t, ROWS, {}, { namespace: "team" });
   } finally {
     vaultTypeRegistry.invalidateType(migrateSourceType);
   }

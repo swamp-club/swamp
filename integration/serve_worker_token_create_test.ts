@@ -91,6 +91,8 @@ async function createServeRepo(
       force: false,
       version,
       tools: [],
+      // The only user vault is the one this helper is asked for.
+      vault: false,
     }),
   );
   assertEquals(initEvents.some((event) => event.kind === "error"), false);

@@ -29,23 +29,46 @@ import {
   DATASTORE_FORMAT_MARKER_MAX_BYTES,
   type DatastoreFormatMarkerRead,
 } from "../../domain/datastore/datastore_format.ts";
-import type { ControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
+import type { DatastoreControlPlaneStore } from "../../domain/datastore/control_plane_store.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { resolveCustomProvider } from "./datastore_global_lock.ts";
 
 /**
- * How long the control-plane read of the marker may take before the check
- * gives up and proceeds. The S3 and GCS extensions retry with backoff inside
- * `get`, so during an outage this bounds the wait the check adds before the
- * command meets the same outage itself. A remote slower than this is treated
- * like a failed read: the check is skipped, never blocking.
+ * How long the marker read through a provider's datastore-wide store may
+ * take before the check gives up and proceeds. The read's signal aborts
+ * then, so an extension that honours it stops its request and retry
+ * backoff; one that does not is raced. A remote slower than this is treated
+ * like a failed read: the check is skipped, never blocking, and the command
+ * meets the same outage itself.
+ *
+ * Measured with `scripts/bench_datastore_format_guard.ts` (swamp-club#3191).
+ * Against local emulators a healthy read adds no time distinguishable from
+ * noise. A real bucket adds round trips and credential resolution to the
+ * first request: with 300 ms round trips and a 1 s credentials fetch, this
+ * read took about 1.95 s. A deadline it misses skips the check silently, so
+ * the cap keeps headroom over that.
  */
-export const DATASTORE_FORMAT_READ_TIMEOUT_MS = 5_000;
+export const DATASTORE_FORMAT_READ_TIMEOUT_MS = 3_000;
+
+/**
+ * The same cap for a provider without a datastore-wide store, read through
+ * a fresh sync service. That path pays one more round trip than the
+ * datastore-wide one (the S3 extension's `HeadBucket` credentials
+ * preflight) and at 300 ms round trips with a 1 s credentials fetch did not
+ * finish within 2 s, so it is given longer.
+ */
+export const DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS = 4_000;
 
 /** Options for {@link readDatastoreFormatMarker}. */
 export interface ReadDatastoreFormatMarkerOptions {
-  /** Overrides {@link DATASTORE_FORMAT_READ_TIMEOUT_MS} (tests). */
+  /**
+   * Overrides {@link DATASTORE_FORMAT_READ_TIMEOUT_MS} and, unless
+   * `fallbackTimeoutMs` is given, {@link DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS}
+   * (tests).
+   */
   readonly timeoutMs?: number;
+  /** Overrides {@link DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS} (tests). */
+  readonly fallbackTimeoutMs?: number;
   /** Overrides provider resolution (tests). */
   readonly resolveProvider?: (
     config: CustomDatastoreConfig,
@@ -58,13 +81,18 @@ export interface ReadDatastoreFormatMarkerOptions {
  * Filesystem datastores keep the marker at the datastore root,
  * `<path>/datastore-format.json`, outside every namespace subdirectory.
  *
- * Other datastores keep it as the control-plane record `datastore-format`.
- * The read goes through a sync service built for this read alone: one that
- * has never pulled or pushed has no namespace bound, so the S3 and GCS
- * extensions resolve the key to the datastore-wide `_control/` root from a
- * namespaced repo too. A provider that hands out one shared sync service
- * would have its namespace bound by this read, breaking the command's later
- * namespaced pull, so such a provider is skipped.
+ * Other datastores keep it as the control-plane record `datastore-format`
+ * at the datastore-wide `_control/` root. A provider that offers
+ * `datastoreControlPlaneStore` is read through it: one request, no sync
+ * service. Otherwise the read goes through a sync service built for this
+ * read alone: one that has never pulled or pushed has no namespace bound,
+ * so the S3 and GCS extensions resolve the key to the datastore-wide root
+ * from a namespaced repo too. A provider that hands out one shared sync
+ * service would have its namespace bound by that read, breaking the
+ * command's later namespaced pull, so such a provider is skipped.
+ *
+ * The read is given an `AbortSignal` that aborts at the deadline, so an
+ * extension that honours it stops its request and retries then.
  */
 export async function readDatastoreFormatMarker(
   repoDir: string,
@@ -83,31 +111,40 @@ export async function readDatastoreFormatMarker(
   // Names the datastore type too, so a user with several datastores (a
   // serve audit datastore, say) can tell which one was refused.
   const source = `_control/${DATASTORE_FORMAT_MARKER_KEY} on ${config.type}`;
-  let store: ControlPlaneStore;
+  let store: DatastoreControlPlaneStore;
+  let deadlineMs: number;
   try {
     const provider = await (options.resolveProvider ?? resolveCustomProvider)(
       config,
     );
-    if (!provider.createSyncService) {
+    if (provider.datastoreControlPlaneStore) {
+      store = provider.datastoreControlPlaneStore();
+      deadlineMs = options.timeoutMs ?? DATASTORE_FORMAT_READ_TIMEOUT_MS;
+    } else if (!provider.createSyncService) {
       return {
         kind: "unsupported",
         reason: `${config.type} provides no sync service`,
       };
+    } else {
+      const service = provider.createSyncService(repoDir, config.cachePath);
+      if (
+        !service.capabilities?.().controlPlane || !service.controlPlaneStore
+      ) {
+        return {
+          kind: "unsupported",
+          reason: `${config.type} does not advertise controlPlane`,
+        };
+      }
+      if (service === provider.createSyncService(repoDir, config.cachePath)) {
+        return {
+          kind: "unsupported",
+          reason: `${config.type} shares one sync service instance`,
+        };
+      }
+      store = service.controlPlaneStore();
+      deadlineMs = options.fallbackTimeoutMs ?? options.timeoutMs ??
+        DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS;
     }
-    const service = provider.createSyncService(repoDir, config.cachePath);
-    if (!service.capabilities?.().controlPlane || !service.controlPlaneStore) {
-      return {
-        kind: "unsupported",
-        reason: `${config.type} does not advertise controlPlane`,
-      };
-    }
-    if (service === provider.createSyncService(repoDir, config.cachePath)) {
-      return {
-        kind: "unsupported",
-        reason: `${config.type} shares one sync service instance`,
-      };
-    }
-    store = service.controlPlaneStore();
   } catch (error) {
     // The command resolves the provider again and reports the failure itself.
     return { kind: "unreadable", source, error };
@@ -115,9 +152,9 @@ export async function readDatastoreFormatMarker(
 
   let bytes: Uint8Array | null;
   try {
-    bytes = await withTimeout(
-      store.get(DATASTORE_FORMAT_MARKER_KEY),
-      options.timeoutMs ?? DATASTORE_FORMAT_READ_TIMEOUT_MS,
+    bytes = await withDeadline(
+      (signal) => store.get(DATASTORE_FORMAT_MARKER_KEY, { signal }),
+      deadlineMs,
     );
   } catch (error) {
     return { kind: "unreadable", source, error };
@@ -163,20 +200,31 @@ async function readFilesystemMarker(
   }
 }
 
-/** Rejects when `promise` has not settled within `ms`. */
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+/**
+ * Runs `read` and rejects when it has not settled within `ms`, aborting the
+ * signal handed to it at that moment. A read that ignores the signal is
+ * raced all the same.
+ */
+async function withDeadline<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`timed out after ${ms}ms`)),
-      ms,
-    );
+    timer = setTimeout(() => {
+      const error = new Error(`timed out after ${ms}ms`);
+      controller.abort(error);
+      reject(error);
+    }, ms);
   });
+  let reading: Promise<T> | undefined;
   try {
-    return await Promise.race([promise, timeout]);
+    reading = read(controller.signal);
+    return await Promise.race([reading, timeout]);
   } finally {
     clearTimeout(timer);
     // The losing read may still settle later; its outcome is not wanted.
-    promise.catch(() => {});
+    reading?.catch(() => {});
   }
 }

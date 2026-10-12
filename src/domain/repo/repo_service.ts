@@ -48,6 +48,11 @@ import {
 import { assertStorableServerAddress } from "./server_address.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
+import {
+  createDefaultVaultConfig,
+  DEFAULT_VAULT_NAME,
+  type DefaultVaultStore,
+} from "../vaults/default_vault.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 import {
   BUILTIN_TOOL_SKILL_DIRS_FILE,
@@ -77,10 +82,44 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
 // pre-approves `swamp vault read-secret`. Upgrade removes this exact entry.
 const LEGACY_CLAUDE_VAULT_ALLOW = "Bash(swamp vault:*)";
 
-// Kiro IDE checks its denylist before its trusted commands and matches by
-// substring, so this asks before `read-secret` however the command is spelled
-// (e.g. `swamp --json vault read-secret`).
-const KIRO_COMMAND_DENYLIST = ["read-secret"];
+const KIRO_AUDIT_COMMAND = "swamp audit record --from-hook --tool kiro";
+// swamp's Kiro audit hook command exactly as some version wrote it: bare
+// `swamp`, or the absolute path to the binary (quoted) older versions wrote,
+// followed by the audit arguments and nothing else. Upgrade deletes hooks that
+// match, so a command the user extended (e.g. `... && ./notify.sh`) is kept.
+const KIRO_AUDIT_COMMAND_PATTERN =
+  /^(?:swamp|"[^"]*swamp(?:\.exe)?"|\S*[\\/]swamp(?:\.exe)?) audit record --from-hook --tool kiro$/;
+
+// Kiro IDE 0.x settings earlier versions wrote to .vscode/settings.local.json.
+// Kiro IDE 1.0 no longer reads them (permission rules moved to
+// permissions.yaml outside the repo), so upgrade removes these exact entries.
+const LEGACY_KIRO_IDE_SETTINGS: Record<string, string> = {
+  "kiroAgent.trustedCommands": "swamp *",
+  "kiroAgent.commandDenylist": "read-secret",
+};
+
+// The allowlist entry earlier versions wrote to .amp/settings.json. Amp no
+// longer reads `amp.commands`; upgrade removes this exact entry.
+const LEGACY_AMP_ALLOW = "swamp *";
+
+/** Whether a Kiro hook command is swamp's audit hook command, unchanged. */
+function isKiroAuditCommand(command: unknown): boolean {
+  return typeof command === "string" &&
+    KIRO_AUDIT_COMMAND_PATTERN.test(command.trim());
+}
+
+/**
+ * Whether a Kiro v1 hook entry is a copy of swamp's audit hook: a post-tool
+ * trigger that runs swamp's audit hook command, unchanged.
+ */
+function isKiroAuditHookEntry(hook: unknown): boolean {
+  const entry = hook as
+    | { trigger?: unknown; action?: { command?: unknown } }
+    | null;
+  return (entry?.trigger === "PostToolUse" ||
+    entry?.trigger === "postToolUse") &&
+    isKiroAuditCommand(entry?.action?.command);
+}
 
 /**
  * Describes what happened to the .gitignore during init/upgrade.
@@ -202,6 +241,18 @@ export interface RepoInitResult {
    * scaffolding files were left on disk. Empty for fresh inits.
    */
   removedTools: string[];
+  /** The default vault, or null when init did not set one up. */
+  vault: RepoInitVault | null;
+}
+
+/**
+ * The default vault repo init set up. `created` is false when a vault named
+ * `default` already existed and was kept.
+ */
+export interface RepoInitVault {
+  name: string;
+  type: string;
+  created: boolean;
 }
 
 /**
@@ -247,6 +298,13 @@ export interface RepoInitOptions {
   force?: boolean;
   tools?: string[];
   serverAddress?: string;
+  /**
+   * Where the repository's vault configs live. When given, init creates the
+   * `default` local_encryption vault unless a vault of that name exists, and
+   * records it as the marker's `defaultVault` (a `--force` reinit keeps the
+   * `defaultVault` already recorded). When omitted, no vault is set up.
+   */
+  defaultVaultStore?: DefaultVaultStore;
 }
 
 /**
@@ -475,9 +533,11 @@ export class RepoService {
     const isAlreadyInit = await this.isInitialized(repoPath);
 
     let removedTools: string[] = [];
+    let existingDefaultVault: string | undefined;
 
     if (isAlreadyInit) {
       const existingMarker = await this.markerRepo.read(repoPath);
+      existingDefaultVault = existingMarker?.defaultVault;
       const existingTools = existingMarker?.tools ?? [];
 
       if (!options.force) {
@@ -509,6 +569,12 @@ export class RepoService {
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
+
+    let vault: RepoInitVault | null = null;
+    if (options.defaultVaultStore) {
+      vault = await this.ensureDefaultVault(options.defaultVaultStore);
+      markerData.defaultVault = existingDefaultVault ?? vault.name;
+    }
 
     // Install skills globally (deduplicated across tools)
     let skillsCopied = await this.installGlobalSkills(tools);
@@ -563,7 +629,24 @@ export class RepoService {
       gitignoreAction,
       tools,
       removedTools,
+      vault,
     };
+  }
+
+  /**
+   * Creates the default vault unless a vault named `default` already exists,
+   * which is kept whatever its type.
+   */
+  private async ensureDefaultVault(
+    store: DefaultVaultStore,
+  ): Promise<RepoInitVault> {
+    const existing = await store.findByName(DEFAULT_VAULT_NAME);
+    if (existing) {
+      return { name: existing.name, type: existing.type, created: false };
+    }
+    const config = createDefaultVaultConfig();
+    await store.save(config);
+    return { name: config.name, type: config.type, created: true };
   }
 
   /**
@@ -970,9 +1053,8 @@ export class RepoService {
           break;
         }
         case "kiro": {
-          const s = alreadyExists
-            ? await this.updateKiroSettings(repoPath)
-            : await this.createKiroSettingsIfNotExists(repoPath);
+          const s = alreadyExists &&
+            await this.removeLegacyKiroIdeSettings(repoPath);
           const h = alreadyExists
             ? await this.updateKiroHooks(repoPath)
             : await this.createKiroHooksIfNotExists(repoPath);
@@ -980,9 +1062,9 @@ export class RepoService {
             ? await this.updateKiroAgentConfig(repoPath)
             : await this.createKiroAgentConfigIfNotExists(repoPath);
           const c = await this.ensureKiroCliDefaultAgent(repoPath);
-          settingsChanged = s || h || a || c;
+          settingsChanged = s || h.length > 0 || a || c;
           if (s) changedFiles.push(".vscode/settings.local.json");
-          if (h) changedFiles.push(".kiro/hooks/swamp-audit.kiro.hook");
+          for (const path of h) changedFiles.push(path);
           if (a) changedFiles.push(".kiro/agents/swamp.json");
           if (c) changedFiles.push(".kiro/settings/cli.json");
           break;
@@ -1004,11 +1086,14 @@ export class RepoService {
           break;
         }
         case "amp": {
-          const changed = alreadyExists
-            ? await this.updateAmpSettings(repoPath)
-            : await this.createAmpSettingsIfNotExists(repoPath);
-          settingsChanged = changed;
-          if (changed) changedFiles.push(".amp/settings.json");
+          const p = alreadyExists
+            ? await this.updateAmpPlugin(repoPath)
+            : await this.createAmpPluginIfNotExists(repoPath);
+          const s = alreadyExists &&
+            await this.removeLegacyAmpCommands(repoPath);
+          settingsChanged = p || s;
+          if (p) changedFiles.push(".amp/plugins/swamp.ts");
+          if (s) changedFiles.push(".amp/settings.json");
           break;
         }
         case "pi": {
@@ -1339,20 +1424,19 @@ essential context for working with this repository.`
 matches a skill area below, read the corresponding \`SKILL.md\` file for guidance.`;
 
     const gettingStarted = useSkillNames
-      ? `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately invoke the \`swamp-getting-started\` skill before doing anything else.
-This walks new users through an interactive onboarding tutorial.
+      ? `If the user is new to swamp or asks to get started, or a swamp command you
+run shows this repository has no models yet, invoke the
+\`swamp-getting-started\` skill. It checks for existing models itself and walks
+new users through an interactive onboarding tutorial.
 
-If models already exist, start by using the \`swamp\` skill to work with
-swamp models.`
-      : `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately read \`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its
-instructions. This walks new users through an interactive onboarding tutorial.
+Otherwise, use the \`swamp\` skill to work with swamp models.`
+      : `If the user is new to swamp or asks to get started, or a swamp command you
+run shows this repository has no models yet, read
+\`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its instructions. It
+checks for existing models itself and walks new users through an interactive
+onboarding tutorial.
 
-If models already exist, start by reading \`${skillsDir}/swamp/SKILL.md\`
-to work with swamp models.`;
+Otherwise, read \`${skillsDir}/swamp/SKILL.md\` to work with swamp models.`;
 
     return `# Project
 
@@ -1858,168 +1942,181 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     return true;
   }
 
-  private generateAmpSettingsContent(): string {
-    const settings = {
-      "amp.commands": {
-        allowlist: ["swamp *"],
-        strict: true,
-      },
+  /**
+   * Generates the content for the Amp plugin at .amp/plugins/swamp.ts.
+   * Amp runs tools without asking by default and no longer reads the
+   * `amp.commands` allowlist, so command control goes through a plugin. This
+   * one asks before a shell command that reads a vault secret.
+   * Upstream contract: https://ampcode.com/docs/customize/plugins
+   */
+  private generateAmpPluginContent(): string {
+    return `// Swamp permissions plugin for Amp
+// Asks before running a shell command that reads a vault secret, and allows
+// every other tool call (Amp's default).
+// This is a managed file — it will be overwritten on swamp upgrade.
+
+import type { PluginAPI } from "@ampcode/plugin";
+
+export const description = "Asks before running swamp vault read-secret; allows every other tool call.";
+
+export default function (amp: PluginAPI) {
+  amp.on("tool.call", async (event, ctx) => {
+    const shell = amp.helpers.shellCommandFromToolCall(event);
+    if (!shell || !shell.command.includes("read-secret")) {
+      return { action: "allow" };
+    }
+    try {
+      const approved = await ctx.ui.confirm({
+        title: "Allow swamp vault read-secret?",
+        message: shell.command,
+        confirmButtonText: "Allow",
+        requireHuman: true,
+        skipIfUnwatched: true,
+      });
+      if (approved) return { action: "allow" };
+    } catch {
+      // No one to ask (e.g. amp --execute): refuse rather than run it.
+    }
+    return {
+      action: "reject-and-continue",
+      message: "The user did not approve reading a vault secret: " +
+        shell.command,
     };
-    return JSON.stringify(settings, null, 2) + "\n";
+  });
+}
+`;
   }
 
-  private createAmpSettingsIfNotExists(
-    repoPath: RepoPath,
-  ): Promise<boolean> {
-    const settingsPath = join(repoPath.value, ".amp", "settings.json");
+  /**
+   * Creates .amp/plugins/swamp.ts if it doesn't already exist.
+   */
+  private createAmpPluginIfNotExists(repoPath: RepoPath): Promise<boolean> {
     return this.createFileIfNotExists(
-      settingsPath,
-      this.generateAmpSettingsContent(),
+      join(repoPath.value, ".amp", "plugins", "swamp.ts"),
+      this.generateAmpPluginContent(),
     );
   }
 
-  private async updateAmpSettings(repoPath: RepoPath): Promise<boolean> {
-    const ampDir = join(repoPath.value, ".amp");
-    const settingsPath = join(ampDir, "settings.json");
+  /**
+   * Updates .amp/plugins/swamp.ts, always overwriting with latest content.
+   */
+  private updateAmpPlugin(repoPath: RepoPath): Promise<boolean> {
+    return this.overwriteIfChanged(
+      join(repoPath.value, ".amp", "plugins", "swamp.ts"),
+      this.generateAmpPluginContent(),
+    );
+  }
 
-    await ensureDir(ampDir);
-
-    let existingSettings: Record<string, unknown> = {};
-    let settingsExisted = false;
-
+  /**
+   * Reads a JSON file an earlier swamp version wrote, so upgrade can remove
+   * swamp's own entries from it. Returns undefined when the file is absent,
+   * is not a regular file, or does not hold a JSON object: upgrade then
+   * leaves it alone rather than failing over a file swamp no longer needs,
+   * warning unless `quiet` is set (for files that are the user's own).
+   */
+  private async readLegacyJsonFile(
+    path: string,
+    quiet = false,
+  ): Promise<Record<string, unknown> | undefined> {
+    let info: Deno.FileInfo;
     try {
-      const content = await Deno.readTextFile(settingsPath);
-      existingSettings = JSON.parse(content);
-      settingsExisted = true;
+      info = await Deno.lstat(path);
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
     }
+    if (!info.isFile) return undefined;
 
-    const ourSettings = JSON.parse(this.generateAmpSettingsContent());
-    const existingCommands =
-      (existingSettings as Record<string, Record<string, unknown>>)
-        ?.["amp.commands"] as
-          | { allowlist?: string[]; strict?: boolean }
-          | undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await Deno.readTextFile(path));
+    } catch {
+      parsed = undefined;
+    }
+    if (
+      typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+    ) {
+      if (!quiet) {
+        logger.warn`Leaving ${path} unchanged: it does not hold a JSON object`;
+      }
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  }
 
-    const mergedAllowlist = [
-      ...new Set([
-        ...(existingCommands?.allowlist ?? []),
-        ...ourSettings["amp.commands"].allowlist,
-      ]),
-    ];
+  /**
+   * Writes a settings file swamp cleaned up, deleting it when nothing is left.
+   */
+  private async writeOrRemoveSettingsFile(
+    path: string,
+    settings: Record<string, unknown>,
+  ): Promise<void> {
+    if (Object.keys(settings).length === 0) {
+      await Deno.remove(path);
+      return;
+    }
+    await atomicWriteTextFile(path, JSON.stringify(settings, null, 2) + "\n");
+  }
 
-    const hasChanges =
-      mergedAllowlist.length !== (existingCommands?.allowlist?.length ?? 0) ||
-      existingCommands?.strict !== true;
-
-    if (!hasChanges && settingsExisted) {
+  /**
+   * Removes the `amp.commands` allowlist entry earlier versions wrote to
+   * .amp/settings.json. The user's own entries and settings are kept; the
+   * block goes when nothing but `strict` is left in it, and the file goes
+   * when nothing is left in it.
+   */
+  private async removeLegacyAmpCommands(repoPath: RepoPath): Promise<boolean> {
+    const settingsPath = join(repoPath.value, ".amp", "settings.json");
+    const settings = await this.readLegacyJsonFile(settingsPath);
+    const commands = settings?.["amp.commands"];
+    if (
+      !settings || typeof commands !== "object" || commands === null ||
+      Array.isArray(commands)
+    ) {
+      return false;
+    }
+    const block: Record<string, unknown> = { ...commands };
+    const allowlist = block.allowlist;
+    if (!Array.isArray(allowlist) || !allowlist.includes(LEGACY_AMP_ALLOW)) {
       return false;
     }
 
-    const newSettings = {
-      ...existingSettings,
-      "amp.commands": {
-        ...existingCommands,
-        allowlist: mergedAllowlist,
-        strict: true,
-      },
-    };
-
-    await atomicWriteTextFile(
-      settingsPath,
-      JSON.stringify(newSettings, null, 2) + "\n",
-    );
+    const kept = allowlist.filter((entry) => entry !== LEGACY_AMP_ALLOW);
+    if (kept.length === 0) delete block.allowlist;
+    else block.allowlist = kept;
+    if (Object.keys(block).every((key) => key === "strict")) {
+      delete settings["amp.commands"];
+    } else {
+      settings["amp.commands"] = block;
+    }
+    await this.writeOrRemoveSettingsFile(settingsPath, settings);
     return true;
   }
 
   /**
-   * Generates the content for Kiro's .vscode/settings.local.json.
+   * Removes the Kiro IDE 0.x entries earlier versions wrote to
+   * .vscode/settings.local.json. The user's own entries and settings are
+   * kept; an emptied key is dropped, and the file goes when nothing is left
+   * in it.
    */
-  private generateKiroSettingsContent(): string {
-    const settings = {
-      "kiroAgent.trustedCommands": [
-        "swamp *",
-      ],
-      "kiroAgent.commandDenylist": KIRO_COMMAND_DENYLIST,
-    };
-    return JSON.stringify(settings, null, 2) + "\n";
-  }
-
-  /**
-   * Creates .vscode/settings.local.json for Kiro if it doesn't already exist.
-   */
-  private createKiroSettingsIfNotExists(
+  private async removeLegacyKiroIdeSettings(
     repoPath: RepoPath,
   ): Promise<boolean> {
-    const settingsPath = join(
-      repoPath.value,
-      ".vscode",
-      "settings.local.json",
-    );
-    return this.createFileIfNotExists(
-      settingsPath,
-      this.generateKiroSettingsContent(),
-    );
-  }
+    const settingsPath = join(repoPath.value, ".vscode", "settings.local.json");
+    const settings = await this.readLegacyJsonFile(settingsPath);
+    if (!settings) return false;
 
-  /**
-   * Updates .vscode/settings.local.json for Kiro, merging trusted commands.
-   */
-  private async updateKiroSettings(repoPath: RepoPath): Promise<boolean> {
-    const vscodeDir = join(repoPath.value, ".vscode");
-    const settingsPath = join(vscodeDir, "settings.local.json");
-
-    await ensureDir(vscodeDir);
-
-    let existingSettings: Record<string, unknown> = {};
-    let settingsExisted = false;
-
-    try {
-      const content = await Deno.readTextFile(settingsPath);
-      existingSettings = JSON.parse(content);
-      settingsExisted = true;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
+    let changed = false;
+    for (const [key, entry] of Object.entries(LEGACY_KIRO_IDE_SETTINGS)) {
+      const list = settings[key];
+      if (!Array.isArray(list) || !list.includes(entry)) continue;
+      const kept = list.filter((item) => item !== entry);
+      if (kept.length === 0) delete settings[key];
+      else settings[key] = kept;
+      changed = true;
     }
+    if (!changed) return false;
 
-    const ourCommands = ["swamp *"];
-    const existingCommands =
-      (existingSettings["kiroAgent.trustedCommands"] as string[] | undefined) ??
-        [];
-    const mergedCommands = [...new Set([...existingCommands, ...ourCommands])];
-
-    const rawDenylist = existingSettings["kiroAgent.commandDenylist"];
-    const existingDenylist = Array.isArray(rawDenylist)
-      ? rawDenylist.filter((entry): entry is string =>
-        typeof entry === "string"
-      )
-      : [];
-    const mergedDenylist = [
-      ...new Set([...existingDenylist, ...KIRO_COMMAND_DENYLIST]),
-    ];
-
-    const hasChanges = mergedCommands.length !== existingCommands.length ||
-      !ourCommands.every((cmd) => existingCommands.includes(cmd)) ||
-      !KIRO_COMMAND_DENYLIST.every((cmd) => existingDenylist.includes(cmd));
-
-    if (!hasChanges && settingsExisted) {
-      return false;
-    }
-
-    const newSettings = {
-      ...existingSettings,
-      "kiroAgent.trustedCommands": mergedCommands,
-      "kiroAgent.commandDenylist": mergedDenylist,
-    };
-    await atomicWriteTextFile(
-      settingsPath,
-      JSON.stringify(newSettings, null, 2) + "\n",
-    );
+    await this.writeOrRemoveSettingsFile(settingsPath, settings);
     return true;
   }
 
@@ -2112,66 +2209,118 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
     return true;
   }
 
+  /**
+   * Generates the content for Kiro's .kiro/hooks/swamp-audit.json, a hook in
+   * Kiro's v1 hook schema. Kiro IDE 1.0 no longer runs legacy `.kiro.hook`
+   * files. Upstream contract: https://kiro.dev/docs/hooks/
+   */
   private generateKiroHookContent(): string {
-    const hook = {
-      name: "Swamp Audit",
-      description: "Records agent tool usage for swamp audit tracking",
-      version: "1",
-      when: { type: "postToolUse", toolTypes: ["*"] },
-      then: {
-        type: "runCommand",
-        command: "swamp audit record --from-hook --tool kiro",
-        timeout: 5,
-      },
+    const hooks = {
+      version: "v1",
+      hooks: [
+        {
+          name: "swamp-audit",
+          trigger: "PostToolUse",
+          action: { type: "command", command: KIRO_AUDIT_COMMAND },
+          timeout: 5,
+        },
+      ],
     };
-    return JSON.stringify(hook, null, 2) + "\n";
+    return JSON.stringify(hooks, null, 2) + "\n";
   }
 
   /**
-   * Creates .kiro/hooks/swamp-audit.kiro.hook if it doesn't already exist.
+   * Creates .kiro/hooks/swamp-audit.json if it doesn't already exist.
+   * Returns the paths it created.
    */
   private async createKiroHooksIfNotExists(
     repoPath: RepoPath,
-  ): Promise<boolean> {
-    const hookPath = join(
-      repoPath.value,
-      ".kiro",
-      "hooks",
-      "swamp-audit.kiro.hook",
-    );
-    return await this.createFileIfNotExists(
-      hookPath,
+  ): Promise<string[]> {
+    const created = await this.createFileIfNotExists(
+      join(repoPath.value, ".kiro", "hooks", "swamp-audit.json"),
       this.generateKiroHookContent(),
     );
+    return created ? [".kiro/hooks/swamp-audit.json"] : [];
   }
 
   /**
-   * Updates .kiro/hooks/swamp-audit.kiro.hook, always overwriting with latest content.
-   * Also removes the old swamp-audit.json hook file if it exists.
+   * Updates .kiro/hooks/swamp-audit.json, always overwriting with latest
+   * content, and removes the audit hooks earlier versions leave behind:
+   * swamp's legacy `swamp-audit.kiro.hook`, and copies of the audit hook in
+   * other v1 hook files (Kiro IDE auto-migrates legacy hooks), each of which
+   * would record every tool call again. Returns the paths it changed.
    */
-  private async updateKiroHooks(repoPath: RepoPath): Promise<boolean> {
-    // Remove old .json hook file if it exists
-    const oldHookPath = join(
-      repoPath.value,
-      ".kiro",
-      "hooks",
-      "swamp-audit.json",
-    );
-    try {
-      await Deno.remove(oldHookPath);
-    } catch {
-      // not found, ignore
-    }
-    const hookPath = join(
-      repoPath.value,
-      ".kiro",
-      "hooks",
-      "swamp-audit.kiro.hook",
-    );
-    return this.overwriteIfChanged(
-      hookPath,
+  private async updateKiroHooks(repoPath: RepoPath): Promise<string[]> {
+    const hooksDir = join(repoPath.value, ".kiro", "hooks");
+    const changed: string[] = [];
+
+    const written = await this.overwriteIfChanged(
+      join(hooksDir, "swamp-audit.json"),
       this.generateKiroHookContent(),
     );
+    if (written) changed.push(".kiro/hooks/swamp-audit.json");
+
+    const legacyPath = join(hooksDir, "swamp-audit.kiro.hook");
+    if (await this.removeLegacyKiroHookFile(legacyPath)) {
+      changed.push(".kiro/hooks/swamp-audit.kiro.hook");
+    }
+
+    const otherHookFiles: string[] = [];
+    for await (const entry of Deno.readDir(hooksDir)) {
+      if (
+        entry.isFile && entry.name.endsWith(".json") &&
+        entry.name !== "swamp-audit.json"
+      ) {
+        otherHookFiles.push(entry.name);
+      }
+    }
+    for (const name of otherHookFiles.sort()) {
+      if (await this.removeKiroAuditHookCopies(join(hooksDir, name))) {
+        changed.push(`.kiro/hooks/${name}`);
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Deletes the Kiro IDE 0.x hook file earlier versions wrote, if it is
+   * still swamp's audit hook. Any other file at that path is left alone.
+   */
+  private async removeLegacyKiroHookFile(path: string): Promise<boolean> {
+    const hook = await this.readLegacyJsonFile(path);
+    const then = hook?.then as { command?: unknown } | undefined;
+    if (!isKiroAuditCommand(then?.command)) return false;
+    await Deno.remove(path);
+    return true;
+  }
+
+  /**
+   * Removes copies of swamp's audit hook from a v1 Kiro hook file: post-tool
+   * entries whose command is swamp's audit hook command, however the binary
+   * is spelled. Everything else in the file is kept, and
+   * the file is deleted only when no hooks and no other settings are left.
+   */
+  private async removeKiroAuditHookCopies(path: string): Promise<boolean> {
+    // Any hook file can be swept, most of them the user's own, so one that
+    // does not parse is skipped without a warning on every upgrade.
+    const file = await this.readLegacyJsonFile(path, true);
+    if (file?.version !== "v1" || !Array.isArray(file.hooks)) return false;
+
+    const kept = file.hooks.filter((hook) => !isKiroAuditHookEntry(hook));
+    if (kept.length === file.hooks.length) return false;
+
+    const onlyHooks = Object.keys(file).every((key) =>
+      key === "version" || key === "hooks"
+    );
+    if (kept.length === 0 && onlyHooks) {
+      await Deno.remove(path);
+    } else {
+      await atomicWriteTextFile(
+        path,
+        JSON.stringify({ ...file, hooks: kept }, null, 2) + "\n",
+      );
+    }
+    return true;
   }
 
   /**
@@ -2284,8 +2433,18 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
 
   /**
    * Generates the content for the kiro CLI agent config at .kiro/agents/swamp.json.
-   * This provides kiro-cli with trusted commands, audit hooks, and resource
-   * references that the IDE gets from .vscode/settings.local.json and .kiro/hooks/.
+   * This provides kiro-cli (not Kiro IDE) with trusted commands, the audit
+   * hook, and resource references.
+   *
+   * The config is in kiro-cli's universal format, which both its 2.x engine
+   * (the default) and its opt-in 3.0 engine load: the 2.x `toolsSettings`
+   * alongside the 3.0 `permissions.rules` that mirror them, and the array
+   * form of `hooks`. This is the shape `kiro-cli agent upgrade` writes
+   * (checked against kiro-cli 2.29). kiro-cli treats a profile whose
+   * permissions or tools differ from what it would derive from
+   * `toolsSettings` as out of sync, so keep `tools` sorted and the two rule
+   * sets equivalent. Kiro IDE 1.0 ignores agent configs that contain `hooks`;
+   * the IDE runs the audit hook from .kiro/hooks/swamp-audit.json instead.
    */
   private generateKiroAgentConfigContent(): string {
     const config = {
@@ -2294,7 +2453,15 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       // kiro-cli's agent schema only accepts explicit tool names from its
       // built-in list. Using "*" silently fails parsing and kiro-cli falls
       // back to the default agent, skipping the postToolUse audit hook.
-      tools: ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
+      tools: [
+        "glob",
+        "grep",
+        "read",
+        "shell",
+        "thinking",
+        "todo_list",
+        "write",
+      ],
       resources: [
         "file://.kiro/steering/**/*.md",
         "skill://~/.kiro/skills/**/SKILL.md",
@@ -2308,13 +2475,22 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
           deniedCommands: [".*read-secret.*"],
         },
       },
-      hooks: {
-        postToolUse: [
-          {
-            command: "swamp audit record --from-hook --tool kiro",
-          },
+      // The 3.0 engine could ask before read-secret, but kiro-cli reports an
+      // ask rule as out of sync with the 2.x deniedCommands, so both deny.
+      permissions: {
+        rules: [
+          { capability: "shell", match: ["swamp *"], effect: "allow" },
+          { capability: "shell", match: ["*read-secret*"], effect: "deny" },
         ],
       },
+      hooks: [
+        {
+          name: "swamp-audit",
+          trigger: "postToolUse",
+          action: { type: "command", command: KIRO_AUDIT_COMMAND },
+          timeout: 10,
+        },
+      ],
     };
     return JSON.stringify(config, null, 2) + "\n";
   }

@@ -39,6 +39,9 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type { DatastoreStatusResponse } from "../../serve/protocol.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
+import { v3DatastoreFor } from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -87,13 +90,19 @@ export const datastoreStatusCommand = withRemoteOptions(
     return;
   }
 
-  const { datastoreResolver } = await requireInitializedRepoReadOnly({
+  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
     outputMode: cliCtx.outputMode,
   });
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createDatastoreStatusDeps(datastoreResolver);
+  const config = datastoreResolver.config();
+  const deps = await createDatastoreStatusDeps(datastoreResolver, {
+    ...(resolverEngine(datastoreResolver) === "v3" &&
+        !isCustomDatastoreConfig(config)
+      ? { describeCommitLog: () => v3DatastoreFor(repoDir, config).describe() }
+      : {}),
+  });
   const renderer = createDatastoreStatusRenderer(cliCtx.outputMode);
   await consumeStream(datastoreStatus(ctx, deps), renderer.handlers());
 

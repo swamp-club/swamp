@@ -261,6 +261,16 @@ export interface GrantFileCheck {
   readonly warnings: readonly GrantFileCheckIssue[];
 }
 
+/**
+ * How a repository grants/ file is named to users: `grants/<name>` with a
+ * forward slash on every platform, since it names the file within the
+ * repository rather than a path to open. `--grants-file` and `--grants-dir`
+ * files are named by their native paths.
+ */
+export function repoGrantFileName(name: string): string {
+  return `grants/${name}`;
+}
+
 function resultIssues(
   result: GrantFileParseResult,
   errors: GrantFileCheckIssue[],
@@ -304,7 +314,7 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
   // Repository grant files are parsed under their bare names; name the
   // directory too, since external sources are listed beside them.
   for (const result of files.repo.values()) {
-    resultIssues(result, errors, warnings, (name) => join("grants", name));
+    resultIssues(result, errors, warnings, repoGrantFileName);
   }
   const grantsFile = files.grantsFile;
   if (grantsFile?.status === "missing") {

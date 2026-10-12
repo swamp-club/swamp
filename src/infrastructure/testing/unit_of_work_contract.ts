@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The behaviour every {@link UnitOfWork} adapter must have, as one reusable
- * suite. The legacy adapter runs it today; the datastore rework's Phase 3
- * commit-log adapter runs the same suite.
+ * The behaviour every path-forwarding {@link UnitOfWork} adapter must have,
+ * as one reusable suite. The legacy adapter runs it. The Phase 3 commit-log
+ * adapter (`src/infrastructure/datastore_v3/commit_log_unit_of_work.ts`)
+ * does not: it refuses every path-only change these cases stage, and has its
+ * own tests (swamp-club#3240).
  *
  * Test-only: production code must never import this module.
  *

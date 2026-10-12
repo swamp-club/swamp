@@ -23,6 +23,8 @@ import {
   isProcessAlive,
   killChildGroups,
   killProcessTree,
+  sendGracefulStop,
+  snapshotChildrenToKill,
   withoutReusedPids,
 } from "./process_kill.ts";
 
@@ -170,4 +172,74 @@ Deno.test("withoutReusedPids: keeps every pid when start times are unavailable",
   const starts = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
   assertEquals(withoutReusedPids([10, 11], undefined, starts), [10, 11]);
   assertEquals(withoutReusedPids([10, 11], starts, undefined), [10, 11]);
+});
+
+/** Records what sendGracefulStop does; `delivered` is requestStop's answer. */
+function gracefulStopSpy(delivered: boolean) {
+  const sent: string[] = [];
+  return {
+    sent,
+    deps: {
+      requestStop: (pid: number) => {
+        sent.push(`request ${pid}`);
+        return delivered;
+      },
+      kill: (pid: number, signal: Deno.Signal) => {
+        sent.push(`${signal} ${pid}`);
+      },
+    },
+  };
+}
+
+Deno.test("sendGracefulStop: sends a stop request on Windows, and no SIGTERM once it is delivered", () => {
+  const { sent, deps } = gracefulStopSpy(true);
+
+  assertEquals(sendGracefulStop(4242, { os: "windows", ...deps }), true);
+
+  assertEquals(sent, ["request 4242"]);
+});
+
+Deno.test("sendGracefulStop: falls back to SIGTERM on Windows when no process takes the request", () => {
+  const { sent, deps } = gracefulStopSpy(false);
+
+  assertEquals(sendGracefulStop(4242, { os: "windows", ...deps }), false);
+
+  assertEquals(sent, ["request 4242", "SIGTERM 4242"]);
+});
+
+Deno.test("sendGracefulStop: sends SIGTERM on POSIX", () => {
+  for (const os of ["darwin", "linux"] as const) {
+    const { sent, deps } = gracefulStopSpy(true);
+
+    assertEquals(sendGracefulStop(4242, { os, ...deps }), false, os);
+
+    assertEquals(sent, ["SIGTERM 4242"], os);
+  }
+});
+
+Deno.test("snapshotChildrenToKill: kills first-snapshot children not in the later snapshot and not reused", () => {
+  const before = new Map([[10, "a"], [11, "b"], [12, "c"]]);
+  const after = new Map([[10, "a"], [11, "reused"], [12, "c"]]);
+
+  assertEquals(
+    snapshotChildrenToKill([10, 11, 12], [12], before, after, false),
+    [10],
+  );
+});
+
+Deno.test("snapshotChildrenToKill: kills none of the first snapshot after a stop request", () => {
+  // Windows: no start times, and the wait can last the whole grace.
+  assertEquals(
+    snapshotChildrenToKill([10, 11], [], undefined, undefined, true),
+    [],
+  );
+});
+
+Deno.test("sendGracefulStop: a process gone before SIGTERM is not an error", () => {
+  sendGracefulStop(4242, {
+    os: "linux",
+    kill: () => {
+      throw new Deno.errors.NotFound("no such process");
+    },
+  });
 });

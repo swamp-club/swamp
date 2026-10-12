@@ -55,6 +55,7 @@ import {
   runServe,
   serveCtx,
 } from "./usecase_sync_fixtures.ts";
+import { checkRowsOnV3 } from "./usecase_v3_fixtures.ts";
 
 await initializeLogging({});
 
@@ -153,6 +154,7 @@ async function strandedMethodRun(repos: RowRepos): Promise<string> {
     ActiveRun.createModelMethodRun({
       id: output.id,
       modelType: repos.modelType.normalized,
+      definitionId: model.id,
       methodName: "noop",
       pid: DEAD_PID,
       hostname: hostname(),
@@ -1362,4 +1364,12 @@ const EXPECTED: Record<string, PinnedRow> = {
 
 Deno.test("use case sync characterization: model and workflow use cases mark and push today's paths", async (t) => {
   await checkRows(t, ROWS, EXPECTED);
+});
+
+Deno.test("use-case sync characterization: on a v3 datastore every model and workflow row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS);
+});
+
+Deno.test("use-case sync characterization: on a namespaced v3 datastore every model and workflow row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS, {}, { namespace: "team" });
 });

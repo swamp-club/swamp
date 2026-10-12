@@ -68,11 +68,19 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         if (data.namespace) {
           lines.push(`  Namespace: ${data.namespace}`);
         }
-        lines.push(
-          `  Files:    ${data.filesCopied} copied (${
-            formatBytes(data.bytesCopied)
-          })`,
-        );
+        if (data.format !== undefined) {
+          lines.push(
+            `  Format:   ${data.format} (v3 commit log, one writer at a time)`,
+          );
+        }
+        // A v3 setup migrates nothing, so it has no files or dirs to show.
+        if (data.format === undefined) {
+          lines.push(
+            `  Files:    ${data.filesCopied} copied (${
+              formatBytes(data.bytesCopied)
+            })`,
+          );
+        }
         // Always surface the hydration count for extension datastores
         // (filesystem datastores have no separate cache to hydrate, so
         // filesPulled is structurally always 0 there and the line is
@@ -82,7 +90,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         if (data.type !== "filesystem") {
           lines.push(`  Hydrated: ${data.filesPulled} pulled`);
         }
-        lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
+        if (data.format === undefined) {
+          lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
+        }
 
         if (data.sourcePath && data.destinationPath) {
           lines.push("");
@@ -91,7 +101,11 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
               data.directoriesMigrated.join(", ") +
               " now resolve under " + bold(data.destinationPath),
           );
-          lines.push(`  Moved from: ${data.sourcePath}`);
+          lines.push(
+            data.sourceKept
+              ? `  Copied from: ${data.sourcePath} (left in place)`
+              : `  Moved from: ${data.sourcePath}`,
+          );
         }
 
         if (data.errors.length > 0) {

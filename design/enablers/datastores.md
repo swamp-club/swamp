@@ -7,8 +7,9 @@ last-verified: 2026-10-08 @ 03ca42ca
 # Datastores
 
 A datastore is where swamp keeps runtime data: versioned model data, workflow
-runs, method outputs, audit logs, telemetry, encrypted secrets and cached
-bundles.
+runs, method outputs, encrypted secrets and cached bundles. Audit logs,
+telemetry and run logs stay with the checkout that wrote them, whatever the
+datastore (see "v3 stream directories").
 
 Source-of-truth files (model definitions, workflow definitions, vault configs)
 are never in the datastore. They live in the repo's top-level
@@ -214,7 +215,9 @@ Two optional fields decide which data goes to the datastore:
   `DEFAULT_DATASTORE_SUBDIRS` (`datastore_config.ts`): `auto-definitions`,
   `definitions-evaluated`, `workflows-evaluated`, `config`, `data`, `outputs`,
   `workflow-runs`, `audit`, `telemetry`, `logs`, `files`, plus the bundle
-  directories. Anything unlisted stays in local `.swamp/`. The
+  directories. Anything unlisted stays in local `.swamp/`. Nothing writes
+  `audit`, `telemetry`, `logs` or `files` through the datastore, so listing
+  them moves no data (see "v3 stream directories"). The
   `ALWAYS_LOCAL_SUBDIRS` (`secrets`, `bundles`, `vault-bundles`,
   `report-bundles`) always stay local.
   `swamp datastore setup filesystem --directories` sets the list at setup.
@@ -399,6 +402,10 @@ Two neighbouring concepts differ:
 
 ## Remote Datastore Sync
 
+This section describes today's (v2) sync. The v3 datastore replicates its
+single-writer `commits.db` with Litestream instead; how swamp runs it is decided
+in [datastore-litestream.md](./datastore-litestream.md).
+
 With a remote datastore (e.g. S3 via `@swamp/s3-datastore`), sync is
 automatic:
 
@@ -456,10 +463,12 @@ datastores reads see what a write command last synced to the local cache; run
 ### Format Marker
 
 A datastore can carry a **format marker** naming the layout it is written in.
-Today's layout is format 2. A datastore without a marker is format 2, and
-nothing writes a marker yet: the v3 opt-in writes one when it creates a
-datastore, and the v3 migration writes one when it converts one
-(swamp-club#2865). This binary only reads it (swamp-club#3189).
+Today's layout is format 2. A datastore without a marker is format 2.
+`swamp datastore setup filesystem --format 3` writes a format-3 marker when it
+creates a v3 datastore (swamp-club#3279, "v3 opt-in"), and the v3 migration
+will write one when it converts one (swamp-club#2865). This binary reads
+formats 2 and 3 on a filesystem datastore and format 2 on every other
+(swamp-club#3189).
 
 The marker is JSON. Unknown keys are ignored so later writers can add fields:
 
@@ -482,7 +491,13 @@ namespace:
   it.
 - **Datastores whose sync service advertises `controlPlane`** (S3, GCS): the
   control-plane record `datastore-format`, at `<prefix>/_control/datastore-format`.
-  Core reads it through a sync service built for that read alone. A sync
+  A provider that implements the optional `datastoreControlPlaneStore()` is
+  read through it: a read-only store keyed at the datastore-wide `_control/`
+  root that binds no namespace and builds no sync service, so the read is one
+  `get` (swamp-club#3191). Only a missing record reads as null; access denied
+  and every other failure reject, so the read counts as failed, not absent.
+  For a provider without it, core reads the record through a sync service
+  built for that read alone. A sync
   service that has not pulled or pushed has no namespace bound, so the S3 and
   GCS extensions resolve the key to the root `_control/` even for a namespaced
   repo. This holds for every released S3/GCS version: before extensions#242
@@ -498,8 +513,13 @@ namespace:
   instances they return.
 - **Other extensions** (no `controlPlane`, no sync service, no cache path): no
   marker can be read, so the check is skipped and logged at debug. The v3
-  storage contract must give every v3-capable datastore an explicit
-  datastore-scoped marker read, rather than relying on lazy binding.
+  storage contract must require `datastoreControlPlaneStore()` of every
+  v3-capable datastore, rather than relying on lazy binding.
+  `assertDatastoreControlPlaneStoreConformance` in `@swamp-club/swamp-testing`
+  checks an implementation.
+- **Namespace-scoped credentials.** A namespaced repo whose credentials reach
+  only its own `<prefix>/<namespace>/` cannot read the root record. The read
+  fails, and the check is skipped, the same through either path.
 
 **The check.** `assertSupportedDatastoreFormat`
 (`src/domain/datastore/datastore_format.ts`) decides; the infrastructure reader
@@ -520,9 +540,34 @@ and says nothing was changed. A garbled marker is refused because treating it
 as format 2 is the unsafe direction. A failed read passes because blocking
 offline or degraded use would change behaviour for every v2 datastore, and the
 command meets the same outage itself. The remote read is bounded by
-`DATASTORE_FORMAT_READ_TIMEOUT_MS` (5 s), since the extensions retry inside
-`get`; a remote slower than that is treated as a failed read. The v3 opt-in
-should revisit that trade-off.
+`DATASTORE_FORMAT_READ_TIMEOUT_MS` (3 s) through a provider's datastore-wide
+store, and by `DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS` (4 s) on the
+fresh-sync-service fallback, which pays one more round trip. The `get` is
+handed an `AbortSignal` that aborts at that deadline, so an extension that honours it stops its
+request and retry backoff then; until then it may retry, so one transient
+error does not skip the check. A remote slower than the deadline is treated as
+a failed read.
+
+**Cost** (swamp-club#3191, measured with
+`scripts/bench_datastore_format_guard.ts` against local ministack and
+fake-gcs-server, 20 interleaved runs per cell). With the current S3 and GCS
+extensions, which have no `datastoreControlPlaneStore()` yet, each guarded
+command builds two sync services and makes one control-plane `get`: on S3 that
+is a `HeadBucket` credentials preflight plus the `GetObject`, two requests; on
+GCS one request. Against a local emulator this adds no time distinguishable
+from noise. A stalled read used to add the whole 5 s; it now adds the cap of
+its path. Through `datastoreControlPlaneStore()` the check builds no sync
+service and, as the extensions implement it, makes one request.
+
+The caps were set from emulator runs with injected round trips and a slow AWS
+container-credentials source, since a real bucket's first request pays
+connection setup and credential resolution. A read that misses its deadline
+skips the check silently, so the caps keep headroom: at 300 ms round trips and
+a 1 s credentials fetch the S3 read took about 1.95 s through the
+datastore-wide store, and more than 2 s on the fallback, where a 2 s cap let
+a newer-format datastore through in 5 of 5 runs. With the 3 s and 4 s caps a
+planted newer-format marker was refused in every run, up to a 1.5 s
+credentials fetch.
 
 **Where it runs.** Before anything locks, pulls, pushes or writes:
 
@@ -612,7 +657,10 @@ An idle peer sees committed output within one polling interval of it reaching
 the remote. Under steady run load it can take about four intervals: three
 skips, then an escalated cycle. The same bound applies to changes reaching the
 AccessDataPoller, and to a newly minted token being accepted by a peer: until
-the peer's next pull, it rejects the token as unknown. The query catalog is
+the peer's next pull, it rejects the token as unknown. A worker enrolling on a
+peer that already has an enrollment token's record but not its definition is
+refused as retryable (`token_not_synced`), and the peer never creates a
+definition of its own for the token. The query catalog is
 invalidated only after a successful pull that reports changes, so quiet cycles
 keep fast cached reads.
 
@@ -1242,7 +1290,9 @@ of work whose operation failed.
 
 When an operation runs inside `runInUnitOfWork`, the
 repository stages the change into that ambient unit of work, but only when the
-unit is a legacy adapter over the repository's own hook instance. A unit belongs
+unit is bound to the repository's own hook instance in the unit-of-work binding
+registry (see "v3 commit-log unit of work" below; until swamp-club#3240 only the
+legacy adapter could bind a unit). A unit belongs
 to one repository context, so a second context in the same process (side-by-side
 repos, namespace migration) never hands it its changes. Otherwise the repository
 calls its hook as before, and with no hook (filesystem datastores) it does
@@ -1443,12 +1493,13 @@ operation inside a unit of work:
   - `PINNED_UNSCOPED_WRITERS` in the guard module lists the production
     callers still allowed on route 2, each with a reason. It is empty: every
     route-2 caller found runs in a root. The pushing ones make their push the
-    root's flush: serve bookkeeping GC and server-token GC. The rest run in a
+    root's flush: serve bookkeeping GC, server-token GC and serve shutdown's
+    run interrupts (swamp-club#3252). The rest run in a
     root with no flush, which forwards each mark to the hook at once and
     pushes nothing, as before: the device-auth mint, `access.reload` and the
     grant commit (their writes, before the root `stageWritesThenPush` already
     opens for the push), serve boot reconciliation and its continuous tick,
-    serve shutdown's run interrupts, the OAuth collective refresh's token
+    the OAuth collective refresh's token
     updates and revokes, `model.validate` (whose model checks receive the
     hooked repositories), `run.doctor`'s fix, worker data-plane writes and
     capability deletes, and the CLI's
@@ -1721,6 +1772,1982 @@ not per-file corruption. A damaged cache file (bit rot, a truncated write after
 a crash) can pass the fast path if the index is unchanged. Integrity is the
 verifier's job: use `DatastoreVerifier.verify()`, or `rm -rf` the cache and
 re-pull.
+
+### v3 domain model (datastore rework Phase 3)
+
+v3 replaces "write a file, mark it dirty, push later" with explicit commits. A
+single writer records each commit in `commits.db`, and content is stored as
+immutable, content-addressed chunks. The CLI's embedded datastore service is
+the writer in solo mode, and the elected `swamp serve` leader in team mode.
+swamp-club#3233 adds the domain model this builds on, in
+`src/domain/datastore_v3/`. It is pure, in-memory domain code, and nothing in
+production imports it yet: `integration/datastore_v3_rules_test.ts` pins its
+importers to an empty list. It is a bounded context of its own, beside
+`src/domain/datastore/`, because it builds on the `models`, `data` and
+`workflows` contexts, and those already import `datastore`: inside it, the
+model would close three context cycles
+(`integration/architecture_boundary_test.ts`). swamp-club#3236 adds the
+commit store (see "v3 commit store" below), swamp-club#3237 the chunk store
+("v3 chunk storage"), swamp-club#3240 the commit-log unit of work ("v3
+commit-log unit of work") and swamp-club#3239 the read model ("v3 read
+model"), all dormant. The opt-in is a later issue.
+
+**Ubiquitous language.**
+
+- **Partition**: the storage of one aggregate instance. Consistency between
+  partitions is eventual.
+- **Commit**: one transaction on one partition. Its ops apply together or not
+  at all.
+- **seq**: a partition's commit counter. It has no gaps: a partition accepts
+  only its current seq plus one.
+- **Intent**: the domain operation an op performs (`data.save`,
+  `grant.revoke`, …). Serve authorises on the intent, never on the path.
+- **Op**: one change in a commit: `put`, `tombstone`, `data-version` or
+  `lease`.
+- **Record key**: the namespace-relative path an op projects to, in today's
+  cache layout. It is used only to materialise real files.
+- **Blob**: content stored as chunks, referenced by `{ sha256, size }`, plus
+  `parts` when it spans more than one chunk.
+- **Chunk**: an immutable piece of content addressed by its SHA-256.
+- **Fence**: a lease's monotonic number. A writer whose fence is stale loses.
+- **txnId**: the outbox entry id a commit carries. A retry carries the same
+  one, so the commit lands once.
+- **High-water mark**: the greatest version a data name ever had. It never
+  decreases. It is not a floor for new versions: a new version only has to be
+  not live (swamp-club#3250).
+
+**Partitions are aggregates.** A partition key is built only by
+`partitionOf()` (`partition_key.ts`) from the identity of the aggregate it
+stores. A fitness rule rejects partition-key literals anywhere else.
+
+| Aggregate | Partition key | Contention |
+|---|---|---|
+| `Model`: data names and versions, outputs, the evaluated definition. Grants, groups, server tokens, enrollment tokens and workers are models of their `swamp/*` types. | `model--{type}--{modelId}` | Real: a lease (Phase 5) |
+| `WorkflowRun`, with its jobs and steps | `run--{workflowId}--{runId}` | None: each run gets a new id |
+| `Definition`: a model, workflow or vault under managed config, with its evaluated workflow | `config--{model\|workflow\|vault}--{name}` | Real: optimistic concurrency (`expect`) |
+| The managed-config extension lockfile | `config--lockfile--upstream_extensions` | Real: optimistic concurrency (`expect`) |
+| `AutoDefinition` | `definition--{id}` | None: each gets a new id |
+
+Content chunks contend with nothing, because a chunk's identity is its
+SHA-256.
+
+**Ops and the commit envelope.**
+
+- **`Commit`** (`commit.ts`) carries:
+  - `v: 3`, the `seq`, the partition and the namespace;
+  - the `txnId` and the writer (`host`, `pid`, `instance`);
+  - optional `executedAt`, `clockOffsetMs`, `principal` (set by serve only)
+    and `fence`;
+  - `at`, and between 1 and `MAX_COMMIT_OPS` (10,000) ops.
+- **Ops** (`op.ts`) are built by factories, never as literals.
+  - **`put`** carries a `BlobRef` or up to 8 KiB of inline content, as
+    canonical base64. `putOp()` computes the SHA-256 of inline content. The
+    serialized form leaves that digest out, and `Commit.fromJSON` recomputes
+    it, so a stored digest can never disagree with its bytes.
+  - **`tombstone`** names one key; there are no prefix tombstones.
+  - **`data-version`** carries the version's `DataMetadata`, and is allowed
+    only in a model partition.
+  - **`lease`** carries a holder and a fence.
+- **The intent's partition.** Every `put` and `tombstone` intent must belong
+  to the commit's partition (`intentPartition`).
+
+**The partition's rules.** `Partition.append` (`partition.ts`) keeps these.
+It is synchronous, and a refused commit leaves the partition unchanged:
+
+- **Partition, then duplicate.** A commit for another partition is refused
+  first. A commit whose `txnId` the partition holds is then a no-op, checked
+  before seq, so a retry of a commit that landed is harmless even though its
+  seq is now behind. Identity is the txnId alone: the payload is not
+  compared.
+- **seq has no gaps.**
+- **Fences never go down.** A commit, or a lease op, whose fence is below the
+  partition's highest is refused (`stale-fence`). Once a partition has seen a
+  fence, a commit without one is refused too (`unfenced`), so a writer cannot
+  slip past fencing by leaving it out. Every v3 writer holds a fence: the
+  solo writer lock at `_control/writer` carries it in solo mode, and the
+  leader lease in team mode (swamp-club#3234,
+  `design/enablers/datastore-litestream.md`). Only a partition that has never
+  seen a fence accepts an unfenced commit.
+- **`expect` must hold.**
+  - `put` with `expect: "absent"` creates only.
+  - `put` with `expect: { sha256 }` edits the version it was loaded from.
+  - `tombstone` with `expect: "present"` removes only a record that exists.
+  - Ops in one commit see each other's effects in order.
+- **A live data version is recorded once** (swamp-club#3250; it replaced "data
+  versions only grow" from swamp-club#3233).
+  - A `data-version` op's version must not be live for its name, or the
+    commit is refused with `version-live`. A version removed earlier may be
+    recorded again, and versions may arrive out of order. This is v2 parity:
+    the filesystem allocates `max(existing) + 1`, so a save after deleting a
+    whole name or its top version reuses the number. Parallel writers of one
+    name, and deferred promotions, also finish out of order. Two writers
+    claiming the same live version are still refused.
+  - The one exception is an append: a `data-version` op may re-record a live
+    version when a `data.append` put for that name and version comes earlier
+    in the same commit. Each such put lets one op through, so a save of a
+    live version ahead of an append in the commit is still refused. Its
+    metadata (the new size) replaces the version's. The append's
+    `metadata.yaml` put carries `expect: { sha256 }` of the metadata it
+    replaces, so a version another writer recorded under the same number
+    refuses the append (`expect-failed`) instead of being overwritten.
+  - A tombstone whose intent is `data.delete` or `data.gc` with a version
+    removes that version. A delete of a whole name lists each version it has
+    seen as its own versioned tombstone, so a version written concurrently
+    survives. A version-less `data.delete` is only for keys that carry no
+    version (the latest marker, the name directory).
+  - A rename is one model-partition commit: a `data.rename` put, a
+    `data-version` op for the new name, and a `data-version` op for the old
+    name's marker version (the version carrying `renamedTo`), which is not
+    live.
+  - Each name's latest is its greatest live version, so exactly one latest
+    per name holds by construction. The partition reads names and versions
+    from intents and metadata, never by parsing a record key.
+
+**Decisions.** The commit store, the chunk store and the opt-in build on
+these.
+
+1. **From staged changes to commits.** A path alone cannot become a commit:
+   the commit needs the intent serve authorises on and the content the
+   partition records. Repositories on a v3 datastore stage typed changes
+   (`TypedChange`: a partition and an op, or a partition and a put whose
+   content the unit stores at commit) through `CommitLogUnitOfWork`
+   (`commit_log_unit_of_work.ts`). It is a sibling port that extends
+   `UnitOfWork` with `stageOp`, `stagedOps` and `checkpoint`. `StagedChange`,
+   its callers and the legacy adapter are unchanged.
+2. **How a commit-log unit claims a repository context.** Before
+   swamp-club#3240 `signalChange` staged into the ambient unit only when
+   `legacyUnitOfWorkTarget(uow)` was the repository's own hook, which
+   recognised legacy units alone. A binding registry (`UnitOfWorkBinding`)
+   generalises it: each adapter binds the units it builds to the hook of the
+   context they serve, and `signalChange` asks the registry. The legacy
+   adapter becomes one registrant and the commit-log adapter another.
+3. **Unscoped writes are refused on v3.** On v2, a hooked write outside every
+   unit still marks the hook (route 2 in `signalChange`); its removal is
+   deferred. A v3 datastore has no such fallback, so the commit-log adapter
+   refuses a write outside a unit rather than drop it. That includes a hooked
+   repository write inside the CLI's managed-lockfile root, which is bound to
+   the transaction's own hook (swamp-club#3192), so such a write would count
+   as unscoped. The lockfile's own write is a typed `lockfile.write` op in
+   that root.
+4. **Abandon discards.** A legacy unit's changes have already reached the
+   hook, so it flushes on abandon. A commit-log unit discards its staged ops
+   instead. Content it already wrote as chunks stays as unreferenced chunks,
+   which chunk garbage collection reclaims; a chunk is never referenced
+   before the commit that names it lands.
+5. **Run outcomes.** A workflow run's unit commits its partitions when the
+   run ends `completed`, `failed`, `suspended` or `cancelled`:
+   - a suspended run must be durable to resume;
+   - a cancelled or failed run's record is its outcome.
+
+   A unit ended by a throw or an early stop discards, except a `completed`
+   stream followed by `return()`, which counts as success. A use case that
+   reports an `error` commits since swamp-club#3279, which reversed this
+   part of the decision: a failed method run reports one, and v2 publishes
+   its record. The risk is that a half-updated aggregate, such as a run
+   record a persistence error left `running`, becomes durable history, as
+   v2 publishes it. `completed` is
+   the status `WorkflowRun` records as `succeeded` (swamp-club#3257). An
+   `interrupted` run does not commit through its own unit: the run's unit
+   never ends that way, since shutdown and the reapers record it from
+   another path.
+6. **Checkpoints.** `checkpoint()` commits each partition touched so far, in
+   the order of decision 7, and keeps the unit open. Later changes to the
+   same partitions go into later commits.
+7. **No atomicity across partitions.** Each partition commits on its own. A
+   workflow run that writes several models commits the data partitions
+   first and the run record last, so a run record never names data that has
+   not landed. A refused data partition holds the run record back until the
+   run is saved again with the steps that wrote it failed ("Run records and
+   refusals" in "v3 commit-log unit of work", swamp-club#3257).
+
+**Decisions found while building the model.**
+
+- **Key encoding.** The type and name segments are percent-encoded, keeping
+  `@`: `model--swamp%2Fgrant--<id>`. Ids are lowercased, so one aggregate
+  never splits into two partitions by letter case. A normalized model type keeps `/` and
+  `@`, and a definition name may hold `/` (scoped `@collective/name`) or
+  `--`, so flattening `/` to `-` would give `a-b/c` and `a/b-c` one key.
+  `partitionOf` takes a `ModelType` and uses its normalized form, so every
+  spelling of a type gives one key. `@swamp/grant` and `swamp/grant` are
+  distinct normalized types, and so distinct partitions, as their paths are
+  today.
+- **No ULIDs.** Every id swamp generates is `crypto.randomUUID()` (UUID v4,
+  122 random bits), which already cannot collide, and the run, workflow and
+  data id schemas require a UUID. A partition orders its commits by seq, so
+  ids need not sort by time. `WorkflowRunFactory`, `DefinitionFactory` and
+  `ModelOutputFactory` (`identity_factories.ts`) reuse that generator.
+- **Version numbers follow v2's allocation** (swamp-club#3250). swamp-club#3233
+  decided versions are never reused and called that harmless for a new, empty
+  v3 datastore. It is not: within one datastore a save after
+  `delete(name)` (and `data prune`) or after a top-version delete reuses the
+  number, a rename marker can too, and a deferred version promoted after a
+  higher one committed arrives below it. Each would have been refused and
+  dropped its partition's whole group. v3 therefore accepts any version not
+  live. The cost is v2's: a run record that names `name@version` can point
+  at the content of a later save that reused the number, and in team mode a
+  writer behind on catch-up can re-create a deleted version number. The
+  high-water mark stays the greatest version seen.
+- **Aggregate-specific rules stay with their aggregate.**
+  - A partition sees op content as opaque bytes.
+  - `WorkflowRun` keeps its own status-transition and step-ownership rules
+    and enforces them before it builds ops.
+  - Admin-only changes to grants and groups are enforced by serve, which
+    authorises on the intent.
+- **Renames span two partitions.** A definition partition is keyed by name,
+  because the files are laid out by name and `expect: "absent"` on the name
+  catches concurrent creates. A rename (vault edit can rename) is two
+  commits, in order:
+  1. a `definition.rename-to` put with `expect: "absent"` in the new name's
+     partition;
+  2. a `definition.rename-from` tombstone with `expect: "present"` in the old
+     one.
+
+  A crash between them leaves both names until a repair. Readers resolve the
+  definition by its id.
+- **The lockfile is a partition.** The managed-config extension lockfile is
+  datastore-synced today and has real contention, so it is a single-instance
+  partition written by `lockfile.write` under optimistic concurrency.
+- **What stays outside the commit log.** These writes get no intent, because
+  the datastore never syncs them:
+  - bundles and pulled extension sources (`ALWAYS_LOCAL_SUBDIRS`,
+    swamp-club#2612);
+  - the repo marker and datastore config;
+  - sources;
+  - vault secrets, which go to the vault provider;
+  - control-plane store keys (signal waits, heartbeats, webhook state, and
+    serve's audit events);
+  - the stream directories `audit/`, `telemetry/`, `logs/` and `files/`, and
+    run logs, which stay repo-local (swamp-club#3278, "v3 stream
+    directories").
+- **Authorisation requirements for the serve wiring.** Serve will authorise
+  each op on its intent, and the model leaves four bindings to that issue. Each
+  needs the per-repository audit of what every write stages, so none is
+  enforced yet:
+  - **Key to aggregate.** A put's or tombstone's record key must fall under
+    the projected paths of its intent's aggregate. Otherwise a principal
+    allowed to save data on one model could write any other aggregate's
+    file, such as a grant's. Since swamp-club#3256 the binding also covers
+    ownership: the read model keeps a file whose newest live put is
+    another partition's (a same-key rename), so a principal who could put
+    at another aggregate's key could also stop that aggregate's tombstone
+    from removing the file in every checkout.
+  - **Definition kind and model type.** A managed-config definition intent
+    names its kind and name, not its model type
+    (`config--model--{name}`), so same-named definitions of two model
+    types share one partition. Their record keys differ by type directory,
+    so the records never collide, but serve cannot tell the two apart when
+    it authorises an intent. The binding must take the type from the key or
+    add it to the intent.
+  - **Op kind to intent kind.** Which intents may ride a tombstone, and which
+    a put, is not a simple verb split. A versioned `data.delete` rewrites the
+    name's latest marker (a put), a definition delete keeps a file that
+    another entity shares (a put), and `grant.revoke` writes a new grant
+    version (a put). The table comes from that audit.
+  - **`data-version` ops.** These carry no intent, so they must be tied to a
+    `data.save`, `data.append` (or rename) intent for the same name and
+    version in the same commit, or get an intent of their own.
+  - **`lease` ops.** These carry no intent either. Only the lease machinery
+    (Phase 5) may write them; a client-forwarded commit carrying one must be
+    refused.
+- **The stream directories.** `audit/`, `telemetry/`, `logs/` and `files/`
+  are in `DEFAULT_DATASTORE_SUBDIRS`, which swamp-club#3233 read as "synced
+  today", with an open requirement that the opt-in give them a v3 home.
+  swamp-club#3278 found that nothing writes them through the datastore, so
+  they stay repo-local on v3, as on v2 ("v3 stream directories").
+
+### v3 chunk storage (`storage/1`)
+
+swamp-club#3237 adds where v3 content lives: the `storage/1` contract that a
+datastore extension implements, the core chunk store built on it, a
+filesystem reference implementation and a conformance suite. All of it is
+dormant until the v3 opt-in. `integration/datastore_v3_rules_test.ts` pins
+importers of the filesystem storage, and production calls of a provider's
+`storage()`, to empty lists. The chunk store sits in `src/domain/datastore_v3/`,
+so the rule that keeps that model dormant covers it too.
+
+**Ubiquitous language.**
+
+- **Storage**: a backend's `storage/1` implementation (`DatastoreStorage`,
+  `src/domain/datastore/datastore_storage.ts`), returned by the optional
+  `DatastoreProvider.storage()`.
+- **Chunk store**: the core domain service (`ChunkStore`,
+  `src/domain/datastore_v3/chunk_store.ts`) that cuts content into chunks,
+  uploads them, and reads them back verified.
+- **Part**: one chunk of content stored as several, listed in its `BlobRef`.
+- **Storage namespace**: the repository's namespace slug, or `_default` for an
+  unnamespaced datastore: one whose commits carry the empty namespace (`""`
+  in `commits.db`), whether a solo repository or a team datastore served with
+  no namespace. No slug can start with `_` (`NAMESPACE_PATTERN` in
+  `src/domain/data/namespace.ts`), so the two cannot collide.
+
+**The contract.** v3 keeps commits in `commits.db`, which Litestream
+replicates with its own clients, so object storage holds chunks and nothing
+else. The contract is therefore chunk-shaped, not a general byte store. An
+extension implements one small, verifiable thing, and it can batch `has`. The
+contract also leaves `list` and the refresh to the extension. Every method
+takes an `AbortSignal` and must reject when it aborts.
+
+| Member | Purpose |
+|---|---|
+| `contract` | `"storage/1"`. The chunk store refuses any other value. |
+| `capabilities()` | `{ maxChunkBytes, touch }` |
+| `has(ns, hashes)` | The subset of `hashes` stored. The chunk store checks it before uploading. |
+| `put(ns, sha256, bytes)` | Atomic, and idempotent by hash. Replaces the chunk and sets `lastModified` to now. |
+| `get(ns, sha256)` | The bytes, or null only when the chunk is absent. |
+| `touch?(ns, hashes)` | Refreshes `lastModified`, and returns the hashes it did not find. |
+| `list(ns)` | Every chunk, with its `lastModified`. |
+| `delete(ns, sha256)` | Idempotent. |
+
+`touch`, `list` and `lastModified` are the primitives chunk garbage collection
+uses, with the commit store's chunk index (see "v3 chunk garbage
+collection").
+
+**What the earlier seven-method draft had, and why it was dropped.**
+
+- **Range reads.** A slice of a chunk cannot be checked against the chunk's
+  SHA-256, so a ranged read would hand on unverified bytes. Core reads whole
+  chunks, and chunking itself gives random access: a reader fetches only the
+  parts that cover the range it wants.
+- **Streaming bodies.** A chunk is at most 16 MiB, and core must hash a whole
+  chunk before it knows the chunk's key. Bodies are `Uint8Array`.
+- **`listOlderThan`.** No backend filters a listing by date on the server, so
+  `list` returns `lastModified` and core filters.
+
+**Capabilities and their fallbacks.**
+
+- **`maxChunkBytes`**: core cuts chunks of `min(16 MiB, maxChunkBytes)`. The
+  same content can therefore be cut differently on two backends. Every
+  reference stays readable on both, because its parts are listed; only dedup
+  across backends is lost.
+- **`touch`**: without it, core puts a chunk it found present again, which
+  refreshes `lastModified` just as `touch` would. The same happens with any
+  hash `touch` reports missing, which covers a chunk deleted between `has` and
+  `touch`. A chunk a commit is about to name is therefore always present and
+  fresh.
+
+**Key layout.** Chunks sit under the datastore root, beside `_control/` and
+`_litestream/`. They are namespaced, because dedup is per namespace:
+
+```
+<prefix>/_blobs/<namespace>/sha256/<first two hex>/<sha256>
+```
+
+**Content spanning several chunks.** `BlobRef.sha256` is always the SHA-256 of
+the whole content, so `PutOp.sha256` and a put's `expect` keep meaning "the
+record's bytes". Content stored as one chunk has no `parts`, and that chunk's
+key is `sha256`. Empty content is one empty chunk. Content stored as several
+chunks lists them in order, as `parts: [{ sha256, size }]`. JSON without parts
+is unchanged.
+
+A manifest chunk was the alternative, and it was rejected. With the parts
+listed in the reference, a later GC finds every chunk still in use from the
+commits alone, with no extra fetch. With 16 MiB parts, the list costs about
+6 KB per GiB of content.
+
+**What core verifies.** On read, the chunk store checks each chunk's length,
+then its SHA-256, before handing on any of its bytes. The length is checked
+against the size the reference records, not against this backend's
+`maxChunkBytes`, because a reference cut on another backend may hold larger
+parts. For content in several chunks, it also checks the
+SHA-256 of the whole content when the read ends. A mismatch errors the stream
+with `ChunkIntegrityError`, and a missing chunk errors it with
+`ChunkMissingError`. A consumer keeps what a read yields only once the read
+ends cleanly.
+
+**Damaged chunks are not repaired by writes.** A write trusts `has`: a chunk
+that is present is refreshed, not uploaded again, so one damaged in place after
+its put (a crash that leaves a file of the right length but wrong bytes) stays
+damaged, and every read of it fails. A `put` always replaces the chunk, so
+deleting it, or putting it again, repairs it. Chunk garbage collection finds
+and deletes damaged chunks, since it already walks every chunk.
+
+**For extension authors.** `FileSystemStorage`
+(`src/infrastructure/persistence/fs_datastore_storage.ts`) is the reference
+implementation. It writes a temp file and renames it into place, validates the
+namespace and hash before building any path, and uses mtime as
+`lastModified`. `assertStorageConformance` in `@swamp-club/swamp-testing`
+checks an implementation. `createInMemoryRemote({ storage: true })` provides a
+conforming in-memory one. The S3 and GCS implementations are a later
+swamp-extensions change.
+
+### v3 commit store (datastore rework Phase 3)
+
+swamp-club#3236 adds `commits.db`, the store that keeps every partition's
+commits and enforces the partition rules in storage. It is dormant: nothing in
+production opens it, and `integration/datastore_v3_rules_test.ts` keeps every
+importer of `src/domain/datastore_v3/` and `src/infrastructure/datastore_v3/`
+inside those two directories.
+
+**Port and adapter.**
+
+- `CommitStore` (`src/domain/datastore_v3/commit_store.ts`) is the repository
+  port for partitions:
+  - `append(commit)` returns `appended` with the commit's seq, or
+    `duplicate` with the seq an earlier commit with that txnId landed at.
+  - `readPartition(namespace, partition, fromSeq, limit)` reads commits in
+    seq order.
+  - `head(namespace, partition)` returns the seq and highest fence.
+  - `changesSince(cursor, limit)` reads the store-wide change feed.
+  - `compactionStatus`, `compactHistory` and `readCompactedBase` compact
+    history and read the compacted base (swamp-club#3258, "v3 history
+    compaction" below). `changesSince` and `readPartition` reject with
+    `CommitsCompactedError` below the compaction point.
+  - `close()` lets queued appends finish, then every other call rejects.
+- `SqliteCommitStore` (`src/infrastructure/datastore_v3/sqlite_commit_store.ts`)
+  implements it over `node:sqlite`, the binding `_catalog.db` uses.
+- It is core's own store, not an extension contract. `commits/1`, for
+  backends that are themselves the commit store, is a Phase 8 item.
+
+**The rules stay in the aggregate.** An append never re-implements a rule. It
+rebuilds the `Partition` and calls `Partition.append` inside the transaction,
+so a refusal is the domain's `CommitRejectedError` and writes nothing. The
+unique keys below back the seq and txnId rules up in SQL. A damaged store
+raises `CommitStoreCorruptError`, naming the namespace, partition and seq, so
+it is never reported as a refusal of the new commit. A store is damaged when a
+stored commit does not parse, does not match its row's seq, namespace,
+partition or txnId, or breaks a rule against the commits before it; when a
+snapshot is invalid; when a head row disagrees with its commits; or when a
+txnId the partition has applied has no stored commit.
+Stored rows are read through `Commit.fromJSON`, so they pass the same checks
+as a commit a client sends.
+
+**Schema.** Version 1, in `PRAGMA user_version`. Migrations are an ordered
+list in the store: migration `i` takes version `i` to `i + 1`, a new one is
+appended, and a shipped one is never edited. A database at a newer version is
+refused (`upgrade swamp`) rather than read with the wrong expectations.
+
+| Table | Key | Holds |
+|---|---|---|
+| `commits` | `cursor` (`AUTOINCREMENT`); unique `(namespace, partition, seq)` and `(namespace, partition, txn_id)` | The commit's JSON (`Commit.toJSON`, inline digests left out) and the lookup columns `txn_id`, `fence` and `at` |
+| `partition_heads` | `(namespace, partition)` | The seq and highest fence, so an append never scans |
+| `partition_snapshots` | `(namespace, partition)` | The partition's latest snapshot and its seq |
+
+**One transaction per commit.** An append runs synchronously from
+`BEGIN IMMEDIATE` to `COMMIT`. It takes the write lock up front, because a
+deferred `BEGIN` in WAL mode can fail on a stale snapshot even with
+`busy_timeout`, as `_catalog.db` did (swamp-club#2671). Inside it the store:
+
+1. reads the head row and compares its seq with the rebuilt partition's;
+2. applies the commit with `Partition.append`;
+3. writes the commit row, the head row (its fence read from the partition,
+   since a lease op raises it too) and, on every 1,000th commit, a snapshot.
+
+A refusal rolls back and leaves the rebuilt partition unchanged. Any other
+failure rolls back and drops the rebuilt partition, which may be ahead of the
+file. Because the append is synchronous, it blocks the event loop for its
+`fsync`. That matters once serve writes through the store (Phase 5).
+
+**Rebuilding a partition.** Each store queues its appends one at a time. The
+queue rebuilds a partition, which is asynchronous because `Commit.fromJSON`
+recomputes inline digests, before the transaction starts. It never rebuilds
+inside one.
+
+- **From a snapshot.** `Partition.snapshot()` gives the partition's state
+  as plain data: seq, fence, lease holder, record digests, and each data
+  name's live versions and high-water mark. `Partition.restore()` refuses a
+  value that breaks the partition's invariants. The store writes a snapshot
+  every 1,000 commits of a partition, in the append's transaction, and
+  rebuilds from the latest one plus the commits after it.
+- **No txnIds in the snapshot.** They grow with every commit the partition
+  ever had, so a snapshot holding them would rewrite more of the WAL that
+  Litestream replicates every 1,000 commits. The rest of a snapshot grows only
+  with the partition's live state. Instead, `restore` takes a synchronous,
+  exact lookup for txnIds at or before the snapshot's seq, and
+  `Partition.append` uses it in its duplicate check, so the rule stays in the
+  aggregate. The store answers the lookup from the unique `txn_id` index,
+  bounded by the snapshot's seq so that the commits it replays after the
+  snapshot are not taken for retries of themselves. A lookup that missed a
+  txnId would let a retry apply twice.
+- **Measured** on an Apple M5 Max with a model partition of 10,999 commits
+  (`scripts/bench_commit_store.ts`). Each commit is an inline put and a
+  data-version, plus a delete every tenth:
+
+  | | Time |
+  |---|---|
+  | Replay from seq 1 | 268 ms |
+  | Snapshot plus the 999 commits after it | 35 ms |
+  | Writing a snapshot (once per 1,000 appends) | 2 ms |
+  | Appending to a cached partition | 0.07 ms |
+
+  About 80% of a full replay is `Commit.fromJSON` recomputing inline digests.
+  Replay grows with the partition, and a short-lived CLI command pays it on
+  its first append to that partition, so the store snapshots.
+- **Cache.** Each store keeps rebuilt partitions in an LRU of 1,024 entries.
+  Serve is long-lived and every workflow run is a new partition, so the
+  number of cached partitions is bounded. A cached partition still collects
+  the txnIds of every commit applied since its snapshot, so a very busy
+  partition cached for a long time grows. Phase 5 should bound that, for
+  example by re-restoring a partition from its newest snapshot.
+- **Head check.** A cached partition whose seq differs from the head row was
+  overtaken by another connection. The store drops it, rebuilds and retries
+  once. A second writer is a bug the Phase 4 writer lock prevents, but the
+  store stays correct. If the partition is stale again straight after the
+  rebuild, the store compares the head row with the last stored commit while
+  it holds the write lock. A mismatch means damage, and the store raises
+  `CommitStoreCorruptError`.
+
+**Change cursor.** `commits.cursor` is an `AUTOINCREMENT` key, so a value is
+never reused even after a later prune deletes rows. `changesSince(cursor)`
+returns rows above it in cursor order. Rows appear in cursor order only
+because one writer serializes appends: no reader can see cursor `n + 1`
+committed before `n`. The read model and the Phase 5 commit feed rely on
+that.
+
+**SQLite settings.**
+
+- WAL, `synchronous=FULL` (a commit is durable when append returns), a
+  5-second `busy_timeout`, and no foreign keys (the schema has none).
+- SQLite's default auto-checkpoint, and never a forced checkpoint. Litestream
+  replicates the WAL, and `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made
+  the replica 11 times larger (`datastore-litestream.md`). A fitness rule
+  refuses `wal_checkpoint` and `wal_autocheckpoint` in v3 code.
+- One connection per store, and one writing process per file.
+
+**One `commits.db` per datastore.** Namespaces share one database, keyed by a
+`namespace` column, rather than one database each.
+
+- The Litestream record puts the replica beside `_control/` at
+  `_litestream/<fence>/`, and the solo writer lock at `_control/writer`
+  carries one fence per datastore. One database matches one fence and one
+  sidecar.
+- Serve handles several namespaces with one connection and one sidecar, not
+  one of each per namespace.
+- Failover restores one database.
+- The cost: restoring one namespace restores them all, and a busy namespace
+  grows the shared file. Namespaces that share a datastore already share its
+  bucket and its writer, so that is accepted.
+- An unnamespaced datastore's commits have namespace `""`. Its chunks live
+  under `_blobs/_default/` (swamp-club#3237, "v3 chunk storage" above).
+
+**Large changes.** A commit carries at most `MAX_COMMIT_OPS` (10,000) ops.
+The commit-log unit splits a partition's larger change sets across several
+commits, between batches (swamp-club#3250, "v3 commit-log unit of work"
+below).
+
+### v3 commit-log unit of work (datastore rework Phase 3)
+
+swamp-club#3240 implements decisions 1 to 7 of "v3 domain model" above. The
+commit-log unit is dormant: `integration/datastore_v3_rules_test.ts` (rule 5)
+keeps every production file outside the v3 directories from importing it, and
+only tests open it until the v3 opt-in. The binding registry is the one change
+it shares with v2.
+
+**The binding registry.** `unitOfWorkBinding`
+(`src/infrastructure/persistence/unit_of_work_binding.ts`) implements the
+`UnitOfWorkBinding` port (`src/domain/datastore/unit_of_work.ts`). The port
+lives in the generic datastore context, because persistence may not import the
+dormant v3 context. It holds two weak maps:
+
+- `bind(uow, hook)` / `boundHook(uow)`: which repository context a unit
+  serves. The legacy adapter binds every unit it builds over a hook, and the
+  commit-log adapter binds its own. Identity decides, so a wrapper of a hook
+  never matches. `legacyUnitOfWorkTarget` stays as the legacy-only view.
+- `requireUnit(hook)` / `requiresUnit(hook)`: a context that has no route 2.
+  `runInCommitLogRoot` marks its context's hook, and `createRepositoryContext`
+  marks a v3 context's when it builds it (swamp-club#3279), so a write before
+  any root opens is refused too. A mark is permanent for the process, so a hook
+  instance must never be shared between a v2 and a v3 context. A legacy unit
+  forwards each change to the hook, which would be route 2 by another name:
+  the legacy adapter refuses to build one over a marked hook, and
+  `signalChange` refuses to stage a marked hook's write into one built
+  before the mark.
+
+`signalChange` routes a hooked write in this order: into the ambient unit when
+it is bound to the write's hook; otherwise, when the hook requires a unit,
+refuse with `UnscopedWriteRefusedError` before anything is marked or written
+(decision 3); otherwise route 2, exactly as before. That covers the CLI's
+managed-lockfile root (swamp-club#3192): a v3 repository write inside it meets
+a root bound to the transaction's own hook, and is refused.
+`integration/datastore_write_seams_rules_test.ts` pins every `bind`,
+`boundHook`, `requireUnit` and `legacyUnitOfWorkTarget` caller.
+
+**Typed changes and content.** A `TypedChange` is either an op built by the
+op factories, or a pending put: intent, key, optional `expect` and a
+`ContentSource`. A put whose content needs a chunk cannot be built before the
+chunk is stored (`putOp` takes its `BlobRef`), so the unit stores content when
+it commits, and an abandoned unit stores nothing. A `ContentSource` is bytes,
+or a function returning a fresh stream each time it is called (a repository
+passes "open the file I just wrote"), so large content is never held in
+memory between staging and commit. The unit reads a stream a piece at a
+time until it ends or holds more than `MAX_INLINE_BYTES`: content that ends
+within the limit is inlined, anything longer goes, with what was already
+read, through `ChunkStore.write`. Bytes are copied when staged. A retry calls the source
+again. A source is read at commit and at most once: a retry reuses the
+content stored the first time. Before reading it, the unit drops a stream put
+that a later put or tombstone of the same key with no `expect` supersedes,
+among the unflushed batches and the pending groups not being appended whose
+put is not stored yet (swamp-club#3250); a group emptied so is dropped, since a
+commit carries an op. A stream put superseded while its group is being
+appended cannot leave that group; the append skips it, also when its stream
+fails because the file is gone, and commits nothing when no op is left. So a
+repository may rewrite or remove a file it staged
+as a stream, provided it stages the change that does so; until then the file
+must stay readable and unchanged. `stage(StagedChange)`, the
+path-only form, is refused with `PathOnlyChangeRefusedError`: there is no
+path-to-op guessing. Changes are checked where they are staged (the
+partition matches the intent, a pending put's key and `expect` build a valid
+put, at most `MAX_COMMIT_OPS` per partition in one `stageOps` batch, no
+`lease` ops, which only the lease machinery writes), so a bad change fails at the call that
+made it rather than blocking the partitions after it at commit.
+
+**Commit order and failure.** `commit` and `checkpoint` group the changes by
+partition, in first-touched order with workflow-run partitions last
+(decision 7). For each partition the unit stores its content first, so no
+commit names a missing chunk, then builds one `Commit`: `seq` is the
+partition's head plus one, read when it appends; `txnId` is fixed when the
+group forms; plus the writer, the fence when one is given, and `at`. The head
+read and the append run under a per-partition lock keyed by sink, namespace
+and partition, so two units in one process never take the same seq; the lock
+is released on every outcome and its entry dropped when its queue drains.
+
+- **No atomicity across partitions.** When a partition fails, the partitions
+  before it stay committed and the ones after it are not tried. A refusal is
+  the exception: the flush goes on past it (below).
+- **Pending groups.** A partition whose commit failed stays pending with its
+  txnId. The unit's next `checkpoint`, or its `commit`, rebuilds it at the
+  current head with the same txnId, so a commit that had landed is reported
+  `duplicate` and lands once. `commit` ends the unit whether or not it
+  succeeds (the `UnitOfWork` contract), so what is still pending when the
+  unit's own commit fails is lost with it until the Phase 4 outbox makes it
+  durable; a caller that must retry checkpoints first.
+- **Refusals.** The refused partition's changes are dropped: they can never
+  land as they are, and keeping them would block every partition staged
+  after them. The flush goes on to the other partitions, then throws one
+  `PartitionsRefusedError` (swamp-club#3257). It is a `CommitRejectedError`
+  with the first refusal's reason, its message carries each refusal's, and
+  it lists every refusal not yet acknowledged, earlier flushes' included,
+  each with the data versions its changes recorded. Every flush throws it
+  until the refusals are acknowledged, so none is cleared unseen. When
+  another failure stops the flush after a refusal (a transient append
+  error, or a second `seq-gap`), the refusal is thrown with that failure as
+  its `cause`, and the failed partition stays pending. A `seq-gap` is not a
+  refusal: another append moved the head first, so the append is rebuilt at
+  the new head once more in the same flush, and if that also meets a gap the
+  partition stays pending for the next checkpoint and the flush stops.
+- **Splits (swamp-club#3250).** A partition holding more than
+  `MAX_COMMIT_OPS` changes in one flush forms several groups, split between
+  `stageOps` batches, so one batch always lands in one commit. Each split has
+  its own txnId and commits in order. A refused split drops the splits of its
+  partition formed in the same flush, which were staged after it; a batch
+  staged after that flush forms its own group and commits on its own. Splits
+  give up the single commit: when a later split fails, the earlier ones stay
+  landed, and between two splits a reader can see part of the operation (a
+  name's version tombstones without its latest-marker change). The final
+  state is the same. When a later split is refused, the earlier ones keep
+  what they recorded: a stream put elided because a tombstone in the refused
+  split superseded it leaves its version recorded with `metadata.yaml` and no
+  `raw`. That is v2's own failure mode for a crash between its metadata and
+  content writes; the next save or delete of the name settles it. The issue asked for the unit to refuse more changes
+  until a checkpoint; splitting at group formation keeps child units
+  all-or-nothing and needs no caller to checkpoint.
+- **Abandon** discards staged and pending changes (decision 4). A
+  checkpoint already in progress finishes first, so what it commits stays
+  committed. Chunks already stored stay for chunk garbage collection.
+- **Run records and refusals (swamp-club#3257).** A run record never names
+  data whose partition was refused. The issue offered two ways: hold the run
+  record back (or commit it with the step failed), or have the record name
+  only versions that landed. This takes the first, with the step failed:
+  - Naming only landed versions would make the committed record differ from
+    the local file, which every read-model gate compares by bytes; would
+    leave the step `succeeded` with its provenance silently gone, though
+    later steps may have read that data; and the run cannot know at save
+    time what will land, only at commit.
+  - A run's record is rewritten whole on each save, so a save after a
+    refusal still names what it refused. So the unit holds every run
+    partition back for the rest of its life once a non-run partition is
+    refused, not for one flush, and keeps it pending rather than dropping
+    it, so the run's snapshot is not lost with it.
+  - `acknowledgeRefusals()` releases them. A root that ends without it
+    throws the refusal again, and its held run records are lost with it, as
+    on any failed commit. The local record stays, still naming the refused
+    data.
+  - `runInCommitLogRoot`'s `onRefused` settles a refusal at the root, where
+    a checkpoint is possible (a use case's unit is a child and cannot): a
+    root that commits checkpoints first (again, up to three times, after a
+    transient failure, so a refusal behind it is still met there) and, on a
+    refusal, runs `onRefused` with itself ambient, acknowledges, commits,
+    then throws the refusal. A step's failure reason carries the refusals'
+    messages, not the held-run list.
+    `reconcileRefusedRuns` (`refused_run_records.ts`) is the callback for a
+    workflow run: it saves each held run again with
+    `WorkflowRun.failStepsNamingRefusedData`, which fails the steps whose
+    data artifacts name a refused version (by data id and version, which
+    both the refusal and the step record), their jobs, and a succeeded run
+    (also when only a workflow-scope report artifact names one). A
+    suspended or cancelled run keeps its status. The re-save supersedes the
+    held record, so the store, and every later save of the run, records
+    those steps failed. The refusals `onRefused` sees are all that
+    acknowledging clears. When `onRefused` throws, the refusal is logged
+    and the root is discarded.
+  - A run's root on a v3 context passes it (swamp-club#3279, "v3 opt-in").
+- **Checkpoint** commits what is staged so far and keeps the unit open
+  (decision 6).
+
+**The outbox seam.** The unit appends through a `CommitSink`
+(`append` and `head`). Phase 3 passes the local `CommitStore`; Phase 4 passes
+the outbox, which makes pending groups durable across a crash.
+
+**Roots, children and run outcomes.** `runInCommitLogRoot(repoContext,
+options, fn)` mirrors `runInRootUnitOfWork`: it refuses a context without a
+hook, marks the hook with `requireUnit`, and runs `fn` with the root ambient.
+Opened inside an open commit-log unit for the same hook it is a child: its
+`commit` hands its batches, in order and one by one, to the root, its `abandon`
+discards them (and refuses changes staged after it), and `checkpoint` on it throws. A root's checkpoint commits what has
+been handed to it so far. The root ends as its `disposition` option decides,
+the way `pushWhen` decides a legacy root's push: by default it commits when
+`fn` resolves and discards when it throws. `runOutcomeDisposition` is
+decision 5 for a workflow run: commit when the run ends `completed`,
+`failed`, `suspended` or `cancelled`, discard on a throw. A failed or
+cancelled run must resolve with its status, not throw, or its record is
+discarded. `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) ends a v3
+unit, which `takesTypedChanges` tells apart, as decision 5 says
+(swamp-club#3257): it commits once the stream yields `completed`,
+`suspended`, `cancelled` or, since swamp-club#3279, a reported `error`,
+including when the consumer then stops with `return()`, and abandons on a
+throw or a stop before any of them. A legacy unit ends as before. The v3
+opt-in opens roots that follow their v2 push policy instead of
+`runOutcomeDisposition` ("v3 opt-in"). `result()` stops at
+`completed`, before the executor's last save of the run, so a run read
+that way commits the record as the run last saved it, still `running`, as
+v2 leaves the local file; the CLI and serve drain the stream.
+
+**The v2 gate.** `integration/usecase_sync_characterization_routing_test.ts`
+recorded today's routing before the registry landed (a root, a use-case
+child, a nested root over another hook, a wrapped hook, a unit no adapter
+bound, and the lockfile root), and every existing characterization and
+root-unit suite passed unchanged after it. A temporary route recorder over
+the whole test suite gave the same set of route-1 and route-2 writes before
+and after.
+
+### v3 repository staging (datastore rework Phase 3)
+
+swamp-club#3250 makes the data and output repositories stage typed changes
+when they run on v3, for every write they make. It is the first of three
+repository staging groups; definition, workflow and evaluated staging, and
+run and vault config staging, add builders to the same route. It is dormant:
+nothing reaches it until a hook requires a unit, which only a commit-log root
+marks. v2 behaviour does not change: the builders never run on v2.
+
+**The shared route: two calls.** The issue sketched one pre-write call with a
+lazy builder, `signalChange(markDirty, pathChange, () => typedChanges)`. The
+typed changes cannot be built before the write: the version is allocated by
+it, the content and metadata are written by it, and whether the latest marker
+moved is decided by it. Moving the call after the write would change v2's
+pre-write signal timing. So a repository makes two calls
+(`src/infrastructure/persistence/unit_of_work_scope.ts`):
+
+1. **Before the write**, `signalChange(markDirty, pathChange, { typed: true })`
+   as today. On v2 the option changes nothing. In a unit bound to the hook
+   that takes typed changes, the path change is checked (a write outside a
+   bound unit is still refused before anything is written) but not staged,
+   since a commit-log unit refuses path-only changes. A repository that has no
+   builders yet leaves the option out, so its path change still reaches the
+   unit and is refused there (`PathOnlyChangeRefusedError`).
+2. **After the write**, `stageTyped(markDirty, build)`, once per batch. It
+   returns at once when there is no hook or the hook does not require a unit
+   (every v2 context), so `build` never runs and nothing is read. In a bound
+   unit that takes typed changes it runs `build` and stages the result as one
+   `stageOps` batch. On a v3 hook with no such unit ambient it throws
+   `UnscopedWriteRefusedError` rather than drop the change.
+
+Which units take typed changes is a persistence-only registry beside the
+binding (`typedStagers` in `unit_of_work_binding.ts`): the commit-log adapter
+registers each unit it builds. It lives there, not in the domain port, so the
+`datastore` context never depends on `datastore_v3`, and persistence never
+imports the commit-log unit. `integration/datastore_write_seams_rules_test.ts`
+pins the registry's callers, and rule 7 accepts `stageTyped(this.markDirty,
+…)` beside `signalChange`. `integration/datastore_v3_rules_test.ts` pins the
+new imports of `src/domain/datastore_v3/` from persistence: type-only ones in
+the route, and the repositories' builders.
+
+**The change factory.** `ModelChanges` (`src/domain/datastore_v3/
+repository_changes.ts`) builds every typed change from what a repository
+already has: model type and id, data name, version, output file. It derives
+the partition with `partitionOf` and builds intents with `createIntent` and
+`modelRef`; record keys come from segments in today's layout, never from an
+OS path. After a write, the repository reads back what it wrote (on v3 only,
+inside `build`): the metadata bytes and parsed metadata, the content as bytes
+up to `MAX_INLINE_BYTES` and as a stream that opens the file at commit above
+it, and the latest marker's bytes.
+
+**Batches.** Each version is its own batch (its puts and `data-version`, or its
+two tombstones), and each latest-marker change is its own, so no write path
+builds a batch over `MAX_COMMIT_OPS` and a large removal splits between
+versions ("Splits" above). A rename is one batch, so it lands in one commit.
+
+**The mapping.** Every write of the data repository
+(`unified_data_repository.ts`), and what it stages after it:
+
+| Write | Typed changes |
+|---|---|
+| `save`, `finalizeVersion` | `data.save`: puts of `raw` and `metadata.yaml`, the `data-version` op, and a put of the latest marker when the marker now names the version. Staged before the write-time prune, so a failed prune never leaves the version local-only |
+| write-time prune (`pruneExcessVersions`) | Per pruned version, `data.gc` tombstones of `raw` and `metadata.yaml` with the version |
+| `append` | `data.append`: puts of `raw` and `metadata.yaml` (expecting the digest of the metadata it rewrote) and a `data-version` op re-recording the live version it extended |
+| `delete(version)` | `data.delete` tombstones of the version's two files, then the marker as the delete left it: a put of the lowered latest or of `NO_PROMOTED_VERSION`, or a version-less `data.delete` tombstone when the name directory went |
+| `delete(name)`, `data prune` | Per version listed before the removal, `data.delete` tombstones with its version; then a version-less `data.delete` tombstone of the marker |
+| `removeLatestMarker` (expiry) | A version-less `data.gc` tombstone of the marker: the read model drops the name's rows and keeps its versions |
+| `rename` | One batch with `data.rename` intents (naming both names): the new name's version files and `data-version`, its marker when it moved, the old name's marker version (`renamedTo`) and its marker. The inner save stages nothing of its own; its prune stages as above. A rollback stages the new name's marker as it left it |
+| `collectGarbage` | Per removed version, `data.gc` tombstones with the version, staged after the parallel removals; then the marker as GC left it |
+| `saveDeferred`, deferred `allocateVersion`, `finalizeVersionDeferred` | Nothing: a deferred version reaches v3 when it is promoted |
+| `advanceLatestMarkers` | Per promoted version, as `save`; a version whose metadata is gone stages its `raw` and marker but no `data-version`, as its catalog row is dropped |
+| `rollbackVersions` | Versioned `data.delete` tombstones (harmless for a version never promoted) and the marker as the rollback left it |
+| orphan reclaim | A version a dead process had promoted (its marker names it) stages as a promotion; a removed orphan stages `data.gc` tombstones, and an emptied name's marker as it was left |
+
+The output repository (`yaml_output_repository.ts`) stages an `output.save`
+put of a record's YAML after `save`, and an `output.delete` tombstone after
+removing one (`delete`, `deleteOlderThan`, `deleteByMethodLifetime`). A record
+that never parsed has no output id, so no repository ever put it, and its
+removal stages nothing. Run logs have no typed change: they are local-only
+(swamp-club#3257, below), and their removals inside a datastore declare
+`typed` so they are not refused.
+
+**The `bulk` mapping.** Neither repository stages a `bulk` change on v2. Their
+directory marks (a data name's or a version's directory) become per-key
+changes: a version directory holds exactly `raw` and `metadata.yaml`, and a
+name directory those of each version plus `latest`. There are no prefix
+tombstones.
+
+**Staging errors are never only logged.** Staging runs outside the catch blocks
+that log and continue (`advanceLatestMarkers`, `rollbackVersions`, GC's
+`allSettled` batches), so a v3 refusal surfaces. `advanceLatestMarkers` and
+`rollbackVersions` collect them and throw after every receipt (one error, or
+an `AggregateError`), so one refusal stops no other promotion. Two places log
+one instead, because an earlier error is already on its way to the caller: a
+rollback inside a failed `saveDeferred` or deferred `allocateVersion`, and
+the rollback of a failed rename. That error fails the operation either way.
+The first applies on v3 only: on v2 a failed write's rollback runs exactly as
+before, and its own error still reaches the caller.
+
+An append's metadata `expect` needs the digest of the file it rewrites, read
+before the write. `typedStagingActive(markDirty)` says whether `stageTyped`
+would run its builder now, so only v3 reads it; rule 7 accepts it beside the
+other two calls.
+
+**Chunk GC's post-commit check (swamp-club#3249).** Every commit a unit lands
+runs `restoreMissingChunks` for each blob put it names, a retry that reused
+a stored op included, so no landed commit names a chunk a racing sweep
+deleted. The check reads a put's source again only when one of its chunks is
+missing: the one exception to "read at most once", for repair after a GC
+race. A file-backed source reopens the file the repository wrote; when the
+file has changed since, the content no longer gives the same `BlobRef` and
+the commit fails loudly rather than store other bytes. A superseded put that
+the unit dropped never commits, so it needs no check.
+
+**The gate.** `integration/datastore_v3_repository_staging_test.ts` runs the
+real repositories on v3 in a commit-log root over `SqliteCommitStore` and
+filesystem `storage/1`, solo and namespaced, and catches up a read model into
+a second directory. Its files and `_catalog_v3.db` must equal what the
+repositories wrote, for every path above. That includes version reuse,
+out-of-order writers, a late version below a rename marker, an append after a
+top delete, a save pruned in the same unit, and a use case's child unit. GC
+and `delete(name)` above `MAX_COMMIT_OPS` split into two commits, in a root
+and in a child.
+
+#### Definition, workflow and evaluated repositories (swamp-club#3256)
+
+The second staging group: `yaml_definition_repository.ts`,
+`yaml_workflow_repository.ts`, `yaml_evaluated_definition_repository.ts` and
+`yaml_evaluated_workflow_repository.ts` stage typed changes for every write
+they make on v3, through the same two calls. v2 does not change: every read
+a typed change needs and every builder runs only behind `typedStagingActive`
+or inside `stageTyped`.
+
+**Which writes are datastore writes.** Every one of these repositories gets
+the context's hook, including definitions and workflows without managed
+config, whose repo-local `models/` and `workflows/` paths the hook simply
+never sends. Direct execution also builds a definition repository over the
+auto-definitions directory as its primary directory. So each written or
+removed file is classified by the directory it is in, not by the
+repository's role (`config_staging.ts`):
+
+- inside the managed config base, a managed-config definition or workflow,
+  in `config--{model|workflow}--{name}` (and a vault config in
+  `config--vault--{name}`, swamp-club#3257);
+- inside a directory named `auto-definitions`, an auto-definition, in
+  `definition--{id}`;
+- anywhere else, a git-tracked file, which stages nothing. Its path change
+  is declared `typed`, so a v3 unit does not refuse it either.
+
+Evaluated definitions and workflows are always datastore files. The tier
+comes from the default datastore layout (`DEFAULT_DATASTORE_SUBDIRS`);
+honouring a repository's configured `directories` and `exclude` is left to
+the opt-in. A record key is the file's path under the namespace root, from
+its own tier's base (`config/models/...`, `config/workflows/...`,
+`auto-definitions/...`, `definitions-evaluated/...`,
+`workflows-evaluated/...`), never rebuilt from a name, so a file a cached
+lookup found outside its type directory keeps its real key.
+
+**The mapping.**
+
+| Write | Typed changes |
+|---|---|
+| Definition or workflow `save`, managed config, name unchanged | `definition.create` put expecting the key absent; or `definition.edit` expecting the replaced file's digest, or absent when the file moved here from another key of the same name (a legacy uuid path), with a `definition.edit` tombstone of that key expecting it present. An unchanged save that does not write stages nothing |
+| Definition or workflow `save` that renames | Batch 1: `definition.rename-to` put in the new name's partition, always expecting the key absent. Batch 2: `definition.rename-from` tombstones, expecting present, of the keys the save removed in the old name's partition, and of the target key itself when both names are stored at the same uuid path |
+| Definition `save` into or out of auto-definitions | `auto-definition.save` put (no precondition) of the written file, `auto-definition.delete` tombstones of removed auto-definition files, and `definition.delete` tombstones (expecting present) of removed managed-config files |
+| Definition or workflow `delete` | Per partition, `definition.delete` or `auto-definition.delete` tombstones of the files it removed, without a precondition. A removed file whose name is unknown stages nothing |
+| Evaluated definition `save`, `delete` | `evaluated-definition.save` put and `.delete` tombstones in the model's partition, without a precondition |
+| Evaluated definition `clearAll` | Per file, read before the removal, an `evaluated-definition.delete` tombstone in the model its raw `type` and `id` name |
+| Evaluated workflow `save` | `evaluated-workflow.save` put in the workflow name's partition, and tombstones of removed files of that name; then, as later batches, tombstones of removed files, or of a same-key target, that declared another name, in that name's partition |
+| Evaluated workflow `delete`, `clear` | `evaluated-workflow.delete` tombstones in the partition of each file's declared name; `clear` also tombstones run snapshots |
+| `saveForRun`, `deleteForRun` | `run-snapshot.save` put and `.delete` tombstone in `run--{workflowId}--{runId}` |
+
+Before a write, the repository reads (on v3 only) the bytes and the raw
+`id`, `name` and `type` of each file the write replaces or removes: the
+digest for an edit's precondition, and the name that tells a rename apart.
+A fresh repository's id cache is cold, which is how every CLI command
+builds one, so the name never comes from the cache. The definition
+repository reads before `readMergeSource`, which removes a corrupt target.
+Definition puts pass bytes, never a stream: a put with an `expect` never
+supersedes an earlier stream put of its key, so a definition saved twice in
+one unit would otherwise read the second save's bytes for the first put.
+`cleanupOldPaths` returns the paths it removed, and staging runs outside its
+catch blocks, so a refusal surfaces and a failed removal is never
+tombstoned.
+
+**Preconditions.** Only authored managed-config definitions and workflows
+carry them, so a concurrent edit or create from another checkout is refused
+(`expect-failed`) rather than silently overwritten. The refusal surfaces
+when the root commits, as `CommitRejectedError`. Its message names the
+record key and the partition, so it is not wrapped while v3 is dormant; the
+user-facing wording belongs to the opt-in. Two limits:
+
+- A tombstone can only expect `present`, so a move from a legacy key cannot
+  detect a stale edit of the file it replaces.
+- A local file out of step with the store (an editor-mode edit, a hand
+  edit, a write by a hook-less command) makes the next save's precondition
+  fail until the read model catches the file up. A rename of a name v3
+  never saw lands its first commit and refuses its second.
+
+Auto-definitions, evaluated definitions and workflows, and run snapshots
+carry none: every direct execution rewrites an auto-definition, and the
+others are derived files that hook-less commands also write.
+
+**Renames.** A rename spans two partitions, so it is two batches, and the
+unit commits partitions in the order each was first touched, so the new
+name lands first. No use case touches the old name's partition earlier in
+the same unit, which that order relies on;
+`integration/datastore_v3_config_staging_test.ts` pins it. A crash between
+the two commits leaves both names, and the definition resolves by id. For a
+same-key rename the store holds two live records of one key, and the read
+model's ownership rule ("Keys two partitions write" in "v3 read model")
+keeps the file with the new name's bytes.
+
+The two commits are not atomic, so another checkout can edit the old name
+between them. Its edit expects the bytes the old partition still holds, so
+it lands. For a same-key rename the old name's edit is then the newest put
+of the key, and the rename's tombstone, which follows it, removes the file
+while the new name's record stays live. Replaying the feed gives the same
+result, so every checkout agrees, and the next save of the new name
+restores the file. This is accepted: the same race loses one of the two
+changes on v2, and closing it needs a commit spanning both partitions.
+
+**Directory removals.** `clearAll`, `clear` and `deleteForRun` remove whole
+directories. On v3 each lists its files first and stages one tombstone per
+file, finding each partition from the raw YAML fields (and a legacy file
+name's uuid), never a schema parse, so a file another swamp version wrote
+is still found. A file that names no valid aggregate (a missing or
+non-UUID id, an invalid model type), or a run directory that is not a
+UUID, stages nothing: no repository ever put it, and run GC must not abort
+on a stray directory. Neither `clearAll` nor `clear` has a production
+caller.
+
+**Writers with no hook.** These write the same files through repositories
+built without a hook: CLI `model create` and `model edit` and `workflow
+create`, `model evaluate` and `workflow evaluate`, editor-mode `model edit`,
+and serve's `migrateGrantDefinitions`. On v3 their typed changes stage into
+the commit-log unit around them (swamp-club#3279, "v3 opt-in"), and
+`runManagedConfigMutation` stages no bulk change there: it has no sync
+service.
+
+**The gate.** `integration/datastore_v3_config_staging_test.ts` runs the
+four repositories on v3 in a commit-log root, solo and namespaced, and
+compares a caught-up read model's files with theirs for every path above:
+including same-key renames, a cold repository's rename, a save across
+tiers, a git-tracked write that stages nothing, and run snapshot removals
+of a stray and an empty run directory. It also covers a rename's commit
+order and crash states, a stale edit, a concurrent create, and a file out
+of step. Dropping any staged change fails it.
+
+#### Workflow run and vault config repositories (swamp-club#3257)
+
+The third staging group: `yaml_workflow_run_repository.ts` and
+`yaml_vault_config_repository.ts` stage typed changes for every write they
+make on v3, through the same two calls. v2 does not change: every read a
+typed change needs runs behind `typedStagingActive`, and every builder
+inside `stageTyped`.
+
+**The mapping.**
+
+| Write | Typed changes |
+|---|---|
+| Run `save` | A `run.create` put of the record when the file was new, else `run.update`, in `run--{workflowId}--{runId}`, with no precondition. The content is a stream of the written file |
+| Run `deleteAllByWorkflowId` | One `run.delete` tombstone per run record the directory held, listed before the removal, each its own batch |
+| Run `deleteOlderThan` (GC) | A `run.delete` tombstone of each record it removes, terminal or unparseable; a dry run stages nothing |
+| Vault `save` | #3256's `definitionSaveBatches` with kind `vault`: a `definition.create` expecting the key absent, a `definition.edit` expecting the replaced bytes' digest, or a rename as two partitions (the path is by id, so a vault rename is always a same-key rename). A save of the bytes the file already held stages nothing |
+| Vault `delete` | A `definition.delete` tombstone in the partition of the name the file declared, when the removal happened |
+
+The record key is the file's path under the namespace root:
+`workflow-runs/{workflowId}/workflow-run-{runId}.yaml` and
+`config/vaults/{type}/{id}.yaml`.
+
+**Run records.**
+
+- A run is saved many times in one unit, so its record is a stream put
+  with no `expect`: the unit elides each earlier save still unread, and a
+  flush commits the last one, under that save's intent (`run.update` after a
+  `run.create` in the same unit). A put with an `expect` is never elided.
+- No precondition: a run has one writer at a time under its lock, and
+  cancel, recovery and the reapers rewrite the record as well as the run,
+  so a digest would refuse the next save whenever the local file is out of
+  step with the store.
+- Removals find runs by directory and file name. A workflow or run id that
+  is not a UUID stages nothing (no repository put it), so GC never aborts on
+  a stray file. A record a hook-less write truncated is still tombstoned.
+- Run logs and the run indexes (`.runs-index.json`) are local-only: the
+  executor writes the log under the repository's own `.swamp`, whatever the
+  datastore, and the indexes are a local cache. Neither stages anything;
+  run GC and `deleteAllByWorkflowId` remove logs where runs write them
+  (swamp-club#3266) with no signal.
+- A run's snapshot is #3256's (`run-snapshot.*`, same partition).
+
+**The `bulk` mapping.** Neither repository stages a `bulk` change on v2.
+`deleteAllByWorkflowId`'s directory removal, the only directory mark,
+becomes one tombstone per run record listed before the removal.
+
+**Vault configs.**
+
+- Only managed config makes a vault config a datastore file. A repo-local
+  `vaults/` file is git-tracked and stages nothing, which includes the
+  default vault `repo init` writes (swamp-club#3259): a new repository has
+  no config tier. A default vault saved under managed config names no host
+  path, so none reaches a commit.
+- The typed change carries exactly the YAML the repository wrote. Secrets
+  are the vault provider's, written under `.swamp/secrets` with no hook, so
+  none ever reaches a typed change. A registry vault type that keeps a
+  token in its config file already syncs it on v2; v3 carries no more.
+- A migration to another type saves the new type's path (a create) and
+  deletes the old one, both in the vault name's partition.
+
+**Writers with no hook.** These write vault configs without a hook: `repo
+init` (repo-local, as above), `datastore setup`
+(`src/libswamp/datastores/setup.ts`, `src/cli/commands/datastore_setup.ts`),
+the CLI's fallback repository in `src/cli/mod.ts`, serve
+(`src/cli/commands/serve.ts`), and the `vault create` and `vault edit`
+fallbacks when no repository is injected. Inside a v3 root their typed
+changes stage into it (swamp-club#3279, "v3 opt-in"); `repo init` and
+`datastore setup` run before any v3 datastore exists.
+
+**The gate.** `integration/datastore_v3_run_staging_test.ts` runs the run
+repository on v3 in a commit-log root, solo and namespaced, and compares a
+caught-up read model's run records with the repository's for every path
+above. It also runs the `workflowRun` use case on a v3 context: the unit
+commits a succeeded, failed, suspended and cancelled run and discards an
+early stop; and after a real `version-live` refusal and an `expect-failed`
+one, the committed record has the step that wrote the refused data failed,
+as does a later unit's save of the run. Without `onRefused` no run record
+commits. `integration/datastore_v3_vault_staging_test.ts` covers create,
+edit, an unchanged save, a rename's commit order, a migration, the default
+vault, delete, a stale edit, a secret and a repo-local config that commit
+nothing, and v2 reading no file. Dropping any staged change or rule fails a
+gate.
+
+### v3 read model (datastore rework Phase 3)
+
+swamp-club#3239 adds the read model: it brings one checkout's local files, a
+v3 catalog and an index of live records up to date with `commits.db`. It is
+dormant: nothing in production opens it, and
+`integration/datastore_v3_rules_test.ts` keeps it inside the v3 directories.
+
+**Ubiquitous language.**
+
+- **Read model**: the local files, catalog and index that model code, CEL
+  `.path` and queries read. It is a cache of the commits, rebuilt from them.
+- **Cursor**: how far this checkout has caught up with the store-wide change
+  feed (`changesSince`).
+- **Applied seq**: the last seq of a partition this checkout applied.
+- **Live-record index**: each partition's present records, with their digest
+  and `BlobRef` (or an inline marker). `chunksInUse` gives the chunks behind
+  one checkout's present records. Chunk garbage collection does not use it:
+  a checkout catching up from the start needs every chunk any commit names
+  (see "v3 chunk garbage collection").
+
+**Port and adapter.** `ReadModel` (`src/domain/datastore_v3/read_model.ts`)
+has `catchUp`, `catchUpPartition`, `liveRecords`, `chunksInUse` and `close`.
+`SqliteReadModel` (`src/infrastructure/datastore_v3/sqlite_read_model.ts`)
+implements it. It reads commits only through the `CommitStore` port, and a
+fitness rule keeps `sqlite_commit_store.ts` the only code that writes the
+commit tables or opens `commits.db`.
+
+**Who writes local files in Phase 3.** Repositories keep writing local files
+exactly as today. The read model applies commits to the same files, and
+applying a commit twice changes nothing, so applying one this process just
+made rewrites the same bytes. Moving repositories to materialiser-only writes,
+with a fitness rule against repository file writes, is a later step. The read
+model never calls a repository, and the commit-log unit of work never calls
+the read model.
+
+**Where its state lives.** Everything the read model keeps is in
+`.swamp/_read_model_v3/`, built from the repository with
+`readModelStateDir(repoDir)` (`swampPath`), never from the datastore resolver:
+
+| File | Holds |
+|---|---|
+| `_catalog_v3.db` | The v3 catalog |
+| `_read_model_v3.db` | The cursor, each partition's applied seq, the live-record index, and each data name's live versions with their metadata |
+| `read_model.lock` | The lock that serializes catch-ups across processes |
+
+The issue that planned this suggested `_catalog_v3.db` beside `commits.db`.
+It lives in the checkout instead, for two reasons:
+
+- **The state is per checkout.** Several repositories can share one
+  datastore. If they shared a cursor, the first to catch up would move it for
+  all of them, and the others would never apply those commits. Today's
+  `_catalog.db` is per repository for the same reason (`catalogDbPath`).
+- **Record keys cannot reach it.** In solo layout the cache root is `.swamp/`
+  itself, so a record key could name a file there. `_read_model_v3` is no
+  datastore subdirectory, and the key guard below refuses every key whose
+  first segment is not one. It is never synced: sync routes only datastore
+  subdirectories, and a fitness rule keeps `_read_model_v3` out of
+  `DEFAULT_DATASTORE_SUBDIRS` and `ALWAYS_LOCAL_SUBDIRS`. Git ignores it
+  through `repo init`'s managed `.swamp/` entry.
+
+**The v3 catalog.** `_catalog_v3.db` is opened with the existing
+`CatalogStore`, unchanged, so it has the schema and query API data query
+already uses, and no v2 code changes. Switching data query to it is the
+opt-in's job. Rows are built from a version's metadata field for field as the
+v2 repository's `catalogUpsert` builds them, with the model type and id from
+the partition key. One difference: v3 keeps a version's tags in key order
+(`dataVersionOp`), so the `tags` JSON can list keys in a different order than
+v2 wrote them, with the same meaning.
+
+**Commits to catalog changes.** `projectCatalog`
+(`src/domain/datastore_v3/catalog_projection.ts`) is a pure domain service. It
+reads names and versions from intents and metadata, never from record keys,
+and gives the catalog actions v2 takes for the same change:
+
+| Op | Catalog actions |
+|---|---|
+| `data-version` | Upsert the version's row. For a rename marker (`lifecycle: deleted` with `renamedTo`), remove the name's rows and forward it, as `rename()` does |
+| Versioned `data.delete` or `data.gc` tombstone | Remove the version's row, then reconcile the name, as `delete(version)` and `collectGarbage` do: no live version left removes the name and its forward; a rename marker on top removes the name and forwards it; otherwise the greatest live version's row is upserted again, which restores a row an earlier rename removed |
+| Version-less `data.gc` | Expiry (`removeLatestMarker`): remove the name's rows; its versions stay. An expiry after a versioned tombstone of the name in the same commit wins, as `delete(version)` then `removeLatestMarker` would; a versioned tombstone after it reconciles the name again |
+| Version-less `data.delete` | Nothing: a delete of a whole name lists each version as its own tombstone |
+
+The version-less tombstone rows are a contract with the commit-log unit of
+work, which builds the ops: v2 expiry must become a version-less `data.gc`.
+`integration/datastore_v3_read_model_v2_oracle_test.ts` holds the projection
+to v2: a v2 repository saves, deletes, renames, expires and garbage-collects,
+each step's file changes become one commit, and the read model's files and
+catalog must equal v2's.
+
+**Applying a commit.** Commits are applied in landing order. A commit at or
+below its partition's applied seq is skipped (`catchUpPartition` applied it
+already). Within one partition, positions in the change feed grow with seqs,
+so that alone keeps a catch-up from rolling a file back to an older put of
+the same partition. Across partitions it does not: see "Keys two partitions
+write" below. A commit's
+ops see each other's effects, so only each key's last put or tombstone is
+materialised, removals before writes, so a removal can clear the path a write
+needs (a put of `data/x` beside a tombstone of `data/x/y`). Effects come in a
+fixed order:
+
+1. **Files.** A put is written under the namespace's cache root: inline
+   bytes, or streamed from `ChunkStore.read`. The content goes to a temp file
+   that is fsynced and renamed into place, and the directory is fsynced,
+   along with the parent of every directory the write created (except on
+   Windows, which cannot sync a directory). A tombstone removes the
+   file, ignores one already gone, and removes empty directories up to the
+   root. A directory at a tombstoned key (a name directory) is removed only
+   when empty. Every path passes `assertContainedPath` and `assertSafePath`.
+2. **Catalog.** The projection's actions.
+3. **State.** One transaction holds the index changes, the live versions, the
+   ownership of each file the commit wrote or removed, the partition's
+   applied seq and, from `catchUp`, the cursor. Neither the cursor nor an
+   applied seq moves back.
+
+Each effect is idempotent, so a crash anywhere is repaired by catching up
+again from the unchanged cursor. The index and the cursor are never ahead of
+the files. Calls queue in the process, and an exclusive OS lock on
+`read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
+file a faster one has removed.
+
+**Keys two partitions write (swamp-club#3256).** A same-key definition
+rename (two names that are not filename-safe, both stored at the
+definition's uuid path) puts the new name's record at a key the old name's
+partition then tombstones. `catchUpPartition` applies one partition's
+commits ahead of the change feed, so a later `catchUp` can apply the old
+name's earlier put after the new name's, and the tombstone after both. The
+file must follow the feed, not the order commits are applied in.
+
+`readPartition` returns each commit with its feed position, as
+`changesSince` does. The state (schema 2, `materialised_keys`) records, for
+each file, the partition whose put it shows (the owner), that put's
+position (the mark), and whether it is present:
+
+- a put writes the file only when the key has no ownership or its position
+  is greater than the mark, then becomes the owner;
+- a tombstone removes the file only while it is present and owned by the
+  tombstoning partition, and keeps the mark, so an older put of another
+  partition cannot bring it back. A key with no ownership is removed as
+  before (no put of it was applied, or it is a name directory).
+
+The result is that of applying the feed in order: a file holds its latest
+put in feed order, unless a later tombstone from that put's own partition
+removed it. A key only one partition writes behaves exactly as before, as
+its positions grow and it has one owner. The decision reads the ownership
+from before the commit, and the state is replaced only after every file, so
+a retry after a crash decides the same way. Schema 2's migration clears the
+catalog generation, so a state built under schema 1, whose files have no
+ownership, is reset and replayed. A path conflict still depends on what is
+on disk, so it is not independent of order across partitions; config keys
+cannot form one. `integration/datastore_v3_read_model_shared_key_test.ts`
+checks that random mixes of store and partition catch-ups end in the state
+in-order replay gives, and in the state the rule above describes.
+
+The live-record index stays per partition, so it can hold a record whose
+file another partition owns, or an orphan: a same-key rename whose second
+commit never landed leaves the old name's record live, while the file holds
+the new name's bytes. Deleting the new name removes the file regardless.
+The orphan stays live until someone tombstones it by hand. Chunk GC is
+unaffected: definition records are small and inline.
+
+**The key guard.** Serve does not yet bind a record key to its aggregate's
+paths ("Authorisation requirements" above), and in team mode other
+principals write commits. The read model therefore writes or removes a key
+only when its first segment is a datastore-synced subdirectory
+(`DEFAULT_DATASTORE_SUBDIRS` without `ALWAYS_LOCAL_SUBDIRS`), it names no
+catalog database (`_catalog*.db` and its side files), and it does not land in
+the state directory (`record_path_guard.ts`). That check is lexical, so
+after `assertSafePath` the read model also refuses a key whose resolved path
+lands in the state directory: a symlink already in the cache could lead
+there. A refused key is logged and not materialised, but it is still
+indexed, so the index stays exact for chunk GC.
+
+**Path conflicts.** A file and a directory claiming one path (a put of
+`data/x` where `data/x/y` exists, or of `data/x/y` where `data/x` is a
+file) can never succeed, and in team mode another principal could cause one.
+Retrying would block every later commit, and with them chunk GC, so a put
+that conflicts is logged and skipped like a refused key, and stays indexed. A
+tombstone under a file has nothing to remove.
+
+**Failures.** Any other failure throws `ReadModelApplyError`, naming the
+namespace, partition and seq, and leaves the cursor before the commit, so the
+next catch-up tries it again. Causes include a missing or damaged chunk (it
+may not be uploaded yet), a `BlobRef` with a `legacyKey` (no migration writes
+those yet), and a write error. An
+abort stops between commits or during a chunk read, and leaves no partial
+file. Waiting for another process to release `read_model.lock` is not
+abortable: the OS lock has no abort hook.
+
+**Reading the index.** `liveRecords` and `chunksInUse` reject with
+`ReadModelIncompleteError` until a `catchUp` has reached the end of the
+change feed since the state was built or last reset. Until then the index can
+hold only part of the live records: after a reset, `catchUpPartition` fills
+one partition, and a replay cut short by an error or an abort fills the
+first commits. Chunk GC must never take such a partial set for the chunks to
+keep. Once complete, the index stays complete up to the cursor. The
+completeness check and the index read share one SQLite snapshot, so a reset
+another process commits in between cannot hand back a partial index.
+
+**Rebuilds.** The state records the catalog's generation, and the read model
+marks the catalog populated (`CatalogStore.markPopulated`) when it takes it
+over. It resets its state and replays every commit when the generation
+differs (a schema change rebuilds the file empty, and `invalidate()` advances
+it) or the catalog is not marked populated. The second check catches a
+`_catalog_v3.db` that was deleted and created afresh: a new file always
+starts at generation 1, the same as the one the state may have recorded.
+
+**Known limits.**
+
+- On a case-insensitive filesystem (macOS by default, Windows), two keys that
+  differ only in case are one file, and a tombstone of one removes the other's
+  file while the index still lists it. v2 has the same collision for data
+  names that differ in case.
+- A full replay needs every commit. History compaction (swamp-club#3258)
+  removes old commits, and a checkout below the compaction point loads the
+  compacted base instead, replacing each data name's catalog rows rather
+  than writing over them ("v3 history compaction" below).
+- A crash between creating a temp file and renaming it leaves a
+  `.<uuid>.tmp` file beside the target, inside a synced directory, which
+  sync could push. v2's `atomicWriteFile` writes the same temp files in the
+  same directories, so this is shared, not new; a sweep of orphaned temp
+  files would fix both. Chunk garbage collection sweeps the filesystem
+  storage's own temp files under `_blobs/`, not these.
+
+**Wired by the opt-in** (swamp-club#3279, "v3 opt-in"):
+
+- The cache root of namespace `ns` is `.swamp/` (solo) or `.swamp/<ns>`; the
+  state directory is the checkout's `.swamp/_read_model_v3/`. A context
+  catches up whenever it opens; serve once, at start-up, while it holds the
+  writer lock.
+- Data query reads `_catalog_v3.db`: `catalogDbPath` returns it on v3.
+- A configured `directories` entry named `_read_model_v3` cannot reach the
+  state directory: on v3 every datastore directory resolves in the checkout
+  already, and the record key guard refuses any key under it.
+- A checkout applies every namespace in `commits.db`, each under its own cache
+  root; its resolver and catalog queries read its own namespace.
+
+### v3 chunk garbage collection (datastore rework Phase 3)
+
+swamp-club#3249 reclaims chunks that no commit names: those an abandoned unit,
+a refused or failed commit, or a crash between storing chunks and committing
+left behind. It also finds damaged chunks and removes the filesystem storage's
+orphaned temp files. It is dormant: nothing in production calls it, and
+`integration/datastore_v3_rules_test.ts` (rule 8) pinned that until `swamp
+datastore gc` wired it in (swamp-club#3279, "v3 opt-in").
+
+**Ubiquitous language.**
+
+- **Referenced chunk**: a chunk some stored commit names. A put's `BlobRef`
+  names its `sha256` when it has no `parts`, otherwise each part
+  (`Commit.chunkRefs`). A `legacyKey` ref is indexed by the same rule, which can
+  only keep a chunk, never lose one.
+- **Grace period**: how long an unreferenced chunk is kept after it was last
+  stored or refreshed. 24 hours by default (`DEFAULT_CHUNK_GRACE_MS`).
+- **Sweep**: one `ChunkCollector.collect` over one storage namespace.
+- **Damaged chunk**: a stored chunk whose bytes do not hash to its key.
+
+**Why the reference set is the commit log.** The read model applies each commit
+in turn and reads every put's chunks as it goes, so a checkout catching up from
+cursor 0 needs every chunk any commit ever named. That includes content a later
+commit overwrote, and versions a delete, `data gc` or `prune` tombstoned.
+Deleting such a chunk would stop a fresh catch-up at that commit with
+`ChunkMissingError`. A read model's `chunksInUse` describes one checkout's
+present records at its own cursor, so it cannot be the reference set.
+
+Reclaiming superseded content (chunks only historical commits name) is history
+compaction's job (swamp-club#3258, "v3 history compaction" below). After a
+compaction the reference set is the surviving commits plus the compacted base,
+plus chunks released within the sweep's grace period.
+
+**The chunk index.** `commits.db` schema version 2 adds
+`chunk_refs(namespace, sha256)`. Its namespace is the commit namespace (`""`
+when unnamespaced). Each append writes its commit's refs in the append's own
+transaction, so a refused, repeated or rolled-back append writes none. The
+migration from version 1 backfills the table from the stored commits in SQL
+(`json_each` over each body's ops) by the same rule. A property test checks the
+index against a scan of every stored commit, built both ways.
+`CommitStore.referencedChunks(namespace, hashes)` answers a batch of hashes, so a
+sweep never loads a namespace's whole reference set.
+
+**The sweep.** `ChunkCollector` (`src/domain/datastore_v3/chunk_collector.ts`)
+is a domain service over the `CommitStore` and `storage/1` ports:
+
+1. Fix `now`, and the cutoff `now - grace`.
+2. When `verifyBytes` is set, verify chunks in a listing pass of their own
+   (see "Damaged chunks").
+3. Stream the namespace's `list` again. A chunk modified at or after the
+   cutoff is kept unchecked.
+4. Gather older chunks in batches of `CHUNK_COLLECTION_BATCH` (256). For each
+   batch, read which are referenced. Read the rest, delete them, check their
+   references again, and put back any a commit landed on (see "Races with a
+   concurrent write").
+5. Remove the storage's stale temp files, when it has a `TempFileSweeper`.
+
+The report counts what was scanned, kept as referenced, deleted, restored,
+kept over the read budget, kept as too new and verified. It also lists the
+damaged chunks and counts the temp files removed. The
+unnamespaced datastore's chunks live under `_default`. The collector maps it
+with `storageNamespaceOf` and queries the index with `""`.
+
+**Why 24 hours, and why the order matters.** A unit stores, or refreshes,
+every chunk it is about to name before it commits. Writes trust `has`, and a
+chunk found present is touched or put again, which moves its `lastModified`. A
+chunk no commit names yet is therefore either abandoned or younger than the
+unit holding it. The grace period sits far above the longest a unit lives
+between storing its chunks and committing.
+
+The cutoff is fixed before any reference is read. A commit that lands during
+the sweep names chunks stored or refreshed after the cutoff, so they are never
+candidates.
+
+**Races with a concurrent write.** A writer that finds a chunk present
+refreshes it (`touch`, or a put) and commits later. So a sweep can see a chunk
+unreferenced and old, and a commit can land on it before the delete. The
+refresh alone does not save it, because the sweep already holds the old
+`lastModified`. Two halves close this without changing `storage/1`:
+
+1. **The sweep re-checks and restores.** For each batch, the sweep reads each
+   unreferenced candidate's bytes and checks their SHA-256. Then it deletes
+   them and asks `referencedChunks` again for the deleted hashes. A chunk a
+   commit landed on in the meantime is put back from the bytes read, and the
+   report counts it as `restored`. The re-check runs for every chunk a delete
+   was started for even when the sweep aborts or a delete fails part-way, with
+   a signal of its own. Reads are bounded by `sweepReadBytes` (1 GiB
+   by default), and at most 64 MiB of candidates is held at once. A candidate
+   past the budget is kept for the next sweep, never deleted unread. A
+   candidate whose bytes are damaged is deleted and reported, never put back.
+2. **The writer checks after its commit lands.** In the commit-log unit
+   (`appendGroup`), once an append returns `appended` or `duplicate`, the
+   writer calls `has` for the chunks its commit names. It stores any missing
+   ones again from the put's content source: the bytes, or the stream
+   function, which can be called again. That is one `has` per stored blob, and
+   nothing for inline content. A source that no longer gives the same content
+   cannot repair the commit, and the unit's commit fails saying so.
+
+Take a commit that names a chunk the sweep deletes. If it lands before the
+sweep's re-check, the re-check sees the reference and puts the bytes back. If
+it lands after the re-check, it landed after the delete, so the writer's
+check, which runs after its commit lands, finds the chunk missing and stores
+it again. Either way no stored commit is left naming a missing chunk, however
+long the batch took.
+
+One case the two halves do not cover: the writer's process dies after its
+commit lands and before its check runs, while a sweep deletes one of that
+commit's chunks between its reference check and the commit landing. That needs
+a crash between an append returning and one `has` call, at the same time as a
+sweep that holds the chunk as a candidate. Phase 4's outbox, which knows which commits it
+sent, is where a recovery would re-run the check.
+
+**Clock skew.** `lastModified` comes from the storage's clock (a file's mtime,
+an object store's server time), and `now` from the collector's. A skew between
+them shifts the cutoff by the same amount. Against a 24-hour grace normal skew
+does not matter. Only tests should configure a grace near zero.
+
+**The Phase 4 outbox.** A unit's pending retry calls `appendGroup` again, so
+its content is stored (refreshed) again before each append, and the writer's
+check runs after the append lands. The Phase 4 outbox will make a pending
+commit durable, and could send it days later, after a sweep has removed its
+chunks. An outbox entry must do the same: keep its content sources and run the
+writer's check after it lands, or store its content again before sending.
+
+**Damaged chunks.** `collect` can read and hash chunks within a byte budget
+(`verifyBytes`, 0 by default), in a listing pass before the sweep. Whether a
+commit names each damaged chunk is looked up once, after the pass. The sweep's
+own reads of its candidates find damage too. A damaged chunk is deleted
+whatever its age. That relies on `storage/1` requiring an atomic `put`, so a
+reader never sees a chunk still being written. Once a damaged chunk is gone,
+the next write of that content finds it absent and stores it again. The report
+says whether a commit names it. If one does, its reads were already failing.
+
+The verify pass has a narrower form of the race. A writer that finds a chunk
+present with `touch` never replaces it, so a damaged chunk stays until the
+sweep removes it. On a backend without `touch`, though, a writer puts the
+chunk again, so a good put can replace the damaged chunk between the pass's
+read and its delete. When that writer's commit lands after the delete, its
+check stores the chunk again. When the commit lands and its check runs inside
+that window, the next writer check or the next write of that content restores
+it.
+
+**Temp files.** `FileSystemStorage.removeStaleTempFiles` removes the
+`.<uuid>.tmp` files a put left under `_blobs/` when it died before renaming one
+into place. It removes only files older than the sweep's cutoff, so a put still
+writing keeps its file. It implements `TempFileSweeper`
+(`src/domain/datastore/datastore_storage.ts`), which is not part of
+`storage/1`, since extension backends have no such files. `list` already skips
+them. Empty shard directories are left in place. They are harmless, and
+removing one would race a concurrent put's `mkdir`.
+
+**Wired by the opt-in.** `swamp datastore gc` sweeps the checkout's namespace
+with the default grace period (swamp-club#3279, "v3 opt-in"). Splitting large
+`data gc` and `prune` tombstone sets across commits belongs to the data and
+output staging issue.
+
+### v3 history compaction (datastore rework Phase 3)
+
+swamp-club#3258 lets superseded content be reclaimed. Every commit at or below
+a **compaction point** is folded into a **compacted base** in `commits.db`
+and deleted, so a checkout no longer needs the whole history, and chunk GC can
+reclaim chunks that only deleted commits named. It is dormant: nothing in
+production compacted until the opt-in wired it into the writer
+(swamp-club#3279, "v3 opt-in").
+
+**Ubiquitous language.**
+
+- **Compaction point**: a change-feed cursor. Every commit at or below it is
+  compacted. 0 before any compaction. It only moves forward.
+- **Compacted base**: what a checkout holds after applying every compacted
+  commit, without the files: each partition's present records (digest, and
+  inline content or `BlobRef`), each data name's live versions, catalog rows
+  and forward, each materialised key's ownership, and each partition's
+  compacted seq.
+- **Compacted seq**: a partition's last compacted commit.
+- **Released chunk**: a chunk whose last reference (a stored commit or a base
+  record) a compaction dropped, with the time it was released.
+
+**Decisions** (the issue's questions, in order).
+
+1. **One point for the whole store, not one per partition.** A checkout whose
+   cursor is below the point loads the base, reconciles its files,
+   `_catalog_v3.db` and state with it, then replays the commits after the
+   point. A checkout at or past the point is unaffected. The read model
+   catches up through the store-wide feed, and file ownership marks
+   (swamp-club#3256) compare feed positions across partitions. With no commit
+   at or below the point left, every later put is newer in the feed than
+   every mark in the base, so ownership after a load matches a replay.
+   Reconciling means:
+   - the files the state shows present, that the base does not, are
+     removed;
+   - files the base shows present, whose put the state does not show, are
+     written;
+   - each data name's catalog rows and forward are replaced;
+   - partitions that a partition catch-up had taken past their compacted seq
+     go back to it and replay.
+2. **Compacted commits are deleted**, not kept for audit with content no
+   longer guaranteed. Readers would otherwise need to tell kept-but-hollow
+   commits from real ones. Three things keep working without them:
+   - **Retries.** Their txnIds move to `compacted_txns`, so a retry still
+     returns `duplicate` with its original seq. The snapshot `priorTxn`
+     lookup and the duplicate lookup read both tables.
+   - **Rebuilds.** Each compacted partition gets a snapshot at its compacted
+     seq when its latest is older, so a rebuild never needs a deleted commit.
+   - **Head check.** It compares the head row with the larger of the last
+     stored seq and the compacted seq.
+
+   `compacted_txns` grows by one small row per commit, about 120 bytes in
+   the bench below against about 2.2 KB of commit. The Phase 4 outbox bounds
+   how old a retry can be, and may prune it then.
+
+   Litestream replicates the deletes as page changes. Freed pages are reused
+   and never vacuumed: `VACUUM` rewrites the whole file into the WAL.
+3. **GC reference rule.** `chunk_refs` becomes a count of the stored commits,
+   and the base records, that name each chunk (each commit or record counted
+   once).
+   - A batch adds the base's references before it drops the commits', so a
+     present chunk's count never reaches zero.
+   - A chunk whose count does reach zero is deleted from the index and
+     recorded in `released_chunks`.
+   - `referencedChunks(namespace, hashes, releasedSince)` counts a chunk
+     named by a commit or a base record, or released at or after
+     `releasedSince`. `ChunkCollector` passes its cutoff (`now - grace`).
+     Without the argument every released chunk counts, as before.
+   - Compaction forgets releases older than `releasedRetentionMs`
+     (`DEFAULT_CHUNK_GRACE_MS` by default), which must be at least the
+     longest grace period any sweep uses.
+
+   #3249's guarantees are unchanged: the sweep's re-check and restore, and
+   the writer's post-commit check. Compaction never names a new chunk.
+4. **Races.**
+   - **Compaction and appends** share the store's queue, so nothing appends
+     between a batch's reads and its transaction.
+   - **Feed and partition reads** read the point in the same read
+     transaction as their page. A read from below it rejects with
+     `CommitsCompactedError`, and the read model loads the base.
+   - **A page read before a compaction stays valid.** Its commits happened.
+     The chunks they name stay referenced for the grace period after their
+     release.
+   - **The base is read in pages,** each with the point it was read at. A
+     load that sees the point move starts again.
+   - **A load that fails part-way** has first recorded the keys and names it
+     was about to touch (`load_touched_keys`, `load_touched_names`), so the
+     next attempt, even against a newer base, reconciles what the failed one
+     wrote.
+   - **A GC sweep around a compaction:** a released chunk stays referenced
+     for the grace period, and a present chunk's count never reaches zero.
+     No checkout that finishes within the grace period can need a chunk GC
+     deleted. One that takes longer fails on the missing chunk
+     (`ReadModelApplyError`), keeps its cursor, and loads the newer base on
+     its next catch-up.
+5. **When it runs.**
+   - `CompactionPolicy` (`compaction_policy.ts`) is pure. By default it
+     folds at least 10,000 commits at a time, and keeps the newest 10,000
+     and the last 7 days.
+   - `CommitStore.compactionStatus(retention)` measures the history the
+     retention allows, by count and by commit `at`. Everything from the
+     first commit written at or after `since` is kept, so a writer's slow
+     clock never makes a newer commit compactable.
+   - `compactHistory(through)` runs on the single writer (solo, or the serve
+     leader): a writing CLI command at teardown, and serve hourly
+     (swamp-club#3279).
+6. **Run records.** `resolveRunArtifact` (`run_artifact_resolution.ts`)
+   resolves a run's `dataArtifacts` ref (dataId, name, version). It returns
+   the live version only when it is evidently what the ref's producer wrote,
+   and otherwise "content no longer available":
+   - the version must be live, with the ref's `dataId`;
+   - a ref carrying `sha256` decides by content;
+   - a version that records a workflow run must name the producer's run;
+   - otherwise (a method run, or report data that records no run) it must
+     have been created within the producer's start and finish. An output
+     that never finished resolves nothing.
+
+   The one case left: another writer deletes and re-saves the same top
+   version inside the producer's own window. That keeps the `dataId`
+   (`Data.withNewVersion`), and nothing in today's ref tells the two apart.
+   The opt-in closes it by recording the content's `sha256` in new refs
+   (swamp-club#3279). The
+   time window also assumes the producer and the writer share a clock, which
+   holds while one process writes both.
+
+**The fold.** `foldCommit` (`compaction.ts`) applies one commit to the base
+with the read model's own rules, extracted to the domain so there is one
+copy:
+
+- `materialisation.ts`: final key states, the #3256 ownership rule,
+  `lexicalRefusal` and `lexicalConflict`;
+- `projectCatalog`;
+- `catalog_state.ts`, the catalog store's semantics as a value. That includes
+  ending a name's forward when an upsert becomes its latest row, as
+  `CatalogStore.upsertNewVersion` does.
+
+The base has no files, so refused keys and file/directory conflicts are judged
+from key strings against the base's present files. That is what the read model
+finds on a cache holding only materialised files. Like replay, a cache holding
+other files can differ (see "Path conflicts" above). A key refused only by
+its resolved path (a state directory placed inside a synced one) passes the
+lexical check, so the load drops its ownership when the guards skip it, as a
+replay records none. Catalog rows are stored as
+versions and take their metadata from the live versions, which they always
+equal. A row that is not live fails the batch.
+
+**Schema.** `commits.db` version 3 adds:
+
+- `compaction` (the point);
+- `compacted_partitions`, `compacted_txns`;
+- `base_records`, `base_versions`, `base_catalog`, `base_forwards`,
+  `base_files`;
+- `released_chunks`.
+
+It also turns `chunk_refs` into a count, backfilled from the stored commits by
+#3249's rule. `_read_model_v3.db` version 3 adds the load's staging tables
+and its touched keys and names.
+
+**Batches and crashes.** `compactHistory` folds `COMPACTION_BATCH` (250)
+commits per transaction:
+
+1. read and parse the rows, and rebuild the snapshots the batch needs,
+   outside the transaction;
+2. in one `BEGIN IMMEDIATE`, check the point again, fold, move the txnIds,
+   drop the references, write the snapshots, delete the rows and move the
+   point.
+
+A point or a partition that changed between the two steps means another
+process is writing the store, and the batch says so rather than report
+damage.
+
+A failure or a crash leaves a batch whole or absent.
+`integration/datastore_v3_compaction_test.ts` stops one with an injected
+failure, and with a Worker terminated inside the transaction, and compares
+every table with the old state.
+
+**Measured** on an Apple M5 Max (`scripts/bench_commit_compaction.ts`). One
+model partition has 11,000 commits, each saving a new version of one of 50
+names. In the "growing" history most versions stay live; in the "churning"
+history each commit deletes the previous version.
+
+| History | Batch | Mean ms per batch | Max ms | WAL bytes per batch | WAL bytes, appending as many |
+|---|---|---|---|---|---|
+| growing | 250 | 143 | 272 | 1.0 MB | 4.1 MB |
+| growing | 1,000 | 483 | 907 | 2.9 MB | 4.2 MB |
+| churning | 250 | 19 | 36 | 0.7 MB | 4.1 MB |
+| churning | 1,000 | 71 | 105 | 1.4 MB | 4.2 MB |
+
+A batch holds the write lock and the event loop for its whole fold. The fold
+is cheaper for a churning history: a growing name's live versions are parsed
+once per batch, and there are many more of them. 250 keeps the worst case
+under about 0.3 s. A batch writes less WAL than the appends it replaces.
+
+Over cycles of 2,000 churning appends, each followed by a compaction that kept
+the newest 500 commits, `commits.db` reached 9.3 MB after 16,000 commits,
+against 35.6 MB uncompacted. It keeps growing by about 120 bytes per commit:
+`compacted_txns`, as above. Freed pages are reused: about 1,000 stay free.
+
+A fresh checkout of the 11,000 churning commits took 165 s to replay them all,
+most of it one durable write per file, and 0.6 s to load the base. A load
+costs O(live state), not O(history).
+
+**Done by the opt-in** (swamp-club#3279, "v3 opt-in"): compaction runs on the
+writer by `DEFAULT_COMPACTION_POLICY`; run-record artifacts resolve through
+`resolveRunArtifact`, and new `DataArtifactRef`s record `sha256`. **Still
+open:** prune `compacted_txns` once the Phase 4 outbox bounds retry age.
+
+### v3 stream directories (datastore rework Phase 3)
+
+swamp-club#3278 answers where `audit/`, `telemetry/`, `logs/` and `files/`
+live on v3. swamp-club#3233 recorded them as synced, append-only streams with
+no v3 home. A trace of every writer and reader in `src/` shows that none of
+them is written through the datastore on any backend, so the answer is that
+they stay repo-local, on v3 as on v2. No v2 behaviour changes.
+
+**Ubiquitous language.**
+
+- **Stream directory**: one of `REPO_LOCAL_STREAM_SUBDIRS`
+  (`record_path_guard.ts`): `audit`, `telemetry`, `logs` and `files`. Each is
+  a datastore directory by name, in `DEFAULT_DATASTORE_SUBDIRS`, with no
+  writer that resolves it through the datastore.
+- **Run log**: the plain-text `.log` file beside a run or output record. It is
+  not in `logs/`.
+
+**What each directory holds, and who reads it.**
+
+| Directory | Writers | Readers | Other checkouts or nodes |
+|---|---|---|---|
+| `audit/` | Agent-hook command audit (`JsonlAuditRepository`, `commands-YYYY-MM-DD.jsonl`, 7-day retention) and vault audit (`JsonlVaultAuditRepository`, `vault-audit-YYYY-MM-DD.jsonl`, no retention). Both build `swampPath(repoDir, "audit")`, the checkout's own `.swamp`. | `swamp audit`, `swamp doctor audit`, `swamp vault audit-trail`, serve's `audit.timeline` and `vault.audit-trail`, all on the node's own disk. | Never shared: each serve node shows only what it recorded. |
+| `telemetry/` | None in the repository. The spool is user-global (`globalTelemetryDir()`), uploaded over HTTP. `migrateRepoTelemetryToGlobal` drains a legacy repo-local spool. | `swamp telemetry stats`, over the user-global spool. | Not a datastore concern. |
+| `logs/` | None. | None. | Nothing to share. |
+| `files/` | None. `repo init` stopped creating it as unused (commit `b703d746`), and `DEFAULT_DATASTORE_SUBDIRS` copied it from the old subdirectory list (`153e19a5`). | None. | Nothing to share. |
+
+Two neighbours complete the picture:
+
+- **Run logs.** `RunFileSink` writes them under the checkout's own
+  `.swamp/outputs/` and `.swamp/workflow-runs/`, beside records that do go
+  to the datastore. Records store `logFile` relative to the repository. The
+  logs were already local-only, by swamp-club#3257 and #3266, so another
+  checkout reads the record and finds no log. Workers send their output back
+  to serve, which writes it into its own run log.
+- **Method file outputs** are data records under `data/` (`createFileWriterFactory`,
+  `.../<version>/raw`). Their paths are never stored: CEL's `.path` is
+  derived on each checkout. v3 already commits them as data, with the rule
+  that chunks land before commits.
+
+Serve's tamper-evident audit log is not in `audit/` either. `StoreSink`
+writes `events/<date>/<uuid>.jsonl` objects to a control-plane store: a
+dedicated audit datastore's store at `audit/<target>/`, or the main
+datastore's at `_audit/<target>/`. Control-plane keys are already outside the
+commit log, and `audit-wal` is always-local.
+
+**Decisions.**
+
+1. **The model is repo-local (option (c) of the issue) for all four.** This
+   is v2 parity, not a change: a v2 datastore never holds them either.
+   Neither the commit log (a) nor a separate stream area (b) has a writer to
+   serve. A wish to share one, such as a cluster-wide vault audit trail, is a
+   new feature with its own design, built against a real writer.
+2. **No commit may materialise into a stream directory.** They are left out of
+   `MATERIALISED_SUBDIRS`, so the read model's key guard and history
+   compaction's fold both index such a key but never write it. In solo layout
+   the cache root is `.swamp/` itself, so a key at
+   `audit/commands-<date>.jsonl` would otherwise overwrite a checkout's own
+   audit trail.
+3. **Ordering.** No commit names a stream file, so there is nothing to order.
+   Method file outputs keep data's rule.
+4. **GC and compaction.** None of the four enters the commit log or
+   `storage/1`, so chunk GC and compaction never touch them. Their own
+   retention is unchanged: the command audit's 7 days, run GC's log sweeps,
+   and serve's `retention.days`.
+5. **Every backend.** The answer is the same on filesystem, S3 and GCS, so
+   there is no storage format to carry into Phase 4. The S3 and GCS
+   extensions' `resolveCachePath` returns `undefined`, so their sync cache is
+   core's `~/.swamp/repos/<repoId>` (`resolve_datastore.ts`), never a
+   checkout's `.swamp`. An extension that pointed its cache at the checkout's
+   `.swamp` would be the one way v2 could sync these directories.
+
+**Fitness rules** (`integration/datastore_v3_rules_test.ts`, rule 10):
+
+- every stream directory is a datastore directory, not always-local, and not
+  materialised;
+- no production call of `resolvePath` or `dsPath` names a stream directory
+  (the pinned list is empty);
+- every production file that uses a stream directory's `SWAMP_SUBDIRS` name is
+  pinned, so a resolver call through a variable is still reviewed.
+
+**Left to the opt-in.**
+
+- A writer that needs a stream directory synced gives it a v3 home first. The
+  rules above fail until it does.
+- v3 `datastore setup` creates and migrates nothing, the stream directories
+  included (swamp-club#3279). v2 setup leaves them, and the run logs, in
+  `.swamp` on every backend (swamp-club#3281); it still creates the empty
+  stream directories at a new filesystem path.
+- A v3 provider used as serve's dedicated audit datastore must still offer a
+  control-plane store.
+
+**Tests.** `integration/datastore_v3_stream_dirs_test.ts` runs two checkouts
+on one datastore with the production writers, on v3 and on v2. The second
+checkout reads none of the first's audit, vault audit or run log, and on v3
+no commit names a stream key. After compaction and chunk GC the writer's files
+are unchanged, and a checkout rebuilt from the compacted base holds none of
+them. A commit keyed into each stream directory is indexed but never
+materialised. `record_path_guard_property_test.ts` checks that every key under
+a stream directory is refused, and that every other key gets the same answer
+as before.
+
+### v3 opt-in (datastore rework Phase 3)
+
+swamp-club#3279 makes v3 usable: a new, empty filesystem datastore can be
+created in the commit-log format, and every command and serve handler works on
+it. Nothing changes for v2 datastores. S3, GCS and extension datastores stay
+on v2 until Phase 4; multi-writer and team mode are Phase 5; migrating v2 data
+is Phase 6.
+
+**Setting it up.** `swamp datastore setup filesystem --path <dir> --format 3`.
+
+- The `.swamp.yaml` key is `format` (2 or 3) on the `datastore:` block, and it
+  is accepted only on a filesystem datastore. `format: 3` on S3, GCS or an
+  extension datastore, in `.swamp.yaml` or as `--format 3` on `datastore setup
+  extension`, is refused with a message naming Phase 4. Format 2 there is the
+  default and is read as no key.
+- The target must be absent or an empty directory, checked with `lstat`, so a
+  symlinked target is refused too. The repository's current datastore must
+  hold no records under its datastore directories (the stream directories and
+  the catalog aside): v3 starts empty, and migrating records is Phase 6.
+- Setup writes the marker `{format: 3, minReaderFormat: 3, writtenBy}` first,
+  then `commits.db` and `_blobs/`, then `format: 3` into `.swamp.yaml`. A crash
+  before the marker leaves an unmarked empty directory; the marker writer
+  refuses to replace an existing marker. Setup creates no datastore
+  subdirectory and migrates nothing.
+- The checkout's own `.swamp/` is checked for records even under
+  `--skip-migration`, and a current datastore that cannot be read refuses
+  setup, as on v2.
+- A repo already on a v3 datastore is never moved by setup, to v2 or to
+  another v3: its records live in the checkout and its commit log, and
+  migrating v3 data is Phase 6. A v2 setup onto a datastore that is already v3
+  is refused too: v2's migration would copy the repo's records into it, where
+  no v3 checkout reads them.
+- The marker is written by linking a complete temp file into place, so of
+  two concurrent setups exactly one creates the datastore. On a filesystem
+  without hard links (exFAT, FAT32, some SMB and NFS mounts) it falls back to
+  an exclusive create, written and synced; a reader may see a partial marker
+  only while setup runs, and the guard refuses a garbled one. A setup that
+  stopped after the marker (or after `commits.db` and `_blobs/`) leaves a
+  fresh skeleton with no commits, which a re-run of setup completes.
+
+**The marker decides the engine.** `ensureSupportedDatastoreFormat` returns
+the engine (`DatastoreEngine`, `v2` or `v3`) and caches it per config object
+(`checkedDatastoreEngine`). This binary reads formats 2 and 3 on a filesystem
+datastore and only 2 elsewhere (`supportedDatastoreFormatsFor`), so a format-3
+marker on S3 or GCS is still refused, and a binary that reads only format 2
+refuses a v3 datastore. The `format` key records what setup chose; a config
+whose key disagrees with the marker (or asks for 3 where no marker can be
+read) is refused with `DatastoreFormatMismatchError`. A filesystem marker
+that exists but cannot be read is refused
+(`UnreadableDatastoreFormatMarkerError`): it could name v3. An unchecked
+filesystem
+config (a resolver built straight from `.swamp.yaml`) reads its marker
+synchronously (`datastoreEngineOf`), so no code resolves a v3 datastore's
+paths as v2. `integration/datastore_write_seams_rules_test.ts` pins every read
+of the engine.
+
+**Where records live.** A v3 datastore path holds only the marker,
+`commits.db`, `_blobs/` and `_control/` (and the v2 global and per-model lock
+files, which still order processes). Each checkout materialises records in
+its own `.swamp/` (solo) or `.swamp/<namespace>`: `DefaultDatastorePathResolver`
+on a v3 engine resolves every datastore directory there. The writer's
+repositories write those files as they stage the change, and another
+checkout's read model writes the same bytes when it catches up. The catalog is
+the read model's `_catalog_v3.db`: `catalogDbPath` returns it on v3, so every
+direct `createCatalogStore` caller reads it, the query service never backfills
+it from disk, and repositories still write through to it, so an operation
+reads what it saved before its root commits.
+
+**One writer per datastore.** `V3WriterLock` (`v3_writer_lock.ts`) is a
+`FileLock` at `<datastore>/_control/writer.lock`, taken once per process and
+reference-counted across that process's roots. A writing CLI command
+(`requireInitializedRepo`, `requireInitializedRepoUnlocked`) joins the hold
+before it takes any other lock and keeps it until teardown; serve holds it
+from start-up to shutdown. Another process that cannot take it within
+`SWAMP_LOCK_TIMEOUT_MS` is refused with `V3WriterBusyError`, which names the
+holder and, when that is serve, says to run the command through serve. So a
+CLI write against a repository whose serve is running is refused on v3, unlike
+v2. Read-only commands never take it, and a root that stages nothing (a
+dry-run `data gc`) commits nothing and needs no lock. The writer also records
+which checkout it writes (`_control/writer.checkout.json`); a reader in that
+same checkout does not catch up while the writer runs, because the writer's
+files there are newer than its last commit and replaying older commits over
+them would undo its work. `swamp datastore lock
+status|release --force` act on the writer lock on v3. A holder on another
+host is treated as alive until its TTL expires, never judged by its pid,
+which means nothing on this host (`FileLock`'s `sameHostPidCheck`). A holder
+paused past its TTL is not fenced: its later writes are not refused. The
+Phase 4 writer lease at `_control/writer`, which carries the fence every
+commit names, replaces it. A read-only context stages nothing: any change
+staged through it is refused (`ReadOnlyV3WriteError`), so a read-only command
+that writes fails in tests rather than committing without the lock.
+
+**Wiring.** One module outside the v3 directories opens a v3 datastore for a
+repository context: `v3_repo_context.ts`. It opens one handle per checkout and
+datastore per process (`openV3Datastore`: commit store, chunk store, read
+model, catalog), catches the read model up whenever a context opens, and
+`closeV3Datastores` closes it at CLI teardown and after serve stops.
+
+- `createRepositoryContext` takes a `commitLog` factory on v3. It gives the
+  context a hook of its own, marks it `requireUnit` before any repository can
+  write, and binds the context's `CommitLogEngine` to that hook
+  (`bindCommitLogEngine`). A hook is never shared between contexts.
+- `runInRootUnitOfWork` and `repoUnitOfWorkFactory` find the engine through
+  the context or its hook, so every CLI command, serve handler and serve
+  background root that already opens a root (including the ones that hold
+  only `{ markDirty }`) opens a commit-log root on v3. The root's flush still
+  runs once the root has ended: on a filesystem datastore it releases the
+  command's locks. A root nested in another with its own push or checkpoint is
+  refused, as on v2.
+- A repository built without a hook marks nothing on v2. On v3 its typed
+  changes stage into the innermost open commit-log unit around the call, even
+  under a use case's unbound unit, and an untyped change there is refused. The
+  write-route recorder found about fifteen such writers (definition, workflow
+  and vault use cases that build their own repositories, local workflow
+  cancel, the orphaned-run reaper, serve's `data.delete`); this one rule covers
+  them all, and v2 is untouched because no commit-log unit exists there.
+- A v3 root commits when its v2 root would push: on every outcome, or only
+  when the operation resolved under `pushWhen: "completed"`. A use case's
+  unit commits once its stream yields an outcome, a reported `error`
+  included: a failed method run reports one, and its record is what v2
+  publishes too. It abandons on a throw or a stop before any outcome. This
+  changes decision 5's ending of #3257, which abandoned on a reported
+  `error`, so a failed run's records reach the commit log as v2 publishes
+  them. Every root settles refusals with `reconcileRefusedRuns`; only a root
+  holding a run record has anything to reconcile.
+- The managed extension lockfile is committed as a typed `lockfile.write` put
+  in `config--lockfile--upstream_extensions` at its transaction root's
+  checkpoint (`v3_lockfile_sync.ts`), in the CLI and serve, under the global
+  lock as on v2. Managed config whose `directories` or `exclude` leave
+  `config` out is refused when a context opens: nothing in it would be
+  committed.
+
+**No v2 sync on v3.** A filesystem datastore has no sync service, so none of
+v2's sync machinery runs: no pull or push at the locks, no sync gate, no access,
+runtime or config pull in serve, no lazy hydration. `datastore sync`,
+`datastore catalog pull` and `datastore migrate-index` refuse a filesystem
+datastore already. On v3, `datastore config migrate` and `datastore namespace
+set|unset|migrate` refuse too: moving existing config or records, or a
+checkout, between namespaces is Phase 6.
+
+**Tier rules.** A record key outside the repository's configured `directories`
+or matching its `exclude` stays in the checkout and is never committed: the
+commit-log unit drops it when it is staged (`datastoreKeyFilter`), as v2 never
+syncs it.
+
+**Chunk GC and compaction.** `swamp datastore gc` sweeps the namespace's
+unreferenced chunks with the default grace period under the writer lock; on a
+v2 datastore it reports that chunk GC applies only to v3. A writing CLI
+command compacts by `DEFAULT_COMPACTION_POLICY` at teardown, while it still
+holds the lock. Serve, which holds the lock for its lifetime so the CLI's
+`datastore gc` cannot run beside it, compacts and then sweeps chunks every
+hour (`V3MaintenanceTimer`). `datastore status` reports the format
+and the commit log (commits stored, compacted through). `doctor datastores`
+checks a v3 checkout; its `--repair` is refused on v3 for now, since its
+repairs are v2's and take no writer lock.
+
+**Run artifacts.** On v3 a data save reports its content's checksum, and the
+`DataArtifactRef`s built from it record `sha256`. A streamed version reports
+none and falls back to `resolveRunArtifact`'s run or time rule. `model output
+data` and the run reads of `data get` and `data list` resolve a run's
+artifacts through `resolveRunArtifact`, so a later re-save of the same version
+is reported as no longer available. v2 records and outputs carry no `sha256`.
+
+**Known limits.**
+
+- A use case that throws, and a success-only root whose operation threw,
+  commit nothing, but their repositories already wrote the writer's files and
+  catalog rows. That checkout keeps them until a later write replaces them;
+  no other checkout ever sees them.
+- Run logs, the run index and the stream directories are the checkout's own;
+  they are never committed.
+- Serve's start-up migrations of legacy grant and token layouts move files on
+  disk without committing them. A new v3 datastore has no legacy layout to
+  migrate.
+- A reader whose catch-up is already running when a writer starts in the
+  same checkout can still replay a commit over a file the writer has just
+  rewritten; the next write of that file restores it. The window is one
+  catch-up long, on one host.
+
+Serve's background writes are pinned on v3 too
+(`integration/serve_v3_background_writes_test.ts`,
+`serve_v3_extension_lockfile_test.ts`, `serve_v3_remote_execution_test.ts`):
+boot reconciliation and the stale-record sweep, shutdown interrupts, server
+token GC, the continuation sweep, webhook and scheduled runs, the worker
+gateway and data plane, the device-auth mint, `access.reload`, the grants
+poller, collective refresh, the extension lockfile in the CLI and serve, and
+the maintenance timer.
+
+**The gate.** `integration/usecase_v3_fixtures.ts` runs every row of the
+use-case sync characterization (`usecase_sync_characterization_*_test.ts`),
+CLI and serve, solo and namespaced, on a v3 checkout. After each row a second
+checkout catches up and its datastore records and catalog must equal the
+writer's, and no commit may name a stream directory.
+`integration/datastore_v3_opt_in_test.ts` covers setup, the refusals, the
+second writer, an older binary, every v2 sync path, failed runs and roots
+that throw, read-your-writes, dry-run GC and run-artifact digests. Every v2 suite passes
+unchanged, apart from tests that used format 3 to stand for "a newer format",
+which now use 4.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -2764,7 +4791,11 @@ lock directly, for when a crashed process left a lock that has not expired.
 - `swamp doctor datastores [--repair [-y]]`: health check with optional repair
   of catalog completeness, unmigrated root-level data, and foreign namespace
   contamination (the last via the optional `repairNamespaceContamination?()` on
-  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`).
+  `DatastoreSyncService`) (`src/cli/commands/doctor_datastores.ts`). The
+  completeness check walks the data dir every command reads
+  (`resolvePath("data")`: the external path or the cache), not the repo's own
+  `.swamp/data`, which holds only the catalog when the datastore lives
+  elsewhere (swamp-club#3238).
 
 ## Setup and Migration
 
@@ -2782,13 +4813,33 @@ swamp datastore setup extension @swamp/s3-datastore \
 Each setup command (`src/libswamp/datastores/setup.ts`):
 
 1. Checks the target is accessible (writable directory or reachable S3 bucket).
-2. Migrates existing runtime data from `.swamp/` to the new location (skipped
-   with `--skip-migration`). A filesystem destination whose real path is the
-   migration source (for example `--path .swamp`) has nothing to move: setup
-   skips the copy, the verification and the cleanup, and only writes the
-   datastore block (swamp-club#3162). Without that, the copy fails on files
-   such as `_catalog.db`, and a copy with no failures would let cleanup delete
-   the datastore itself.
+2. Migrates existing runtime data from the current datastore to the new
+   location (skipped with `--skip-migration`). The source is the current
+   datastore's data: the outgoing extension datastore's cache, the root of a
+   filesystem datastore outside the repo (`externalFilesystemDatastoreRoot`),
+   or `.swamp/` (swamp-club#3238). A filesystem datastore root that is missing,
+   or that holds none of the datastore subdirs (an unmounted mount point),
+   stops setup before anything moves or `.swamp.yaml` changes; it is never
+   replaced by `.swamp/`. A destination whose real path is the migration
+   source (for example `--path .swamp` on a repo already there) has nothing to
+   move: setup skips the copy, the verification and the cleanup, and only
+   writes the datastore block (swamp-club#3162). A destination inside one of
+   the source's migrated subdirs is refused, since the copy would recurse into
+   it. The catalog (`data/_catalog.db` and its sidecars, `CATALOG_FILES`) is a
+   local index and is never copied. Neither are the stream directories
+   (`REPO_LOCAL_STREAM_SUBDIRS`: `audit`, `telemetry`, `logs`, `files`) or the
+   run logs (`.log` files under `outputs/` and `workflow-runs/`): their
+   writers and readers only use the checkout's own `.swamp`, so setup leaves
+   them there and the cleanup in step 5 keeps them (swamp-club#3281). The
+   verification checks that every source
+   file arrived (regular files with the same size, symlinks by existence), so
+   local files a `.swamp/` destination already holds, such as method-run logs,
+   do not fail it.
+   Data moved from a filesystem datastore outside the repo is copied, never
+   cleaned up from the old path, whatever the destination: other repositories
+   may share that path, and deleting it would take their data too. The
+   completed result then carries `sourceKept: true`, and log mode prints
+   "Copied from" instead of "Moved from".
 3. Pushes migrated data to the remote (extension datastores; skipped with
    `--skip-migration` or when there is nothing to push).
 4. Hydrates the local cache from the remote (extension datastores only).
@@ -2802,6 +4853,11 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    - **filesystem**: updates `.swamp.yaml`, then removes migrated directories.
      A crash in between leaves harmless orphaned source data, not a repo
      pointing at a cleaned-up datastore.
+
+   Once `.swamp.yaml` names a different datastore, setup removes the local
+   catalog so the next command rebuilds it from the new datastore. A kept
+   catalog would miss whatever the new datastore already held
+   (swamp-club#3238).
 
 `setup extension` also takes `--namespace <slug>` and
 `--hydration-strategy full|lazy`, both saved in the datastore block.
@@ -2990,6 +5046,17 @@ exclude patterns.
 | `src/domain/datastore/distributed_lock.ts` | `DistributedLock` interface, `LockInfo`, `LockTimeoutError` |
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
 | `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
+| `src/domain/datastore_v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
+| `src/domain/datastore_v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
+| `src/domain/datastore_v3/blob_ref.ts` | v3 `BlobRef`: content stored as a chunk |
+| `src/domain/datastore_v3/intent.ts` | v3 typed intents and `intentPartition()` |
+| `src/domain/datastore_v3/op.ts` | v3 ops (`put`, `tombstone`, `data-version`, `lease`) and their factories |
+| `src/domain/datastore_v3/commit.ts` | v3 `Commit` envelope |
+| `src/domain/datastore_v3/partition.ts` | v3 `Partition` aggregate, its commit rules, and its snapshot and restore |
+| `src/domain/datastore_v3/commit_store.ts` | v3 `CommitStore` port and `CommitStoreCorruptError` |
+| `src/domain/datastore_v3/identity_factories.ts` | Identity factories for runs, auto-definitions and outputs |
+| `src/domain/datastore_v3/commit_log_unit_of_work.ts` | v3 `CommitLogUnitOfWork`, `TypedChange` and `ContentSource` ports |
+| `src/domain/datastore/unit_of_work.ts` | `UnitOfWork`, `StagedChange` and the `UnitOfWorkBinding` port |
 | `src/infrastructure/persistence/namespace_manifest.ts` | `.namespace.json` read/write for filesystem datastores |
 | `src/infrastructure/persistence/sync_error_diagnostic.ts` | Turns sync failures into user-facing summaries |
 | `src/infrastructure/persistence/lockfile_repository.ts` | Extension lockfile persistence (local or managed-config tier) |
@@ -3005,6 +5072,10 @@ exclude patterns.
 | `src/infrastructure/persistence/file_lock.ts` | File-based distributed lock (advisory lockfile) |
 | `src/infrastructure/persistence/datastore_format_marker_reader.ts` | Reads the format marker without writing |
 | `src/infrastructure/persistence/datastore_format_guard.ts` | `ensureSupportedDatastoreFormat`: read, check, debug log |
+| `src/infrastructure/datastore_v3/sqlite_commit_store.ts` | v3 `SqliteCommitStore`: `commits.db` over `node:sqlite` (dormant) |
+| `src/infrastructure/persistence/unit_of_work_binding.ts` | The unit-of-work binding registry `signalChange` routes by |
+| `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam (dormant) |
+| `src/infrastructure/datastore_v3/commit_log_root.ts` | `runInCommitLogRoot` and the run-outcome disposition (dormant) |
 
 ### Application Layer (libswamp)
 

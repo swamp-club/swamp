@@ -46,12 +46,16 @@ wrapping CLI tools or building integrations."_
 
 ## Credential Setup
 
-If the chosen model type requires credentials (cloud services, APIs, etc.), set
-up a vault before configuring the model. Use the `swamp` skill (vault guide):
+If the chosen model type requires credentials (cloud services, APIs, etc.),
+store them in a vault before configuring the model. `swamp repo init` already
+created a `local_encryption` vault named `default`; confirm it with
+`swamp vault search --json`. Use the `swamp` skill (vault guide):
 
-1. Create a vault: `swamp vault create local_encryption my-secrets --json`
-2. Store credentials: `swamp vault put my-secrets API_KEY` (prompts securely)
-3. Reference in model YAML: `${{ vault.get("my-secrets", "API_KEY") }}`
+1. Store credentials: `swamp vault put default API_KEY` (prompts securely)
+2. Reference in model YAML: `${{ vault.get("default", "API_KEY") }}`
+
+If `default` is missing (the repo was created with `--no-vault`), create one
+first: `swamp vault create local_encryption default --json`.
 
 ## Method Selection
 

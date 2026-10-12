@@ -41,7 +41,9 @@ import {
 import {
   pathExists,
   recordingUnitOfWork,
+  typedRecordingUnitOfWork,
 } from "./test_helpers/staged_change_helpers.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1697,6 +1699,161 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each un
   });
 });
 
+/** Each typed change's op kind, key and intent kind, for comparison. */
+function typedShape(change: TypedChange): Record<string, unknown> {
+  if ("put" in change) {
+    return {
+      partition: change.partition.toString(),
+      put: change.put.key.toString(),
+      intent: change.put.intent.kind,
+      expect: change.put.expect,
+    };
+  }
+  const op = change.op;
+  return op.kind === "tombstone"
+    ? {
+      partition: change.partition.toString(),
+      tombstone: op.key.toString(),
+      intent: op.intent.kind,
+      expect: op.expect,
+    }
+    : { op: op.kind };
+}
+
+async function contentOf(change: TypedChange): Promise<string> {
+  assert("put" in change);
+  const content = change.put.content;
+  const bytes = content instanceof Uint8Array
+    ? content
+    : new Uint8Array(await new Response(await content()).arrayBuffer());
+  return new TextDecoder().decode(bytes);
+}
+
+Deno.test("YamlWorkflowRunRepository.save: on v3, stages run.create then run.update streams of the written record, with no precondition (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow, batches, staged } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    const key = `workflow-runs/${workflow.id}/workflow-run-${run.id}.yaml`;
+    const partition = `run--${workflow.id}--${run.id}`;
+
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(workflow.id, run);
+      run.start();
+      await repo.save(workflow.id, run);
+    });
+
+    assertEquals(staged, []);
+    assertEquals(batches.map((batch) => batch.map(typedShape)), [
+      [{ partition, put: key, intent: "run.create", expect: undefined }],
+      [{ partition, put: key, intent: "run.update", expect: undefined }],
+    ]);
+    // The content is a stream of the file, read when the unit commits: the
+    // record as the last save left it.
+    for (const [change] of batches) {
+      assert(!("put" in change && change.put.content instanceof Uint8Array));
+      assertEquals(
+        await contentOf(change),
+        await Deno.readTextFile(repo.getPath(workflow.id, run.id)),
+      );
+    }
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: on v3, stages one run.delete tombstone per run, each its own batch (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const runs = [WorkflowRun.create(workflow), WorkflowRun.create(workflow)];
+    for (const run of runs) await seed.save(workflow.id, run);
+    const { markDirty, uow, batches, staged } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.deleteAllByWorkflowId(workflow.id));
+
+    assertEquals(staged, []);
+    assertEquals(
+      batches.map((batch) => batch.map(typedShape)),
+      runs.map((run) => run.id).sort().map((runId) => [{
+        partition: `run--${workflow.id}--${runId}`,
+        tombstone: `workflow-runs/${workflow.id}/workflow-run-${runId}.yaml`,
+        intent: "run.delete",
+        expect: undefined,
+      }]),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: on v3, tombstones each removed record, terminal or unparseable, and stages nothing for a stray or a dry run (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.endAsCancelled("test");
+    await seed.save(workflow.id, finished);
+    const runsDir = dirname(seed.getPath(workflow.id, finished.id));
+    const unparseable = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(runsDir, `workflow-run-${unparseable}.yaml`),
+      "",
+    );
+    // A stray file whose name holds no UUID: no repository put it.
+    await Deno.writeTextFile(join(runsDir, "workflow-run-stray.yaml"), "");
+    const cutoff = new Date(Date.now() + 60_000);
+
+    const dry = typedRecordingUnitOfWork();
+    const dryRepo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      dry.markDirty,
+    );
+    await runInUnitOfWork(
+      dry.uow,
+      () => dryRepo.deleteOlderThan(cutoff, { dryRun: true }),
+    );
+    assertEquals(dry.batches, []);
+
+    const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const result = await runInUnitOfWork(
+      uow,
+      () => repo.deleteOlderThan(cutoff),
+    );
+
+    assertEquals(result.deleted, 3);
+    const tombstoned = batches.flat().map(typedShape);
+    assertEquals(
+      tombstoned.sort((a, b) =>
+        String(a.tombstone).localeCompare(String(b.tombstone))
+      ),
+      [finished.id, unparseable].sort().map((runId) => ({
+        partition: `run--${workflow.id}--${runId}`,
+        tombstone: `workflow-runs/${workflow.id}/workflow-run-${runId}.yaml`,
+        intent: "run.delete",
+        expect: undefined,
+      })),
+    );
+  });
+});
+
 Deno.test("save: concurrent saves of different runs of one workflow keep every index entry (swamp-club#2518)", async () => {
   await withTempDir(async (dir) => {
     const repo = new YamlWorkflowRunRepository(dir);
@@ -2204,5 +2361,321 @@ Deno.test("YamlWorkflowRunRepository.verifyIndexes: a rebuilt index lists runs i
 
     const index = await readRunIndex(runsDir);
     assertEquals(Object.keys(index!.entries), [...ids].sort());
+  });
+});
+
+// Run logs are written under the repo-local .swamp/workflow-runs whichever
+// datastore holds the run records (swamp-club#3266).
+
+const EIGHT_DAYS_MS = 8 * 24 * 60 * 60 * 1000;
+
+async function withRepoAndStore(
+  fn: (
+    repoDir: string,
+    storeDir: string,
+    repo: YamlWorkflowRunRepository,
+  ) => Promise<void>,
+  storeSubdir = "workflow-runs",
+): Promise<void> {
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const storeDir = join(dir, "store", storeSubdir);
+    await ensureDir(repoDir);
+    await ensureDir(storeDir);
+    await fn(
+      repoDir,
+      storeDir,
+      new YamlWorkflowRunRepository(repoDir, undefined, storeDir),
+    );
+  });
+}
+
+function localRunsDir(repoDir: string, workflowId: string): string {
+  return join(repoDir, ".swamp", "workflow-runs", workflowId);
+}
+
+async function writeLocalLog(
+  repoDir: string,
+  workflowId: string,
+  runId: string,
+  content = "log line\n",
+): Promise<string> {
+  const path = join(
+    localRunsDir(repoDir, workflowId),
+    `workflow-run-${runId}.log`,
+  );
+  await ensureDir(dirname(path));
+  await Deno.writeTextFile(path, content);
+  return path;
+}
+
+async function saveFinishedRun(
+  repo: YamlWorkflowRunRepository,
+  workflow: Workflow,
+): Promise<WorkflowRun> {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.endAsCancelled("test");
+  await repo.save(workflow.id, run);
+  return run;
+}
+
+async function backdate(path: string, ms: number): Promise<void> {
+  const when = new Date(Date.now() - ms);
+  await Deno.utime(path, when, when);
+}
+
+const FUTURE_CUTOFF = () => new Date(Date.now() + 60_000);
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log of a run whose record is in another datastore", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const run = await saveFinishedRun(repo, workflow);
+    const log = await writeLocalLog(repoDir, workflow.id, run.id, "12345");
+    const recordSize = (await Deno.stat(
+      join(storeDir, workflow.id, `workflow-run-${run.id}.yaml`),
+    )).size;
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(result.deleted, 1);
+    assertEquals(result.bytesReclaimed, recordSize + 5);
+    assertEquals(await pathExists(log), false);
+    assertEquals(
+      await pathExists(localRunsDir(repoDir, workflow.id)),
+      false,
+      "the emptied local workflow dir is removed",
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the repo-local log of an unparseable record in another datastore", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflowId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    await ensureDir(join(storeDir, workflowId));
+    await Deno.writeTextFile(
+      join(storeDir, workflowId, `workflow-run-${runId}.yaml`),
+      "",
+    );
+    const log = await writeLocalLog(repoDir, workflowId, runId);
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(result.deletedRunIds, [runId]);
+    assertEquals(await pathExists(log), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: a dry run counts the repo-local log but keeps it", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const run = await saveFinishedRun(repo, workflow);
+    const log = await writeLocalLog(repoDir, workflow.id, run.id, "12345");
+    const recordSize = (await Deno.stat(
+      join(storeDir, workflow.id, `workflow-run-${run.id}.yaml`),
+    )).size;
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF(), {
+      dryRun: true,
+    });
+
+    assertEquals(result.bytesReclaimed, recordSize + 5);
+    assertEquals(await pathExists(log), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: never deletes the file a record's logFile names", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+    run.endAsCancelled("test");
+    const outside = join(dirname(storeDir), "precious.log");
+    await Deno.writeTextFile(outside, "keep me");
+    run.setLogFile(outside);
+    await repo.save(workflow.id, run);
+    const log = await writeLocalLog(repoDir, workflow.id, run.id);
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(await pathExists(outside), true);
+    assertEquals(await pathExists(log), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes a log a datastore migration moved beside the record", async () => {
+  await withRepoAndStore(async (_repoDir, storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const run = await saveFinishedRun(repo, workflow);
+    const moved = join(storeDir, workflow.id, `workflow-run-${run.id}.log`);
+    await Deno.writeTextFile(moved, "migrated");
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(await pathExists(moved), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the repo-local log of a run it keeps", async () => {
+  await withRepoAndStore(async (repoDir, _storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const finished = await saveFinishedRun(repo, workflow);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+    const finishedLog = await writeLocalLog(repoDir, workflow.id, finished.id);
+    const runningLog = await writeLocalLog(repoDir, workflow.id, running.id);
+    // Old and silent: only its record keeps it.
+    await backdate(runningLog, EIGHT_DAYS_MS);
+
+    // Cutoff in the past: the finished run is too recent to collect.
+    await repo.deleteOlderThan(new Date(Date.now() - 60_000));
+    assertEquals(await pathExists(finishedLog), true);
+    assertEquals(await pathExists(runningLog), true);
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+    assertEquals(await pathExists(finishedLog), false);
+    assertEquals(await pathExists(runningLog), true);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflow.id)), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps the repo-local log of a finished child its unfinished parent still reads", async () => {
+  await withRepoAndStore(async (repoDir, _storeDir, repo) => {
+    const parentWorkflow = createWorkflowWithId(WORKFLOW_A_ID, "parent");
+    const childWorkflow = createWorkflowWithId(WORKFLOW_B_ID, "child");
+    const parent = WorkflowRun.create(parentWorkflow);
+    parent.start();
+    await repo.save(parentWorkflow.id, parent);
+    const child = WorkflowRun.create(childWorkflow);
+    child.recordParentRun({
+      workflowId: parentWorkflow.id,
+      workflowName: "parent",
+      runId: parent.id,
+      jobName: "job1",
+      stepName: "step1",
+      nestingDepth: 1,
+      ancestorWorkflowNames: ["parent"],
+    });
+    child.start();
+    child.endAsCancelled("test");
+    await repo.save(childWorkflow.id, child);
+    const childLog = await writeLocalLog(repoDir, childWorkflow.id, child.id);
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(await pathExists(childLog), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: sweeps an old repo-local log whose record is gone", async () => {
+  await withRepoAndStore(async (repoDir, _storeDir, repo) => {
+    const workflowId = crypto.randomUUID();
+    const orphan = await writeLocalLog(
+      repoDir,
+      workflowId,
+      crypto.randomUUID(),
+      "1234567",
+    );
+    await backdate(orphan, EIGHT_DAYS_MS);
+
+    const preview = await repo.deleteOlderThan(FUTURE_CUTOFF(), {
+      dryRun: true,
+    });
+    assertEquals(preview.deleted, 0);
+    assertEquals(preview.deletedRunIds, []);
+    assertEquals(preview.bytesReclaimed, 7);
+    assertEquals(await pathExists(orphan), true);
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF());
+    assertEquals(result.deleted, 0);
+    assertEquals(result.deletedRunIds, []);
+    assertEquals(result.bytesReclaimed, 7);
+    assertEquals(await pathExists(orphan), false);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflowId)), false);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: keeps an orphaned log newer than the cutoff or the seven-day floor", async () => {
+  await withRepoAndStore(async (repoDir, _storeDir, repo) => {
+    const workflowId = crypto.randomUUID();
+    // A run that has written its log but not yet saved its record.
+    const fresh = await writeLocalLog(repoDir, workflowId, crypto.randomUUID());
+    await backdate(fresh, 60 * 60 * 1000);
+    const old = await writeLocalLog(repoDir, workflowId, crypto.randomUUID());
+    await backdate(old, EIGHT_DAYS_MS);
+
+    // Past the floor but not past a cutoff further back.
+    await repo.deleteOlderThan(new Date(Date.now() - 2 * EIGHT_DAYS_MS));
+    assertEquals(await pathExists(old), true);
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+    assertEquals(await pathExists(fresh), true);
+    assertEquals(await pathExists(old), false);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflowId)), true);
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: resolves the repo-local log under a namespaced datastore", async () => {
+  await withRepoAndStore(async (repoDir, _storeDir, repo) => {
+    const workflow = createTestWorkflow();
+    const run = await saveFinishedRun(repo, workflow);
+    const log = await writeLocalLog(repoDir, workflow.id, run.id);
+    const orphan = await writeLocalLog(
+      repoDir,
+      workflow.id,
+      crypto.randomUUID(),
+    );
+    await backdate(orphan, EIGHT_DAYS_MS);
+
+    await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(await pathExists(log), false);
+    assertEquals(await pathExists(orphan), false);
+  }, join("my-namespace", "workflow-runs"));
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: removes the log and keeps other logs with the default datastore", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+    const finished = await saveFinishedRun(repo, workflow);
+    const running = WorkflowRun.create(workflow);
+    running.start();
+    await repo.save(workflow.id, running);
+    const finishedLog = await writeLocalLog(dir, workflow.id, finished.id);
+    const runningLog = await writeLocalLog(dir, workflow.id, running.id);
+    const recentOrphan = await writeLocalLog(
+      dir,
+      workflow.id,
+      crypto.randomUUID(),
+    );
+
+    const result = await repo.deleteOlderThan(FUTURE_CUTOFF());
+
+    assertEquals(result.deletedRunIds, [finished.id]);
+    assertEquals(await pathExists(finishedLog), false);
+    assertEquals(await pathExists(runningLog), true);
+    assertEquals(await pathExists(recentOrphan), true);
+    assertEquals(await repo.listRunIds(), new Set([running.id]));
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: removes the repo-local logs of runs in another datastore", async () => {
+  await withRepoAndStore(async (repoDir, storeDir, repo) => {
+    const workflowA = createWorkflowWithId(WORKFLOW_A_ID, "a");
+    const workflowB = createWorkflowWithId(WORKFLOW_B_ID, "b");
+    const runA = await saveFinishedRun(repo, workflowA);
+    const runB = await saveFinishedRun(repo, workflowB);
+    const logA = await writeLocalLog(repoDir, workflowA.id, runA.id);
+    const logB = await writeLocalLog(repoDir, workflowB.id, runB.id);
+
+    assertEquals(await repo.deleteAllByWorkflowId(workflowA.id), 1);
+
+    assertEquals(await pathExists(logA), false);
+    assertEquals(await pathExists(localRunsDir(repoDir, workflowA.id)), false);
+    assertEquals(await pathExists(join(storeDir, workflowA.id)), false);
+    assertEquals(await pathExists(logB), true);
   });
 });

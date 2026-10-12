@@ -27,9 +27,10 @@ import { UserError } from "../domain/errors.ts";
 import { renderError } from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
+  describeStatuslessFailure,
   diagnoseTlsMessage,
   formatCommandTarget,
-  probeServerHealth,
+  probeHandshakeStatus,
   readTokenFile,
   requestNewerServerResponse,
   requestServerResponse,
@@ -1244,14 +1245,56 @@ function authRejectingServer(
   };
 }
 
+/**
+ * A server that upgrades WebSockets only for `Authorization: Bearer good`
+ * and answers 401 to any other handshake. Its /health answers ok, as serve's
+ * does, so an implementation that guesses from a healthy probe is caught.
+ */
+function tokenCheckingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      if (req.headers.get("upgrade") !== "websocket") {
+        return Response.json({ status: "ok" });
+      }
+      if (req.headers.get("authorization") !== "Bearer good") {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onopen = () => socket.close();
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+  };
+}
+
 Deno.test({
-  name: "probeServerHealth: returns true for healthy server",
+  name:
+    "probeHandshakeStatus: never sends the caller's token, so a valid one is still answered 401",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const server = authRejectingServer();
+    const server = tokenCheckingServer();
     try {
-      assertEquals(await probeServerHealth(server.url), true);
+      assertEquals(await probeHandshakeStatus(server.url), 401);
+      assertEquals(
+        await probeHandshakeStatus(server.url, {
+          Authorization: "Bearer good",
+        }),
+        401,
+      );
+      assertEquals(
+        await probeHandshakeStatus(server.url, {
+          authorization: "Bearer good",
+        }),
+        401,
+      );
     } finally {
       await server.shutdown();
     }
@@ -1259,26 +1302,110 @@ Deno.test({
 });
 
 Deno.test({
-  name: "probeServerHealth: returns false for unreachable server",
+  name: "probeHandshakeStatus: sends the caller's other headers",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    assertEquals(await probeServerHealth("ws://127.0.0.1:1"), false);
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) =>
+        new Response(null, {
+          status: req.headers.get("x-tunnel") === "yes" ? 418 : 400,
+        }),
+    );
+    try {
+      assertEquals(
+        await probeHandshakeStatus(`ws://127.0.0.1:${server.addr.port}`, {
+          "x-tunnel": "yes",
+        }),
+        418,
+      );
+    } finally {
+      await server.shutdown();
+    }
   },
 });
 
 Deno.test({
   name:
-    "probeServerHealth: returns false when response body is not valid health JSON",
+    "probeHandshakeStatus: does not follow a redirect, so pass-through headers stay with the server",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const server = authRejectingServer({ healthBody: { status: "degraded" } });
+    let elsewhereHit = false;
+    const elsewhere = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      () => {
+        elsewhereHit = true;
+        return new Response(null, { status: 401 });
+      },
+    );
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: `http://127.0.0.1:${elsewhere.addr.port}/login`,
+          },
+        }),
+    );
     try {
-      assertEquals(await probeServerHealth(server.url), false);
+      assertEquals(
+        await probeHandshakeStatus(`ws://127.0.0.1:${server.addr.port}`, {
+          "CF-Access-Client-Secret": "secret",
+        }),
+        302,
+      );
+      assertEquals(elsewhereHit, false);
     } finally {
       await server.shutdown();
+      await elsewhere.shutdown();
     }
+  },
+});
+
+Deno.test("describeStatuslessFailure: classifies from what the tokenless probe got", () => {
+  const ws = "ws://serve.test/";
+  const wss = "wss://serve.test/";
+  const original = "Could not connect to wss://serve.test/: stream error";
+  const auth = (url: string) =>
+    `Authentication failed — run: swamp auth server-login --server ${url}`;
+  const cases: Array<
+    [string, string, number | undefined, boolean, string]
+  > = [
+    ["no answer", wss, undefined, true, original],
+    ["429", wss, 429, true, "Rate-limited by server — try again later"],
+    [
+      "503",
+      wss,
+      503,
+      false,
+      `Server error (HTTP 503) while connecting to ${wss} — check the server log for the cause`,
+    ],
+    ["401, no token sent", wss, 401, false, auth(wss)],
+    ["403, no token sent", ws, 403, false, auth(ws)],
+    ["401, token sent over wss", wss, 401, true, `${auth(wss)} (${original})`],
+    ["401, token sent over ws", ws, 401, true, original],
+    ["101 (no auth required)", wss, 101, true, original],
+    ["302 redirect", wss, 302, true, original],
+    ["404", ws, 404, false, original],
+  ];
+  for (const [label, url, status, sentToken, expected] of cases) {
+    assertEquals(
+      describeStatuslessFailure(url, original, status, sentToken),
+      expected,
+      label,
+    );
+  }
+});
+
+Deno.test({
+  name: "probeHandshakeStatus: returns undefined for an unreachable server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    assertEquals(await probeHandshakeStatus("ws://127.0.0.1:1"), undefined);
   },
 });
 
@@ -1347,6 +1474,240 @@ Deno.test({
       ) {}
     }, UserError);
     assertStringIncludes(error.message, "Could not connect to");
+  },
+});
+
+/**
+ * A server whose /health answers ok but which drops every WebSocket upgrade
+ * without a response — a transient connection failure that carries no HTTP
+ * status, and that the handshake probe cannot get a status for either
+ * (swamp-club#3276).
+ */
+function connectionDroppingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const listener = Deno.listen({ port: 0, hostname: "127.0.0.1" });
+  const accepting = (async () => {
+    for await (const conn of listener) {
+      // Read the whole request head — the headers may span several reads.
+      let head = "";
+      const buf = new Uint8Array(4096);
+      while (!head.includes("\r\n\r\n")) {
+        const n = await conn.read(buf).catch(() => null);
+        if (n === null) break;
+        head += new TextDecoder().decode(buf.subarray(0, n));
+      }
+      if (!/upgrade: websocket/i.test(head)) {
+        const body = JSON.stringify({ status: "ok" });
+        await conn.write(
+          new TextEncoder().encode(
+            `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n` +
+              `content-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`,
+          ),
+        ).catch(() => {});
+      }
+      try {
+        conn.close();
+      } catch { /* already closed */ }
+    }
+  })();
+  return {
+    url: `ws://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
+    shutdown: async () => {
+      listener.close();
+      await accepting.catch(() => {});
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "remote run: a dropped connection to a healthy server keeps the original error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = connectionDroppingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Could not connect to");
+      assertEquals(error.message.includes("Authentication failed"), false);
+      assertEquals(error.message.includes("swamp auth server-login"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a dropped connection to a healthy server keeps the original error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = connectionDroppingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Could not connect to");
+      assertEquals(error.message.includes("Authentication failed"), false);
+      assertEquals(error.message.includes("swamp auth server-login"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+/**
+ * A socket that fails before opening with `message` and no HTTP status — the
+ * way Deno reports a handshake rejected over HTTP/2 (swamp-club#1482).
+ */
+function opaquelyFailingSocket(message: string): () => WebSocket {
+  return () => {
+    const socket = {
+      binaryType: "blob",
+      readyState: WebSocket.CONNECTING,
+      onmessage: null,
+      onopen: null,
+      onerror: null as ((event: Event) => void) | null,
+      onclose: null as ((event: CloseEvent) => void) | null,
+      send() {},
+      close() {},
+    };
+    setTimeout(() => {
+      socket.onerror?.(new ErrorEvent("error", { message }));
+      socket.onclose?.(new CloseEvent("close", { code: 1006 }));
+    }, 0);
+    return socket as unknown as WebSocket;
+  };
+}
+
+const HTTP2_STREAM_ERROR =
+  "NetworkError: failed to connect to WebSocket: stream error received: unspecific protocol error detected";
+
+Deno.test({
+  name:
+    "remote run: a tokenless handshake rejected without a status is classified from the probe's 401",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = tokenCheckingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            createSocket: opaquelyFailingSocket(HTTP2_STREAM_ERROR),
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertEquals(
+        error.message,
+        `Authentication failed — run: swamp auth server-login --server ${server.url}/`,
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a tokenless handshake rejected without a status is classified from the probe's 401",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = tokenCheckingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            {
+              server: server.url,
+              createSocket: opaquelyFailingSocket(HTTP2_STREAM_ERROR),
+            },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertEquals(
+        error.message,
+        `Authentication failed — run: swamp auth server-login --server ${server.url}/`,
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a token handshake over ws:// that fails without a status keeps the original error",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = tokenCheckingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            {
+              server: server.url,
+              token: "good",
+              createSocket: opaquelyFailingSocket(HTTP2_STREAM_ERROR),
+            },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Could not connect to");
+      assertStringIncludes(error.message, "stream error received");
+      assertEquals(error.message.includes("Authentication failed"), false);
+      assertEquals(error.message.includes("swamp auth server-login"), false);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: a handshake rejected without a status is classified from the probe's 429",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = rateLimitingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+            createSocket: opaquelyFailingSocket(HTTP2_STREAM_ERROR),
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Rate-limited");
+    } finally {
+      await server.shutdown();
+    }
   },
 });
 

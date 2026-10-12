@@ -513,6 +513,32 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
         latestKey(receipt.type.normalized, receipt.modelId, receipt.dataName),
         receipt.version,
       );
+      if (!this.enableWriteGc) continue;
+      const data = this.dataMap.get(
+        dataKey(
+          receipt.type.normalized,
+          receipt.modelId,
+          receipt.dataName,
+          receipt.version,
+        ),
+      );
+      const gc = data?.garbageCollection;
+      if (typeof gc === "number") {
+        // Keep the newest `gc` versions, counting the promoted one, as the
+        // filesystem repository does. This repository has no pending state,
+        // so unlike it, another in-flight deferred version counts too.
+        this.pruneExcessVersions(
+          receipt.type,
+          receipt.modelId,
+          receipt.dataName,
+          this.listVersionsSync(
+            receipt.type,
+            receipt.modelId,
+            receipt.dataName,
+          ),
+          gc + 1,
+        );
+      }
     }
     return Promise.resolve();
   }

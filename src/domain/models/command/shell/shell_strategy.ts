@@ -42,6 +42,13 @@ import { PowerShellStrategy } from "./powershell_strategy.ts";
  */
 export interface ShellStrategy {
   /**
+   * Whether the shell ends every output line with CRLF, so captured output
+   * is normalised to LF to read the same as POSIX output. A shell whose
+   * lines end in LF leaves any CR a command writes as part of its output.
+   */
+  readonly normalizesCrlfOutput: boolean;
+
+  /**
    * Build the executable + args that wrap a user-authored command
    * string in the host shell. The returned shape is what
    * `Deno.Command` consumes via `executeProcess`.

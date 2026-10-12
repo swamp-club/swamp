@@ -46,6 +46,9 @@ const POWERSHELL_COMPATIBILITY_PREFIX =
   "function echo { Write-Output ($args -join ' ') }; ";
 
 export class PowerShellStrategy implements ShellStrategy {
+  // Write-Output, and so `echo`, ends every line with CRLF.
+  readonly normalizesCrlfOutput = true;
+
   buildInvocation(command: string): { command: string; args: string[] } {
     return {
       command: "powershell.exe",

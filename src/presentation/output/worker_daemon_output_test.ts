@@ -106,6 +106,36 @@ Deno.test("renderWorkerDaemonStatus: log mode shows not configured when disabled
   assertStringIncludes(stripped, "user service");
 });
 
+Deno.test("renderWorkerDaemonStatus: log mode shows the unsupported reason instead of the enable hint", () => {
+  const status: WorkerDaemonStatus = {
+    enabled: false,
+    running: false,
+    unsupportedReason: "swamp worker daemon is not yet supported on windows",
+  };
+  const output = captureLogs(() =>
+    renderWorkerDaemonStatus(status, "log", "user")
+  );
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "not configured");
+  assertStringIncludes(
+    stripped,
+    "swamp worker daemon is not yet supported on windows",
+  );
+  assertFalse(stripped.includes("swamp worker daemon enable"));
+});
+
+Deno.test("renderWorkerDaemonStatus: json mode includes the unsupported reason", () => {
+  const status: WorkerDaemonStatus = {
+    enabled: false,
+    running: false,
+    unsupportedReason: "swamp worker daemon is not yet supported on windows",
+  };
+  const output = captureLogs(() =>
+    renderWorkerDaemonStatus(status, "json", "user")
+  );
+  assertEquals(JSON.parse(output), { ...status, serviceMode: "user" });
+});
+
 Deno.test("renderWorkerDaemonStatus: log mode shows running when enabled and running", () => {
   const status: WorkerDaemonStatus = {
     enabled: true,

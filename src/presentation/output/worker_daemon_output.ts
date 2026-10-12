@@ -97,6 +97,10 @@ export function renderWorkerDaemonStatus(
     writeOutput(
       `${dim(`Status (${label}):`)} ${dim("not configured")}`,
     );
+    if (status.unsupportedReason) {
+      writeOutput(dim(status.unsupportedReason));
+      return;
+    }
     writeOutput(
       `${dim("Run")} ${bold("swamp worker daemon enable")} ${
         dim("to set up the daemon")

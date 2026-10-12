@@ -502,6 +502,7 @@ export const workflowRunCommand = new Command()
                   repoContext.hydrateFile,
                   unlocked.vaultsDir,
                   unlocked.datastoreResolver,
+                  repoContext.autoGc,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 return service;

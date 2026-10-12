@@ -29,6 +29,8 @@ import {
   compilePatterns,
   isExcludedCompiled,
 } from "../../domain/datastore/datastore_pattern_matcher.ts";
+import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
+import { datastoreEngineOf } from "./datastore_format_guard.ts";
 import { SWAMP_DATA_DIR } from "./paths.ts";
 
 /**
@@ -50,16 +52,32 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
    * string is solo mode: paths are byte-identical to a non-namespaced repo.
    */
   private readonly namespace: string;
+  private readonly datastoreEngine: DatastoreEngine;
 
-  constructor(repoDir: string, datastoreConfig: DatastoreConfig) {
+  /**
+   * `engine` defaults to what the format guard chose for this config object
+   * (`ensureSupportedDatastoreFormat`), or, for a config it has not checked,
+   * to what the datastore's marker says (`datastoreEngineOf`).
+   */
+  constructor(
+    repoDir: string,
+    datastoreConfig: DatastoreConfig,
+    options: { readonly engine?: DatastoreEngine } = {},
+  ) {
     this.repoDir = repoDir;
     this.datastoreConfig = datastoreConfig;
     this.datastoreSubdirs = new Set(getDatastoreDirectories(datastoreConfig));
     this.compiledExclude = compilePatterns(datastoreConfig.exclude ?? []);
     this.namespace = datastoreConfig.namespace ?? "";
+    this.datastoreEngine = options.engine ?? datastoreEngineOf(datastoreConfig);
 
     // Determine the base path for the datastore
-    if (isCustomDatastoreConfig(datastoreConfig)) {
+    if (this.datastoreEngine === "v3") {
+      // A v3 datastore path holds the commit log, not records: each checkout
+      // materialises its records in its own `.swamp/` (swamp-club#3279), so
+      // the datastore tier resolves there, namespaced as before.
+      this.datastoreBasePath = join(repoDir, SWAMP_DATA_DIR);
+    } else if (isCustomDatastoreConfig(datastoreConfig)) {
       // For remote datastores with a local cache (e.g. S3), use the cache
       // path so reads/writes go to the same directory the sync service
       // pushes from and pulls to.  Fall back to datastorePath for custom
@@ -124,5 +142,9 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
 
   config(): DatastoreConfig {
     return this.datastoreConfig;
+  }
+
+  engine(): DatastoreEngine {
+    return this.datastoreEngine;
   }
 }

@@ -27,9 +27,24 @@ export class SecretRedactor {
   /**
    * Registers a secret value for redaction.
    * Values shorter than 3 characters are ignored to prevent false-positive redaction.
+   *
+   * Also registers the value as it reads after CRLF line endings are
+   * normalised to LF — every CR that precedes an LF or ends the value
+   * removed — because captured PowerShell output is normalised that way
+   * before it is redacted.
    */
   addSecret(value: string): void {
     if (value.length < 3) return;
+    this.addForm(value);
+    const lineEndingsNormalised = value.replace(/\r(?=\n|$)/g, "");
+    if (
+      lineEndingsNormalised !== value && lineEndingsNormalised.length >= 3
+    ) {
+      this.addForm(lineEndingsNormalised);
+    }
+  }
+
+  private addForm(value: string): void {
     this.secrets.add(value);
     // Also add JSON-escaped version for JSON data files
     const jsonEscaped = JSON.stringify(value).slice(1, -1);

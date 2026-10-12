@@ -33,7 +33,9 @@ They run in a fixed order so output is stable:
 3. **`agent-config-loadable`**: a per-tool parser checks that the config
    `swamp init` wrote exists, parses and has the expected shape. For example,
    Kiro's `.kiro/agents/swamp.json` must not contain `tools: ["*"]`, which
-   kiro-cli 2.0 silently rejects.
+   kiro-cli 2.0 silently rejects, and must have a post-tool hook that runs the
+   audit hook: either the 2.x object form (`hooks.postToolUse`) or a
+   universal-format array entry with trigger `postToolUse`.
    For Claude, Cursor and Copilot it also fails when an event runs the audit
    hook more than once, since each copy records every tool call.
 4. **`default-agent-set`**: Kiro only. `.kiro/settings/cli.json` has

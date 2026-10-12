@@ -27,6 +27,7 @@ import {
 } from "../../domain/vaults/vault_type_registry.ts";
 import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import {
+  defaultLocalEncryptionConfig,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
   withServerDefaultKeySource,
@@ -143,15 +144,8 @@ export async function createVaultCreateDeps(
  */
 function resolveBuiltInProviderConfig(
   vaultType: string,
-  repoDir: string,
 ): Record<string, unknown> {
-  if (isLocalEncryptionType(vaultType)) {
-    return {
-      auto_generate: true,
-      base_dir: repoDir,
-    };
-  }
-  return {};
+  return isLocalEncryptionType(vaultType) ? defaultLocalEncryptionConfig() : {};
 }
 
 /** How to try the creation again once the config is complete. */
@@ -276,19 +270,13 @@ export async function* vaultCreate(
             };
             return;
           }
-          providerConfig = withServerDefaultKeySource(
-            input.config,
-            input.repoDir,
-          );
+          providerConfig = withServerDefaultKeySource(input.config);
         } else if (input.config) {
           // Built-in type with explicit config
           providerConfig = input.config;
         } else {
           // Built-in vault type: resolve defaults
-          providerConfig = resolveBuiltInProviderConfig(
-            input.vaultType,
-            input.repoDir,
-          );
+          providerConfig = resolveBuiltInProviderConfig(input.vaultType);
         }
 
         // Create and save

@@ -54,7 +54,7 @@ function makeMockDeps(
       _signal: AbortSignal,
     ): Promise<OAuthUserInfo> =>
       Promise.resolve({
-        sub: "user-1",
+        sub: "u1",
         email: "user@example.com",
         collectives: ["team-a"],
         groups: [],
@@ -422,4 +422,72 @@ Deno.test("CollectiveRefreshService: a tick runs with no active span when starte
     assert(seen.length >= 2);
     for (const span of seen) assertEquals(span, undefined);
   });
+});
+
+function changedCollectivesDeps(principalId: string, sub: string) {
+  const cycles = countCycles(() =>
+    Promise.resolve([
+      {
+        name: "tok-1",
+        principalId,
+        vaultName: "_token-secrets",
+        collectives: ["team-a"],
+        groups: [],
+      },
+    ])
+  );
+  const deps = makeMockDeps({
+    listActiveTokens: cycles.listActiveTokens,
+    getUserInfo: () =>
+      Promise.resolve({
+        sub,
+        email: "other@example.com",
+        collectives: ["admins"],
+        groups: ["idp-admins"],
+      }),
+  });
+  return { cycles, deps };
+}
+
+async function runOneCycle(
+  deps: ReturnType<typeof makeMockDeps>,
+  cycles: ReturnType<typeof countCycles>,
+): Promise<void> {
+  const svc = new CollectiveRefreshService(deps);
+  svc.start();
+  await cycles.firstCycleDone();
+  await svc.dispose();
+}
+
+function assertTokenUntouched(deps: ReturnType<typeof makeMockDeps>): void {
+  assertEquals(deps.updatedTokens.size, 0);
+  assertEquals(deps.updatedConnections.size, 0);
+  assertEquals(deps.revokedTokens, []);
+  assertEquals(deps.closedPrincipals, []);
+}
+
+Deno.test("CollectiveRefreshService: ignores userinfo for a different subject", async () => {
+  const { cycles, deps } = changedCollectivesDeps("user:u1", "u2");
+  await runOneCycle(deps, cycles);
+  assertTokenUntouched(deps);
+});
+
+Deno.test("CollectiveRefreshService: a subject differing only in case is a different subject", async () => {
+  const { cycles, deps } = changedCollectivesDeps("user:u1", "U1");
+  await runOneCycle(deps, cycles);
+  assertTokenUntouched(deps);
+});
+
+Deno.test("CollectiveRefreshService: never applies userinfo to a token whose principal is not a user", async () => {
+  const { cycles, deps } = changedCollectivesDeps("u1", "u1");
+  await runOneCycle(deps, cycles);
+  assertTokenUntouched(deps);
+});
+
+Deno.test("CollectiveRefreshService: applies userinfo when the subject matches the principal", async () => {
+  const { cycles, deps } = changedCollectivesDeps("user:u1", "u1");
+  await runOneCycle(deps, cycles);
+  assertEquals(deps.updatedTokens.get("tok-1"), ["admins"]);
+  assertEquals(deps.updatedConnections.get("user:u1"), ["admins"]);
+  assertEquals(deps.revokedTokens, []);
 });

@@ -122,6 +122,12 @@ export interface DispatchGateway {
     options?: {
       signal?: AbortSignal;
       onEvent?: (event: RpcStreamEvent) => void;
+      /**
+       * Called synchronously once the dispatch is listed in the worker's
+       * `activeDispatchIds`, i.e. from then on the pool itself counts the
+       * slot as taken.
+       */
+      onRegistered?: () => void;
     },
   ): Promise<DispatchResult>;
 }
@@ -150,7 +156,12 @@ export class DispatchService {
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
-  /** Per-worker reservation count for queued steps not yet dispatched. */
+  /**
+   * Per-worker count of steps the scheduler placed but the gateway has not
+   * registered yet. A reservation ends when the dispatch appears in the
+   * worker's `activeDispatchIds`, so a dispatch is counted by exactly one
+   * of the two.
+   */
   readonly #reserved = new Map<string, number>();
   /** Dispatches that performed at least one durable write. */
   readonly #writesByDispatch = new Set<string>();
@@ -376,18 +387,35 @@ export class DispatchService {
 
       while (true) {
         request.signal?.throwIfAborted();
-        const workerName = request.skipScheduler &&
-            effectivePlacement.target
-          ? effectivePlacement.target
-          : await this.#acquireWorker(
+        const scheduled = !(request.skipScheduler && effectivePlacement.target);
+        const workerName = scheduled
+          ? await this.#acquireWorker(
             effectivePlacement,
             request.signal,
             deadline,
             emitQueued,
             assertPinHeld,
-          );
+          )
+          : effectivePlacement.target!;
+        // One per attempt: every pass of this loop takes its own
+        // reservation. An unscheduled attempt took none.
+        let reservationHeld = scheduled;
+        const releaseReservation = () => {
+          if (!reservationHeld) return;
+          reservationHeld = false;
+          const count = this.#reserved.get(workerName) ?? 0;
+          if (count <= 1) {
+            this.#reserved.delete(workerName);
+          } else {
+            this.#reserved.set(workerName, count - 1);
+          }
+        };
         try {
-          const result = await this.#dispatchOnce(workerName, request);
+          const result = await this.#dispatchOnce(
+            workerName,
+            request,
+            releaseReservation,
+          );
           lastDispatchId = result.dispatchId;
           endQueue("mark_dispatched", { dispatchId: result.dispatchId });
           if (affinityKey && !this.#affinityPins.has(affinityKey)) {
@@ -478,12 +506,8 @@ export class DispatchService {
           }
           throw error;
         } finally {
-          const count = this.#reserved.get(workerName) ?? 0;
-          if (count <= 1) {
-            this.#reserved.delete(workerName);
-          } else {
-            this.#reserved.set(workerName, count - 1);
-          }
+          // An attempt that failed before the gateway registered it.
+          releaseReservation();
         }
       }
     } catch (error) {
@@ -523,6 +547,7 @@ export class DispatchService {
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
+    onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const handOff = await request.beginLockHandOff?.();
     let outcome:
@@ -531,7 +556,12 @@ export class DispatchService {
     try {
       outcome = {
         ok: true,
-        result: await this.#dispatchLent(workerName, request, handOff?.lent),
+        result: await this.#dispatchLent(
+          workerName,
+          request,
+          handOff?.lent,
+          onRegistered,
+        ),
       };
     } catch (error) {
       outcome = { ok: false, error };
@@ -578,6 +608,7 @@ export class DispatchService {
     workerName: string,
     request: RemoteStepRequest,
     lockHolder: RemoteLockHolder | undefined,
+    onRegistered: () => void,
   ): Promise<RemoteStepResult & { dispatchId: string }> {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
@@ -665,6 +696,7 @@ export class DispatchService {
       const result = await gateway.dispatch(workerName, params, {
         signal: request.signal,
         onEvent: request.onEvent,
+        onRegistered,
       });
       // What the method wrote to the console on the worker travels in the
       // result, not the stream. Forward it as output so it reaches the run
@@ -810,7 +842,10 @@ export class DispatchService {
       worker.status === "draining";
   }
 
-  /** The live pool with reservation counts overlaid onto active dispatch counts. */
+  /**
+   * The live pool with reservations overlaid onto active dispatch counts.
+   * Reservations cover only dispatches the gateway has not registered yet.
+   */
   #poolSnapshot(): WorkerSnapshot[] {
     return this.#gateway!.workers().map((worker) => {
       const reservations = this.#reserved.get(worker.name) ?? 0;

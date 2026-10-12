@@ -19,7 +19,11 @@
 
 // deno-lint-ignore-file no-import-prefix
 import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
-import type { ControlPlaneStore } from "./datastore_types.ts";
+import type {
+  ControlPlaneStore,
+  DatastoreControlPlaneStore,
+  DatastoreSyncService,
+} from "./datastore_types.ts";
 
 /** Options for {@link assertControlPlaneStoreConformance}. */
 export interface ControlPlaneStoreConformanceOptions {
@@ -227,6 +231,118 @@ export async function assertControlPlaneStoreConformance(
         await store.delete(k);
       } catch { /* best-effort cleanup */ }
     }
+  }
+}
+
+/** Options for {@link assertDatastoreControlPlaneStoreConformance}. */
+export interface DatastoreControlPlaneStoreConformanceOptions {
+  /** The provider's `datastoreControlPlaneStore()`. */
+  openDatastoreStore: () =>
+    | DatastoreControlPlaneStore
+    | Promise<DatastoreControlPlaneStore>;
+  /**
+   * A fresh sync service from the same provider, never pulled or pushed,
+   * with a cache of its own each call.
+   */
+  openSyncService: () => DatastoreSyncService | Promise<DatastoreSyncService>;
+  /**
+   * The namespace a service is bound to, by pulling with it. Default: a
+   * fresh one per run. A backend that only pulls registered namespaces
+   * needs one registered before the suite runs; pass its name here.
+   */
+  namespace?: string;
+}
+
+/**
+ * Checks a provider's `datastoreControlPlaneStore()` against the contract
+ * swamp's datastore format check relies on.
+ *
+ * Checked: `get` reads the record a never-pulled sync service's control
+ * plane wrote at the datastore-wide root, returns null for a missing key,
+ * does not see a record written only under a namespace, and rejects when
+ * its signal is already aborted. Using it binds no namespace: a sync
+ * service built first can still pull under a namespace afterwards, and
+ * reads that namespace's records. The suite writes only under a key prefix
+ * of its own and removes what it wrote.
+ *
+ * ```ts
+ * import { assertDatastoreControlPlaneStoreConformance } from "@swamp-club/swamp-testing";
+ *
+ * Deno.test("datastore-wide control-plane store conformance", async () => {
+ *   await assertDatastoreControlPlaneStoreConformance({
+ *     openDatastoreStore: () => provider.datastoreControlPlaneStore!(),
+ *     openSyncService: async () =>
+ *       provider.createSyncService!(repoDir, await Deno.makeTempDir()),
+ *   });
+ * });
+ * ```
+ */
+export async function assertDatastoreControlPlaneStoreConformance(
+  options: DatastoreControlPlaneStoreConformanceOptions,
+): Promise<void> {
+  const namespace = options.namespace ??
+    `conformance-ns-${crypto.randomUUID().slice(0, 8)}`;
+  const root = `conformance-${crypto.randomUUID()}`;
+  const rootKey = `${root}/datastore-wide`;
+  const namespacedKey = `${root}/namespaced`;
+
+  const rootService = await options.openSyncService();
+  const namespacedService = await options.openSyncService();
+  if (!rootService.controlPlaneStore || !namespacedService.controlPlaneStore) {
+    throw new Error(
+      "openSyncService must return services with a controlPlaneStore",
+    );
+  }
+  const rootStore = rootService.controlPlaneStore();
+  let namespacedStore: ControlPlaneStore | undefined;
+
+  try {
+    await rootStore.put(rootKey, encode("root"));
+    const store = await options.openDatastoreStore();
+
+    const read = await store.get(rootKey);
+    assertEquals(
+      read === null ? null : new TextDecoder().decode(read),
+      "root",
+      "get must read the record written at the datastore-wide root",
+    );
+    assertEquals(
+      await store.get(`${root}/missing`),
+      null,
+      "get must return null for a key that holds no record",
+    );
+
+    // The datastore-wide store was used first; the service must still
+    // bind its own namespace, and its records stay out of the root.
+    await namespacedService.pullChanged({ namespace });
+    namespacedStore = namespacedService.controlPlaneStore();
+    await namespacedStore.put(namespacedKey, encode("namespaced"));
+    assertEquals(
+      await store.get(namespacedKey),
+      null,
+      "get must not see a record written only under a namespace",
+    );
+    const namespacedRead = await namespacedStore.get(namespacedKey);
+    assertEquals(
+      namespacedRead === null ? null : new TextDecoder().decode(namespacedRead),
+      "namespaced",
+      "a namespaced service must still read its own records after the datastore-wide store was used",
+    );
+
+    let rejected = false;
+    try {
+      await store.get(rootKey, { signal: AbortSignal.abort() });
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, "get must reject when its signal is already aborted");
+  } finally {
+    try {
+      await rootStore.delete(rootKey);
+    } catch { /* best-effort cleanup */ }
+    try {
+      await namespacedStore?.delete(namespacedKey);
+    } catch { /* best-effort cleanup */ }
   }
 }
 

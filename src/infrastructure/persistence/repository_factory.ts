@@ -73,7 +73,11 @@ import { NoopRepoIndexService } from "../repo/noop_repo_index_service.ts";
 import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
-import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import {
+  type DatastorePathResolver,
+  resolverEngine,
+} from "../../domain/datastore/datastore_path_resolver.ts";
+import { v3CatalogPath } from "../datastore_v3/record_path_guard.ts";
 import type {
   HydrateFileHook,
   MarkDirtyHook,
@@ -81,11 +85,17 @@ import type {
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore, ITERATE_PAGE_SIZE } from "./catalog_store.ts";
 import {
+  bindCommitLogEngine,
+  type CommitLogEngine,
+} from "./repo_unit_of_work.ts";
+import { unitOfWorkBinding } from "./unit_of_work_binding.ts";
+import {
   CATALOG_WRITERS_DIR,
   SharedDatastoreWriteTracker,
 } from "./shared_datastore_write_tracker.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { dirname, join, resolve } from "@std/path";
+import { ensureDir } from "@std/fs";
 
 // =============================================================================
 // Catalog Store Factory
@@ -114,9 +124,30 @@ export function catalogDbPath(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
 ): string {
+  // On a v3 datastore the catalog is the read model's, in the checkout's own
+  // state directory (swamp-club#3279); the read model fills it.
+  if (resolverEngine(datastoreResolver) === "v3") return v3CatalogPath(repoDir);
   const dataBaseDir = datastoreResolver?.localPath(SWAMP_SUBDIRS.data) ??
     swampPath(repoDir, SWAMP_SUBDIRS.data);
   return join(dataBaseDir, "_catalog.db");
+}
+
+/**
+ * Removes the repo's local catalog database and its SQLite sidecars, so the
+ * next data query rebuilds the index from disk.
+ */
+export async function removeCatalogDb(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): Promise<void> {
+  const dbPath = catalogDbPath(repoDir, datastoreResolver);
+  for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+    try {
+      await Deno.remove(dbPath + suffix);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
 }
 
 /**
@@ -167,6 +198,9 @@ function sharedDatastoreWriteTracker(
   datastoreResolver?: DatastorePathResolver,
 ): SharedDatastoreWriteTracker | undefined {
   if (datastoreResolver?.config().type !== "filesystem") return undefined;
+  // A v3 checkout's records are its own; other writers reach it through
+  // commits, which its read model applies.
+  if (resolverEngine(datastoreResolver) === "v3") return undefined;
   const dataDir = resolve(datastoreResolver.resolvePath(SWAMP_SUBDIRS.data));
   if (dataDir === resolve(datastoreResolver.localPath(SWAMP_SUBDIRS.data))) {
     return undefined;
@@ -195,12 +229,11 @@ export async function writeCatalogExport(
   cachePath: string,
   namespace: string,
 ): Promise<number> {
-  const exportPath = join(cachePath, namespace, ".catalog-export.json");
-  const tmpPath = join(
-    cachePath,
-    namespace,
-    `.${crypto.randomUUID()}.tmp`,
-  );
+  const namespaceDir = join(cachePath, namespace);
+  const exportPath = join(namespaceDir, ".catalog-export.json");
+  const tmpPath = join(namespaceDir, `.${crypto.randomUUID()}.tmp`);
+  // A checkout with no local data has not created the namespace dir yet.
+  await ensureDir(namespaceDir);
   const encoder = new TextEncoder();
   const file = await Deno.open(tmpPath, {
     write: true,
@@ -395,6 +428,23 @@ export interface RepositoryFactoryConfig {
    * Defaults to true for backward compatibility.
    */
   filterStaleRows?: boolean;
+  /**
+   * Builds the v3 commit log this context commits through, given the
+   * context's hook (swamp-club#3279). Set only for a v3 datastore. The
+   * factory then gives the context a hook of its own when `markDirty` is
+   * absent and marks it `requireUnit` before any repository can write, so a
+   * write outside a commit-log unit is refused rather than left uncommitted.
+   */
+  commitLog?: (
+    markDirty: MarkDirtyHook,
+    workflowRunRepo: () => YamlWorkflowRunRepository,
+  ) => CommitLogEngine;
+  /**
+   * The catalog to read and write instead of the one at `catalogDbPath`:
+   * the v3 read model's on a v3 datastore, which the read model fills, so
+   * the query service never backfills it from disk.
+   */
+  catalogStore?: CatalogStore;
 }
 
 /**
@@ -418,7 +468,20 @@ export interface RepositoryContext {
   dataQueryService: DataQueryService;
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
+  /**
+   * The v3 commit log this context commits through; set only on a v3
+   * datastore (swamp-club#3279). Roots and use-case units open commit-log
+   * units through it instead of legacy ones.
+   */
+  commitLog?: CommitLogEngine;
   autoDefinitionsDir: string;
+  /**
+   * The repo's `autoGc` setting, which `unifiedDataRepo` enforces at write
+   * time. Code that builds its own data repositories for this repo, such as
+   * workflow execution, passes it on so their writes keep the same caps
+   * (swamp-club#3251).
+   */
+  autoGc?: boolean;
   /**
    * Whether this repository's datastore supports workflow signal waits, with
    * the store for their records. Set by the code that resolves the
@@ -458,9 +521,26 @@ export function createRepositoryContext(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
-    markDirty,
     hydrateFile,
   } = config;
+
+  // A v3 context gets a hook of its own when none was given: the hook is the
+  // context's identity for its units, and must never be shared with a v2
+  // context (the requireUnit mark is permanent).
+  const markDirty: MarkDirtyHook | undefined = config.commitLog === undefined
+    ? config.markDirty
+    : config.markDirty ?? (() => Promise.resolve());
+  if (config.commitLog !== undefined && markDirty !== undefined) {
+    unitOfWorkBinding.requireUnit(markDirty);
+  }
+  const commitLog = config.commitLog !== undefined && markDirty !== undefined
+    // The run repository is built below; the engine reads it only when a
+    // root settles a refusal, long after this function returns.
+    ? config.commitLog(markDirty, () => workflowRunRepo)
+    : undefined;
+  if (commitLog !== undefined && markDirty !== undefined) {
+    bindCommitLogEngine(markDirty, commitLog);
+  }
 
   // Translate the raw config namespace slug into the Namespace value object
   // exactly once — this factory is the single composition root where config
@@ -523,7 +603,8 @@ export function createRepositoryContext(
   );
 
   // Create catalog store for data query
-  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+  const catalogStore = config.catalogStore ??
+    createCatalogStore(repoDir, datastoreResolver);
 
   // Unified data repository with catalog write-through
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(
@@ -541,6 +622,7 @@ export function createRepositoryContext(
   // catalog handle as an infrastructure detail of the composition root.
   const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo, {
     filterStaleRows: config.filterStaleRows ?? true,
+    backfill: config.catalogStore === undefined,
   });
   const outputRepo = new YamlOutputRepository(
     repoDir,
@@ -575,6 +657,8 @@ export function createRepositoryContext(
     dataQueryService,
     markDirty,
     hydrateFile,
+    ...(commitLog !== undefined ? { commitLog } : {}),
     autoDefinitionsDir: autoDefDir,
+    autoGc: config.autoGc ?? false,
   };
 }

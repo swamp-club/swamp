@@ -34,8 +34,10 @@ config:
   # Option 3: Use default SSH key (~/.ssh/id_rsa)
   # (set auto_generate: false and omit ssh_key_path)
 
-  # Optional: Custom base directory
-  base_dir: /path/to/repo
+  # Optional: custom base directory for the secrets. Leave it out: an unset
+  # base_dir is the repository root, resolved when the vault loads, so the
+  # committed file works in every clone.
+  # base_dir: /path/to/secrets-root
 createdAt: 2025-02-01T...
 ```
 

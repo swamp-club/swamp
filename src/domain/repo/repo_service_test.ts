@@ -35,6 +35,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { writeCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
+import { VaultConfig } from "../vaults/vault_config.ts";
+import type { DefaultVaultStore } from "../vaults/default_vault.ts";
 
 // init/upgrade install bundled skills into the user's home and config
 // directories. Test files share one process and one `Deno.env`, so a write
@@ -246,6 +248,151 @@ Deno.test("RepoService.init succeeds with force on existing repo", async () => {
     const result = await service.init(repoPath, { force: true });
 
     assertEquals(result.version, "0.1.0");
+  });
+});
+
+/** An in-memory DefaultVaultStore that records what init saved. */
+function memoryVaultStore(
+  initial: VaultConfig[] = [],
+): DefaultVaultStore & { saved: VaultConfig[] } {
+  const configs = [...initial];
+  const saved: VaultConfig[] = [];
+  return {
+    saved,
+    findByName: (name) =>
+      Promise.resolve(configs.find((c) => c.name === name) ?? null),
+    save: (config) => {
+      configs.push(config);
+      saved.push(config);
+      return Promise.resolve();
+    },
+  };
+}
+
+Deno.test("RepoService.init without a vault store sets up no vault", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tools: [] });
+
+    assertEquals(result.vault, null);
+    assertEquals((await service.getMarker(repoPath))?.defaultVault, undefined);
+  });
+});
+
+Deno.test("RepoService.init creates the default vault and makes it the default", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    const store = memoryVaultStore();
+
+    const result = await service.init(repoPath, {
+      tools: [],
+      defaultVaultStore: store,
+    });
+
+    assertEquals(result.vault, {
+      name: "default",
+      type: "local_encryption",
+      created: true,
+    });
+    assertEquals(store.saved.length, 1);
+    assertEquals(store.saved[0].name, "default");
+    assertEquals(store.saved[0].config, { auto_generate: true });
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init --force keeps an existing vault named default, whatever its type", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+    const existing = VaultConfig.create(
+      "existing-id",
+      "default",
+      "@swamp/aws-sm",
+      { region: "eu-west-1" },
+    );
+    const store = memoryVaultStore([existing]);
+
+    const result = await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: store,
+    });
+
+    assertEquals(result.vault, {
+      name: "default",
+      type: "@swamp/aws-sm",
+      created: false,
+    });
+    assertEquals(store.saved, []);
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init --force keeps the defaultVault already recorded", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    await markerRepo.write(repoPath, { ...marker!, defaultVault: "prod" });
+
+    const result = await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: memoryVaultStore(),
+    });
+
+    assertEquals(result.vault?.created, true);
+    assertEquals((await service.getMarker(repoPath))?.defaultVault, "prod");
+  });
+});
+
+Deno.test("RepoService.init --force without a recorded defaultVault records default", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: [] });
+
+    await service.init(repoPath, {
+      force: true,
+      tools: [],
+      defaultVaultStore: memoryVaultStore(),
+    });
+
+    assertEquals(
+      (await service.getMarker(repoPath))?.defaultVault,
+      "default",
+    );
+  });
+});
+
+Deno.test("RepoService.init writes no marker when the default vault cannot be saved", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    const store: DefaultVaultStore = {
+      findByName: () => Promise.resolve(null),
+      save: () => Promise.reject(new Error("disk full")),
+    };
+
+    await assertRejects(
+      () => service.init(repoPath, { tools: [], defaultVaultStore: store }),
+      Error,
+      "disk full",
+    );
+    assertEquals(await service.isInitialized(repoPath), false);
   });
 });
 
@@ -878,6 +1025,97 @@ Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", asyn
       content,
       "the anti-pattern is bypassing swamp entirely",
     );
+  });
+});
+
+/** Returns the body of the managed `## Getting Started` section. */
+function gettingStartedSection(content: string): string {
+  const start = content.indexOf("## Getting Started");
+  const end = content.indexOf("## Commands", start);
+  return content.substring(start, end);
+}
+
+Deno.test("RepoService.init generates CLAUDE.md without a session-start model search", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const content = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    const section = gettingStartedSection(content);
+
+    assertEquals(content.includes("At the start of every conversation"), false);
+    assertEquals(section.includes("swamp model search"), false);
+    assertStringIncludes(section, "invoke the\n`swamp-getting-started` skill");
+    assertStringIncludes(section, "use the `swamp` skill");
+  });
+});
+
+Deno.test("RepoService.init: path-style custom tool instructions point at getting-started without a session-start model search", async () => {
+  await withTempDir(async (tempDir) => {
+    await writeCustomTools(tempDir, [{
+      name: "myagent",
+      skillsDir: ".myagent/skills",
+      instructionsFile: "AGENTS.md",
+      instructionsMode: "shared",
+      skillReferenceStyle: "path",
+    }]);
+
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["myagent"] });
+
+    const content = await Deno.readTextFile(join(tempDir, "AGENTS.md"));
+    const section = gettingStartedSection(content);
+
+    assertEquals(content.includes("At the start of every conversation"), false);
+    assertEquals(section.includes("swamp model search"), false);
+    assertStringIncludes(
+      section,
+      "`.myagent/skills/swamp-getting-started/SKILL.md`",
+    );
+    assertStringIncludes(section, "`.myagent/skills/swamp/SKILL.md`");
+  });
+});
+
+Deno.test("RepoService.upgrade replaces the old session-start model search instruction", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    // Swap the current Getting Started body for the pre-#3206 wording
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const current = await Deno.readTextFile(claudeMdPath);
+    const section = gettingStartedSection(current);
+    const legacy = current.replace(
+      section,
+      `## Getting Started
+
+**IMPORTANT:** At the start of every conversation, run
+\`swamp model search --json\`. If no models are returned (empty result), you MUST
+immediately invoke the \`swamp-getting-started\` skill before doing anything else.
+This walks new users through an interactive onboarding tutorial.
+
+If models already exist, start by using the \`swamp\` skill to work with
+swamp models.
+
+`,
+    );
+    await Deno.writeTextFile(claudeMdPath, legacy);
+
+    const upgradeService = testService("0.2.0", tempDir);
+    const result = await upgradeService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+    const upgraded = await Deno.readTextFile(claudeMdPath);
+    assertEquals(
+      upgraded.includes("At the start of every conversation"),
+      false,
+    );
+    assertEquals(gettingStartedSection(upgraded), section);
   });
 });
 
@@ -1835,17 +2073,10 @@ Deno.test("RepoService.init with kiro creates steering file with name-based skil
     assertStringIncludes(content, "the `swamp` skill");
     assertEquals(content.includes(".kiro/skills/swamp/SKILL.md"), false);
 
-    // Check .vscode/settings.local.json created with trusted commands
-    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
-    const settingsContent = await Deno.readTextFile(settingsPath);
-    const settings = JSON.parse(settingsContent);
-    assertEquals(
-      Array.isArray(settings["kiroAgent.trustedCommands"]),
-      true,
-    );
-    assertStringIncludes(
-      JSON.stringify(settings["kiroAgent.trustedCommands"]),
-      "swamp *",
+    // Kiro IDE 1.0 no longer reads the 0.x settings, so none are written.
+    await assertRejects(
+      () => Deno.stat(join(tempDir, ".vscode", "settings.local.json")),
+      Deno.errors.NotFound,
     );
   });
 });
@@ -1882,13 +2113,18 @@ Deno.test("RepoService.upgrade allows switching to kiro and creates steering fil
     const content = await Deno.readTextFile(steeringPath);
     assertStringIncludes(content, "inclusion: always");
 
-    // Verify kiro settings created
-    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
-    const settingsContent = await Deno.readTextFile(settingsPath);
-    const settings = JSON.parse(settingsContent);
-    assertStringIncludes(
-      JSON.stringify(settings["kiroAgent.trustedCommands"]),
-      "swamp *",
+    // Verify kiro audit hook and agent config created
+    assertEquals(
+      result.changedFiles.includes(".kiro/hooks/swamp-audit.json"),
+      true,
+    );
+    assertEquals(
+      result.changedFiles.includes(".kiro/agents/swamp.json"),
+      true,
+    );
+    await assertRejects(
+      () => Deno.stat(join(tempDir, ".vscode", "settings.local.json")),
+      Deno.errors.NotFound,
     );
   });
 });
@@ -2015,7 +2251,28 @@ Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
 
 // Kiro audit hook tests
 
-Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook", async () => {
+const KIRO_AUDIT_COMMAND = "swamp audit record --from-hook --tool kiro";
+
+// The Kiro IDE 0.x hook file earlier versions wrote.
+const LEGACY_KIRO_HOOK = {
+  name: "Swamp Audit",
+  description: "Records agent tool usage for swamp audit tracking",
+  version: "1",
+  when: { type: "postToolUse", toolTypes: ["*"] },
+  then: { type: "runCommand", command: KIRO_AUDIT_COMMAND, timeout: 5 },
+};
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.json in the v1 hook schema", async () => {
   await withTempDir(async (tempDir) => {
     const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
@@ -2024,139 +2281,419 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook"
 
     assertEquals(result.settingsCreated, true);
 
-    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
-    const content = await Deno.readTextFile(hookPath);
-    const hook = JSON.parse(content);
-    assertEquals(hook.name, "Swamp Audit");
-    assertEquals(hook.when.type, "postToolUse");
-    assertEquals(hook.when.toolTypes, ["*"]);
-    assertEquals(hook.then.type, "runCommand");
-    assertEquals(hook.then.timeout, 5);
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    assertEquals(await readJson(hookPath), {
+      version: "v1",
+      hooks: [{
+        name: "swamp-audit",
+        trigger: "PostToolUse",
+        action: { type: "command", command: KIRO_AUDIT_COMMAND },
+        timeout: 5,
+      }],
+    });
     assertEquals(
-      hook.then.command,
-      "swamp audit record --from-hook --tool kiro",
-    );
-
-    // Also verify .vscode/settings.local.json was created
-    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
-    const settingsContent = await Deno.readTextFile(settingsPath);
-    const settings = JSON.parse(settingsContent);
-    assertStringIncludes(
-      JSON.stringify(settings["kiroAgent.trustedCommands"]),
-      "swamp *",
+      await pathExists(
+        join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook"),
+      ),
+      false,
     );
   });
 });
 
-Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
+Deno.test("RepoService.upgrade with kiro is a no-op for current kiro files", async () => {
   await withTempDir(async (tempDir) => {
-    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
 
-    await service.init(repoPath, { tools: ["kiro"] });
-
-    const upgradeService = testService("0.2.0", tempDir);
-    const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
 
     assertEquals(result.tools[0], "kiro");
-
-    const hookPath = join(
-      tempDir,
-      ".kiro",
-      "hooks",
-      "swamp-audit.kiro.hook",
-    );
-    const content = await Deno.readTextFile(hookPath);
-    const hook = JSON.parse(content);
     assertEquals(
-      hook.then.command,
-      "swamp audit record --from-hook --tool kiro",
+      result.changedFiles.filter((f) =>
+        f.startsWith(".kiro/") || f.startsWith(".vscode/")
+      ),
+      [],
     );
   });
 });
 
-Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file", async () => {
+Deno.test("RepoService.upgrade with kiro replaces the legacy .kiro.hook with the v1 hook file", async () => {
   await withTempDir(async (tempDir) => {
-    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
 
-    await service.init(repoPath, { tools: ["kiro"] });
+    const hooksDir = join(tempDir, ".kiro", "hooks");
+    const legacyPath = join(hooksDir, "swamp-audit.kiro.hook");
+    const newPath = join(hooksDir, "swamp-audit.json");
+    await Deno.writeTextFile(legacyPath, JSON.stringify(LEGACY_KIRO_HOOK));
+    await Deno.remove(newPath);
 
-    // Simulate an old hook file left from a previous version
-    const oldHookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
-    await Deno.writeTextFile(oldHookPath, "{}");
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
 
-    const upgradeService = testService("0.2.0", tempDir);
-    await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
-
-    // Old .json hook file should be removed
-    await assertRejects(
-      () => Deno.stat(oldHookPath),
-      Deno.errors.NotFound,
+    assertEquals(await pathExists(legacyPath), false);
+    assertEquals((await readJson(newPath)).version, "v1");
+    assertEquals(
+      result.changedFiles.includes(".kiro/hooks/swamp-audit.kiro.hook"),
+      true,
     );
-
-    // New .kiro.hook file should exist
-    const newHookPath = join(
-      tempDir,
-      ".kiro",
-      "hooks",
-      "swamp-audit.kiro.hook",
+    assertEquals(
+      result.changedFiles.includes(".kiro/hooks/swamp-audit.json"),
+      true,
     );
-    const content = await Deno.readTextFile(newHookPath);
-    const hook = JSON.parse(content);
-    assertEquals(hook.name, "Swamp Audit");
   });
+});
+
+Deno.test("RepoService.upgrade with kiro removes a legacy .kiro.hook that ran swamp by absolute path", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const legacyPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
+    await Deno.writeTextFile(
+      legacyPath,
+      JSON.stringify({
+        ...LEGACY_KIRO_HOOK,
+        then: {
+          ...LEGACY_KIRO_HOOK.then,
+          command: "/usr/local/bin/swamp audit record --from-hook --tool kiro",
+        },
+      }),
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await pathExists(legacyPath), false);
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro keeps a legacy .kiro.hook whose audit command the user extended", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const legacyPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
+    const extended = JSON.stringify({
+      ...LEGACY_KIRO_HOOK,
+      then: {
+        ...LEGACY_KIRO_HOOK.then,
+        command: `${KIRO_AUDIT_COMMAND} && ./notify.sh`,
+      },
+    });
+    await Deno.writeTextFile(legacyPath, extended);
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await Deno.readTextFile(legacyPath), extended);
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro keeps a swamp-audit.kiro.hook that is not swamp's", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const legacyPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
+    const userHook = JSON.stringify({
+      ...LEGACY_KIRO_HOOK,
+      then: { type: "runCommand", command: "npm run lint" },
+    });
+    await Deno.writeTextFile(legacyPath, userHook);
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await Deno.readTextFile(legacyPath), userHook);
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro overwrites a pre-#584 swamp-audit.json", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
+    await Deno.writeTextFile(hookPath, "{}");
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals((await readJson(hookPath)).hooks[0].name, "swamp-audit");
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro removes audit hook copies Kiro IDE migrated into other hook files", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const hooksDir = join(tempDir, ".kiro", "hooks");
+    const auditCopy = {
+      name: "Swamp Audit",
+      trigger: "PostToolUse",
+      action: { type: "command", command: KIRO_AUDIT_COMMAND },
+    };
+    const userHook = {
+      name: "lint",
+      trigger: "PostFileSave",
+      action: { type: "command", command: "npm run lint" },
+    };
+    const mixedPath = join(hooksDir, "migrated-mixed.json");
+    const onlyCopyPath = join(hooksDir, "migrated-audit.json");
+    const withSettingsPath = join(hooksDir, "migrated-settings.json");
+    const userOnlyPath = join(hooksDir, "user.json");
+    await Deno.writeTextFile(
+      mixedPath,
+      JSON.stringify({ version: "v1", hooks: [auditCopy, userHook] }),
+    );
+    await Deno.writeTextFile(
+      onlyCopyPath,
+      JSON.stringify({ version: "v1", hooks: [auditCopy] }),
+    );
+    await Deno.writeTextFile(
+      withSettingsPath,
+      JSON.stringify({ version: "v1", hooks: [auditCopy], note: "keep" }),
+    );
+    const userOnly = JSON.stringify({ version: "v1", hooks: [userHook] });
+    await Deno.writeTextFile(userOnlyPath, userOnly);
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+
+    assertEquals(await readJson(mixedPath), {
+      version: "v1",
+      hooks: [userHook],
+    });
+    assertEquals(await pathExists(onlyCopyPath), false);
+    assertEquals(await readJson(withSettingsPath), {
+      version: "v1",
+      hooks: [],
+      note: "keep",
+    });
+    assertEquals(await Deno.readTextFile(userOnlyPath), userOnly);
+    assertEquals(
+      result.changedFiles.filter((f) => f.startsWith(".kiro/hooks/")),
+      [
+        ".kiro/hooks/migrated-audit.json",
+        ".kiro/hooks/migrated-mixed.json",
+        ".kiro/hooks/migrated-settings.json",
+      ],
+    );
+    // swamp's own hook file is untouched.
+    assertEquals(
+      (await readJson(join(hooksDir, "swamp-audit.json"))).hooks.length,
+      1,
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro removes migrated audit hook copies that run swamp by absolute path", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const hooksDir = join(tempDir, ".kiro", "hooks");
+    const otherTrigger = {
+      name: "audit on save",
+      trigger: "PostFileSave",
+      action: { type: "command", command: KIRO_AUDIT_COMMAND },
+    };
+    const migratedPath = join(hooksDir, "migrated.json");
+    await Deno.writeTextFile(
+      migratedPath,
+      JSON.stringify({
+        version: "v1",
+        hooks: [
+          {
+            name: "Swamp Audit",
+            trigger: "PostToolUse",
+            action: {
+              type: "command",
+              command:
+                '"/usr/local/bin/swamp" audit record --from-hook --tool kiro',
+            },
+          },
+          otherTrigger,
+        ],
+      }),
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    // The post-tool copy goes; a hook on another trigger is the user's own.
+    assertEquals(await readJson(migratedPath), {
+      version: "v1",
+      hooks: [otherTrigger],
+    });
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro recognises swamp's audit command however the binary is spelled", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const hooksDir = join(tempDir, ".kiro", "hooks");
+    const auditHook = (command: string) => ({
+      name: "Swamp Audit",
+      trigger: "PostToolUse",
+      action: { type: "command", command },
+    });
+    const kept = [
+      auditHook(`${KIRO_AUDIT_COMMAND} && ./notify.sh`),
+      auditHook(`not-swamp audit record --from-hook --tool kiro`),
+      auditHook(`swamp audit record --from-hook --tool kiro --verbose`),
+    ];
+    const migratedPath = join(hooksDir, "migrated.json");
+    await Deno.writeTextFile(
+      migratedPath,
+      JSON.stringify({
+        version: "v1",
+        hooks: [
+          auditHook(KIRO_AUDIT_COMMAND),
+          auditHook(
+            '"C:\\Program Files\\swamp\\swamp.exe" audit record --from-hook --tool kiro',
+          ),
+          auditHook(
+            "/opt/swamp/bin/swamp audit record --from-hook --tool kiro",
+          ),
+          ...kept,
+        ],
+      }),
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await readJson(migratedPath), { version: "v1", hooks: kept });
+  });
+});
+
+Deno.test("RepoService.upgrade with kiro leaves hook files it cannot read alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const hooksDir = join(tempDir, ".kiro", "hooks");
+    const invalidPath = join(hooksDir, "broken.json");
+    const otherSchemaPath = join(hooksDir, "other.json");
+    const arrayPath = join(hooksDir, "array.json");
+    const otherSchema = JSON.stringify({
+      hooks: [{ action: { command: KIRO_AUDIT_COMMAND } }],
+    });
+    await Deno.writeTextFile(invalidPath, "{ not json");
+    await Deno.writeTextFile(otherSchemaPath, otherSchema);
+    await Deno.writeTextFile(arrayPath, "[]");
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await Deno.readTextFile(invalidPath), "{ not json");
+    assertEquals(await Deno.readTextFile(otherSchemaPath), otherSchema);
+    assertEquals(await Deno.readTextFile(arrayPath), "[]");
+  });
+});
+
+Deno.test({
+  name: "RepoService.upgrade with kiro does not follow a symlinked hook file",
+  // Creating symlinks on Windows needs a privilege CI runners lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const repoPath = RepoPath.create(tempDir);
+      await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+      const outside = join(tempDir, "outside.json");
+      const outsideContent = JSON.stringify({
+        version: "v1",
+        hooks: [{ action: { type: "command", command: KIRO_AUDIT_COMMAND } }],
+      });
+      await Deno.writeTextFile(outside, outsideContent);
+      const linkPath = join(tempDir, ".kiro", "hooks", "linked.json");
+      await Deno.symlink(outside, linkPath, { type: "file" });
+
+      await testService("0.2.0", tempDir).upgrade(repoPath, {
+        tools: ["kiro"],
+      });
+
+      assertEquals(await Deno.readTextFile(outside), outsideContent);
+      assertEquals((await Deno.lstat(linkPath)).isSymlink, true);
+    });
+  },
 });
 
 // Kiro CLI agent config tests
 
-Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async () => {
+// The universal format `kiro-cli agent upgrade` (kiro-cli 2.29) writes for
+// swamp's agent, which both its 2.x and 3.0 engines load.
+const KIRO_AGENT_CONFIG = {
+  name: "swamp",
+  description: "Swamp automation agent with audit tracking",
+  tools: ["glob", "grep", "read", "shell", "thinking", "todo_list", "write"],
+  resources: [
+    "file://.kiro/steering/**/*.md",
+    "skill://~/.kiro/skills/**/SKILL.md",
+  ],
+  toolsSettings: {
+    shell: {
+      allowedCommands: ["swamp .*"],
+      deniedCommands: [".*read-secret.*"],
+    },
+  },
+  permissions: {
+    rules: [
+      { capability: "shell", match: ["swamp *"], effect: "allow" },
+      { capability: "shell", match: ["*read-secret*"], effect: "deny" },
+    ],
+  },
+  hooks: [{
+    name: "swamp-audit",
+    trigger: "postToolUse",
+    action: { type: "command", command: KIRO_AUDIT_COMMAND },
+    timeout: 10,
+  }],
+};
+
+Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json in kiro-cli's universal format", async () => {
   await withTempDir(async (tempDir) => {
     const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
 
     await service.init(repoPath, { tools: ["kiro"] });
 
-    const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
-    const content = await Deno.readTextFile(configPath);
-    const config = JSON.parse(content);
-    assertEquals(config.name, "swamp");
-    assertEquals(
-      config.tools,
-      ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
+    const config = await readJson(
+      join(tempDir, ".kiro", "agents", "swamp.json"),
     );
-    assertStringIncludes(
-      JSON.stringify(config.toolsSettings.shell.allowedCommands),
-      "swamp .*",
-    );
-    assertEquals(
-      config.hooks.postToolUse[0].command,
-      "swamp audit record --from-hook --tool kiro",
-    );
-    assertStringIncludes(
-      JSON.stringify(config.resources),
-      "skill://~/.kiro/skills/**/SKILL.md",
-    );
+    assertEquals(config, KIRO_AGENT_CONFIG);
+    // kiro-cli reports a reordered tools list as out of sync.
+    assertEquals(config.tools, [...config.tools].sort());
   });
 });
 
-Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
+Deno.test("RepoService.upgrade with kiro replaces a 2.x-format agent config", async () => {
   await withTempDir(async (tempDir) => {
-    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
-
-    await service.init(repoPath, { tools: ["kiro"] });
-
-    const upgradeService = testService("0.2.0", tempDir);
-    await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
 
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
-    const content = await Deno.readTextFile(configPath);
-    const config = JSON.parse(content);
-    assertEquals(
-      config.hooks.postToolUse[0].command,
-      "swamp audit record --from-hook --tool kiro",
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({
+        name: "swamp",
+        description: "Swamp automation agent with audit tracking",
+        tools: ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
+        resources: KIRO_AGENT_CONFIG.resources,
+        toolsSettings: { shell: { allowedCommands: ["swamp .*"] } },
+        hooks: { postToolUse: [{ command: KIRO_AUDIT_COMMAND }] },
+      }),
     );
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+
+    assertEquals(await readJson(configPath), KIRO_AGENT_CONFIG);
+    assertEquals(result.changedFiles.includes(".kiro/agents/swamp.json"), true);
   });
 });
 
@@ -2170,7 +2707,7 @@ Deno.test("RepoService.init with kiro produces hook, agent, and cli.json togethe
     await service.init(repoPath, { tools: ["kiro"] });
 
     // Hook file
-    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
     await Deno.stat(hookPath);
 
     // Agent config with explicit tools list (no "*")
@@ -3465,7 +4002,7 @@ Deno.test("RepoService.upgrade: custom tool with relative skillsDir gets skills 
   });
 });
 
-Deno.test("RepoService.init with tool amp creates .amp/settings.json", async () => {
+Deno.test("RepoService.init with tool amp creates the .amp/plugins/swamp.ts plugin", async () => {
   await withTempDir(async (tempDir) => {
     const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
@@ -3474,35 +4011,135 @@ Deno.test("RepoService.init with tool amp creates .amp/settings.json", async () 
     assertEquals(result.tools, ["amp"]);
     assertEquals(result.settingsCreated, true);
 
-    const content = await Deno.readTextFile(
-      join(tempDir, ".amp", "settings.json"),
+    const plugin = await Deno.readTextFile(
+      join(tempDir, ".amp", "plugins", "swamp.ts"),
     );
-    const settings = JSON.parse(content);
-    assertEquals(settings["amp.commands"].allowlist, ["swamp *"]);
-    assertEquals(settings["amp.commands"].strict, true);
+    assertStringIncludes(
+      plugin,
+      'import type { PluginAPI } from "@ampcode/plugin";',
+    );
+    assertStringIncludes(plugin, "export default function (amp: PluginAPI)");
+    assertStringIncludes(plugin, 'amp.on("tool.call"');
+    assertStringIncludes(plugin, 'shell.command.includes("read-secret")');
+    assertStringIncludes(plugin, "requireHuman: true");
+    assertStringIncludes(plugin, "skipIfUnwatched: true");
+    assertStringIncludes(plugin, '"reject-and-continue"');
+    // Amp no longer reads the amp.commands allowlist, so none is written.
+    await assertRejects(
+      () => Deno.stat(join(tempDir, ".amp", "settings.json")),
+      Deno.errors.NotFound,
+    );
   });
 });
 
-Deno.test("RepoService.upgrade with tool amp preserves existing .amp/settings.json entries", async () => {
+Deno.test("RepoService.upgrade with tool amp restores a modified plugin", async () => {
   await withTempDir(async (tempDir) => {
-    const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
-    await service.init(repoPath, { tools: ["amp"] });
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["amp"] });
+
+    const pluginPath = join(tempDir, ".amp", "plugins", "swamp.ts");
+    const original = await Deno.readTextFile(pluginPath);
+    await Deno.writeTextFile(pluginPath, "// tampered\n");
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(await Deno.readTextFile(pluginPath), original);
+    assertEquals(result.changedFiles.includes(".amp/plugins/swamp.ts"), true);
+
+    const again = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(
+      again.changedFiles.filter((f) => f.startsWith(".amp/")),
+      [],
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade with tool amp removes swamp's amp.commands entry and keeps the user's", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["amp"] });
 
     const settingsPath = join(tempDir, ".amp", "settings.json");
-    const existing = JSON.parse(await Deno.readTextFile(settingsPath));
-    existing["amp.commands"].allowlist.push("git *");
-    existing["amp.ui"] = { theme: "dark" };
-    await Deno.writeTextFile(settingsPath, JSON.stringify(existing, null, 2));
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify({
+        "amp.commands": { allowlist: ["swamp *", "git *"], strict: true },
+        "amp.ui": { theme: "dark" },
+      }),
+    );
 
-    const upgradeService = testService("0.2.0", tempDir);
-    await upgradeService.upgrade(repoPath);
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath);
 
-    const updated = JSON.parse(await Deno.readTextFile(settingsPath));
-    assertEquals(updated["amp.commands"].allowlist.includes("swamp *"), true);
-    assertEquals(updated["amp.commands"].allowlist.includes("git *"), true);
-    assertEquals(updated["amp.commands"].strict, true);
-    assertEquals(updated["amp.ui"].theme, "dark");
+    assertEquals(await readJson(settingsPath), {
+      "amp.commands": { allowlist: ["git *"], strict: true },
+      "amp.ui": { theme: "dark" },
+    });
+    assertEquals(result.changedFiles.includes(".amp/settings.json"), true);
+
+    const again = await testService("0.2.0", tempDir).upgrade(repoPath);
+    assertEquals(again.changedFiles.includes(".amp/settings.json"), false);
+  });
+});
+
+Deno.test("RepoService.upgrade with tool amp drops an amp.commands block left with only strict", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["amp"] });
+
+    const settingsPath = join(tempDir, ".amp", "settings.json");
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify({
+        "amp.commands": { allowlist: ["swamp *"], strict: true },
+        "amp.showCosts": false,
+      }),
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await readJson(settingsPath), { "amp.showCosts": false });
+  });
+});
+
+Deno.test("RepoService.upgrade with tool amp deletes the settings file swamp wrote when nothing else is in it", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["amp"] });
+
+    const settingsPath = join(tempDir, ".amp", "settings.json");
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify(
+        { "amp.commands": { allowlist: ["swamp *"], strict: true } },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const result = await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    await assertRejects(() => Deno.stat(settingsPath), Deno.errors.NotFound);
+    assertEquals(result.changedFiles.includes(".amp/settings.json"), true);
+  });
+});
+
+Deno.test("RepoService.upgrade with tool amp leaves settings it cannot parse or that lack swamp's entry", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["amp"] });
+
+    const settingsPath = join(tempDir, ".amp", "settings.json");
+    for (
+      const content of [
+        '{ // comment\n  "amp.showCosts": false }',
+        JSON.stringify({ "amp.commands": { allowlist: ["git *"] } }),
+        JSON.stringify({ "amp.commands": "swamp *" }),
+      ]
+    ) {
+      await Deno.writeTextFile(settingsPath, content);
+      const result = await testService("0.2.0", tempDir).upgrade(repoPath);
+      assertEquals(await Deno.readTextFile(settingsPath), content);
+      assertEquals(result.changedFiles.includes(".amp/settings.json"), false);
+    }
   });
 });
 
@@ -3650,42 +4287,23 @@ Deno.test("RepoService.upgrade: settingsUpdated when only the legacy claude vaul
   });
 });
 
-Deno.test("RepoService.init: kiro IDE settings deny read-secret", async () => {
-  await withTempDir(async (tempDir) => {
-    await testService("0.1.0", tempDir).init(RepoPath.create(tempDir), {
-      tools: ["kiro"],
-    });
+// Kiro IDE 1.0 no longer reads `kiroAgent.trustedCommands` /
+// `kiroAgent.commandDenylist` (swamp-club#3222), so upgrade removes the
+// entries earlier versions wrote.
 
-    const settings = await readJson(
-      join(tempDir, ".vscode", "settings.local.json"),
-    );
-    const denylist: string[] = settings["kiroAgent.commandDenylist"];
-    // Kiro 0.x matches denylist entries as substrings of the command.
-    for (const command of READ_SECRET_COMMANDS) {
-      assertEquals(
-        denylist.some((entry) => command.includes(entry)),
-        true,
-        `denylist does not catch: ${command}`,
-      );
-    }
-    assertEquals(
-      denylist.some((entry) => "swamp vault get my-vault".includes(entry)),
-      false,
-    );
-  });
-});
-
-Deno.test("RepoService.upgrade: merges read-secret into an existing kiro IDE denylist", async () => {
+Deno.test("RepoService.upgrade: removes swamp's kiro IDE 0.x entries and keeps the user's", async () => {
   await withTempDir(async (tempDir) => {
     const repoPath = RepoPath.create(tempDir);
     await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
 
     const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    await ensureDir(join(tempDir, ".vscode"));
     await Deno.writeTextFile(
       settingsPath,
       JSON.stringify({
-        "kiroAgent.trustedCommands": ["swamp *"],
-        "kiroAgent.commandDenylist": ["rm -rf"],
+        "kiroAgent.trustedCommands": ["swamp *", "git *"],
+        "kiroAgent.commandDenylist": ["rm -rf", "read-secret"],
+        "editor.tabSize": 2,
       }),
     );
 
@@ -3693,20 +4311,118 @@ Deno.test("RepoService.upgrade: merges read-secret into an existing kiro IDE den
       tools: ["kiro"],
     });
     assertEquals(result.settingsUpdated, true);
-
-    const settings = await readJson(settingsPath);
-    assertEquals(settings["kiroAgent.commandDenylist"], [
-      "rm -rf",
-      "read-secret",
-    ]);
-    assertEquals(settings["kiroAgent.trustedCommands"], ["swamp *"]);
+    assertEquals(
+      result.changedFiles.includes(".vscode/settings.local.json"),
+      true,
+    );
+    assertEquals(await readJson(settingsPath), {
+      "kiroAgent.trustedCommands": ["git *"],
+      "kiroAgent.commandDenylist": ["rm -rf"],
+      "editor.tabSize": 2,
+    });
 
     const again = await testService("0.2.0", tempDir).upgrade(repoPath, {
       tools: ["kiro"],
     });
-    assertEquals(again.settingsUpdated, false);
+    assertEquals(
+      again.changedFiles.includes(".vscode/settings.local.json"),
+      false,
+    );
   });
 });
+
+Deno.test("RepoService.upgrade: drops emptied kiro IDE keys and keeps other settings", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    await ensureDir(join(tempDir, ".vscode"));
+    await Deno.writeTextFile(
+      settingsPath,
+      JSON.stringify({
+        "kiroAgent.trustedCommands": ["swamp *"],
+        "kiroAgent.commandDenylist": ["read-secret"],
+        "editor.tabSize": 2,
+      }),
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
+
+    assertEquals(await readJson(settingsPath), { "editor.tabSize": 2 });
+  });
+});
+
+Deno.test("RepoService.upgrade: deletes the kiro IDE settings file swamp wrote when nothing else is in it", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    // Both shapes earlier versions wrote: before and after swamp-club#3219.
+    for (
+      const legacy of [
+        { "kiroAgent.trustedCommands": ["swamp *"] },
+        {
+          "kiroAgent.trustedCommands": ["swamp *"],
+          "kiroAgent.commandDenylist": ["read-secret"],
+        },
+      ]
+    ) {
+      const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+      await ensureDir(join(tempDir, ".vscode"));
+      await Deno.writeTextFile(
+        settingsPath,
+        JSON.stringify(legacy, null, 2) + "\n",
+      );
+
+      const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+        tools: ["kiro"],
+      });
+
+      await assertRejects(() => Deno.stat(settingsPath), Deno.errors.NotFound);
+      assertEquals(
+        result.changedFiles.includes(".vscode/settings.local.json"),
+        true,
+      );
+    }
+  });
+});
+
+Deno.test("RepoService.upgrade: leaves kiro IDE settings it cannot parse or that lack swamp's entries", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
+
+    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
+    await ensureDir(join(tempDir, ".vscode"));
+    for (
+      const content of [
+        '{ // comment\n  "kiroAgent.trustedCommands": ["swamp *"] }',
+        JSON.stringify({ "kiroAgent.trustedCommands": ["git *"] }),
+        JSON.stringify({ "kiroAgent.trustedCommands": "swamp *" }),
+        "null",
+      ]
+    ) {
+      await Deno.writeTextFile(settingsPath, content);
+      const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
+        tools: ["kiro"],
+      });
+      assertEquals(await Deno.readTextFile(settingsPath), content);
+      assertEquals(
+        result.changedFiles.includes(".vscode/settings.local.json"),
+        false,
+      );
+    }
+  });
+});
+
+// kiro-cli 3.0 permission globs: `*` matches any run of characters.
+function kiroGlobMatches(pattern: string, command: string): boolean {
+  const source = pattern.split("*").map((part) =>
+    part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+  ).join("[\\s\\S]*");
+  return new RegExp(`^${source}$`).test(command);
+}
 
 Deno.test("RepoService.init and upgrade: kiro-cli agent denies read-secret", async () => {
   await withTempDir(async (tempDir) => {
@@ -3715,9 +4431,17 @@ Deno.test("RepoService.init and upgrade: kiro-cli agent denies read-secret", asy
 
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
     const check = async () => {
-      const shell = (await readJson(configPath)).toolsSettings.shell;
+      const config = await readJson(configPath);
+      const shell = config.toolsSettings.shell;
       const denied: string[] = shell.deniedCommands;
       const allowed: string[] = shell.allowedCommands;
+      const rules: { match: string[]; effect: string }[] =
+        config.permissions.rules;
+      const v3Matches = (effect: string, command: string) =>
+        rules.some((rule) =>
+          rule.effect === effect &&
+          rule.match.some((p) => kiroGlobMatches(p, command))
+        );
       for (const command of READ_SECRET_COMMANDS) {
         const isDenied = denied.some((p) => kiroCliPatternMatches(p, command));
         const isAllowed = allowed.some((p) =>
@@ -3729,47 +4453,29 @@ Deno.test("RepoService.init and upgrade: kiro-cli agent denies read-secret", asy
           true,
           `auto-approved: ${JSON.stringify(command)}`,
         );
+        // kiro-cli 3.0: deny wins over allow in any scope.
+        assertEquals(
+          v3Matches("deny", command),
+          true,
+          `not denied by permissions: ${JSON.stringify(command)}`,
+        );
       }
+      const vaultGet = "swamp vault get my-vault";
       assertEquals(
-        denied.some((p) =>
-          kiroCliPatternMatches(p, "swamp vault get my-vault")
-        ),
+        denied.some((p) => kiroCliPatternMatches(p, vaultGet)),
         false,
       );
+      assertEquals(v3Matches("deny", vaultGet), false);
+      assertEquals(v3Matches("allow", vaultGet), true);
     };
     await check();
 
     // An agent config written before the fix is replaced on upgrade.
     const old = await readJson(configPath);
     delete old.toolsSettings.shell.deniedCommands;
+    delete old.permissions;
     await Deno.writeTextFile(configPath, JSON.stringify(old, null, 2));
     await testService("0.2.0", tempDir).upgrade(repoPath, { tools: ["kiro"] });
     await check();
-  });
-});
-
-Deno.test("RepoService.upgrade: adds read-secret to a kiro IDE denylist holding duplicate entries", async () => {
-  await withTempDir(async (tempDir) => {
-    const repoPath = RepoPath.create(tempDir);
-    await testService("0.1.0", tempDir).init(repoPath, { tools: ["kiro"] });
-
-    const settingsPath = join(tempDir, ".vscode", "settings.local.json");
-    await Deno.writeTextFile(
-      settingsPath,
-      JSON.stringify({
-        "kiroAgent.trustedCommands": ["swamp *"],
-        "kiroAgent.commandDenylist": ["rm -rf", "rm -rf"],
-      }),
-    );
-
-    const result = await testService("0.2.0", tempDir).upgrade(repoPath, {
-      tools: ["kiro"],
-    });
-    assertEquals(result.settingsUpdated, true);
-    const settings = await readJson(settingsPath);
-    assertEquals(
-      settings["kiroAgent.commandDenylist"].includes("read-secret"),
-      true,
-    );
   });
 });

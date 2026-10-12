@@ -25,7 +25,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import {
+  createModelLock,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { runCommandInRootUnit } from "../command_root_unit.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -39,6 +42,8 @@ import type {
 } from "../../domain/models/active_run.ts";
 import { maxOf } from "../../domain/array_extrema.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
+import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { OWNER_STOP_GRACE_MS } from "./workflow_cancel.ts";
 import {
   DEFAULT_STALE_TTL_MS,
@@ -266,6 +271,135 @@ export function selectMethodRunToCancel(
   return { run: cancellable[0], skipped: serveOwned };
 }
 
+/** The running method runs a named cancel considers for one model. */
+export interface ModelMethodRuns {
+  /** The model's running method runs. */
+  runs: ActiveRun[];
+  /**
+   * Running rows of the model's type that name no definition and that
+   * nothing ties to one, so none of them is selected.
+   */
+  unattributed: ActiveRun[];
+}
+
+/**
+ * What was found out about the rows that name no definition: the ids of
+ * those that are the model's runs, and of those that are another model's.
+ */
+export interface LegacyRunAttribution {
+  own: ReadonlySet<string>;
+  others: ReadonlySet<string>;
+}
+
+/**
+ * Selects a model's running method runs by definition id, never by type
+ * alone (swamp-club#3244). A row registered before the tracker recorded the
+ * definition id (schema v4 and earlier) is the model's only when `legacy`
+ * says so, and is unattributed unless `legacy` places it with another model.
+ */
+export function methodRunsOfModel(
+  runningRows: readonly ActiveRun[],
+  model: { definitionId: string; modelType: string },
+  legacy: LegacyRunAttribution = { own: new Set(), others: new Set() },
+): ModelMethodRuns {
+  const ofType = runningRows.filter((r) =>
+    r.runKind === "model_method" && r.modelType === model.modelType
+  );
+  return {
+    runs: ofType.filter((r) =>
+      r.definitionId === model.definitionId ||
+      (r.definitionId === null && legacy.own.has(r.id))
+    ),
+    unattributed: ofType.filter((r) =>
+      r.definitionId === null && !legacy.own.has(r.id) &&
+      !legacy.others.has(r.id)
+    ),
+  };
+}
+
+/** What ties a row that names no definition to the model that runs it. */
+export interface LegacyRunEvidence {
+  /** The method-run records; a workflow step saves its own while running. */
+  outputs: Pick<MethodRunOutputs, "findByIds">;
+  /** Reads the model's own lock, which a mutating method run holds. */
+  inspectModelLock: () => Promise<LockInfo | null>;
+  logger: Logger;
+}
+
+/**
+ * {@link methodRunsOfModel} for a resolved model. A running row of its type
+ * that names no definition is attributed from what its run left behind, and
+ * nothing is read when there is no such row:
+ *
+ * 1. its method-run record, which carries the definition id and decides the
+ *    row either way. Only a workflow step has one while it runs;
+ * 2. failing that, the model's lock: the row is the model's when the row's
+ *    process holds it and runs no other method. A direct run of a method
+ *    that does not mutate takes no lock, so its row stays unattributed.
+ */
+export async function findMethodRunsOfModel(
+  runningRows: readonly ActiveRun[],
+  model: { definitionId: string; type: ModelType },
+  evidence: LegacyRunEvidence,
+): Promise<ModelMethodRuns> {
+  const selector = {
+    definitionId: model.definitionId,
+    modelType: model.type.normalized,
+  };
+  const selected = methodRunsOfModel(runningRows, selector);
+  const legacyRows = selected.unattributed;
+  if (legacyRows.length === 0) return selected;
+
+  const own = new Set<string>();
+  const others = new Set<string>();
+  // Evidence that cannot be read is no evidence, not a failure: the model's
+  // own rows cancel without it.
+  const methods = new Set(
+    legacyRows.map((r) => r.methodName).filter((m) => m !== null),
+  );
+  for (const method of methods) {
+    const ids = new Set(
+      legacyRows.filter((r) => r.methodName === method).map((r) => r.id),
+    );
+    try {
+      const records = await evidence.outputs.findByIds(model.type, method, ids);
+      for (const [id, record] of records) {
+        (record.definitionId === model.definitionId ? own : others).add(id);
+      }
+    } catch (error) {
+      evidence.logger
+        .debug`Could not read the ${method} method-run records: ${error}`;
+    }
+  }
+
+  const unrecorded = legacyRows.filter((r) =>
+    !own.has(r.id) && !others.has(r.id)
+  );
+  if (unrecorded.length > 0) {
+    let lock: LockInfo | null = null;
+    try {
+      lock = await evidence.inspectModelLock();
+    } catch (error) {
+      evidence.logger.debug`Could not read the model lock: ${error}`;
+    }
+    if (lock && !lock.holderUnknown) {
+      const sameProcess = (
+        a: ActiveRun,
+        b: { pid: number; hostname: string },
+      ) => a.pid === b.pid && a.hostname === b.hostname;
+      for (const row of unrecorded) {
+        const methodRunsOfProcess = runningRows.filter((r) =>
+          r.runKind === "model_method" && sameProcess(r, row)
+        );
+        if (sameProcess(row, lock) && methodRunsOfProcess.length === 1) {
+          own.add(row.id);
+        }
+      }
+    }
+  }
+  return methodRunsOfModel(runningRows, selector, { own, others });
+}
+
 function methodRunFields(run: ActiveRun) {
   return {
     id: run.id,
@@ -339,10 +473,11 @@ export const modelCancelCommand = new Command()
       );
     }
 
-    const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir, repoContext, datastoreConfig } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
     const reason = options.reason as string | undefined;
     const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
@@ -437,13 +572,28 @@ export const modelCancelCommand = new Command()
       const { definition, type } = resolved;
 
       const runningRows = runTracker.findAllRunning();
-      const trackerRuns = runningRows.filter(
-        (r) => r.modelType === type.normalized,
+      const { runs: trackerRuns, unattributed } = await findMethodRunsOfModel(
+        runningRows,
+        { definitionId: definition.id, type },
+        {
+          outputs: repoContext.outputRepo,
+          inspectModelLock: async () =>
+            (await createModelLock(
+              datastoreConfig,
+              type.normalized,
+              definition.id,
+            )).inspect(),
+          logger: cliCtx.logger,
+        },
       );
 
       if (trackerRuns.length === 0) {
         throw new UserError(
-          `No running method runs found for model '${definition.name}'`,
+          unattributed.length === 0
+            ? `No running method runs found for model '${definition.name}'`
+            : `No running method runs found for model '${definition.name}'. ` +
+              `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
+              `'swamp model cancel --all' stops them, along with every other running method run a swamp serve does not own.`,
         );
       }
 

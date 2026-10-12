@@ -50,6 +50,7 @@ import {
 } from "../../domain/access/principal.ts";
 import type { Action } from "../../domain/access/action.ts";
 import { isControlPlaneRecordResource } from "../../domain/access/control_plane_records.ts";
+import { vaultKindResource } from "../../domain/access/access_resources.ts";
 import {
   isControlPlaneModelType,
   normalizeModelTypeName,
@@ -1713,17 +1714,9 @@ export function vaultAccessResource(name: string): AccessResource {
   return { kind: "data", name, fields: { name, ns: "", tags: {} } };
 }
 
-/**
- * The vault resource `vault:<name>` (swamp-club#2676). `key` is the secret a
- * request names; without one a `key` condition sees "".
- */
-export function vaultKindResource(name: string, key?: string): AccessResource {
-  return {
-    kind: "vault",
-    name,
-    fields: { name, ...(key !== undefined ? { key } : {}) },
-  };
-}
+// Moved to the domain so the local `swamp access check` shares it
+// (swamp-club#3224); handlers keep importing it from here.
+export { vaultKindResource };
 
 /** A request on one vault, as {@link authorizeVaultOrReject} decides it. */
 export interface VaultRequest {

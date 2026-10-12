@@ -22,20 +22,26 @@ import { withMockedEnv } from "../../infrastructure/persistence/path_test_helper
 import { join } from "@std/path";
 import {
   ALWAYS_LOCAL_SUBDIRS,
+  CATALOG_FILES,
   classifyInRepoConfig,
   type CustomDatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
   DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_SYNC_TIMEOUT_MS,
+  externalFilesystemDatastoreRoot,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   inRepoConfigMigrationSkips,
   isAlwaysLocal,
+  isRepoLocalStreamSubdir,
+  isRunLogFile,
   LOCK_TIMEOUT_ENV_VAR,
+  mayHoldRunLogs,
   mergeSetupDatastoreBlock,
   planConfigTierMerge,
   PULLED_EXTENSIONS_SUBDIR,
+  REPO_LOCAL_STREAM_SUBDIRS,
   resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
@@ -462,4 +468,94 @@ Deno.test("planConfigTierMerge: no conflicts leaves everything to migrate", () =
     cleanupKeeps: [],
     keptPaths: [],
   });
+});
+
+Deno.test("externalFilesystemDatastoreRoot: is undefined for the repo's own .swamp", () => {
+  const swampDir = join("/repo", ".swamp");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: swampDir },
+      swampDir,
+    ),
+    undefined,
+  );
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: join("/repo", "sub", "..", ".swamp") },
+      swampDir,
+    ),
+    undefined,
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: returns a path outside the repo", () => {
+  const external = join("/mnt", "nas", "store");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: external },
+      join("/repo", ".swamp"),
+    ),
+    external,
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: appends the namespace", () => {
+  const external = join("/mnt", "nas", "store");
+  assertEquals(
+    externalFilesystemDatastoreRoot(
+      { type: "filesystem", path: external, namespace: "team-a" },
+      join("/repo", ".swamp"),
+    ),
+    join(external, "team-a"),
+  );
+});
+
+Deno.test("externalFilesystemDatastoreRoot: is undefined for an extension datastore", () => {
+  const config: CustomDatastoreConfig = {
+    type: "@swamp/s3-datastore",
+    config: {},
+    datastorePath: "s3://bucket",
+    cachePath: join("/home", "u", ".swamp", "repos", "id"),
+  };
+  assertEquals(
+    externalFilesystemDatastoreRoot(config, join("/repo", ".swamp")),
+    undefined,
+  );
+});
+
+Deno.test("CATALOG_FILES: names the catalog and its sidecars under data", () => {
+  assertEquals(CATALOG_FILES, [
+    join("data", "_catalog.db"),
+    join("data", "_catalog.db-journal"),
+    join("data", "_catalog.db-wal"),
+    join("data", "_catalog.db-shm"),
+  ]);
+});
+
+Deno.test("isRepoLocalStreamSubdir: accepts the stream directories only", () => {
+  for (const dir of REPO_LOCAL_STREAM_SUBDIRS) {
+    assertEquals(isRepoLocalStreamSubdir(dir), true, dir);
+  }
+  for (const dir of ["data", "outputs", "workflow-runs", "config"]) {
+    assertEquals(isRepoLocalStreamSubdir(dir), false, dir);
+  }
+});
+
+Deno.test("isRunLogFile: accepts .log files under outputs and workflow-runs only", () => {
+  assertEquals(
+    isRunLogFile("outputs", "def-2026-10-12T14-00-28-063Z.log"),
+    true,
+  );
+  assertEquals(isRunLogFile("workflow-runs", "workflow-run-abc.log"), true);
+  assertEquals(isRunLogFile("outputs", "def-2026-10-12.yaml"), false);
+  assertEquals(isRunLogFile("workflow-runs", "workflow-run-abc.yaml"), false);
+  assertEquals(isRunLogFile("data", "notes.log"), false);
+  assertEquals(isRunLogFile("audit", "commands.log"), false);
+});
+
+Deno.test("mayHoldRunLogs: true for outputs and workflow-runs only", () => {
+  assertEquals(mayHoldRunLogs("outputs"), true);
+  assertEquals(mayHoldRunLogs("workflow-runs"), true);
+  assertEquals(mayHoldRunLogs("data"), false);
+  assertEquals(mayHoldRunLogs("audit"), false);
 });

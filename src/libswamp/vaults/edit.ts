@@ -30,14 +30,12 @@ import {
   VaultConfigDataSchema,
 } from "../../domain/vaults/vault_config.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import {
-  type LocalEncryptionConfig,
-  moveLocalEncryptionSecrets,
-} from "../../domain/vaults/local_encryption_vault_provider.ts";
+import { moveLocalEncryptionSecrets } from "../../domain/vaults/local_encryption_vault_provider.ts";
 import {
   findChangedKeySourceFields,
   findNonDefaultKeySourceFields,
   isLocalEncryptionType,
+  withRuntimeBaseDir,
   withServerDefaultKeySource,
 } from "../../domain/vaults/local_encryption_key_source.ts";
 import {
@@ -234,12 +232,12 @@ export function createVaultEditDeps(
       return typeInfo.configSchema;
     },
     moveSecrets: async (stored, toName) => {
-      if (stored.type !== "local_encryption") return null;
+      if (!isLocalEncryptionType(stored.type)) return null;
       // The storage root comes from the stored config only: over --server
-      // the edited config is client-controlled. VaultService falls back to
-      // the repo dir when base_dir is unset or empty, so this does too.
-      const baseDir = (stored.config as LocalEncryptionConfig).base_dir ||
-        repoDir;
+      // the edited config is client-controlled. An unset or empty base_dir
+      // is the repo dir, as when VaultService loads the vault.
+      const baseDir = withRuntimeBaseDir(stored.type, stored.config, repoDir)
+        .base_dir as string;
       const moved = await moveLocalEncryptionSecrets(
         baseDir,
         stored.name,
@@ -622,7 +620,7 @@ async function* repairVaultFromStdin(
     }
     repaired = {
       ...repaired,
-      config: withServerDefaultKeySource(repaired.config, input.repoDir),
+      config: withServerDefaultKeySource(repaired.config),
     };
   }
 

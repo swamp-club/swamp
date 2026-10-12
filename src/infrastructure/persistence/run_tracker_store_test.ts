@@ -40,6 +40,7 @@ function makeRun(overrides: Partial<{
   return ActiveRun.createModelMethodRun({
     id: overrides.id ?? crypto.randomUUID(),
     modelType: overrides.modelType ?? "@test/model",
+    definitionId: "def-1",
     methodName: overrides.methodName ?? "start",
     pid: overrides.pid ?? Deno.pid,
     hostname: overrides.hostname ?? "test-host",
@@ -808,6 +809,7 @@ Deno.test("RunTrackerStore: register stores initiatedBy", () => {
     const run = ActiveRun.createModelMethodRun({
       id: "with-user",
       modelType: "@test/model",
+      definitionId: "def-1",
       methodName: "start",
       pid: Deno.pid,
       hostname: "test-host",
@@ -828,6 +830,7 @@ Deno.test("RunTrackerStore: register stores null initiatedBy for ghost runs", ()
     const run = ActiveRun.createModelMethodRun({
       id: "ghost-run",
       modelType: "@test/model",
+      definitionId: "def-1",
       methodName: "start",
       pid: Deno.pid,
       hostname: "test-host",
@@ -1233,6 +1236,66 @@ Deno.test("RunTrackerStore: a row reads back the reason it was completed or sett
     assertEquals(store.findById("running")?.cancelReason, null);
     // Read only: the entity never carries it back into a write.
     assertEquals("cancelReason" in store.findById("settled")!.toData(), false);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: register stores the definition id", () => {
+  const store = new RunTrackerStore(makeTempDbPath());
+  try {
+    store.register(makeRun({ id: "with-definition" }));
+    store.register(ActiveRun.createWorkflowRun({
+      id: "wf-row",
+      workflowName: "deploy",
+      pid: Deno.pid,
+      hostname: "test-host",
+    }));
+
+    assertEquals(store.findById("with-definition")?.definitionId, "def-1");
+    assertEquals(store.findById("wf-row")?.definitionId, null);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("RunTrackerStore: schema v5 migration adds definition_id to a v4 database", () => {
+  const dbPath = makeTempDbPath();
+  // A v4 tracker as an older swamp left it: no definition_id column.
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE run_tracker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO run_tracker_meta (key, value) VALUES ('schema_version', '4');
+    CREATE TABLE active_runs (
+      id            TEXT PRIMARY KEY,
+      run_kind      TEXT NOT NULL,
+      model_type    TEXT,
+      method_name   TEXT,
+      workflow_name TEXT,
+      pid           INTEGER NOT NULL,
+      hostname      TEXT NOT NULL,
+      started_at    TEXT NOT NULL,
+      heartbeat_at  TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'running',
+      completed_at  TEXT,
+      cancel_reason TEXT,
+      initiated_by  TEXT,
+      instance_id   TEXT
+    );
+  `);
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO active_runs
+       (id, run_kind, model_type, method_name, pid, hostname, started_at, heartbeat_at, status)
+     VALUES ('v4-run', 'model_method', '@test/model', 'start', ?, 'test-host', ?, ?, 'running')`,
+  ).run(Deno.pid, now, now);
+  db.close();
+
+  const store = new RunTrackerStore(dbPath);
+  try {
+    assertEquals(store.findById("v4-run")?.definitionId, null);
+    store.register(makeRun({ id: "v5-run" }));
+    assertEquals(store.findById("v5-run")?.definitionId, "def-1");
   } finally {
     store.close();
   }

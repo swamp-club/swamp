@@ -67,6 +67,16 @@ loads.
 `DefinitionUpgradeService` (`src/domain/models/definition_upgrade_service.ts`).
 The upgraded definition is saved, so each upgrade runs only once.
 
+Validation reads static global arguments the way the next method run will.
+`DefaultModelValidationService` (`src/domain/models/validation_service.ts`)
+applies the same chain to an in-memory copy before it checks global arguments
+and runs pre-flight checks, and never saves it. That covers both
+`swamp model validate` and the check before each workflow step, so a stale
+definition is not refused before the run that would migrate it. An upgrade that
+throws fails the Global arguments item. Arguments holding a swamp expression are
+not upgraded in validation: the run upgrades their evaluated values, and the
+schema check skips them until then (swamp-club#3196).
+
 That save happens on whichever method runs first, including one that only reads.
 It changes the definition file and nothing else about it:
 `YamlDefinitionRepository.save()` merges the new values onto the file's existing
@@ -369,10 +379,21 @@ Returns a discriminated result:
 - `{ ok: false, error: { message, stack? } }` on failure
 
 **Argument routing:** The target type's Zod schemas route the `arguments` object
-between globalArguments and method arguments, as with CLI `--input`. Method
-arguments win on ambiguous keys. Unknown keys return `{ ok: false }`. For direct
-type execution, only global-arg values are saved in the auto-created
-definition; method-arg values apply only to that invocation.
+between globalArguments and method arguments. Method arguments win on ambiguous
+keys. Unknown keys return `{ ok: false }`. Routed values of both kinds apply to
+that invocation and are never saved to an existing definition. For direct type
+execution, only global-arg values are saved in the auto-created definition.
+
+Unlike CLI `--input`, `arguments` are not author-written: they come from
+extension code at run time. They are applied after the target definition is
+evaluated, as literal values, and are never evaluated as expressions. A
+global-arg value holding `${{ ... }}` text that swamp could evaluate (any text
+reading a swamp namespace such as `vault`, `data`, `self` or `inputs`, or that
+swamp cannot attribute) returns `{ ok: false }` before anything is saved. The
+check fails closed and reaches values nested inside object-typed arguments:
+`${{ }}` text that does not parse, and expressions that read no namespace at all
+(`${{ 1 }}`), are refused too. Another templating system's text, such as
+`${{ github.sha }}`, passes through.
 
 **Data ownership:** When model X calls model Y, Y's writes belong to Y's
 definition, not X's. This holds whether Y runs standalone, from a workflow or
@@ -387,7 +408,14 @@ At most 100 total `runModel` calls per top-level execution, matching follow-up
 action limits.
 
 **Vault isolation:** The caller's `VaultSecretBag` is not passed to the nested
-model. Each nested execution resolves its own vault expressions.
+model. Each nested execution evaluates its target definition's CEL and runtime
+(`vault.get`, `env`) expressions as a standalone run of that definition does,
+into its own bag, within the caller's vault access scope: a workflow's `vaults`
+list and a serve principal's grants still apply. The evaluated definition is
+not persisted. Wherever the standalone run would fail — a refused vault, a
+missing key, a failed expression in the invoked method's arguments — the call
+returns `{ ok: false }`. Resolved sensitive values are registered with the
+caller's run redactor.
 
 **Runtime authorization:** Extension models must declare dependencies in
 `manifest.yaml` to invoke models from other extensions. Built-in types and

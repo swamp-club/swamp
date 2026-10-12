@@ -304,6 +304,13 @@ function catalogRowKey(row: CatalogRow): string {
 
 export interface DataQueryServiceOptions {
   filterStaleRows?: boolean;
+  /**
+   * Whether a catalog not marked populated is filled by walking the data
+   * directory. True by default. A v3 repository context passes false: its
+   * catalog is the read model's, which the context catches up before any
+   * query and which marks it populated itself (swamp-club#3279).
+   */
+  backfill?: boolean;
 }
 
 export class DataQueryService {
@@ -312,6 +319,7 @@ export class DataQueryService {
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
   private backfillPromise: Promise<void> | null = null;
   private readonly filterStaleRows: boolean;
+  private readonly backfill: boolean;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -319,6 +327,7 @@ export class DataQueryService {
     options?: DataQueryServiceOptions,
   ) {
     this.filterStaleRows = options?.filterStaleRows ?? false;
+    this.backfill = options?.backfill ?? true;
     this.queryEnv = new Environment({
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
@@ -1617,6 +1626,7 @@ export class DataQueryService {
   }
 
   private async backfillAsync(): Promise<void> {
+    if (!this.backfill) return;
     // Read before walking the disk; see CatalogStore.markPopulated.
     // The walk is in name order at every level (see
     // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get
@@ -1698,6 +1708,7 @@ export class DataQueryService {
   }
 
   private backfillSync(): void {
+    if (!this.backfill) return;
     // Read before walking the disk; see CatalogStore.markPopulated.
     // The walk is in name order at every level (see
     // FileSystemUnifiedDataRepository.findAllGlobal), so the rows below get

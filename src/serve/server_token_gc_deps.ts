@@ -38,6 +38,7 @@ import type {
   Definition,
   DefinitionId,
 } from "../domain/definitions/definition.ts";
+import type { DefinitionRepository } from "../domain/definitions/repositories.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
   ServerTokenSchema,
@@ -45,7 +46,6 @@ import {
 } from "../domain/models/access/server_token_model.ts";
 import { TOKEN_SECRETS_VAULT_NAME } from "../domain/vaults/control_plane_vault_provider.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
-import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import { oauthAccessTokenKey } from "./device_auth_handler.ts";
 import { type SyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
@@ -57,13 +57,19 @@ const logger = getSwampLogger(["serve", "token-gc"]);
 
 const TOKEN_DATA_NAME = "token-main";
 
+/** The caller recorded in the vault audit log for the GC's deletes. */
+const GC_CALLER = "serve:token-gc";
+
 export interface ServerTokenGcDepsInput {
   readonly intervalMs: number;
   readonly gracePeriodMs: number;
   readonly dataQueryService: Pick<DataQueryService, "query">;
-  readonly definitionRepo: Pick<YamlDefinitionRepository, "findByName">;
+  readonly definitionRepo: Pick<DefinitionRepository, "findByName">;
   readonly dataRepo: Pick<FileSystemUnifiedDataRepository, "getContent">;
-  readonly vaultService: Pick<VaultService, "delete" | "supportsDelete">;
+  readonly vaultService: Pick<
+    VaultService,
+    "delete" | "supportsDelete" | "list"
+  >;
   /** Built over the process's shared repositories and `markDirty` hook. */
   readonly modelDeleteDeps: ModelDeleteDeps;
   /**
@@ -74,19 +80,35 @@ export interface ServerTokenGcDepsInput {
   readonly libCtx: LibSwampContext;
   /** Pushes local changes to the remote datastore; absent without one. */
   readonly pushChanged?: () => Promise<void>;
+  /**
+   * Pulls remote changes into the local copy; absent without a remote
+   * datastore. Each collection pulls before it re-reads, so it sees a write
+   * another replica pushed (swamp-club#2534).
+   */
+  readonly pullChanged?: () => Promise<void>;
   /** Serve's sync gate; absent without a remote datastore. */
   readonly syncGate?: SyncGate;
+  /**
+   * Runs `fn` holding the server token name lock for `tokenName`, the lock
+   * every other writer of a token's record and secret takes
+   * (`withServerTokenLock`). Unlike the sync gate it exists in every
+   * deployment (swamp-club#2534).
+   */
+  readonly withTokenLock: <T>(
+    tokenName: string,
+    fn: () => Promise<T>,
+  ) => Promise<T>;
 }
 
 /**
  * Builds the repositories the server token GC reads and deletes through.
  *
- * Server-token definitions live in the auto-definitions directory, so the
- * lookup and the delete go through a repository rooted there, as the admin
- * grant store and `access.reload` do. The shared repository treats that
- * directory as secondary: its type-scoped `findByName` does not record a
- * secondary file's path, so its `delete` would find nothing to remove. Data,
- * outputs and marks still go through the process's shared repositories.
+ * The owning definition is looked up through the process's shared definition
+ * repository, the one authentication reads through (`readServerTokenRecord`),
+ * so the GC and authentication always agree on which definition owns a name.
+ * That repository searches the primary models directory first, then the
+ * auto-definitions directory, and deletes a definition from either. Data,
+ * outputs and marks go through the process's shared repositories too.
  */
 export function createServerTokenGcRepos(
   repoDir: string,
@@ -96,22 +118,15 @@ export function createServerTokenGcRepos(
   ServerTokenGcDepsInput,
   "definitionRepo" | "dataRepo" | "modelDeleteDeps" | "markDirty"
 > {
-  const autoDefRepo = new YamlDefinitionRepository(
-    repoDir,
-    repoContext.eventBus,
-    repoContext.autoDefinitionsDir,
-    false,
-    repoContext.markDirty,
-  );
   return {
-    definitionRepo: autoDefRepo,
+    definitionRepo: repoContext.definitionRepo,
     dataRepo: repoContext.unifiedDataRepo,
     modelDeleteDeps: createModelDeleteDeps(
       repoDir,
       datastoreResolver,
       repoContext.unifiedDataRepo,
       repoContext.markDirty,
-      autoDefRepo,
+      repoContext.definitionRepo,
     ),
     markDirty: repoContext.markDirty,
   };
@@ -139,8 +154,10 @@ export function createServerTokenGcDeps(
     modelDeleteDeps,
     libCtx,
     pushChanged,
+    pullChanged,
     syncGate,
     markDirty,
+    withTokenLock,
   } = input;
 
   const readToken = async (
@@ -164,6 +181,19 @@ export function createServerTokenGcDeps(
     }
   };
 
+  // Each legacy vault is listed at most once per sweep: listTokens starts a
+  // sweep and clears the cache. Tokens are no longer minted into these
+  // vaults, so a listing cannot miss a key added during the sweep. A failed
+  // listing is not cached, so the next legacy token in the sweep retries it.
+  let listings = new Map<string, Set<string>>();
+  const listVault = async (vaultName: string): Promise<Set<string>> => {
+    const cached = listings.get(vaultName);
+    if (cached) return cached;
+    const keys = new Set(await vaultService.list(vaultName));
+    listings.set(vaultName, keys);
+    return keys;
+  };
+
   const deleteSecret = async (token: TokenGcInfo): Promise<void> => {
     const key = serverTokenSecretKey(token.name);
     if (!vaultService.supportsDelete(TOKEN_SECRETS_VAULT_NAME)) {
@@ -171,7 +201,9 @@ export function createServerTokenGcDeps(
         `Vault ${TOKEN_SECRETS_VAULT_NAME} does not support deleting secrets`,
       );
     }
-    await deleteIgnoringNotFound(vaultService, TOKEN_SECRETS_VAULT_NAME, key);
+    // The control-plane store's delete of a missing key is a no-op, so any
+    // error here is a real failure.
+    await vaultService.delete(TOKEN_SECRETS_VAULT_NAME, key, GC_CALLER);
 
     // Tokens minted before secrets moved to the control-plane store record
     // the vault that still holds their secret.
@@ -192,7 +224,30 @@ export function createServerTokenGcDeps(
       );
       return;
     }
-    await deleteIgnoringNotFound(vaultService, token.vaultName, key);
+    // Anyone who can write the datastore can change the recorded vault, so
+    // the key is only deleted from a vault whose listing holds it. A vault
+    // that cannot be listed is left alone and the token is still collected:
+    // with its records and _token-secrets copy gone, the leftover secret
+    // cannot authenticate, and keeping the token would leave it listed for
+    // good when the vault's credentials allow deletes but not listing. A
+    // failed delete still keeps the token for the next sweep.
+    let keys: Set<string>;
+    try {
+      keys = await listVault(token.vaultName);
+    } catch (err) {
+      logger.warn(
+        "Cannot list vault {vault} to clear server token {name}'s legacy secret; leaving {secretKey} there: {error}",
+        {
+          vault: token.vaultName,
+          name: token.name,
+          secretKey: key,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return;
+    }
+    if (!keys.has(key)) return;
+    await vaultService.delete(token.vaultName, key, GC_CALLER);
   };
 
   const deleteRecords = async (definition: Definition): Promise<void> => {
@@ -238,6 +293,7 @@ export function createServerTokenGcDeps(
     gracePeriodMs: input.gracePeriodMs,
 
     listTokens: async () => {
+      listings = new Map();
       const records = await dataQueryService.query(
         `modelType == "${SERVER_TOKEN_MODEL_TYPE.normalized}" && name == "${TOKEN_DATA_NAME}"`,
         { loadAttributes: true },
@@ -255,72 +311,82 @@ export function createServerTokenGcDeps(
     },
 
     collectToken: (listed, isEligible) =>
-      // One unit under the sync gate. The local deletes and the push that
+      // One unit under the token's name lock, which mint, rotate, revoke and
+      // the secret migration hold across their writes in the CLI and in
+      // serve, so the re-read below sees the token as it is now rather than
+      // as the sweep listed it. The lock exists in every deployment; the
+      // sync gate only with a remote datastore (swamp-club#2534). Like the
+      // token handlers, the lock is taken before the gate, so the GC never
+      // waits on it while holding the gate.
+      //
+      // Inside it, the sync gate: the local deletes and the push that
       // commits them must not interleave with a poller pull, or the pull
-      // would restore the deleted files (swamp-club#2247). Serve's token
-      // mint, rotate and revoke hold the same gate while they write, so the
-      // re-read below sees the token as it is now rather than as the sweep
-      // listed it. Serve only creates the gate with a remote datastore:
-      // without one, `withSyncGate` runs this unguarded and a rotation can
-      // still land between the re-read and the deletes. The GC runs from a
-      // timer, never inside a gated handler, so taking the non-reentrant
+      // would restore the deleted files (swamp-club#2247). The GC runs from
+      // a timer, never inside a gated handler, so taking the non-reentrant
       // gate here is safe.
-      withSyncGate(syncGate, async () => {
-        const token = await readToken(listed.definitionId, listed.name);
-        if (!token || !isEligible(token)) return "skipped";
+      //
+      // The lock orders the GC after another replica's write, but the
+      // re-read is of the local copy, so the GC pulls first, as the token
+      // handlers do. A failed pull fails the collection: deleting on a stale
+      // record is what the lock is there to prevent.
+      withTokenLock(listed.name, () =>
+        withSyncGate(syncGate, async () => {
+          if (pullChanged) await pullChanged();
+          const token = await readToken(listed.definitionId, listed.name);
+          if (!token || !isEligible(token)) return "skipped";
 
-        let touchedLocalFiles = false;
-        // The deletes run in a root unit of work whose flush is the push,
-        // on every outcome (swamp-club#3056). pushDeletes logs a failed push
-        // rather than throwing it, so a collection error is never masked.
-        return await runInRootUnitOfWork({ markDirty }, {
-          // Push whatever was deleted, even after a partial failure, so no
-          // delete is left uncommitted.
-          flush: async () => {
-            if (touchedLocalFiles) await pushDeletes(pushChanged);
-          },
-        }, async (): Promise<"collected"> => {
-          const owner = await definitionRepo.findByName(
-            SERVER_TOKEN_MODEL_TYPE,
-            token.name,
-          );
-          if (!owner || owner.id !== token.definitionId) {
-            // The record outlived its definition. The name, and with it
-            // the name-keyed secret, belongs to another definition or to
-            // none, so only this record's data is deleted.
-            logger.warn(
-              "Server token record {name} ({id}) has no definition; deleting its data and leaving its secret alone",
-              { name: token.name, id: token.definitionId },
+          let touchedLocalFiles = false;
+          // The deletes run in a root unit of work whose flush is the push,
+          // on every outcome (swamp-club#3056). pushDeletes logs a failed push
+          // rather than throwing it, so a collection error is never masked.
+          return await runInRootUnitOfWork({ markDirty }, {
+            // Push whatever was deleted, even after a partial failure, so no
+            // delete is left uncommitted.
+            flush: async () => {
+              if (touchedLocalFiles) await pushDeletes(pushChanged);
+            },
+          }, async (): Promise<"collected"> => {
+            const owner = await definitionRepo.findByName(
+              SERVER_TOKEN_MODEL_TYPE,
+              token.name,
             );
+            if (!owner || owner.id !== token.definitionId) {
+              // The record outlived its definition. The name, and with it
+              // the name-keyed secret, belongs to another definition or to
+              // none, so only this record's data is deleted.
+              logger.warn(
+                "Server token record {name} ({id}) has no definition; deleting its data and leaving its secret alone",
+                { name: token.name, id: token.definitionId },
+              );
+              touchedLocalFiles = true;
+              await deleteOrphanedData(token.definitionId);
+              return "collected";
+            }
+
+            // The secret goes first, and a failure stops here so the next
+            // sweep retries: once it is gone, no stale copy of the records
+            // (such as an HA peer's local cache) can authenticate.
+            await deleteSecret(token);
+            try {
+              await vaultService.delete(
+                TOKEN_SECRETS_VAULT_NAME,
+                oauthAccessTokenKey(token.name),
+                GC_CALLER,
+              );
+            } catch (err) {
+              logger.warn(
+                "Failed to delete OAuth access token for {name}: {error}",
+                {
+                  name: token.name,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              );
+            }
             touchedLocalFiles = true;
-            await deleteOrphanedData(token.definitionId);
+            await deleteRecords(owner);
             return "collected";
-          }
-
-          // The secret goes first, and a failure stops here so the next
-          // sweep retries: once it is gone, no stale copy of the records
-          // (such as an HA peer's local cache) can authenticate.
-          await deleteSecret(token);
-          try {
-            await deleteIgnoringNotFound(
-              vaultService,
-              TOKEN_SECRETS_VAULT_NAME,
-              oauthAccessTokenKey(token.name),
-            );
-          } catch (err) {
-            logger.warn(
-              "Failed to delete OAuth access token for {name}: {error}",
-              {
-                name: token.name,
-                error: err instanceof Error ? err.message : String(err),
-              },
-            );
-          }
-          touchedLocalFiles = true;
-          await deleteRecords(owner);
-          return "collected";
-        });
-      }),
+          });
+        })),
   };
 }
 
@@ -367,19 +433,5 @@ async function pushDeletes(
       "Failed to push server token GC deletes to the remote datastore: {error}",
       { error: err instanceof Error ? err.message : String(err) },
     );
-  }
-}
-
-async function deleteIgnoringNotFound(
-  vaultService: Pick<VaultService, "delete">,
-  vaultName: string,
-  secretKey: string,
-): Promise<void> {
-  try {
-    await vaultService.delete(vaultName, secretKey, "serve:token-gc");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/not found/i.test(message)) return;
-    throw err;
   }
 }

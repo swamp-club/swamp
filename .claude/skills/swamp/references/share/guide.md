@@ -67,8 +67,10 @@ Present as a checklist:
 - ✓/✗ Each vault's provider type (green if not `local_encryption`)
 
 **Already shareable:** If datastore is external AND no vaults are
-`local_encryption`, say: "This repo is already shareable." Offer to generate
-joiner instructions (skip to State 5).
+`local_encryption`, say: "This repo is already shareable." A `local_encryption`
+vault that holds no secrets and is not `defaultVault` (for example the `default`
+vault after the user pointed `defaultVault` at a team vault) does not count.
+Offer to generate joiner instructions (skip to State 5).
 
 **Verify:** Checklist is displayed and the user sees what needs to change.
 
@@ -137,6 +139,17 @@ State 4.
 
 The user can skip individual vaults ("I'll do that later") — show them as ✗ in
 the checklist on the next assess.
+
+**The `default` vault:** `swamp repo init` creates a `local_encryption` vault
+named `default` and makes it `defaultVault`, so most repos reach this state with
+one. Check `swamp vault list-keys default --json`, then offer two choices:
+
+- **Migrate it** like any other vault, when it holds secrets the team needs. It
+  keeps the name `default`, so `vault.get(default, ...)` references and
+  `defaultVault` keep working.
+- **Point `defaultVault` at the team vault** in `.swamp.yaml`, when the user
+  already has a shared vault. Leave `default` in place for per-machine secrets,
+  and say that sensitive outputs now go to the team vault.
 
 **Verify:** `swamp vault search --json` shows migrated vaults with the new type.
 

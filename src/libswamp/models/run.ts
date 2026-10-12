@@ -929,6 +929,7 @@ export async function* modelMethodRun(
               const activeRun = ActiveRun.createModelMethodRun({
                 id: output.id,
                 modelType: modelType.normalized,
+                definitionId: definition.id,
                 methodName: input.methodName,
                 pid: Deno.pid,
                 hostname: hostname(),
@@ -960,6 +961,7 @@ export async function* modelMethodRun(
                 .modelInvocationService = new ModelInvocationService({
                   executionService,
                   commonDeps,
+                  evaluationService,
                   repoDir: deps.repoDir,
                   pulledExtensionsRoot: resolvePulledExtensionsRoot(
                     deps.repoDir,
@@ -1205,6 +1207,9 @@ export async function* modelMethodRun(
                   name: handle.name,
                   version: handle.version,
                   tags: handle.tags,
+                  ...(handle.sha256 !== undefined
+                    ? { sha256: handle.sha256 }
+                    : {}),
                 });
 
                 // Parse content if JSON for display

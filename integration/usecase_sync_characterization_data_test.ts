@@ -34,6 +34,7 @@ import {
   row,
   type RowRepos,
 } from "./usecase_sync_fixtures.ts";
+import { checkRowsOnV3 } from "./usecase_v3_fixtures.ts";
 
 await initializeLogging({});
 
@@ -363,4 +364,12 @@ const EXPECTED: Record<string, PinnedRow> = {
 
 Deno.test("use case sync characterization: data use cases mark and push today's paths", async (t) => {
   await checkRows(t, ROWS, EXPECTED);
+});
+
+Deno.test("use-case sync characterization: on a v3 datastore every data row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS);
+});
+
+Deno.test("use-case sync characterization: on a namespaced v3 datastore every data row commits what the second checkout reads (swamp-club#3279)", async (t) => {
+  await checkRowsOnV3(t, ROWS, {}, { namespace: "team" });
 });

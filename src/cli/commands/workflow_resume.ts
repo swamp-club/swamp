@@ -472,6 +472,7 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.hydrateFile,
       unlocked.vaultsDir,
       unlocked.datastoreResolver,
+      repoContext.autoGc,
     );
 
     service.runClaims = createWorkflowRunClaims(unlocked.datastoreConfig);

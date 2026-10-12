@@ -319,9 +319,19 @@ attribute statements).
 # Admin explain mode — see why a subject is allowed or denied
 swamp access check --subject user:alice --action run --on workflow:@acme/deploy
 
+# Deny by type: `--on model:<type>` matches models of that type under any name
+swamp access grant create --subject user:alice --deny write --on model:command/shell
+swamp access check --subject user:alice --action write --on model:team-x-probe  # DENY if team-x-probe is command/shell
+
 # User self-service — check your own permissions
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://...
 ```
+
+A local `access check` resolves a concrete model, data or workflow name from the
+repo (its stored type and tags), as serve does. `--field key=value` overrides a
+resolved field to simulate a resource or tag that does not exist yet. Settings a
+server is started with, such as `--restricted-model-types`, are only reflected
+with `--server`.
 
 ## Token Management
 
@@ -398,7 +408,10 @@ A running serve deletes revoked tokens at its next token GC sweep. It deletes
 expired tokens once a grace period has passed. Deleted tokens drop out of
 `access token list`. The sweep runs every `--token-gc-interval` (default `1h`;
 `0` disables it), and the grace period is `--token-gc-grace-period` (default
-`1h`).
+`1h`; `0` deletes at expiry). In `serve.yaml`, quote duration values such as `0`
+(`token-gc-interval: "0"`): YAML reads an unquoted `0` as a number, which serve
+rejects. A sweep collects at most 100 tokens, so a large backlog, such as the
+first sweep after an upgrade, drains over several sweeps.
 
 ### Wiring a token into an external secret store
 

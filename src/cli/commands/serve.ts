@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { resolverEngine } from "../../domain/datastore/datastore_path_resolver.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -64,7 +65,7 @@ import {
   runVaultScopeContext,
   serviceRunVaultScope,
 } from "../../serve/run_vault_access_policy.ts";
-import { withoutVaultAccess } from "../../domain/vaults/run_vault_access.ts";
+import { runOutsideAmbientContext } from "../../infrastructure/runtime/ambient_context.ts";
 import {
   auditScheduledEvent,
   auditWebhookEvent,
@@ -322,6 +323,7 @@ import {
   runShutdownDrain,
   SHUTDOWN_ABORT_GRACE_MS,
 } from "../../serve/shutdown_drain.ts";
+import { interruptShutdownRuns } from "../../serve/shutdown_interrupt.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { ActiveRunRegistry } from "../../serve/active_run_registry.ts";
 import { RunMetricsTracker } from "../../serve/run_metrics_tracker.ts";
@@ -397,6 +399,7 @@ import {
 import {
   checkServeGrantFiles,
   readServeGrantFiles,
+  repoGrantFileName,
 } from "../../domain/access/grant_file_loader.ts";
 import {
   readConditionTypeLiterals,
@@ -409,6 +412,7 @@ import {
   createGrantWriteTracking,
 } from "../../serve/grant_write_tracking.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import { withServerTokenLock } from "../../infrastructure/persistence/server_token_lock.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
@@ -486,6 +490,10 @@ import {
   type VaultClassification,
 } from "../../domain/serve/deployment_mode.ts";
 import { validateEndEntityCert } from "../../infrastructure/runtime/tls_cert_validation.ts";
+import {
+  v3DatastoreFor,
+  V3MaintenanceTimer,
+} from "../../infrastructure/datastore_v3/v3_repo_context.ts";
 
 const DISPATCH_ENV_ALLOW_HELP =
   "Comma-separated environment variable names; only these ship to workers with each " +
@@ -498,17 +506,18 @@ const DISPATCH_ENV_ALLOW_HELP =
 type AnyOptions = any;
 
 /**
- * Runs every HTTP request, WebSocket upgrades included, outside any run's
- * vault scope (swamp-club#2676). Deno can leave the async context of the
- * last code that ran current when it calls a serve handler (a first-time
- * dynamic `import()` inside a run does), so without this a request — and
- * every message on a connection it upgrades — could inherit another run's
- * scope, and token authentication would be refused the reserved vault.
+ * Runs every HTTP request, WebSocket upgrades included, outside every
+ * ambient store a run enters (swamp-club#2676, swamp-club#3125). Deno can
+ * leave the async context of the last code that ran current when it calls a
+ * serve handler (a first-time dynamic `import()` inside a run does), so
+ * without this a request — and every message on a connection it upgrades —
+ * could inherit another run's vault scope, unit of work, held locks, trace
+ * frames or extension lock leases.
  */
 export function unscopedHttpHandler<A extends Deno.Addr>(
   handler: Deno.ServeHandler<A>,
 ): Deno.ServeHandler<A> {
-  return (req, info) => withoutVaultAccess(() => handler(req, info));
+  return (req, info) => runOutsideAmbientContext(() => handler(req, info));
 }
 
 const logger = getSwampLogger(["serve"]);
@@ -1839,7 +1848,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--token-gc-grace-period <duration:string>",
-    "How long expired server tokens are kept before GC (default: 1h, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
+    "How long expired server tokens are kept before GC (default: 1h, 0 deletes at expiry, env: SWAMP_TOKEN_GC_GRACE_PERIOD)",
   )
   .option(
     "--remote-only",
@@ -2887,6 +2896,7 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
+      datastoreResolver: repoDatastoreResolver,
       syncService,
       lockfilePath: managedLockfilePath,
       vaultsDir,
@@ -2900,6 +2910,14 @@ export const serveCommand = new Command()
     // land between a local delete and its push (swamp-club#2247). Only
     // meaningful with a sync service — without one nothing syncs.
     const syncGate = syncService ? createSyncGate() : undefined;
+
+    // A v3 datastore is maintained by its writer: serve compacts history and
+    // sweeps chunks while it runs (swamp-club#3279).
+    const v3Maintenance = !isCustomDatastoreConfig(datastoreConfig) &&
+        resolverEngine(repoDatastoreResolver) === "v3"
+      ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
+      : undefined;
+    v3Maintenance?.start();
 
     let configPoller: ConfigPoller | null = null;
     let accessDataPoller: AccessDataPoller | null = null;
@@ -3951,7 +3969,7 @@ export const serveCommand = new Command()
           formatGrantFileErrorLines(
             grantFileErrors.map((e) => ({
               ...e,
-              filename: join("grants", e.filename),
+              filename: repoGrantFileName(e.filename),
             })),
           )
         }`,
@@ -6763,80 +6781,20 @@ export const serveCommand = new Command()
           }
         },
       });
-      const workflowRuns = remaining.filter((r) =>
-        r.kind === "workflow-run" || r.kind === "workflow-resume"
-      );
-      if (workflowRuns.length > 0) {
-        const earliestCutoff = new Date(
-          Math.min(...workflowRuns.map((r) => r.startedAt.getTime())) -
-            60_000,
-        );
-        let allRuns:
-          | Awaited<
-            ReturnType<
-              typeof repoContext.workflowRunRepo.findGlobalByStatus
-            >
-          >
-          | undefined;
-        try {
-          allRuns = await repoContext.workflowRunRepo
-            .findGlobalByStatus(
-              ["running", "cancelled"],
-              earliestCutoff,
-            );
-        } catch (err) {
-          logger.warn(
-            "Failed to load workflow runs for interrupt: {error}",
-            {
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-        if (allRuns) {
-          // The interrupts run in a root unit of work with no push, so their
-          // saves stage into it instead of reaching the hook through
-          // signalChange's fallback (swamp-club#3056). Nothing pushes here,
-          // as before.
-          await runInRootUnitOfWork(
-            repoContext,
-            { flush: undefined },
-            async () => {
-              for (const run of workflowRuns) {
-                try {
-                  const match = allRuns.find((r) => r.run.id === run.runId);
-                  if (
-                    match &&
-                    (match.run.status === "running" ||
-                      match.run.status === "cancelled")
-                  ) {
-                    match.run.interrupt("server_shutdown");
-                    await repoContext.workflowRunRepo.save(
-                      match.workflowId,
-                      match.run,
-                    );
-                    if (isJson) {
-                      console.log(JSON.stringify({
-                        status: "interrupted",
-                        runId: run.runId,
-                      }));
-                    }
-                    logger
-                      .info`Interrupted workflow run ${run.runId} (server shutdown)`;
-                  }
-                } catch (err) {
-                  logger.warn(
-                    "Failed to interrupt run {runId}: {error}",
-                    {
-                      runId: run.runId,
-                      error: err instanceof Error ? err.message : String(err),
-                    },
-                  );
-                }
-              }
-            },
-          );
-        }
-      }
+      // Before the pollers stop: the push of the interrupted runs takes the
+      // shared sync gate, as a run's post-run push does (swamp-club#3252).
+      await interruptShutdownRuns(remaining, {
+        repoContext,
+        syncService,
+        namespace: serveNamespace,
+        syncGate,
+        onInterrupted: (runId) => {
+          if (isJson) {
+            console.log(JSON.stringify({ status: "interrupted", runId }));
+          }
+          logger.info`Interrupted workflow run ${runId} (server shutdown)`;
+        },
+      });
       if (workerGcService) {
         await workerGcService.dispose();
       }
@@ -6876,6 +6834,7 @@ export const serveCommand = new Command()
         await configPoller.stop();
       }
       await policySnapshotLoader.dispose();
+      await v3Maintenance?.stop();
       // Final telemetry flush, after runs have drained so their entries are
       // included. Must happen BEFORE ac.abort(), which releases
       // `await server.finished` and with it the CLI's own teardown flush.
@@ -7329,8 +7288,10 @@ export const serveCommand = new Command()
     }
 
     // Server token GC — deletes revoked tokens, and expired ones past the
-    // grace period, in every auth mode. It starts after token secret
-    // migration so every token's secret is already where the GC looks.
+    // grace period, in every auth mode. In OAuth mode it starts after token
+    // secret migration, so every token's secret is already where the GC
+    // looks; other modes run no migration, and the GC also clears a legacy
+    // token's secret from the vault its record names.
     if (tokenGcSettings.intervalMs === 0) {
       logger.info("Server token GC disabled (token GC interval is 0)");
       if (merged.tokenGcGracePeriod !== undefined) {
@@ -7359,7 +7320,17 @@ export const serveCommand = new Command()
               await tokenGcSync.pushChanged({ namespace: serveNamespace });
             }
             : undefined,
+          pullChanged: tokenGcSync
+            ? async () => {
+              const pulled = await tokenGcSync.pullChanged({
+                namespace: serveNamespace,
+              });
+              if (pulled !== 0) repoContext.catalogStore.invalidate();
+            }
+            : undefined,
           syncGate,
+          withTokenLock: (name, fn) =>
+            withServerTokenLock(datastoreConfig, name, fn),
         }),
       );
       serverTokenGcService.start();

@@ -1358,7 +1358,12 @@ writes the entry, which then pins later resolves.
    `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` → `@swamp/aws`). For
    two-segment types like `@keeb/mongodb-datastore`, the full type is the only
    candidate; stripping more would leave a bare collective.
-3. **Search fallback**: otherwise, search the registry for matching extensions.
+3. **Search fallback**: otherwise, search the type's collective and take the
+   highest-ranked of the top 5 results whose latest version's published metadata
+   lists the type among its models, vaults, datastores or webhooks. Search ranks
+   by words, so an unchecked hit can be unrelated (a made-up type once installed
+   `@swamp/gcp/realtimebidding`). When no result lists the type, resolution
+   reports not-found and installs nothing (swamp-club#3246).
 
 ### Safety: never overwrite on-disk extensions
 
@@ -1371,7 +1376,10 @@ auto-resolve does:
 
 - **Missing**: no entry in `upstream_extensions.json`, or the directory
   `.swamp/pulled-extensions/<name>/` is absent and no source files the lockfile
-  lists remain on disk. A clean install goes ahead.
+  lists remain on disk. A clean install goes ahead. If the type still is not
+  registered after the install hot-loads, the resolver reports
+  `installedWithoutType` rather than success: a direct candidate is matched by
+  name alone (swamp-club#3246).
 - **Intact**: the lockfile entry, the directory and every file the lockfile
   lists are present. The resolver then checks the extension catalog for a
   failed source (`BundleBuildFailed`, `ValidationFailed` or
@@ -2251,7 +2259,10 @@ path would look like a gen-2 path and the freshly restored skill dir would be
 deleted. On its own, the path-only `classifyExtensionFile` helper flags only the
 documented gen-1 shape, `extensions/<known-type>/...` with `<known-type>` in
 `PULLED_TYPE_DIRS`. Any other non-`.swamp/` path, or a path it doesn't
-recognise, counts as current-layout and is ignored rather than swept.
+recognise, counts as current-layout and is ignored rather than swept. It matches
+on path segments, not separators: a lockfile written on Windows stores
+backslash-separated paths, and those classify the same as their forward-slash
+form.
 
 ## Removal
 

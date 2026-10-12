@@ -527,6 +527,123 @@ Deno.test("modelCreate: accepts a vault.get expression for a sensitive global ar
   assertEquals(completed.kind, "completed");
 });
 
+Deno.test("modelCreate: stores a record global arg given as a JSON string as a map (swamp-club#3286)", async () => {
+  let stored: unknown;
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/record-args" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        labels: z.record(z.string(), z.string()).optional(),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      stored = globalArguments;
+      return Promise.resolve(
+        { id: "def-1", name: "my-model" } as unknown as Awaited<
+          ReturnType<ModelCreateDeps["createAndSave"]>
+        >,
+      );
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/record-args",
+      name: "my-model",
+      // CLI passes --global-arg 'labels={"env":"prod"}' as one string
+      globalArguments: { labels: '{"env":"prod"}' },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(stored, { labels: { env: "prod" } });
+});
+
+Deno.test("modelCreate: accepts a sensitive record given as a JSON string of vault.get expressions (swamp-club#3286)", async () => {
+  let stored: unknown;
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/sensitive-record" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        tokens: z.record(z.string(), z.string()).meta({ sensitive: true })
+          .optional(),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      stored = globalArguments;
+      return Promise.resolve(
+        { id: "def-1", name: "my-model" } as unknown as Awaited<
+          ReturnType<ModelCreateDeps["createAndSave"]>
+        >,
+      );
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/sensitive-record",
+      name: "my-model",
+      globalArguments: {
+        tokens: `{"a":"\${{ vault.get('creds', 'a') }}"}`,
+      },
+    }),
+  );
+
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(stored, {
+    tokens: { a: "${{ vault.get('creds', 'a') }}" },
+  });
+});
+
+Deno.test("modelCreate: refuses a sensitive record JSON string that mixes a literal with a vault.get expression (swamp-club#3286)", async () => {
+  let saved = false;
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/sensitive-record" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        tokens: z.record(z.string(), z.string()).meta({ sensitive: true })
+          .optional(),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: () => {
+      saved = true;
+      return Promise.resolve(
+        { id: "def-1", name: "my-model" } as unknown as Awaited<
+          ReturnType<ModelCreateDeps["createAndSave"]>
+        >,
+      );
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/sensitive-record",
+      name: "my-model",
+      globalArguments: {
+        tokens: `{"a":"\${{ vault.get('creds', 'a') }}","b":"SUPERSECRET123"}`,
+      },
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(last.error.message, "tokens");
+  assertEquals(saved, false);
+});
+
 Deno.test("modelCreate: accepts a vault.get expression for a CONSTRAINED sensitive field (ADV-3)", async () => {
   // The vault.get sentinel is far shorter than min(20); without stripping
   // expression fields before schema validation this would be wrongly rejected,

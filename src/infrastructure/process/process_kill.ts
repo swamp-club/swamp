@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { requestStop } from "./windows_stop_request.ts";
 
 const logger = getLogger(["process", "kill"]);
 
@@ -158,10 +159,62 @@ export function killChildGroups(pids: readonly number[]): void {
   }
 }
 
+/** What {@link sendGracefulStop} uses, replaceable in tests. */
+export interface GracefulStopDeps {
+  os?: typeof Deno.build.os;
+  requestStop?: (pid: number) => boolean;
+  kill?: (pid: number, signal: Deno.Signal) => void;
+}
+
+/**
+ * Asks the swamp process `pid` to stop and save its work: SIGTERM on POSIX,
+ * a stop request on Windows, where Deno's SIGTERM is `TerminateProcess`. A
+ * Windows process that cannot be reached that way is sent SIGTERM anyway,
+ * which ends it outright, as before stop requests existed. Returns true when
+ * a stop request reached the process.
+ */
+export function sendGracefulStop(
+  pid: number,
+  {
+    os = Deno.build.os,
+    requestStop: request = requestStop,
+    kill = (target, signal) => Deno.kill(target, signal),
+  }: GracefulStopDeps = {},
+): boolean {
+  if (os === "windows" && request(pid)) return true;
+  try {
+    kill(pid, "SIGTERM");
+  } catch { /* race: died between check and kill */ }
+  return false;
+}
+
+/**
+ * The children from the snapshot taken before the stop that are still to be
+ * killed once the parent is gone: those not in `current`, the snapshot taken
+ * just before a forced kill, less any pid reused during the wait. None after
+ * a stop request: the parent ended its own commands, its Job Objects end the
+ * rest, and Windows has no start times to tell a reused pid from a child
+ * through a wait that can last the whole grace.
+ */
+export function snapshotChildrenToKill(
+  snapshot: readonly number[],
+  current: readonly number[],
+  before: ReadonlyMap<number, string> | undefined,
+  after: ReadonlyMap<number, string> | undefined,
+  stopRequested: boolean,
+): number[] {
+  if (stopRequested) return [];
+  return withoutReusedPids(
+    snapshot.filter((child) => !current.includes(child)),
+    before,
+    after,
+  );
+}
+
 /**
  * Kills a process tree (parent + children) after verifying the parent is
- * a swamp process. Sends SIGTERM for graceful shutdown, waits up to
- * {@link maxWaitMs} for exit, then SIGKILL anything still alive.
+ * a swamp process. Asks it to stop gracefully ({@link sendGracefulStop}),
+ * waits up to {@link maxWaitMs} for exit, then SIGKILL anything still alive.
  *
  * Returns true if the process was found and killed, false if the PID was
  * not a swamp process (PID reuse) or already dead.
@@ -185,9 +238,7 @@ export async function killProcessTree(
   const snapshot = await findChildPids(pid);
   const snapshotStarts = await processStartTimes(snapshot);
 
-  try {
-    Deno.kill(pid, "SIGTERM");
-  } catch { /* race: died between check and kill */ }
+  const stopRequested = sendGracefulStop(pid);
 
   // Poll until parent exits or timeout
   const deadline = Date.now() + maxWaitMs;
@@ -210,10 +261,12 @@ export async function killProcessTree(
   // pid to an unrelated process; that pid is left alone.
   const children = [
     ...current,
-    ...withoutReusedPids(
-      snapshot.filter((child) => !current.includes(child)),
+    ...snapshotChildrenToKill(
+      snapshot,
+      current,
       snapshotStarts,
       await processStartTimes(snapshot),
+      stopRequested,
     ),
   ];
 

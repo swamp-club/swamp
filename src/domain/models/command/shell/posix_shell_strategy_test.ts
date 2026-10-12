@@ -29,6 +29,10 @@ Deno.test("PosixShellStrategy.buildInvocation: wraps command in sh -c", () => {
   );
 });
 
+Deno.test("PosixShellStrategy.normalizesCrlfOutput: keeps every CR a command writes", () => {
+  assertEquals(new PosixShellStrategy().normalizesCrlfOutput, false);
+});
+
 Deno.test("PosixShellStrategy.buildInvocation: passes command through verbatim (no escaping)", () => {
   // The shell handles parsing — strategy doesn't pre-escape. This
   // matches `Deno.Command` semantics where args are passed as-is.

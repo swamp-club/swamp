@@ -39,6 +39,7 @@ import {
   type DatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
   isCustomDatastoreConfig,
+  readDatastoreFormatKey,
 } from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
@@ -344,6 +345,7 @@ export async function resolveDatastoreConfig(
   if (marker?.datastore) {
     const ds = marker.datastore;
     const dsType = ds.type;
+    const format = readDatastoreFormatKey(dsType, ds.format);
 
     // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
     const renamedTo = RENAMED_DATASTORE_TYPES[dsType];
@@ -434,6 +436,7 @@ export async function resolveDatastoreConfig(
         directories: fsFields.directories ?? ds.directories,
         exclude: fsFields.exclude ?? ds.exclude,
         namespace: fsFields.namespace ?? ds.namespace,
+        ...(format !== undefined ? { format } : {}),
       };
     }
 

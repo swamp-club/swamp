@@ -20,8 +20,17 @@
 import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { z } from "zod";
-import { dirname, join, normalize, relative, SEPARATOR } from "@std/path";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  basename,
+  dirname,
+  join,
+  normalize,
+  relative,
+  SEPARATOR,
+} from "@std/path";
+import { signalChange, stageTyped } from "./unit_of_work_scope.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { ModelChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import type { StagedChange } from "../../domain/datastore/unit_of_work.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
@@ -38,7 +47,7 @@ import { readDirSorted } from "./sorted_dir_entries.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import {
   createModelOutputId,
   ModelOutput,
@@ -98,7 +107,10 @@ export class YamlOutputRepository implements OutputRepository {
   }
 
   private async stage(change: StagedChange): Promise<void> {
-    await signalChange(this.markDirty, change);
+    // Every record write stages its typed change after it (swamp-club#3250),
+    // so a v3 unit takes no path change from this repository. Run logs have
+    // no typed change: nothing puts them on v3 yet.
+    await signalChange(this.markDirty, change, { typed: true });
   }
 
   /**
@@ -404,6 +416,14 @@ export class YamlOutputRepository implements OutputRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
+    await stageTyped(this.markDirty, () => [
+      new ModelChanges(type, output.definitionId).writeOutput(
+        output.id,
+        method,
+        basename(path),
+        new TextEncoder().encode(content),
+      ),
+    ]);
   }
 
   async delete(
@@ -453,6 +473,7 @@ export class YamlOutputRepository implements OutputRepository {
           0,
           this.ownedLogPath(matchPath, matchData),
           false,
+          matchData,
         );
       }
     } catch (error) {
@@ -571,6 +592,7 @@ export class YamlOutputRepository implements OutputRepository {
           stat.size ?? 0,
           logPath,
           dryRun,
+          data,
         );
         deletedYamls.add(yamlPath);
         if (logPath) countedLogs.add(logPath);
@@ -602,6 +624,7 @@ export class YamlOutputRepository implements OutputRepository {
     yamlBytes: number,
     logPath: string | null,
     dryRun: boolean,
+    record: ModelOutputData | null,
   ): Promise<number> {
     let bytes = yamlBytes;
     let logExists = false;
@@ -634,7 +657,37 @@ export class YamlOutputRepository implements OutputRepository {
       await cleanupEmptyParentDirs(logPath, this.rootFor(logPath));
     }
     await cleanupEmptyParentDirs(yamlPath, this.baseDir);
+    await stageTyped(
+      this.markDirty,
+      () => this.recordTombstone(yamlPath, record),
+    );
     return bytes;
+  }
+
+  /**
+   * The typed change of a removed record: an output.delete tombstone of its
+   * key under `<type>/<method>/<file>`. A record that never parsed carries no
+   * output id or model, so no repository ever put it, and it has none.
+   */
+  private recordTombstone(
+    yamlPath: string,
+    record: ModelOutputData | null,
+  ): TypedChange[] {
+    if (record?.id === undefined || record.definitionId === undefined) {
+      return [];
+    }
+    const segments = relative(this.baseDir, yamlPath).split(SEPARATOR);
+    if (segments.length < 3) return [];
+    const file = segments[segments.length - 1];
+    const method = segments[segments.length - 2];
+    const type = ModelType.create(segments.slice(0, -2).join("/"));
+    return [
+      new ModelChanges(type, record.definitionId).removeOutput(
+        record.id,
+        method,
+        file,
+      ),
+    ];
   }
 
   /**

@@ -59,6 +59,8 @@ import {
   pushNamespace,
   pushNamespaceCounted,
 } from "../infrastructure/persistence/push_paths.ts";
+import { datastoreBlockEngine } from "../infrastructure/persistence/datastore_format_guard.ts";
+import { createV3LockfileSync } from "../infrastructure/datastore_v3/v3_lockfile_sync.ts";
 
 /**
  * A config-tier change was written to the local cache but could not be
@@ -380,6 +382,21 @@ export function createManagedLockfileTransaction(
   marker: RepoMarkerData | null,
   write: ManagedLockfileWrite,
 ): LockfileTransaction | undefined {
+  if (write.publish && isV3ManagedConfigDatastore(repoDir, marker)) {
+    return lazyLockfileTransaction(write.lockfilePath, async () => {
+      const resolved = await requireInitializedRepoUnlocked({
+        repoDir,
+        outputMode: "log",
+      });
+      return buildV3ManagedLockfileTransaction(
+        resolved.repoContext,
+        resolved.repoDir,
+        write.lockfilePath,
+        resolved.datastoreResolver.resolvePath("config"),
+        resolved.datastoreConfig,
+      );
+    });
+  }
   if (!write.publish || !isExtensionBackedDatastore(marker)) return undefined;
 
   return lazyLockfileTransaction(write.lockfilePath, async () => {
@@ -409,6 +426,58 @@ export function createManagedLockfileTransaction(
         ? HELD_LOCK
         : coordinatedGlobalLock(datastoreConfig),
     });
+  });
+}
+
+/**
+ * Whether the repo's managed config lives on a v3 filesystem datastore
+ * (swamp-club#3279), whose lockfile changes are committed rather than
+ * shared as one file. The datastore's format marker decides at open; a
+ * config naming format 3 that its marker contradicts is refused there.
+ */
+function isV3ManagedConfigDatastore(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+): boolean {
+  return marker?.datastore?.managedConfig === true &&
+    datastoreBlockEngine(repoDir, marker.datastore) === "v3";
+}
+
+/**
+ * The transaction a v3 repo's extension commands make lockfile changes in:
+ * each outermost run is a commit-log root over the repo's context, and the
+ * publish commits the lockfile at that root's checkpoint
+ * ({@link createV3LockfileSync}). The writer lock the context holds stands
+ * in for the global lock.
+ */
+export function buildV3ManagedLockfileTransaction(
+  repoContext: RepositoryContext,
+  repoDir: string,
+  lockfilePath: string,
+  configBase: string,
+  datastoreConfig: DatastoreConfig,
+): ManagedLockfileTransaction {
+  const markDirty = repoContext.markDirty;
+  if (markDirty === undefined || repoContext.commitLog === undefined) {
+    throw new ManagedLockfileUnavailableError(
+      "the datastore's managed config is v3, but the repository did not open as v3",
+    );
+  }
+  return new ManagedLockfileTransaction({
+    lockfilePath,
+    inRoot: (fn) =>
+      runInRootUnitOfWork(
+        repoContext,
+        { flush: undefined, checkpoint: () => Promise.resolve() },
+        () => fn(),
+      ),
+    // The global lock serialises lockfile changes, as on v2, unless this
+    // command already holds it.
+    lock: getRegisteredLockKeys().includes(GLOBAL_LOCK_KEY)
+      ? HELD_LOCK
+      : coordinatedGlobalLock(datastoreConfig),
+    sync: createV3LockfileSync({ markDirty, lockfilePath, configBase }),
+    pending: createRepoPendingLockfileStore(repoDir),
   });
 }
 

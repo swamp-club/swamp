@@ -1068,3 +1068,58 @@ Deno.test("resolveConfigTierPath: undefined when the datastore type cannot be re
     assertEquals(tier, undefined);
   });
 });
+
+Deno.test("resolveDatastoreConfig: a filesystem datastore carries its format key", async () => {
+  const marker = {
+    swampVersion: "0.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type: "filesystem", path: "/data/v3", format: 3 },
+  } as RepoMarkerData;
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+  assertEquals(config, {
+    type: "filesystem",
+    path: "/data/v3",
+    directories: undefined,
+    exclude: undefined,
+    namespace: undefined,
+    format: 3,
+  });
+});
+
+Deno.test("resolveDatastoreConfig: a filesystem datastore without a format key resolves as before", async () => {
+  const marker = {
+    swampVersion: "0.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type: "filesystem", path: "/data/v2" },
+  } as RepoMarkerData;
+  const config = await resolveDatastoreConfig(marker, undefined, "/repo");
+  assertEquals("format" in config, false);
+});
+
+Deno.test("resolveDatastoreConfig: format 3 on an extension or legacy s3 datastore is refused", async () => {
+  for (const type of ["s3", "@test/v3-refused"]) {
+    const marker = {
+      swampVersion: "0.0.0",
+      initializedAt: "2026-01-01T00:00:00.000Z",
+      datastore: { type, config: {}, bucket: "b", format: 3 },
+    } as RepoMarkerData;
+    await assertRejects(
+      () => resolveDatastoreConfig(marker, undefined, "/repo"),
+      Error,
+      "not supported yet",
+    );
+  }
+});
+
+Deno.test("resolveDatastoreConfig: a format other than 2 or 3 is refused", async () => {
+  const marker = {
+    swampVersion: "0.0.0",
+    initializedAt: "2026-01-01T00:00:00.000Z",
+    datastore: { type: "filesystem", path: "/data", format: 4 },
+  } as RepoMarkerData;
+  await assertRejects(
+    () => resolveDatastoreConfig(marker, undefined, "/repo"),
+    Error,
+    "must be 2 or 3",
+  );
+});

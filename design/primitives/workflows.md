@@ -2586,9 +2586,21 @@ A run executes the jobs and steps in dependency order. The order should be a
 weighted topological sort, so that identical inputs should give the same run
 order.
 
-The run's output is written to a workflow run log in the datastore at
+The run record is written to the datastore at
 `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
-`.swamp/workflow-runs/`).
+`.swamp/workflow-runs/`). The run's output log is always written repo-local, at
+`.swamp/workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.log`, whichever
+datastore holds the record. The record's `logFile` names it relative to the
+repo.
+
+`swamp run gc` and deleting a workflow remove a run's log with its record. They
+rebuild its path from the record's directory and file names rather than reading
+`logFile`, which another writer on a shared datastore could point anywhere. A
+log beside the record in the datastore, left by a datastore migration, is
+removed too. Run GC also sweeps repo-local run logs whose record is gone, once
+they have gone unwritten for longer than both the cutoff and seven days: a run
+writes its log before it first saves its record (`YamlWorkflowRunRepository`,
+swamp-club#3266).
 
 ### Run Statuses
 
@@ -2619,6 +2631,20 @@ method-run record it left `running` with the same error its step gets
 (`OWNER_STOPPED_STEP_ERROR`), then completes its tracker rows still `running`
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
+
+**On Windows** Deno turns a SIGTERM sent to another process into
+`TerminateProcess`, so cancel sends a stop request instead
+(`sendGracefulStop`, `src/infrastructure/process/process_kill.ts`): it sets a
+named event, `Local\swamp-stop-<pid>`, that every swamp process listening for
+shutdown signals polls (`registerShutdownHandler`,
+`src/infrastructure/process/windows_stop_request.ts`). The owner handles it as
+it handles SIGTERM on POSIX: it records its own cancellation and runs its
+always/completed cleanup steps. An owner that cannot be reached that way — one
+in another logon session, such as a service in session 0, or one where kernel32
+cannot be loaded — is ended outright with `TerminateProcess`, as is an owner
+still running after the grace. Its shell steps end with it through their Job
+Objects (see [Post-Cancellation Cleanup](#post-cancellation-cleanup)), and
+cancel settles the records it left as for an owner killed after its grace.
 
 **Finding the run.** A local cancel looks the run up in the run store, not
 through the workflow's definition (`resolveLocalCancelTarget`,
@@ -2938,7 +2964,11 @@ A local CLI resume or approve, or a second serve instance on a shared
 datastore, is not covered by the reservation.
 
 Model method runs cancel the same way, with
-`swamp model cancel <model> [--all] [--reason <reason>]`. The command SIGTERMs
+`swamp model cancel <model> [--all] [--reason <reason>]`. The named form
+considers only the named model's runs, never those of another model of the
+same type. (A run an older swamp registered names no model on its tracker row and is
+matched from its method-run record or the model's lock; see
+`design/enablers/run-tracker.md`.) The command SIGTERMs
 the process that owns the method run and waits up to 10 s for it to exit
 before SIGKILL: the 3 s grace the shell step gets, plus time for the owner to
 save the cancelled output (`METHOD_OWNER_STOP_GRACE_MS`,
@@ -2947,7 +2977,11 @@ workflow run, as a workflow step's method run does, gets the workflow cancel
 grace instead, so its cleanup steps can run. `--all` stops the owning
 processes together, each once. A run its owner finished another way during
 the wait keeps that status, and the command reports it as finished before the
-cancel took effect (`finished` in `--json`) rather than as cancelled.
+cancel took effect (`finished` in `--json`) rather than as cancelled. When the
+owner is a workflow run, stopping it cancels the whole run, so every running
+step of the run ends, not only the cancelled method run's. On Windows the
+SIGTERM is a stop request, as for a workflow cancel (see
+[Cancellation](#cancellation)).
 A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
 is still recorded failed (`DefaultStepExecutor`,
@@ -3136,7 +3170,20 @@ signalled depends on whether swamp has a controlling terminal
   group, so it keeps `/dev/tty` prompts, and Ctrl-C reaches every process it
   started. A timeout or offline cancel signals only the direct child, so its
   own children can outlive the step.
-- **Windows**: `taskkill /T /F` ends the whole tree.
+- **Windows**: `taskkill /T /F` ends the whole tree. The command also runs in
+  a kill-on-close Job Object (`attachProcessJob`,
+  `src/infrastructure/process/windows_job.ts`). Windows has no signal another
+  process can catch: only a stop request from swamp itself (see
+  [Cancellation](#cancellation)) lets swamp stop gracefully, and every other
+  stop from outside — a service manager, Task Manager, a supervisor's kill —
+  ends swamp outright. Its job handles close
+  with it, and each job ends the command it held. An abort ends the
+  job too, reaching descendants whose parent already exited. A command that
+  exits on its own has its job released first, so what it backgrounded keeps
+  running. When a job cannot be made, the command runs without one. The job
+  is attached just after the spawn, as Deno cannot spawn suspended: a process
+  the command starts within that instant is outside it, though an abort's
+  `taskkill /T` still reaches it.
 
 A step whose command exits on its own is never signalled: anything it
 deliberately backgrounded keeps running.

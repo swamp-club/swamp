@@ -744,6 +744,11 @@ export interface StepExecutionContext {
   namespace?: Namespace;
   /** Resolved vault config directory (managed config tier or local vaults/) */
   vaultsDir?: string;
+  /**
+   * The repo's `autoGc` setting: the step's data repository enforces
+   * integer `garbageCollection` caps at write time when true.
+   */
+  autoGc?: boolean;
   runTracker?: RunTrackerRepository;
   ephemeralRepo?: UnifiedDataRepository;
   ephemeralCatalog?: CatalogStore;
@@ -1160,6 +1165,11 @@ export interface StepExecutorDeps {
   methodExecutionService: MethodExecutionService;
   vaultService: VaultService;
   expressionEvaluator: ExpressionEvaluationService;
+  /**
+   * Evaluates the target of a `context.runModel` call from a step, with the
+   * data repositories and vault service a standalone run of that target uses.
+   */
+  invocationEvaluator: ExpressionEvaluationService;
   directTypeResolver?: DirectTypeResolver;
   runTracker?: RunTrackerRepository;
   /**
@@ -1208,6 +1218,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
       vaultsDir?: string;
+      autoGc?: boolean;
     },
   ): Promise<DefaultStepExecutor> {
     return new DefaultStepExecutor(
@@ -1232,6 +1243,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile: this.hydrateFile,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
+      autoGc: ctx.autoGc,
       ephemeralRepo: ctx.ephemeralRepo,
       ephemeralCatalog: ctx.ephemeralCatalog,
     });
@@ -1254,6 +1266,7 @@ export class DefaultStepExecutor implements StepExecutor {
       hydrateFile?: HydrateFileHook;
       namespace?: Namespace;
       vaultsDir?: string;
+      autoGc?: boolean;
       ephemeralRepo?: UnifiedDataRepository;
       ephemeralCatalog?: CatalogStore;
     },
@@ -1276,6 +1289,7 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.markDirty,
       opts.hydrateFile,
       opts.namespace ?? SOLO_NAMESPACE,
+      opts.autoGc ?? false,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -1292,6 +1306,9 @@ export class DefaultStepExecutor implements StepExecutor {
           new DataQueryService(opts.ephemeralCatalog, opts.ephemeralRepo),
         )
         : persistentQueryService;
+    const vaultService = await VaultService.fromRepository(repoDir, {
+      vaultsDir: opts.vaultsDir,
+    });
     return {
       definitionRepo,
       unifiedDataRepo,
@@ -1307,12 +1324,15 @@ export class DefaultStepExecutor implements StepExecutor {
         opts.markDirty,
       ),
       methodExecutionService: new DefaultMethodExecutionService(),
-      vaultService: await VaultService.fromRepository(repoDir, {
-        vaultsDir: opts.vaultsDir,
-      }),
+      vaultService,
       expressionEvaluator: new ExpressionEvaluationService(
         definitionRepo,
         repoDir,
+      ),
+      invocationEvaluator: new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+        { dataRepo: unifiedDataRepo, dataQueryService, vaultService },
       ),
       // directTypeResolver is not available in the lazy buildDeps path.
       // It must be injected via the WorkflowExecutionService constructor.
@@ -1356,6 +1376,7 @@ export class DefaultStepExecutor implements StepExecutor {
       methodExecutionService: executionService,
       vaultService,
       expressionEvaluator,
+      invocationEvaluator,
     } = allDeps;
 
     if (
@@ -1374,6 +1395,7 @@ export class DefaultStepExecutor implements StepExecutor {
           dataQueryService,
           createCelEnvironment: createExtensionCelEnvironment,
         },
+        evaluationService: invocationEvaluator,
         repoDir: ctx.repoDir,
         pulledExtensionsRoot: ctx.pulledExtensionsRoot,
       });
@@ -2033,6 +2055,7 @@ export class DefaultStepExecutor implements StepExecutor {
         const activeRun = ActiveRun.createModelMethodRun({
           id: output.id,
           modelType: modelType.normalized,
+          definitionId: originalDefinition.id,
           methodName: task.methodName,
           pid: Deno.pid,
           hostname: hostname(),
@@ -2455,6 +2478,7 @@ export class DefaultStepExecutor implements StepExecutor {
           name: handle.name,
           version: handle.version,
           tags: handle.tags,
+          ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
         };
         output.addDataArtifact(artifactRef);
         savedArtifacts.push(artifactRef);
@@ -2620,6 +2644,7 @@ export class DefaultStepExecutor implements StepExecutor {
           name: handle.name,
           version: handle.version,
           tags: handle.tags,
+          ...(handle.sha256 !== undefined ? { sha256: handle.sha256 } : {}),
         };
         output.addDataArtifact(artifactRef);
         savedArtifacts.push(artifactRef);
@@ -2879,6 +2904,7 @@ export class WorkflowExecutionService {
     private readonly hydrateFile?: HydrateFileHook,
     private readonly vaultsDir?: string,
     private readonly datastoreResolver?: DatastorePathResolver,
+    private readonly autoGc: boolean = false,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -2918,6 +2944,7 @@ export class WorkflowExecutionService {
       markDirty,
       hydrateFile,
       namespace,
+      autoGc,
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
@@ -5701,6 +5728,7 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           namespace: this.namespace,
           vaultsDir: this.vaultsDir,
+          autoGc: this.autoGc,
           runTracker: this.runTracker,
           ephemeralRepo: this.ephemeralRepo,
           ephemeralCatalog: this.ephemeralCatalog,
@@ -6316,6 +6344,7 @@ export class WorkflowExecutionService {
       this.hydrateFile,
       this.vaultsDir,
       this.datastoreResolver,
+      this.autoGc,
     );
     childService.signalWaits = this.signalWaits;
 
@@ -6549,6 +6578,7 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           dataBaseDir: this.dataBaseDir,
           datastoreResolver: this.datastoreResolver,
+          autoGc: this.autoGc,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
           sensitiveValues: options.sensitiveValues,

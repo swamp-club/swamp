@@ -32,6 +32,8 @@ import type { ShellStrategy } from "./shell_strategy.ts";
  * references with quoting-context-aware double quoting.
  */
 export class PosixShellStrategy implements ShellStrategy {
+  readonly normalizesCrlfOutput = false;
+
   buildInvocation(command: string): { command: string; args: string[] } {
     return { command: "sh", args: ["-c", command] };
   }

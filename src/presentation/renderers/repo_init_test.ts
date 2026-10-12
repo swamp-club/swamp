@@ -32,7 +32,10 @@ import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({ noColor: true });
 
-function makeInitData(tools: string[]) {
+function makeInitData(
+  tools: string[],
+  vault: { name: string; type: string; created: boolean } | null = null,
+) {
   return {
     path: "/tmp/test",
     version: "0.1.0",
@@ -43,6 +46,7 @@ function makeInitData(tools: string[]) {
     gitignoreAction: "created",
     tools,
     removedTools: [],
+    vault,
     tool: tools.length === 1 ? tools[0] : null,
   };
 }
@@ -159,6 +163,59 @@ Deno.test(
     ], "log");
 
     assertEquals(output.includes("swamp auth login"), false);
+  },
+);
+
+Deno.test(
+  "LogRepoInitRenderer: reports the default vault it created or kept",
+  () => {
+    const created = captureInitOutput([
+      {
+        kind: "completed",
+        data: makeInitData([], {
+          name: "default",
+          type: "local_encryption",
+          created: true,
+        }),
+      },
+    ], "log");
+    assertStringIncludes(
+      created,
+      "Created vault default (local_encryption) for secrets and sensitive outputs",
+    );
+
+    const kept = captureInitOutput([
+      {
+        kind: "completed",
+        data: makeInitData([], {
+          name: "default",
+          type: "@swamp/aws-sm",
+          created: false,
+        }),
+      },
+    ], "log");
+    assertStringIncludes(kept, "Kept existing vault default (@swamp/aws-sm)");
+
+    const none = captureInitOutput([
+      { kind: "completed", data: makeInitData([]) },
+    ], "log");
+    assertEquals(none.includes("vault"), false);
+  },
+);
+
+Deno.test(
+  "JsonRepoInitRenderer: includes the vault field",
+  () => {
+    const vault = { name: "default", type: "local_encryption", created: true };
+    const output = captureInitOutput([
+      { kind: "completed", data: makeInitData([], vault) },
+    ], "json");
+    assertEquals(JSON.parse(output).vault, vault);
+
+    const skipped = captureInitOutput([
+      { kind: "completed", data: makeInitData([]) },
+    ], "json");
+    assertEquals(JSON.parse(skipped).vault, null);
   },
 );
 

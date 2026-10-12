@@ -321,23 +321,37 @@ with another mint's secret (swamp-club#2482):
   since hashing the current secret would bless a pairing that may already be
   wrong.
 
-Two writers do not take the name lock. The OAuth login mint names each token
+The token GC takes the name lock too, around each token it collects (see
+below). One writer does not. The OAuth login mint names each token
 `oauth-<random>`, so it only shares a name with another mint by chance; it
-records the fingerprint, so a collision fails closed. The token GC deletes
-under the sync gate alone, as described below. A binary from before the lock
-takes neither precaution, and drops the fingerprint from a record it rewrites.
+records the fingerprint, so a collision fails closed. A binary from before the
+lock takes neither precaution, and drops the fingerprint from a record it
+rewrites.
 
 Serve garbage-collects server tokens in every auth mode
 (`ServerTokenGcService`, `src/serve/server_token_gc_service.ts`, wired by
 `src/serve/server_token_gc_deps.ts`). The first sweep runs just after boot,
-once token secret migration is done, then one runs every `--token-gc-interval`.
-A sweep deletes revoked tokens at once, and expired tokens once
-`--token-gc-grace-period` has passed since `expiresAt`, so both drop out of
-`access token list`.
+after token secret migration in OAuth mode (the only mode that migrates), then
+one runs every `--token-gc-interval`. A sweep deletes revoked tokens at once,
+and expired tokens once `--token-gc-grace-period` has passed since `expiresAt`,
+so both drop out of `access token list`.
 
-Each token is collected as one unit holding the sync gate exclusively. Inside
-the unit the GC re-reads the token's `token-main` and skips the token if it is
-gone or no longer eligible. Then:
+A sweep stops after `MAX_TOKENS_PER_SWEEP` (100) tokens that it collected or
+failed to collect; a token skipped on re-read does not count. Each collection
+holds the sync gate for a push, so without the cap the first sweep after an
+upgrade, which finds every revoked or expired token ever minted, would hold
+the gate for a long time. A larger backlog drains over later sweeps. Tokens
+that failed in the last sweep are tried after the others, so a block of tokens
+that keep failing cannot use up the cap (swamp-club#2535).
+
+Each token is collected as one unit holding the token's name lock and, inside
+it, the sync gate exclusively. The lock is taken first, as the token handlers
+take it, so the GC never waits on it while holding the gate; a lock it cannot
+take fails the collection, and the token is retried next sweep. Inside the
+unit the GC first pulls, when serve has a remote datastore, as the token
+handlers do before they write; a failed pull fails the collection. It then
+re-reads the token's `token-main` and skips the token if it is gone or no
+longer eligible. Then:
 
 1. It deletes the secret. A failure keeps the token for the next sweep, so a
    stale copy of the records, such as an HA peer's local cache, can never
@@ -355,21 +369,48 @@ That key is shared by every definition that has carried the name. So when a
 record outlives its definition, and the name now belongs to another definition
 or to none, the GC deletes only that record's data and leaves the secret.
 
+The GC looks up the definition that owns the name through the shared
+definition repository, the one authentication reads through, so the two
+always agree. It searches `models/` first, then `.swamp/auto-definitions/`, so
+a server-token definition the boot migration left in `models/` is collected
+rather than treated as an orphan.
+
+For a token minted before swamp-club#1511, the GC also deletes the canonical
+key from the vault the record names, but only when that vault supports deletes
+and its listing holds the key. Anyone who can write the datastore can change
+the recorded vault, so a vault that does not hold the key is never touched.
+When the listing fails, the GC leaves that vault alone, logs the vault and key
+so an operator can remove it, and still collects the token: with its records
+and `_token-secrets` copy gone, the leftover secret cannot authenticate, and a
+vault whose credentials allow deletes but not listing would otherwise keep the
+token forever. A failed delete still keeps the token for the next sweep. Each
+such vault is listed at most once per sweep; a failed listing is not cached. The
+`_token-secrets` deletes do not match error messages: the control-plane
+store's delete of a missing key is a no-op, so any error is a real failure.
+
 Every replica sweeps on its own, and a token another replica already deleted
 is skipped.
 
-The re-read protects against token writes only where the gate covers them.
-Serve's own token mint, rotate and revoke, and the OAuth login mint, hold the
-gate while they write. So with a remote datastore, a write in the same process
-lands either before the re-read or after the unit. The gap is in two places:
+The re-read protects against token writes because the GC holds the same name
+lock as the writers. Mint, rotate and revoke, in serve and in the CLI, hold it
+across their writes, so a write lands either before the re-read or after the
+unit, with or without a remote datastore (swamp-club#2534). Serve only creates
+the sync gate with a remote datastore, so the lock, not the gate, is what
+serialises them. The OAuth login mint holds the gate but not the lock; its
+random names make a clash with a collected token a chance collision.
 
-- **No remote datastore.** Serve creates no gate at all, so a rotation or
-  re-mint can land between the re-read and the deletes (swamp-club#2534).
-- **Across replicas.** The gate is in-process only. A replica whose copy of a
-  record is older than another replica's re-mint or rotation of the same name
-  can still collect the new token.
+Across replicas the lock is the datastore's distributed lock, so it orders
+the GC after another replica's re-mint or rotation of the same name, and the
+pull before the re-read brings that write into the local copy the GC reads.
 
-Both fail closed: the token has to be minted again.
+The lock and the pull have a cost. With a remote datastore each collection
+takes a distributed lock and pulls, on top of its push, and holds the gate for
+the pull. A token whose lock another writer holds can make a sweep wait up to
+the lock timeout (`SWAMP_LOCK_TIMEOUT_MS`, 60 s by default), without holding
+the gate. `MAX_TOKENS_PER_SWEEP` caps the collections that succeed or fail,
+and a lock timeout is a failure. A token skipped on re-read still costs a lock
+and a pull but does not count toward the cap, so skips are bounded only by the
+number of tokens the sweep listed as eligible.
 
 **Server token secrets.** Serves before swamp-club#1511 stored each server
 token's secret, and an OAuth login's `oauth-access-token-<name>`, in a user
@@ -494,7 +535,10 @@ reloads the snapshot on any change
 (`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
-(`src/serve/collective_refresh_service.ts`). A token is refreshed only when an
+(`src/serve/collective_refresh_service.ts`). It applies a userinfo answer only
+when its subject matches the token's principal, and otherwise keeps the token's
+snapshot and logs a warning, so whoever can write a stored access token cannot
+choose whose collectives a token gets. A token is refreshed only when an
 OAuth login stored an access token for it. The lookup reads `_token-secrets`,
 and reads a user vault only for a token whose record still names one, so a
 manually minted or worker server token costs no user-vault read
@@ -1008,8 +1052,13 @@ together against one `--shutdown-drain-timeout` deadline (default 30 s,
 `runShutdownDrain` in `src/serve/shutdown_drain.ts`); whatever is left is
 aborted and gets 5 s more. It marks aborted API workflow runs
 `interrupted("server_shutdown")` in the run repository (aborted webhook and cron
-runs end `cancelled`), deletes its heartbeat and exits. Set the pod's
-`terminationGracePeriodSeconds` above the drain timeout plus about 10 s, and
+runs end `cancelled`) and, on a remote datastore, pushes those records under the
+shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
+swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
+a push that fails or misses it is logged as a warning, and the datastore keeps
+the run's last pushed status. It then deletes its heartbeat and exits. Set the pod's
+`terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
+abort grace and the 5 s interrupt push), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
 senders that do not retry on 503 lose deliveries that arrive while the
 instance drains. Peers see no stale heartbeat, so nothing is reaped.

@@ -3138,6 +3138,27 @@ for (const kind of ["full", "light"] as const) {
       }
     }, "team" as Namespace);
   });
+
+  Deno.test(`ModelResolver.${kind === "full" ? "buildContext" : "buildLightContext"}: data.latest() with a namespaced name never returns the caller's own record of that name (swamp-club#3295)`, async () => {
+    await withRenamedModel(async ({ dataRepo, write, context }) => {
+      await write("result", "result", "new-name");
+      await write("renamed", "result", "old-name");
+      const ctx = await context(kind);
+      assertExists(ctx.data);
+
+      // No other namespace holds new-name, so only the caller's own has it.
+      assertEquals(await ctx.data.latest("security:new-name", "result"), null);
+      assertEquals(await ctx.data.latest("nosuchns:new-name", "result"), null);
+      const own = `${dataRepo.namespace}:new-name`;
+      assertEquals((await ctx.data.latest(own, "result"))?.namespace, "team");
+      assertEquals((await ctx.data.latest("new-name", "result"))?.version, 1);
+
+      // The own-namespace prefix matches the name tag only; the bare name
+      // also reads the definition's data by type and id.
+      assertEquals(await ctx.data.latest(own, "renamed"), null);
+      assertEquals((await ctx.data.latest("new-name", "renamed"))?.version, 1);
+    }, "team" as Namespace);
+  });
 }
 
 Deno.test("ModelResolver.buildContext: data accessors make no definition lookup", async () => {

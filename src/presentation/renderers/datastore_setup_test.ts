@@ -83,3 +83,47 @@ Deno.test("createDatastoreSetupRenderer: json mode lists remote_config_tier_kept
   const output = JSON.parse(lines[0]);
   assertEquals(output.warnings, [keptWarning.data]);
 });
+
+function relocated(sourceKept: boolean): DatastoreSetupEvent {
+  return {
+    kind: "completed",
+    data: {
+      type: "filesystem",
+      path: "/repo/.swamp",
+      filesCopied: 1,
+      filesPulled: 0,
+      bytesCopied: 10,
+      directoriesMigrated: ["data"],
+      errors: [],
+      sourcePath: "/nas/store",
+      destinationPath: "/repo/.swamp",
+      ...(sourceKept ? { sourceKept: true } : {}),
+    },
+  };
+}
+
+Deno.test("createDatastoreSetupRenderer: log mode says the external source was copied and left in place", async () => {
+  const renderer = createDatastoreSetupRenderer("log");
+  const lines = await captureConsole(() =>
+    consumeStream(toStream([relocated(true)]), renderer.handlers())
+  );
+  const text = lines.join("\n");
+  assertStringIncludes(text, "Copied from: /nas/store (left in place)");
+  assertEquals(text.includes("Moved from:"), false);
+});
+
+Deno.test("createDatastoreSetupRenderer: log mode still says moved for a cleaned-up source", async () => {
+  const renderer = createDatastoreSetupRenderer("log");
+  const lines = await captureConsole(() =>
+    consumeStream(toStream([relocated(false)]), renderer.handlers())
+  );
+  assertStringIncludes(lines.join("\n"), "Moved from: /nas/store");
+});
+
+Deno.test("createDatastoreSetupRenderer: json mode reports sourceKept", async () => {
+  const renderer = createDatastoreSetupRenderer("json");
+  const lines = await captureConsole(() =>
+    consumeStream(toStream([relocated(true)]), renderer.handlers())
+  );
+  assertEquals(JSON.parse(lines.join("\n")).sourceKept, true);
+});

@@ -136,7 +136,11 @@ export class DefaultDataWriter implements DataWriter {
     );
 
     this.finalized = true;
-    return this.buildHandle(saveResult.version, content.length);
+    return this.buildHandle(
+      saveResult.version,
+      content.length,
+      saveResult.checksum,
+    );
   }
 
   writeText(text: string): Promise<DataHandle> {
@@ -311,7 +315,11 @@ export class DefaultDataWriter implements DataWriter {
     });
   }
 
-  private buildHandle(version: number, size: number): DataHandle {
+  private buildHandle(
+    version: number,
+    size: number,
+    sha256?: string,
+  ): DataHandle {
     return {
       name: this.options.name,
       specName: this.options.specName,
@@ -319,6 +327,7 @@ export class DefaultDataWriter implements DataWriter {
       dataId: this.dataId,
       version,
       size,
+      ...(sha256 !== undefined ? { sha256 } : {}),
       tags: { ...this.options.tags },
       metadata: {
         contentType: this.options.contentType,
