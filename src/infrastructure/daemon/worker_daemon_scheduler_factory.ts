@@ -22,17 +22,20 @@ import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import { UserError } from "../../domain/errors.ts";
 import { LaunchdWorkerScheduler } from "./launchd_worker_scheduler.ts";
 import { SystemdWorkerScheduler } from "./systemd_worker_scheduler.ts";
+import { UnsupportedPlatformWorkerScheduler } from "./unsupported_platform_worker_scheduler.ts";
 import { hasSystemctl } from "./has_systemctl.ts";
 
 export interface WorkerDaemonSchedulerOptions {
   mode?: LaunchdMode;
+  os?: typeof Deno.build.os;
 }
 
 export async function createWorkerDaemonScheduler(
   options?: WorkerDaemonSchedulerOptions,
 ): Promise<WorkerDaemonScheduler> {
   const mode = options?.mode ?? "agent";
-  switch (Deno.build.os) {
+  const os = options?.os ?? Deno.build.os;
+  switch (os) {
     case "darwin":
       return new LaunchdWorkerScheduler(mode);
     case "linux":
@@ -45,8 +48,6 @@ export async function createWorkerDaemonScheduler(
           "  swamp issue feature",
       );
     default:
-      throw new UserError(
-        `swamp worker daemon is not yet supported on ${Deno.build.os}`,
-      );
+      return new UnsupportedPlatformWorkerScheduler(os);
   }
 }
