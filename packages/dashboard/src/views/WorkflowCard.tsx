@@ -30,6 +30,7 @@ import {
   RunningBadge,
 } from "../components/RunHistoryBar.tsx";
 import { Skeleton, SkeletonRunHistory } from "../components/Skeleton.tsx";
+import { FailureLink } from "../components/FailureLink.tsx";
 import { StatusPill } from "../components/StatusPill.tsx";
 import { TriggerBadge } from "../components/TriggerBadge.tsx";
 import {
@@ -98,6 +99,8 @@ export function WorkflowCard(
   const runs = summary?.runs ?? 0;
   const running = summary?.running ?? 0;
   const last = summary?.recent[0];
+  const lastFinished = summary?.recent.find((r) => !UNFINISHED.has(r.status));
+  const failedRun = lastFinished?.status === "failed" ? lastFinished : null;
   const lastStartedAt = summary?.lastStartedAt ?? last?.startedAt;
 
   const onCardClick = (e: MouseEvent<HTMLElement>) => {
@@ -122,6 +125,9 @@ export function WorkflowCard(
           </RouteLink>
         </h3>
         <span className="wf-card-status">
+          {failedRun && !summaryPending && (
+            <FailureLink workflowName={workflow.name} runId={failedRun.runId} />
+          )}
           {summaryPending
             ? <Skeleton width={64} height={18} radius={4} />
             : running > 0
@@ -211,6 +217,8 @@ export function WorkflowCard(
     </article>
   );
 }
+
+const UNFINISHED = new Set(["running", "suspended", "pending"]);
 
 /** Cron expression, webhook route(s), or Manual. */
 function TriggerList(

@@ -26,6 +26,7 @@ import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import "../styles/workflows.css";
 import { RouteLink } from "../components/RouteLink";
+import { FailureLink } from "../components/FailureLink";
 import { RunHistoryBar } from "../components/RunHistoryBar";
 import { EmptyState } from "../components/EmptyState";
 import {
@@ -253,7 +254,7 @@ export function WorkflowDetail(
               <SkeletonList rows={5} label="Loading runs" />
             </>
           )}
-          <div>
+          <div className="wf-detail-runs">
             {!runsPending && recentRuns.length === 0 && (
               <EmptyState title="No runs yet">
                 Runs of this workflow will appear here.
@@ -296,6 +297,14 @@ export function WorkflowDetail(
                     </time>
                   )}
                 </div>
+                {run.status === "failed"
+                  ? (
+                    <FailureLink
+                      workflowName={run.workflowName}
+                      runId={run.runId}
+                    />
+                  )
+                  : <span />}
                 <span className="run-duration">
                   {run.duration !== undefined
                     ? formatDuration(run.duration)

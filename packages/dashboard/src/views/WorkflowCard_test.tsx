@@ -170,3 +170,36 @@ Deno.test("WorkflowCard: pending summary shows placeholders, unavailable shows n
   assertEquals(unavailable.includes("wf-card-foot"), false);
   assertEquals(unavailable.includes("run-history"), false);
 });
+
+Deno.test("WorkflowCard: a failed last finished run links straight to its failure", () => {
+  const failing = renderToStaticMarkup(
+    <WorkflowCard
+      workflow={workflow}
+      facets={scheduled}
+      summary={{
+        ...summary,
+        running: 1,
+        recent: [
+          { runId: "run-live", status: "running" },
+          ...summary.recent,
+        ],
+      }}
+      now={NOW}
+    />,
+  );
+  assertStringIncludes(
+    failing,
+    '/workflows/deploy-api/runs/run-newest-0001?focus=failure" title',
+  );
+  assertStringIncludes(failing, ">View failure</a>");
+
+  const passing = renderToStaticMarkup(
+    <WorkflowCard
+      workflow={workflow}
+      facets={scheduled}
+      summary={{ ...summary, recent: [...summary.recent].reverse() }}
+      now={NOW}
+    />,
+  );
+  assertEquals(passing.includes("View failure"), false);
+});
