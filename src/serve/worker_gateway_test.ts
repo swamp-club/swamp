@@ -794,6 +794,26 @@ Deno.test("WorkerGateway: worker.drain sets status to draining", async () => {
   );
 });
 
+Deno.test("WorkerGateway: a repeated worker.drain changes nothing", async () => {
+  const draining: WorkerSnapshot[] = [];
+  const h = createHarness({
+    onWorkerDraining: (w) => draining.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  await workerChannel.call(RemoteMethod.drain, {});
+  await workerChannel.call(RemoteMethod.drain, {});
+
+  assertEquals(draining.length, 1);
+  assertEquals(
+    h.transitions.filter((t) =>
+      t.methodName === "set_status" && t.inputs.status === "draining"
+    ).length,
+    1,
+  );
+});
+
 Deno.test("WorkerGateway: a refused dispatch names why the worker could not take it (swamp-club#3156)", async () => {
   const h = createHarness({
     graceWindowMs: 60_000,

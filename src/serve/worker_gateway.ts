@@ -845,7 +845,9 @@ export class WorkerGateway {
 
   async #handleDrain(workerName: string): Promise<void> {
     const entry = this.#workers.get(workerName);
-    if (!entry) return;
+    // A worker calls again when its in-flight work ends, to confirm its last
+    // response arrived before it closes; the repeat changes nothing.
+    if (!entry || entry.status === "draining") return;
     logger.info("Worker {worker} is draining", { worker: workerName });
     entry.status = "draining";
     await this.#recordTransition(() =>

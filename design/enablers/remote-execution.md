@@ -1002,9 +1002,12 @@ runners to finish (`activeRunners === 0`).
 **Drain**: a worker that starts draining (a signal, `maxDispatches` or the idle
 timeout) sends `worker.drain` at once, before its active runners finish. The
 orchestrator marks it `draining` for the whole drain, so the scheduler offers it
-no new step while its in-flight work completes. The worker closes the
-connection when that work is done, and the gateway removes a draining worker
-on disconnect with no grace window.
+no new step while its in-flight work completes. When that work is done the
+worker sends `worker.drain` a second time and waits for the answer before it
+closes the connection: frames arrive in order, so the answer proves the last
+dispatch response reached the orchestrator, and a worker process that exits
+straight after closing cannot lose it. The orchestrator ignores the repeat. The
+gateway removes a draining worker on disconnect with no grace window.
 
 ## Shipping extension code
 
