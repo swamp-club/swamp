@@ -320,7 +320,8 @@ export function StepRow({ step, ctx }: { step: StepRun; ctx: StepContext }) {
             type="button"
             className="rs-log-toggle"
             aria-expanded={expanded}
-            aria-controls={logId}
+            // The log is only in the page while open.
+            aria-controls={expanded ? logId : undefined}
             onClick={() => setExpanded((e) => !e)}
           >
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
