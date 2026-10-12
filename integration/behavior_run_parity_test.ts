@@ -343,19 +343,23 @@ Deno.test({
 });
 
 Deno.test({
-  name:
-    "behaviorRunCommand: sets Deno.exitCode 1 when the server-side run fails",
+  name: "both run leaves set Deno.exitCode 1 when the server-side run fails",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
     const server = payloadCapturingServer({ status: "failed" });
     const previousExitCode = Deno.exitCode;
-    Deno.exitCode = 0;
     try {
-      await root().parse(
-        REMOTE_ARGS(["behavior", "run", "echo-model", "echo"], server.url),
-      );
-      assertEquals(Deno.exitCode, 1);
+      for (
+        const positionals of [
+          ["model", "method", "run", "echo-model", "echo"],
+          ["behavior", "run", "echo-model", "echo"],
+        ]
+      ) {
+        Deno.exitCode = 0;
+        await root().parse(REMOTE_ARGS(positionals, server.url));
+        assertEquals(Deno.exitCode, 1, positionals.join(" "));
+      }
     } finally {
       Deno.exitCode = previousExitCode;
       await server.shutdown();

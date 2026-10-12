@@ -108,69 +108,64 @@ type AnyOptions = any;
  * spellings of one invocation, not two commands (swamp-club#3265).
  */
 export interface RunCommandSyntax {
-  /** `[title, command line]` pairs shown by `--help`. */
-  readonly examples: ReadonlyArray<readonly [string, string]>;
-  /** Renders the direct-type invocation named in the missing-name error. */
-  readonly directTypeUsage: (type: string, method: string) => string;
+  /** Renders `swamp … <model> <method>` for a named definition. */
+  readonly invocation: (model: string, method: string) => string;
+  /** Renders `swamp … @<type> … <method> <name>` for direct type execution. */
+  readonly directInvocation: (
+    type: string,
+    method: string,
+    name: string,
+  ) => string;
 }
 
 /** The legacy spelling: `swamp model [@type] method run`. */
 export const MODEL_METHOD_RUN_SYNTAX: RunCommandSyntax = {
-  examples: [
-    ["Run a method", "swamp model method run my-server getSystemInfo"],
-    [
-      "Run with inputs",
-      "swamp model method run my-server deploy --input env=prod",
-    ],
-    [
-      "Direct type execution",
-      "swamp model @swamp/aws/ec2/vpc method run create my-vpc --input region=us-east-1",
-    ],
-    [
-      "Pass an array or object input (JSON-typed via :json suffix)",
-      'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
-    ],
-    [
-      "Pipe inputs from stdin",
-      'echo \'{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
-    ],
-    [
-      "Batch run via NDJSON from stdin",
-      'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
-    ],
-  ],
-  directTypeUsage: (type, method) =>
-    `swamp model ${type} method run ${method} <name>`,
+  invocation: (model, method) => `swamp model method run ${model} ${method}`,
+  directInvocation: (type, method, name) =>
+    `swamp model ${type} method run ${method} ${name}`,
 };
 
 /** The preferred spelling: `swamp behavior run [@type]`. */
 export const BEHAVIOR_RUN_SYNTAX: RunCommandSyntax = {
-  examples: [
-    ["Run a method", "swamp behavior run my-server getSystemInfo"],
+  invocation: (model, method) => `swamp behavior run ${model} ${method}`,
+  directInvocation: (type, method, name) =>
+    `swamp behavior run ${type} ${method} ${name}`,
+};
+
+/** The `--help` examples, written once and rendered for each surface. */
+function examples(
+  s: RunCommandSyntax,
+): ReadonlyArray<readonly [string, string]> {
+  return [
+    ["Run a method", s.invocation("my-server", "getSystemInfo")],
     [
       "Run with inputs",
-      "swamp behavior run my-server deploy --input env=prod",
+      `${s.invocation("my-server", "deploy")} --input env=prod`,
     ],
     [
       "Direct type execution",
-      "swamp behavior run @swamp/aws/ec2/vpc create my-vpc --input region=us-east-1",
+      `${
+        s.directInvocation("@swamp/aws/ec2/vpc", "create", "my-vpc")
+      } --input region=us-east-1`,
     ],
     [
       "Pass an array or object input (JSON-typed via :json suffix)",
-      'swamp behavior run my-server search --input \'keywords:json=["a","b"]\'',
+      `${
+        s.invocation("my-server", "search")
+      } --input 'keywords:json=["a","b"]'`,
     ],
     [
       "Pipe inputs from stdin",
-      'echo \'{"env":"prod"}\' | swamp behavior run my-server deploy --stdin',
+      `echo '{"env":"prod"}' | ${s.invocation("my-server", "deploy")} --stdin`,
     ],
     [
       "Batch run via NDJSON from stdin",
-      'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp behavior run my-server deploy --stdin',
+      `printf '{"env":"dev"}\\n{"env":"prod"}' | ${
+        s.invocation("my-server", "deploy")
+      } --stdin`,
     ],
-  ],
-  directTypeUsage: (type, method) =>
-    `swamp behavior run ${type} ${method} <name>`,
-};
+  ];
+}
 
 /**
  * Builds a method-run command for one CLI surface. Each call returns a new
@@ -178,10 +173,8 @@ export const BEHAVIOR_RUN_SYNTAX: RunCommandSyntax = {
  * under a second parent, so the two surfaces must never share one.
  */
 export function createModelMethodRunCommand(syntax: RunCommandSyntax) {
-  const command = new Command()
-    .name("run")
-    .description("Execute a method on a model");
-  for (const [title, example] of syntax.examples) {
+  const command = new Command().name("run");
+  for (const [title, example] of examples(syntax)) {
     command.example(title, example);
   }
   return command
@@ -312,7 +305,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
         if (isDirectExecution && !definitionNameArg) {
           throw new UserError(
             "Direct type execution requires a definition name: " +
-              syntax.directTypeUsage(modelOrType, methodName),
+              syntax.directInvocation(modelOrType, methodName, "<name>"),
           );
         }
 
