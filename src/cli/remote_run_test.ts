@@ -1326,6 +1326,45 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name:
+    "probeHandshakeStatus: does not follow a redirect, so pass-through headers stay with the server",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let elsewhereHit = false;
+    const elsewhere = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      () => {
+        elsewhereHit = true;
+        return new Response(null, { status: 401 });
+      },
+    );
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: {
+            Location: `http://127.0.0.1:${elsewhere.addr.port}/login`,
+          },
+        }),
+    );
+    try {
+      assertEquals(
+        await probeHandshakeStatus(`ws://127.0.0.1:${server.addr.port}`, {
+          "CF-Access-Client-Secret": "secret",
+        }),
+        302,
+      );
+      assertEquals(elsewhereHit, false);
+    } finally {
+      await server.shutdown();
+      await elsewhere.shutdown();
+    }
+  },
+});
+
 Deno.test("describeStatuslessFailure: classifies from what the tokenless probe got", () => {
   const ws = "ws://serve.test/";
   const wss = "wss://serve.test/";
@@ -1349,6 +1388,7 @@ Deno.test("describeStatuslessFailure: classifies from what the tokenless probe g
     ["401, token sent over wss", wss, 401, true, `${auth(wss)} (${original})`],
     ["401, token sent over ws", ws, 401, true, original],
     ["101 (no auth required)", wss, 101, true, original],
+    ["302 redirect", wss, 302, true, original],
     ["404", ws, 404, false, original],
   ];
   for (const [label, url, status, sentToken, expected] of cases) {

@@ -909,7 +909,8 @@ const HANDSHAKE_PROBE_TIMEOUT_MS = 3_000;
  * The probe never sends the `Authorization` header — the other headers (proxy
  * pass-through) are kept. Serve rejects a tokenless handshake before its
  * per-token rate limit and audit log, so the probe spends no login attempt
- * and cannot lock a token out.
+ * and cannot lock a token out. A server that needs no token accepts the
+ * probe (101) and the session closes as soon as the client does.
  */
 export async function probeHandshakeStatus(
   wsUrl: string,
@@ -937,6 +938,9 @@ export async function probeHandshakeStatus(
         "Sec-WebSocket-Version": "13",
         "Sec-WebSocket-Key": randomWebSocketKey(),
       },
+      // A WebSocket handshake never follows a redirect; following one would
+      // carry the pass-through headers (often proxy credentials) elsewhere.
+      redirect: "manual",
       signal: AbortSignal.timeout(HANDSHAKE_PROBE_TIMEOUT_MS),
     });
     await response.body?.cancel();
