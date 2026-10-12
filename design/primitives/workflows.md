@@ -1155,10 +1155,14 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
      with that slot;
    - the key's highest generation has reached the slot, and a claim that
      reads the slot was settled by this very signal: a step took it on
-     opening its wait and its run went on. This is looked for first, among
-     every claim of the key and not only the highest (`findTakerOf`),
-     because the key may have been claimed again since: a signal a wait took
-     is never delivered to another wait or stored a second time. The answer
+     opening its wait and its run went on. This is looked for among every
+     claim of the key and not only the highest (`findTakerOf`), because the
+     key may have been claimed again since: a signal a wait took is never
+     delivered to another wait or stored a second time. The key's holder is
+     read before the taker is looked for. A key that reads as free, or as
+     held by a later claim, has the outcome of every claim that reads the
+     slot written already, so a step cannot take the signal between the two
+     reads and be missed by both. The answer
      is the one a delivered signal gets, built from the claim, since the run
      may have ended and its registration with it. The result says `taken`,
      and the command suggests no resume;
@@ -1727,6 +1731,13 @@ every iteration would claim it.
   the key is free, and a signal for the next run looks the same. The pending
   answer's `lastWait` says how and when the key's last wait was settled, and
   a sender that needs a signal to land once reads it before sending again.
+- Two rare orders can still leave a signal held that no wait takes, or
+  stored again after a wait took it; both need a run's records to be removed
+  while a signal for its key is arriving. A release written between a
+  signaller's read of the key and its create lets a second signaller store in
+  the slot above, and the next claim takes that one. And a claim removed with
+  its run after it took a signal, before the signaller's second read, cannot
+  be found as the taker, so the signal arrives again for the next run.
 - A `swamp workflow signal --server` client from before pending signals does
   not understand a pending reply and fails after the signal was stored.
   Upgrade the clients that signal a workflow before one of its waits sets

@@ -418,6 +418,57 @@ Deno.test("holdEarlySignal: a signal a step took is not stored again when the ke
   assertEquals(store.pendingRecords.size, 1);
 });
 
+Deno.test("holdEarlySignal: a step that takes the signal between the signaller's reads of its outcome does not have it stored again", async () => {
+  // The step has claimed and registered when the signaller reads the key
+  // again, and takes the signal straight after the signaller's first or
+  // second read of the claim's outcome.
+  for (const afterRead of [1, 2]) {
+    const store = new InMemorySignalWaitStore();
+    let opened: WaitKeyClaim | undefined;
+    let reads = 0;
+    const racing = new Proxy(store, {
+      get(target, property, receiver) {
+        if (property === "createPendingRecord") {
+          return async (record: PendingSignal) => {
+            const stored = await target.createPendingRecord(record);
+            opened ??= (await claim(target, NOW)).claim;
+            return stored;
+          };
+        }
+        if (property === "findOutcome") {
+          return async (waitId: string) => {
+            const found = await target.findOutcome(waitId);
+            if (++reads === afterRead) {
+              const registration = await target.findRegistration(
+                opened!.waitId,
+              );
+              assert(registration.kind === "found");
+              await takePendingSignal(
+                target,
+                earlyWaitRef(registration.record)!,
+              );
+            }
+            return found;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const arrival = await holdEarlySignal(racing, signal(), NOW);
+    assert(
+      arrival.kind === "taken" || arrival.kind === "held",
+      `got ${arrival.kind} after read ${afterRead}`,
+    );
+    assertEquals(arrival.claim, opened);
+    // One record, and the wait's outcome is that signal.
+    assertEquals(store.pendingRecords.size, 1);
+    const outcome = await store.findOutcome(opened!.waitId);
+    assert(outcome.kind === "found" && outcome.record.kind === "accepted");
+    assertEquals(outcome.record.receipt.id, arrival.record?.receiptId);
+  }
+});
+
 Deno.test("holdEarlySignal: a wait opened under a later claim is reported, though the signal sits in a slot it does not read", async () => {
   const store = new InMemorySignalWaitStore();
   let second: WaitKeyClaim | undefined;

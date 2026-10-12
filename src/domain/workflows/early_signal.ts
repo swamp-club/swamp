@@ -314,13 +314,18 @@ export async function holdEarlySignal(
         again.record.kind === "release")
     ) return { kind: "pending", record: stored };
 
-    // The key has reached the slot. A claim that reads the slot may have
-    // taken this signal already, with the key held or settled again since:
-    // a signal a wait took is never delivered or stored a second time.
+    // The key has reached the slot. Its holder is read before the taker is
+    // looked for: a key that reads as free, or as held by a later claim,
+    // has the outcome of every claim that reads this slot written already,
+    // and an outcome is written once. Looking for the taker first would let
+    // a step take the signal between the two reads and be missed by both.
+    const holding = await findKeyHolder(store, workflowId, key);
+    if (holding.kind === "unreadable") return { kind: "unreadable" };
+    // A claim that reads the slot may have taken this signal, with the key
+    // held or settled again since: a signal a wait took is never delivered
+    // or stored a second time.
     const taker = await findTakerOf(store, stored);
     if (taker) return { kind: "taken", claim: taker, record: stored };
-
-    const holding = await findKeyHolder(store, workflowId, key);
     if (holding.kind === "held") {
       return { kind: "held", claim: holding.claim, record: stored };
     }
