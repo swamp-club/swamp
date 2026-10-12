@@ -31,7 +31,6 @@ import {
 import {
   describeTimeRange,
   type TimeRange,
-  useTimeBounds,
   useTimeRange,
 } from "../client/time_range";
 import { oneOf, useQueryState } from "../client/useQueryState";
@@ -48,6 +47,7 @@ import {
   useWorkflowFilter,
 } from "../components/FilterBar";
 import { RunStatusFilter } from "../components/RunStatusFilter";
+import { FailureLink } from "../components/FailureLink";
 import {
   type SkeletonColumn,
   SkeletonPills,
@@ -60,6 +60,7 @@ import {
   RUN_SOURCES,
   RUN_STATUSES,
   runSearchPayload,
+  runSearchWindow,
   type RunSourceFilter,
   type RunStatusFilter as StatusValue,
   statusCounts,
@@ -130,7 +131,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     SOURCE_PARAM,
   );
   const { range } = useTimeRange();
-  const bounds = useTimeBounds();
+  const searchWindow = runSearchWindow(range);
 
   // Runs are paged on the server, so the workflow filter becomes the exact
   // workflow names it selects. Until the catalog is in, a filter cannot be
@@ -166,8 +167,8 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
       status,
       source,
       workflows: workflowNames,
-      since: bounds.since,
-      until: bounds.until,
+      since: searchWindow.since,
+      until: searchWindow.until,
     }),
     { enabled },
   );
@@ -197,6 +198,11 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     { enabled: pageWorkflows.length > 0 },
   );
   const history = summariesByName(useKeepPrevious(historyRequest.summary));
+  // A serve without the run summary has no strips to show: drop the column.
+  const showHistory = !historyRequest.error;
+  const columns = showHistory
+    ? COLUMNS
+    : COLUMNS.filter((c) => c.header !== "Recent runs");
 
   // The seam for live updates: a stream of run events can call this (or
   // splice rows in) once serve pushes new executions.
@@ -315,7 +321,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
         <table className="data-table">
           <thead>
             <tr>
-              {COLUMNS.map((c) => (
+              {columns.map((c) => (
                 <th key={c.header} scope="col">{c.header}</th>
               ))}
             </tr>
@@ -361,27 +367,42 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
                     </RouteLink>
                   </td>
                   <td>
-                    <StatusPill status={run.status} />
+                    <span className="exec-status">
+                      <StatusPill status={run.status} />
+                      {run.status === "failed" && (
+                        <FailureLink
+                          workflowName={run.workflowName}
+                          runId={run.runId}
+                        />
+                      )}
+                    </span>
                   </td>
                   <td>
                     <TriggerBadge trigger={run.triggerSource} />
                   </td>
-                  <td className="exec-history">
-                    {recent
-                      ? (
-                        <RunHistoryBar
-                          runs={recent}
-                          workflowName={run.workflowName}
-                          slots={HISTORY_SLOTS}
-                          height={12}
-                          highlightRunId={run.runId}
-                          noun={`runs of ${run.workflowName}`}
-                        />
-                      )
-                      : historyRequest.loading
-                      ? <SkeletonRunHistory slots={HISTORY_SLOTS} height={12} />
-                      : null}
-                  </td>
+                  {showHistory && (
+                    <td className="exec-history">
+                      {recent
+                        ? (
+                          <RunHistoryBar
+                            runs={recent}
+                            workflowName={run.workflowName}
+                            slots={HISTORY_SLOTS}
+                            height={12}
+                            highlightRunId={run.runId}
+                            noun={`runs of ${run.workflowName}`}
+                          />
+                        )
+                        : historyRequest.loading
+                        ? (
+                          <SkeletonRunHistory
+                            slots={HISTORY_SLOTS}
+                            height={12}
+                          />
+                        )
+                        : null}
+                    </td>
+                  )}
                   <td className="mono exec-num">
                     {formatDuration(run.duration)}
                   </td>

@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   filterRowsByWorkflow,
   runSearchPayload,
+  runSearchWindow,
   statusCounts,
   workflowNamesForFilter,
 } from "./run_filters.ts";
@@ -189,5 +190,20 @@ Deno.test("statusCounts: maps totals to status filters", () => {
       suspended: 1,
       cancelled: 1,
     },
+  );
+});
+
+Deno.test("runSearchWindow: presets as durations, custom as ISO bounds", () => {
+  assertEquals(runSearchWindow({ kind: "preset", preset: "7d" }), {
+    since: "7d",
+  });
+  assertEquals(runSearchWindow({ kind: "preset", preset: "all" }), {});
+  assertEquals(
+    runSearchWindow({
+      kind: "custom",
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-10-02T00:00:00.000Z",
+    }),
+    { since: "2026-10-01T00:00:00.000Z", until: "2026-10-02T00:00:00.000Z" },
   );
 });

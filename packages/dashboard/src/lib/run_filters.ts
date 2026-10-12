@@ -122,6 +122,24 @@ export function runSearchPayload(q: RunSearchQuery): Record<string, unknown> {
   return payload;
 }
 
+/** The dashboard time range, as `client/time_range.ts` defines it. */
+export type RunWindowRange =
+  | { kind: "preset"; preset: string }
+  | { kind: "custom"; from: string; to: string };
+
+/**
+ * The `since`/`until` a run search sends for the dashboard time range. A
+ * preset goes as serve's relative duration ("7d"), which every serve
+ * accepts and which serve resolves against its own clock; a custom range
+ * goes as its ISO bounds. "all" sends neither.
+ */
+export function runSearchWindow(
+  range: RunWindowRange,
+): { since?: string; until?: string } {
+  if (range.kind === "custom") return { since: range.from, until: range.to };
+  return range.preset === "all" ? {} : { since: range.preset };
+}
+
 export interface RunTotals {
   runs: number;
   succeeded: number;

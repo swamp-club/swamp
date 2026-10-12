@@ -117,7 +117,7 @@
 .exec-row {
   cursor: pointer;
 }
-.exec-run-link {
+.exec-table td a.exec-run-link {
   font-size: 0.75rem;
   color: var(--accent);
   text-decoration: none;
@@ -127,13 +127,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.exec-workflow-link {
+.exec-table td a.exec-workflow-link {
   font-weight: 500;
   color: var(--text-1);
   text-decoration: none;
 }
-.exec-run-link:hover,
-.exec-workflow-link:hover {
+.exec-table td a.exec-run-link:hover,
+.exec-table td a.exec-workflow-link:hover {
+  color: var(--accent);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -185,4 +186,32 @@
   .exec-table {
     transition: none;
   }
+}
+
+.exec-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+a.failure-link,
+.data-table td a.failure-link {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--danger);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.failure-link::after {
+  content: " →";
+}
+a.failure-link:hover,
+.data-table td a.failure-link:hover {
+  color: var(--danger);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.failure-link:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
