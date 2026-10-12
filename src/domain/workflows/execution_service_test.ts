@@ -3057,6 +3057,69 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
   });
 });
 
+// --- forEach iterations run in list order (swamp-club#3318) ---
+
+/** Runs one forEach step over `items` one at a time; returns its step order. */
+async function forEachRunOrder(
+  stepName: string,
+  items: unknown[],
+): Promise<string[]> {
+  let order: string[] = [];
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "foreach-list-order",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: stepName,
+              task: StepTask.model("test-model", "run"),
+              forEach: { item: "op", in: "${{ inputs.ops }}" },
+              concurrency: 1,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const run = await service.execute(workflow.name, {
+      inputs: { ops: items },
+    });
+    assertEquals(run.status, "succeeded");
+    order = executor.executedSteps.map((s) => s.split("/")[1]);
+  });
+  return order;
+}
+
+Deno.test("execute: forEach iterations run in list order past ten items", async () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ id: i }));
+  assertEquals(
+    await forEachRunOrder("operate", items),
+    items.map((_, i) => `operate-${i}`),
+  );
+});
+
+Deno.test("execute: named forEach iterations run in list order, not name order", async () => {
+  assertEquals(
+    await forEachRunOrder("deploy-${{ self.op }}", ["prod", "dev", "staging"]),
+    ["deploy-prod", "deploy-dev", "deploy-staging"],
+  );
+});
+
 // --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
 
 /** A workflow whose one step is an approval gate, expanded per env or not. */

@@ -44,6 +44,12 @@ const NAME_POOL = [
   "papa",
 ];
 
+/**
+ * Group keys, like the forEach template a set of iterations shares. They sort
+ * on both sides of the name pool, so groups interleave with plain nodes.
+ */
+const GROUP_KEYS = ["aardvark-group", "omega-group", "zz-group"];
+
 const MAX_NODES = 8;
 
 function range(n: number): number[] {
@@ -65,6 +71,7 @@ function buildNodes(
   names: string[],
   weights: number[],
   edges: boolean[],
+  groups: (GraphNode["group"] | null)[],
 ): GraphNode[] {
   const nodes: GraphNode[] = [];
   let edgeIndex = 0;
@@ -75,7 +82,8 @@ function buildNodes(
         dependencies.push(names[j]);
       }
     }
-    nodes.push({ name: names[i], weight: weights[i], dependencies });
+    const group = groups[i] ?? undefined;
+    nodes.push({ name: names[i], weight: weights[i], dependencies, group });
   }
   return nodes;
 }
@@ -98,9 +106,18 @@ const arbGraph: fc.Arbitrary<GeneratedGraph> = fc
           maxLength: n,
         }),
         order: fc.shuffledSubarray(range(n), { minLength: n, maxLength: n }),
+        groups: fc.array(
+          fc.option(
+            fc.record({
+              key: fc.constantFrom(...GROUP_KEYS),
+              index: fc.integer({ min: 0, max: 12 }),
+            }),
+          ),
+          { minLength: n, maxLength: n },
+        ),
       })
-      .map(({ weights, edges, names, order }) => ({
-        nodes: buildNodes(names, weights, edges),
+      .map(({ weights, edges, names, order, groups }) => ({
+        nodes: buildNodes(names, weights, edges, groups),
         order,
       }))
   );
@@ -159,7 +176,7 @@ Deno.test("TopologicalSortService.sort: result is invariant under input order", 
   );
 });
 
-Deno.test("TopologicalSortService.sort: levels are ordered by weight then name", () => {
+Deno.test("TopologicalSortService.sort: levels are ordered by weight, then group key or name, then group index, then name", () => {
   fc.assert(
     fc.property(arbGraph, ({ nodes }) => {
       const byName = new Map(nodes.map((n) => [n.name, n]));
@@ -169,8 +186,17 @@ Deno.test("TopologicalSortService.sort: levels are ordered by weight then name",
           const prev = byName.get(level[i - 1])!;
           const curr = byName.get(level[i])!;
           if (prev.weight === curr.weight) {
+            const prevKey = prev.group?.key ?? prev.name;
+            const currKey = curr.group?.key ?? curr.name;
+            const byKey = prevKey.localeCompare(currKey);
+            const byIndex = (prev.group?.index ?? 0) -
+              (curr.group?.index ?? 0);
             assert(
-              prev.name.localeCompare(curr.name) <= 0,
+              byKey < 0 ||
+                (byKey === 0 &&
+                  (byIndex < 0 ||
+                    (byIndex === 0 &&
+                      prev.name.localeCompare(curr.name) <= 0))),
               `${prev.name} should sort before ${curr.name}`,
             );
           } else {
