@@ -558,6 +558,11 @@ export function getNestedValue(
     ) {
       return undefined;
     }
+    // A key the object does not hold is absent, whatever the prototype
+    // answers for it (`toString`, `constructor`).
+    if (!Object.hasOwn(current, part)) {
+      return undefined;
+    }
     current = (current as Record<string, unknown>)[part];
   }
   return current;

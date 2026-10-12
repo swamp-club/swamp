@@ -350,6 +350,12 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
     return true;
   }
   const memberType = getSchemaType(core);
+  const def = getSchemaDef(core);
+  // `z.coerce.string()`, `z.coerce.date()` and the like accept any value by
+  // converting it.
+  if (def?.coerce === true) {
+    return true;
+  }
   if (memberType === "object" || memberType === "record") {
     return isPlainObject(value);
   }
@@ -357,11 +363,6 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
     return Array.isArray(value);
   }
   if (SCALAR_TYPES.includes(memberType)) {
-    const def = getSchemaDef(core);
-    // `z.coerce.string()` accepts any value by converting it.
-    if (def.coerce === true) {
-      return true;
-    }
     if (typeof value === "object") {
       return false;
     }
@@ -653,7 +654,11 @@ function visitValue(
   if (schemaType === "object" && isPlainObject(value)) {
     const shape = def.shape ?? {};
     for (const [key, fieldSchema] of Object.entries(shape)) {
-      visitKey(fieldSchema, value[key], key, perElement);
+      // A key the value does not hold is absent, whatever the prototype
+      // answers for it (`toString`, `constructor`).
+      if (Object.hasOwn(value, key)) {
+        visitKey(fieldSchema, value[key], key, perElement);
+      }
     }
     const catchall = def.catchall;
     if (catchall) {

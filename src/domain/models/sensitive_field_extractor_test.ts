@@ -1389,3 +1389,13 @@ Deno.test("redactSensitiveValues: masks a value of the wrong shape whole", () =>
     "hunter2",
   ]);
 });
+
+Deno.test("redactSensitiveValues: does not add a key for an absent field named like a prototype member", () => {
+  const schema = z.object({
+    toString: z.string().meta({ sensitive: true }).optional(),
+    region: z.string(),
+  });
+  const redacted = redactSensitiveValues(schema, { region: "x" });
+  assertEquals(Object.keys(redacted), ["region"]);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { region: "x" }), []);
+});

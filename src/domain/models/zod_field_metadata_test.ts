@@ -739,3 +739,22 @@ Deno.test("findValuesWithMetadata: a transform before a pipe reports the stored 
   });
   assertEquals(markedPaths(schema, { csv: "a,b" }), ["csv"]);
 });
+
+Deno.test("findValuesWithMetadata: a declared key the value lacks is not read from the prototype", () => {
+  const schema = z.object({
+    toString: z.string().meta({ marked: true }).optional(),
+    constructor: z.string().meta({ marked: true }).optional(),
+    region: z.string(),
+  });
+  assertEquals(markedPaths(schema, { region: "x" }), []);
+  assertEquals(markedPaths(schema, { region: "x", toString: "s" }), [
+    "toString",
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: a coerced date member is kept for a value of any kind", () => {
+  const schema = z.object({
+    at: z.union([z.coerce.date().meta({ marked: true }), z.number()]),
+  });
+  assertEquals(markedPaths(schema, { at: 1700000000 }), ["at"]);
+});
