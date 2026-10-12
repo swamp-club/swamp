@@ -51,16 +51,29 @@ interface WorkerSnapshot {
   activeDispatchIds: string[];
 }
 
-interface ScheduleEntry {
+export interface ScheduleEntry {
   workflowId: string;
   workflowName: string;
   cronExpression: string;
+  /** Null while the schedule is paused. */
   nextRun: string | null;
   running: boolean;
   /** Unset on servers that predate queue reporting (swamp-club#3046). */
   queued?: number;
   oldestQueuedAt?: string | null;
   lastQueueDelayMs?: number | null;
+  /** Unset on servers without schedule pause/resume. */
+  paused?: boolean;
+  /** Whether the schedule comes from the workflow file or a serve override. */
+  source?: "workflow" | "override";
+}
+
+export interface WebhookEntry {
+  route: string;
+  /** The configured workflow id or name. */
+  workflow: string;
+  /** Signature verification scheme, when serve reports it. */
+  scheme?: string;
 }
 
 interface ComponentHealth {
@@ -82,7 +95,7 @@ export interface HealthSnapshot {
     enabled: boolean;
     schedules: ScheduleEntry[];
   };
-  webhooks: Array<{ route: string; workflow: string }>;
+  webhooks: WebhookEntry[];
   components: ComponentHealth[];
 }
 
