@@ -784,6 +784,9 @@ const PINNED_UNIT_OF_WORK_SCOPES: readonly string[] = [
   // only tests call it until the v3 opt-in), with its import and one call.
   "src/infrastructure/datastore_v3/commit_log_root.ts: <module>",
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
+  // swamp-club#3257: the same root runs onRefused with itself ambient, so a
+  // run's re-save stages into it.
+  "src/infrastructure/datastore_v3/commit_log_root.ts: settle",
 ];
 
 // libswamp use cases that run inside a unit of work (swamp-club#3025): every
@@ -939,6 +942,9 @@ const PINNED_CHECKPOINT_CALLS: readonly string[] = [
   // The v3 commit-log root's view handing checkpoint to its unit, which
   // commits the partitions touched so far (swamp-club#3240, dormant).
   "src/infrastructure/datastore_v3/commit_log_root.ts: runInCommitLogRoot",
+  // Before a run's root commits, its checkpoint finds a refusal to settle
+  // with onRefused (swamp-club#3257, dormant).
+  "src/infrastructure/datastore_v3/commit_log_root.ts: settleRefusals",
   // The catalog's SQLite WAL checkpoint, which shares the name and pushes
   // nothing.
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
@@ -993,6 +999,9 @@ const PINNED_TYPED_STAGER_REGISTRARS: readonly string[] = [
 const PINNED_TYPED_STAGER_LOOKUPS: readonly string[] = [
   "src/infrastructure/persistence/unit_of_work_scope.ts: boundTypedStager",
   "src/infrastructure/persistence/unit_of_work_scope.ts: signalChange",
+  // swamp-club#3257: whether a unit is v3, which withUnitOfWork asks to end
+  // it as decision 5 says.
+  "src/infrastructure/persistence/unit_of_work_scope.ts: takesTypedChanges",
 ];
 
 // Who marks a context as one that refuses writes outside a unit: only the

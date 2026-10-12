@@ -31,10 +31,12 @@ import {
   leaseOp,
   MAX_INLINE_BYTES,
   type PutOp,
+  putOp,
   tombstoneOp,
 } from "../../domain/datastore_v3/op.ts";
 import { partitionOf } from "../../domain/datastore_v3/partition_key.ts";
 import {
+  DATA_ID,
   dataKey,
   MemoryStorage,
   modelCommit,
@@ -46,7 +48,11 @@ import {
   versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
 import { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
-import type { ContentSource } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import {
+  type ContentSource,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
 import {
   commitLogParentFor,
@@ -58,9 +64,12 @@ import {
   AT,
   contextHook,
   MemorySink,
+  RUN_ID,
+  runIntent,
   runPartition,
   runPut,
   unitOptions,
+  WORKFLOW_ID,
   WRITER,
 } from "./commit_log_test_helpers.ts";
 
@@ -530,7 +539,8 @@ Deno.test("createCommitLogUnitOfWork: a child's batch is never split when it is 
   );
 });
 
-Deno.test("createCommitLogUnitOfWork: a refused partition is dropped, so the next checkpoint commits the partitions after it", async () => {
+/** A unit whose model partition is refused (stale fence) at its next flush. */
+async function refusingModel() {
   const sink = new MemorySink();
   await sink.append(
     modelCommit(1, [await savePut("seed", 1)], { fence: 5 }),
@@ -539,12 +549,184 @@ Deno.test("createCommitLogUnitOfWork: a refused partition is dropped, so the nex
     contextHook(),
     unitOptions(sink, memory(), { fence: 3 }),
   );
-  await uow.stageOp({ partition: MODEL, op: await savePut("a", 1) });
+  await uow.stageOps([
+    { partition: MODEL, op: await savePut("a", 1) },
+    { partition: MODEL, op: versionOp("a", 1) },
+  ]);
+  return { sink, uow };
+}
+
+const AUTO_ID = "55555555-5555-4555-8555-555555555555";
+const AUTO = partitionOf({ kind: "definition", id: AUTO_ID });
+
+/** A put in an auto-definition partition, which no fence refuses here. */
+function autoPut(): Promise<PutOp> {
+  return putOp({
+    intent: createIntent({
+      kind: "auto-definition.save",
+      autoDefinition: { id: AUTO_ID },
+    }),
+    key: RecordKey.create(`auto-definitions/${AUTO_ID}.yaml`),
+    inline: btoa("auto"),
+  });
+}
+
+Deno.test("createCommitLogUnitOfWork: a refused partition holds the run records back for the unit's life, until acknowledged (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
   await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
-  await assertRejects(() => uow.checkpoint(), CommitRejectedError);
+  const error = await assertRejects(
+    () => uow.checkpoint(),
+    PartitionsRefusedError,
+  );
+  // Still a CommitRejectedError with the refusal's reason.
+  assert(error instanceof CommitRejectedError);
+  assertEquals(error.reason, "stale-fence");
+  assertEquals(
+    error.refusals.map((r) => [r.partition.toString(), r.reason, r.versions]),
+    [[MODEL.toString(), "stale-fence", [{ dataId: DATA_ID, version: 1 }]]],
+  );
+  assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
+  // A later save of the run still names what the refusal dropped: held too.
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r2") });
+  const again = await assertRejects(
+    () => uow.checkpoint(),
+    PartitionsRefusedError,
+  );
+  assertEquals(again.refusals.map((r) => r.partition.toString()), [
+    MODEL.toString(),
+  ]);
+  assertEquals(sink.commitsOf(runPartition()), []);
+  uow.acknowledgeRefusals();
   await uow.commit();
-  assertEquals(sink.commitsOf(runPartition()).length, 1);
+  assertEquals(sink.commitsOf(runPartition()).length, 2);
   assertEquals(sink.commitsOf(MODEL).length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: after a refusal the flush still commits the other partitions (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
+  await uow.stageOp({ partition: AUTO, op: await autoPut() });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  assertEquals(sink.commitsOf(AUTO).length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: a root that commits without acknowledging throws the refusal and commits no run record (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  const error = await assertRejects(
+    () => uow.commit(),
+    PartitionsRefusedError,
+  );
+  assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
+  assertEquals(sink.commitsOf(runPartition()), []);
+});
+
+Deno.test("createCommitLogUnitOfWork: a re-save of a held run supersedes the held record, and the run's other changes commit with it (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
+  const key = RecordKey.create(
+    `workflow-runs/${WORKFLOW_ID}/workflow-run-${RUN_ID}.yaml`,
+  );
+  const runRecord = (source: ContentSource) => ({
+    partition: runPartition(),
+    put: { intent: runIntent(), key, content: source },
+  });
+  const held = countedStream(new TextEncoder().encode("names refused data"));
+  await uow.stageOp(runRecord(held));
+  // Another key of the run's partition, as its snapshot is.
+  await uow.stageOp({
+    partition: runPartition(),
+    op: await runPut("snapshot"),
+  });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  await uow.stageOp(runRecord(new TextEncoder().encode("step failed")));
+  uow.acknowledgeRefusals();
+  await uow.commit();
+  assertEquals(held.opened, 0);
+  // The held group (now just the snapshot) commits, then the re-save.
+  assertEquals(
+    sink.commitsOf(runPartition()).flatMap((commit) =>
+      commit.ops.map((op) => op.kind === "put" ? op.key.toString() : op.kind)
+    ),
+    [
+      `workflow-runs/${WORKFLOW_ID}/${RUN_ID}.yaml`,
+      key.toString(),
+    ],
+  );
+});
+
+Deno.test("createCommitLogUnitOfWork: an unacknowledged refusal is reported with every later one, and every flush throws until acknowledged (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  // The caller carried on; nothing new is refused, but the flush still says
+  // so, since the refusal was never acknowledged.
+  await uow.stageOp({ partition: AUTO, op: await autoPut() });
+  const again = await assertRejects(
+    () => uow.checkpoint(),
+    PartitionsRefusedError,
+  );
+  assertEquals(sink.commitsOf(AUTO).length, 1);
+  assertEquals(again.refusals.map((r) => r.partition.toString()), [
+    MODEL.toString(),
+  ]);
+  // A second refusal of the same partition is listed with the first.
+  await uow.stageOps([
+    { partition: MODEL, op: await savePut("b", 1) },
+    { partition: MODEL, op: versionOp("b", 1) },
+  ]);
+  const both = await assertRejects(
+    () => uow.checkpoint(),
+    PartitionsRefusedError,
+  );
+  assertEquals(both.refusals.length, 2);
+  uow.acknowledgeRefusals();
+  await uow.commit();
+});
+
+Deno.test("createCommitLogUnitOfWork: a transient failure after a refusal in the same flush surfaces the refusal, with the failure as its cause (swamp-club#3257)", async () => {
+  const { sink, uow } = await refusingModel();
+  await uow.stageOp({ partition: AUTO, op: await autoPut() });
+  let fail = true;
+  sink.beforeAppend = (commit) => {
+    if (fail && commit.partition.equals(AUTO)) throw new Error("disk full");
+  };
+  const error = await assertRejects(
+    () => uow.checkpoint(),
+    PartitionsRefusedError,
+  );
+  assertEquals(error.refusals.map((r) => r.partition.toString()), [
+    MODEL.toString(),
+  ]);
+  assert(error.cause instanceof Error);
+  assertEquals(error.cause.message, "disk full");
+  // The failed group stays pending and lands once the refusal is settled.
+  fail = false;
+  uow.acknowledgeRefusals();
+  await uow.commit();
+  assertEquals(sink.commitsOf(AUTO).length, 1);
+});
+
+Deno.test("createCommitLogUnitOfWork: only a root acknowledges refusals, and abandon forgets them (swamp-club#3257)", async () => {
+  const hook = contextHook();
+  const sink = new MemorySink();
+  const root = createCommitLogUnitOfWork(hook, unitOptions(sink, memory()));
+  const child = createCommitLogUnitOfWork(hook, {
+    ...unitOptions(sink, memory()),
+    parent: root,
+  });
+  try {
+    await assertRejects(
+      () => Promise.resolve().then(() => child.acknowledgeRefusals()),
+      Error,
+      "child unit of work",
+    );
+  } finally {
+    await child.abandon();
+    await root.abandon();
+  }
+  const { uow } = await refusingModel();
+  await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
+  await uow.abandon();
 });
 
 /** Makes another writer append to MODEL before each of the next `n` appends. */
@@ -816,14 +998,17 @@ Deno.test("createCommitLogUnitOfWork: a refused split drops the splits formed wi
   await uow.stageOp({ partition: runPartition(), op: await runPut("r") });
   await assertRejects(() => uow.checkpoint(), CommitRejectedError);
   // The second split was formed with the refused one: dropped. The run
-  // partition, formed in the same flush, still commits.
-  await uow.checkpoint();
+  // partition, formed in the same flush, is held until the refusal is
+  // acknowledged (swamp-club#3257).
+  await assertRejects(() => uow.checkpoint(), PartitionsRefusedError);
   assertEquals(sink.commitsOf(MODEL).length, 1);
-  assertEquals(sink.commitsOf(runPartition()).length, 1);
+  assertEquals(sink.commitsOf(runPartition()), []);
   // A batch staged after the refusal forms a group of its own and lands.
   await uow.stageOp({ partition: MODEL, op: await savePut("later", 1) });
+  uow.acknowledgeRefusals();
   await uow.commit();
   assertEquals(sink.commitsOf(MODEL).length, 2);
+  assertEquals(sink.commitsOf(runPartition()).length, 1);
 });
 
 /** A stream source that counts how often it was opened. */

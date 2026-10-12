@@ -28,6 +28,7 @@ import type {
   UnitOfWork,
 } from "../domain/datastore/unit_of_work.ts";
 import { legacyUnitOfWorkParent } from "../infrastructure/persistence/legacy_unit_of_work.ts";
+import { typedStagers } from "../infrastructure/persistence/unit_of_work_binding.ts";
 import {
   repoUnitOfWorkFactory,
   runInRootUnitOfWork,
@@ -52,7 +53,7 @@ type CountingUnit = UnitOfWork & { commits: number; abandons: number };
  * A unit of work that counts commits and abandons, plus a context that opens
  * them.
  */
-function countingContext(): {
+function countingContext(options: { typed?: boolean } = {}): {
   ctx: LibSwampContext;
   units: CountingUnit[];
 } {
@@ -77,6 +78,10 @@ function countingContext(): {
         },
         staged: () => [...staged],
       };
+      // A unit that takes typed changes is a v3 commit-log unit.
+      if (options.typed) {
+        typedStagers.register(uow, () => Promise.resolve());
+      }
       units.push(uow);
       return uow;
     },
@@ -349,4 +354,46 @@ Deno.test("withUnitOfWork: when the consumer stops early and the generator's fin
   );
   assertEquals(units[0].commits, 0);
   assertEquals(units[0].abandons, 1);
+});
+
+Deno.test("withUnitOfWork: a v3 unit commits on a terminal outcome, including completed then return() (swamp-club#3257)", async () => {
+  for (const kind of ["completed", "suspended", "cancelled"] as const) {
+    const { ctx, units } = countingContext({ typed: true });
+    await drain(withUnitOfWork(ctx, () => endsOn(kind)));
+    assertEquals([units[0].commits, units[0].abandons], [1, 0], kind);
+  }
+  const { ctx, units } = countingContext({ typed: true });
+  async function* body(): AsyncGenerator<Event> {
+    yield { kind: "completed" };
+    yield { kind: "step", seen: undefined };
+  }
+  // result() stops at completed with return().
+  await result(withUnitOfWork(ctx, body));
+  assertEquals([units[0].commits, units[0].abandons], [1, 0]);
+});
+
+Deno.test("withUnitOfWork: a v3 unit abandons on an error event, a throw, or a stop before any terminal outcome (swamp-club#3257)", async () => {
+  const errored = countingContext({ typed: true });
+  async function* failing(): AsyncGenerator<Event> {
+    yield { kind: "completed" };
+    yield { kind: "error", message: "failed" };
+  }
+  await drain(withUnitOfWork(errored.ctx, failing));
+  assertEquals([errored.units[0].commits, errored.units[0].abandons], [0, 1]);
+
+  const thrown = countingContext({ typed: true });
+  async function* throwing(): AsyncGenerator<Event> {
+    yield { kind: "completed" };
+    throw new Error("boom");
+  }
+  await assertRejects(() => drain(withUnitOfWork(thrown.ctx, throwing)));
+  assertEquals([thrown.units[0].commits, thrown.units[0].abandons], [0, 1]);
+
+  const stopped = countingContext({ typed: true });
+  async function* body(): AsyncGenerator<Event> {
+    yield { kind: "step", seen: undefined };
+    yield { kind: "completed" };
+  }
+  for await (const _event of withUnitOfWork(stopped.ctx, body)) break;
+  assertEquals([stopped.units[0].commits, stopped.units[0].abandons], [0, 1]);
 });

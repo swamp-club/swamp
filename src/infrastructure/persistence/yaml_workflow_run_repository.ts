@@ -20,7 +20,13 @@
 import { ensureDir } from "@std/fs";
 import { basename, join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import { keyUnder, unlessUnpartitionable } from "./config_staging.ts";
+import { RunChanges } from "../../domain/datastore_v3/repository_changes.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import {
@@ -600,11 +606,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     await this.beforeSave?.(run);
     const path = this.getPath(workflowId, run.id);
-    await signalChange(this.markDirty, { kind: "write", path });
+    await signalChange(this.markDirty, { kind: "write", path }, {
+      typed: true,
+    });
 
     const dir = this.getRunsDir(workflowId);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
+    // On v3, whether the save creates the run's record or updates it.
+    const created = typedStagingActive(this.markDirty) &&
+      !(await fileExists(path));
 
     // Get the previous status to detect state changes
     let previousStatus: string | undefined;
@@ -624,6 +635,15 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
+    // A stream of the file just written: a later save of the run in the
+    // same unit supersedes it before it is read.
+    await stageTyped(this.markDirty, () => [
+      new RunChanges(workflowId, run.id).write(
+        created ? "run.create" : "run.update",
+        this.keyOf(path),
+        async () => (await Deno.open(path)).readable,
+      ),
+    ]);
 
     await this.updateIndexEntry(workflowId, run, path, content);
 
@@ -682,6 +702,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     return swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns);
   }
 
+  /** The record key of a run file: its path under the namespace root. */
+  private keyOf(path: string) {
+    return keyUnder(SWAMP_SUBDIRS.workflowRuns, this.baseDir, path);
+  }
+
+  /**
+   * On v3, the tombstone of a run record removed from `dir`, one batch per
+   * run. Removals find runs by directory and file name, so a workflow or
+   * run id that is not a UUID stages nothing (no repository put it) rather
+   * than abort the removal.
+   */
+  private async stageRunRemoval(
+    workflowId: string,
+    runId: string,
+    dir: string,
+  ): Promise<void> {
+    await stageTyped(this.markDirty, () => {
+      const change = unlessUnpartitionable(() =>
+        new RunChanges(workflowId, runId).remove(
+          this.keyOf(join(dir, `workflow-run-${runId}.yaml`)),
+        )
+      );
+      return change === undefined ? [] : [change];
+    });
+  }
+
   private getLocalIndexDir(workflowId: WorkflowId): string {
     return join(this.getLocalRunsDir(), workflowId);
   }
@@ -697,7 +743,14 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       return 0;
     }
 
-    await signalChange(this.markDirty, { kind: "remove", path: dir });
+    await signalChange(this.markDirty, { kind: "remove", path: dir }, {
+      typed: true,
+    });
+    // On v3, the runs the directory holds, listed before the removal: each
+    // record's removal is its own run's tombstone.
+    const runIds = typedStagingActive(this.markDirty)
+      ? await this.listRunIdsInDir(dir)
+      : [];
 
     try {
       await Deno.remove(dir, { recursive: true });
@@ -705,6 +758,10 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;
       }
+    }
+
+    for (const runId of runIds) {
+      await this.stageRunRemoval(workflowId, runId, dir);
     }
 
     const localDir = this.getLocalIndexDir(workflowId);
@@ -831,7 +888,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                   await signalChange(this.markDirty, {
                     kind: "remove",
                     path: yamlPath,
-                  });
+                  }, { typed: true });
                   try {
                     await Deno.remove(yamlPath);
                   } catch (error) {
@@ -847,6 +904,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 if (!options?.dryRun) {
                   await cleanupEmptyParentDirs(yamlPath, this.baseDir);
                   affectedDirs.add(dir);
+                  await this.stageRunRemoval(
+                    workflowId,
+                    runIdFromFileName(fileEntry.name),
+                    dir,
+                  );
                 }
                 deleted++;
                 bytesReclaimed += fileBytes;
@@ -878,7 +940,7 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
                 await signalChange(this.markDirty, {
                   kind: "remove",
                   path: yamlPath,
-                });
+                }, { typed: true });
                 try {
                   await Deno.remove(yamlPath);
                 } catch (error) {
@@ -894,6 +956,11 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
               if (!options?.dryRun) {
                 await cleanupEmptyParentDirs(yamlPath, this.baseDir);
                 affectedDirs.add(dir);
+                await this.stageRunRemoval(
+                  workflowId,
+                  runIdFromFileName(fileEntry.name),
+                  dir,
+                );
               }
 
               deleted++;
@@ -1569,4 +1636,14 @@ function indexToSummaries(index: WorkflowRunIndex): WorkflowRunSummary[] {
 /** Extracts the run ID from a `workflow-run-{runId}.yaml` filename. */
 function runIdFromFileName(fileName: string): string {
   return fileName.slice("workflow-run-".length, -".yaml".length);
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }

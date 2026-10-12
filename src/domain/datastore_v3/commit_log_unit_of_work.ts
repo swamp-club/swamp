@@ -31,6 +31,7 @@
 import type { UnitOfWork } from "../datastore/unit_of_work.ts";
 import type { Intent } from "./intent.ts";
 import type { Op, PutExpect } from "./op.ts";
+import { CommitRejectedError, type CommitRejection } from "./partition.ts";
 import type { PartitionKey } from "./partition_key.ts";
 import type { RecordKey } from "./record_key.ts";
 
@@ -100,6 +101,14 @@ export type TypedChange =
 export interface CommitLogUnitOfWork extends UnitOfWork {
   stageOp(change: TypedChange): Promise<void>;
   /**
+   * Releases the workflow run records held back since a partition was
+   * refused (decision 7, swamp-club#3257). The caller acknowledges once it
+   * has saved each affected run again so its record names no refused data;
+   * the re-save supersedes the held record. Only a root holds them, so a
+   * child refuses the call.
+   */
+  acknowledgeRefusals(): void;
+  /**
    * Records several typed changes as one batch, all or nothing. A
    * partition's changes split into several commits when they pass
    * `MAX_COMMIT_OPS`, but only between batches, so one batch always lands
@@ -110,4 +119,57 @@ export interface CommitLogUnitOfWork extends UnitOfWork {
   checkpoint(): Promise<void>;
   /** The typed changes staged so far, in staging order. */
   stagedOps(): readonly TypedChange[];
+}
+
+/** One partition whose commit a unit's flush refused. */
+export interface PartitionRefusal {
+  readonly partition: PartitionKey;
+  readonly reason: CommitRejection;
+  readonly message: string;
+  /**
+   * The data versions the refused changes recorded (their `data-version`
+   * ops), by data id: what a workflow run's steps name as data artifacts,
+   * so a run can mark the steps that wrote them failed.
+   */
+  readonly versions: readonly {
+    readonly dataId: string;
+    readonly version: number;
+  }[];
+}
+
+/**
+ * A unit's flush met one or more refused partitions (swamp-club#3257).
+ *
+ * - `refusals` are every non-run partition refused since the unit last
+ *   acknowledged, earlier flushes' included, and the run partitions this
+ *   flush refused: all that `acknowledgeRefusals` would clear.
+ * - `heldRuns` are the workflow run partitions not committed because a
+ *   refusal is unacknowledged: a run record must never name data its
+ *   partition refused (decision 7), and a run's record is rewritten whole on
+ *   each save, so it is held for the unit's lifetime, not one flush.
+ *
+ * It is a `CommitRejectedError` with the first refusal's reason, and its
+ * message carries each refusal's message, so a caller that handles one
+ * refusal handles it unchanged. `cause` is set when another failure in the
+ * same flush (a transient append error) stopped it after the refusal.
+ */
+export class PartitionsRefusedError extends CommitRejectedError {
+  constructor(
+    readonly refusals: readonly PartitionRefusal[],
+    readonly heldRuns: readonly PartitionKey[],
+    cause?: unknown,
+  ) {
+    if (refusals.length === 0) {
+      throw new Error("PartitionsRefusedError needs at least one refusal");
+    }
+    const held = heldRuns.length === 0 ? "" : `; ${heldRuns.length} workflow ` +
+      `run record(s) were held back, since they may name data a refused ` +
+      `partition did not record (${heldRuns.join(", ")})`;
+    super(
+      refusals[0].reason,
+      refusals.map((refusal) => refusal.message).join("; ") + held,
+    );
+    this.name = "PartitionsRefusedError";
+    if (cause !== undefined) this.cause = cause;
+  }
 }

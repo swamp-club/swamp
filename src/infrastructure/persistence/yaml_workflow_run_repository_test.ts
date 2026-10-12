@@ -41,7 +41,9 @@ import {
 import {
   pathExists,
   recordingUnitOfWork,
+  typedRecordingUnitOfWork,
 } from "./test_helpers/staged_change_helpers.ts";
+import type { TypedChange } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { runInUnitOfWork } from "./unit_of_work_scope.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -1694,6 +1696,161 @@ Deno.test("YamlWorkflowRunRepository.deleteOlderThan: stages a remove of each un
     assertEquals(uow.staged(), [{ kind: "remove", path }]);
     assertEquals(marks, [path]);
     assertEquals(await pathExists(path), false);
+  });
+});
+
+/** Each typed change's op kind, key and intent kind, for comparison. */
+function typedShape(change: TypedChange): Record<string, unknown> {
+  if ("put" in change) {
+    return {
+      partition: change.partition.toString(),
+      put: change.put.key.toString(),
+      intent: change.put.intent.kind,
+      expect: change.put.expect,
+    };
+  }
+  const op = change.op;
+  return op.kind === "tombstone"
+    ? {
+      partition: change.partition.toString(),
+      tombstone: op.key.toString(),
+      intent: op.intent.kind,
+      expect: op.expect,
+    }
+    : { op: op.kind };
+}
+
+async function contentOf(change: TypedChange): Promise<string> {
+  assert("put" in change);
+  const content = change.put.content;
+  const bytes = content instanceof Uint8Array
+    ? content
+    : new Uint8Array(await new Response(await content()).arrayBuffer());
+  return new TextDecoder().decode(bytes);
+}
+
+Deno.test("YamlWorkflowRunRepository.save: on v3, stages run.create then run.update streams of the written record, with no precondition (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const { markDirty, uow, batches, staged } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    const key = `workflow-runs/${workflow.id}/workflow-run-${run.id}.yaml`;
+    const partition = `run--${workflow.id}--${run.id}`;
+
+    await runInUnitOfWork(uow, async () => {
+      await repo.save(workflow.id, run);
+      run.start();
+      await repo.save(workflow.id, run);
+    });
+
+    assertEquals(staged, []);
+    assertEquals(batches.map((batch) => batch.map(typedShape)), [
+      [{ partition, put: key, intent: "run.create", expect: undefined }],
+      [{ partition, put: key, intent: "run.update", expect: undefined }],
+    ]);
+    // The content is a stream of the file, read when the unit commits: the
+    // record as the last save left it.
+    for (const [change] of batches) {
+      assert(!("put" in change && change.put.content instanceof Uint8Array));
+      assertEquals(
+        await contentOf(change),
+        await Deno.readTextFile(repo.getPath(workflow.id, run.id)),
+      );
+    }
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId: on v3, stages one run.delete tombstone per run, each its own batch (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const runs = [WorkflowRun.create(workflow), WorkflowRun.create(workflow)];
+    for (const run of runs) await seed.save(workflow.id, run);
+    const { markDirty, uow, batches, staged } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    await runInUnitOfWork(uow, () => repo.deleteAllByWorkflowId(workflow.id));
+
+    assertEquals(staged, []);
+    assertEquals(
+      batches.map((batch) => batch.map(typedShape)),
+      runs.map((run) => run.id).sort().map((runId) => [{
+        partition: `run--${workflow.id}--${runId}`,
+        tombstone: `workflow-runs/${workflow.id}/workflow-run-${runId}.yaml`,
+        intent: "run.delete",
+        expect: undefined,
+      }]),
+    );
+  });
+});
+
+Deno.test("YamlWorkflowRunRepository.deleteOlderThan: on v3, tombstones each removed record, terminal or unparseable, and stages nothing for a stray or a dry run (swamp-club#3257)", async () => {
+  await withTempDir(async (dir) => {
+    const workflow = createTestWorkflow();
+    const seed = new YamlWorkflowRunRepository(dir);
+    const finished = WorkflowRun.create(workflow);
+    finished.start();
+    finished.endAsCancelled("test");
+    await seed.save(workflow.id, finished);
+    const runsDir = dirname(seed.getPath(workflow.id, finished.id));
+    const unparseable = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(runsDir, `workflow-run-${unparseable}.yaml`),
+      "",
+    );
+    // A stray file whose name holds no UUID: no repository put it.
+    await Deno.writeTextFile(join(runsDir, "workflow-run-stray.yaml"), "");
+    const cutoff = new Date(Date.now() + 60_000);
+
+    const dry = typedRecordingUnitOfWork();
+    const dryRepo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      dry.markDirty,
+    );
+    await runInUnitOfWork(
+      dry.uow,
+      () => dryRepo.deleteOlderThan(cutoff, { dryRun: true }),
+    );
+    assertEquals(dry.batches, []);
+
+    const { markDirty, uow, batches } = typedRecordingUnitOfWork();
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+    const result = await runInUnitOfWork(
+      uow,
+      () => repo.deleteOlderThan(cutoff),
+    );
+
+    assertEquals(result.deleted, 3);
+    const tombstoned = batches.flat().map(typedShape);
+    assertEquals(
+      tombstoned.sort((a, b) =>
+        String(a.tombstone).localeCompare(String(b.tombstone))
+      ),
+      [finished.id, unparseable].sort().map((runId) => ({
+        partition: `run--${workflow.id}--${runId}`,
+        tombstone: `workflow-runs/${workflow.id}/workflow-run-${runId}.yaml`,
+        intent: "run.delete",
+        expect: undefined,
+      })),
+    );
   });
 });
 

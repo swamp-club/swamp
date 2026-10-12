@@ -1716,6 +1716,44 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Records that data the run's steps wrote never reached the datastore: a
+   * v3 commit refused the partition holding it (decision 7 of "v3 domain
+   * model", swamp-club#3257). Each step whose data artifacts name one of
+   * `refused` (by data id and version) fails with `reason`, its job fails,
+   * and a run that had succeeded fails, so the record the run commits
+   * afterwards names no refused data as a success. A suspended or cancelled
+   * run keeps its status, since that is its outcome; only its steps fail. A
+   * step that already failed keeps its error. Workflow-scope report artifacts that name
+   * refused data fail the run too. Returns the steps it failed; a run that
+   * names none is unchanged.
+   */
+  failStepsNamingRefusedData(
+    refused: readonly { readonly dataId: string; readonly version: number }[],
+    reason: string,
+  ): StepRun[] {
+    const keys = new Set(refused.map((v) => `${v.dataId}@${v.version}`));
+    const names = (artifacts: ReadonlyArray<DataArtifactRef>) =>
+      artifacts.some((a) => keys.has(`${a.dataId}@${a.version}`));
+    const failed: StepRun[] = [];
+    for (const job of this._jobs) {
+      // A step that already failed keeps its own error.
+      const steps = job.steps.filter((step) =>
+        step.status !== "failed" && names(step.dataArtifacts)
+      );
+      for (const step of steps) step.fail(reason);
+      if (steps.length > 0 && job.status === "succeeded") job.fail();
+      for (const step of steps) failed.push(step);
+    }
+    if (
+      (failed.length > 0 || names(this._workflowDataArtifacts)) &&
+      this._status === "succeeded"
+    ) {
+      this._status = "failed";
+    }
+    return failed;
+  }
+
+  /**
    * Records why an already-cancelled run was cancelled. Only sets the
    * cancel_reason tag; no-ops unless the run is cancelled, so it never
    * changes a run's status. An empty reason is ignored, as in

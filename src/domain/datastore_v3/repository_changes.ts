@@ -44,6 +44,8 @@
  * ({@link recordKeyOf}); each change takes its precondition explicitly,
  * because the repository decides it per key.
  *
+ * swamp-club#3257 adds {@link RunChanges}, a workflow run's record.
+ *
  * @module
  */
 
@@ -493,6 +495,44 @@ export class RunSnapshotChanges {
     return {
       partition: this.partition,
       op: tombstoneOp({ intent: this.#intentOf("run-snapshot.delete"), key }),
+    };
+  }
+}
+
+/**
+ * The typed changes of one workflow run's record (swamp-club#3257). None
+ * carries a precondition: a run has one writer at a time under its lock,
+ * and cancel, recovery and the reapers rewrite the record too. A
+ * run is saved many times in one unit, so its record is staged as a stream
+ * of the written file: the unit elides every earlier save still unread, and
+ * a flush commits the last one, under the last save's intent.
+ */
+export class RunChanges {
+  readonly partition: PartitionKey;
+  readonly #intentOf: (
+    kind: "run.create" | "run.update" | "run.delete",
+  ) => Intent;
+
+  constructor(workflowId: string, runId: string) {
+    this.partition = partitionOf({ kind: "run", workflowId, runId });
+    this.#intentOf = (kind) =>
+      createIntent({ kind, run: { workflowId, runId } });
+  }
+
+  /** A written run record: `run.create` for a new file, else `run.update`. */
+  write(
+    kind: "run.create" | "run.update",
+    key: RecordKey,
+    content: ContentSource,
+  ): TypedChange {
+    return putChange(this.partition, this.#intentOf(kind), key, content);
+  }
+
+  /** A removed run record. */
+  remove(key: RecordKey): TypedChange {
+    return {
+      partition: this.partition,
+      op: tombstoneOp({ intent: this.#intentOf("run.delete"), key }),
     };
   }
 }

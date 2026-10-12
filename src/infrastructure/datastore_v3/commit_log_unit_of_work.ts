@@ -32,7 +32,8 @@
  * the unit stores the content that needs storing (chunks before the commit
  * that names them), then appends one commit through the {@link CommitSink}.
  * There is no atomicity across partitions: when a partition fails, the
- * partitions before it stay committed and the ones after it are not tried.
+ * partitions before it stay committed and the ones after it are not tried;
+ * a refusal is the exception (below).
  *
  * - A partition whose commit failed stays **pending** with its txnId and
  *   ops. The next `checkpoint` of the same unit, or its `commit`, rebuilds
@@ -42,20 +43,28 @@
  *   `UnitOfWork` contract), so what is still pending when the unit's own
  *   commit fails is lost with it; the Phase 4 outbox makes it durable. A
  *   caller that must retry checkpoints first.
- * - A refusal (`CommitRejectedError`) surfaces unchanged, and the refused
- *   partition's changes are dropped: they can never land as they are, and
- *   keeping them would block every partition staged after them. A
- *   `seq-gap` is the exception: another append moved the head first, so the
- *   append is rebuilt at the new head once more in the same flush, and if
- *   that also meets a gap the partition stays pending.
+ * - A refusal (`CommitRejectedError`) drops the refused partition's
+ *   changes: they can never land as they are, and keeping them would block
+ *   every partition staged after them. The flush goes on to the other
+ *   partitions, then throws one {@link PartitionsRefusedError} carrying each
+ *   refusal (swamp-club#3257). A `seq-gap` is not a refusal: another append
+ *   moved the head first, so the append is rebuilt at the new head once more
+ *   in the same flush, and if that also meets a gap the partition stays
+ *   pending and the flush stops.
  * - `abandon` discards staged and pending changes. A checkpoint already in
  *   progress finishes first, so what it commits stays committed. Chunks
  *   already stored stay unreferenced until chunk garbage collection
  *   reclaims them.
- * - Run partitions commit after the others of the same flush, but a
- *   partition dropped as refused does not hold back a run partition a later
- *   checkpoint commits: keeping a run record from naming refused data is
- *   left to the issue that stages run records (decision 7).
+ * - Run partitions commit after the others of the same flush, and a run
+ *   record never names data whose partition was refused (decision 7,
+ *   swamp-club#3257): once a non-run partition is refused, every run
+ *   partition stays pending, never dropped, for the rest of the unit's life,
+ *   since a run's record is rewritten whole on each save and a later save
+ *   still names what an earlier flush refused. `acknowledgeRefusals`
+ *   releases them after the caller saved each affected run again; that save
+ *   supersedes the held record, and the run's snapshot commits with it. A
+ *   root that ends without acknowledging throws the refusal again, and its
+ *   held run records are lost with it.
  *
  * **Batches, splits and elision (swamp-club#3250).** `stageOps` records a
  * batch all or nothing, and a child hands its batches to its ancestor one by
@@ -104,11 +113,13 @@ import {
   type CommitWriter,
   MAX_COMMIT_OPS,
 } from "../../domain/datastore_v3/commit.ts";
-import type {
-  CommitLogUnitOfWork,
-  ContentSource,
-  PendingPut,
-  TypedChange,
+import {
+  type CommitLogUnitOfWork,
+  type ContentSource,
+  type PartitionRefusal,
+  PartitionsRefusedError,
+  type PendingPut,
+  type TypedChange,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import type { CommitStore } from "../../domain/datastore_v3/commit_store.ts";
 import {
@@ -267,6 +278,11 @@ export function createCommitLogUnitOfWork(
   >();
   let formations = 0;
   let ended: "committed" | "abandoned" | undefined;
+  /**
+   * The non-run partitions refused since the last acknowledgement: while
+   * any is, run partitions stay pending (decision 7).
+   */
+  let refusals: PartitionRefusal[] = [];
   /** Serializes this unit's commits and checkpoints. */
   let flushing: Promise<void> = Promise.resolve();
 
@@ -330,36 +346,89 @@ export function createCommitLogUnitOfWork(
       // Run partitions last (decision 7); a stable sort keeps the rest in
       // the order they were formed, so a partition's splits stay in order.
       pending.sort((a, b) => runRank(a) - runRank(b));
-      while (pending.length > 0) {
-        const group = pending[0];
+      const refusedNow: PartitionRefusal[] = [];
+      // A run record may name data a refused partition did not record, so
+      // run groups wait while a refusal is unacknowledged. They sort last,
+      // so the first group not held is the next to append; it is read from
+      // `pending` each time, which staging may change between appends.
+      const held = (group: Group) =>
+        runRank(group) === 1 && refusals.length > 0;
+      while (true) {
+        const group = pending.find((other) => !held(other));
+        if (group === undefined) break;
         inFlight = group;
         try {
           await appendGroup(group, options, clock, stored, supersededInFlight);
         } catch (error) {
+          // A seq gap only means another append moved the head first; the
+          // group stays pending, is rebuilt at the new head, and the flush
+          // stops as for any other failure.
+          if (
+            !(error instanceof CommitRejectedError) ||
+            error.reason === "seq-gap"
+          ) {
+            // A refusal met earlier in this flush is never lost behind it:
+            // the caller sees the refusal, with this error as its cause, and
+            // the failed group stays pending for the next flush.
+            if (refusedNow.length > 0 || refusals.length > 0) {
+              throw refusedError(refusedNow, error);
+            }
+            throw error;
+          }
           // A refused commit can never land as it is: drop it, with the
           // splits of its partition formed with it (they were staged after
-          // it), so the partitions staged after it can still commit. A seq
-          // gap only means another append moved the head first; the group
-          // stays pending and is rebuilt at the new head.
-          if (
-            error instanceof CommitRejectedError && error.reason !== "seq-gap"
-          ) {
-            pending = pending.filter((other) =>
-              other !== group &&
-              !(other.formation === group.formation &&
-                other.partition.equals(group.partition))
-            );
-          }
-          throw error;
+          // it), and go on, so the partitions staged after it still commit.
+          const dropped = pending.filter((other) =>
+            other === group ||
+            (other.formation === group.formation &&
+              other.partition.equals(group.partition))
+          );
+          pending = pending.filter((other) => !dropped.includes(other));
+          const refusal: PartitionRefusal = {
+            partition: group.partition,
+            reason: error.reason,
+            message: error.message,
+            versions: dropped.flatMap((other) => recordedVersions(other)),
+          };
+          refusedNow.push(refusal);
+          if (runRank(group) === 0) refusals = [...refusals, refusal];
+          continue;
         } finally {
           inFlight = undefined;
         }
         pending = pending.filter((other) => other !== group);
       }
+      // Every flush throws until the refusals are acknowledged, so none is
+      // ever cleared unseen.
+      if (refusedNow.length > 0 || refusals.length > 0) {
+        throw refusedError(refusedNow);
+      }
     });
     flushing = run.catch(() => {});
     return run;
   };
+
+  /**
+   * The refusal a flush throws: every unacknowledged non-run refusal (this
+   * flush's and earlier ones, which `acknowledgeRefusals` clears together),
+   * this flush's run refusals, and the run partitions held back.
+   */
+  const refusedError = (
+    refusedNow: readonly PartitionRefusal[],
+    cause?: unknown,
+  ): PartitionsRefusedError =>
+    new PartitionsRefusedError(
+      [
+        ...refusals,
+        ...refusedNow.filter((refusal) => refusal.partition.kind === "run"),
+      ],
+      refusals.length === 0
+        ? []
+        : pending.filter((group) => runRank(group) === 1).map((group) =>
+          group.partition
+        ),
+      cause,
+    );
 
   const state: CommitLogState = {
     hook: markDirty,
@@ -378,6 +447,7 @@ export function createCommitLogUnitOfWork(
       staged = [];
       streamPuts.clear();
       pending = [];
+      refusals = [];
       return;
     }
     if (parent !== undefined) {
@@ -433,6 +503,15 @@ export function createCommitLogUnitOfWork(
         );
       }
       await flush();
+    },
+    acknowledgeRefusals(): void {
+      if (parent !== undefined) {
+        throw new Error(
+          "acknowledgeRefusals called on a child unit of work; its root holds " +
+            "the run records",
+        );
+      }
+      refusals = [];
     },
     commit: () => end("committed"),
     abandon: () => end("abandoned"),
@@ -608,6 +687,17 @@ function streamPutSlot(change: TypedChange): string | undefined {
 
 function slotOf(partition: PartitionKey, key: RecordKey): string {
   return `${partition}\u0000${key}`;
+}
+
+/** The data versions a group's `data-version` ops record. */
+function recordedVersions(
+  group: Group,
+): { readonly dataId: string; readonly version: number }[] {
+  return group.changes.flatMap((change) =>
+    "op" in change && change.op.kind === "data-version"
+      ? [{ dataId: change.op.metadata.id, version: change.op.metadata.version }]
+      : []
+  );
 }
 
 function runRank(group: Group): number {
