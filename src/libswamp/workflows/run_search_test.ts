@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
+import { UserError } from "../../domain/errors.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  parseRunTimeBound,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchEvent,
@@ -316,4 +318,136 @@ Deno.test("workflowRunSearch: surfaces awaitingResume and workflowHasInputs", as
   const gated = completed.data.results.find((r) => r.runId === "run-gated");
   assertEquals(gated?.awaitingResume, undefined);
   assertEquals(gated?.workflowHasInputs, undefined);
+});
+
+// ── until / workflows / triggerSource filters ───────────────────────────
+
+function completedRunIds(events: WorkflowRunSearchEvent[]): string[] {
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    WorkflowRunSearchEvent,
+    { kind: "completed" }
+  >;
+  return completed.data.results.map((r) => r.runId);
+}
+
+Deno.test("workflowRunSearch: until keeps runs started before an ISO time, exclusive", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      until: new Date(now - 3000).toISOString(),
+    }),
+  );
+  // run-3 started exactly at the bound and is left out.
+  assertEquals(completedRunIds(events), ["run-2"]);
+});
+
+Deno.test("workflowRunSearch: since accepts an ISO time as well as a duration", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      since: new Date(now - 3000).toISOString(),
+    }),
+  );
+  assertEquals(completedRunIds(events), ["run-1", "run-3"]);
+});
+
+Deno.test("workflowRunSearch: since and until together bound a window", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      since: new Date(now - 5000).toISOString(),
+      until: new Date(now - 1000).toISOString(),
+    }),
+  );
+  assertEquals(completedRunIds(events), ["run-3", "run-2"]);
+});
+
+Deno.test("workflowRunSearch: workflows keeps runs of any listed workflow by exact name", async () => {
+  const deps = makeDeps();
+  const only = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, { workflows: ["test"] }),
+  );
+  assertEquals(completedRunIds(only), ["run-3"]);
+
+  const both = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      workflows: ["test", "deploy"],
+    }),
+  );
+  assertEquals(completedRunIds(both), ["run-1", "run-3", "run-2"]);
+
+  const caseDiffers = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, { workflows: ["TEST"] }),
+  );
+  assertEquals(completedRunIds(caseDiffers), []);
+
+  const empty = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, { workflows: [] }),
+  );
+  assertEquals(completedRunIds(empty), ["run-1", "run-3", "run-2"]);
+});
+
+Deno.test("workflowRunSearch: triggerSource keeps runs with that source, ignoring case", async () => {
+  const deps = makeDeps({
+    findAllRunsByWorkflowId: (id: string) =>
+      Promise.resolve(
+        id === "wf-1"
+          ? [
+            {
+              ...makeRun({
+                id: "run-s",
+                workflowId: "wf-1",
+                workflowName: "deploy",
+                status: "succeeded",
+                startedAt: new Date(now - 1000),
+              }),
+              triggerSource: "schedule",
+            },
+            {
+              ...makeRun({
+                id: "run-a",
+                workflowId: "wf-1",
+                workflowName: "deploy",
+                status: "succeeded",
+                startedAt: new Date(now - 2000),
+              }),
+              triggerSource: "api",
+            },
+            makeRun({
+              id: "run-none",
+              workflowId: "wf-1",
+              workflowName: "deploy",
+              status: "succeeded",
+              startedAt: new Date(now - 3000),
+            }),
+          ]
+          : [],
+      ),
+  });
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), deps, {
+      triggerSource: "Schedule",
+    }),
+  );
+  assertEquals(completedRunIds(events), ["run-s"]);
+});
+
+Deno.test("workflowRunSearch: new filters left out change nothing", async () => {
+  const events = await collect<WorkflowRunSearchEvent>(
+    workflowRunSearch(createLibSwampContext(), makeDeps(), {
+      until: undefined,
+      workflows: undefined,
+      triggerSource: undefined,
+    }),
+  );
+  assertEquals(completedRunIds(events), ["run-1", "run-3", "run-2"]);
+});
+
+Deno.test("parseRunTimeBound: reads durations back from now and ISO times, and rejects anything else", () => {
+  const at = Date.UTC(2026, 9, 12, 12, 0, 0);
+  assertEquals(parseRunTimeBound("1h", at), at - 60 * 60 * 1000);
+  assertEquals(
+    parseRunTimeBound("2026-10-01T00:00:00Z", at),
+    Date.UTC(2026, 9, 1),
+  );
+  for (const bad of ["soon", "", "12345", "yesterday", "2026-13-45"]) {
+    assertThrows(() => parseRunTimeBound(bad, at), UserError);
+  }
 });
