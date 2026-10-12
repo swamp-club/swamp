@@ -44,6 +44,11 @@ import {
 } from "./template_syntax_scan.ts";
 import { CalVer } from "./calver.ts";
 import {
+  DefinitionUpgradeService,
+  MALFORMED_TYPE_VERSION_CODE,
+} from "./definition_upgrade_service.ts";
+import { UserError } from "../errors.ts";
+import {
   coerceMethodArgs,
   getObjectShape,
   parseGlobalArgumentsLeniently,
@@ -388,10 +393,17 @@ export class DefaultModelValidationService implements ModelValidationService {
     checkContext?: CheckValidationContext,
     options?: ModelValidationOptions,
   ): Promise<ModelValidationOutcome> {
+    // Global arguments and checks read what a method run would give them:
+    // the definition after its upgrade chain, applied in memory and never
+    // saved (swamp-club#3196). Every other check reads the definition as
+    // authored.
+    const upgrade = this.upgradeInMemory(definition, modelDef);
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
       this.validateTypeVersion(definition),
-      this.validateGlobalArguments(definition, modelDef),
+      upgrade.failure
+        ? Promise.resolve(upgrade.failure)
+        : this.validateGlobalArguments(upgrade.definition, modelDef),
       this.validateMethodArguments(definition, modelDef),
     ];
 
@@ -429,7 +441,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     // Run pre-flight checks if context provided and model has checks
     if (modelDef.checks && checkContext) {
       const checkResults = await this.runCheckValidations(
-        definition,
+        upgrade.definition,
         modelDef,
         checkContext,
       );
@@ -446,6 +458,44 @@ export class DefaultModelValidationService implements ModelValidationService {
     ];
 
     return { results, warnings };
+  }
+
+  /**
+   * Applies the model type's upgrade chain to a copy of the definition, as a
+   * method run does before it reads the global arguments. Returns the
+   * definition unchanged when no upgrade applies or its `typeVersion` is
+   * malformed (the Type version check reports that). An upgrade that throws
+   * fails Global arguments, since the next method run throws the same way —
+   * unless a global argument holds a swamp expression: the run upgrades the
+   * evaluated values, so the arguments are checked as written instead.
+   */
+  private upgradeInMemory(
+    definition: Definition,
+    modelDef: ModelDefinition,
+  ): { definition: Definition; failure?: ValidationResult } {
+    try {
+      return {
+        definition: new DefinitionUpgradeService().upgrade(definition, modelDef)
+          .definition,
+      };
+    } catch (error) {
+      if (
+        (error instanceof UserError &&
+          error.code === MALFORMED_TYPE_VERSION_CODE) ||
+        containsSwampExpression(definition.globalArguments)
+      ) {
+        return { definition };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        definition,
+        failure: ValidationResult.fail(
+          "Global arguments",
+          `Upgrading from typeVersion ${definition.typeVersion} to ` +
+            `${modelDef.version} failed: ${message}`,
+        ),
+      };
+    }
   }
 
   /**

@@ -2732,3 +2732,198 @@ Deno.test("validateModel enforces an object-level globalArguments refinement (sw
   assertStringIncludes(invalid?.error ?? "", "apiKey or token required");
   assertEquals((await resultFor({ token: "t" }))?.passed, true);
 });
+
+// Upgrade chain in validation (swamp-club#3196)
+
+/**
+ * A model type whose one upgrade renames the `host` global argument to
+ * `target`. Built as a plain object so the tests do not register a type in the
+ * process-global registry.
+ */
+function renamingModel(
+  upgradeAttributes: (old: Record<string, unknown>) => Record<string, unknown>,
+  overrides: Partial<ModelDefinition> = {},
+): ModelDefinition {
+  return {
+    type: ModelType.create("test/renaming-upgrade"),
+    version: "2026.02.01.1",
+    globalArguments: z.object({ target: z.string() }),
+    upgrades: [{
+      toVersion: "2026.02.01.1",
+      description: "Rename host to target",
+      upgradeAttributes,
+    }],
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    ...overrides,
+  };
+}
+
+const renameHost = (old: Record<string, unknown>) => {
+  const { host, ...rest } = old;
+  return { ...rest, target: host };
+};
+
+async function validateGlobalArgs(
+  modelDef: ModelDefinition,
+  props: Parameters<typeof Definition.create>[0],
+) {
+  const definition = Definition.create(props);
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    modelDef,
+  );
+  return {
+    definition,
+    globalArguments: results.find((r) => r.name === "Global arguments"),
+    typeVersion: results.find((r) => r.name === "Type version"),
+    failed: results.filter((r) => !r.passed).map((r) => r.name),
+  };
+}
+
+Deno.test("validateModel: checks a stale definition's global arguments after its upgrade chain", async () => {
+  const { globalArguments } = await validateGlobalArgs(
+    renamingModel(renameHost),
+    {
+      name: "stale",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { host: "example" },
+    },
+  );
+
+  assertEquals(globalArguments?.passed, true);
+});
+
+Deno.test("validateModel: leaves the validated definition as authored when it applies the upgrade chain", async () => {
+  const { definition } = await validateGlobalArgs(renamingModel(renameHost), {
+    name: "stale",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { host: "example" },
+  });
+
+  assertEquals(definition.typeVersion, "2026.01.01.1");
+  assertEquals(definition.globalArguments, { host: "example" });
+});
+
+Deno.test("validateModel: checks a current definition's global arguments without upgrading them", async () => {
+  const model = renamingModel(() => {
+    throw new Error("must not run");
+  });
+
+  const current = await validateGlobalArgs(model, {
+    name: "current",
+    typeVersion: "2026.02.01.1",
+    globalArguments: { target: "example" },
+  });
+  assertEquals(current.globalArguments?.passed, true);
+
+  const oldShape = await validateGlobalArgs(model, {
+    name: "current-old-shape",
+    typeVersion: "2026.02.01.1",
+    globalArguments: { host: "example" },
+  });
+  assertEquals(oldShape.globalArguments?.passed, false);
+  assertStringIncludes(oldShape.globalArguments?.error ?? "", "host");
+});
+
+Deno.test("validateModel: checks an unstamped definition's global arguments as written", async () => {
+  const { globalArguments } = await validateGlobalArgs(
+    renamingModel(renameHost),
+    { name: "unstamped", globalArguments: { host: "example" } },
+  );
+
+  assertEquals(globalArguments?.passed, false);
+  assertStringIncludes(
+    globalArguments?.error ?? "",
+    "Unknown global argument(s): host",
+  );
+});
+
+Deno.test("validateModel: fails only Type version for a malformed typeVersion on a type with an upgrade chain", async () => {
+  const { failed, typeVersion } = await validateGlobalArgs(
+    renamingModel(renameHost),
+    {
+      name: "malformed",
+      typeVersion: "1.0",
+      globalArguments: { target: "example" },
+    },
+  );
+
+  assertEquals(failed, ["Type version"]);
+  assertStringIncludes(typeVersion?.error ?? "", "not a valid CalVer");
+});
+
+Deno.test("validateModel: fails Global arguments when an upgrade throws on static arguments", async () => {
+  const { globalArguments } = await validateGlobalArgs(
+    renamingModel(() => {
+      throw new Error("host must be a hostname");
+    }),
+    {
+      name: "stale",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { host: "example" },
+    },
+  );
+
+  assertEquals(globalArguments?.passed, false);
+  assertEquals(
+    globalArguments?.error,
+    "Upgrading from typeVersion 2026.01.01.1 to 2026.02.01.1 failed: " +
+      "host must be a hostname",
+  );
+});
+
+Deno.test("validateModel: checks arguments as written when an upgrade throws on an expression-valued argument", async () => {
+  const { globalArguments } = await validateGlobalArgs(
+    renamingModel(() => {
+      throw new Error("host must be a hostname");
+    }),
+    {
+      name: "stale",
+      typeVersion: "2026.01.01.1",
+      globalArguments: { host: "${{ inputs.host }}" },
+    },
+  );
+
+  // As before the upgrade ran in validation: a field holding a swamp
+  // expression skips the schema check until the run evaluates it.
+  assertEquals(globalArguments?.passed, true);
+});
+
+Deno.test("validateModel: gives pre-flight checks the upgraded global arguments", async () => {
+  let seen: Record<string, unknown> | undefined;
+  const model = renamingModel(renameHost, {
+    checks: {
+      "sees-args": {
+        description: "Records the global arguments",
+        execute: (context) => {
+          seen = context.globalArgs;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  });
+  const definition = Definition.create({
+    name: "stale",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { host: "example" },
+  });
+
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  assertEquals(
+    results.find((r) => r.name === "Check: sees-args")?.passed,
+    true,
+  );
+  assertEquals(seen, { target: "example" });
+});
