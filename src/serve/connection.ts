@@ -1611,13 +1611,6 @@ export function validateServerRequest(
 }
 
 /**
- * Best-effort extraction of the request `id` from a parsed message
- * BEFORE schema validation. When validation fails, the validated
- * request object is unavailable, but the client still needs the id
- * echoed back so it can match the error to its pending request.
- * Falls back to `"unknown"` when the id is absent or not a string.
- */
-/**
  * The audit action of a `workflow.trigger.set`: a request that pauses or
  * resumes the schedule is recorded as such, so the trail reads as a pause
  * or resume rather than as one more override write.
@@ -1628,6 +1621,13 @@ export function triggerSetAuditAction(paused: boolean | undefined): string {
   return "workflow.trigger.set";
 }
 
+/**
+ * Best-effort extraction of the request `id` from a parsed message
+ * BEFORE schema validation. When validation fails, the validated
+ * request object is unavailable, but the client still needs the id
+ * echoed back so it can match the error to its pending request.
+ * Falls back to `"unknown"` when the id is absent or not a string.
+ */
 export function extractRequestId(data: unknown): string {
   if (
     typeof data === "object" && data !== null &&
