@@ -32,6 +32,8 @@ import { resolveActorIdentity } from "../domain/serve_audit/actor_identity.ts";
 import type { AuditOutcome } from "../domain/serve_audit/audit_event.ts";
 import { buildAuditEvent } from "../domain/serve_audit/audit_event_builder.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
   SIGNAL_KEY_MAX_LENGTH,
   SIGNAL_PAYLOAD_MAX_BYTES,
   SIGNAL_WORKFLOW_MAX_LENGTH,
@@ -278,6 +280,15 @@ export async function handleSignalHttpRequest(
     address = { workflow, key };
   }
 
+  // What names the signal across the sender's retries, in the header HTTP
+  // clients already send for it.
+  const idempotencyKey = req.headers.get("idempotency-key") ?? undefined;
+  if (idempotencyKey !== undefined && !isIdempotencyKey(idempotencyKey)) {
+    return badRequest(
+      `The Idempotency-Key header must be ${IDEMPOTENCY_KEY_FORM}`,
+    );
+  }
+
   // The wait ID, or the workflow a key address names: as sent until it
   // resolves, then under its canonical name, as its denial is audited.
   let named = "waitId" in address ? address.waitId : address.workflow;
@@ -285,6 +296,7 @@ export async function handleSignalHttpRequest(
     requestId,
     ...address,
     payload: (body as { payload: unknown }).payload,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
   }, {
     onWorkflowResolved: (name) => {
       named = name;

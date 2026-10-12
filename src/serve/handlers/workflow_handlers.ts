@@ -1578,6 +1578,14 @@ export async function handleWorkflowApprove(
  * the caller may not signal is answered as one that does not exist. Nothing
  * here reserves or saves a run.
  */
+function idempotencyKeyOf(
+  payload: WorkflowSignalPayload,
+): { idempotencyKey?: string } {
+  return payload.idempotencyKey !== undefined
+    ? { idempotencyKey: payload.idempotencyKey }
+    : {};
+}
+
 export async function handleWorkflowSignal(
   socket: WebSocket,
   ctx: ConnectionContext,
@@ -1589,12 +1597,20 @@ export async function handleWorkflowSignal(
     ctx,
     accessCallerOf(socket, principal),
     "waitId" in payload
-      ? { requestId, waitId: payload.waitId, payload: payload.payload }
+      ? {
+        requestId,
+        waitId: payload.waitId,
+        payload: payload.payload,
+        ...idempotencyKeyOf(payload),
+      }
       : {
         requestId,
         workflow: payload.workflow,
         key: payload.key,
         payload: payload.payload,
+        // A client from before the pending reply cannot read one.
+        holdEarly: payload.acceptsPending === true,
+        ...idempotencyKeyOf(payload),
       },
     {
       onWorkflowResolved: (name) =>

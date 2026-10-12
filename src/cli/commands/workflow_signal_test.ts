@@ -30,6 +30,7 @@ import { UserError } from "../../domain/errors.ts";
 import type { CommandContext } from "../context.ts";
 import { captureStdout, hintTestContext } from "./command_hint_test_helpers.ts";
 import {
+  parseIdempotencyKey,
   parseSignalAddress,
   parseSignalPayload,
   remoteSignalPayload,
@@ -284,7 +285,13 @@ Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow an
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
-    { workflow: "@acme/release", key: "verdict", payload: 7 },
+    // A key address says this client reads a pending reply.
+    {
+      workflow: "@acme/release",
+      key: "verdict",
+      payload: 7,
+      acceptsPending: true,
+    },
   );
 });
 
@@ -538,4 +545,37 @@ Deno.test("renderSignalResult: a signal a step took on opening its wait suggests
   assertEquals(lines, [
     "The step took the signal as it opened its wait, and its run went on without waiting.",
   ]);
+});
+
+Deno.test("parseIdempotencyKey: passes a key in the form of one, and none; refuses any other", () => {
+  assertEquals(parseIdempotencyKey(undefined), undefined);
+  assertEquals(parseIdempotencyKey("order-1"), "order-1");
+  for (const raw of ["", "has space", "a/b", "k".repeat(129)]) {
+    assertThrows(
+      () => parseIdempotencyKey(raw),
+      UserError,
+      "--idempotency-key must be",
+    );
+  }
+});
+
+Deno.test("remoteSignalPayload: an idempotency key is sent with either address, and left out when none was given", () => {
+  assertEquals(
+    remoteSignalPayload({ waitId: WAIT_ID }, {}, "order-1"),
+    { waitId: WAIT_ID, payload: {}, idempotencyKey: "order-1" },
+  );
+  assertEquals(
+    remoteSignalPayload({ workflow: "release", key: "verdict" }, {}, "order-1"),
+    {
+      workflow: "release",
+      key: "verdict",
+      payload: {},
+      acceptsPending: true,
+      idempotencyKey: "order-1",
+    },
+  );
+  assertEquals(
+    "idempotencyKey" in remoteSignalPayload({ waitId: WAIT_ID }, {}),
+    false,
+  );
 });

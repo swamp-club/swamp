@@ -81,6 +81,26 @@ export function isWaitKey(key: string): boolean {
 /** The longest key a signal's address may carry; no key is longer. */
 export const SIGNAL_KEY_MAX_LENGTH = 64;
 
+/** The longest idempotency key a signal may carry. */
+export const SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH = 128;
+
+/** The form of an idempotency key, in words for a message. */
+export const IDEMPOTENCY_KEY_FORM =
+  `1 to ${SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH} letters, digits, dots, colons, hyphens and underscores`;
+
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]+$/;
+
+/**
+ * True for a string a sender may give as a signal's idempotency key: what
+ * names one signal across its retries, so a retry of a signal that landed is
+ * answered with that signal and nothing is delivered or held twice. It is
+ * kept in plaintext on the signal's receipt, so its form is narrow.
+ */
+export function isIdempotencyKey(value: string): boolean {
+  return value.length <= SIGNAL_IDEMPOTENCY_KEY_MAX_LENGTH &&
+    IDEMPOTENCY_KEY_PATTERN.test(value);
+}
+
 /**
  * The longest workflow name or ID a signal addressed by key may carry. It
  * bounds client text on its way to a lookup and the audit log; a workflow
@@ -124,6 +144,8 @@ export const SignalReceiptSchema = z.object({
   waitId: z.string().uuid(),
   receivedAt: z.string().datetime(),
   submittedBy: z.string().min(1),
+  /** The idempotency key the sender gave, if any. */
+  idempotencyKey: z.string().refine(isIdempotencyKey).optional(),
 });
 
 export type SignalReceipt = z.infer<typeof SignalReceiptSchema>;

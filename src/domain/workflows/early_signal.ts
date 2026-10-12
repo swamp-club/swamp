@@ -37,6 +37,7 @@ import {
 } from "./pending_signal.ts";
 import { earlySlots, SignalWait } from "./signal_wait.ts";
 import type { PayloadValidation } from "./signal_wait.ts";
+import type { AcceptedWaitOutcome } from "./signal_wait_records.ts";
 import {
   findKeyHolder,
   type HighestKeyRecord,
@@ -173,6 +174,8 @@ export interface EarlySignal {
   submittedBy: string;
   /** The age limit the definition declares, in seconds. */
   acceptEarly: number;
+  /** The idempotency key the sender gave, if any. */
+  idempotencyKey?: string;
 }
 
 /** How the arrival of an early signal ended. */
@@ -286,6 +289,9 @@ export async function holdEarlySignal(
       submittedBy: signal.submittedBy,
       payload: signal.payload,
       acceptEarly: signal.acceptEarly,
+      ...(signal.idempotencyKey !== undefined
+        ? { idempotencyKey: signal.idempotencyKey }
+        : {}),
     };
     const created = await store.createPendingRecord(record);
     if (created.kind !== "found") return { kind: "unreadable" };
@@ -334,4 +340,71 @@ export async function holdEarlySignal(
     // again at that slot.
   }
   return { kind: "contended" };
+}
+
+/** A signal the store already holds under an idempotency key. */
+export type EarlierSignal =
+  /** Held as the key's pending signal, within its age limit. */
+  | { readonly kind: "pending"; readonly record: PendingSignal }
+  /** A wait took it: `claim` is that wait's, and `outcome` its receipt. */
+  | {
+    readonly kind: "settled";
+    readonly claim: WaitKeyClaim;
+    readonly outcome: AcceptedWaitOutcome;
+  };
+
+/**
+ * The signal already received for `key` under `idempotencyKey`, if the
+ * records still say so: a retry of it is answered with that signal, and is
+ * neither delivered nor held again. Looked for in the pending signal of each
+ * live slot, and in the outcomes of the key's two highest claims: the wait
+ * that last held the key, and the one before it for a retry that arrives
+ * once the next run has opened its wait. It reads at most six records and
+ * writes nothing.
+ *
+ * A key is remembered as long as its receipt is: until the run that took the
+ * signal is removed, the key has been claimed twice since, or the pending
+ * signal has passed its age limit untaken.
+ */
+export async function findSignalByIdempotencyKey(
+  store:
+    & Pick<WaitKeyRecords, "highestKeyRecord" | "findKeyRecord" | "findOutcome">
+    & Pick<PendingSignalRecords, "highestPendingRecord">,
+  at: { workflowId: string; key: string },
+  idempotencyKey: string,
+  now: Date,
+): Promise<EarlierSignal | undefined> {
+  const { workflowId, key } = at;
+  const highest = await store.highestKeyRecord(workflowId, key);
+  // Whoever acts on the key next reports a record that cannot be read.
+  if (highest.kind === "unreadable") return undefined;
+
+  for (const slot of liveSlotsOf(highest).live) {
+    const head = await store.highestPendingRecord({ workflowId, key, slot });
+    if (
+      head.kind === "found" && head.record.kind === "pending" &&
+      head.record.idempotencyKey === idempotencyKey &&
+      isPendingHeld(head.record, now)
+    ) return { kind: "pending", record: head.record };
+  }
+
+  if (highest.kind === "none") return undefined;
+  const generation = highest.record.generation;
+  for (const each of [generation, generation - 1]) {
+    if (each < 1) break;
+    const stored = each === generation
+      ? highest
+      : await store.findKeyRecord({ workflowId, key, generation: each });
+    if (stored.kind !== "found" || stored.record.kind !== "claim") continue;
+    const claim = stored.record;
+    const outcome = await store.findOutcome(claim.waitId);
+    if (
+      outcome.kind === "found" && outcome.record.kind === "accepted" &&
+      // An outcome that names another run is not that wait's outcome.
+      outcome.record.runId === claim.runId &&
+      outcome.record.workflowId === workflowId &&
+      outcome.record.receipt.idempotencyKey === idempotencyKey
+    ) return { kind: "settled", claim, outcome: outcome.record };
+  }
+  return undefined;
 }

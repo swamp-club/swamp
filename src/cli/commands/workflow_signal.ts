@@ -59,6 +59,8 @@ import type {
   WorkflowSignalResponseData,
 } from "../../serve/protocol.ts";
 import {
+  IDEMPOTENCY_KEY_FORM,
+  isIdempotencyKey,
   isWaitKey,
   SIGNAL_WORKFLOW_MAX_LENGTH,
   WAIT_KEY_FORM,
@@ -110,6 +112,19 @@ export function parseSignalAddress(
 }
 
 /**
+ * Checks the `--idempotency-key` flag. The key is kept on the signal's
+ * receipt, so only a narrow form is taken.
+ */
+export function parseIdempotencyKey(
+  raw: string | undefined,
+): string | undefined {
+  if (raw === undefined || isIdempotencyKey(raw)) return raw;
+  throw new UserError(
+    `--idempotency-key must be ${IDEMPOTENCY_KEY_FORM}.`,
+  );
+}
+
+/**
  * Renders a delivered signal in log or JSON mode. The command to run next
  * goes through writeOutput, not the logger, so it can be copied as printed.
  * `--quiet` hides it, as it hides the logger's info lines. `commandTarget`
@@ -139,6 +154,12 @@ export function renderSignalResult(
       .info`Signalled step ${data.stepName} in workflow ${data.workflowName}: wait ${data.waitId} holding key ${data.key}, signal ${data.signal.id}`;
   }
   if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.`,
+    );
+    return;
+  }
   if (data.taken) {
     writeOutput(
       "The step took the signal as it opened its wait, and its run went on without waiting.",
@@ -178,6 +199,12 @@ export function renderPendingSignalResult(
       .info`Signal ${data.signal.id} is held until ${data.heldUntil}`;
   }
   if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and is the one held. Nothing more was stored.`,
+    );
+    return;
+  }
   writeOutput(
     "No wait holds the key yet. A step that opens its wait by then takes the signal and does not wait; after that the signal is ignored.",
   );
@@ -203,7 +230,9 @@ export function renderPendingSignalResult(
 export function remoteSignalPayload(
   address: WorkflowSignalAddress,
   payload: unknown,
+  idempotencyKey?: string,
 ): WorkflowSignalPayload {
+  const keyed = idempotencyKey !== undefined ? { idempotencyKey } : {};
   if ("waitId" in address) {
     const id = normalizeWaitId(address.waitId);
     if (id === undefined) {
@@ -212,7 +241,7 @@ export function remoteSignalPayload(
         "not_found",
       );
     }
-    return { waitId: id, payload };
+    return { waitId: id, payload, ...keyed };
   }
   if (
     address.workflow.length === 0 ||
@@ -239,7 +268,15 @@ export function remoteSignalPayload(
       "not_found",
     );
   }
-  return { workflow: address.workflow, key: address.key, payload };
+  return {
+    workflow: address.workflow,
+    key: address.key,
+    payload,
+    // This command reads a pending reply; a server holds no signal for a
+    // client that does not say so.
+    acceptsPending: true,
+    ...keyed,
+  };
 }
 
 /**
@@ -272,6 +309,7 @@ export function renderRemoteSignalResult(
         runRecordAvailable: data.runRecordAvailable ?? false,
         resumeCommand: data.resumeCommand,
         ...(data.taken ? { taken: true as const } : {}),
+        ...(data.duplicate ? { duplicate: true as const } : {}),
       },
       formatCommandTarget({ server }),
     );
@@ -284,6 +322,12 @@ export function renderRemoteSignalResult(
   cliCtx.logger
     .info`Signal ${data.signal.id} delivered to wait ${data.waitId}`;
   if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.`,
+    );
+    return;
+  }
   // The server does not say which run this was; it still has to be resumed.
   writeOutput(
     "The signal takes effect when the run is next resumed, by someone who may resume it.",
@@ -377,6 +421,10 @@ export const workflowSignalCommand = withRemoteOptions(
       "--payload <json:string>",
       "The message, as a JSON object matching the wait's schema",
       { required: true },
+    )
+    .option(
+      "--idempotency-key <key:string>",
+      "Names this signal across retries: one sent again with the same key after it was received is answered with the first, and is not delivered or held twice",
     ),
 )
   .action(async function (options: AnyOptions, waitId?: string) {
@@ -389,10 +437,13 @@ export const workflowSignalCommand = withRemoteOptions(
       workflow: options.workflow as string | undefined,
       key: options.key as string | undefined,
     });
+    const idempotencyKey = parseIdempotencyKey(
+      options.idempotencyKey as string | undefined,
+    );
 
     const server = resolveServeUrl(options.server as string | undefined);
     if (server) {
-      const named = remoteSignalPayload(address, payload);
+      const named = remoteSignalPayload(address, payload, idempotencyKey);
       const token = await resolveServerTokenFromOptions(server, options);
       let response: WorkflowSignalResponse;
       try {
@@ -408,6 +459,13 @@ export const workflowSignalCommand = withRemoteOptions(
       if (response.pending !== undefined) {
         renderPendingSignalResult(cliCtx, response.pending);
         return;
+      }
+      // A reply of a kind added since this build has neither.
+      if (response.data === undefined) {
+        throw new UserError(
+          "The server answered the signal in a form this swamp cannot read; upgrade swamp here, then check what the signal did before sending it again.",
+          "unsupported_by_client",
+        );
       }
       renderRemoteSignalResult(
         cliCtx,
@@ -435,7 +493,11 @@ export const workflowSignalCommand = withRemoteOptions(
     });
 
     await consumeStream(
-      workflowSignal(ctx, deps, { ...address, payload }),
+      workflowSignal(ctx, deps, {
+        ...address,
+        payload,
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+      }),
       {
         resolving: () => {},
         completed: (e) => {

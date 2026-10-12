@@ -716,6 +716,54 @@ Deno.test("deliverSignalForCaller: by key, a signal before the wait opens is hel
   assertEquals(f.waits.outcomes.size, 0);
 });
 
+Deno.test("deliverSignalForCaller: by key, nothing is held for a request that cannot read a pending answer", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const result = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal", "read"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "ship" },
+      holdEarly: false,
+    },
+  );
+  assertEquals(result.status, "no_open_wait");
+  assertEquals(f.waits.pendingRecords.size, 0);
+});
+
+Deno.test("deliverSignalForCaller: by key, a retry under the idempotency key of the held signal is answered with it, to a caller with signal alone too", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const ctx = f.ctxWith([grantOf(["signal"])]);
+  const send = (idempotencyKey: string) =>
+    deliverSignalForCaller(ctx, CALLER, {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "ship" },
+      idempotencyKey,
+    });
+  const first = await send("order-1");
+  assert(first.status === "pending", `got ${first.status}`);
+  assertEquals(first.data.signal.idempotencyKey, "order-1");
+  assertEquals("duplicate" in first.data, false);
+
+  const retry = await send("order-1");
+  assert(retry.status === "pending", `got ${retry.status}`);
+  assertEquals(retry.data.duplicate, true);
+  assertEquals(retry.data.signal, first.data.signal);
+  assertEquals(
+    Object.keys(retry.data).sort(),
+    ["duplicate", "heldUntil", "signal"],
+  );
+  assertEquals(f.waits.pendingRecords.size, 1);
+
+  assertEquals((await send("order-2")).status, "already_pending");
+});
+
 Deno.test("deliverSignalForCaller: by key, a caller with signal alone is told the receipt of a held signal and nothing of the workflow", async () => {
   const f = await fixture();
   const workflow = withEarlyWorkflow(f);

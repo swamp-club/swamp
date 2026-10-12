@@ -291,6 +291,9 @@ export interface WaitKeyRecords
     record: WaitKeyRecord,
   ): Promise<StoredWaitRecord<WaitKeyRecord>>;
 
+  /** The record of one generation of a key. */
+  findKeyRecord(at: WaitKeyAddress): Promise<StoredWaitRecord<WaitKeyRecord>>;
+
   /** Every key record that can be read. */
   listKeyRecords(): Promise<WaitKeyRecord[]>;
 

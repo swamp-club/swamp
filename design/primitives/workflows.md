@@ -1221,9 +1221,10 @@ is open and registered, and its next reader takes the signal.
 Its registration stays until the run ends, so a retry of the signal by wait
 ID is answered already settled. A retry by key is not: the key is free once
 its wait is settled, so the retry is a second signal and is held for the
-next run. Its pending answer carries `lastWait`, as a `no_open_wait` refusal
-does, which is how the sender tells that the first one landed (see
-"Limits").
+next run, unless it carries the first one's idempotency key (see
+"Idempotency keys" below). Its pending answer carries `lastWait`, as a
+`no_open_wait` refusal does, which is how a sender with no key tells that the
+first one landed (see "Limits").
 
 _Every reader finishes the job._ Whoever settles a wait takes an applicable
 pending signal first, whether the deadline has passed or not: `outcomeAt`,
@@ -1286,7 +1287,10 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
   read the old highest and one that read after the delete both store a
   signal. One lapse is left per slot until the slot is claimed.
 - In a live slot the numbers below the highest are removed: each was past its
-  age limit when the next was stored over it.
+  age limit when the next was stored over it. The signaller that stores over
+  a signal removes that one itself (`removeSupersededPendingSignal`), so a slot holds one
+  record however many signals age out in it; the sweep removes what a
+  signaller that stopped in between left.
 - A slot the key has passed, with no claim left that reads it, is removed
   whole. A build from before pending signals leaves such slots when it
   collects a run. A slot whose claim still exists is left for that claim's
@@ -1296,9 +1300,38 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
   its step may be about to take the signal.
 
 This part of the sweep reads key records and never a run record, so unlike
-the rest it runs on every datastore. Nothing is audited: the sweep runs from
-local commands, which have no audit log; it reports a count
-(`WaitRecordSweep.pendingSignals`).
+the rest it runs on every datastore. `swamp serve` runs it with each
+continuation pass (`sweepHeldSignals`), since a signal by key is held through
+serve and nothing else there sweeps wait records; where the continuation sweep
+does not start, it is left to `workflow waits` and the run garbage collection.
+Nothing is audited: it reports a count (`WaitRecordSweep.pendingSignals`).
+
+_Idempotency keys._ A sender may name a signal with an idempotency key
+(`--idempotency-key`, the `Idempotency-Key` header over HTTP,
+`idempotencyKey` over the WebSocket): 1 to 128 letters, digits, dots, colons,
+hyphens and underscores (`isIdempotencyKey`). The key is kept on the pending
+record and on the receipt, so it lives exactly as long as they do and needs no
+record of its own. A signal whose key matches one already received is
+answered with that signal's receipt, marked `duplicate`, and is neither
+delivered nor held:
+
+- By key, before the key's holder is asked (`findSignalByIdempotencyKey`): the
+  pending signal of each live slot, while it is within its age limit, and the
+  outcomes of the key's two highest claims. The second covers a retry that
+  arrives once the next run has opened its wait, which would otherwise be
+  delivered to that wait.
+- At the wait (`deliver`): a wait whose accepted outcome carries the key
+  answers a retry as delivered, by ID or by key, which also decides two
+  copies sent at the same moment. A wait settled by ID whose registration is
+  gone still answers already settled, with the receipt in the details.
+- Two copies that both arrive early: one is stored, and the other is answered
+  with it instead of `already_pending`.
+
+The answer is the first signal's: `pending` with its `heldUntil` while it is
+held, or the wait and run that took it. A key is remembered until the run that
+took the signal is removed, the key has been claimed twice since, or the held
+signal passed its age limit untaken; after that the same key names a new
+signal. A sender that sends no key gets what it got before.
 
 **A wait with no usable registration.** When the registration is missing or
 cannot be read, `workflow signal` falls back to scanning run records and
@@ -1357,7 +1390,12 @@ A binary from before swamp-club#3212 does not know `acceptEarly`. It opens the
 wait without reading the key's pending signal, and it settles a wait at its
 deadline as timed out over one. A signal a newer host answered as pending is
 then never taken, and the step times out. That binary's `workflow signal`
-still refuses an early signal `no_open_wait`. When it saves a run it drops the
+still refuses an early signal `no_open_wait`. Sent to a newer server, it
+would read `data` of a reply that has only `pending`, so the server holds a
+signal over the WebSocket only for a request that sets `acceptsPending`, which
+`workflow signal` does from this build on: any other is refused
+`no_open_wait` as before, with nothing stored. The HTTP route always holds;
+202 is a status its callers read, not a shape. When it saves a run it drops the
 slots a newer build recorded on a wait, which turns that wait into a plain
 one. There is no guard: upgrade every host that runs, resumes, lists or sweeps
 a workflow, serve instances included, before giving one of its waits
@@ -1666,10 +1704,11 @@ every iteration would claim it.
   it does not settle a wait that is past its deadline (swamp-club#3109), and
   it never continues one branch while another still waits. The local command
   does no authorization, as local `approve` does none.
-- A retried signal is answered "already settled". Through serve, the earlier
-  receipt is shown only to a caller who may read the workflow, so a caller with
-  `signal` alone cannot tell its own delivery from another's. There is no
-  idempotency key.
+- A retried signal with no idempotency key is answered "already settled".
+  Through serve, the earlier receipt is shown only to a caller who may read
+  the workflow, so a caller with `signal` alone cannot tell its own delivery
+  from another's. A sender that needs to tell sends an idempotency key (see
+  "Idempotency keys").
 - Through serve, a wait with no readable registration (a run suspended by the
   swamp-club#3068 build, or a damaged registration file) is answered as unknown
   until a waits listing registers it.
@@ -1729,11 +1768,16 @@ every iteration would claim it.
   held.
 - `workflow waits` lists open waits, not pending signals. A held signal shows
   only in the answer its sender got, until a step takes it.
-- A retry by key after a lost reply is held as a second signal, and the next
-  run that opens its wait within `acceptEarly` takes it. Nothing refuses it:
-  the key is free, and a signal for the next run looks the same. The pending
-  answer's `lastWait` says how and when the key's last wait was settled, and
-  a sender that needs a signal to land once reads it before sending again.
+- A retry by key after a lost reply, sent with no idempotency key, is held as
+  a second signal, and the next run that opens its wait within `acceptEarly`
+  takes it. Nothing refuses it: the key is free, and a signal for the next run
+  looks the same. A sender that needs a signal to land once sends an
+  idempotency key; without one, the pending answer's `lastWait` says how and
+  when the key's last wait was settled.
+- An idempotency key is remembered only as long as the signal's receipt or
+  pending record is: not once the run that took the signal is removed, nor
+  once the key has been claimed twice since. A server from before the key
+  drops the field without a word, so upgrade serve before relying on it.
 - Two rare orders can still leave a signal held that no wait takes, or
   stored again after a wait took it; both need a run's records to be removed
   while a signal for its key is arriving. A release written between a

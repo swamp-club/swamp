@@ -204,6 +204,12 @@ export class ControlPlaneSignalWaitStore implements SignalWaitStore {
     return await this.#findKeyRecord(record);
   }
 
+  async findKeyRecord(
+    at: WaitKeyAddress,
+  ): Promise<StoredWaitRecord<WaitKeyRecord>> {
+    return await this.#findKeyRecord(at);
+  }
+
   async listKeyRecords(): Promise<WaitKeyRecord[]> {
     const found: WaitKeyRecord[] = [];
     for (const storeKey of await this.#store.list(WAIT_KEY_RECORD_PREFIX)) {

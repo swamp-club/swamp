@@ -19,6 +19,7 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import type { InputsSchema } from "../definitions/definition.ts";
 import {
+  isIdempotencyKey,
   isWaitKey,
   openSignalWaitMessage,
   parseStoredWait,
@@ -645,4 +646,31 @@ Deno.test("SignalWait.withEarly: a wait that holds no key takes no early signal"
     Error,
     "holds a key",
   );
+});
+
+Deno.test("isIdempotencyKey: accepts 1 to 128 letters, digits, dots, colons, hyphens and underscores, and nothing else", () => {
+  for (
+    const key of [
+      "a",
+      "order-1",
+      "evt_01HZX.retry:3",
+      "6f1c0a52-3f0e-4c4b-9d53-2f6a7c1e8b90",
+      "K".repeat(128),
+    ]
+  ) {
+    assertEquals(isIdempotencyKey(key), true, key);
+  }
+  for (
+    const key of [
+      "",
+      "has space",
+      "a/b",
+      "a\\b",
+      "line\nbreak",
+      "é",
+      "k".repeat(129),
+    ]
+  ) {
+    assertEquals(isIdempotencyKey(key), false, key);
+  }
 });

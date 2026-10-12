@@ -142,6 +142,7 @@ export const UNSHARED_SIGNAL_WAITS: SignalWaitStore = {
   removeOutcome: () => Promise.resolve(),
   highestKeyRecord: () => Promise.resolve({ kind: "none" }),
   createKeyRecord: (record) => Promise.resolve({ kind: "found", record }),
+  findKeyRecord: () => Promise.resolve({ kind: "absent" }),
   listKeyRecords: () => Promise.resolve([]),
   removeKeyRecord: () => Promise.resolve(),
   removeKeyRecordsOfWorkflow: () => Promise.resolve(),

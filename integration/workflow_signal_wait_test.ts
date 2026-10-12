@@ -2041,6 +2041,7 @@ Deno.test("signal wait: a new run opens its waits without reading every registra
       removeOutcome: (id) => h.waits.removeOutcome(id),
       highestKeyRecord: (w, k) => h.waits.highestKeyRecord(w, k),
       createKeyRecord: (r) => h.waits.createKeyRecord(r),
+      findKeyRecord: (at) => h.waits.findKeyRecord(at),
       listKeyRecords: () => h.waits.listKeyRecords(),
       removeKeyRecord: (at) => h.waits.removeKeyRecord(at),
       removeKeyRecordsOfWorkflow: (w) => h.waits.removeKeyRecordsOfWorkflow(w),
@@ -2672,6 +2673,7 @@ function heldAfterRead(
         return highest;
       },
       createKeyRecord: (r) => store.createKeyRecord(r),
+      findKeyRecord: (at) => store.findKeyRecord(at),
       listKeyRecords: () => store.listKeyRecords(),
       removeKeyRecord: (at) => store.removeKeyRecord(at),
       removeKeyRecordsOfWorkflow: (w) => store.removeKeyRecordsOfWorkflow(w),

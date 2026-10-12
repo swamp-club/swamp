@@ -324,6 +324,7 @@ export function decideSignal(
   payload: unknown,
   submittedBy: string,
   now: Date,
+  idempotencyKey?: string,
 ): SignalDecision {
   if (isWaitExpired(registration, now)) {
     return {
@@ -343,6 +344,7 @@ export function decideSignal(
     waitId: registration.waitId,
     receivedAt: now.toISOString(),
     submittedBy,
+    ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
   };
   return {
     accepted: true,

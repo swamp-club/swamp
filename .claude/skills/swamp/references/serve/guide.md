@@ -87,6 +87,12 @@ curl -X POST https://<host>/api/v1/signal/<waitId> \
 curl -X POST https://<host>/api/v1/signal \
   -H "Authorization: Bearer <name>.<secret>" \
   -d '{"workflow":"<name>","key":"<key>","payload":{"verdict":"ship"}}'
+
+# A sender that retries adds a key: the retry gets the first receipt back
+# with "duplicate": true, and nothing is delivered or held twice
+curl -X POST https://<host>/api/v1/signal \
+  -H "Authorization: Bearer <name>.<secret>" -H "Idempotency-Key: build-812" \
+  -d '{"workflow":"<name>","key":"<key>","payload":{"verdict":"ship"}}'
 ```
 
 `swamp workflow run --server` prints the wait ID and the signal command with
@@ -106,7 +112,7 @@ Approvals page lists open, signalled and expired waits.
 | 409         | Already settled                                                |
 | 410         | Expired, or closed before a signal arrived                     |
 | 401 / 429   | No valid token / rate limited (plain-text body)                |
-| 400 / 413   | Body malformed, or by key carries a `waitId` / too large       |
+| 400 / 413   | Body or `Idempotency-Key` malformed, or `waitId` by key / big  |
 | 403 / 503   | `workflow.signal` is admin-only here / audit cannot record     |
 | 501 / 500   | Datastore cannot hold waits / stored record unreadable         |
 

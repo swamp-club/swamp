@@ -23,6 +23,7 @@ import {
   decideEarlySignal,
   declaredEarlyWait,
   type EarlySignal,
+  findSignalByIdempotencyKey,
   holdEarlySignal,
   liveSlotsOf,
   validateEarlyPayload,
@@ -559,4 +560,74 @@ Deno.test("holdEarlySignal: a key whose highest record cannot be read holds noth
     kind: "unreadable",
   });
   assertEquals(store.pendingRecords.size, 0);
+});
+
+Deno.test("findSignalByIdempotencyKey: finds the held signal while it is within its age limit, and only under its own key", async () => {
+  const store = new InMemorySignalWaitStore();
+  const at = { workflowId: WORKFLOW, key: KEY };
+  assertEquals(
+    await findSignalByIdempotencyKey(store, at, "order-1", NOW),
+    undefined,
+  );
+  const held = await holdEarlySignal(
+    store,
+    signal({ idempotencyKey: "order-1" }),
+    NOW,
+  );
+  assert(held.kind === "pending");
+  assertEquals(held.record.idempotencyKey, "order-1");
+  assertEquals(
+    await findSignalByIdempotencyKey(store, at, "order-1", WITHIN),
+    { kind: "pending", record: held.record },
+  );
+  assertEquals(
+    await findSignalByIdempotencyKey(store, at, "order-2", WITHIN),
+    undefined,
+  );
+  // Past its limit no wait takes it, so a retry is not a repeat of it.
+  assertEquals(
+    await findSignalByIdempotencyKey(store, at, "order-1", AFTER_LIMIT),
+    undefined,
+  );
+});
+
+Deno.test("findSignalByIdempotencyKey: finds the signal a wait took under the key's highest claim and the one below, and no further", async () => {
+  const store = new InMemorySignalWaitStore();
+  const at = { workflowId: WORKFLOW, key: KEY };
+  const held = await holdEarlySignal(
+    store,
+    signal({ idempotencyKey: "order-1" }),
+    NOW,
+  );
+  assert(held.kind === "pending");
+  const first = await claim(store, WITHIN);
+  const taken = await takePendingSignal(
+    store,
+    earlyWaitRef({ ...waitRefOfClaim(first.claim), schema: SCHEMA })!,
+  );
+  assert(taken.kind === "found" && taken.record.kind === "accepted");
+
+  const found = await findSignalByIdempotencyKey(store, at, "order-1", WITHIN);
+  assert(found?.kind === "settled", `got ${found?.kind}`);
+  assertEquals(found.claim.waitId, first.claim.waitId);
+  assertEquals(found.outcome.receipt.id, held.record.receiptId);
+
+  // The next run opens its wait: the claim below the highest still says so.
+  const second = await claim(store, new Date(NOW.getTime() + 60_000));
+  const below = await findSignalByIdempotencyKey(store, at, "order-1", WITHIN);
+  assert(below?.kind === "settled", `got ${below?.kind}`);
+  assertEquals(below.claim.waitId, first.claim.waitId);
+
+  // Two claims later the receipt is out of reach.
+  await store.settle(
+    cancelledOutcome(
+      waitRefOfClaim(second.claim),
+      new Date(NOW.getTime() + 61_000),
+    ),
+  );
+  await claim(store, new Date(NOW.getTime() + 120_000));
+  assertEquals(
+    await findSignalByIdempotencyKey(store, at, "order-1", WITHIN),
+    undefined,
+  );
 });

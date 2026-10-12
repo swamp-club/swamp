@@ -349,3 +349,29 @@ Deno.test("takePendingSignal: a wait already settled keeps its outcome", async (
   const stored = await takePendingSignal(store, ref());
   assertEquals(stored.kind === "found" && stored.record.kind, "timed_out");
 });
+
+Deno.test("pendingOutcome: the receipt keeps the idempotency key the signal was held under", () => {
+  const record = pending({ idempotencyKey: "order-1" });
+  assertEquals(
+    decodePendingRecord(encodePendingRecord(record), record),
+    { kind: "found", record },
+  );
+  assertEquals(
+    pendingOutcome(record, ref())?.receipt.idempotencyKey,
+    "order-1",
+  );
+  assertEquals(
+    "idempotencyKey" in (pendingOutcome(pending(), ref())?.receipt ?? {}),
+    false,
+  );
+  // A key in another form was never one a signal was held under.
+  assertEquals(
+    decodePendingRecord(
+      new TextEncoder().encode(
+        JSON.stringify({ ...record, idempotencyKey: "has space" }),
+      ),
+      record,
+    ),
+    { kind: "unreadable" },
+  );
+});

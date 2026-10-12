@@ -290,3 +290,13 @@ Deno.test("registrationOf: records the key of a keyed wait, and no key field for
     "unreadable",
   );
 });
+
+Deno.test("decideSignal: the receipt keeps the idempotency key the signal carried, and has none otherwise", () => {
+  const reg = registration();
+  const keyed = decideSignal(reg, { verdict: "ship" }, "ada", IN_TIME, "k-1");
+  assert(keyed.accepted);
+  assertEquals(keyed.outcome.receipt.idempotencyKey, "k-1");
+  const plain = decideSignal(reg, { verdict: "ship" }, "ada", IN_TIME);
+  assert(plain.accepted);
+  assertEquals("idempotencyKey" in plain.outcome.receipt, false);
+});

@@ -156,6 +156,10 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
     return Promise.resolve(this.#findKeyRecord(record));
   }
 
+  findKeyRecord(at: WaitKeyAddress): Promise<StoredWaitRecord<WaitKeyRecord>> {
+    return Promise.resolve(this.#findKeyRecord(at));
+  }
+
   listKeyRecords(): Promise<WaitKeyRecord[]> {
     const found: WaitKeyRecord[] = [];
     for (const storeKey of [...this.keyRecords.keys()]) {

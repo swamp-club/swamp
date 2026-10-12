@@ -43,6 +43,7 @@ import {
   PENDING_SIGNAL_LAPSE_GRACE_MS,
   type PendingAddress,
   type PendingLapse,
+  type PendingSignalRecords,
   takePendingSignal,
 } from "./pending_signal.ts";
 
@@ -456,6 +457,28 @@ export interface WaitRecordSweep {
   keyRecords: number;
   /** Pending signals no wait took, and records in slots nothing reads. */
   pendingSignals: number;
+}
+
+/**
+ * Removes the pending signal `stored` was stored over: the record one number
+ * below it in its slot. Only the highest record of a slot is read, and
+ * `stored` is above that one, so nothing reads it again; the highest is
+ * never deleted, and no number comes back into use. Whoever stores a signal
+ * calls this once it is stored, so a slot does not keep every signal that
+ * aged out in it until a sweep. What a caller that stopped in between left
+ * is removed by {@link sweepPendingSignals}.
+ */
+export async function removeSupersededPendingSignal(
+  store: Pick<PendingSignalRecords, "removePendingRecord">,
+  stored: PendingAddress,
+): Promise<void> {
+  if (stored.number <= 1) return;
+  await store.removePendingRecord({
+    workflowId: stored.workflowId,
+    key: stored.key,
+    slot: stored.slot,
+    number: stored.number - 1,
+  });
 }
 
 /**

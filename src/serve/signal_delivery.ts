@@ -107,6 +107,17 @@ export type SignalDeliveryRequest = SignalDeliveryAddress & {
   /** Identifies the request in audit events. */
   readonly requestId: string;
   readonly payload: unknown;
+  /**
+   * False for a caller that cannot read a `pending` answer: a signal by key
+   * that finds no open wait is then refused `no_open_wait` and never held,
+   * whatever the step declares (swamp-club#3212). Defaults to true.
+   */
+  readonly holdEarly?: boolean;
+  /**
+   * The sender's idempotency key, already in the form of one. A signal
+   * whose key matches one already received is answered with that signal.
+   */
+  readonly idempotencyKey?: string;
 };
 
 /** What the transport that carries a signal is told along the way. */
@@ -530,6 +541,10 @@ export async function deliverSignalForCaller(
           : {}),
         authorize,
         waitsCommand: SERVER_WAITS_COMMAND,
+        ...(request.holdEarly === false ? { holdEarly: false } : {}),
+        ...(request.idempotencyKey !== undefined
+          ? { idempotencyKey: request.idempotencyKey }
+          : {}),
       }),
       {
         resolving: () => {},
@@ -627,6 +642,7 @@ export async function deliverSignalForCaller(
       data: {
         signal: { ...held.signal },
         heldUntil: held.heldUntil,
+        ...(held.duplicate ? { duplicate: true as const } : {}),
         ...(readable
           ? {
             key: held.key,
@@ -664,6 +680,7 @@ export async function deliverSignalForCaller(
     data: {
       waitId: delivered.waitId,
       signal: { ...delivered.signal },
+      ...(delivered.duplicate ? { duplicate: true as const } : {}),
       ...(readable
         ? {
           ...(delivered.key !== undefined ? { key: delivered.key } : {}),
@@ -715,7 +732,8 @@ function emitDelivered(
     // The key is the one the wait's registration holds, never request text.
     detail:
       `wait=${delivered.waitId} receipt=${delivered.signal.id} run=${delivered.runId}` +
-      (delivered.key !== undefined ? ` key=${delivered.key}` : ""),
+      (delivered.key !== undefined ? ` key=${delivered.key}` : "") +
+      (delivered.duplicate ? " duplicate=true" : ""),
   }));
 }
 
@@ -751,7 +769,8 @@ function emitHeld(
     sourceIp: caller.sourceIp,
     requestId,
     detail:
-      `receipt=${held.signal.id} key=${held.key} heldUntil=${held.heldUntil}`,
+      `receipt=${held.signal.id} key=${held.key} heldUntil=${held.heldUntil}` +
+      (held.duplicate ? " duplicate=true" : ""),
   }));
 }
 

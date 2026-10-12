@@ -38,6 +38,7 @@ import { z } from "zod";
 import { generationFromKey } from "./continuation_claim.ts";
 import {
   earlySlots,
+  isIdempotencyKey,
   isWaitKey,
   SIGNAL_ACCEPT_EARLY_MAX_SECONDS,
   SignalWait,
@@ -93,6 +94,8 @@ export const PendingSignalSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
   /** The age limit the definition declared when the signal arrived, in seconds. */
   acceptEarly: z.number().positive().max(SIGNAL_ACCEPT_EARLY_MAX_SECONDS),
+  /** The idempotency key the sender gave, if any; the receipt keeps it. */
+  idempotencyKey: z.string().refine(isIdempotencyKey).optional(),
 });
 
 export type PendingSignal = z.infer<typeof PendingSignalSchema>;
@@ -323,6 +326,9 @@ export function pendingOutcome(
       waitId: ref.waitId,
       receivedAt: pending.receivedAt,
       submittedBy: pending.submittedBy,
+      ...(pending.idempotencyKey !== undefined
+        ? { idempotencyKey: pending.idempotencyKey }
+        : {}),
     },
     payload: validation.payload,
   };

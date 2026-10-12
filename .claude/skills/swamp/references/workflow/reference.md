@@ -906,6 +906,7 @@ swamp workflow run release     # runs to the wait, prints the wait ID, suspends
 swamp workflow waits           # wait ID, workflow, step, deadline, schema
 swamp workflow signal <wait-id> --payload '{"verdict":"ship"}'
 swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}'   # by key, in place of the wait ID
+swamp workflow signal --workflow release --key release-verdict --payload '{"verdict":"ship"}' --idempotency-key build-812   # safe to send again
 swamp workflow resume release --run <run-id>   # not needed when serve auto-resumes
 ```
 
@@ -959,15 +960,20 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   `pending.heldUntil`, the time after which to send again. On such a step
   `no_open_wait` means only that the key changed hands while the signal arrived:
   send it again. A retry by key after the step took the first signal is held as
-  a second one, for the next run: its result carries `lastWait` (how and when
-  the key's last wait was settled), so read that before sending again. The
-  payload is checked on arrival against the schema as written, so the schema of
-  such a step may hold no expression, `inputs.*` included (`workflow validate`
-  refuses one). A pending signal is stored in plaintext like any payload, and
-  `workflow waits` does not list it. Upgrade every host that runs, resumes or
-  lists the workflow before adding `acceptEarly`, and every client that signals
-  it with `--server`: an older swamp never takes a held signal, and an older
-  client fails on the pending reply.
+  a second one, for the next run, unless both carry the same `--idempotency-key`
+  (1 to 128 letters, digits, `.`, `:`, `-`, `_`): the retry is then answered
+  with the first signal's receipt and `duplicate: true`, and nothing is
+  delivered or held twice. Give every signal a sender may retry its own key.
+  Without one, the result carries `lastWait` (how and when the key's last wait
+  was settled), so read that before sending again. The payload is checked on
+  arrival against the schema as written, so the schema of such a step may hold
+  no expression, `inputs.*` included (`workflow validate` refuses one). A
+  pending signal is stored in plaintext like any payload, and `workflow waits`
+  does not list it. Upgrade every host that runs, resumes or lists the workflow
+  before adding `acceptEarly`, and every client that signals it with `--server`:
+  an older swamp never takes a held signal, and a server holds nothing for an
+  older client, which is refused `no_open_wait`. A server older than
+  `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).

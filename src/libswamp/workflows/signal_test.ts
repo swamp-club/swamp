@@ -208,6 +208,7 @@ async function send(
   fixture: Pick<Fixture, "deps">,
   waitId: string,
   payload: unknown,
+  idempotencyKey?: string,
 ): Promise<WorkflowSignalEvent> {
   const events = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), fixture.deps, {
@@ -215,6 +216,7 @@ async function send(
       payload,
       // No letter of it is a hex digit, so no UUID in a message holds it.
       submittedBy: "tux",
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     }),
   );
   assertEquals(events[0], { kind: "resolving" });
@@ -1238,6 +1240,7 @@ async function sendByKey(
   workflow: string,
   key: string,
   payload: unknown,
+  idempotencyKey?: string,
 ): Promise<WorkflowSignalEvent> {
   const events = await collect<WorkflowSignalEvent>(
     workflowSignal(createLibSwampContext(), fixture.deps, {
@@ -1245,6 +1248,7 @@ async function sendByKey(
       key,
       payload,
       submittedBy: "tux",
+      ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     }),
   );
   assertEquals(events[0], { kind: "resolving" });
@@ -1732,6 +1736,26 @@ Deno.test("workflowSignal: a keyed wait without acceptEarly refuses an early sig
   assertEquals(waits.pendingRecords.size, 0);
 });
 
+Deno.test("workflowSignal: for a caller that cannot be told a signal is held, an early signal is refused as before and nothing is stored", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "ship" },
+      submittedBy: "tux",
+      holdEarly: false,
+    }),
+  );
+  const refusal = refusalOf(events.at(-1)!);
+  assertEquals(refusal.kind, "no_open_wait");
+  assertStringIncludes(refusal.message, "nothing was stored");
+  assertStringIncludes(refusal.message, "upgrade swamp");
+  assertEquals(waits.pendingRecords.size, 0);
+});
+
 Deno.test("workflowSignal: a wait opened over a pending signal its step never read is given that signal by the next signal that looks", async () => {
   const workflow = earlyWorkflow();
   const waits = new InMemorySignalWaitStore();
@@ -1835,4 +1859,232 @@ Deno.test("workflowSignal: a signal sent as the step opens its wait is delivered
   const pending = await waits.findPendingRecord(address);
   assert(pending.kind === "found" && pending.record.kind === "pending");
   assertEquals(pending.record.receiptId, sent.data.signal.id);
+});
+
+// A signal sent again under its idempotency key (swamp-club#3212).
+
+/**
+ * An early signal sent under `idempotencyKey` that the first run's wait
+ * took: the wait opened five seconds after it and was settled by the next
+ * reader, so the key is free again.
+ */
+async function landedEarlySignal(idempotencyKey: string) {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const empty = await fixtureOf([], { waits, workflows: [workflow] });
+  const early = await sendByKey(
+    empty,
+    "release",
+    KEY,
+    { verdict: "ship" },
+    idempotencyKey,
+  );
+  assert(early.kind === "pending", `got ${early.kind}`);
+  const opened = await suspendedAtEarlyWait(
+    workflow,
+    waits,
+    new Date(IN_TIME.getTime() + 5_000),
+  );
+  const at = (seconds: number, runs: WorkflowRun[] = [opened.run]) =>
+    fixtureOf(runs, {
+      waits,
+      workflows: [workflow],
+      now: new Date(IN_TIME.getTime() + seconds * 1000),
+    });
+  // Whoever looks at the wait next gives it the signal.
+  const reader = refusalOf(
+    await sendByKey(await at(6), "release", KEY, { verdict: "fix" }),
+  );
+  assertEquals(reader.kind, "already_settled");
+  return { workflow, waits, early: early.data, opened, at };
+}
+
+Deno.test("workflowSignal: a retry of an early signal a run took is answered with that signal, and nothing is held for the next run", async () => {
+  const { waits, early, opened, at } = await landedEarlySignal("order-1");
+  const held = waits.pendingRecords.size;
+
+  const retry = await sendByKey(
+    await at(7),
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "order-1",
+  );
+  assert(retry.kind === "completed", `got ${retry.kind}`);
+  assertEquals(retry.data.duplicate, true);
+  assertEquals(retry.data.waitId, opened.waitId);
+  assertEquals(retry.data.runId, opened.run.id);
+  assertEquals(retry.data.signal.id, early.signal.id);
+  assertEquals(retry.data.signal.idempotencyKey, "order-1");
+  assertEquals(waits.pendingRecords.size, held);
+
+  // Under another key, or none, it is a signal for the next run, as before.
+  const other = await sendByKey(
+    await at(8),
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "order-2",
+  );
+  assert(other.kind === "pending", `got ${other.kind}`);
+  assertEquals(other.data.duplicate, undefined);
+});
+
+Deno.test("workflowSignal: a retry of a signal that is still held is answered with the held one, and another key is refused as already pending", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const payload = { verdict: "ship" };
+  const first = await sendByKey(fixture, "release", KEY, payload, "order-1");
+  assert(first.kind === "pending");
+  assertEquals(first.data.signal.idempotencyKey, "order-1");
+  assertEquals(first.data.duplicate, undefined);
+
+  const retry = await sendByKey(fixture, "release", KEY, payload, "order-1");
+  assert(retry.kind === "pending", `got ${retry.kind}`);
+  assertEquals(retry.data.duplicate, true);
+  assertEquals(retry.data.signal, first.data.signal);
+  assertEquals(retry.data.heldUntil, first.data.heldUntil);
+  assertEquals(waits.pendingRecords.size, 1);
+
+  const other = refusalOf(
+    await sendByKey(fixture, "release", KEY, payload, "order-2"),
+  );
+  assertEquals(other.kind, "already_pending");
+});
+
+Deno.test("workflowSignal: a held signal past its age limit is not what a retry repeats, and the retry is held", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const payload = { verdict: "ship" };
+  const first = await sendByKey(
+    await fixtureOf([], { waits, workflows: [workflow] }),
+    "release",
+    KEY,
+    payload,
+    "order-1",
+  );
+  assert(first.kind === "pending");
+  const later = await fixtureOf([], {
+    waits,
+    workflows: [workflow],
+    now: new Date(IN_TIME.getTime() + 10_001),
+  });
+  const retry = await sendByKey(later, "release", KEY, payload, "order-1");
+  assert(retry.kind === "pending", `got ${retry.kind}`);
+  assertEquals(retry.data.duplicate, undefined);
+  assertEquals(retry.data.signal.id === first.data.signal.id, false);
+});
+
+Deno.test("workflowSignal: a retry that arrives once the next run has opened its wait is not delivered to that wait", async () => {
+  const { workflow, waits, early, opened, at } = await landedEarlySignal(
+    "order-1",
+  );
+  const next = await suspendedAtEarlyWait(
+    workflow,
+    waits,
+    new Date(IN_TIME.getTime() + 20_000),
+  );
+  const fixture = await at(21, [opened.run, next.run]);
+
+  const retry = await sendByKey(
+    fixture,
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "order-1",
+  );
+  assert(retry.kind === "completed", `got ${retry.kind}`);
+  assertEquals(retry.data.duplicate, true);
+  assertEquals(retry.data.waitId, opened.waitId);
+  assertEquals(retry.data.signal.id, early.signal.id);
+  assertEquals((await waits.findOutcome(next.waitId)).kind, "absent");
+
+  // Without the key it is a signal for the wait that is open.
+  const plain = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(plain.kind === "completed", `got ${plain.kind}`);
+  assertEquals(plain.data.waitId, next.waitId);
+  assertEquals(plain.data.duplicate, undefined);
+});
+
+Deno.test("workflowSignal: a signal to an open wait keeps its idempotency key, and a retry by ID or by key is answered with it", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const opened = await suspendedAtEarlyWait(workflow, waits, OPENED);
+  const fixture = await fixtureOf([opened.run], {
+    waits,
+    workflows: [workflow],
+  });
+  const payload = { verdict: "ship" };
+  const first = await send(fixture, opened.waitId, payload, "order-1");
+  assert(first.kind === "completed", `got ${first.kind}`);
+  assertEquals(first.data.duplicate, undefined);
+  assertEquals(first.data.signal.idempotencyKey, "order-1");
+
+  const byId = await send(fixture, opened.waitId, payload, "order-1");
+  assert(byId.kind === "completed", `got ${byId.kind}`);
+  assertEquals(byId.data.duplicate, true);
+  assertEquals(byId.data.signal, first.data.signal);
+
+  const byKey = await sendByKey(fixture, "release", KEY, payload, "order-1");
+  assert(byKey.kind === "completed", `got ${byKey.kind}`);
+  assertEquals(byKey.data.duplicate, true);
+  assertEquals(byKey.data.signal, first.data.signal);
+  assertEquals(waits.pendingRecords.size, 0);
+
+  // Another key, or none, is a second signal for a settled wait.
+  assertEquals(
+    refusalOf(await send(fixture, opened.waitId, payload, "order-2")).kind,
+    "already_settled",
+  );
+  assertEquals(
+    refusalOf(await send(fixture, opened.waitId, payload)).kind,
+    "already_settled",
+  );
+});
+
+Deno.test("workflowSignal: an idempotency key in another form is refused before anything is read", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  for (const key of ["", "has space", "a/b", "k".repeat(129)]) {
+    const sent = await sendByKey(fixture, "release", KEY, {}, key);
+    assert(sent.kind === "error", `got ${sent.kind}`);
+    assertEquals(signalRefusalKind(sent.error), undefined);
+    assertStringIncludes(sent.error.message, "idempotency key");
+  }
+  assertEquals(waits.pendingRecords.size, 0);
+});
+
+Deno.test("workflowSignal: a slot keeps one record however many early signals age out in it", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  let last: string | undefined;
+  for (let i = 0; i < 20; i++) {
+    const sent = await sendByKey(
+      await fixtureOf([], {
+        waits,
+        workflows: [workflow],
+        now: new Date(IN_TIME.getTime() + i * 10_001),
+      }),
+      "release",
+      KEY,
+      { verdict: "ship" },
+    );
+    assert(sent.kind === "pending", `got ${sent.kind}`);
+    last = sent.data.signal.id;
+  }
+  // The highest record is the last signal; the ones it superseded are gone.
+  const addresses = await waits.listPendingAddresses();
+  assertEquals(addresses.map((at) => at.number), [20]);
+  const head = await waits.highestPendingRecord({
+    workflowId: workflow.id,
+    key: KEY,
+    slot: 1,
+  });
+  assertEquals(
+    head.kind === "found" && head.record.kind === "pending" &&
+      head.record.receiptId,
+    last,
+  );
 });
