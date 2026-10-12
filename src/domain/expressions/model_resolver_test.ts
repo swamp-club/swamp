@@ -38,7 +38,7 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import type { DataRecord } from "../data/data_record.ts";
-import type { Namespace } from "../data/namespace.ts";
+import { type Namespace, restoreNamespace } from "../data/namespace.ts";
 import {
   createEphemeralStore,
   wrapWithEphemeral,
@@ -2314,6 +2314,93 @@ Deno.test("data.latest records sensitive vault refs resolved through the catalog
         source: { vaultName: "my-vault", key: "api-key" },
       }]);
       assertEquals(redactor.redact("key=secret-456"), "key=***");
+    } finally {
+      catalog.close();
+    }
+  });
+});
+
+Deno.test("data.latest returns another namespace's sensitive vault refs as stored (swamp-club#3306)", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const defRepo = new YamlDefinitionRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    try {
+      const ref = "${{ vault.get('my-vault', 'api-key') }}";
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalog,
+        undefined,
+        undefined,
+        restoreNamespace("infra"),
+        undefined,
+        undefined,
+        () =>
+          Promise.resolve(
+            new TextEncoder().encode(JSON.stringify({ apiKey: ref })),
+          ),
+      );
+      catalog.markPopulated();
+      // As `datastore catalog pull` writes it: the row and its tags are the
+      // other namespace's, and there is no content on local disk.
+      const tags = {
+        type: "resource",
+        modelName: "secret-holder",
+        "_swamp.sensitiveFields": JSON.stringify(["apiKey"]),
+      };
+      catalog.upsert({
+        namespace: "security",
+        type_normalized: "test/model",
+        model_id: crypto.randomUUID(),
+        data_name: "creds",
+        id: crypto.randomUUID(),
+        version: 1,
+        is_latest: 1,
+        is_step_latest: 1,
+        model_name: "secret-holder",
+        spec_name: "",
+        data_type: "resource",
+        content_type: "application/json",
+        lifetime: "infinite",
+        garbage_collection: "10",
+        owner_type: "model-method",
+        streaming: 0,
+        size: 2,
+        created_at: new Date().toISOString(),
+        tags: JSON.stringify(tags),
+        owner_ref: "",
+        workflow_run_id: "",
+        workflow_name: "",
+        job_name: "",
+        step_name: "",
+        source: "",
+      });
+
+      const vaultReads: string[] = [];
+      const vaultService = {
+        get: (_vaultName: string, secretKey: string) => {
+          vaultReads.push(secretKey);
+          return Promise.resolve("secret-789");
+        },
+      } as unknown as VaultService;
+      const resolver = new ModelResolver(defRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: new DataQueryService(catalog, dataRepo),
+        vaultService,
+      });
+
+      const values = new RunSensitiveValues();
+      const record = await resolver.buildLightContext(values).data!.latest(
+        "security:secret-holder",
+        "creds",
+      );
+      assertExists(record);
+      assertEquals(record.namespace, "security");
+      assertEquals(record.attributes.apiKey, ref);
+      assertEquals(vaultReads, []);
+      assertEquals(values.list(), []);
     } finally {
       catalog.close();
     }

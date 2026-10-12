@@ -729,6 +729,145 @@ Deno.test("requireInitializedRepoUnlocked - does not acquire any lock", async ()
 });
 
 // ============================================================================
+// Foreign content fetcher wiring (swamp-club#3306)
+// ============================================================================
+
+Deno.test("repo contexts carry the sync service's foreign content fetcher on the data repository", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+  const { DataQueryService } = await import(
+    "../domain/data/data_query_service.ts"
+  );
+
+  const typeName = `test-foreign-content-${crypto.randomUUID()}`;
+  const fetched: Array<{ namespace: string; relPath: string }> = [];
+
+  datastoreTypeRegistry.register({
+    type: typeName,
+    name: "Test foreign content",
+    description: "Test extension for the foreign content fetcher wiring",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: typeName,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+      createSyncService: () => ({
+        pullChanged: () => Promise.resolve(0),
+        pushChanged: () => Promise.resolve(0),
+        markDirty: () => Promise.resolve(),
+        fetchForeignContent: (namespace: string, relPath: string) => {
+          fetched.push({ namespace, relPath });
+          return Promise.resolve(
+            new TextEncoder().encode('{"content":"security"}'),
+          );
+        },
+      }),
+    }),
+  });
+
+  const contexts = {
+    requireInitializedRepoReadOnly: (repoDir: string) =>
+      requireInitializedRepoReadOnly({ repoDir, outputMode: "json" }),
+    requireInitializedRepo: (repoDir: string) =>
+      requireInitializedRepo({
+        repoDir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      }),
+    // The one `model method run`, `workflow run` and serve build.
+    requireInitializedRepoUnlocked: (repoDir: string) =>
+      requireInitializedRepoUnlocked({ repoDir, outputMode: "json" }),
+  };
+
+  try {
+    for (const [name, build] of Object.entries(contexts)) {
+      await withTempDir(async (dir) => {
+        await initializeRepo(dir);
+        await configureExtensionDatastore(dir, typeName);
+        fetched.length = 0;
+
+        const { repoContext } = await build(dir);
+        try {
+          // A row as `datastore catalog pull` writes it: no local content.
+          repoContext.catalogStore.markPopulated();
+          const modelId = crypto.randomUUID();
+          repoContext.catalogStore.upsert({
+            namespace: "security",
+            type_normalized: "test/scanner",
+            model_id: modelId,
+            data_name: "output",
+            id: crypto.randomUUID(),
+            version: 1,
+            is_latest: 1,
+            is_step_latest: 1,
+            model_name: "scanner",
+            spec_name: "result",
+            data_type: "resource",
+            content_type: "application/json",
+            lifetime: "infinite",
+            garbage_collection: "10",
+            owner_type: "model-method",
+            streaming: 0,
+            size: 22,
+            created_at: new Date().toISOString(),
+            tags: "{}",
+            owner_ref: "",
+            workflow_run_id: "",
+            workflow_name: "",
+            job_name: "",
+            step_name: "",
+            source: "",
+          });
+
+          // The context's own service, and one built from the context's
+          // repository the way every run-deps builder builds its own.
+          for (
+            const service of [
+              repoContext.dataQueryService,
+              new DataQueryService(
+                repoContext.catalogStore,
+                repoContext.unifiedDataRepo,
+              ),
+            ]
+          ) {
+            const record = await service.getLatestRecord(
+              "scanner",
+              "output",
+              "security",
+            );
+            assertEquals(record?.attributes, { content: "security" }, name);
+          }
+          assertEquals(fetched[0], {
+            namespace: "security",
+            relPath: `data/test/scanner/${modelId}/output/1/raw`,
+          }, name);
+        } finally {
+          await flushDatastoreSync();
+        }
+      });
+    }
+  } finally {
+    datastoreTypeRegistry.invalidateType(typeName);
+  }
+});
+
+// ============================================================================
 // createModelLock Tests
 // ============================================================================
 

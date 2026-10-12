@@ -154,7 +154,10 @@ import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
 import { ActiveRun, type ActiveRunStatus } from "../models/active_run.ts";
 import { cancelCause, cleanupGraceSignal } from "../models/cancel_cause.ts";
 import { hostname } from "node:os";
-import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type {
+  ForeignContentFetcher,
+  UnifiedDataRepository,
+} from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
@@ -1324,6 +1327,7 @@ export class DefaultStepExecutor implements StepExecutor {
     private readonly markDirty?: MarkDirtyHook,
     private readonly stepLockHook?: StepLockHook,
     private readonly hydrateFile?: HydrateFileHook,
+    private readonly fetchForeignContent?: ForeignContentFetcher,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -1342,6 +1346,7 @@ export class DefaultStepExecutor implements StepExecutor {
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
+      fetchForeignContent?: ForeignContentFetcher;
       namespace?: Namespace;
       vaultsDir?: string;
       autoGc?: boolean;
@@ -1367,6 +1372,7 @@ export class DefaultStepExecutor implements StepExecutor {
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
       hydrateFile: this.hydrateFile,
+      fetchForeignContent: this.fetchForeignContent,
       namespace: ctx.namespace,
       vaultsDir: ctx.vaultsDir,
       autoGc: ctx.autoGc,
@@ -1390,6 +1396,7 @@ export class DefaultStepExecutor implements StepExecutor {
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
       hydrateFile?: HydrateFileHook;
+      fetchForeignContent?: ForeignContentFetcher;
       namespace?: Namespace;
       vaultsDir?: string;
       autoGc?: boolean;
@@ -1416,6 +1423,8 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.hydrateFile,
       opts.namespace ?? SOLO_NAMESPACE,
       opts.autoGc ?? false,
+      undefined,
+      opts.fetchForeignContent,
     );
     const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
@@ -3226,6 +3235,7 @@ export class WorkflowExecutionService {
     private readonly vaultsDir?: string,
     private readonly datastoreResolver?: DatastorePathResolver,
     private readonly autoGc: boolean = false,
+    private readonly fetchForeignContent?: ForeignContentFetcher,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -3234,6 +3244,7 @@ export class WorkflowExecutionService {
         markDirty,
         stepLockHook,
         hydrateFile,
+        fetchForeignContent,
       );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
@@ -3266,6 +3277,8 @@ export class WorkflowExecutionService {
       hydrateFile,
       namespace,
       autoGc,
+      undefined,
+      fetchForeignContent,
     );
     this.dataRepo = ephemeralRepo
       ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
@@ -6900,6 +6913,7 @@ export class WorkflowExecutionService {
       this.vaultsDir,
       this.datastoreResolver,
       this.autoGc,
+      this.fetchForeignContent,
     );
     childService.signalWaits = this.signalWaits;
 

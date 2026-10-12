@@ -21,7 +21,6 @@ import type { DataRecord } from "./data_record.ts";
 import {
   type DataQueryOptions,
   DataQueryService,
-  type ForeignContentFetcher,
   type LatestRecordOptions,
 } from "./data_query_service.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -57,11 +56,6 @@ export class CompositeDataQueryService extends DataQueryService {
   ) {
     super(persistentCatalog, persistentRepo);
     this.ephemeralQueryService = ephemeralQueryService;
-  }
-
-  override setForeignContentFetcher(fetcher: ForeignContentFetcher): void {
-    super.setForeignContentFetcher(fetcher);
-    this.ephemeralQueryService.setForeignContentFetcher(fetcher);
   }
 
   // Ephemeral wins, matching the precedence deduplicateRecords gives query().

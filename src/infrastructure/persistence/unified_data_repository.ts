@@ -67,6 +67,7 @@ import {
   type ContentAvailability,
   type DeferredWriteReceipt,
   type FindAllGlobalOptions,
+  type ForeignContentFetcher,
   type GarbageCollectionResult,
   OwnershipValidationError,
   type RenameForward,
@@ -229,6 +230,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     private readonly enableWriteGc: boolean = false,
     /** Clock for {@link ACCEPTED_SHORT_CONTENT_TTL_MS}; tests inject one. */
     private readonly now: () => number = Date.now,
+    public readonly fetchForeignContent?: ForeignContentFetcher,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }

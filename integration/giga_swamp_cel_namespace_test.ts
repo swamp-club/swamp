@@ -41,6 +41,7 @@ import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlOutputRepository } from "../src/infrastructure/persistence/yaml_output_repository.ts";
 import type { DataRecord } from "../src/domain/data/data_record.ts";
+import type { ForeignContentFetcher } from "../src/domain/data/repositories.ts";
 import { SOLO_NAMESPACE } from "../src/domain/data/namespace.ts";
 import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import {
@@ -93,6 +94,7 @@ function setupRepo(
   repoDir: string,
   dsDir: string,
   namespace?: string,
+  fetchForeignContent?: ForeignContentFetcher,
 ): SetupResult {
   const config: DatastoreConfig = namespace
     ? { type: "filesystem", path: dsDir, namespace }
@@ -109,6 +111,9 @@ function setupRepo(
     undefined,
     undefined,
     ns,
+    undefined,
+    undefined,
+    fetchForeignContent,
   );
   const queryService = new DataQueryService(catalog, dataRepo);
   return { catalog, queryService, dataRepo, repoDir };
@@ -257,6 +262,76 @@ Deno.test("giga-swamp CEL Phase 4: cross-namespace point lookup with ns:model sy
       const crossResult = await latestFn("security:scanner", "output");
       assertEquals(crossResult !== null, true);
       assertEquals(crossResult!.namespace, "security");
+    } finally {
+      setup.catalog.close();
+    }
+  });
+});
+
+// --- Test 2a: every reader returns the foreign record's attributes ---
+// A catalog pull brings another namespace's rows without their content; the
+// repository's fetcher reads it from the remote on demand (swamp-club#3306).
+
+Deno.test("giga-swamp CEL Phase 4: data.* readers return a foreign record's attributes through the repository's fetcher (swamp-club#3306)", async () => {
+  await withTempDir(async (root) => {
+    const dsDir = join(root, "shared-ds");
+    const repoDir = join(root, "repo-infra");
+    const fetched: Array<{ namespace: string; relPath: string }> = [];
+    const setup = setupRepo(repoDir, dsDir, "infra", (namespace, relPath) => {
+      fetched.push({ namespace, relPath });
+      return Promise.resolve(
+        new TextEncoder().encode('{"content":"security"}'),
+      );
+    });
+
+    try {
+      await setup.dataRepo.save(
+        modelType,
+        crypto.randomUUID(),
+        makeData("output", "scanner"),
+        new TextEncoder().encode('{"content":"infra"}'),
+      );
+      setup.catalog.markPopulated();
+      const row = makeCrossNamespaceRow("security", "scanner", "output");
+      setup.catalog.upsert(row);
+      setup.catalog.upsert({
+        ...makeCrossNamespaceRow("security", "auditor", "report"),
+      });
+
+      const data = await buildDataContext(setup);
+      const attributesOf = async (read: unknown) =>
+        ((await read) as DataRecord | null)?.attributes;
+
+      // The caller's record of the same name is still its own.
+      assertEquals(
+        await attributesOf(data.latest("scanner", "output")),
+        { content: "infra" },
+      );
+      assertEquals(fetched, []);
+
+      assertEquals(
+        await attributesOf(data.latest("security:scanner", "output")),
+        { content: "security" },
+      );
+      assertEquals(fetched, [{
+        namespace: "security",
+        relPath: `data/${row.type_normalized}/${row.model_id}/output/1/raw`,
+      }]);
+      assertEquals(
+        await attributesOf(data.version("security:scanner", "output", 1)),
+        { content: "security" },
+      );
+      // Only security holds "auditor", so the wildcard is unambiguous.
+      assertEquals(
+        await attributesOf(data.latest("*:auditor", "report")),
+        { content: "security" },
+      );
+      const queried = await data.query(
+        'ns == "security" && modelName == "scanner"',
+      ) as DataRecord[];
+      assertEquals(queried.map((r) => r.attributes), [{
+        content: "security",
+      }]);
     } finally {
       setup.catalog.close();
     }

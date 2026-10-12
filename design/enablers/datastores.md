@@ -3780,9 +3780,37 @@ records a `foreign_synced:{namespace}` timestamp in `catalog_meta`.
 
 **On-demand content fetch** (Phase 6d): when a cross-namespace CEL expression
 reads `attributes` whose content is not local, the `DataQueryService` calls
-`fetchForeignContent` through its `ForeignContentFetcher` callback. Content is
-cached in memory for the command, not persisted. Missing content or errors
-leave attributes empty.
+`fetchForeignContent` through the `ForeignContentFetcher` its data repository
+carries (`UnifiedDataRepository.fetchForeignContent`). The fetcher travels with
+the repository, as the lazy-hydration hook does, so a query service built from
+a repo context's repository can fetch wherever it is built: every repo context
+constructor wires it from the sync service, and the paths that build a
+repository of their own (workflow runs, `workflow evaluate`, `model evaluate`,
+`model validate`) are handed it.
+
+Every reader hydrates a foreign JSON record: `query()` (before projection, so a
+`select` over `attributes` sees them, and after the `include` filter, so a
+record the caller may not read is never fetched; a `select` that reads no
+`attributes` fetches nothing) and `getLatestRecord`, which serves a
+namespace-prefixed `data.latest()`.
+
+The path fetched is built from the foreign row's namespace, model type, model
+id, data name and version. Those fields are the other namespace's to write, so
+a row is fetched only when each is a plain path segment: one holding `..`, a
+separator or nothing at all could name an object outside that namespace's data
+tree, and is left with empty attributes. A `select` that reads `content`
+rather than `attributes` still sees no bytes for a foreign record, and a
+predicate over a foreign record's `attributes` is matched before hydration,
+against empty attributes.
+
+A fetched body is cached in memory by the service, up to a fixed number of
+bodies, and never persisted. Missing content or an error leaves attributes
+empty and is not cached, so the next read tries again.
+
+Foreign attributes are returned as stored. Sensitive fields holding vault
+references are not resolved: the record's tags and values are the other
+namespace's to write, and must not choose which of the reader's secrets are
+read.
 
 **CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
 foreign catalog metadata from those namespaces.
