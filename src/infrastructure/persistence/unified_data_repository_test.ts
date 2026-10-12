@@ -2916,3 +2916,93 @@ Deno.test("rollbackVersions: rolling back a deferred write prunes nothing with e
     assertEquals(await repo.listVersions(testType, "m1", "capped"), [1, 2, 3]);
   }, true);
 });
+
+Deno.test("reassertLatestVersion: moves a reverted latest marker forward and stages the version and the marker (swamp-club#3146)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  const catalogStore = new CatalogStore(join(dir, "_catalog.db"));
+  try {
+    const marks: (string | undefined)[] = [];
+    const repo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogStore,
+      (path) => {
+        marks.push(path);
+        return Promise.resolve();
+      },
+    );
+    await repo.save(testType, "model-1", makeData("state"), enc("one"));
+    await repo.save(testType, "model-1", makeData("state"), enc("two"));
+    const latestPath = join(
+      repo.getDataNameDir(testType, "model-1", "state"),
+      "latest",
+    );
+    // A pull of the datastore put back the remote's older marker.
+    await Deno.writeTextFile(latestPath, "1");
+    marks.length = 0;
+
+    const paths = await repo.reassertLatestVersion(
+      testType,
+      "model-1",
+      "state",
+      2,
+    );
+
+    assertEquals(await Deno.readTextFile(latestPath), "2");
+    const versionDir = repo.getPath(testType, "model-1", "state", 2);
+    assertEquals(paths, { versionDir, latestPath });
+    assertEquals(marks, [versionDir, latestPath]);
+  } finally {
+    catalogStore.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("reassertLatestVersion: never lowers a marker naming a newer version", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(testType, "model-1", makeData("state"), enc("one"));
+    await repo.save(testType, "model-1", makeData("state"), enc("two"));
+
+    const paths = await repo.reassertLatestVersion(
+      testType,
+      "model-1",
+      "state",
+      1,
+    );
+
+    assertExists(paths);
+    assertEquals(
+      await Deno.readTextFile(
+        join(repo.getDataNameDir(testType, "model-1", "state"), "latest"),
+      ),
+      "2",
+    );
+  });
+});
+
+Deno.test("reassertLatestVersion: a version deleted on purpose changes nothing and returns undefined", async () => {
+  await withTempRepo(async (repo) => {
+    await repo.save(testType, "model-1", makeData("state"), enc("one"));
+    await repo.save(testType, "model-1", makeData("state"), enc("two"));
+    await repo.delete(testType, "model-1", "state", 2);
+    const latestPath = join(
+      repo.getDataNameDir(testType, "model-1", "state"),
+      "latest",
+    );
+    const before = await Deno.readTextFile(latestPath);
+
+    const paths = await repo.reassertLatestVersion(
+      testType,
+      "model-1",
+      "state",
+      2,
+    );
+
+    assertEquals(paths, undefined);
+    assertEquals(await Deno.readTextFile(latestPath), before);
+  });
+});

@@ -35,6 +35,7 @@ import {
   type RemoteLockHolder,
 } from "../datastore/lock_holder_marker.ts";
 import type { Definition } from "../definitions/definition.ts";
+import type { WrittenVersion } from "../datastore/datastore_sync_service.ts";
 import { markErrorPaths, UserError } from "../errors.ts";
 import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
@@ -211,6 +212,23 @@ function logRemoteOutput(logger: Logger, event: unknown): void {
       logger.info(message);
     }
   }
+}
+
+/**
+ * The data versions a worker wrote before its dispatch failed, which the
+ * dispatch attaches to the error as `writtenVersions` (swamp-club#3146). Only
+ * the lock's flush reads them, to publish what the worker left behind; they
+ * are never shown as the step's artifacts.
+ */
+export function writtenVersionsOf(error: unknown): WrittenVersion[] {
+  if (typeof error !== "object" || error === null) return [];
+  const versions = (error as { writtenVersions?: unknown }).writtenVersions;
+  if (!Array.isArray(versions)) return [];
+  return versions.filter((v): v is WrittenVersion =>
+    typeof v === "object" && v !== null &&
+    typeof v.modelType === "string" && typeof v.modelId === "string" &&
+    typeof v.dataName === "string" && typeof v.version === "number"
+  );
 }
 
 /**

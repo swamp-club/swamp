@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   methodExecutionFailed,
@@ -1558,4 +1559,96 @@ Deno.test("modelMethodRun: direct execution proceeds on a different definition t
   assertStringIncludes(renamedIn, "changed while the request was being");
   assertStringIncludes(await run(false), "changed while the request was being");
   assertEquals(seen.every((id) => id === winner.id), true);
+});
+
+Deno.test("modelMethodRun: tells onWrittenVersions what a completed run wrote (swamp-club#3146)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const dataHandle = {
+    dataId: generateDataId(),
+    name: "state",
+    specName: "state",
+    kind: "resource" as const,
+    version: 7,
+    size: 2,
+    tags: {},
+    metadata: { contentType: "text/plain" },
+  } as DataHandle;
+  const told: [readonly WrittenVersion[], string][] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () =>
+      ({
+        executeWorkflow: () => Promise.resolve({ dataHandles: [dataHandle] }),
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    onWrittenVersions: (versions, outcome) => told.push([versions, outcome]),
+  };
+
+  await collect(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  assertEquals(told, [[[{
+    modelType: "test/model",
+    modelId: definition.id,
+    dataName: "state",
+    version: 7,
+  }], "completed"]]);
+});
+
+Deno.test("modelMethodRun: tells onWrittenVersions what a failed run wrote, a worker's included (swamp-club#3146)", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const fromWorker: WrittenVersion = {
+    modelType: "test/model",
+    modelId: definition.id,
+    dataName: "remote-state",
+    version: 3,
+  };
+  const error = new Error("execution boom") as Error & {
+    dataHandles?: DataHandle[];
+    writtenVersions?: WrittenVersion[];
+  };
+  error.dataHandles = [{
+    dataId: generateDataId(),
+    name: "partial-state",
+    specName: "state",
+    kind: "resource" as const,
+    version: 1,
+    size: 42,
+    tags: {},
+    metadata: { contentType: "application/json" },
+  } as DataHandle];
+  error.writtenVersions = [fromWorker];
+  const told: [readonly WrittenVersion[], string][] = [];
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createExecutionService: () => createFailingExecutionService(error),
+    outputRepo: createFakeOutputRepo(),
+    onWrittenVersions: (versions, outcome) => told.push([versions, outcome]),
+  };
+
+  const events = await collect<ModelMethodRunEvent>(
+    modelMethodRun(
+      createLibSwampContext(),
+      deps,
+      createTestInput("test-model", "run"),
+    ),
+  );
+
+  assertEquals(events[events.length - 1].kind, "error");
+  assertEquals(told, [[[
+    {
+      modelType: "test/model",
+      modelId: definition.id,
+      dataName: "partial-state",
+      version: 1,
+    },
+    fromWorker,
+  ], "failed"]]);
 });

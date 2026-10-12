@@ -99,7 +99,11 @@ import {
   extractTraceContext,
   runWithParentTrace,
 } from "../infrastructure/tracing/mod.ts";
-import { type SyncGate, withSharedSyncGate } from "./sync_gate.ts";
+import {
+  type SyncGate,
+  withRunSyncGate,
+  withSharedSyncGate,
+} from "./sync_gate.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
 import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
@@ -413,7 +417,10 @@ export function createStepLockHook(
       syncService,
       repoContext.catalogStore,
       undefined,
-      { wrapSync: (fn) => withSharedSyncGate(syncGate, fn) },
+      {
+        wrapSync: (fn, kind) => withRunSyncGate(syncGate, fn, kind),
+        repoContext,
+      },
     );
     if (result.synced) repoContext.catalogStore.invalidate();
     return result;

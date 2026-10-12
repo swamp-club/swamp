@@ -3061,6 +3061,49 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Moves the latest marker of `dataName` forward to `version` again when a
+   * datastore pull replaced it with an older marker before this process
+   * pushed it (swamp-club#3146). For the lock flush, about a version this
+   * process wrote under the model's lock.
+   *
+   * Changes nothing and returns undefined when the version's metadata is
+   * gone: a delete, garbage collection or rollback removed it on purpose.
+   * Otherwise stages the version directory and the latest marker again,
+   * after the write, so a push that cleared the marks made before the write
+   * cannot have dropped them, and returns both paths. Never lowers the
+   * marker.
+   */
+  async reassertLatestVersion(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number,
+  ): Promise<{ versionDir: string; latestPath: string } | undefined> {
+    try {
+      const stat = await Deno.stat(
+        this.getMetadataPath(type, modelId, dataName, version),
+      );
+      if (!stat.isFile) return undefined;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return undefined;
+      throw error;
+    }
+    if (await this.readLatestMarker(type, modelId, dataName) !== version) {
+      await this.advanceLatestMarker(type, modelId, dataName, version);
+    }
+    const versionDir = this.getPath(type, modelId, dataName, version);
+    const latestPath = join(
+      this.getDataNameDir(type, modelId, dataName),
+      "latest",
+    );
+    // The directory before the marker: a push cut short must not publish a
+    // marker naming a version it left behind.
+    await this.stage({ kind: "write", path: versionDir });
+    await this.stage({ kind: "write", path: latestPath });
+    return { versionDir, latestPath };
+  }
+
+  /**
    * The version the latest marker names, or null when there is no marker.
    * Unlike {@link getLatestVersion} it never falls back to scanning the
    * version directories.

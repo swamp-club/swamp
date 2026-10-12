@@ -81,6 +81,8 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RemoteLockHolder } from "../domain/datastore/lock_holder_marker.ts";
 import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
 import { SecretRedactor } from "../domain/secrets/secret_redactor.ts";
+import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
+import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
 
 export { hasPlacement };
 
@@ -149,6 +151,30 @@ export interface DispatchServiceOptions {
   captureEnvironment?: () => Record<string, string>;
 }
 
+/**
+ * `error` carrying the data versions a failed dispatch wrote, as
+ * `writtenVersions`, for the step's lock push (swamp-club#3146). Used
+ * wherever a dispatch's error is replaced, so the versions survive it. An
+ * error that cannot take the property is returned unchanged.
+ */
+export function withWrittenVersions(
+  error: unknown,
+  versions: readonly WrittenVersion[],
+): unknown {
+  if (versions.length === 0) return error;
+  if (typeof error !== "object" || error === null) return error;
+  try {
+    Object.defineProperty(error, "writtenVersions", {
+      value: [...versions],
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // A frozen error keeps what it has.
+  }
+  return error;
+}
+
 export class DispatchService {
   readonly #options: DispatchServiceOptions;
   readonly #queueTimeoutMs: number;
@@ -156,6 +182,9 @@ export class DispatchService {
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
+  #writtenVersionsOf:
+    | ((dispatchId: string) => Promise<readonly WrittenVersion[]>)
+    | null = null;
   /**
    * Per-worker count of steps the scheduler placed but the gateway has not
    * registered yet. A reservation ends when the dispatch appears in the
@@ -214,6 +243,17 @@ export class DispatchService {
   /** Called by serve wiring so finished dispatches release writer sessions. */
   setOnDispatchEnd(callback: (dispatchId: string) => void): void {
     this.#onDispatchEnd = callback;
+  }
+
+  /**
+   * Called by serve wiring with the data plane's record of the versions a
+   * dispatch wrote, which a failed dispatch attaches to its error for the
+   * step's lock push (swamp-club#3146).
+   */
+  setWrittenVersionsSource(
+    source: (dispatchId: string) => Promise<readonly WrittenVersion[]>,
+  ): void {
+    this.#writtenVersionsOf = source;
   }
 
   /** Gateway hook: a worker became idle — wake queued steps. */
@@ -436,16 +476,22 @@ export class DispatchService {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
               });
-              throw new WorkerAffinityLostError(workerName, affinityKey);
+              throw withWrittenVersions(
+                new WorkerAffinityLostError(workerName, affinityKey),
+                writtenVersionsOf(error),
+              );
             }
             if (error.hadWrites) {
               endQueue("mark_dispatched", {
                 dispatchId: error.dispatchId ?? "unknown",
               });
-              throw new Error(
-                `Worker '${workerName}' disconnected after step '${
-                  request.stepName ?? request.methodName
-                }' had written data — failing the run (write-then-drop)`,
+              throw withWrittenVersions(
+                new Error(
+                  `Worker '${workerName}' disconnected after step '${
+                    request.stepName ?? request.methodName
+                  }' had written data — failing the run (write-then-drop)`,
+                ),
+                writtenVersionsOf(error),
               );
             }
             logger.warn(
@@ -587,7 +633,9 @@ export class DispatchService {
             },
           );
         }
-        throw error;
+        throw outcome.ok
+          ? error
+          : withWrittenVersions(error, writtenVersionsOf(outcome.error));
       }
       // A cancelled attempt that failed writes nothing to the model, so the
       // step stays cancelled rather than failing on a structural command it
@@ -742,56 +790,86 @@ export class DispatchService {
         workerName,
         dispatchId,
       };
-    } catch (error) {
-      if (
-        (error instanceof RpcError && error.code === "cancelled") ||
-        (error instanceof DOMException && error.name === "AbortError")
-      ) {
-        await this.#leaseTransition("fail", {
+    } catch (dispatchError) {
+      // Every way out of here throws; the versions the dispatch wrote go
+      // with the error, read before the finally releases the dispatch.
+      let failure: unknown;
+      try {
+        failure = await this.#failedDispatchError(
+          dispatchError,
+          workerName,
+          dispatchId,
           leaseId,
-          error: "dispatch cancelled",
-        });
-        throw new DOMException(
-          `Dispatch of step '${
-            request.stepName ?? request.methodName
-          }' was cancelled`,
-          "AbortError",
+          leaseSettled,
+          request,
         );
+      } catch (error) {
+        failure = error;
       }
-      if (error instanceof ChannelClosedError) {
-        const hadWrites = this.#writesByDispatch.has(dispatchId);
-        const fate = await this.#awaitWorkerFate(workerName, request.signal);
-        if (hadWrites) {
-          await this.#leaseTransition("fail", {
-            leaseId,
-            error: "worker disconnected after writing (write-then-drop)",
-          });
-        } else {
-          await this.#leaseTransition("expire", {
-            leaseId,
-            error: `worker ${
-              fate === "reconnected" ? "reconnected after drop" : "lost"
-            }; no writes had occurred`,
-          });
-        }
-        throw new WorkerLostError(workerName, hadWrites, dispatchId);
-      }
-      // Anything else (worker_busy desync, unexpected RPC failure): the
-      // attempt is abandoned, not a method failure — end the lease so it
-      // cannot leak as 'active', then let executeRemote decide. Leases the
-      // try block already settled (fail/complete) are left alone.
-      if (!leaseSettled) {
-        await this.#leaseTransition("expire", {
-          leaseId,
-          error: error instanceof Error ? error.message : String(error),
-        }).catch(() => {});
-      }
-      throw error;
+      const versions = await this.#writtenVersionsOf?.(dispatchId) ?? [];
+      throw withWrittenVersions(failure, versions);
     } finally {
       this.#options.dispatches.unregister(workerName, dispatchId);
       this.#writesByDispatch.delete(dispatchId);
       this.#onDispatchEnd?.(dispatchId);
     }
+  }
+
+  /**
+   * The error the step sees for a failed dispatch, after ending its lease.
+   */
+  async #failedDispatchError(
+    error: unknown,
+    workerName: string,
+    dispatchId: string,
+    leaseId: string,
+    leaseSettled: boolean,
+    request: RemoteStepRequest,
+  ): Promise<unknown> {
+    if (
+      (error instanceof RpcError && error.code === "cancelled") ||
+      (error instanceof DOMException && error.name === "AbortError")
+    ) {
+      await this.#leaseTransition("fail", {
+        leaseId,
+        error: "dispatch cancelled",
+      });
+      return new DOMException(
+        `Dispatch of step '${
+          request.stepName ?? request.methodName
+        }' was cancelled`,
+        "AbortError",
+      );
+    }
+    if (error instanceof ChannelClosedError) {
+      const hadWrites = this.#writesByDispatch.has(dispatchId);
+      const fate = await this.#awaitWorkerFate(workerName, request.signal);
+      if (hadWrites) {
+        await this.#leaseTransition("fail", {
+          leaseId,
+          error: "worker disconnected after writing (write-then-drop)",
+        });
+      } else {
+        await this.#leaseTransition("expire", {
+          leaseId,
+          error: `worker ${
+            fate === "reconnected" ? "reconnected after drop" : "lost"
+          }; no writes had occurred`,
+        });
+      }
+      return new WorkerLostError(workerName, hadWrites, dispatchId);
+    }
+    // Anything else (worker_busy desync, unexpected RPC failure): the
+    // attempt is abandoned, not a method failure — end the lease so it
+    // cannot leak as 'active', then let executeRemote decide. Leases the
+    // try block already settled (fail/complete) are left alone.
+    if (!leaseSettled) {
+      await this.#leaseTransition("expire", {
+        leaseId,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => {});
+    }
+    return error;
   }
 
   /** Schedule against the live pool, queueing while eligible workers are busy or absent. */

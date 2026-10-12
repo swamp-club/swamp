@@ -44,6 +44,7 @@
 import { isAbsolute, join, normalize, resolve } from "@std/path";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DataHandle, DataWriter } from "../domain/models/model.ts";
+import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
 import {
   createFileWriterFactory,
   createResourceWriter,
@@ -98,6 +99,13 @@ function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
 }
 
+/**
+ * How long a failed dispatch waits for its write requests still running
+ * before reporting the versions they finalized (swamp-club#3146). The step
+ * holds its model lock meanwhile.
+ */
+export const DISPATCH_WRITES_SETTLE_TIMEOUT_MS = 10_000;
+
 class DataPlaneError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -127,6 +135,16 @@ export class DataPlane {
   readonly #options: DataPlaneOptions;
   readonly #writers = new Map<string, WriterSession>();
   readonly #dispatchesWithWrites = new Set<string>();
+  /**
+   * The data versions each dispatch's writes finalized, so a failed
+   * dispatch can still hand them to its lock's push (swamp-club#3146).
+   */
+  readonly #writtenByDispatch = new Map<string, WrittenVersion[]>();
+  /** Write requests still running, per dispatch, and who waits for them. */
+  readonly #inFlight = new Map<
+    string,
+    { count: number; idle: PromiseWithResolvers<void> }
+  >();
   #vaultService: Promise<VaultService> | null = null;
 
   constructor(options: DataPlaneOptions) {
@@ -150,6 +168,67 @@ export class DataPlane {
       }
     }
     this.#dispatchesWithWrites.delete(dispatchId);
+    this.#writtenByDispatch.delete(dispatchId);
+  }
+
+  /**
+   * The data versions a dispatch's writes finalized, once its write
+   * requests still running have finished or `timeoutMs` has passed, so a
+   * failed dispatch reports a version a request was still finalizing
+   * (swamp-club#3146). A request that outlives the wait is not reported.
+   */
+  async writtenVersions(
+    dispatchId: string,
+    timeoutMs: number,
+  ): Promise<readonly WrittenVersion[]> {
+    const pending = this.#inFlight.get(dispatchId);
+    if (pending !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(true), timeoutMs);
+      });
+      const timedOut = await Promise.race([
+        pending.idle.promise.then(() => false),
+        expired,
+      ]);
+      clearTimeout(timer);
+      if (timedOut) {
+        logger.warn(
+          "Write requests of dispatch {dispatchId} still running after {timeoutMs}ms; reporting the versions finalized so far",
+          { dispatchId, timeoutMs },
+        );
+      }
+    }
+    return [...(this.#writtenByDispatch.get(dispatchId) ?? [])];
+  }
+
+  /** Counts one write request of `dispatchId`; call the result when it ends. */
+  #beginWrite(dispatchId: string): () => void {
+    let entry = this.#inFlight.get(dispatchId);
+    if (entry === undefined) {
+      entry = { count: 0, idle: Promise.withResolvers<void>() };
+      this.#inFlight.set(dispatchId, entry);
+    }
+    entry.count++;
+    const counted = entry;
+    return () => {
+      counted.count--;
+      if (counted.count === 0) {
+        this.#inFlight.delete(dispatchId);
+        counted.idle.resolve();
+      }
+    };
+  }
+
+  #recordVersion(dispatch: ActiveDispatch, handle: DataHandle): void {
+    const versions = this.#writtenByDispatch.get(dispatch.dispatchId) ?? [];
+    versions.push({
+      modelType: dispatch.modelType.normalized,
+      modelId: dispatch.modelId,
+      dataName: handle.name,
+      version: handle.version,
+    });
+    this.#writtenByDispatch.set(dispatch.dispatchId, versions);
   }
 
   async handle(req: Request): Promise<Response | null> {
@@ -453,14 +532,18 @@ export class DataPlane {
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
     await this.#recordWrite(dispatch);
+    const done = this.#beginWrite(dispatch.dispatchId);
     let handle: DataHandle;
     try {
       handle = await writeResource(body.specName, body.name, body.data);
+      this.#recordVersion(dispatch, handle);
     } catch (error) {
       throw new DataPlaneError(
         400,
         error instanceof Error ? error.message : String(error),
       );
+    } finally {
+      done();
     }
     return json(handleToJson(handle));
   }
@@ -561,15 +644,27 @@ export class DataPlane {
       case "content": {
         const body = req.body ?? ReadableStream.from<Uint8Array>([]);
         await this.#recordWrite(dispatch);
-        const handle = await session.writer.writeStream(body);
-        this.#writers.delete(writerId);
-        return json(handleToJson(handle));
+        const done = this.#beginWrite(dispatch.dispatchId);
+        try {
+          const handle = await session.writer.writeStream(body);
+          this.#recordVersion(dispatch, handle);
+          this.#writers.delete(writerId);
+          return json(handleToJson(handle));
+        } finally {
+          done();
+        }
       }
       case "finalize": {
         await this.#recordWrite(dispatch);
-        const handle = await session.writer.finalize();
-        this.#writers.delete(writerId);
-        return json(handleToJson(handle));
+        const done = this.#beginWrite(dispatch.dispatchId);
+        try {
+          const handle = await session.writer.finalize();
+          this.#recordVersion(dispatch, handle);
+          this.#writers.delete(writerId);
+          return json(handleToJson(handle));
+        } finally {
+          done();
+        }
       }
       default:
         return errorResponse(404, `Unknown writer action '${action}'`);

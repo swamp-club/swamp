@@ -333,6 +333,7 @@ export const workflowRunCommand = new Command()
         unlocked.syncService,
         repoContext.catalogStore,
         createLockProgressWriter(modelId),
+        { repoContext },
       );
       if (result.synced) repoContext.catalogStore.invalidate();
       return result;

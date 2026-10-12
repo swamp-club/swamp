@@ -29,6 +29,7 @@ import {
   BUILTIN_BUNDLE_PREFIX,
   type DispatchGateway,
   DispatchService,
+  withWrittenVersions,
   WorkerAffinityLostError,
 } from "./dispatch_service.ts";
 import { DispatchRegistry } from "./dispatch_registry.ts";
@@ -42,6 +43,8 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import { errorPaths } from "../domain/errors.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
+import type { WrittenVersion } from "../domain/datastore/datastore_sync_service.ts";
+import { writtenVersionsOf } from "../domain/models/method_execution_service.ts";
 import {
   type DispatchParams,
   type DispatchResult,
@@ -1943,4 +1946,89 @@ Deno.test("DispatchService: a two-slot worker runs a step that arrives while ano
   await first;
   await second;
   gateway.dispose();
+});
+
+/** A source of written versions for {@link DispatchService.setWrittenVersionsSource}. */
+function writtenVersionsSource(versions: Map<string, WrittenVersion[]>) {
+  return (dispatchId: string) =>
+    Promise.resolve(versions.get(dispatchId) ?? []);
+}
+
+const WRITTEN: WrittenVersion = {
+  modelType: MODEL_TYPE.normalized,
+  modelId: "m-1",
+  dataName: "out-main",
+  version: 4,
+};
+
+Deno.test("DispatchService: a failed dispatch's error carries the versions it wrote (swamp-club#3146)", async () => {
+  const h = createHarness();
+  const versions = new Map<string, WrittenVersion[]>();
+  h.service.setWrittenVersionsSource(writtenVersionsSource(versions));
+  h.setBehavior((_name, params) => {
+    versions.set(params.dispatchId, [WRITTEN]);
+    return Promise.resolve({
+      status: "error",
+      error: "boom after writing",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    Error,
+    "boom after writing",
+  );
+  assertEquals(writtenVersionsOf(error), [WRITTEN]);
+});
+
+Deno.test("DispatchService: write-then-drop and cancel keep the written versions on the error they throw (swamp-club#3146)", async () => {
+  for (const ending of ["drop", "cancel"] as const) {
+    const h = createHarness();
+    const versions = new Map<string, WrittenVersion[]>();
+    h.service.setWrittenVersionsSource(writtenVersionsSource(versions));
+    h.setBehavior(async (name, params) => {
+      versions.set(params.dispatchId, [WRITTEN]);
+      if (ending === "cancel") {
+        return await Promise.reject(
+          new RpcError({ code: "cancelled", message: "aborted on worker" }),
+        );
+      }
+      await h.service.recordFirstWrite({
+        workerName: name,
+        dispatchId: params.dispatchId,
+        leaseId: params.leaseId,
+        modelDef: builtinModelDef,
+        modelType: MODEL_TYPE,
+        modelId: "m-1",
+        methodName: "run",
+        definitionName: "test-def",
+        definitionTags: {},
+      });
+      h.pool.delete(name);
+      h.service.notifyGraceExpired(snapshot({ name }));
+      return await Promise.reject(
+        new ChannelClosedError("control socket closed"),
+      );
+    });
+
+    const error = await assertRejects(() =>
+      h.service.executeRemote(stepRequest())
+    );
+    assertEquals(writtenVersionsOf(error), [WRITTEN], ending);
+  }
+});
+
+Deno.test("withWrittenVersions: attaches the versions, and leaves an error without any unchanged", () => {
+  const error = new Error("x");
+  assertEquals(withWrittenVersions(error, []), error);
+  assertEquals(writtenVersionsOf(error), []);
+  assertEquals(withWrittenVersions(error, [WRITTEN]), error);
+  assertEquals(writtenVersionsOf(error), [WRITTEN]);
+  assertEquals(
+    withWrittenVersions("not an object", [WRITTEN]),
+    "not an object",
+  );
 });
