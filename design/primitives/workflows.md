@@ -2620,12 +2620,19 @@ method-run record it left `running` with the same error its step gets
 on this host as `cancelled` with the reason (`closeStoppedOwnerRuns`,
 `src/cli/commands/workflow_cancel.ts`). An owner still alive is left alone.
 
-**On Windows** no signal another process can catch exists: Deno turns the
-SIGTERM into `TerminateProcess`, so the owner ends at once, saves nothing, and
-its always/completed cleanup steps do not run. Its shell steps end with it
-through their Job Objects (see [Post-Cancellation
-Cleanup](#post-cancellation-cleanup)), and cancel settles the records it left as
-for an owner killed after its grace.
+**On Windows** Deno turns a SIGTERM sent to another process into
+`TerminateProcess`, so cancel sends a stop request instead
+(`sendGracefulStop`, `src/infrastructure/process/process_kill.ts`): it sets a
+named event, `Local\swamp-stop-<pid>`, that every swamp process listening for
+shutdown signals polls (`registerShutdownHandler`,
+`src/infrastructure/process/windows_stop_request.ts`). The owner handles it as
+it handles SIGTERM on POSIX: it records its own cancellation and runs its
+always/completed cleanup steps. An owner that cannot be reached that way — one
+in another logon session, such as a service in session 0, or one where kernel32
+cannot be loaded — is ended outright with `TerminateProcess`, as is an owner
+still running after the grace. Its shell steps end with it through their Job
+Objects (see [Post-Cancellation Cleanup](#post-cancellation-cleanup)), and
+cancel settles the records it left as for an owner killed after its grace.
 
 **Finding the run.** A local cancel looks the run up in the run store, not
 through the workflow's definition (`resolveLocalCancelTarget`,
@@ -2959,9 +2966,8 @@ grace instead, so its cleanup steps can run. `--all` stops the owning
 processes together, each once. A run its owner finished another way during
 the wait keeps that status, and the command reports it as finished before the
 cancel took effect (`finished` in `--json`) rather than as cancelled. On
-Windows the owner ends at once, as for a workflow cancel (see
-[Cancellation](#cancellation)); when the owner is a workflow run, that ends
-every running step of the run, not only the cancelled method run's.
+Windows the SIGTERM is a stop request, as for a workflow cancel (see
+[Cancellation](#cancellation)).
 A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
 is still recorded failed (`DefaultStepExecutor`,
@@ -3153,8 +3159,10 @@ signalled depends on whether swamp has a controlling terminal
 - **Windows**: `taskkill /T /F` ends the whole tree. The command also runs in
   a kill-on-close Job Object (`attachProcessJob`,
   `src/infrastructure/process/windows_job.ts`). Windows has no signal another
-  process can catch, so every stop from outside — a service manager, Task
-  Manager, a supervisor's kill — ends swamp outright. Its job handles close
+  process can catch: only a stop request from swamp itself (see
+  [Cancellation](#cancellation)) lets swamp stop gracefully, and every other
+  stop from outside — a service manager, Task Manager, a supervisor's kill —
+  ends swamp outright. Its job handles close
   with it, and each job ends the command it held. An abort ends the
   job too, reaching descendants whose parent already exited. A command that
   exits on its own has its job released first, so what it backgrounded keeps

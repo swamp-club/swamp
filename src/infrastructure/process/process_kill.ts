@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { requestStop } from "./windows_stop_request.ts";
 
 const logger = getLogger(["process", "kill"]);
 
@@ -158,10 +159,37 @@ export function killChildGroups(pids: readonly number[]): void {
   }
 }
 
+/** What {@link sendGracefulStop} uses, replaceable in tests. */
+export interface GracefulStopDeps {
+  os?: typeof Deno.build.os;
+  requestStop?: (pid: number) => boolean;
+  kill?: (pid: number, signal: Deno.Signal) => void;
+}
+
+/**
+ * Asks the swamp process `pid` to stop and save its work: SIGTERM on POSIX,
+ * a stop request on Windows, where Deno's SIGTERM is `TerminateProcess`. A
+ * Windows process that cannot be reached that way is sent SIGTERM anyway,
+ * which ends it outright, as before stop requests existed.
+ */
+export function sendGracefulStop(
+  pid: number,
+  {
+    os = Deno.build.os,
+    requestStop: request = requestStop,
+    kill = (target, signal) => Deno.kill(target, signal),
+  }: GracefulStopDeps = {},
+): void {
+  if (os === "windows" && request(pid)) return;
+  try {
+    kill(pid, "SIGTERM");
+  } catch { /* race: died between check and kill */ }
+}
+
 /**
  * Kills a process tree (parent + children) after verifying the parent is
- * a swamp process. Sends SIGTERM for graceful shutdown, waits up to
- * {@link maxWaitMs} for exit, then SIGKILL anything still alive.
+ * a swamp process. Asks it to stop gracefully ({@link sendGracefulStop}),
+ * waits up to {@link maxWaitMs} for exit, then SIGKILL anything still alive.
  *
  * Returns true if the process was found and killed, false if the PID was
  * not a swamp process (PID reuse) or already dead.
@@ -185,9 +213,7 @@ export async function killProcessTree(
   const snapshot = await findChildPids(pid);
   const snapshotStarts = await processStartTimes(snapshot);
 
-  try {
-    Deno.kill(pid, "SIGTERM");
-  } catch { /* race: died between check and kill */ }
+  sendGracefulStop(pid);
 
   // Poll until parent exits or timeout
   const deadline = Date.now() + maxWaitMs;

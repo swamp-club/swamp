@@ -23,6 +23,7 @@ import {
   isProcessAlive,
   killChildGroups,
   killProcessTree,
+  sendGracefulStop,
   withoutReusedPids,
 } from "./process_kill.ts";
 
@@ -170,4 +171,56 @@ Deno.test("withoutReusedPids: keeps every pid when start times are unavailable",
   const starts = new Map([[10, "Thu Oct  1 12:00:00 2026"]]);
   assertEquals(withoutReusedPids([10, 11], undefined, starts), [10, 11]);
   assertEquals(withoutReusedPids([10, 11], starts, undefined), [10, 11]);
+});
+
+/** Records what sendGracefulStop does; `delivered` is requestStop's answer. */
+function gracefulStopSpy(delivered: boolean) {
+  const sent: string[] = [];
+  return {
+    sent,
+    deps: {
+      requestStop: (pid: number) => {
+        sent.push(`request ${pid}`);
+        return delivered;
+      },
+      kill: (pid: number, signal: Deno.Signal) => {
+        sent.push(`${signal} ${pid}`);
+      },
+    },
+  };
+}
+
+Deno.test("sendGracefulStop: sends a stop request on Windows, and no SIGTERM once it is delivered", () => {
+  const { sent, deps } = gracefulStopSpy(true);
+
+  sendGracefulStop(4242, { os: "windows", ...deps });
+
+  assertEquals(sent, ["request 4242"]);
+});
+
+Deno.test("sendGracefulStop: falls back to SIGTERM on Windows when no process takes the request", () => {
+  const { sent, deps } = gracefulStopSpy(false);
+
+  sendGracefulStop(4242, { os: "windows", ...deps });
+
+  assertEquals(sent, ["request 4242", "SIGTERM 4242"]);
+});
+
+Deno.test("sendGracefulStop: sends SIGTERM on POSIX", () => {
+  for (const os of ["darwin", "linux"] as const) {
+    const { sent, deps } = gracefulStopSpy(true);
+
+    sendGracefulStop(4242, { os, ...deps });
+
+    assertEquals(sent, ["SIGTERM 4242"], os);
+  }
+});
+
+Deno.test("sendGracefulStop: a process gone before SIGTERM is not an error", () => {
+  sendGracefulStop(4242, {
+    os: "linux",
+    kill: () => {
+      throw new Deno.errors.NotFound("no such process");
+    },
+  });
 });
