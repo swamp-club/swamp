@@ -2586,9 +2586,21 @@ A run executes the jobs and steps in dependency order. The order should be a
 weighted topological sort, so that identical inputs should give the same run
 order.
 
-The run's output is written to a workflow run log in the datastore at
+The run record is written to the datastore at
 `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
-`.swamp/workflow-runs/`).
+`.swamp/workflow-runs/`). The run's output log is always written repo-local, at
+`.swamp/workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.log`, whichever
+datastore holds the record. The record's `logFile` names it relative to the
+repo.
+
+`swamp run gc` and deleting a workflow remove a run's log with its record. They
+rebuild its path from the record's directory and file names rather than reading
+`logFile`, which another writer on a shared datastore could point anywhere. A
+log beside the record in the datastore, left by a datastore migration, is
+removed too. Run GC also sweeps repo-local run logs whose record is gone, once
+they have gone unwritten for longer than both the cutoff and seven days: a run
+writes its log before it first saves its record (`YamlWorkflowRunRepository`,
+swamp-club#3266).
 
 ### Run Statuses
 
