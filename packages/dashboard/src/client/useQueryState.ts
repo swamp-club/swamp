@@ -17,17 +17,34 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // Page state kept in the URL's query string (?q=…&group=…), so a filtered
 // view survives a reload and can be shared as a link. Writes replace the
 // current history entry: typing in a search box must not flood Back.
+// Back/Forward, and in-app navigation that pushes a URL with a query
+// string (`navigateToHref` dispatches popstate), re-read the param.
 
-function readParam(key: string): string | null {
+/** The value `parse` makes of `?key=` in a query string. */
+export function queryParamValue<T>(
+  search: string,
+  key: string,
+  parse: (raw: string | null) => T,
+): T {
+  let raw: string | null = null;
   try {
-    return new URLSearchParams(globalThis.location?.search ?? "").get(key);
+    raw = new URLSearchParams(search).get(key);
   } catch {
-    return null;
+    raw = null;
+  }
+  return parse(raw);
+}
+
+function currentSearch(): string {
+  try {
+    return globalThis.location?.search ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -36,7 +53,13 @@ function writeParam(key: string, value: string | null): void {
     const url = new URL(globalThis.location.href);
     if (value === null || value === "") url.searchParams.delete(key);
     else url.searchParams.set(key, value);
-    history.replaceState(history.state, "", url);
+    const history = (globalThis as {
+      history?: {
+        state: unknown;
+        replaceState(state: unknown, unused: string, url: string): void;
+      };
+    }).history;
+    history?.replaceState(history.state, "", url.toString());
   } catch {
     // No history API (tests, sandboxed frames): state lives in memory only.
   }
@@ -55,7 +78,17 @@ export function useQueryState<T>(
   parse: (raw: string | null) => T,
   serialize: (value: T) => string | null = toParam,
 ): [T, (next: T) => void] {
-  const [value, setValue] = useState<T>(() => parse(readParam(key)));
+  const [value, setValue] = useState<T>(() =>
+    queryParamValue(currentSearch(), key, parse)
+  );
+  const parseRef = useRef(parse);
+  parseRef.current = parse;
+  useEffect(() => {
+    const onPop = () =>
+      setValue(queryParamValue(currentSearch(), key, parseRef.current));
+    globalThis.addEventListener("popstate", onPop);
+    return () => globalThis.removeEventListener("popstate", onPop);
+  }, [key]);
   const set = useCallback((next: T) => {
     setValue(next);
     writeParam(key, next === defaultValue ? null : serialize(next));
