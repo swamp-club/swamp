@@ -53,6 +53,8 @@ import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
+import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
+import { WebhookDetail } from "./views/WebhookDetail.tsx";
 import { buildPath } from "./routes.ts";
 import "./styles/shell.css";
 
@@ -245,6 +247,26 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               workflowName={detail.workflowName}
               onBack={closeDetail}
               onOpenRun={openRun}
+            />
+          )
+          : detail?.kind === "schedule"
+          ? (
+            <ScheduleDetail
+              key={detail.workflowName}
+              workflowName={detail.workflowName}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
+            />
+          )
+          : detail?.kind === "webhook"
+          ? (
+            <WebhookDetail
+              key={detail.route}
+              route={detail.route}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
             />
           )
           : detail?.kind === "model"
