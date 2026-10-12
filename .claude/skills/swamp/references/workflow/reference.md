@@ -630,9 +630,11 @@ jobs:
 **Key behaviors:**
 
 - Workflow-level affinity scopes to the entire run; job-level scopes to the job
-- If the pinned worker disconnects mid-group, steps fail with a
-  `WorkerAffinityLostError` instead of silently re-dispatching — preserving the
-  co-location guarantee
+- If the pinned worker disconnects or starts draining mid-group, steps fail with
+  a `WorkerAffinityLostError` instead of silently re-dispatching — preserving
+  the co-location guarantee
+- The pin binds when the first step completes; before that, a first step that
+  loses its worker without writing re-dispatches to another worker
 - Validation warns when `affinity: true` is set without any placement (a no-op
   since there are no remote steps to co-locate)
 - Requires `swamp serve` (same as all placement features)
