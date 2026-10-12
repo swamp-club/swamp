@@ -17,6 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ModelDefinition } from "../models/model.ts";
+import {
+  UnpublishedDataVersionError,
+  type WrittenVersion,
+} from "../datastore/datastore_sync_service.ts";
 import {
   acceptedOutcomeFor,
   inMemorySignalWaits,
@@ -16812,7 +16817,9 @@ interface StepWriteProbe {
 async function runStepUnderLockHook(
   makeHook: (probe: StepWriteProbe) => StepLockHook,
   methodName: string,
-  execute: () => Promise<Record<string, never>> = () => Promise.resolve({}),
+  execute: ModelDefinition["methods"][string]["execute"] = () =>
+    Promise.resolve({}),
+  resources: ModelDefinition["resources"] = {},
 ): Promise<{
   error: unknown;
   outputs: import("../models/model_output.ts").ModelOutput[];
@@ -16843,7 +16850,7 @@ async function runStepUnderLockHook(
       type: modelType,
       version: "2026.01.01.1",
       globalArguments: z.object({}),
-      resources: {},
+      resources,
       methods: {
         execute: {
           description: "does nothing",
@@ -20121,3 +20128,79 @@ for (const autoGc of [true, false]) {
     });
   });
 }
+
+// swamp-club#3146: the step's lock flush is told what the step wrote, so it
+// can publish it, and a step that failed keeps its own error when that
+// publish fails.
+
+/** A lock hook whose flush records what it was given and may fail. */
+function recordingLockHook(
+  flushError?: Error,
+): { hook: StepLockHook; written: (readonly WrittenVersion[] | undefined)[] } {
+  const written: (readonly WrittenVersion[] | undefined)[] = [];
+  return {
+    hook: () =>
+      Promise.resolve({
+        flush: (versions?: readonly WrittenVersion[]) => {
+          written.push(versions);
+          return flushError ? Promise.reject(flushError) : Promise.resolve();
+        },
+      }),
+    written,
+  };
+}
+
+const UNPUBLISHED = new UnpublishedDataVersionError([{
+  modelType: "test/x",
+  modelId: "m",
+  dataName: "state",
+  version: 1,
+}], 3);
+
+Deno.test("DefaultStepExecutor: the step lock's flush is told the versions a failed step wrote (swamp-club#3146)", async () => {
+  const { z } = await import("zod");
+  const lock = recordingLockHook();
+  const { error } = await runStepUnderLockHook(
+    () => lock.hook,
+    "execute",
+    async (_args, context) => {
+      await context.writeResource!("state", "state", { value: "partial" });
+      throw new Error("method failed after writing");
+    },
+    {
+      state: {
+        description: "state written before the failure",
+        schema: z.object({ value: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+  );
+
+  assert(error instanceof Error);
+  assertStringIncludes(error.message, "method failed after writing");
+  assertEquals(lock.written.length, 1);
+  assertEquals(
+    (lock.written[0] ?? []).map((w) => [w.dataName, w.version]),
+    [["state", 1]],
+  );
+});
+
+Deno.test("DefaultStepExecutor: a failed step keeps its own error when its versions cannot be published (swamp-club#3146)", async () => {
+  const lock = recordingLockHook(UNPUBLISHED);
+  const { error } = await runStepUnderLockHook(
+    () => lock.hook,
+    "execute",
+    () => Promise.reject(new Error("the method's own failure")),
+  );
+
+  assert(error instanceof Error);
+  assertStringIncludes(error.message, "the method's own failure");
+});
+
+Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions cannot be published (swamp-club#3146)", async () => {
+  const lock = recordingLockHook(UNPUBLISHED);
+  const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
+
+  assertEquals(error, UNPUBLISHED);
+});

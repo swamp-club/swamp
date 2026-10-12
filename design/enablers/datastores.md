@@ -1627,6 +1627,55 @@ because the extension resets the whole dirty set when a push completes.
 swamp-club#2421 tracks the proper fix: repositories that mark after the write,
 and extensions that clear only the marks a push handled.
 
+**Data versions written under a model lock (swamp-club#3146).** Concurrent
+runs of one serve process share its sync service, so another run's push can
+clear the marks of a version a step just wrote, and a pull (another run's
+step-start pull, or the poller) can put the remote's older `latest` marker back
+over the step's unpushed one. Both lost versions silently. The lock's push now
+publishes what the work under it wrote and checks it landed:
+
+- Each step and method run reports the data versions it wrote: the step's
+  saved artifacts, the versions a failed in-process method left
+  (`error.dataHandles`), and those a worker wrote before its dispatch failed,
+  which the data plane records per dispatch and the dispatch error carries as
+  `writtenVersions`. The list reaches the lock's push in process only
+  (`StepLockResult.flush(written)`, `ModelLockResult.pushWritten`, and
+  `ModelMethodRunDeps.onWrittenVersions` for method runs), never the event
+  stream.
+- Before each push, per data name, the highest written version still on disk
+  has its `latest` marker moved forward again if a pull reverted it
+  (`UnifiedDataRepository.reassertLatestVersion`, never lowering it), and its
+  version directory and marker are staged again, after the write, so a commit
+  that cleared the earlier marks cannot drop them. A version deleted, garbage
+  collected or rolled back on purpose is skipped.
+- After the push, while the model lock is still held, the push reads the
+  version's `metadata.yaml` and the `latest` marker back with `fetchContent`.
+  If either is missing or behind it repeats, up to `PUBLISH_ATTEMPTS` rounds,
+  then fails with `UnpublishedDataVersionError`. A step or method run that
+  already failed keeps its own error and logs this one; a serve method run,
+  which answers its client before it pushes, logs it. A read that fails or
+  times out leaves the push unverified, with a warning, rather than failing
+  work whose push succeeded. The reads run eight at a time. A namespaced datastore
+  whose root data is still migrating pushes nothing on the first round and
+  converges on the next, because each round marks again. A sync service
+  without `fetchContent` gets one unverified round.
+
+What stays exposed until the S3/GCS extensions clear only the marks a push
+handled and stop overwriting paths with a pending mark:
+
+- In serve, the run lanes keep a run pull out of every run push, so a pull
+  can no longer revert a marker, locally or on the remote, after a push
+  verified it. Two processes sharing one cache (a CLI next to serve) are not
+  covered: there a pull can still do both.
+- Run records, evaluated definitions, output records, definition YAML and
+  appends to an existing version can still be reverted locally by an
+  overlapping pull; only data versions are verified.
+- A published version a peer's GC or a 404 cleanup drops from the remote index
+  can be deleted locally by a pull despite a directory mark, and the push then
+  treats it as removed on purpose.
+- A worker data-plane request still running when a failed dispatch's bounded
+  wait (`DISPATCH_WRITES_SETTLE_TIMEOUT_MS`) expires is not reported.
+
 **Writes outside a hooked repository.** Some serve mutations write cache files
 that no hooked repository covers. Each marks exactly those files, by path, after
 writing:
@@ -1724,10 +1773,20 @@ The gate has two modes:
   each step's model-lock pull and flush push (serve passes `acquireModelLocks` a
   `wrapSync` hook, normally through `createStepLockHook`), and the post-run and
   post-resume pushes of `workflow.run`, `workflow.resume`, `model.method.run`,
-  scheduled, webhook and auto-resumed runs. Shared holders exclude pulls and
-  handler mutations but not each other, so fan-out workflows keep their
+  scheduled, webhook and auto-resumed runs. Shared holders exclude poller pulls
+  and handler mutations but not each other, so fan-out workflows keep their
   parallel uploads. The `wrapSync` hook covers only the sync calls, never the
   model-lock wait.
+- **Run lanes** inside the shared mode (`RunSyncLanes`, swamp-club#3146): run
+  pulls and run pushes exclude each other, first come first served, while
+  holders of one lane run together. Without them a step-start pull that read
+  the remote's older `latest` marker before another run's push committed wrote
+  it over the local marker after that push had verified it, and the next upload
+  of the marker published the older version again. A lane wait degrades like
+  the gate after `GATE_WAIT_TIMEOUT_MS`. A model lock's last publish attempt
+  runs alone: `wrapSync` is called with `push-alone` and serve takes the
+  exclusive mode (`withRunSyncGate`), so a run whose earlier attempts other
+  pushes undid still publishes under heavy fan-out.
 
 The fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
 serve function pushes outside the gate: a raw push outside a
@@ -3690,11 +3749,77 @@ model, catalog), catches the read model up whenever a context opens, and
 v2's sync machinery runs: no pull or push at the locks, no sync gate, no access,
 runtime or config pull in serve, no lazy hydration. `datastore sync`,
 `datastore catalog pull` and `datastore migrate-index` refuse a filesystem
-datastore already. On v3, `datastore config migrate` and `datastore namespace
-set|unset|migrate` refuse too: moving existing config or records, or a
-checkout, between namespaces is Phase 6. A namespace is chosen by running
-`namespace set` before `setup filesystem --format 3`, which needs no
-`--skip-migration` (swamp-club#3301).
+datastore already. On v3, `datastore namespace set|unset|migrate` refuse
+too: moving existing records, or a checkout, between namespaces is Phase 6.
+A namespace is chosen by running `namespace set` before `setup filesystem
+--format 3`, which needs no `--skip-migration` (swamp-club#3301).
+`datastore config migrate` has a v3 form of its own (below).
+
+**Managed config on v3** (swamp-club#3300). With managedConfig on, model
+definitions, workflows and vault configs are read from the config tier, so a
+repo that turns it on must commit the config it already has, or that config
+disappears from view (the default vault `repo init` writes among it).
+`v3_config_adoption.ts` reads the repo-local `models/`, `workflows/` and
+`vaults/` trees and commits each file into its managed-config partition as
+`definition.create`, expecting its key absent, through
+`definitionSaveBatches` with no priors. The file lands at the same relative
+path under the config base, so a later save of it stages the same key.
+
+- **The commit log is the migration record.** v2's sentinel file has no v3
+  intent. A name is adopted only while its partition has no commit
+  (`CommitStore.head`, whose rows compaction never deletes). So a re-run
+  adopts nothing, a name deleted from the tier after adoption is never
+  brought back, and a name another checkout committed is never overwritten.
+  A file with a config-tier copy at its path is skipped before it is parsed
+  or the commit log read, whatever bytes an edit has since given that copy,
+  so a repo adopted long ago pays one `lstat` per file.
+- **Files follow the commit.** Adoption stages its puts in a root of its own
+  and writes the config-tier files only once that root has committed, so a
+  tier copy always means a committed name (a copy placed there by hand
+  aside). When the commit fails, nothing is written, a re-run adopts again,
+  and any partition that did commit reaches the checkout at its next
+  catch-up, as another checkout's commits do (for serve, at its next
+  start).
+- **Stale writes are refused.** A checkout whose view of the commit log is
+  stale creates a key that exists, and its `absent` precondition refuses the
+  commit (`ConfigAdoptionRefusedError`, a `UserError` saying to run the
+  command again). The single writer lock already rules this out within one
+  datastore today; the precondition is what holds once there are more
+  writers.
+- **Only regular files are read.** Symlinks in the repo's trees, a tree's
+  root included, are neither read nor followed, so a repo-controlled link never commits bytes from
+  outside the repo, and every target is checked to stay in the config base.
+  Secrets are never read: only vault configs are committed.
+- **The extension lockfile moves too.** Turning managedConfig on moves the
+  lockfile from the repo's extension models directory to the config tier, so
+  adoption commits the repo's own lockfile into the lockfile partition (a
+  `lockfile.write` put, as `v3_lockfile_sync.ts` stages) while that partition
+  has no commit, and writes it to `upstream_extensions.json` in the tier after
+  the commit. With it, `.swamp/pulled-extensions` is copied into the managed
+  root `.swamp/config/pulled-extensions` in this checkout only: pulled sources
+  have no v3 intent, as after an `extension pull` on v3.
+- **`datastore config migrate` on v3** runs adoption, then sets
+  `managedConfig: true`. It confirms each config-tier copy against the commit
+  log instead of trusting it, so a copy the log never held (left by an
+  earlier setup, or placed by hand) does not stop its name being committed.
+  Its JSON keeps the v2 shape (`copiedLockfile`, `copiedPulledExtensions`;
+  `pushed` is false) and adds `committed` and `skipped`: files declaring no
+  name, a name an earlier file of their kind declares, a path no record key
+  can name, a file or directory that could not be read, or a name the commit
+  log already holds with no tier copy at the file's path (another checkout's
+  definition of it, or one renamed or deleted since).
+- **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
+  command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
+  adoption in a root of their own, with no flush (on v3 a root's flush
+  releases the command's locks), before the command's own root. Adopt rather
+  than refuse, because the user asked to keep what they have, and the hand
+  path and `config migrate` then share one implementation. Anything that
+  stops adoption there (a refusal, an unreadable file) is a warning and the
+  command goes on; `config migrate` surfaces the cause. A read-only context
+  cannot commit, so it warns that the config is not in the tier yet, and
+  never fails the command over that check. Serve opens its context once, so a
+  by-hand change made while serve runs is adopted at its next start (a CLI
+  write is refused while serve holds the writer lock anyway).
 
 **Tier rules.** A record key outside the repository's configured `directories`
 or matching its `exclude` stays in the checkout and is never committed: the

@@ -93,6 +93,10 @@ import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datas
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
+  UnpublishedDataVersionError,
+  type WrittenVersion,
+} from "../../domain/datastore/datastore_sync_service.ts";
+import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
@@ -553,6 +557,8 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                 repoDir,
                 syncService,
                 repoContext.catalogStore,
+                undefined,
+                { repoContext },
               );
               if (lockResult.synced) repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
@@ -570,10 +576,38 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
             )
             : [cliInputs];
 
+          // What each run wrote, for the locks' push to publish
+          // (swamp-club#3146).
+          const written: WrittenVersion[] = [];
+          let methodFailed = false;
+          const runDeps: typeof deps = {
+            ...deps,
+            onWrittenVersions: (versions, outcome) => {
+              for (const version of versions) written.push(version);
+              if (outcome === "failed") methodFailed = true;
+            },
+          };
+          const locks = modelLocks;
           const finished = await runCommandInRootUnit(
             repoContext,
             {
-              push: modelLocks?.push,
+              push: locks
+                ? async () => {
+                  try {
+                    await locks.pushWritten(written);
+                  } catch (error) {
+                    // A failed method run keeps its own error; the version it
+                    // could not publish is logged instead.
+                    if (
+                      !methodFailed ||
+                      !(error instanceof UnpublishedDataVersionError)
+                    ) {
+                      throw error;
+                    }
+                    ctx.logger.error("{message}", { message: error.message });
+                  }
+                }
+                : undefined,
               release: modelLocks?.release,
               onCleanupError: (releaseError) => {
                 ctx.logger.warn(
@@ -608,7 +642,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
 
                   await runUnderModelLocks(modelLocks, () =>
                     consumeStream(
-                      modelMethodRun(libCtx, deps, {
+                      modelMethodRun(libCtx, runDeps, {
                         modelIdOrName,
                         methodName,
                         inputs: inputSets[i],

@@ -193,7 +193,10 @@ import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
-import { DataPlane } from "../../serve/data_plane.ts";
+import {
+  DataPlane,
+  DISPATCH_WRITES_SETTLE_TIMEOUT_MS,
+} from "../../serve/data_plane.ts";
 import {
   setRemoteOnlyMode,
   setRemoteStepDispatcher,
@@ -3037,6 +3040,9 @@ export const serveCommand = new Command()
     });
     dispatchService.setOnDispatchEnd((dispatchId) =>
       dataPlane.releaseDispatch(dispatchId)
+    );
+    dispatchService.setWrittenVersionsSource((dispatchId) =>
+      dataPlane.writtenVersions(dispatchId, DISPATCH_WRITES_SETTLE_TIMEOUT_MS)
     );
 
     // When managedConfig is active, pull the config and auto-definitions

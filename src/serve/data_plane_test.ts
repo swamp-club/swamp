@@ -1005,3 +1005,78 @@ Deno.test("DataPlane: a dispatch's writes run in the dispatching run's vault sco
     assertEquals(currentVaultAccess(), undefined);
   });
 });
+
+Deno.test("DataPlane: writtenVersions reports the versions a dispatch's writes finalized, until the dispatch is released (swamp-club#3146)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const write = await h.plane.handle(
+      request("/data/resource", {
+        method: "POST",
+        body: JSON.stringify({
+          specName: "result",
+          name: "result",
+          data: { value: "x" },
+        }),
+      }),
+    );
+    assertEquals(write?.status, 200);
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({ specName: "log", name: "log" }),
+      }),
+    );
+    const { writerId } = await open!.json();
+    await h.plane.handle(
+      request(`/data/writers/${writerId}/line`, {
+        method: "POST",
+        body: "a line",
+      }),
+    );
+    const finalize = await h.plane.handle(
+      request(`/data/writers/${writerId}/finalize`, { method: "POST" }),
+    );
+    assertEquals(finalize?.status, 200);
+
+    const versions = await h.plane.writtenVersions("d-1", 1_000);
+    assertEquals(
+      versions.map((v) => [v.modelType, v.modelId, v.dataName, v.version]),
+      [
+        [MODEL_TYPE.normalized, "m-1", "result", 1],
+        [MODEL_TYPE.normalized, "m-1", "log", 1],
+      ],
+    );
+
+    h.plane.releaseDispatch("d-1");
+    assertEquals(await h.plane.writtenVersions("d-1", 1_000), []);
+  });
+});
+
+Deno.test("DataPlane: writtenVersions waits for a write still running before reporting (swamp-club#3146)", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+    const open = await h.plane.handle(
+      request("/data/writers", {
+        method: "POST",
+        body: JSON.stringify({ specName: "log", name: "log" }),
+      }),
+    );
+    const { writerId } = await open!.json();
+    const body = new TransformStream<Uint8Array, Uint8Array>();
+    const streaming = h.plane.handle(
+      request(`/data/writers/${writerId}/content`, {
+        method: "POST",
+        body: body.readable,
+      }),
+    );
+    // Once the writer consumes the first chunk the request is in flight,
+    // and it stays so until its body ends.
+    const writer = body.writable.getWriter();
+    await writer.write(new TextEncoder().encode("payload"));
+    const reported = h.plane.writtenVersions("d-1", 10_000);
+    await writer.close();
+    assertEquals((await streaming)?.status, 200);
+
+    assertEquals((await reported).map((v) => v.dataName), ["log"]);
+  });
+});
