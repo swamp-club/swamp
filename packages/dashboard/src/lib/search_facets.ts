@@ -109,6 +109,6 @@ export function suggestionsFor(
     }
   }
   values.sort((a, b) => b.score - a.score);
-  out.push(...values.slice(0, MAX_CROSS_VALUES).map((v) => v.s));
+  for (const v of values.slice(0, MAX_CROSS_VALUES)) out.push(v.s);
   return out;
 }
