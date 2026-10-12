@@ -20,6 +20,7 @@
 import { runDetached } from "../infrastructure/tracing/mod.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { OAuthUserInfo } from "./oauth_client.ts";
+import { oauthPrincipalId } from "./device_auth_handler.ts";
 
 const logger = getSwampLogger(["serve", "collective-refresh"]);
 
@@ -145,6 +146,16 @@ export class CollectiveRefreshService {
         this.#deps.groupsField,
         signal,
       );
+
+      // The stored access token is applied only to its own user's token:
+      // whoever can write it must not choose whose collectives a token gets.
+      if (token.principalId !== oauthPrincipalId(userInfo.sub)) {
+        logger.warn(
+          "Userinfo subject {sub} does not match principal {principal} of token {name}, keeping existing snapshot",
+          { sub: userInfo.sub, principal: token.principalId, name: token.name },
+        );
+        return;
+      }
 
       const collectivesChanged = !setsEqual(
         token.collectives,

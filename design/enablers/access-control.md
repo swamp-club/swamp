@@ -651,7 +651,9 @@ It loads at serve startup and is rebuilt when grant or group model data changes.
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval` and closes
    connections whose admission lapsed
-   (`src/serve/collective_refresh_service.ts`).
+   (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer
+   only when its subject matches the token's principal; otherwise it keeps the
+   token's snapshot and logs a warning.
 
 The `GrantBasedAccessDecisionService` picks up a rebuilt snapshot on the next
 request. There is no per-request locking or snapshot versioning.
