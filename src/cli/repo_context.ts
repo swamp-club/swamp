@@ -150,6 +150,7 @@ import type {
   SyncCapabilities,
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
+import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -343,6 +344,18 @@ export function cacheRelativeMarkPath(
     if (escapesRoot(rel)) return undefined;
   }
   return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+}
+
+/**
+ * The repository's foreign content fetcher over a sync service, or undefined
+ * when there is no sync service or it cannot read another namespace.
+ */
+function buildForeignContentFetcher(
+  syncService: DatastoreSyncService | undefined,
+): ForeignContentFetcher | undefined {
+  if (!syncService?.fetchForeignContent) return undefined;
+  return (namespace, relPath) =>
+    syncService.fetchForeignContent!(namespace, relPath);
 }
 
 function buildHydrateFileHook(
@@ -1019,6 +1032,7 @@ export async function requireInitializedRepoReadOnly(
     datastoreResolver,
     namespace: datastoreConfig.namespace,
     hydrateFile: hydrateFileHook,
+    fetchForeignContent: buildForeignContentFetcher(readOnlySyncService),
     autoGc: marker?.autoGc === true,
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
     ...v3Factory,
@@ -1033,13 +1047,6 @@ export async function requireInitializedRepoReadOnly(
   // so the context writes no wait record.
   if (!isCustomDatastoreConfig(datastoreConfig)) {
     repoContext.signalWaits = resolveSignalWaitSupport(datastoreConfig);
-  }
-
-  if (readOnlySyncService?.fetchForeignContent) {
-    const svc = readOnlySyncService;
-    repoContext.dataQueryService.setForeignContentFetcher(
-      (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
-    );
   }
 
   return {
@@ -1296,6 +1303,7 @@ export function requireInitializedRepo(
           datastoreConfig.type,
         )
         : undefined,
+      fetchForeignContent: buildForeignContentFetcher(syncService),
       namespace: datastoreConfig.namespace,
       autoGc: marker?.autoGc === true,
       filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),
@@ -1318,13 +1326,6 @@ export function requireInitializedRepo(
     // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
       repoContext.catalogStore.invalidate();
-    }
-
-    if (syncService?.fetchForeignContent) {
-      const svc = syncService;
-      repoContext.dataQueryService.setForeignContentFetcher(
-        (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
-      );
     }
 
     return {
@@ -1494,6 +1495,7 @@ export async function requireInitializedRepoUnlocked(
         datastoreConfig.type,
       )
       : undefined,
+    fetchForeignContent: buildForeignContentFetcher(syncService),
     namespace: datastoreConfig.namespace,
     autoGc: marker?.autoGc === true,
     filterStaleRows: !isCustomDatastoreConfig(datastoreConfig),

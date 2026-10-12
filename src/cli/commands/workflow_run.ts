@@ -503,6 +503,7 @@ export const workflowRunCommand = new Command()
                   unlocked.vaultsDir,
                   unlocked.datastoreResolver,
                   repoContext.autoGc,
+                  repoContext.unifiedDataRepo.fetchForeignContent,
                 );
                 service.signalWaits = signalWaitsOf(repoContext);
                 return service;

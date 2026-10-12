@@ -135,6 +135,10 @@ export const modelValidateCommand = withRemoteOptions(
         repoDir,
         { labels, method },
         datastoreResolver,
+        undefined,
+        undefined,
+        undefined,
+        repoContext.unifiedDataRepo.fetchForeignContent,
       );
 
       const renderer = createModelValidateRenderer(cliCtx.outputMode);

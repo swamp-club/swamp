@@ -71,6 +71,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import {
   RunSensitiveValues,
   type WrittenReference,
@@ -186,6 +187,11 @@ export function createWorkflowEvaluateDeps(
    * that would be saved into the evaluated workflow (swamp-club#3179).
    */
   hydrateFile?: HydrateFileHook,
+  /**
+   * The repository context's foreign content fetcher, so expressions that
+   * read another namespace's data see its attributes (swamp-club#3306).
+   */
+  fetchForeignContent?: ForeignContentFetcher,
 ): WorkflowEvaluateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -199,6 +205,9 @@ export function createWorkflowEvaluateDeps(
     undefined,
     hydrateFile,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    fetchForeignContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(

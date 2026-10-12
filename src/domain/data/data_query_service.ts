@@ -27,9 +27,12 @@ import type {
 import { UserError } from "../errors.ts";
 import type {
   ContentAvailability,
+  ForeignContentFetcher,
   RenameForward,
   UnifiedDataRepository,
 } from "./repositories.ts";
+
+export type { ForeignContentFetcher };
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
@@ -260,13 +263,10 @@ export interface LatestRecordOptions {
  * predicates that reference `attributes`.
  */
 /**
- * Callback for fetching content from a foreign namespace on-demand.
- * Returns raw bytes, or null if unavailable.
+ * Most foreign bodies a service keeps. A serve process keeps one service for
+ * its lifetime, so the cache must not grow with every record ever read.
  */
-export type ForeignContentFetcher = (
-  namespace: string,
-  relPath: string,
-) => Promise<Uint8Array | null>;
+const FOREIGN_CONTENT_CACHE_ENTRIES = 256;
 
 /** What {@link DataQueryService} matched for a predicate, before projection. */
 interface MatchResult {
@@ -315,8 +315,7 @@ export interface DataQueryServiceOptions {
 
 export class DataQueryService {
   private readonly queryEnv: Environment;
-  private foreignContentFetcher?: ForeignContentFetcher;
-  private readonly foreignContentCache = new Map<string, Uint8Array | null>();
+  private readonly foreignContentCache = new Map<string, Uint8Array>();
   private backfillPromise: Promise<void> | null = null;
   private readonly filterStaleRows: boolean;
   private readonly backfill: boolean;
@@ -332,16 +331,6 @@ export class DataQueryService {
       unlistedVariablesAreDyn: true,
       homogeneousAggregateLiterals: false,
     });
-  }
-
-  /**
-   * Configures foreign content fetch for cross-namespace attribute access.
-   * When set, query results from foreign namespaces that have no local
-   * content will attempt to fetch it on-demand. Fetched content is cached
-   * in-memory for the lifetime of this service instance (command duration).
-   */
-  setForeignContentFetcher(fetcher: ForeignContentFetcher): void {
-    this.foreignContentFetcher = fetcher;
   }
 
   /**
@@ -585,7 +574,8 @@ export class DataQueryService {
    * local and current: `fromRow` reads it synchronously, so a body a
    * metadata-only pull left absent or stale would otherwise come back as
    * empty or old attributes (swamp-club#3179). Only rows of this
-   * repository's namespace have a content file here to ensure.
+   * repository's namespace have a content file here to ensure; another
+   * namespace's row gets its attributes from the remote (swamp-club#3306).
    */
   private async buildRecordFromRow(
     row: CatalogRow | null,
@@ -602,7 +592,58 @@ export class DataQueryService {
         String(error)
       }`;
     }
-    return fromRow(row, this.dataRepo, true, true, includeContentPath);
+    const record = fromRow(row, this.dataRepo, true, true, includeContentPath);
+    await this.hydrateForeignRecord(record);
+    return record;
+  }
+
+  /**
+   * Fills the attributes of a JSON record of another namespace, whose content
+   * is never on local disk, through the repository's foreign content fetcher.
+   * A body is fetched once per service; a missing body or a failed fetch
+   * leaves the attributes empty and is tried again on the next read, so one
+   * transient failure never empties a record for the life of the process.
+   */
+  private async hydrateForeignRecord(record: DataRecord): Promise<void> {
+    const fetcher = this.dataRepo.fetchForeignContent;
+    if (
+      !fetcher ||
+      record.namespace === this.dataRepo.namespace ||
+      record.namespace === "" ||
+      record.contentType !== "application/json" ||
+      Object.keys(record.attributes).length > 0
+    ) return;
+    const relPath =
+      `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
+    const cacheKey = `${record.namespace}:${relPath}`;
+    let bytes = this.foreignContentCache.get(cacheKey) ?? null;
+    if (!bytes) {
+      try {
+        bytes = await fetcher(record.namespace, relPath);
+      } catch (error) {
+        logger
+          .debug`Could not fetch ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: ${
+          String(error)
+        }`;
+        return;
+      }
+      if (!bytes) return;
+      if (this.foreignContentCache.size >= FOREIGN_CONTENT_CACHE_ENTRIES) {
+        // Maps iterate in insertion order, so this drops the oldest body.
+        for (const oldest of this.foreignContentCache.keys()) {
+          this.foreignContentCache.delete(oldest);
+          break;
+        }
+      }
+      this.foreignContentCache.set(cacheKey, bytes);
+    }
+    try {
+      record.attributes = JSON.parse(
+        new TextDecoder().decode(bytes),
+      ) as Record<string, unknown>;
+    } catch {
+      // Invalid JSON — leave attributes empty
+    }
   }
 
   /**
@@ -773,6 +814,11 @@ export class DataQueryService {
       if (
         accepted.length >= limit || batch === undefined || !matched.hitLimit
       ) {
+        // Before projection, so a select that reads attributes sees them, and
+        // after include, so a record the caller may not read is never fetched.
+        for (const record of accepted) {
+          await this.hydrateForeignRecord(record);
+        }
         results = this.project(
           accepted,
           matched.selectParsed,
@@ -781,53 +827,6 @@ export class DataQueryService {
         break;
       }
       batch *= 4;
-    }
-
-    // Hydrate foreign namespace records whose content isn't available locally.
-    if (this.foreignContentFetcher && Array.isArray(results)) {
-      const ownNamespace = this.dataRepo.namespace;
-      for (const item of results) {
-        if (
-          typeof item === "object" && item !== null && "attributes" in item
-        ) {
-          const record = item as DataRecord;
-          if (
-            record.namespace !== ownNamespace &&
-            record.namespace !== "" &&
-            Object.keys(record.attributes).length === 0 &&
-            record.contentType === "application/json"
-          ) {
-            const relPath =
-              `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
-            const cacheKey = `${record.namespace}:${relPath}`;
-            let bytes: Uint8Array | null;
-            if (this.foreignContentCache.has(cacheKey)) {
-              bytes = this.foreignContentCache.get(cacheKey)!;
-            } else {
-              try {
-                bytes = await this.foreignContentFetcher(
-                  record.namespace,
-                  relPath,
-                );
-              } catch {
-                bytes = null;
-              }
-              this.foreignContentCache.set(cacheKey, bytes);
-            }
-            if (bytes) {
-              try {
-                const text = new TextDecoder().decode(bytes);
-                record.attributes = JSON.parse(text) as Record<
-                  string,
-                  unknown
-                >;
-              } catch {
-                // Invalid JSON — leave attributes empty
-              }
-            }
-          }
-        }
-      }
     }
 
     return results;

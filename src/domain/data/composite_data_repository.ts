@@ -26,18 +26,22 @@ import type {
   ContentAvailability,
   DeferredWriteReceipt,
   FindAllGlobalOptions,
+  ForeignContentFetcher,
   GarbageCollectionResult,
   UnifiedDataRepository,
 } from "./repositories.ts";
 
 export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
   readonly namespace: Namespace;
+  // Foreign rows are catalog-only and never ephemeral.
+  readonly fetchForeignContent?: ForeignContentFetcher;
 
   constructor(
     private readonly persistent: UnifiedDataRepository,
     private readonly ephemeral: UnifiedDataRepository,
   ) {
     this.namespace = persistent.namespace;
+    this.fetchForeignContent = persistent.fetchForeignContent;
   }
 
   private routeWrite(data: Data): UnifiedDataRepository {

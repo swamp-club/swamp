@@ -72,6 +72,7 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import { NoopRepoIndexService } from "../repo/noop_repo_index_service.ts";
 import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
+import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 import {
   type DatastorePathResolver,
@@ -413,6 +414,12 @@ export interface RepositoryFactoryConfig {
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
   /**
+   * Reads another namespace's content from the remote datastore, for the
+   * foreign rows a catalog pull adds. Carried by the unified data repository,
+   * so every query service built from it can fetch (swamp-club#3306).
+   */
+  fetchForeignContent?: ForeignContentFetcher;
+  /**
    * Namespace slug from the resolved datastore config (giga-swamp Phase 2).
    * Translated into the Namespace value object and stamped onto every catalog
    * row written by the unified data repository. Absent/empty → SOLO_NAMESPACE.
@@ -615,6 +622,8 @@ export function createRepositoryContext(
     hydrateFile,
     namespace,
     config.autoGc ?? false,
+    undefined,
+    config.fetchForeignContent,
   );
 
   // Construct the query service alongside its dependencies so consumers

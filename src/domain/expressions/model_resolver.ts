@@ -1378,12 +1378,18 @@ export class ModelResolver {
             );
             // The coordinates path above resolves sensitive vault references
             // through this resolver's own vault service; do the same here so
-            // both paths return the same attributes.
-            await this.resolveRecordVaultRefs(
-              record,
-              record?.tags,
-              sensitiveValues,
-            );
+            // both paths return the same attributes. Another namespace's
+            // record is returned as stored, as the wildcard and version
+            // readers return it: its tags and values are that namespace's to
+            // write, and must not choose which of this repository's secrets
+            // are read (swamp-club#3306).
+            if (record?.namespace === ownNamespace) {
+              await this.resolveRecordVaultRefs(
+                record,
+                record.tags,
+                sensitiveValues,
+              );
+            }
             await this.materializePath(record);
             return record;
           }

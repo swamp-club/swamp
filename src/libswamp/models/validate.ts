@@ -41,6 +41,7 @@ import {
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { ForeignContentFetcher } from "../../domain/data/repositories.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { selectLookup } from "../lookup_by_id.ts";
@@ -183,6 +184,12 @@ export function createModelValidateDeps(
   injectedDataRepo?: FileSystemUnifiedDataRepository,
   injectedCatalogStore?: CatalogStore,
   injectedDefinitionRepo?: YamlDefinitionRepository,
+  /**
+   * The repository context's foreign content fetcher, so expressions that
+   * read another namespace's data see its attributes (swamp-club#3306). Used
+   * only by the repository built here; an injected repository carries its own.
+   */
+  fetchForeignContent?: ForeignContentFetcher,
 ): ModelValidateDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -201,6 +208,9 @@ export function createModelValidateDeps(
     undefined,
     undefined,
     namespaceFromResolver(datastoreResolver),
+    undefined,
+    undefined,
+    fetchForeignContent,
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const validationService = new DefaultModelValidationService();

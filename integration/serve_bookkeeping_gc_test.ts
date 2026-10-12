@@ -485,16 +485,29 @@ function foreignRow(
 Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another namespace's catalog rows", async () => {
   await withTempDir(async (dir) => {
     const { service } = createRecordingSyncService();
+    const reapNow = Date.now() + 2 * GRACE_MS;
+    const endedAt = new Date(Date.now()).toISOString();
+    let foreignFetches = 0;
     const ctx = createRepositoryContext({
       repoDir: dir,
       enableIndexing: false,
       namespace: "team-a",
       markDirty: buildMarkDirtyHook(service, swampPath(dir), dir),
+      fetchForeignContent: (_ns, relPath) => {
+        foreignFetches++;
+        const attrs = relPath.includes("step-lease")
+          ? {
+            ...acquireInputs("x"),
+            state: "completed",
+            hasWrites: false,
+            createdAt: endedAt,
+            endedAt,
+          }
+          : { name: "w1", status: "disconnected" };
+        return Promise.resolve(new TextEncoder().encode(JSON.stringify(attrs)));
+      },
     });
     try {
-      const reapNow = Date.now() + 2 * GRACE_MS;
-      const endedAt = new Date(Date.now()).toISOString();
-
       await saveRecord(
         ctx,
         WORKER_MODEL_TYPE,
@@ -513,20 +526,6 @@ Deno.test("reapEndedBookkeepingRecords and workerGcListPredicate: ignore another
         foreignRow(STEP_LEASE_MODEL_TYPE, STEP_LEASE_INSTANCE_NAME, "lease-x"),
         foreignRow(WORKER_MODEL_TYPE, "worker-w1", "state-main"),
       ]);
-      let foreignFetches = 0;
-      ctx.dataQueryService.setForeignContentFetcher((_ns, relPath) => {
-        foreignFetches++;
-        const attrs = relPath.includes("step-lease")
-          ? {
-            ...acquireInputs("x"),
-            state: "completed",
-            hasWrites: false,
-            createdAt: endedAt,
-            endedAt,
-          }
-          : { name: "w1", status: "disconnected" };
-        return Promise.resolve(new TextEncoder().encode(JSON.stringify(attrs)));
-      });
 
       const result = await reapEndedBookkeepingRecords(
         {

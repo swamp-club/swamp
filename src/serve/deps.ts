@@ -225,6 +225,7 @@ export async function createWorkflowRunDeps(
         undefined,
         resolver,
         repoContext.autoGc,
+        repoContext.unifiedDataRepo.fetchForeignContent,
       );
       service.signalWaits = repoContext.signalWaits ??
         SIGNAL_WAITS_NOT_CONFIGURED;

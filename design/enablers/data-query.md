@@ -368,7 +368,8 @@ A `select` that references `content` or `contentEncoding` reads each item's
 bytes in the projection step, after `include` has run
 (`DataQueryService.projectedContents`). The async `query()` reads them with
 `getContent`, so a lazily-synced body is downloaded as `data get` downloads it;
-`querySync` (CEL `data.query()`) reads local disk only. Bytes are represented as `data get`
+`querySync` (CEL `data.listVersions()`) reads local disk only; CEL
+`data.query()` uses the async `query()`. Bytes are represented as `data get`
 represents them (`src/domain/data/content_encoding.ts` `encodeContent`): UTF-8
 text when the bytes are valid UTF-8, otherwise base64. `contentEncoding`
 (`utf-8` or `base64`) says which, and exists only in a projection — naming it

@@ -2838,6 +2838,7 @@ export async function handleWorkflowEvaluate(
       ctx.datastoreResolver,
       ctx.repoContext.definitionRepo,
       ctx.repoContext.hydrateFile,
+      ctx.repoContext.unifiedDataRepo.fetchForeignContent,
     );
 
     let result: Record<string, unknown> | undefined;

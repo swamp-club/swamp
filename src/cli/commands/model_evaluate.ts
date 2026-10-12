@@ -113,7 +113,14 @@ export const modelEvaluateCommand = withRemoteOptions(
       // teardown flush did (swamp-club#3055).
       await runInCoordinatorRoot(repoContext, async () => {
         const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
+        const deps = createModelEvaluateDeps(
+          repoDir,
+          datastoreResolver,
+          undefined,
+          undefined,
+          undefined,
+          repoContext.unifiedDataRepo.fetchForeignContent,
+        );
         const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 
         await consumeStream(
@@ -160,7 +167,14 @@ export const modelEvaluateCommand = withRemoteOptions(
     if (lockResult.synced) repoContext.catalogStore.invalidate();
 
     const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-    const deps = createModelEvaluateDeps(repoDir, datastoreResolver);
+    const deps = createModelEvaluateDeps(
+      repoDir,
+      datastoreResolver,
+      undefined,
+      undefined,
+      undefined,
+      repoContext.unifiedDataRepo.fetchForeignContent,
+    );
     const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
 
     await runCommandInRootUnit(
