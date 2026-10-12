@@ -276,6 +276,15 @@ Deno.test("extractCommandInfo: a boolean run flag before the method does not shi
     "deploy",
   ]);
   assertEquals(stdin.args, ["<REDACTED>", "deploy"]);
+  const literal = extractCommandInfo([
+    "behavior",
+    "run",
+    "@acme/t",
+    "--literal-inputs",
+    "create",
+    "my-secret-def",
+  ]);
+  assertEquals(literal.args, ["<REDACTED>", "create", "<REDACTED>"]);
 });
 
 Deno.test("extractCommandInfo redacts all args for commands without schema", () => {

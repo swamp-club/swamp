@@ -116,14 +116,20 @@ function buildContextSuggestions(
   // `swamp behavior my-server deploy` — `run` left out. The positionals after
   // the unknown word are the method (and, for an `@type`, the name) the user
   // meant.
-  const runSuggestion = runSuggestionFor(
-    unknownName,
-    extractPositionalArgs(
-      rawArgs,
-      `${cmd.getPath()} ${unknownName}`,
-      [...pathSpellings(cmd), new Set([unknownName])],
-    ),
+  const trailing = extractPositionalArgs(
+    rawArgs,
+    `${cmd.getPath()} ${unknownName}`,
+    [...pathSpellings(cmd), new Set([unknownName])],
   );
+  // `swamp model @type method ping name` — the legacy direct-type form with
+  // `run` left out, which `rewriteDirectTypeArgs` does not rewrite. `method`
+  // (and a `run` after it) is the command word, not the method the user meant.
+  const legacyDirectType = parentName === "model" &&
+    unknownName.startsWith("@") && trailing[0] === "method";
+  const afterCommandWords = legacyDirectType
+    ? trailing.slice(trailing[1] === "run" ? 2 : 1)
+    : trailing;
+  const runSuggestion = runSuggestionFor(unknownName, afterCommandWords);
 
   if (parentName === "model") {
     if (!unknownName.startsWith("@")) {

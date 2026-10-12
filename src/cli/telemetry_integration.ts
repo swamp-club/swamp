@@ -333,6 +333,7 @@ function isKnownFlag(option: string): boolean {
     "--skip-checks",
     "--skip-reports",
     "--stdin",
+    "--literal-inputs",
   ]);
   return flags.has(option);
 }
