@@ -124,7 +124,10 @@ export interface RunGraphEdge {
   from: string;
   to: string;
   condition?: ConditionData;
-  /** Met/unmet once the upstream job finished; pending until then. */
+  /**
+   * Met/unmet once the upstream job finished; pending until then. Unmet
+   * when the upstream job was cancelled.
+   */
   state: EdgeState;
   /** Work is flowing along it now: met, into a running or waiting job. */
   active: boolean;
@@ -323,7 +326,11 @@ export function buildRunGraph(
     for (const dep of defJob.dependsOn ?? []) {
       const source = byName.get(dep.job);
       if (!source || dep.job === defJob.name) continue;
-      const met = evaluateCondition(dep.condition, source.status);
+      // A cancelled job (or one a finished run left unfinished) will never
+      // finish, so nothing downstream of it runs: its edges are unmet.
+      const met = displayStatus(source.status, run.status) === "cancelled"
+        ? false
+        : evaluateCondition(dep.condition, source.status);
       const state: EdgeState = met === null ? "pending" : met ? "met" : "unmet";
       edges.push({
         from: dep.job,

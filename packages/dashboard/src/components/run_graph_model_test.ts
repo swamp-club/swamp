@@ -134,6 +134,35 @@ Deno.test("buildRunGraph: a finished run shows unreached work as stopped", () =>
   );
 });
 
+Deno.test("buildRunGraph: edges leaving a cancelled job are unmet", () => {
+  const def: WorkflowDefinitionLike = {
+    jobs: [
+      { name: "build", dependsOn: [] },
+      {
+        name: "ship",
+        dependsOn: [{ job: "build", condition: { type: "always" } }],
+      },
+    ],
+  };
+  const jobs = (buildStatus: string) => [
+    { name: "build", status: buildStatus, steps: [] },
+    { name: "ship", status: "pending", steps: [] },
+  ];
+  const states = (run: RunLike) =>
+    buildRunGraph(run, def).edges.map((e) => e.state);
+  assertEquals(
+    states({ status: "cancelled", jobs: jobs("cancelled") }),
+    ["unmet"],
+  );
+  // A running job the cancelled run never let finish.
+  assertEquals(states({ status: "cancelled", jobs: jobs("running") }), [
+    "unmet",
+  ]);
+  assertEquals(states({ status: "running", jobs: jobs("running") }), [
+    "pending",
+  ]);
+});
+
 Deno.test("buildRunGraph: without a definition there are no edges", () => {
   const graph = buildRunGraph(failedRun, null);
   assertEquals(graph.edges, []);
