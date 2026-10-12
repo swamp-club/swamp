@@ -941,7 +941,7 @@ async function classifyConnectionError(
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
   if (await probeServerHealth(wsUrl)) {
-    return `${originalMessage} — ${wsUrl} answers its health check, so the connection failed after reaching the server; if this keeps happening the request may have been rejected for authentication — run: swamp auth server-login --server ${wsUrl}`;
+    return `${originalMessage} — ${wsUrl} is reachable; if this keeps happening, re-authenticate: swamp auth server-login --server ${wsUrl}`;
   }
   return originalMessage;
 }

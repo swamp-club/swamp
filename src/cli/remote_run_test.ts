@@ -1362,9 +1362,14 @@ function connectionDroppingServer(): {
   const listener = Deno.listen({ port: 0, hostname: "127.0.0.1" });
   const accepting = (async () => {
     for await (const conn of listener) {
+      // Read the whole request head — the headers may span several reads.
+      let head = "";
       const buf = new Uint8Array(4096);
-      const n = await conn.read(buf).catch(() => null);
-      const head = new TextDecoder().decode(buf.subarray(0, n ?? 0));
+      while (!head.includes("\r\n\r\n")) {
+        const n = await conn.read(buf).catch(() => null);
+        if (n === null) break;
+        head += new TextDecoder().decode(buf.subarray(0, n));
+      }
       if (!/upgrade: websocket/i.test(head)) {
         const body = JSON.stringify({ status: "ok" });
         await conn.write(
