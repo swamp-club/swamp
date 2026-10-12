@@ -39,6 +39,14 @@ Upgrades are **lazy** — they run at method execution time, not at load time:
 4. The upgraded definition is persisted with the new `typeVersion`
 5. The upgrade only runs once — subsequent method calls skip it
 
+`swamp model validate` and the check before each workflow step apply the chain
+to an in-memory copy first, without saving it, so a stale instance validates
+when its upgrade succeeds. An `upgradeAttributes` that throws fails the
+`Global arguments` item. Instances whose global arguments hold `${{ }}`
+expressions are not upgraded in validation, only at run time. A workflow step
+therefore runs the chain twice, so keep `upgradeAttributes` pure: same input,
+same output, no side effects.
+
 Every step above needs a `typeVersion` to compare against. An instance that
 records none is left exactly as written — no upgrade runs, and nothing is
 stamped. Absence cannot distinguish arguments that predate your chain from

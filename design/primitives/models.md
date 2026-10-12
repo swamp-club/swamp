@@ -67,6 +67,16 @@ loads.
 `DefinitionUpgradeService` (`src/domain/models/definition_upgrade_service.ts`).
 The upgraded definition is saved, so each upgrade runs only once.
 
+Validation reads static global arguments the way the next method run will.
+`DefaultModelValidationService` (`src/domain/models/validation_service.ts`)
+applies the same chain to an in-memory copy before it checks global arguments
+and runs pre-flight checks, and never saves it. That covers both
+`swamp model validate` and the check before each workflow step, so a stale
+definition is not refused before the run that would migrate it. An upgrade that
+throws fails the Global arguments item. Arguments holding a swamp expression are
+not upgraded in validation: the run upgrades their evaluated values, and the
+schema check skips them until then (swamp-club#3196).
+
 That save happens on whichever method runs first, including one that only reads.
 It changes the definition file and nothing else about it:
 `YamlDefinitionRepository.save()` merges the new values onto the file's existing
