@@ -66,9 +66,14 @@ warning, not a silent skip.
 
 The rule walks the schema and the stored values together
 (`findValuesWithMetadata` in `src/domain/models/zod_field_metadata.ts`), so a
-sensitive field is found wherever it is nested: in objects, array elements,
-tuple items, record values, union members and intersections. A finding names the
+sensitive field is found in objects, array elements, tuple items, record values,
+`.catchall()` keys, union members and intersections. A finding names the
 element: `users[1].password`, `accounts.prod.token`.
+
+The walk reads the value as stored. A `z.preprocess()` that turns a string into
+a container is not run, so a sensitive field inside that string is not reached.
+Each schema is walked once per place in the value, so the cost grows with the
+size of the value even when union members overlap in a recursive schema.
 
 - **Unions.** No member's validation runs. Every member the value could belong
   to is checked: members of the wrong container kind are dropped, and a

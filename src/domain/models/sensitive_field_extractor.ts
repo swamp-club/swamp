@@ -164,9 +164,10 @@ function isLiteralSecret(value: unknown): boolean {
  * the definition YAML.
  *
  * The schema and the supplied values are walked together, so a sensitive
- * field is found wherever it is nested: inside objects (`credentials.apiKey`),
- * array elements and tuple items (`users[0].password`), record values
- * (`accounts.prod.token`) and union members. The redaction primitives in this
+ * field is found inside objects (`credentials.apiKey`), array elements and
+ * tuple items (`users[0].password`), record values (`accounts.prod.token`),
+ * `.catchall()` keys and union members. See `findValuesWithMetadata` for
+ * what the walk does not reach. The redaction primitives in this
  * module read the schema alone and still see object-nested fields only.
  *
  * @param schema - The global-arguments Zod schema for the model type
@@ -272,6 +273,38 @@ export interface SensitiveArgRemediation {
 const DEFAULT_REMEDIATION_VAULT = "my-vault";
 
 /**
+ * Returns the last key a path names, unquoted: `apiKey` for
+ * `credentials.apiKey`, `api key` for `credentials["api key"]`.
+ */
+function lastKeyOf(path: string): string {
+  let key = "";
+  let i = 0;
+  while (i < path.length) {
+    if (path[i] === ".") {
+      i++;
+    } else if (path[i] === "[" && path[i + 1] === '"') {
+      let end = i + 2;
+      while (end < path.length && path[end] !== '"') {
+        end += path[end] === "\\" ? 2 : 1;
+      }
+      key = JSON.parse(path.slice(i + 1, end + 1));
+      i = end + 2;
+    } else if (path[i] === "[") {
+      const end = path.indexOf("]", i);
+      i = end === -1 ? path.length : end + 1;
+    } else {
+      let end = i;
+      while (end < path.length && path[end] !== "." && path[end] !== "[") {
+        end++;
+      }
+      key = path.slice(i, end);
+      i = end;
+    }
+  }
+  return key || path;
+}
+
+/**
  * Turns an element path into a vault key: every run of characters outside
  * letters, digits, `_` and `-` becomes one `-`.
  */
@@ -299,7 +332,8 @@ function vaultKeyForElementPath(path: string): string {
  * `users-0-password`) rather than from a declared `vaultKey` or the leaf
  * segment, either of which would point every element at the same secret.
  * When two such keys come out the same, the later one gets a numeric suffix.
- * These paths are only recognised when `args` is given.
+ * These paths, and any path holding a quoted key, are only matched to their
+ * field's metadata when `args` is given.
  *
  * @param leakedPaths - Paths returned by `findLiteralSensitiveGlobalArgs`
  * @param schema - The global-arguments schema, read for vault metadata overrides
@@ -340,7 +374,7 @@ export function buildSensitiveArgRemediations(
   return leakedPaths.map((path) => {
     const meta = fieldsByPath.get(path);
     const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    let vaultKey = meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    let vaultKey = meta?.vaultKey ?? lastKeyOf(path);
     if (elementPaths.has(path)) {
       const base = vaultKeyForElementPath(path);
       vaultKey = base;

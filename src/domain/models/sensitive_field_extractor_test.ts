@@ -1038,3 +1038,42 @@ Deno.test("literalSensitiveGlobalArgsMessage: an array under a quoted record key
   assertStringIncludes(message, "--global-arg '<name>:json=[...]'");
   assertEquals(message.includes('accounts["it\'s eu.west"].users:json'), false);
 });
+
+Deno.test("buildSensitiveArgRemediations: derives the vault key from a quoted last key", () => {
+  const schema = z.object({
+    "$token": z.string().meta({ sensitive: true }),
+    creds: z.object({
+      "api.key": z.string().meta({ sensitive: true }),
+      'say "hi"': z.string().meta({ sensitive: true }),
+    }),
+  });
+  const args = {
+    "$token": "one",
+    creds: { "api.key": "two", 'say "hi"': "three" },
+  };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(paths, [
+    '["$token"]',
+    'creds["api.key"]',
+    'creds["say \\"hi\\""]',
+  ]);
+  assertEquals(remediations.map((r) => r.vaultKey), [
+    "$token",
+    "api.key",
+    'say "hi"',
+  ]);
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags a literal under a sensitive catchall", () => {
+  const schema = z.object({
+    env: z.object({}).catchall(z.string().meta({ sensitive: true })),
+  });
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      env: { TOKEN: "hunter2", OTHER: VAULT_REF },
+    }),
+    ["env.TOKEN"],
+  );
+});

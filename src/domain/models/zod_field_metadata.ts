@@ -52,6 +52,7 @@ interface ZodDef {
   left?: z.ZodTypeAny;
   right?: z.ZodTypeAny;
   getter?: () => z.ZodTypeAny;
+  catchall?: z.ZodTypeAny;
   in?: z.ZodTypeAny;
   out?: z.ZodTypeAny;
   values?: unknown[];
@@ -276,10 +277,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
       Object.getPrototypeOf(value) === null);
 }
 
-/** Follows wrappers down to the schema that describes the value itself. */
-function coreSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+/**
+ * Follows wrappers down to the schema that describes the value itself.
+ * Returns undefined when a `z.preprocess()` is on the way: its function can
+ * turn the stored value into any shape, so the schema behind it says nothing
+ * about the value as stored.
+ */
+function coreSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
   let current = schema;
   for (let inner = innerSchema(current); inner; inner = innerSchema(current)) {
+    const def = getSchemaDef(current);
+    if (
+      getSchemaType(current) === "pipe" && def.in &&
+      getSchemaType(def.in) === "transform"
+    ) {
+      return undefined;
+    }
     current = inner;
   }
   return current;
@@ -298,10 +311,15 @@ const SCALAR_TYPES = [
 /**
  * Reports whether a value has the container kind a union member describes: an
  * object for an object or record, an array for an array or tuple, neither for
- * a scalar. A member of any other type is taken to fit every value.
+ * a scalar. A member of any other type, or one behind a `z.preprocess()`, is
+ * taken to fit every value.
  */
 function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
-  const memberType = getSchemaType(coreSchema(member));
+  const core = coreSchema(member);
+  if (core === undefined) {
+    return true;
+  }
+  const memberType = getSchemaType(core);
   if (memberType === "object" || memberType === "record") {
     return isPlainObject(value);
   }
@@ -353,6 +371,12 @@ interface ValueWalk {
   found: ValueWithMetadata[];
   /** Paths already in `found`. */
   foundPaths: Set<string>;
+  /**
+   * Paths each schema has already been walked at. Overlapping union members
+   * lead to the same schema at the same place more than once; walking it
+   * again would double the work at every level of a recursive schema.
+   */
+  visited: Map<z.ZodTypeAny, Set<string>>;
   /** Containers on the way down to the current value, to stop on a cycle. */
   ancestors: Set<object>;
 }
@@ -367,6 +391,17 @@ function visitValue(
 ): void {
   if (value === undefined || value === null) {
     return;
+  }
+  if (typeof value === "object") {
+    let paths = walk.visited.get(schema);
+    if (!paths) {
+      paths = new Set();
+      walk.visited.set(schema, paths);
+    }
+    if (paths.has(path)) {
+      return;
+    }
+    paths.add(path);
   }
 
   let current = schema;
@@ -413,8 +448,17 @@ function visitValue(
 
   walk.ancestors.add(value);
   if (schemaType === "object" && isPlainObject(value)) {
-    for (const [key, fieldSchema] of Object.entries(def.shape ?? {})) {
+    const shape = def.shape ?? {};
+    for (const [key, fieldSchema] of Object.entries(shape)) {
       visitValue(walk, fieldSchema, value[key], child(key), perElement);
+    }
+    const catchall = def.catchall;
+    if (catchall) {
+      for (const [key, entry] of Object.entries(value)) {
+        if (!Object.hasOwn(shape, key)) {
+          visitValue(walk, catchall, entry, child(key), true);
+        }
+      }
     }
   } else if (schemaType === "record" && isPlainObject(value)) {
     const valueSchema = def.valueType;
@@ -449,8 +493,10 @@ function visitValue(
  * stops at anything that is not an object, this walks the schema and a
  * concrete value together, so it also reaches fields inside array elements
  * and tuple items (`users[0].password`), record values (`labels.team`),
- * union members and intersections, and through `.transform()`, `.readonly()`
- * and `z.lazy()` wrappers. A matching node is reported once, and its children
+ * `.catchall()` keys, union members and intersections, and through
+ * `.transform()`, `.readonly()` and `z.lazy()` wrappers. It reads the value
+ * as stored: a `z.preprocess()` that turns a string into a container is not
+ * run, so fields inside that string are not reached. A matching node is reported once, and its children
  * are still visited. Metadata on the root schema itself is not reported.
  *
  * The walk follows the value, so it visits at most what the value holds and
@@ -473,6 +519,7 @@ export function findValuesWithMetadata(
     matches,
     found: [],
     foundPaths: new Set(),
+    visited: new Map(),
     ancestors: new Set(),
   };
   visitValue(walk, schema, value, "", false, true);

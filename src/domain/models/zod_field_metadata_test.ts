@@ -509,3 +509,63 @@ Deno.test("findValuesWithMetadata: resolves a lazy schema's getter once", () => 
   assertEquals(paths, ["list[0].k", "list[1].k", "list[2].k"]);
   assertEquals(calls, 1);
 });
+
+Deno.test("findValuesWithMetadata: walks a recursive schema with overlapping union members once per node", () => {
+  // Both members accept every node, so walking each member's children
+  // separately would visit a node at depth d 2^d times.
+  type Node = { secret?: string; children?: Node[] };
+  let visits = 0;
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.union([
+      z.object({
+        secret: z.string().meta({ marked: true }).optional(),
+        children: z.array(node).optional(),
+      }),
+      z.object({ children: z.array(node).optional() }),
+    ])
+  );
+  const depth = 60;
+  let chain: Node = { secret: "leaf" };
+  for (let i = 0; i < depth; i++) {
+    chain = { secret: `s${i}`, children: [chain] };
+  }
+  const found = findValuesWithMetadata(
+    z.object({ root: node }),
+    { root: chain },
+    (meta) => {
+      visits++;
+      return isMarked(meta);
+    },
+  );
+  assertEquals(found.length, depth + 1);
+  assertEquals(found.at(-1)?.value, "leaf");
+  assertEquals(visits, depth + 1);
+});
+
+Deno.test("findValuesWithMetadata: reaches keys accepted by a catchall", () => {
+  const schema = z.object({
+    extra: z.object({ name: z.string() }).catchall(
+      z.string().meta({ marked: true }),
+    ),
+  });
+  const found = findValuesWithMetadata(schema, {
+    extra: { name: "n", token: "t", "api key": "k" },
+  }, isMarked);
+  assertEquals(found.map((f) => [f.path, f.perElement]), [
+    ["extra.token", true],
+    ['extra["api key"]', true],
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: keeps a union member behind a preprocess for a value of any shape", () => {
+  const schema = z.object({
+    auth: z.union([
+      z.preprocess(
+        (v) => JSON.stringify(v),
+        z.string().meta({ marked: true }),
+      ),
+      z.object({ user: z.string() }),
+    ]),
+  });
+  assertEquals(markedPaths(schema, { auth: { user: "u" } }), ["auth"]);
+});
