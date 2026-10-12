@@ -1,9 +1,10 @@
 # Model Type Resolution
 
 How to find the right model type based on the user's goal. Follow the resolution
-steps in order — stop as soon as a match is found.
+steps in order — installed types, then official `@swamp/*` extensions, then the
+rest of the registry — and stop as soon as a match is found.
 
-## Step 1: Search Local Types
+## Step 1: Search Installed Types
 
 ```bash
 swamp model type search <keywords from user goal> --json
@@ -14,15 +15,15 @@ If a matching type is found, use it. Run
 
 ## Step 2: Search Extensions
 
-If no local type matches:
+If no installed type matches:
 
 ```bash
 swamp extension search <keywords> --json
 ```
 
-The search results include name, description, and content types. There is no
-`extension info` command — the search output is the only way to evaluate
-extensions before pulling. Present the results and let the user pick one:
+Prefer official `@swamp/*` results; fall back to other collectives only if none
+fit. Run `swamp extension info <package> --json` for details on a candidate.
+Present the results and let the user pick one:
 
 ```bash
 swamp extension pull @collective/extension-name
@@ -62,9 +63,10 @@ first: `swamp vault create local_encryption default --json`.
 For a first run, prefer read-only methods that don't create or modify resources:
 
 - `execute` — for shell models
-- `sync` or `get` — for typed models (discovers/reads existing resources)
+- `get`, `list`, or `describe` — for typed models (reads existing resources)
 
-Avoid `create`, `update`, or `delete` for the first run.
+Avoid `sync` for the first run — on a new model it fails with "No existing state
+found". Avoid `create`, `update`, or `delete` too.
 
 ## CEL Reference Path
 
