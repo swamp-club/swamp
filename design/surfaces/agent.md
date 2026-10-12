@@ -16,7 +16,7 @@ Agents can explore a swamp repository at these layers:
 
 Top-level directories hold the source-of-truth files, tracked in git:
 
-- **`models/`**: model definitions, grouped by normalized type
+- **`models/`**: behavior definitions, grouped by normalized type
 - **`workflows/`**: workflow definitions
 - **`vaults/`**: vault configurations
 
@@ -24,8 +24,8 @@ These are the main places to explore to understand the repository.
 
 ### Runtime Data (Datastore)
 
-Runtime data (versioned model data, workflow runs, method outputs) lives in the
-datastore. The default datastore uses `.swamp/`; it can also use an external
+Runtime data (versioned behavior data, workflow runs, method outputs) lives in
+the datastore. The default datastore uses `.swamp/`; it can also use an external
 path or S3. See [datastores](../enablers/datastores.md).
 
 ### CLI Abstraction

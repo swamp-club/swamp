@@ -6,9 +6,9 @@ last-verified: 2026-10-03 @ dff522a4
 # swamp start
 
 `swamp start` gets a new user from an installed binary to an agent working on
-their own task, without knowing any swamp commands. It reaches the **Models**
-and **Data** primitives (a first model and its first run, done by the agent) and
-prepares the ground for the **Serve** dashboard.
+their own task, without knowing any swamp commands. It reaches the **Behaviors**
+and **Data** primitives (a first behavior and its first run, done by the agent)
+and prepares the ground for the **Serve** dashboard.
 
 ## Glossary
 
@@ -61,22 +61,22 @@ launching would open a second agent window. Each server answers
 `GET /start/ping`, a liveness probe another `swamp start` can use to confirm a
 record's server is still running.
 
-Opening a workspace that has tasks shows its **home**: every task, newest
-first by when it was created (each row shows its created date and time, its
-agent and how far it got), and the open task's summary — the newest one to
-begin with. The page keeps which task is open in the server's memory; nothing
-on disk marks a task as special. A launched task's summary shows the agent
-and when it was launched, and how many models and workflows the workspace
-holds; a task not launched yet carries on from its own step. Its agent toggle picks which agent to open, and **Launch
-Agent** reopens it without sending the task again: Claude Code (`--continue`),
-Codex (`resume --last`, filtered to the folder) and OpenCode (`--continue`)
-continue their most recent conversation in the workspace; the others open a
-fresh session there. A resume that fails within `RESUME_FALLBACK_SECONDS`
-(10s) opens a fresh session instead: `claude --continue` exits 1 with "No
-conversation found to continue" when the folder has no earlier conversation
-(a copy-command launch never run, or another home). Codex starts a fresh
-session on its own. "Launch again",
-which re-sends the task, appears only right after a launch in the same run.
+Opening a workspace that has tasks shows its **home**: every task, newest first
+by when it was created (each row shows its created date and time, its agent and
+how far it got), and the open task's summary — the newest one to begin with. The
+page keeps which task is open in the server's memory; nothing on disk marks a
+task as special. A launched task's summary shows the agent and when it was
+launched, and how many behaviors and workflows the workspace holds; a task not
+launched yet carries on from its own step. Its agent toggle picks which agent to
+open, and **Launch Agent** reopens it without sending the task again: Claude
+Code (`--continue`), Codex (`resume --last`, filtered to the folder) and
+OpenCode (`--continue`) continue their most recent conversation in the
+workspace; the others open a fresh session there. A resume that fails within
+`RESUME_FALLBACK_SECONDS` (10s) opens a fresh session instead: `claude
+--continue` exits 1 with "No conversation found to continue" when the folder has
+no earlier conversation (a copy-command launch never run, or another home).
+Codex starts a fresh session on its own. "Launch again", which re-sends the
+task, appears only right after a launch in the same run.
 
 Workspaces are registered centrally in `<config dir>/workspaces.json`
 (`WorkspaceRegistry`, `src/domain/workspace/`), beside `auth.json`. The
@@ -122,8 +122,8 @@ marking which are on PATH; only a found, launchable one can be chosen.
 `swamp start status` prints the same checklist and every workspace's state.
 
 Swamp hosts no model: it never interprets the task. The agent, guided by the
-`swamp-getting-started` skill's brief entry point, turns the brief into a model
-and a first run.
+`swamp-getting-started` skill's brief entry point, turns the brief into a
+behavior and a first run.
 
 ## Where the code lives
 

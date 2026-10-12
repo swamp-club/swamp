@@ -5,7 +5,7 @@ last-verified: 2026-09-07 @ 58652907
 
 # swamp repo
 
-A swamp repo holds all the models and code for automating tasks with swamp.
+A swamp repo holds all the behaviors and code for automating tasks with swamp.
 
 Initializing a repo creates the needed directories and copies in the swamp-\*
 skills. Upgrading a repo moves the skills, and anything else that needs it, from
@@ -84,7 +84,7 @@ that fails to delete, is logged without stopping the rest of the cleanup.
 
 Source-of-truth files live in top-level directories tracked in git:
 
-- **`models/`**: model definitions, `models/{normalized-type}/{name}.yaml`
+- **`models/`**: behavior definitions, `models/{normalized-type}/{name}.yaml`
   (legacy `{uuid}.yaml` also supported).
 - **`workflows/`**: workflow definitions, `workflows/workflow-{name}.yaml`
   (legacy `workflow-{uuid}.yaml` also supported).
@@ -100,9 +100,9 @@ Source-of-truth files live in top-level directories tracked in git:
   (`src/domain/access/grants_directory_poller.ts`, wired in
   `src/cli/commands/serve.ts`).
 
-Runtime data (versioned model data, workflow runs, method outputs, secrets) goes
-through a datastore abstraction. The default datastore uses `.swamp/`; it can
-also use an external filesystem path or S3. See
+Runtime data (versioned behavior data, workflow runs, method outputs, secrets)
+goes through a datastore abstraction. The default datastore uses `.swamp/`; it
+can also use an external filesystem path or S3. See
 [datastores.md](../enablers/datastores.md).
 
 ## Configuration
@@ -128,21 +128,21 @@ options are:
   belongs to (cached from `auth login`/`auth whoami`), on top of
   `trustedCollectives`. Default `false`. Toggled with
   `swamp extension trust auto-trust <on|off>`.
-- `autoGc`: run garbage collection after model method runs. Default `false`.
-  When `true`, `collectGarbage` runs for the model that just ran, after reports
+- `autoGc`: run garbage collection after method runs. Default `false`. When
+  `true`, `collectGarbage` runs for the behavior that just ran, after reports
   finish and the result is shown, using each data item's declared
   `garbageCollection` policy (version-count caps and duration-based retention).
   Errors are logged and never fail the run. GC runs inside the `modelMethodRun`
-  stream (`src/libswamp/models/run.ts`) before the CLI releases model locks and
-  flushes datastore sync, so on a synced datastore the deletions go out in the
-  same post-run push. With `autoGc` on, every write — including a workflow
+  stream (`src/libswamp/models/run.ts`) before the CLI releases behavior locks
+  and flushes datastore sync, so on a synced datastore the deletions go out in
+  the same post-run push. With `autoGc` on, every write — including a workflow
   step's — also prunes versions beyond an integer `garbageCollection` cap; a
   workflow step gets no post-run pass. `swamp data gc` still does repo-wide
   manual GC.
 - `garbageCollection`: repository defaults for manual `swamp run gc` cleanup.
   `workflowRuns` and `outputs` take positive durations such as `7d` or `2w`;
   omitted values keep the 30-day default. It does not run cleanup on its own or
-  change model data's `autoGc` behavior.
+  change behavior data's `autoGc` behavior.
 - `serverAddress`: default `swamp serve` URL for the repo. When set, every
   serve-aware command uses it without `SWAMP_SERVE_URL` or `--server`.
   Precedence: `--server` flag > `SWAMP_SERVE_URL` env > `SWAMP_SERVER_URL` env >
@@ -157,7 +157,7 @@ options are:
 ### Run Garbage Collection
 
 `swamp run gc` removes old workflow-run records (`.swamp/workflow-runs/`) and
-model method outputs (`.swamp/outputs/`). `data gc` does not cover these; it
+method outputs (`.swamp/outputs/`). `data gc` does not cover these; it
 handles `.swamp/data/` (versioned data with lifetime/version policies).
 
 - **Default retention**: `.swamp.yaml` can configure independent values:
@@ -193,7 +193,7 @@ handles `.swamp/data/` (versioned data with lifetime/version policies).
 - **Orphaned run logs**: gc also removes run logs in the repo-local
   `.swamp/outputs/` that no remaining output references. These include logs
   left behind by earlier gc runs, and logs from runs that failed before saving
-  an output. A direct model method run writes its output record only when it
+  an output. A direct method run writes its output record only when it
   finishes, so while it runs its log looks orphaned too. A log is swept only
   once it is past the retention cutoff and has not been written for 7 days,
   whatever `--older-than` or the method's `outputLifetime` says. A method
@@ -214,11 +214,11 @@ which future event-driven features can use.
 
 Aggregate repositories emit these events when data changes:
 
-**Model Events:**
+**Behavior Events:**
 
-- `ModelCreated` - A new model definition was created
-- `ModelUpdated` - A model definition or data was modified
-- `ModelDeleted` - A model was deleted
+- `ModelCreated` - A new behavior definition was created
+- `ModelUpdated` - A behavior definition or data was modified
+- `ModelDeleted` - A behavior was deleted
 
 **Definition Events:**
 
@@ -259,7 +259,7 @@ When an aggregate repository emits an event:
 
 ### Directory Structure
 
-**Model definitions (`models/`):**
+**Behavior definitions (`models/`):**
 
 ```
 models/{normalized-type}/{name}.yaml

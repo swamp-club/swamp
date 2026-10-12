@@ -73,7 +73,7 @@ it the default file is optional.
 | `--oauth-provider` / `auth.oauth-provider` | — | `https://swamp-club.com` | Must be HTTPS unless localhost (`src/domain/access/serve_auth_config.ts`) |
 | `--oauth-client-id`, `--oauth-client-name` / `auth.oauth-client-{id,name}` | `SWAMP_OAUTH_CLIENT_NAME` (name only) | unset, `swamp-serve-{repo}-{host}` | Client id auto-registered on first start if omitted |
 | `--groups-field` / `auth.groups-field` | — | `collectives` | Userinfo field holding group/collective memberships |
-| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted model type needs admin to create, run, edit or delete a model of it, delete or rename its data, or add or change a workflow step running it. A model type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
+| `--restricted-model-types`, `--restricted-commands` / `auth.restricted-*` | — | unset | Comma lists needing admin authority; need mode `token` or `oauth`. A restricted behavior type needs admin to create, run, edit or delete a behavior of it, delete or rename its data, or add or change a workflow step running it. A behavior type matches in any spelling: a leading `@` is ignored on the entry, the request and the stored type. Command names match exactly. serve warns at startup about an entry that can match nothing; an entry naming no type (`@`, `::`) stops it starting |
 | `--approve-requires-explicit-grant` / `auth.approve-requires-explicit-grant` | `SWAMP_APPROVE_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--signal-requires-explicit-grant` / `auth.signal-requires-explicit-grant` | `SWAMP_SIGNAL_REQUIRES_EXPLICIT_GRANT` | `false` | Opt-in |
 | `--group-refresh-interval` / `auth.group-refresh-interval` | `SWAMP_GROUP_REFRESH_INTERVAL` | 4 h | OAuth only; `0` disables |
@@ -124,7 +124,7 @@ Table notes:
   `src/cli/duration_parser.ts`). Deno fires a longer timer after 1 ms.
 - Without `--hot-reload`, SIGHUP is a shutdown signal
   (`src/infrastructure/process/shutdown_handlers.ts`).
-- `--remote-only` never moves built-in `swamp/*` control-plane models (server
+- `--remote-only` never moves built-in `swamp/*` control-plane behaviors (server
   tokens, enrollment tokens, workers, step leases, etc.) off the orchestrator
   (`src/domain/remote/remote_dispatch.ts`).
 - `--auto-resume` applies to workflows that declare no inputs and leave
@@ -191,7 +191,7 @@ Everything below shares the one listener, dispatched in table order
 | HTTP POST | configured webhook routes | HMAC per scheme | `src/serve/webhook.ts` |
 | HTTP POST | `/api/v1/cancel/{workflow-run\|method-run}/{id}`, `/api/v1/cancel` (bulk) | token + admin (IP burst and per-token rate limits) | `cancelExecution` (see below) |
 | HTTP POST | `/api/v1/signal/{waitId}`, `/api/v1/signal` (by workflow and key, in the body) | token + `signal` on the wait's workflow (IP burst and per-token rate limits) | Delivers a signal to a `wait_for_signal` step (`src/serve/signal_http.ts`; see "Signal" below) |
-| HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and models they may `read`, decided on each resource's resolved name, tags and model type (entries that do not resolve are hidden), without run principals, workers or component detail |
+| HTTP GET | `/api/v1/health` | any valid bearer token or dashboard session (`authenticateToken`, `src/serve/admin_auth.ts`) | Health snapshot (`src/serve/health_collector.ts`). Admins get it whole; other tokens get it narrowed by `healthSnapshotFor` (`src/serve/health_snapshot_view.ts`) to the runs, schedules and webhooks of workflows and behaviors they may `read`, decided on each resource's resolved name, tags and behavior type (entries that do not resolve are hidden), without run principals, workers or component detail |
 | SSE | `/api/v1/health/stream?interval=` | any valid bearer token or dashboard session; at most 10 open streams per token, else 429 | The same narrowed snapshot every 1–60 s (default 5 s), resumable via `Last-Event-ID` (`src/serve/health_stream.ts`). The stream is a token session: when its token is revoked, rotated or expires, or its principal loses access, it ends with a `session-ended` event carrying the close code and reason. A change to the principal's collectives or groups ends it with 4004 so the client reconnects under the new access |
 | HTTP GET | `/api/v1/cluster/instances`, `/api/v1/serve/config` | admin (`authenticateAdmin`, `src/serve/admin_auth.ts`) | Heartbeat roster, redacted merged options |
 | HTTP GET | `/internal/runs?limit=&offset=` | admin; 404 unless `--enable-internal-api` | Full run-tracker history |
@@ -251,7 +251,7 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   serve. `swamp serve check-config` finds such names before a deploy, and
   reports `restricted-commands` entries that are not server commands and
   `restricted-model-types` entries that name no type; it does not load the
-  model registry, so a misspelled bare type is reported only by serve at
+  behavior registry, so a misspelled bare type is reported only by serve at
   startup. It also reads the grant files serve reads (`grants/`,
   `--grants-file`, `--grants-dir`) through the loader startup uses: a file
   startup would refuse fails the check, while a grant type spelling that
@@ -261,7 +261,7 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   "Username resolution" in
   [remote execution](../enablers/remote-execution.md).
 
-Grant, group, token, worker and lease records are stored as model data but
+Grant, group, token, worker and lease records are stored as behavior data but
 owned by the `access` kind: every request that reaches one needs `admin` on
 `access:swamp/<type>`, and a `data:*` or `model:*` grant never does. See
 "Control-plane records" in
@@ -282,8 +282,8 @@ gate, telemetry and extension pulls use the same key as the OAuth calls.
 **Tokens.** A token is split on the first `.`; the name resolves a
 `swamp/server-token` lifecycle resource and its vault secret. Serve applies the
 same pure lifecycle and timing-safe credential check as explicit `redeem`, but
-ingress auth is read-only: no `lastUsedAt` write and no model run
-(`src/serve/token_auth.ts`). Explicit `redeem` stays a model action and still
+ingress auth is read-only: no `lastUsedAt` write and no behavior run
+(`src/serve/token_auth.ts`). Explicit `redeem` stays a behavior action and still
 updates usage.
 
 Secrets live in the encrypted control-plane vault (`ControlPlaneVaultProvider`,
@@ -306,13 +306,18 @@ with another mint's secret (swamp-club#2482):
 - **The name lock.** Mint, rotate, revoke and the secret migration each hold a
   datastore lock keyed by token name (`createServerTokenLock`,
   `src/infrastructure/persistence/server_token_lock.ts`) across their pull,
-  their writes and their push. It is keyed by name, not model id, so it covers a first mint, which has no
-  definition yet. A writer takes it before any per-model lock. In serve it is
-  taken at the dispatch site, around the sync gate (`withServerTokenWriteLock`,
-  `src/serve/handlers/access_handlers.ts`), so a replica never waits on it while
-  holding the gate, and only for a caller the handler will authorize. A caller may name the token by definition id; the lock is taken on the name it resolves to (`serverTokenLockName`). A lock that times out is the client error `lock_timeout`, retryable like serve's other lock timeouts, with a message naming the token; one that cannot be taken at all is `access_token_lock_failed`. The secret
-  migration re-reads each record under the lock and skips one that changed
-  since it was listed, so it cannot restore a rotated token's old secret.
+  their writes and their push. It is keyed by name, not behavior id, so it
+  covers a first mint, which has no definition yet. A writer takes it before any
+  per-behavior lock. In serve it is taken at the dispatch site, around the sync
+  gate (`withServerTokenWriteLock`, `src/serve/handlers/access_handlers.ts`), so
+  a replica never waits on it while holding the gate, and only for a caller the
+  handler will authorize. A caller may name the token by definition id; the lock
+  is taken on the name it resolves to (`serverTokenLockName`). A lock that times
+  out is the client error `lock_timeout`, retryable like serve's other lock
+  timeouts, with a message naming the token; one that cannot be taken at all is
+  `access_token_lock_failed`. The secret migration re-reads each record under
+  the lock and skips one that changed since it was listed, so it cannot restore
+  a rotated token's old secret.
 - **The secret fingerprint.** The record stores `secretFingerprint`, the
   SHA-256 of the secret it was minted with. Authentication, `redeem` and
   `access token reveal` check the vault secret against it
@@ -361,7 +366,7 @@ longer eligible. Then:
 2. It deletes the OAuth access token, best effort.
 3. It deletes the definition, data and outputs through `modelDelete`, and
    pushes the deletes. The workflow reference check is skipped, since it
-   matches by name and a server-token definition is never a step's model.
+   matches by name and a server-token definition is never a step's behavior.
 
 The secret key is always `server-token-<name>`, never the key the persisted
 record names, so a tampered record cannot make serve delete an unrelated
@@ -948,7 +953,7 @@ is not already in flight, so different workflows run together and a workflow
 never overlaps itself. A fired entry is keyed by workflow id and a replayed one
 by name; both resolve to the same workflow. A fire that arrives while the same
 workflow is still queued (not yet running) is queued too. Two workflows that
-touch the same model still exclude each other through the per-model lock.
+touch the same behavior still exclude each other through the per-behavior lock.
 
 Each schedule in the health snapshot, `/health` and the dashboard reports its
 queue state (`queueStatus`): `queued` (fires waiting to start),
@@ -999,7 +1004,7 @@ emits `webhook_denied`. Starts and pre-queue rejections are audited as
 Secrets may be `@env=VAR`, `@file=/path` or `@vault=<vault>:<key>` references,
 resolved at startup and again on hot-reload.
 
-**Workers.** Steps whose model type cannot load locally, or every step under
+**Workers.** Steps whose behavior type cannot load locally, or every step under
 `--remote-only`, go to enrolled workers through the worker gateway
 (`src/serve/worker_gateway.ts`, `src/serve/dispatch_service.ts`).
 [remote-execution](../enablers/remote-execution.md) specifies the lease,
@@ -1066,7 +1071,7 @@ hashes the config-tier lockfile and calls `performServeReload` when the hash
 differs from the last one it acted on. The baseline is the hash at boot. So a
 peer's `extension pull`, `update`, `rm` or pin reloads every instance within one
 poll interval. So does a CLI extension write on the same host, or the
-instance's own extension handler. Definition-only changes (e.g. a model YAML
+instance's own extension handler. Definition-only changes (e.g. a behavior YAML
 edit) invalidate catalogs but do not reload extension registries. A reload that
 overlaps another (`Reload already in progress`) is retried on the next poll. A
 failed reload is retried up to three times per lockfile version.
@@ -1089,7 +1094,7 @@ extension leaves an empty file. On a peer, the reload also retires the removed
 extension's catalog rows, so the loader cannot register them again. The peer's
 files stay in its pulled root until swamp-club#2612. A type that another
 extension or a local source still provides stays registered. The record also
-lists the model types each extension's add-ons extend, and the sweep detaches
+lists the behavior types each extension's add-ons extend, and the sweep detaches
 the members those add-ons attached to built-in and local types, which the
 reload never re-registers (swamp-club#2745). Only the removed extension's
 members go; the base type and other add-ons stay, and a member name the removed
@@ -1100,7 +1105,7 @@ next reload retries it. `sweepRemovedPulledExtensions` in
 `src/serve/extension_reload.ts` implements this.
 
 Installed add-ons go the other way. After re-registering pulled types, the
-reload attaches every pulled add-on whose target model type is registered
+reload attaches every pulled add-on whose target behavior type is registered
 (`attachPulledAddOns`). A built-in or local type the reload never re-registers
 gains the add-on's members without a restart, even if serve had already used
 that type (swamp-club#2846). Lazy targets attach their add-ons when they load,
@@ -1183,16 +1188,16 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   covers the mechanism and its catalog constraint.
 
   Use `--hot-reload` for `managedConfig` deployments where pods must recover
-  from datastore-only state without `kubectl exec`. Without it,
-  `swamp serve reload --server` fails and new extensions need a full pod
-  restart. The `ConfigPoller` refreshes definitions (models, workflows, vaults)
-  every `--datastore-poll-interval` (default 30 s) and reloads extension type
+  from datastore-only state without `kubectl exec`. Without it, `swamp serve
+  reload --server` fails and new extensions need a full pod restart. The
+  `ConfigPoller` refreshes definitions (behaviors, workflows, vaults) every
+  `--datastore-poll-interval` (default 30 s) and reloads extension type
   registries when the config-tier lockfile changes. Sources a peer added still
   need `extension install` on each pod while they stay in each repo
-  (swamp-club#2612; see [High availability](#high-availability)). SIGHUP (`swamp serve reload`) remains
-  available for manual reloads. See
-  [datastores §Managed Config](../enablers/datastores.md#managed-config-deployment-architecture)
-  for the full deployment guide.
+  (swamp-club#2612; see [High availability](#high-availability)). SIGHUP (`swamp
+  serve reload`) remains available for manual reloads. See [datastores §Managed
+  Config](../enablers/datastores.md#managed-config-deployment-architecture) for
+  the full deployment guide.
 - **Graceful shutdown.** SIGINT/SIGTERM run the sequence above, then stop the
   heartbeat, worker gateway, pollers and telemetry, remove the PID file and
   abort the listener. In `--json` mode each phase is emitted as a
@@ -1229,22 +1234,23 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   user is logged in. To start a user service at boot, enable systemd lingering
   (`loginctl enable-linger $USER`) or install system-wide.
 - **Dashboard.** `--dashboard` serves the Vite SPA in `packages/dashboard`
-  (overview, models, workflows, executions, approvals, data, vaults, extensions,
-  schedules, webhooks and system views) from `packages/dashboard/dist`.
-  `scripts/compile.ts` embeds it only if pre-built before compile. The SPA uses
-  the same WebSocket protocol and logs in through `/auth/info` plus the browser
-  session routes. In token and OAuth modes, manual-token exchange or browser
-  device-flow completion creates a server-managed, opaque session and sets its
-  host-only `HttpOnly`, `SameSite=Strict` cookie. Page JavaScript never reads or
-  stores a server token, and the cookie never contains one. The session is
-  bound to the exact origin that created it, including port, before it can
-  authenticate the dashboard status check or a WebSocket; this prevents a page
-  on another same-site port from using an ambient authenticated session.
-  Cookie-backed status and health fetches send a same-origin-only
-  `X-Swamp-Dashboard-Origin` header because browsers need not attach `Origin`
-  to same-origin GETs; a cross-origin page cannot set it without a CORS
-  preflight, which serve does not authorize. The cookie has no `Domain`
-  attribute, so it is shared by tabs on the same host but not subdomains.
+  (overview, behaviors, workflows, executions, approvals, data, vaults,
+  extensions, schedules, webhooks and system views) from
+  `packages/dashboard/dist`. `scripts/compile.ts` embeds it only if pre-built
+  before compile. The SPA uses the same WebSocket protocol and logs in through
+  `/auth/info` plus the browser session routes. In token and OAuth modes,
+  manual-token exchange or browser device-flow completion creates a
+  server-managed, opaque session and sets its host-only `HttpOnly`,
+  `SameSite=Strict` cookie. Page JavaScript never reads or stores a server
+  token, and the cookie never contains one. The session is bound to the exact
+  origin that created it, including port, before it can authenticate the
+  dashboard status check or a WebSocket; this prevents a page on another
+  same-site port from using an ambient authenticated session. Cookie-backed
+  status and health fetches send a same-origin-only `X-Swamp-Dashboard-Origin`
+  header because browsers need not attach `Origin` to same-origin GETs; a
+  cross-origin page cannot set it without a CORS preflight, which serve does not
+  authorize. The cookie has no `Domain` attribute, so it is shared by tabs on
+  the same host but not subdomains.
 
   A dashboard opened in another tab, including a deep link, restores the cookie
   session before rendering Login. Existing `sessionStorage` credentials are
@@ -1284,7 +1290,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   - `/dashboard/models/<model>/data/<dataName>`: the latest version.
   - `/dashboard/models/<model>/data/<dataName>/versions/<n>`: the permalink
     for one version. A step's output, including its method-scope reports,
-    links here through the owning model (`tags.modelName`), since several
+    links here through the owning behavior (`tags.modelName`), since several
     steps in one run can write the same name.
   - `/dashboard/models/<model>/reports/<reportName>[/variants/<variant>]`: the
     latest report, found under the data name the report is persisted as
@@ -1308,7 +1314,7 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   `validation_failed` or `data_pending`; `entityType` is the fixed label from
   libswamp's `notFound()` (`Model`, `Workflow`, `Workflow run`, `Data`, …).
   Identifiers are never included. The dashboard uses these to tell an expired
-  version from a missing model; access denials stay top-level `unauthorized`.
+  version from a missing behavior; access denials stay top-level `unauthorized`.
 
   On desktop the sidebar collapses to an icon-only rail
   (remembered in `localStorage`); at 768px and below it becomes an off-canvas

@@ -1,27 +1,67 @@
 ---
 audience: maintainer, extension-author
-last-verified: 2026-09-07 @ 58652907
+last-verified: 2026-10-13 @ af0b027f
 ---
 
-# Models
+# Behaviors
 
-A model in swamp is defined by a _type_. A model is instantiated by creating a
-_definition_, whose global arguments are set statically or dynamically through
-_inputs_. An instantiated _model_ is used by calling its _methods_, which
-_output_ their results and can store _resources_ and _files_. Each method
-declares its own _arguments_ schema and, at execution time, receives the global
-and per-method arguments merged.
+A behavior in swamp is defined by a _type_. A behavior is instantiated by
+creating a _definition_, whose global arguments are set statically or
+dynamically through _inputs_. An instantiated _behavior_ is used by calling its
+_methods_, which _output_ their results and can store _resources_ and _files_.
+Each method declares its own _arguments_ schema and, at execution time, receives
+the global and per-method arguments merged.
 
 Resources are structured data with a schema; files are raw content with a
 content type. Both are immutable, have a _lifetime_, can be _tagged_ with
-capabilities, and store the _definition_ that created them, so the model can be
-instantiated from the data it produces. Only a model instantiated with the same
-definition as the original data can write that data again.
+capabilities, and store the _definition_ that created them, so the behavior can
+be instantiated from the data it produces. Only a behavior instantiated with the
+same definition as the original data can write that data again.
+
+## Glossary
+
+Behavior is the product term for what swamp used to call a model. The rename is
+in the words people and agents read. The code and every stored format keep the
+model name.
+
+| Old term         | Term                |
+| ---------------- | ------------------- |
+| model            | behavior            |
+| model type       | behavior type       |
+| model definition | behavior definition |
+| model output     | behavior output     |
+| model method     | method              |
+
+## Compatibility
+
+Every `swamp model` command keeps working. `swamp behavior run` (alias
+`behaviour`) is the preferred spelling of `swamp model method run` and
+`swamp model @<type> method run`. Both spellings are built by one command
+factory and share one application path (swamp-club#3265).
+
+These names stay `model`, because existing repos, workflows, extensions and
+scripts depend on them:
+
+- The `models/` and `.swamp/auto-definitions/` directories.
+- JSON output keys and error codes, such as `model_not_found`.
+- Audit actions as stored, such as `model.method.run`.
+- The serve protocol, and grant selectors such as `model:<type>`.
+- The deprecated CEL form `model.<name>.resource...`.
+- The workflow step type `model_method` and its `modelIdOrName`, `modelType` and
+  `modelName` fields.
+- The extension export `export const model`, the `extensions/models/` directory
+  and the manifest `models:` key.
+- Extension API names, such as `context.runModel`.
+- Code names, such as the `Model` and `ModelType` classes, `src/domain/models/`,
+  libswamp names and log categories like `["model", "get"]`.
+
+Where swamp accepts a behavior spelling for one of these, it still writes the
+model form, so older swamp releases can read what it wrote.
 
 ## Type
 
-Every model has a unique _type_, named after the thing it models. For example, a
-model that manages AWS VPCs through the Cloud Control API is named
+Every behavior has a unique _type_, named after the thing it models. For
+example, a behavior that manages AWS VPCs through the Cloud Control API is named
 'AWS::EC2::VPC', because that is the Cloud Control API's name for it. Types
 should map semantically to the domain.
 
@@ -37,27 +77,27 @@ directories, such as 'aws/ec2/vpc', 'docker/run' or
 
 ## ID
 
-Each model instance has a unique uuidv4 ID.
+Each behavior instance has a unique uuidv4 ID.
 
 ## Version
 
-Each model has a **CalVer** version, `YYYY.MM.DD.MICRO` (e.g. `"2025.01.15.1"`,
-`"2025.06.01.3"`). The micro counter allows several bumps per day and resets
-each new date.
+Each behavior type has a **CalVer** version, `YYYY.MM.DD.MICRO` (e.g.
+`"2025.01.15.1"`, `"2025.06.01.3"`). The micro counter allows several bumps per
+day and resets each new date.
 
 Comparison splits on `.`, compares the first three segments as zero-padded
 strings and the fourth as a number. This is the `CalVer` value object in
 `src/domain/models/calver.ts`.
 
-Models must support data written by all earlier versions, but not by later
-ones.
+Behavior types must support data written by all earlier versions, but not by
+later ones.
 
 ## Migration
 
-**Upgrade functions** migrate a model's definitions from one version to the
-next. Each model declares an ordered list of `VersionUpgrade` entries, one per
-version transition. When a definition's `typeVersion` is behind the model's
-current `version`, the chain runs every applicable upgrade in order,
+**Upgrade functions** migrate a behavior's definitions from one version to the
+next. Each behavior type declares an ordered list of `VersionUpgrade` entries,
+one per version transition. When a definition's `typeVersion` is behind the
+type's current `version`, the chain runs every applicable upgrade in order,
 transforming global arguments at each step.
 
 Upgrades are lazy. They run when a method executes, not when the definition
@@ -88,34 +128,34 @@ nothing.
 
 ### Who May Advance `typeVersion`
 
-`typeVersion` records the model type version a definition's global arguments
+`typeVersion` records the behavior type version a definition's global arguments
 were written or migrated for. Only two things may set it:
 
 1. **Creation**: `model create`, direct type execution, and the internal grant
-   and server-token definition writers set it to the registered model's version.
+   and server-token definition writers set it to the registered type's version.
 2. **`DefinitionUpgradeService`**, when it migrates the arguments.
 
 Persistence must never set it. `YamlDefinitionRepository.save()` used to
-overwrite `typeVersion` with the registered model's version on every write. That
+overwrite `typeVersion` with the registered type's version on every write. That
 marked a stale instance as current without migrating its arguments. The upgrade
-service stops once `typeVersion` is at or above the model version, so no later
+service stops once `typeVersion` is at or above the type version, so no later
 upgrade chain could ever migrate that instance (swamp-club#900).
 
 An architecture fitness test pins the rule that every `Definition.create` call
 site supplies the field (`integration/definition_type_version_rules_test.ts`).
 A behavioural test would not catch a regression, because the creation paths that
-relied on the old behaviour are for model types with no upgrade chain.
+relied on the old behaviour are for behavior types with no upgrade chain.
 
 ### Staleness
 
 `resolveStaleness` compares a definition's recorded `typeVersion` with the
-registered model's version and upgrade chain
+registered type's version and upgrade chain
 (`src/domain/definitions/definition_staleness.ts`). It returns one of five
 states:
 
 | State        | Meaning                                                                         |
 | ------------ | ------------------------------------------------------------------------------- |
-| `current`    | Written or migrated for this model version.                                     |
+| `current`    | Written or migrated for this type version.                                      |
 | `upgradable` | Behind, and the upgrade chain covers the gap. The next method run migrates it.  |
 | `stranded`   | Behind, and no upgrade covers the gap. The extension must ship a `VersionUpgrade`. |
 | `unknown`    | No `typeVersion` recorded. Nobody said which version the arguments were written for, so the chain does not run. |
@@ -134,13 +174,13 @@ describing. Refusing to act on an `invalid` version is
 ### Upgrade Rules
 
 - Upgrades must be ordered chronologically by `toVersion`
-- The last upgrade's `toVersion` must equal the model's current `version`
+- The last upgrade's `toVersion` must equal the type's current `version`
 - Upgrade functions are pure global argument transforms (old args → new args)
 - Upgrades are forward-only; there is no downgrade path
 
 ### Example
 
-A model starts at `"2025.01.15.1"` with one `message` global argument.
+A behavior type starts at `"2025.01.15.1"` with one `message` global argument.
 `"2025.06.01.1"` adds a `priority` field with a default. `"2026.02.09.1"`
 renames `message` to `content`:
 
@@ -188,7 +228,7 @@ export const model = {
 ```
 
 If a definition was created at `"2025.01.15.1"` with `{ message: "hello" }` and
-the model is now at `"2026.02.09.1"`, running a method will:
+the type is now at `"2026.02.09.1"`, running a method will:
 
 1. Apply upgrade to `"2025.06.01.1"`: `{ message: "hello", priority: "medium" }`
 2. Apply upgrade to `"2026.02.09.1"`: `{ content: "hello", priority: "medium" }`
@@ -236,9 +276,9 @@ blocking editor exits and after a stdin write. A non-blocking editor returns
 before the person has typed anything, so there is nothing to check yet.
 
 A stdin write does not rename. The piped body carries a `name`, and a body
-written for one model is easily piped at another, so `model edit` refuses a
+written for one behavior is easily piped at another, so `model edit` refuses a
 stdin update whose `name` differs from the stored one unless `--allow-rename`
-is passed, and refuses a name another model holds even then.
+is passed, and refuses a name another behavior holds even then.
 `workflow edit` applies the same rule.
 
 There is no pre-CalVer compatibility path. `typeVersion` was a number for three
@@ -277,13 +317,8 @@ swamp behavior run @swamp/aws/ec2/vpc create my-vpc \
   --input region=us-east-1 --input cidr=10.0.0.0/16
 ```
 
-`swamp behavior run` (alias `behaviour`) is the preferred spelling of a method
-invocation; `swamp model @swamp/aws/ec2/vpc method run create my-vpc` is the
-equivalent legacy form and stays supported. _Behavior_ is an agent-facing name
-for running a model method, not a primitive: both spellings are built by one
-command factory and share one application path, so the serve protocol, the
-audit action `model.method.run` and every persisted contract keep the model
-vocabulary (swamp-club#3265).
+`swamp model @swamp/aws/ec2/vpc method run create my-vpc` is the equivalent
+legacy form and stays supported (see [Compatibility](#compatibility)).
 
 **First run:** `my-vpc` does not exist yet. Swamp creates it with type
 `@swamp/aws/ec2/vpc` and runs `create`. The type's schemas route the `--input`
@@ -303,7 +338,7 @@ differ from the stored definition, the definition is updated and saved. This
 way parameterized workflows that vary inputs per run always use current values.
 
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/`, not
-`models/`. They give model data an ownership boundary without a hand-written
+`models/`. They give behavior data an ownership boundary without a hand-written
 definition file. They are local runtime state, are not tracked in git, and do
 not appear in `swamp model search` results. `model get`, `behavior run`
 and workflow references can find them by name. `model get` shows
@@ -326,7 +361,7 @@ and workflow references can find them by name. `model get` shows
 A Zod 4 schema in the type specifies a definition's valid shape. Core
 properties:
 
-- id: the model's unique id
+- id: the behavior's unique id
 - name: a unique human-readable name
 - tags: string key-value pairs
 - globalArguments: domain-specific data shared by all methods (for example, the
@@ -344,14 +379,14 @@ CEL expressions can read custom input values.
 
 ## Instance
 
-A model is instantiated by passing its definition to the model's constructor.
+A behavior is instantiated by passing its definition to the type's constructor.
 Hashing the definition gives an instantiation id. With that id and a record of
-the definition, the model can always be re-instantiated. This is an instance of
-a model.
+the definition, the behavior can always be re-instantiated. This is an instance
+of a behavior.
 
 ## Methods
 
-Methods are called on instantiated models. Each method declares a required
+Methods are called on instantiated behaviors. Each method declares a required
 `arguments` Zod schema for its per-method arguments. At execution time, its
 `execute` function receives the merged arguments (the definition's global
 arguments plus per-method arguments) first and a `MethodContext` second.
@@ -370,14 +405,14 @@ needed to re-instantiate the object.
 Each invocation records an output: the data written, the status, and how the
 method was called.
 
-Methods can also instantiate a model, from an existing definition by name or a
-definition passed directly, and invoke its methods. This uses
+Methods can also instantiate a behavior, from an existing definition by name or
+a definition passed directly, and invoke its methods. This uses
 `context.runModel()`.
 
-### Cross-Model Invocation (`context.runModel`)
+### Cross-Behavior Invocation (`context.runModel`)
 
-`context.runModel(options)` lets a method invoke another model's method during
-its own execution and use the result inline. Two calling conventions:
+`context.runModel(options)` lets a method invoke another behavior's method
+during its own execution and use the result inline. Two calling conventions:
 
 ```typescript
 // Call an existing definition by name
@@ -417,7 +452,7 @@ check fails closed and reaches values nested inside object-typed arguments:
 (`${{ 1 }}`), are refused too. Another templating system's text, such as
 `${{ github.sha }}`, passes through.
 
-**Data ownership:** When model X calls model Y, Y's writes belong to Y's
+**Data ownership:** When behavior X calls behavior Y, Y's writes belong to Y's
 definition, not X's. This holds whether Y runs standalone, from a workflow or
 inside X.
 
@@ -430,23 +465,23 @@ At most 100 total `runModel` calls per top-level execution, matching follow-up
 action limits.
 
 **Vault isolation:** The caller's `VaultSecretBag` is not passed to the nested
-model. Each nested execution evaluates its target definition's CEL and runtime
-(`vault.get`, `env`) expressions as a standalone run of that definition does,
-into its own bag, within the caller's vault access scope: a workflow's `vaults`
-list and a serve principal's grants still apply. The evaluated definition is
-not persisted. Wherever the standalone run would fail — a refused vault, a
-missing key, a failed expression in the invoked method's arguments — the call
-returns `{ ok: false }`. Resolved sensitive values are registered with the
-caller's run redactor.
+behavior. Each nested execution evaluates its target definition's CEL and
+runtime (`vault.get`, `env`) expressions as a standalone run of that definition
+does, into its own bag, within the caller's vault access scope: a workflow's
+`vaults` list and a serve principal's grants still apply. The evaluated
+definition is not persisted. Wherever the standalone run would fail — a refused
+vault, a missing key, a failed expression in the invoked method's arguments —
+the call returns `{ ok: false }`. Resolved sensitive values are registered with
+the caller's run redactor.
 
-**Runtime authorization:** Extension models must declare dependencies in
-`manifest.yaml` to invoke models from other extensions. Built-in types and
-user-authored models are unrestricted, and same-extension calls are always
+**Runtime authorization:** Extension behaviors must declare dependencies in
+`manifest.yaml` to invoke behaviors from other extensions. Built-in types and
+user-authored behaviors are unrestricted, and same-extension calls are always
 allowed. Unauthorized calls return `{ ok: false }` with an actionable error
 message.
 
 **Remote execution:** `context.runModel()` is not available on remote workers.
-Models that need it should run locally or use a workflow for orchestration.
+Behaviors that need it should run locally or use a workflow for orchestration.
 
 **Output lineage:** Nested invocations produce `ModelOutput` records with
 `triggeredBy: "model"`, a `parentOutputId` pointing to the caller's output, and
@@ -460,7 +495,7 @@ This is the one piece of execution identity that only core can provide.
 `definitionHash` and `modelVersion` cover the definition content and type
 version, but neither proves which code ran.
 
-The field is optional. Old outputs without it still parse, and built-in model
+The field is optional. Old outputs without it still parse, and built-in behavior
 types, which have no extension bundle, leave it undefined. A lifecycle consumer
 can store the fingerprint with its evidence and compare it with the current
 invocation to decide whether an interrupted run can safely resume.
@@ -499,8 +534,8 @@ suspended until resumed with `swamp workflow resume`.
 **Reject** marks the step failed, fails the job and completes the run as failed.
 No resume is needed.
 
-**`decidedBy` is auto-populated** from the calling model's definition name and
-method name (e.g. `model:webhook-handler/on_comment`). Extensions cannot
+**`decidedBy` is auto-populated** from the calling behavior's definition name
+and method name (e.g. `model:webhook-handler/on_comment`). Extensions cannot
 override it; this is enforced for audit integrity.
 
 **Remote execution:** Not available on remote workers. Returns `{ ok: false }`
@@ -523,13 +558,13 @@ The `read` and `list` kinds do not trigger checks; every other kind does. Names
 not in this list (e.g. `sync`) infer no kind, so they default to mutating. Set
 `kind: "read"` or `kind: "list"` to suppress checks for them.
 
-Checks let models enforce invariants (policy constraints, dependency readiness,
-quota availability) before execution begins, which avoids half-completed
-operations.
+Checks let behaviors enforce invariants (policy constraints, dependency
+readiness, quota availability) before execution begins, which avoids
+half-completed operations.
 
 ### CheckDefinition
 
-Each check is a named entry in the model's optional `checks` field
+Each check is a named entry in the behavior type's optional `checks` field
 (`checks?: Record<string, CheckDefinition>`):
 
 ```typescript
@@ -586,7 +621,7 @@ run checks.
 
 - `policy`: business rules and constraints (value validation, allowed values)
 - `live`: checks that make live API calls (quota, existence checks)
-- `dependency`: cross-model dependency validation (required upstream state)
+- `dependency`: cross-behavior dependency validation (required upstream state)
 
 **appliesTo** limits a check to specific methods. Without it, the check runs
 before all mutating methods. Use it to scope expensive or irrelevant checks:
@@ -612,10 +647,10 @@ and `swamp model method run` take the same set):
 1. **Value/policy validation**: inspect `context.globalArgs` for invalid or
    disallowed values. No I/O, always fast.
 
-2. **Cross-model validation**: read another model instance's stored state with
-   `context.dataRepository.getContent` or `findAllForModel`, and verify that a
-   dependency exists or is in the right state. Both accept the definition name
-   or its UUID, because `buildMethodContext` wraps the repository so names
+2. **Cross-behavior validation**: read another behavior instance's stored state
+   with `context.dataRepository.getContent` or `findAllForModel`, and verify
+   that a dependency exists or is in the right state. Both accept the definition
+   name or its UUID, because `buildMethodContext` wraps the repository so names
    resolve to IDs (`src/domain/models/method_context.ts`). Checks do not get
    `context.readModelData`, `context.queryData` or `context.runModel`. Only
    `InProcessExecutor` binds those, for method execution.
@@ -625,7 +660,7 @@ and `swamp model method run` take the same set):
 
 ### Extension Checks
 
-Extensions can add checks to existing model types through the optional third
+Extensions can add checks to existing behavior types through the optional third
 parameter of `modelRegistry.extend()`:
 
 ```typescript
@@ -661,7 +696,7 @@ checks:
 - **`skip`**: these checks are always skipped. `skip` wins over `require` if a
   check appears in both.
 - Validation (`model validate`) warns on require/skip overlap and errors if a
-  referenced check does not exist on the model type.
+  referenced check does not exist on the behavior type.
 
 ### model validate Integration
 
@@ -676,12 +711,12 @@ Two flags narrow which checks run:
 
 ## Data
 
-Models produce two kinds of output data: **resources** and **files**.
+Behaviors produce two kinds of output data: **resources** and **files**.
 
 ### Resources
 
 Resources are structured data with a Zod schema, such as external resource
-state, API responses or any structured output. They are declared in the model's
+state, API responses or any structured output. They are declared in the type's
 `resources` field and written with `context.writeResource()`.
 
 Resources are auto-tagged with `type: "resource"`.
@@ -689,7 +724,7 @@ Resources are auto-tagged with `type: "resource"`.
 ### Files
 
 Files are raw content with a content type (MIME type), such as file artifacts,
-logs or any binary/text output. They are declared in the model's `files` field
+logs or any binary/text output. They are declared in the type's `files` field
 and written with `context.createFileWriter()`. A file can be marked
 `streaming: true` for line-oriented output, which replaces the old dedicated
 log type.
@@ -702,7 +737,7 @@ Resources and files share these properties:
 
 - A unique name (the spec name, declared in `resources` or `files`)
 - A unique id for the data
-- The full definition of the model that wrote the data, so a model can be
+- The full definition of the behavior that wrote the data, so a behavior can be
   re-instantiated to operate on it
 - A lifetime: how long the data persists. It can be a duration string (1h, 5m,
   10d, 1mo, 10y). "ephemeral" stores the data only for the method invocation or
@@ -720,7 +755,7 @@ Versions are auto-incrementing integers starting at 1. The latest version can
 always be referred to as "latest", and CEL expressions imply it. Old versions
 can only be retrieved by a CEL function.
 
-Only a model instantiated from the definition that first wrote the data can
+Only a behavior instantiated from the definition that first wrote the data can
 write it again. That definition is the data's _owner_.
 
 Datastore paths:
@@ -841,8 +876,8 @@ window and nothing to roll back on failure.
 **When NOT to use**: methods that interact with external systems and write data
 reflecting real-world state should leave this flag unset. Their writes may be
 the most accurate picture of reality even if the method fails partway. Methods
-that write then throw on purpose (e.g. a code-review model that writes results
-then throws on verdict=FAIL) must also leave it unset.
+that write then throw on purpose (e.g. a code-review behavior that writes
+results then throws on verdict=FAIL) must also leave it unset.
 
 ## Output
 
@@ -864,7 +899,7 @@ since outputs are not scoped to a process or workflow run.
 
 `swamp run gc` uses `min(globalRetention, methodOutputLifetime)` as the cutoff
 for each method's outputs. An operator can always tighten retention globally,
-and the model author's declared ceiling is still respected.
+and the behavior author's declared ceiling is still respected.
 
 High-traffic methods whose return value is consumed synchronously (e.g.
 `swamp/server-token.redeem`) should declare a short lifetime (e.g. `"1d"`). This
@@ -872,11 +907,11 @@ keeps the outputs directory and the datastore index from growing without bound.
 
 ## Domain Events
 
-The ModelRepository emits domain events when model data changes:
+The ModelRepository emits domain events when behavior data changes:
 
-- `ModelCreated`: a new model definition is created via `model create`
-- `ModelUpdated`: a model definition or data is modified
-- `ModelDeleted`: a model is deleted
+- `ModelCreated`: a new behavior definition is created via `model create`
+- `ModelUpdated`: a behavior definition or data is modified
+- `ModelDeleted`: a behavior is deleted
 
 A `NoopRepoIndexService` is instantiated but not wired to the event bus. No
 handler currently receives these events. See [repo.md](../surfaces/repo.md) for

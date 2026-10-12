@@ -6,8 +6,8 @@ last-verified: 2026-08-28 @ 3d5955a9
 
 # Data Query
 
-Data query is the general way to find data artifacts across models with CEL
-predicates. Queries filter on artifact metadata (model name, spec name, tags,
+Data query is the general way to find data artifacts across behaviors with CEL
+predicates. Queries filter on artifact metadata (behavior name, spec name, tags,
 version, etc.) and optionally on JSON content.
 
 It is available in three places, all with the same predicate syntax and
@@ -15,7 +15,7 @@ fields:
 
 - **CLI**: `swamp data query '<predicate>'`
 - **CEL expressions**: `data.query('<predicate>')` in definitions and workflows
-- **Extension methods**: `context.queryData('<predicate>')` in model method
+- **Extension methods**: `context.queryData('<predicate>')` in method
   implementations
 
 ## Query is the primitive; helpers are shortcuts
@@ -41,7 +41,7 @@ highest-versioned match (the first step on a tie) when several steps in a
 run wrote the same data name
 (swamp-club#2948), so it warns with the other matches; a query that names
 `workflowRunId`, `jobName` and `stepName` selects one item.
-The printed `replacementQuery` names a model's data by `modelType` and
+The printed `replacementQuery` names a behavior's data by `modelType` and
 `modelId`, which survive a rename, and report output (which records no run) the
 same way. A read whose content may not be UTF-8 text (a non-text content type,
 or text that came back base64-encoded) is replaced by a query that selects
@@ -65,13 +65,13 @@ Add `--single` to any of these to get one bare object under `--json`, as
 `data get --json` printed (see [Single result](#single-result---single)).
 
 `model("<m>")` resolves `<m>` as `data get` does and matches rows by the
-resolved definition's `modelType` and `modelId` (see
-[Model of a data item](#model-of-a-data-item)). `modelName` is the name stamped
-on the data when it was written, so `modelName == "<m>"` differs from
-`data get` after a model rename, for data with no `modelName` tag, and after a
-model is deleted and recreated under the same name. A `--version` read of a data
-name that was since renamed has no query equivalent: the rename drops the old
-name's catalog rows (see [Rename Forwards](#rename-forwards)).
+resolved definition's `modelType` and `modelId` (see [Behavior of a data
+item](#behavior-of-a-data-item)). `modelName` is the name stamped on the data
+when it was written, so `modelName == "<m>"` differs from `data get` after a
+behavior rename, for data with no `modelName` tag, and after a behavior is
+deleted and recreated under the same name. A `--version` read of a data name
+that was since renamed has no query equivalent: the rename drops the old name's
+catalog rows (see [Rename Forwards](#rename-forwards)).
 
 A query matches the instance `name` exactly, where `data get` fell back to the
 spec name; match a spec with `specName == "<s>"`. For a binary item, select
@@ -141,12 +141,12 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 (`src/domain/expressions/model_resolver.ts`):
 
 - `data.latest()` with no namespace prefix looks on the filesystem first
-  (`dataRepo.findByName` on the model's coordinates) and falls back to the
+  (`dataRepo.findByName` on the behavior's coordinates) and falls back to the
   catalog only on a miss. With an `ns:` prefix it reads the catalog with the
-  namespace clause and never the caller's own model of that name.
+  namespace clause and never the caller's own behavior of that name.
   `data.version()` always queries the catalog.
 - Every helper except `data.query()` adds `&& ns == "<own namespace>"` unless
-  the model name has a namespace prefix (`routeNamespace`).
+  the behavior name has a namespace prefix (`routeNamespace`).
 - `data.findBySpec()` and `data.findByTag()` keep only the newest record per
   `(modelName, name, stepName)` (`deduplicateByName`).
 - `data.findBySpec()` and `data.findByTag()` query with `latestPerStep`, so
@@ -156,15 +156,15 @@ A shortcut returns the same `DataRecord[]` type and fields as the equivalent
 
 **specName ambiguity detection:** `data.latest()` throws a `UserError` when its
 lookup argument equals a `specName` tag shared by several data items under the
-same model. An exact data name that differs from the specName is unaffected,
+same behavior. An exact data name that differs from the specName is unaffected,
 even if sibling items share the spec. Use `data.findBySpec()` to query by
 specName. The raw `data.query()` equivalent skips this check. When the lookup
-found the record through the model's definition, rows a retyped model left
+found the record through the behavior's definition, rows a retyped behavior left
 under its old type (same id, another type — what `data prune` reclaims as
 orphaned) are not counted as peers.
 
 **Spec name passed as a data name:** `data.latest()` and `data.version()` match
-the data (instance) name, which a model may write under a different name than
+the data (instance) name, which a behavior may write under a different name than
 its spec (e.g. spec `syncRunSummary` as `sync-<timestamp>`). When a
 non-optional select fails on such a miss, the evaluator
 (`CelEvaluator.explainMissedLookups`) asks
@@ -189,9 +189,9 @@ Details: [expressions.md](./expressions.md#null-safe-optional-access-).
 
 ### Cross-namespace queries (giga-swamp Phase 4)
 
-Model-name helpers (`data.latest`, `data.version`, `data.findBySpec`,
-`data.listVersions`) accept namespace-prefixed model names. `data.findByTag`
-takes no model name and always searches the caller's own namespace
+Behavior-name helpers (`data.latest`, `data.version`, `data.findBySpec`,
+`data.listVersions`) accept namespace-prefixed behavior names. `data.findByTag`
+takes no behavior name and always searches the caller's own namespace
 (`model_resolver.ts` `findByTag`):
 
 | Syntax | Scope |
@@ -300,9 +300,9 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `createdAt` | string | ISO-8601 timestamp |
 | `attributes` | map | Parsed JSON content (lazy-loaded; `{}` unless `contentType` is `application/json`) |
 | `tags` | map | All tags as key-value pairs |
-| `modelName` | string | Owning model name as of the write (from the `modelName` tag; a model rename does not update it) |
-| `modelId` | string | Owning model id (stable across renames) |
-| `modelType` | string | Owning model type |
+| `modelName` | string | Owning behavior name as of the write (from the `modelName` tag; a behavior rename does not update it) |
+| `modelId` | string | Owning behavior id (stable across renames) |
+| `modelType` | string | Owning behavior type |
 | `specName` | string | Output spec name |
 | `dataType` | string | `"resource"` or `"file"` |
 | `contentType` | string | MIME type |
@@ -312,7 +312,7 @@ The predicate is evaluated against each `DataRecord`. Filterable fields:
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
 | `content` | dyn | Parsed object for JSON, raw text for other text types (lazy-loaded); reading it on a non-text item is an error — see [Binary content](#binary-content) |
-| `ownerRef` | string | Model definition ID that owns this data |
+| `ownerRef` | string | Behavior definition ID that owns this data |
 | `workflowRunId` | string | Workflow run ID (`""` outside workflows) |
 | `workflowName` | string | Workflow name (`""` outside workflows) |
 | `jobName` | string | Job name (`""` outside workflows) |
@@ -402,7 +402,7 @@ modelName == "dedup" && specName == "episode" && workflowRunId == "run-uuid"
 ```
 
 No data access function scopes by workflow run. Only `data.query()` and
-`context.queryData()` are fully unscoped. The model-name helpers and
+`context.queryData()` are fully unscoped. The behavior-name helpers and
 `context.readModelData()` add an own-namespace filter (see above) and nothing
 else. Any other scoping must be written into the predicate.
 
@@ -416,9 +416,9 @@ else. Any other scoping must be written into the predicate.
   return one version per data name even when several workflow steps wrote it
   (swamp-club#2520).
 - **`is_step_latest`** marks each workflow step's latest version, with
-  asymmetric demotion rules based on `step_name`. A model-method write
+  asymmetric demotion rules based on `step_name`. A method-run write
   (`step_name = ""`) demotes every lower row. A workflow-step write demotes
-  lower rows with the same `step_name` and lower model-method rows. Other
+  lower rows with the same `step_name` and lower method-run rows. Other
   steps' rows are untouched, so different workflow steps writing the same data
   name keep independent version chains (swamp-club#1761, swamp-club#1802). The
   `is_latest` row is always also `is_step_latest`.
@@ -449,7 +449,7 @@ flags without it, inside one transaction; only a catalog rebuilt from an empty
 table (a schema change) treats an in-flight write as promoted, and rolling it
 back afterwards still recomputes the flags. A pending row records the pid and
 host identity (hostname, plus pid namespace on Linux) of the process that wrote
-it. GC (not a dry run) first rolls back each pending write of the model whose
+it. GC (not a dry run) first rolls back each pending write of the behavior whose
 writer had this process's host identity and is no longer alive, since nothing
 else will promote or roll it back, and removes a data name that leaves with no
 versions. A row from another host or container, the current process or a live
@@ -462,10 +462,10 @@ the write removes its own version and pending row.
 `data.query()`, `data.version()`, `data.findBySpec()` and `data.findByTag()` in
 CEL, `context.queryData()` in extension methods, and `swamp data query` return
 schema-marked sensitive fields as the stored `vault.get(...)` reference. The
-reads that resolve those fields are `data.latest()` with an exact model name,
+reads that resolve those fields are `data.latest()` with an exact behavior name,
 `steps.<name>.outputs` and `model.<name>.resource` in CEL, which record each
 value in the run's `RunSensitiveValues`, and `readResource()` and
-`readModelData()` in extension methods. `data.latest()` with a wildcard model
+`readModelData()` in extension methods. `data.latest()` with a wildcard behavior
 name goes through the query service and returns the stored reference. See
 "Read-Side Resolution" in `design/primitives/vaults.md`.
 
@@ -497,21 +497,21 @@ without `--run` (`WorkflowRunRepository.findLatestByWorkflowId`).
   does. A refusal is audited and fails exactly as an unknown workflow does,
   naming only the argument.
 
-### Model of a data item
+### Behavior of a data item
 
-`model("<model>")` is true for the rows stored under a model's current
-definition, so `model("scanner") && name == "result"` reads what
-`data get scanner result` reads (swamp-club#2960). The argument resolves as
-`data get`'s model argument does: definition name first, then exact definition
-id (`findDefinitionByIdOrName`), and rows match on the resolved definition's
+`model("<model>")` is true for the rows stored under a behavior's current
+definition, so `model("scanner") && name == "result"` reads what `data get
+scanner result` reads (swamp-club#2960). The argument resolves as `data get`'s
+behavior argument does: definition name first, then exact definition id
+(`findDefinitionByIdOrName`), and rows match on the resolved definition's
 `modelType` and `modelId`, not on the `modelName` tag.
 
-- The argument is a model name or definition id, as a non-empty string literal.
-  Each model is resolved once per query, before any row is read
+- The argument is a behavior name or definition id, as a non-empty string
+  literal. Each behavior is resolved once per query, before any row is read
   (`src/domain/data/query_predicate.ts` `collectModelReferences`), and a
-  predicate may name at most 32 distinct models (`MAX_MODEL_REFERENCES`); a
+  predicate may name at most 32 distinct behaviors (`MAX_MODEL_REFERENCES`); a
   per-row argument such as `model(modelName)` is an error.
-- An unknown model is an error (`Model not found`), as in `data get`.
+- An unknown behavior is an error (`Model not found`), as in `data get`.
 - The caller passes the resolver per query (`DataQueryOptions.modelResolver`).
   The CLI and TUI pass `createModelReferenceResolver`
   (`src/domain/models/model_lookup.ts`); `data.query()` in CEL and
@@ -520,9 +520,9 @@ id (`findDefinitionByIdOrName`), and rows match on the resolved definition's
 - Matching evaluates in a cloned environment whose `model()` reads the row
   being evaluated from a variable local to the match, so concurrent queries
   never see each other's resolutions.
-- Over `swamp serve`, `model` needs `read` on the data of the model it resolves
-  to, as a model-scoped `data.get` does. A refusal is audited and fails exactly
-  as an unknown model does, naming only the argument.
+- Over `swamp serve`, `model` needs `read` on the data of the behavior it
+  resolves to, as a behavior-scoped `data.get` does. A refusal is audited and
+  fails exactly as an unknown behavior does, naming only the argument.
 
 ## Predicate Syntax
 
@@ -712,19 +712,19 @@ an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
 - **Delete**: the repository's `catalogRemove` drops the forward of the name it
   removes (delete, expiry). Deleting an older version while the rename marker
   stays latest keeps the forward and adds no catalog row for the marker.
-- **Query**: when the predicate does not open history and has a top-level
-  `name == "<literal>"` conjunct, the catalog nominates the models with a
-  forward from the literal, and each hop is then read from the name's latest
-  marker on disk — the same read as an unversioned `findByName` — for at most 5
-  hops, never revisiting a name. A forward that a later write or delete ended,
-  here or on another machine, therefore matches nothing, and a chain the
-  catalog only partly knows is still followed to its end. Rows the chain ends
-  at are evaluated with `name` overlaid to the literal; the returned record
-  keeps its real name, and the caller's `include` filter still applies. A row
-  still under the old name in a model whose forward is confirmed (left by a
-  sync or a failed catalog write) is not returned: the marker shows it is not
-  the latest version. A model whose marker cannot be read is skipped (logged at
-  debug), not the query.
+- **Query**: when the predicate does not open history and has a top-level `name
+  == "<literal>"` conjunct, the catalog nominates the behaviors with a forward
+  from the literal, and each hop is then read from the name's latest marker on
+  disk — the same read as an unversioned `findByName` — for at most 5 hops,
+  never revisiting a name. A forward that a later write or delete ended, here or
+  on another machine, therefore matches nothing, and a chain the catalog only
+  partly knows is still followed to its end. Rows the chain ends at are
+  evaluated with `name` overlaid to the literal; the returned record keeps its
+  real name, and the caller's `include` filter still applies. A row still under
+  the old name in a behavior whose forward is confirmed (left by a sync or a
+  failed catalog write) is not returned: the marker shows it is not the latest
+  version. A behavior whose marker cannot be read is skipped (logged at debug),
+  not the query.
 - **Not followed**: versioned or `isLatest` predicates (as `data get --version`
   does not follow), `name in [...]` or a name test under `||` or `!`, and
   renames in other namespaces: `.catalog-export.json` carries rows, not
@@ -734,7 +734,7 @@ an unversioned `findByName` does (swamp-club#2968). The old name's rows leave
 
 `DataQueryService` accepts a `filterStaleRows` option. When it is on, the query
 hydration loop calls `Deno.statSync` on each row's `raw` content file and drops
-rows whose file is absent. This catches rows orphaned by a model retype (type
+rows whose file is absent. This catches rows orphaned by a behavior retype (type
 field changed, UUID kept): the data moves to a new type directory and the old
 catalog row goes stale.
 
@@ -1149,7 +1149,7 @@ Each execution creates the ephemeral store at the start and disposes it in the
 
 ### Definition-level overrides
 
-Definitions can override a model type's default resource lifetime:
+Definitions can override a behavior type's default resource lifetime:
 
 ```yaml
 resources:

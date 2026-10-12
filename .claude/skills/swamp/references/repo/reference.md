@@ -496,7 +496,7 @@ pointing at your local development copy — your local version loads instead.
   [references/troubleshooting.md](references/troubleshooting.md) for config
   problems and recovery procedures
 - **Repository design**: See `design/surfaces/repo.md` in the swamp source repo
-- **Model structure**: See `design/primitives/models.md` in the swamp source
+- **Model structure**: See `design/primitives/behaviors.md` in the swamp source
   repo
 - **Datastore design**: See `design/enablers/datastores.md` in the swamp source
   repo
