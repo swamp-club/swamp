@@ -158,7 +158,11 @@ function renderV3Migration(
     }`;
   }
   if (alreadyMigrated) {
-    ctx.logger.info`Config migration already completed`;
+    if (plan.alreadyCommitted === 0) {
+      ctx.logger.info`No config files found to migrate`;
+    } else {
+      ctx.logger.info`Config migration already completed`;
+    }
     return;
   }
   ctx.logger.info`Committed ${adopted("model")} model(s), ${
@@ -177,8 +181,9 @@ export const datastoreConfigMigrateCommand = new Command()
       "prevents duplicate work, and a re-run after a failed push publishes\n" +
       "the migration.\n\n" +
       "On a v3 datastore it commits the model definitions, workflow\n" +
-      "definitions and vault configs the commit log has never held; a\n" +
-      "re-run commits nothing.",
+      "definitions and vault configs not already in the datastore; a\n" +
+      "re-run commits nothing. The lockfile is committed by its own\n" +
+      "transaction there, and pulled extensions stay in the checkout.",
   )
   .option("--repo-dir <dir:string>", "Path to the swamp repository")
   // deno-lint-ignore no-explicit-any

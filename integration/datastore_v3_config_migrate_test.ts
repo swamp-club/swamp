@@ -506,6 +506,12 @@ Deno.test("v3 managedConfig by hand: a refused adoption warns and the writing co
     } finally {
       store.head = realHead;
     }
+    // B's config tier still holds what the commit log says: A's bytes.
+    const tierFile = (repoDir: string) =>
+      Deno.readTextFile(
+        swampPath(repoDir, "config", "models", "command", "shell", "m1.yaml"),
+      );
+    assertEquals(await tierFile(repos.repoB), await tierFile(repos.repoA));
     // A writing command then runs as usual.
     await cli(repos.repoB, "model", "create", "command/shell", "after");
   });
@@ -528,17 +534,23 @@ Deno.test("v3 config migrate: a symlink in the repo's config trees is never adop
       join(repos.repoA, "vaults", "local_encryption", "leaked.yaml"),
       { type: "file" },
     );
+    await Deno.mkdir(join(repos.repoA, "models"), { recursive: true });
     await Deno.symlink(
       join(repos.repoA, ".."),
       join(repos.repoA, "models", "escape"),
       { type: "dir" },
-    ).catch(async () => {
-      await Deno.mkdir(join(repos.repoA, "models"), { recursive: true });
-      await Deno.symlink(
-        join(repos.repoA, ".."),
-        join(repos.repoA, "models", "escape"),
-        { type: "dir" },
-      );
+    );
+    // A tree whose root is itself a link is not read either.
+    const outsideWorkflows = join(repos.repoA, "..", "outside-workflows");
+    await Deno.mkdir(outsideWorkflows, { recursive: true });
+    await Deno.writeTextFile(
+      join(outsideWorkflows, "workflow-leaked.yaml"),
+      "id: 0b6f1a52-3c3e-4f19-8d0b-6f6c2f4f8e21\nname: leaked\n",
+    );
+    await Deno.remove(join(repos.repoA, "workflows"), { recursive: true })
+      .catch(() => {});
+    await Deno.symlink(outsideWorkflows, join(repos.repoA, "workflows"), {
+      type: "dir",
     });
 
     await cli(repos.repoA, "datastore", "config", "migrate");
@@ -547,6 +559,43 @@ Deno.test("v3 config migrate: a symlink in the repo's config trees is never adop
     for await (const entry of Deno.readDir(tier)) {
       assert(!entry.name.startsWith("leaked"), "the symlink was not adopted");
     }
+    await assertRejects(() =>
+      Deno.stat(swampPath(repos.repoA, "config", "workflows"))
+    );
+  });
+});
+
+Deno.test("v3 config migrate: a commit that fails writes no config-tier file, so a re-run still adopts", async () => {
+  await withV3RowRepos({}, async (repos) => {
+    await seedRepoLocalConfig(repos.repoA);
+    const config = repos.a.datastoreConfig;
+    if (isCustomDatastoreConfig(config)) throw new Error("v3 is filesystem");
+    const store = v3DatastoreFor(repos.repoA, config).commitStore;
+    const realAppend = store.append.bind(store);
+    store.append = () => Promise.reject(new Error("injected append failure"));
+    try {
+      const error = await withMockedEnv(
+        UNSET_ENV,
+        () =>
+          runCliRejecting({
+            args: ["datastore", "config", "migrate", ...json(repos.repoA)],
+          }),
+      );
+      assertInstanceOf(error, Error);
+    } finally {
+      store.append = realAppend;
+    }
+    assertEquals(await commitCount(repos), 0, "nothing landed");
+    await assertRejects(() => Deno.stat(swampPath(repos.repoA, "config")));
+
+    const migrated = await cli(
+      repos.repoA,
+      "datastore",
+      "config",
+      "migrate",
+    ) as Record<string, unknown>;
+    assertEquals(migrated.committed, 4);
+    assertEquals(await vaultNames(repos.repoA), ["default", "v2"]);
   });
 });
 

@@ -201,3 +201,23 @@ Deno.test("planConfigAdoption: a file the config tier already holds byte for byt
     assertEquals(asked, ["config--workflow--w2"]);
   });
 });
+
+Deno.test("planConfigAdoption: a tree whose root is a symlink is not read", async () => {
+  if (Deno.build.os === "windows") return;
+  await withTempDir(async (dir) => {
+    const repoDir = join(dir, "repo");
+    const outside = join(dir, "outside");
+    await writeFile(
+      join(outside, "local_encryption", `${ID_1}.yaml`),
+      `id: ${ID_1}\nname: leaked\ntype: local_encryption\n`,
+    );
+    await Deno.mkdir(repoDir, { recursive: true });
+    await Deno.symlink(outside, join(repoDir, "vaults"), { type: "dir" });
+    const plan = await planConfigAdoption({
+      repoDir,
+      configBase: join(repoDir, ".swamp", "config"),
+      partitionHasCommits: () => Promise.resolve(false),
+    });
+    assertEquals(plan.adoptions, []);
+  });
+});

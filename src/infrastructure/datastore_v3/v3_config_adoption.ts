@@ -145,6 +145,8 @@ export async function planConfigAdoption(
       // Once adopted, the config tier holds the same bytes at the same
       // path: skip it before parsing it or reading the commit log, so a
       // repo whose config was adopted long ago pays one read per file.
+      // Adoption writes a tier copy only after its commit lands, so a copy
+      // means a committed name (a copy placed there by hand aside).
       if (await sameBytes(sourcePath, targetPath)) {
         alreadyCommitted++;
         continue;
@@ -187,11 +189,12 @@ export async function planConfigAdoption(
 }
 
 /**
- * Writes each adoption into the config tier and stages its commit. Call it
- * inside a root unit of work open over the v3 context whose hook is
- * `markDirty`; the root's commit lands the adoptions.
+ * Stages each adoption's commit. Call it inside a root unit of work open over
+ * the v3 context whose hook is `markDirty`; the root's commit lands the
+ * adoptions. It writes no file: {@link commitConfigAdoption} writes the
+ * config tier once the commit has landed.
  */
-export async function applyConfigAdoption(
+export async function stageConfigAdoption(
   markDirty: MarkDirtyHook,
   configBase: string,
   plan: ConfigAdoptionPlan,
@@ -201,8 +204,6 @@ export async function applyConfigAdoption(
     key: keyUnder("config", configBase, path),
   });
   for (const adoption of plan.adoptions) {
-    await ensureDir(dirname(adoption.targetPath));
-    await Deno.writeFile(adoption.targetPath, adoption.content);
     for (
       const batch of definitionSaveBatches({
         kind: adoption.kind,
@@ -288,9 +289,11 @@ export async function adoptV3Config(
 
 /**
  * Commits `plan`'s adoptions in a root unit of work of its own over the v3
- * context. The root has no flush, so it never releases the locks of the
- * command it runs in; a root already open over the context takes the
- * adoptions as a child would. A plan with nothing to adopt opens no root.
+ * context, then writes them into the checkout's config tier. The root has no
+ * flush, so it never releases the locks of the command it runs in. Call it
+ * with no root open over the context: a child unit would end before the
+ * outer root commits, and the files would be written ahead of the commit. A
+ * plan with nothing to adopt opens no root.
  *
  * @throws ConfigAdoptionRefusedError when another checkout committed one of
  *   the keys first
@@ -309,13 +312,21 @@ export async function commitConfigAdoption(
     await runInRootUnitOfWork(
       repoContext,
       { flush: undefined },
-      () => applyConfigAdoption(markDirty, configBase, plan),
+      () => stageConfigAdoption(markDirty, configBase, plan),
     );
   } catch (error) {
     if (error instanceof CommitRejectedError) {
       throw new ConfigAdoptionRefusedError(error);
     }
     throw error;
+  }
+  // The files are written only once the commit has landed, so a config-tier
+  // copy always means a committed one. When the commit fails, nothing is
+  // written, and the partitions that did commit reach this checkout at its
+  // next catch-up, as another checkout's commits do.
+  for (const adoption of plan.adoptions) {
+    await ensureDir(dirname(adoption.targetPath));
+    await Deno.writeFile(adoption.targetPath, adoption.content);
   }
 }
 
@@ -338,11 +349,17 @@ async function sameBytes(source: string, target: string): Promise<boolean> {
 /**
  * The `.yaml` and `.yml` regular files under `root`, sorted, so the first
  * of two files declaring one name is always the same one. Symlinks, to
- * files or directories, are skipped and never followed. A missing root has
- * none.
+ * files or directories and `root` itself, are skipped and never followed. A
+ * missing root has none.
  */
 async function regularYamlFiles(root: string): Promise<string[]> {
   const files: string[] = [];
+  try {
+    if ((await Deno.lstat(root)).isSymlink) return [];
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
+  }
   const walk = async (dir: string): Promise<void> => {
     let entries: Deno.DirEntry[];
     try {
@@ -369,7 +386,8 @@ async function regularYamlFiles(root: string): Promise<string[]> {
     }
   };
   await walk(root);
-  return files.sort((a, b) =>
-    a.split(SEPARATOR).join("/").localeCompare(b.split(SEPARATOR).join("/"))
-  );
+  // Code-unit order, not the host locale's, so every machine picks the same
+  // first file of a repeated name.
+  const key = (path: string) => path.split(SEPARATOR).join("/");
+  return files.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }

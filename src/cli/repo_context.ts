@@ -1105,6 +1105,11 @@ async function adoptManagedConfigOnV3(
       logger
         .info`Committed ${plan.adoptions.length} existing definition(s), workflow(s) and vault config(s) into the datastore config tier`;
     }
+    // Reported with the adoption that left them out, not on every command.
+    if (plan.adoptions.length > 0 && plan.skipped.length > 0) {
+      logger
+        .warn`${plan.skipped.length} existing config file(s) were not committed: they declare no usable name, or a name another file declares. Run 'swamp datastore config migrate' to list them`;
+    }
   } catch (error) {
     if (!(error instanceof ConfigAdoptionRefusedError)) throw error;
     logger.warn`${error.message}`;

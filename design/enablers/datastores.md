@@ -3714,14 +3714,21 @@ path under the config base, so a later save of it stages the same key.
   A file whose config-tier copy already holds the same bytes is skipped
   before it is parsed or the commit log read, so a repo adopted long ago pays
   one read per file.
+- **Files follow the commit.** Adoption stages its puts in a root of its own
+  and writes the config-tier files only once that root has committed, so a
+  tier copy always means a committed name (a copy placed there by hand
+  aside). When the commit fails, nothing is written, a re-run adopts again,
+  and any partition that did commit reaches the checkout at its next
+  catch-up, as another checkout's commits do (for serve, at its next
+  start).
 - **Stale writes are refused.** A checkout whose view of the commit log is
   stale creates a key that exists, and its `absent` precondition refuses the
   commit (`ConfigAdoptionRefusedError`, a `UserError` saying to run the
   command again). The single writer lock already rules this out within one
   datastore today; the precondition is what holds once there are more
   writers.
-- **Only regular files are read.** Symlinks in the repo's trees are neither
-  read nor followed, so a repo-controlled link never commits bytes from
+- **Only regular files are read.** Symlinks in the repo's trees, a tree's
+  root included, are neither read nor followed, so a repo-controlled link never commits bytes from
   outside the repo, and every target is checked to stay in the config base.
   Secrets are never read: only vault configs are committed.
 - **`datastore config migrate` on v3** runs adoption, then sets
