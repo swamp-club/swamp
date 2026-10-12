@@ -239,3 +239,29 @@ Deno.test("createExtensionListDeps lists nothing from install staging", async ()
     assertEquals("onDiskVersion" in exts[0], false);
   });
 });
+
+Deno.test("extensionList reports a recorded published channel, and ignores a hand-edited one", async () => {
+  const deps = makeDeps({
+    "@ns/exact": {
+      version: "2026.10.01.1",
+      pulledAt: "2026-01-01",
+      publishedChannel: "beta",
+    },
+    "@ns/edited": {
+      version: "2026.10.01.1",
+      pulledAt: "2026-01-01",
+      publishedChannel: "nightly",
+    },
+  });
+  const events = await collect<ExtensionListEvent>(
+    extensionList(createLibSwampContext(), deps),
+  );
+  const completed = events[1] as Extract<
+    ExtensionListEvent,
+    { kind: "completed" }
+  >;
+  const [edited, exact] = completed.data.extensions;
+  assertEquals(exact.publishedChannel, "beta");
+  assertEquals(exact.channel, undefined);
+  assertEquals("publishedChannel" in edited, false);
+});

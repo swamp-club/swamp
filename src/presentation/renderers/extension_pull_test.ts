@@ -20,6 +20,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { createExtensionPullRenderer } from "./extension_pull.ts";
+import { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
+import type { InstallResult } from "../../libswamp/extensions/pull.ts";
 
 await initializeLogging({});
 
@@ -84,4 +86,171 @@ Deno.test("createExtensionPullRenderer: json mode adds skillDirs only when prese
     renderer.renderConflicts([FILE]);
   }));
   assertEquals(withoutSkills, { conflicts: [FILE] });
+});
+
+const REPLACEMENT = ExtensionReplacement.create({
+  name: "@test/ext",
+  current: {
+    version: "2026.09.23.1",
+    channel: "stable",
+    publishedChannel: "stable",
+  },
+  incoming: {
+    version: "2026.10.01.1",
+    channel: "stable",
+    publishedChannel: "beta",
+  },
+});
+
+Deno.test("createExtensionPullRenderer: log mode names the extension and the change before the file list", () => {
+  const renderer = createExtensionPullRenderer("log");
+  const out = captureConsole(() => {
+    renderer.renderConflicts([FILE], [], REPLACEMENT);
+  });
+  const headline =
+    "@test/ext: installed 2026.09.23.1 (stable) -> incoming 2026.10.01.1 (beta, following stable)";
+  assertStringIncludes(out, headline);
+  assertStringIncludes(
+    out,
+    "Upgrade: 2026.10.01.1 is newer than the installed 2026.09.23.1. Channel change: stable to beta.",
+  );
+  assert(out.indexOf(headline) < out.indexOf(FILE));
+});
+
+Deno.test("createExtensionPullRenderer: log mode states a replacement and an unopted pre-release", () => {
+  const renderer = createExtensionPullRenderer("log");
+  const out = captureConsole(() => {
+    renderer.renderReplacement(REPLACEMENT);
+    renderer.renderUnoptedPrerelease({
+      name: "@test/ext",
+      version: "2026.10.01.1",
+      publishedChannel: "beta",
+      parent: null,
+    });
+  });
+  assertStringIncludes(
+    out,
+    "-> incoming 2026.10.01.1 (beta, following stable)",
+  );
+  assertStringIncludes(
+    out,
+    "@test/ext@2026.10.01.1 is a beta release, and --channel was not passed",
+  );
+});
+
+Deno.test("createExtensionPullRenderer: json mode puts the replacement on the conflict document", () => {
+  const renderer = createExtensionPullRenderer("json");
+  const doc = JSON.parse(captureConsole(() => {
+    renderer.renderConflicts([FILE], [], REPLACEMENT);
+  }));
+  assertEquals(doc, {
+    name: "@test/ext",
+    current: {
+      version: "2026.09.23.1",
+      channel: "stable",
+      publishedChannel: "stable",
+    },
+    incoming: {
+      version: "2026.10.01.1",
+      channel: "stable",
+      publishedChannel: "beta",
+    },
+    change: "upgrade",
+    channelChanged: true,
+    conflicts: [FILE],
+  });
+});
+
+Deno.test("createExtensionPullRenderer: json mode prints nothing for a replacement or a pre-release notice", () => {
+  const renderer = createExtensionPullRenderer("json");
+  const out = captureConsole(() => {
+    renderer.renderReplacement(REPLACEMENT);
+    renderer.renderUnoptedPrerelease({
+      name: "@test/ext",
+      version: "2026.10.01.1",
+      publishedChannel: "beta",
+      parent: null,
+    });
+  });
+  assertEquals(out, "");
+});
+
+function installResult(overrides: Partial<InstallResult>): InstallResult {
+  return {
+    name: "@test/ext",
+    version: "2026.10.01.1",
+    description: undefined,
+    extractedFiles: [],
+    integrityStatus: "verified",
+    repository: undefined,
+    platforms: [],
+    safetyWarnings: [],
+    binaries: [],
+    conflicts: [],
+    missingSourceFiles: [],
+    hasSkills: false,
+    hasSkillScripts: false,
+    skillFiles: [],
+    dependencies: [],
+    dependencyResults: [],
+    extendsTypes: [],
+    pruned: [],
+    createdPaths: [],
+    ...overrides,
+  };
+}
+
+async function firstJsonDocument(result: InstallResult): Promise<unknown> {
+  const renderer = createExtensionPullRenderer("json");
+  const docs: string[] = [];
+  const original = console.log;
+  console.log = (msg: string) => docs.push(msg);
+  try {
+    await renderer.handlers().completed({ kind: "completed", data: result });
+  } finally {
+    console.log = original;
+  }
+  return JSON.parse(docs[0]);
+}
+
+Deno.test("createExtensionPullRenderer: json mode reports what an install replaced", async () => {
+  assertEquals(
+    await firstJsonDocument(installResult({
+      channel: "stable",
+      publishedChannel: "beta",
+      previous: REPLACEMENT.current,
+      change: "upgrade",
+      channelChanged: true,
+    })),
+    {
+      name: "@test/ext",
+      version: "2026.10.01.1",
+      channel: "stable",
+      publishedChannel: "beta",
+      previous: {
+        version: "2026.09.23.1",
+        channel: "stable",
+        publishedChannel: "stable",
+      },
+      change: "upgrade",
+      channelChanged: true,
+    },
+  );
+});
+
+Deno.test("createExtensionPullRenderer: json mode reports a first install with previous null and no change", async () => {
+  assertEquals(
+    await firstJsonDocument(installResult({
+      channel: "stable",
+      publishedChannel: "stable",
+      previous: null,
+    })),
+    {
+      name: "@test/ext",
+      version: "2026.10.01.1",
+      channel: "stable",
+      publishedChannel: "stable",
+      previous: null,
+    },
+  );
 });

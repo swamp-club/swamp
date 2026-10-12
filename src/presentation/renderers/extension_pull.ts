@@ -21,7 +21,13 @@ import type { EventHandlers } from "../../libswamp/stream.ts";
 import type {
   ExtensionPullEvent,
   InstallResult,
+  UnoptedPrereleaseNotice,
 } from "../../libswamp/extensions/pull.ts";
+import type { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
+import {
+  replacementSummary,
+  unoptedPrereleaseWarning,
+} from "./extension_pull_prompts.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -34,7 +40,29 @@ export interface ExtensionPullRenderer extends Renderer<ExtensionPullEvent> {
    * that are existing skill dirs, which are written into rather than
    * replaced.
    */
-  renderConflicts(conflicts: string[], skillDirs?: string[]): void;
+  renderConflicts(
+    conflicts: string[],
+    skillDirs?: string[],
+    replacement?: ExtensionReplacement,
+  ): void;
+  /**
+   * States what an install going ahead replaces. JSON mode prints nothing:
+   * the install result carries the same facts.
+   */
+  renderReplacement(replacement: ExtensionReplacement): void;
+  /** Warns that a beta or rc release is installed without opting in. */
+  renderUnoptedPrerelease(notice: UnoptedPrereleaseNotice): void;
+}
+
+/** The replacement as JSON fields, named as the lockfile names them. */
+function replacementFields(r: ExtensionReplacement) {
+  return {
+    name: r.name,
+    current: r.current,
+    incoming: r.incoming,
+    change: r.change,
+    channelChanged: r.channelChanged,
+  };
 }
 
 function renderInstallResultLog(result: InstallResult): void {
@@ -137,12 +165,17 @@ function renderInstallResultLog(result: InstallResult): void {
 }
 
 function renderInstallResultJson(result: InstallResult): void {
-  // Resolved info
+  // Resolved info, and what it replaced
   console.log(JSON.stringify(
     {
       name: result.name,
       version: result.version,
       description: result.description,
+      channel: result.channel,
+      publishedChannel: result.publishedChannel ?? null,
+      previous: result.previous ?? null,
+      change: result.change,
+      channelChanged: result.channelChanged,
     },
     null,
     2,
@@ -269,7 +302,12 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
     };
   }
 
-  renderConflicts(conflicts: string[], skillDirs: string[] = []): void {
+  renderConflicts(
+    conflicts: string[],
+    skillDirs: string[] = [],
+    replacement?: ExtensionReplacement,
+  ): void {
+    if (replacement) this.renderReplacement(replacement);
     const skillSet = new Set(skillDirs);
     const files = conflicts.filter((c) => !skillSet.has(c));
     if (files.length > 0) {
@@ -286,6 +324,17 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
         this.#logger.warn`  ${c}`;
       }
     }
+  }
+
+  renderReplacement(replacement: ExtensionReplacement): void {
+    // Pure wording with no braces, logged as written.
+    for (const line of replacementSummary(replacement)) {
+      this.#logger.warn(line);
+    }
+  }
+
+  renderUnoptedPrerelease(notice: UnoptedPrereleaseNotice): void {
+    this.#logger.warn(unoptedPrereleaseWarning(notice));
   }
 }
 
@@ -326,13 +375,25 @@ class JsonExtensionPullRenderer implements ExtensionPullRenderer {
     };
   }
 
-  renderConflicts(conflicts: string[], skillDirs: string[] = []): void {
+  renderConflicts(
+    conflicts: string[],
+    skillDirs: string[] = [],
+    replacement?: ExtensionReplacement,
+  ): void {
     console.log(JSON.stringify(
-      skillDirs.length > 0 ? { conflicts, skillDirs } : { conflicts },
+      {
+        ...(replacement ? replacementFields(replacement) : {}),
+        conflicts,
+        ...(skillDirs.length > 0 ? { skillDirs } : {}),
+      },
       null,
       2,
     ));
   }
+
+  renderReplacement(): void {}
+
+  renderUnoptedPrerelease(): void {}
 }
 
 export function createExtensionPullRenderer(

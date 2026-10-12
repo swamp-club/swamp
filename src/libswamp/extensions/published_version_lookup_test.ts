@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import type { ListVersionsResponse } from "../../infrastructure/http/extension_api_client.ts";
-import { findPublishedVersion } from "./published_version_lookup.ts";
+import {
+  findPublishedVersion,
+  findPublishedVersions,
+} from "./published_version_lookup.ts";
 
 function fakeClient(pages: ListVersionsResponse[]) {
   const asked: Array<{ channel?: string[]; page?: number }> = [];
@@ -113,4 +116,45 @@ Deno.test("findPublishedVersion: a null yankedAt is not a yank", async () => {
     await findPublishedVersion(client, "@a/b", "2026.10.06.1", "k"),
     { version: "2026.10.06.1", channel: "beta" },
   );
+});
+
+Deno.test("findPublishedVersions: answers several versions in one scan and stops once all are found", async () => {
+  const client = fakeClient([
+    {
+      versions: [{ version: "2026.10.06.1", channel: "beta", publishedAt: "" }],
+      meta: { total: 3, page: 1, perPage: 1 },
+    },
+    {
+      versions: [
+        { version: "2026.09.23.1", channel: "stable", publishedAt: "" },
+      ],
+      meta: { total: 3, page: 2, perPage: 1 },
+    },
+    {
+      versions: [
+        { version: "2026.09.01.1", channel: "stable", publishedAt: "" },
+      ],
+      meta: { total: 3, page: 3, perPage: 1 },
+    },
+  ]);
+  const found = await findPublishedVersions(client, "@a/b", [
+    "2026.09.23.1",
+    "2026.10.06.1",
+  ]);
+  assertEquals(found.get("2026.10.06.1")?.channel, "beta");
+  assertEquals(found.get("2026.09.23.1")?.channel, "stable");
+  assertEquals(client.asked.map((a) => a.page), [1, 2]);
+});
+
+Deno.test("findPublishedVersions: a version no channel carries is absent", async () => {
+  const client = fakeClient([{
+    versions: [{ version: "2026.10.01.1", channel: "stable", publishedAt: "" }],
+    meta: { total: 1, page: 1, perPage: 100 },
+  }]);
+  const found = await findPublishedVersions(client, "@a/b", [
+    "2026.10.01.1",
+    "2026.10.06.1",
+  ]);
+  assertEquals(found.get("2026.10.01.1")?.channel, "stable");
+  assertEquals(found.has("2026.10.06.1"), false);
 });

@@ -225,7 +225,36 @@ run from a sibling repo, with the root inferred from the manifest or named by
 prerelease-only extension it fails with a message suggesting the right
 `--channel` flag. `swamp extension pull @name --channel rc` and
 `swamp extension pull @name --channel beta` resolve the latest rc or beta.
-Pinning an exact version (`@name@2026.06.10.1`) ignores the channel.
+Pinning an exact version (`@name@2026.06.10.1`) installs that version whatever
+channel it is published on.
+
+So an install has two channels. The followed channel is what the lockfile's
+`channel` records: the `--channel` flag, stable without one. `update` and
+`outdated` look for newer versions there. The published channel is where the
+registry lists the installed version. The two differ when an exact version is
+pulled from another channel, or when a version is promoted after it was
+pulled. Pull resolves the published channel without a request when the
+version is the registry's latest on a channel, and otherwise looks it up in
+the versions list, the installed and incoming versions in one scan. A beta or
+rc installed while the extension follows stable, whether pinned at the top or
+by a dependency, gets a warning that `update` keeps following stable and how
+to follow the release's channel instead. Nothing is refused.
+
+When a pull replaces an installed extension, it states what is installed and
+what is coming before writing anything, for example
+`@x/y: installed 2026.09.23.1 (stable) -> incoming 2026.10.01.1 (beta,
+following stable)`, followed by whether it is an upgrade, a downgrade, the same
+version or an unknown installed version, and any change of published channel.
+The overwrite prompt shows this above the file list and says what y and N do;
+`--yes` and `--force` log the same lines. The installed version comes from the
+lockfile entry, else from a `manifest.yaml` under the extension root that names
+the extension, else it is unknown and said to be. A replacement whose incoming
+channel cannot be looked up fails, as what it replaces cannot be stated; a
+first install warns and goes ahead with the channel unknown. In JSON the
+conflict document carries `name`, `current`, `incoming` (each `{version,
+channel, publishedChannel}`), `change` and `channelChanged`, and a successful
+pull's first document carries `channel`, `publishedChannel`, `previous`,
+`change` and `channelChanged`.
 
 ### Search and Versions
 
@@ -300,6 +329,14 @@ The `upstream_extensions.json` entry records the install channel in a `channel`
 field. It is written only for non-stable installs, so entries without it read
 as `"stable"` (`src/infrastructure/persistence/lockfile_repository.ts`). The
 update service looks for updates within the installed channel.
+
+The entry also records the published channel, in `publishedChannel`, when it
+was known at install time; a restore that cannot look it up keeps the value
+recorded for the same version. The lockfile is repo-controlled, so the value is
+read through `readPublishedChannel`, which ignores anything that is not a
+channel name. `swamp extension list` shows it: `v2026.10.01.1 [beta, following
+stable]` when it differs from the followed channel, and `publishedChannel` in
+JSON entries.
 
 ### Update cache
 

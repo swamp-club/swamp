@@ -40,10 +40,14 @@ import type { ClientIdentity } from "../../infrastructure/http/client_identity.t
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { pulledExtensionsLock } from "../../infrastructure/persistence/pulled_extensions_lock.ts";
-import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
+import {
+  readPublishedChannel,
+  type UpstreamExtensionEntry,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
+import { findPublishedVersions } from "./published_version_lookup.ts";
 import {
   EXTENSION_BUNDLE_KINDS,
   extensionInstallRoots,
@@ -68,6 +72,12 @@ import {
 } from "../../domain/extensions/extension_archive_limits.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import {
+  type ExtensionIdentity,
+  ExtensionReplacement,
+  type ReplacementChange,
+} from "../../domain/extensions/extension_replacement.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { readDirSorted } from "../../infrastructure/persistence/sorted_dir_entries.ts";
 import {
   assertContainedPath,
@@ -178,6 +188,32 @@ export interface InstallResult {
    * roots, which it moves back whole.
    */
   createdPaths: string[];
+  /** The channel the install follows, as the lockfile records it. */
+  channel?: string;
+  /**
+   * The channel the registry lists this version on, or null when it could
+   * not be determined.
+   */
+  publishedChannel?: string | null;
+  /**
+   * What this install replaced. Null on a first install, and when an
+   * install was replaced whose version could not be determined (then
+   * `change` is "unknown").
+   */
+  previous?: ExtensionIdentity | null;
+  /** How this version relates to the one it replaced; absent on a first install. */
+  change?: ReplacementChange;
+  /** True when the replaced version was published on another channel. */
+  channelChanged?: boolean;
+}
+
+/** A beta or rc release installed while the extension follows stable. */
+export interface UnoptedPrereleaseNotice {
+  name: string;
+  version: string;
+  publishedChannel: string;
+  /** The extension that pins it, when it was installed as a dependency. */
+  parent: string | null;
 }
 
 /**
@@ -246,6 +282,29 @@ export interface InstallContext {
   expectedChecksum?: string;
   /** Release channel to record in the lockfile entry. */
   channel?: string;
+  /**
+   * Looks up which release channel the registry lists each version on, in
+   * one scan. A version no channel carries is absent from the map. Lets an
+   * exact-version pull say which channel it installs from; installs
+   * without it (lockfile restore, update, auto-resolve) only know the
+   * channel when the version is the registry's latest on one.
+   */
+  getVersionChannels?: (
+    name: string,
+    versions: string[],
+  ) => Promise<Map<string, string>>;
+  /**
+   * Called once an install that replaces an existing one is going ahead,
+   * before any file is written. Not called on a first install.
+   */
+  onReplacing?: (replacement: ExtensionReplacement) => void;
+  /**
+   * Called before files are written when a beta or rc release is
+   * installed while the extension follows stable.
+   */
+  onUnoptedPrerelease?: (notice: UnoptedPrereleaseNotice) => void;
+  /** The extension whose dependency this install is; unset at the top. */
+  parentName?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -258,7 +317,16 @@ export class ConflictError extends UserError {
    * files are overwritten, other files are kept.
    */
   skillDirs: string[];
-  constructor(conflicts: string[], skillDirs: string[] = []) {
+  /**
+   * What the install would have replaced, when known: the extension, its
+   * installed and incoming identity.
+   */
+  replacement: ExtensionReplacement | undefined;
+  constructor(
+    conflicts: string[],
+    skillDirs: string[] = [],
+    replacement?: ExtensionReplacement,
+  ) {
     const skillSet = new Set(skillDirs);
     const files = conflicts.filter((c) => !skillSet.has(c));
     const lines: string[] = [];
@@ -280,6 +348,7 @@ export class ConflictError extends UserError {
     super(lines.join("\n"));
     this.conflicts = conflicts;
     this.skillDirs = skillDirs;
+    this.replacement = replacement;
   }
 }
 
@@ -347,6 +416,12 @@ export interface ExtensionPullDeps {
    * `installExtension` automatically.
    */
   installExtensionFn?: InstallExtensionFn;
+  /** See {@link InstallContext.getVersionChannels}. */
+  getVersionChannels?: InstallContext["getVersionChannels"];
+  /** See {@link InstallContext.onReplacing}. */
+  onReplacing?: InstallContext["onReplacing"];
+  /** See {@link InstallContext.onUnoptedPrerelease}. */
+  onUnoptedPrerelease?: InstallContext["onUnoptedPrerelease"];
   /**
    * W2 service deps. When BOTH are provided, `extensionPull` routes
    * through {@link InstallExtensionService} — phase 8 fires (synchronous
@@ -981,6 +1056,8 @@ interface PreparedInstallFields {
   tmpDir: string;
   extractDir: string;
   safetyWarnings: ExtensionSafetyWarning[];
+  publishedChannel: string | null;
+  knownChannels: ReadonlyMap<string, string>;
 }
 
 /**
@@ -1004,6 +1081,16 @@ class PreparedInstall {
   /** The extracted `extension/` dir inside the temp dir. */
   readonly extractDir: string;
   readonly safetyWarnings: ExtensionSafetyWarning[];
+  /**
+   * The channel the registry lists `version` on, or null when it could
+   * not be determined.
+   */
+  readonly publishedChannel: string | null;
+  /**
+   * Published channels resolved while preparing, by version: the incoming
+   * one and, on a replacement, the installed one.
+   */
+  readonly knownChannels: ReadonlyMap<string, string>;
   readonly #tmpDir: string;
   #disposed = false;
 
@@ -1018,6 +1105,8 @@ class PreparedInstall {
     this.#tmpDir = fields.tmpDir;
     this.extractDir = fields.extractDir;
     this.safetyWarnings = fields.safetyWarnings;
+    this.publishedChannel = fields.publishedChannel;
+    this.knownChannels = fields.knownChannels;
   }
 
   /** Removes the temp dir. Idempotent and best-effort. */
@@ -1064,6 +1153,76 @@ class PreparedInstall {
 export type { PreparedInstall };
 
 /**
+ * Resolves which channel the registry lists the incoming version on, and,
+ * when an install already exists, the installed version too, so a version
+ * promoted since it was pulled is reported where it is now.
+ *
+ * A version that is the registry's latest on a channel needs no request.
+ * Any other is looked up through `ctx.getVersionChannels`, in one scan for
+ * both. When the lookup fails or cannot place the incoming version, a
+ * replacement fails, since what it would replace cannot be stated; a
+ * first install warns and goes ahead with the channel unknown. Without
+ * `getVersionChannels` an unresolved channel is unknown, never guessed.
+ */
+async function resolvePublishedChannels(
+  ref: ExtensionRef,
+  version: string,
+  extInfo: ExtensionRegistryInfo,
+  ctx: InstallContext,
+): Promise<Map<string, string>> {
+  const known = new Map<string, string>();
+  const fromLatest = (v: string): string | null => {
+    if (v === extInfo.latestVersion) return "stable";
+    if (v === extInfo.latestRc) return "rc";
+    if (v === extInfo.latestBeta) return "beta";
+    return null;
+  };
+
+  // The lockfile snapshot read before the lock: it decides whether a
+  // lookup failure is fatal and which installed version to look up.
+  // applyInstall re-reads the entry under the lock.
+  const entry = ctx.lockfileRepository.getEntry(ref.name);
+  const replacing = entry !== null ||
+    await pathExistsNoFollow(
+      extensionInstallRoots(ctx.repoDir, ref.name).extensionRoot,
+    );
+
+  const wanted: string[] = [];
+  for (const v of entry ? [version, entry.version] : [version]) {
+    const channel = fromLatest(v);
+    if (channel) known.set(v, channel);
+    else if (!wanted.includes(v)) wanted.push(v);
+  }
+  if (wanted.length === 0 || !ctx.getVersionChannels) return known;
+
+  let found: Map<string, string> | null = null;
+  let reason = "the registry lists it on no release channel";
+  try {
+    found = await ctx.getVersionChannels(ref.name, wanted);
+  } catch (error) {
+    reason = error instanceof Error ? error.message : String(error);
+  }
+  for (const [v, channel] of found ?? []) {
+    // Registry data is shown to the user: only a channel name counts.
+    if (wanted.includes(v) && ReleaseChannel.isValid(channel)) {
+      known.set(v, channel);
+    }
+  }
+  if (!known.has(version)) {
+    if (replacing) {
+      throw new UserError(
+        `Could not determine which release channel ${ref.name}@${version} is published on (${reason}), so what it would replace cannot be stated. Nothing was changed.`,
+      );
+    }
+    if (ctx.logger) {
+      ctx.logger
+        .warn`Could not determine which release channel ${ref.name}@${version} is published on: ${reason}`;
+    }
+  }
+  return known;
+}
+
+/**
  * Resolves, downloads, verifies, extracts and safety-checks an extension
  * without touching the repo: nothing is written outside a private temp
  * dir, which the returned {@link PreparedInstall} owns. On failure the
@@ -1105,6 +1264,14 @@ export async function prepareInstall(
       `Extension ${ref.name} has no published versions.`,
     );
   }
+
+  const knownChannels = await resolvePublishedChannels(
+    ref,
+    version,
+    extInfo,
+    ctx,
+  );
+  const publishedChannel = knownChannels.get(version) ?? null;
 
   const archiveBytes = await ctx.downloadArchive(
     ref.name,
@@ -1302,6 +1469,8 @@ export async function prepareInstall(
       tmpDir,
       extractDir,
       safetyWarnings,
+      publishedChannel,
+      knownChannels,
     });
   } catch (error) {
     try {
@@ -1606,6 +1775,34 @@ async function pruneSkillOrphans(
   return await pruneOrphanFiles(toPrune, ctx.repoDir);
 }
 
+/**
+ * The identity of the install being replaced. The lockfile entry gives the
+ * version and followed channel, and the published channel comes from the
+ * registry when prepare resolved it, else from the entry. With no entry,
+ * a manifest under the extension root that names this extension gives the
+ * version alone. Null when neither says.
+ */
+function installedIdentity(
+  name: string,
+  entry: UpstreamExtensionEntry | null,
+  extensionRoot: string,
+  knownChannels: ReadonlyMap<string, string>,
+): ExtensionIdentity | null {
+  if (entry) {
+    return {
+      version: entry.version,
+      channel: entry.channel ?? "stable",
+      publishedChannel: knownChannels.get(entry.version) ??
+        readPublishedChannel(entry),
+    };
+  }
+  const manifest = readManifestIdentityAt(join(extensionRoot, "manifest.yaml"));
+  if (manifest && manifest.name === name) {
+    return { version: manifest.version, channel: null, publishedChannel: null };
+  }
+  return null;
+}
+
 /** Top-level names in an extension root that a nested entry cannot use. */
 const EXTENSION_ROOT_ENTRIES = new Set([
   "models",
@@ -1741,8 +1938,46 @@ export async function applyInstall(
     : [];
   conflicts.push(...skillConflicts);
 
+  // The channel the lockfile will record: the one this install follows.
+  const followedChannel = ctx.channel ?? "stable";
+  const replacement = oldEntry !== null || conflicts.length > 0 ||
+      await pathExistsNoFollow(absoluteExtRoot)
+    ? ExtensionReplacement.create({
+      name: ref.name,
+      current: installedIdentity(
+        ref.name,
+        oldEntry,
+        absoluteExtRoot,
+        prepared.knownChannels,
+      ),
+      incoming: {
+        version,
+        channel: followedChannel,
+        publishedChannel: prepared.publishedChannel,
+      },
+    })
+    : null;
+
   if (conflicts.length > 0 && !ctx.force) {
-    throw new ConflictError(conflicts, skillConflicts);
+    throw new ConflictError(
+      conflicts,
+      skillConflicts,
+      replacement ?? undefined,
+    );
+  }
+
+  if (replacement) ctx.onReplacing?.(replacement);
+  if (
+    prepared.publishedChannel !== null &&
+    ReleaseChannel.isPrereleaseName(prepared.publishedChannel) &&
+    followedChannel === "stable"
+  ) {
+    ctx.onUnoptedPrerelease?.({
+      name: ref.name,
+      version,
+      publishedChannel: prepared.publishedChannel,
+      parent: ctx.parentName ?? null,
+    });
   }
 
   // Entries nested under this one keep their own roots inside ours.
@@ -2074,6 +2309,12 @@ export async function applyInstall(
         filesChecksum: filesChecksum ?? undefined,
         serverUrl: resolveServerUrl(),
         channel: ctx.channel,
+        // A restore cannot always look the channel up; the same version
+        // keeps the channel it was recorded with.
+        publishedChannel: prepared.publishedChannel ??
+          (oldEntry?.version === version
+            ? readPublishedChannel(oldEntry) ?? undefined
+            : undefined),
         pulledAt: oldEntry?.version === version ? oldEntry.pulledAt : undefined,
       },
     );
@@ -2159,6 +2400,7 @@ export async function applyInstall(
               depth: ctx.depth + 1,
               channel: lockedEntry.channel,
               expectedChecksum: lockedEntry.checksum,
+              parentName: ref.name,
             },
           );
           if (depPending) {
@@ -2205,6 +2447,7 @@ export async function applyInstall(
             depth: ctx.depth + 1,
             channel: depChannel,
             expectedChecksum: undefined,
+            parentName: ref.name,
           });
           if (depPending) {
             dependencies.push(depPending);
@@ -2241,6 +2484,15 @@ export async function applyInstall(
         ...extractedFiles.filter((f) => !skillRecorded.has(f)),
         ...skillCreatedPaths,
       ],
+      channel: followedChannel,
+      publishedChannel: prepared.publishedChannel,
+      previous: replacement?.current ?? null,
+      ...(replacement
+        ? {
+          change: replacement.change,
+          channelChanged: replacement.channelChanged,
+        }
+        : {}),
     };
     return new PendingInstallNode({
       result,
@@ -2533,6 +2785,9 @@ export async function* extensionPull(
         alreadyPulled: deps.alreadyPulled,
         depth: deps.depth,
         channel: input.channel,
+        getVersionChannels: deps.getVersionChannels,
+        onReplacing: deps.onReplacing,
+        onUnoptedPrerelease: deps.onUnoptedPrerelease,
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt
@@ -2646,6 +2901,10 @@ export async function createExtensionPullDeps(
       client.downloadArchive(name, version, apiKey, channel),
     getChecksum: (name, version, channel) =>
       client.getChecksum(name, version, apiKey, channel),
+    getVersionChannels: async (name, versions) => {
+      const found = await findPublishedVersions(client, name, versions, apiKey);
+      return new Map([...found].map(([v, p]) => [v, p.channel]));
+    },
     lockfileRepository,
     skillsDirs,
     repoDir,

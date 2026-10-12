@@ -19,7 +19,10 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { readUpstreamExtensions } from "./upstream_extensions.ts";
+import {
+  readPublishedChannel,
+  readUpstreamExtensions,
+} from "./upstream_extensions.ts";
 
 async function withLockfile(
   content: string | null,
@@ -86,4 +89,21 @@ Deno.test("readUpstreamExtensions: rejects unparseable JSON, naming the file", a
       `Cannot parse lockfile ${lockfilePath}`,
     );
   });
+});
+
+Deno.test("readPublishedChannel: answers a release channel name", () => {
+  assertEquals(readPublishedChannel({ publishedChannel: "rc" }), "rc");
+});
+
+Deno.test("readPublishedChannel: an absent or hand-edited value reads as null", () => {
+  assertEquals(readPublishedChannel({}), null);
+  assertEquals(readPublishedChannel({ publishedChannel: "nightly" }), null);
+  assertEquals(
+    readPublishedChannel({ publishedChannel: "\u001b[31mbeta" }),
+    null,
+  );
+  assertEquals(
+    readPublishedChannel({ publishedChannel: 7 as unknown as string }),
+    null,
+  );
 });

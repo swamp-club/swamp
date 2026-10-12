@@ -20,13 +20,25 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
+  ConflictError,
   detectConflicts,
+  type InstallContext,
+  type InstallResult,
   LockfileRepository,
   parseExtensionRef,
+  pullExtension,
 } from "./extension_pull.ts";
+import { ExtensionReplacement } from "../../domain/extensions/extension_replacement.ts";
+import {
+  getSwampLogger,
+  initializeLogging,
+} from "../../infrastructure/logging/logger.ts";
+import "../../domain/models/models.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
 import { join } from "@std/path";
+
+await initializeLogging({});
 
 Deno.test("parseExtensionRef parses name without version", () => {
   const ref = parseExtensionRef("@myorg/my-ext");
@@ -152,4 +164,135 @@ Deno.test("detectConflicts uses nested path for bundles, not basename", async ()
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ===== Overwrite prompt (swamp-club#2877) =====
+
+const REPLACEMENT = ExtensionReplacement.create({
+  name: "@test/ext",
+  current: {
+    version: "2026.09.23.1",
+    channel: "stable",
+    publishedChannel: "stable",
+  },
+  incoming: {
+    version: "2026.10.01.1",
+    channel: "stable",
+    publishedChannel: "beta",
+  },
+});
+const HEADLINE =
+  "@test/ext: installed 2026.09.23.1 (stable) -> incoming 2026.10.01.1 (beta, following stable)";
+
+function stubResult(): InstallResult {
+  return {
+    name: "@test/ext",
+    version: "2026.10.01.1",
+    description: undefined,
+    extractedFiles: [],
+    integrityStatus: "verified",
+    repository: undefined,
+    platforms: [],
+    safetyWarnings: [],
+    binaries: [],
+    conflicts: [],
+    missingSourceFiles: [],
+    hasSkills: false,
+    hasSkillScripts: false,
+    skillFiles: [],
+    dependencies: [],
+    dependencyResults: [],
+    extendsTypes: [],
+    pruned: [],
+    createdPaths: [],
+  };
+}
+
+/**
+ * Runs pullExtension against an install that conflicts unless forced and,
+ * when forced, reports the replacement and an unopted pre-release as the
+ * real install does. Returns the console output and the prompt asked.
+ */
+async function pullWithConflict(answer: boolean): Promise<{
+  out: string;
+  installs: boolean[];
+  asked: { question: string; details: string[] }[];
+}> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_pull_prompt_" });
+  const installs: boolean[] = [];
+  const asked: { question: string; details: string[] }[] = [];
+  const lines: string[] = [];
+  const original = { log: console.log, info: console.info, warn: console.warn };
+  const capture = (...args: unknown[]) =>
+    lines.push(args.map(String).join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  try {
+    await pullExtension({ name: "@test/ext", version: null }, {
+      getExtension: () => Promise.resolve(null),
+      downloadArchive: () => Promise.reject(new Error("unused")),
+      getChecksum: () => Promise.resolve(null),
+      logger: getSwampLogger(["extension", "pull"]),
+      lockfileRepository: await LockfileRepository.create(
+        join(dir, "upstream_extensions.json"),
+      ),
+      skillsDirs: [],
+      repoDir: dir,
+      force: false,
+      outputMode: "log",
+      alreadyPulled: new Set(),
+      depth: 0,
+      confirm: (question, details) => {
+        asked.push({ question, details });
+        return Promise.resolve(answer);
+      },
+      installExtensionFn: (_ref, c: InstallContext) => {
+        installs.push(c.force);
+        if (!c.force) {
+          return Promise.reject(
+            new ConflictError(["a.ts"], [], REPLACEMENT),
+          );
+        }
+        c.onReplacing?.(REPLACEMENT);
+        c.onUnoptedPrerelease?.({
+          name: "@test/ext",
+          version: "2026.10.01.1",
+          publishedChannel: "beta",
+          parent: null,
+        });
+        return Promise.resolve(stubResult());
+      },
+    });
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+  return { out: lines.join("\n"), installs, asked };
+}
+
+Deno.test("pullExtension: the overwrite prompt states the replacement once, then what y and N do", async () => {
+  const { out, installs, asked } = await pullWithConflict(true);
+  assertEquals(installs, [false, true]);
+  assertEquals(out.split(HEADLINE).length - 1, 1);
+  assertEquals(asked, [{
+    question: "Overwrite existing files?",
+    details: [
+      "  y = replace 2026.09.23.1 (stable) with 2026.10.01.1 (beta)",
+      "  N = exit; nothing is changed",
+    ],
+  }]);
+  assertStringIncludes(
+    out,
+    "@test/ext@2026.10.01.1 is a beta release, and --channel was not passed",
+  );
+});
+
+Deno.test("pullExtension: answering N cancels without installing", async () => {
+  const { out, installs } = await pullWithConflict(false);
+  assertEquals(installs, [false]);
+  assertStringIncludes(out, HEADLINE);
+  assertStringIncludes(out, "Pull cancelled.");
 });

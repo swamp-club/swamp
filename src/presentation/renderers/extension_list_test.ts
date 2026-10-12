@@ -294,3 +294,71 @@ Deno.test("LogExtensionListRenderer - an auto-resolved skew remedy deletes what 
     lines.join("\n"),
   );
 });
+
+Deno.test("LogExtensionListRenderer - tags the published channel, and the followed one where it differs", async () => {
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({
+    _reset: true,
+    logLevel: "info",
+    _logsConfig: { exporterKind: "none" },
+  });
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+  };
+  const capture = (...args: unknown[]) => lines.push(args.join(" "));
+  console.log = capture;
+  console.info = capture;
+  console.warn = capture;
+  const entry = (name: string, extra: object) => ({
+    name,
+    version: "2026.10.01.1",
+    pulledAt: "2026-01-01",
+    files: [],
+    ...extra,
+  });
+  try {
+    const renderer = createExtensionListRenderer("log");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            extensions: [
+              entry("@ns/exact-beta", { publishedChannel: "beta" }),
+              entry("@ns/on-beta", {
+                channel: "beta",
+                publishedChannel: "beta",
+              }),
+              entry("@ns/old-entry", { channel: "rc" }),
+              entry("@ns/plain", { publishedChannel: "stable" }),
+            ],
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+  }
+  const row = (name: string) => lines.find((l) => l.includes(name)) ?? "";
+  assertEquals(
+    row("@ns/exact-beta").includes("v2026.10.01.1 [beta, following stable]"),
+    true,
+    row("@ns/exact-beta"),
+  );
+  assertEquals(row("@ns/on-beta").includes("v2026.10.01.1 [beta]"), true);
+  assertEquals(row("@ns/old-entry").includes("v2026.10.01.1 [rc]"), true);
+  assertEquals(
+    row("@ns/plain").includes("v2026.10.01.1 ["),
+    false,
+    row("@ns/plain"),
+  );
+});
