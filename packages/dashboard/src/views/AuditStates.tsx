@@ -277,6 +277,21 @@ export function AuditErrorState(
 const GRID = "act-row-grid";
 
 /** Placeholder rows shaped like the feed while it loads. */
+/**
+ * What the feed area shows: only the error when the stream failed with
+ * nothing to show (never "No activity yet" for a feed that didn't load), a
+ * skeleton until the first answer, else the feed.
+ */
+export function auditFeedView(
+  status: string,
+  eventCount: number,
+  historyLoaded: boolean,
+): "error" | "loading" | "feed" {
+  if (eventCount > 0) return "feed";
+  if (status === "error") return "error";
+  return !historyLoaded || status === "connecting" ? "loading" : "feed";
+}
+
 export function AuditFeedSkeleton({ rows = 10 }: { rows?: number }) {
   return (
     <SkeletonRegion label="Loading activity" className="act-feed">

@@ -27,6 +27,7 @@ import {
   AuditDisabledState,
   AuditErrorState,
   AuditFeedSkeleton,
+  auditFeedView,
   AuditLiveToggle,
   MANUAL_URL,
 } from "./AuditStates.tsx";
@@ -114,4 +115,13 @@ Deno.test("AuditLiveToggle: hidden without a feed, labelled per state otherwise"
     ),
     "Connecting",
   );
+});
+
+Deno.test("auditFeedView: a failed stream with nothing loaded shows only the error", () => {
+  assertEquals(auditFeedView("error", 0, false), "error");
+  assertEquals(auditFeedView("error", 0, true), "error");
+  assertEquals(auditFeedView("error", 3, true), "feed");
+  assertEquals(auditFeedView("connecting", 0, true), "loading");
+  assertEquals(auditFeedView("live", 0, false), "loading");
+  assertEquals(auditFeedView("live", 0, true), "feed");
 });

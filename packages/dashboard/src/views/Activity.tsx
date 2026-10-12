@@ -29,6 +29,7 @@ import {
   AuditDisabledState,
   AuditErrorState,
   AuditFeedSkeleton,
+  auditFeedView,
   AuditLiveToggle,
 } from "./AuditStates.tsx";
 import "../styles/activity.css";
@@ -244,15 +245,15 @@ export function Activity({ auditStream }: { auditStream: AuditStream }) {
     );
   }
 
-  const loading = events.length === 0 &&
-    (!historyLoaded || status === "connecting");
+  const feedView = auditFeedView(status, events.length, historyLoaded);
+  const loading = feedView === "loading";
 
   return (
     <>
       <div className="page-header">
         <h1>Activity</h1>
         <div className="header-right">
-          {!loading && (
+          {feedView === "feed" && (
             <span className="mono act-count" aria-live="polite">
               {filtering
                 ? `${formatCount(newestFirst.length)} of ${
@@ -310,43 +311,47 @@ export function Activity({ auditStream }: { auditStream: AuditStream }) {
         <AuditErrorState message={error} onRetry={reconnect} />
       )}
 
-      {loading ? <AuditFeedSkeleton /> : (
-        <div className="act-feed">
-          <div className="act-row-grid act-feed-head" aria-hidden="true">
-            {AUDIT_COLUMNS.map((c, i) => <span key={i}>{c}</span>)}
-          </div>
-          {newestFirst.length === 0
-            ? filtering
-              ? (
-                <EmptyState
-                  title="No events match these filters"
-                  action={
-                    <button
-                      type="button"
-                      className="btn-sm"
-                      onClick={clearFilters}
-                    >
-                      Clear filters
-                    </button>
-                  }
-                />
-              )
+      {feedView === "error"
+        ? null
+        : loading
+        ? <AuditFeedSkeleton />
+        : (
+          <div className="act-feed">
+            <div className="act-row-grid act-feed-head" aria-hidden="true">
+              {AUDIT_COLUMNS.map((c, i) => <span key={i}>{c}</span>)}
+            </div>
+            {newestFirst.length === 0
+              ? filtering
+                ? (
+                  <EmptyState
+                    title="No events match these filters"
+                    action={
+                      <button
+                        type="button"
+                        className="btn-sm"
+                        onClick={clearFilters}
+                      >
+                        Clear filters
+                      </button>
+                    }
+                  />
+                )
+                : (
+                  <EmptyState title="No activity yet">
+                    {status === "live"
+                      ? "Events appear here as soon as anyone uses this server."
+                      : "Resume the live feed to see new events."}
+                  </EmptyState>
+                )
               : (
-                <EmptyState title="No activity yet">
-                  {status === "live"
-                    ? "Events appear here as soon as anyone uses this server."
-                    : "Resume the live feed to see new events."}
-                </EmptyState>
-              )
-            : (
-              <div className="act-feed-body">
-                {newestFirst.map((event, idx) => (
-                  <EventRow key={`${event.id}-${idx}`} event={event} />
-                ))}
-              </div>
-            )}
-        </div>
-      )}
+                <div className="act-feed-body">
+                  {newestFirst.map((event, idx) => (
+                    <EventRow key={`${event.id}-${idx}`} event={event} />
+                  ))}
+                </div>
+              )}
+          </div>
+        )}
     </>
   );
 }
