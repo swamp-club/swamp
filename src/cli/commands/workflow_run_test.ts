@@ -219,3 +219,30 @@ Deno.test("workflowRunCommand: --detach is refused with --timeout and with --jun
     "--detach cannot be combined with --junit",
   );
 });
+
+Deno.test({
+  name:
+    "workflowRunCommand: --detach fails with a message when the server ends the request before the run starts",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = runEventServer([]);
+    try {
+      await assertRejects(
+        () =>
+          parseWorkflowRun([
+            "--json",
+            "--detach",
+            "--server",
+            server.url,
+            "--token",
+            "test.token",
+          ]),
+        UserError,
+        "ended the request before the run started",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});

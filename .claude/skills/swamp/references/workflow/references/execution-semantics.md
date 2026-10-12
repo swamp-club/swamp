@@ -30,8 +30,10 @@ swamp workflow history get <run-id> --server ws://localhost:9090
   `--junit`.
 - A detached run started from inside a step does not share that step's model
   lock. If it needs the same model, it waits until the step ends.
-- Detached runs of one workflow with the same inputs supersede each other's
-  suspended runs. Give each its own inputs or pass `--no-supersede`.
+- Runs started through a server never supersede one another, even with the same
+  inputs. Each detached run that reaches a gate stays suspended until it is
+  approved, rejected or cancelled, so resolve or cancel the ones no longer
+  wanted (`swamp workflow cancel --run <run-id> --server <url>`).
 
 ## Webhook Delivery
 

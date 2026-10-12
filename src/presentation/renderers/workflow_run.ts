@@ -1404,12 +1404,14 @@ export function renderWorkflowRunAccepted(
     unguardedConsole.log(JSON.stringify(data, null, 2));
     return;
   }
+  // Both come from the server; neither reaches the terminal unescaped.
   const workflowName = escapeControlCharacters(data.workflowName);
+  const runId = escapeControlCharacters(data.runId);
   writeOutput([
-    `${green("Accepted")} workflow ${workflowName} (run: ${data.runId})`,
+    `${green("Accepted")} workflow ${workflowName} (run: ${runId})`,
     dim("  The run continues on the server."),
-    dim(`  Status: swamp workflow history get ${data.runId}${commandTarget}`),
-    dim(`  Logs:   swamp workflow history logs ${data.runId}${commandTarget}`),
-    dim(`  Cancel: swamp workflow cancel --run ${data.runId}${commandTarget}`),
+    dim(`  Status: swamp workflow history get ${runId}${commandTarget}`),
+    dim(`  Logs:   swamp workflow history logs ${runId}${commandTarget}`),
+    dim(`  Cancel: swamp workflow cancel --run ${runId}${commandTarget}`),
   ].join("\n"));
 }

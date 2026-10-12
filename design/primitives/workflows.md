@@ -1685,10 +1685,14 @@ resume applies the signal, and cancelling it would discard one. Such a run stays
 suspended until someone resumes it, so a workflow started repeatedly and never
 resumed accumulates suspended runs.
 
-Supersede applies to a detached run (`--detach`) as to any other: detached runs
-of one workflow started with the same inputs cancel each other's suspended
-runs. A caller that fans out runs meant to wait at a gate side by side gives
-each its own inputs or passes `--no-supersede`.
+A run started through serve is serve-owned (it records the instance's id), and
+supersede leaves serve-owned runs alone (`isSuperseded`,
+`src/libswamp/workflows/supersede.ts`). So runs started with
+`swamp workflow run --server`, detached (`--detach`) or not, never supersede
+one another: each one that reaches a gate stays suspended until it is approved,
+rejected or cancelled, and a caller that starts many accumulates them. A run
+started through serve still supersedes matching suspended runs that a local
+`swamp workflow run` left, unless `--no-supersede` is given.
 
 **Nested workflows.** A parent waiting on a child that waits for a signal is
 told to signal the child's wait, then resume the child, then resume the parent.

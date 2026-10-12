@@ -2517,3 +2517,17 @@ Deno.test("renderWorkflowRunAccepted: log mode names the run and the commands th
     "swamp workflow cancel --run run-1 --server ws://host:9090",
   );
 });
+
+Deno.test("renderWorkflowRunAccepted: log mode escapes control characters in the server's run id", async () => {
+  const lines = await captureOutputAsync(() => {
+    renderWorkflowRunAccepted(
+      { runId: "run\u001b]0;x\u0007", workflowName: "deploy" },
+      "log",
+    );
+    return Promise.resolve();
+  });
+  const output = lines.join("\n");
+  assertEquals(output.includes("\u001b"), false);
+  assertEquals(output.includes("\u0007"), false);
+  assertStringIncludes(output, "(run: run\\x1b]0;x\\x07)");
+});

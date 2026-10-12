@@ -870,11 +870,13 @@ async function runWorkflowViaServer(
         return;
       }
       if (detach) {
-        // A detached stream ends at the run's own started event; one that
-        // ended without it was refused, and the renderer has said why.
+        // A detached stream ends at the run's own started event. A refusal
+        // throws before this; a stream that just ends has started nothing.
         if (!accepted) {
-          Deno.exitCode = 1;
-          return;
+          throw new UserError(
+            "The server ended the request before the run started, so no run ID was returned. Check for a run with: swamp workflow history get " +
+              `${workflowIdOrName}${commandTarget}`,
+          );
         }
         renderWorkflowRunAccepted(accepted, ctx.outputMode, commandTarget);
       }
