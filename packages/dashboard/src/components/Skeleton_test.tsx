@@ -24,6 +24,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   SkeletonChart,
   SkeletonKeyValues,
+  SkeletonStats,
   SkeletonTable,
 } from "./Skeleton.tsx";
 
@@ -81,4 +82,12 @@ Deno.test("SkeletonTable: real column headers in a busy region", () => {
   assertStringIncludes(html, "<th>Name</th><th>Status</th>");
   assertStringIncludes(html, "Loading things");
   assertEquals(count(html, 'class="skel-row"'), 2);
+});
+
+Deno.test("SkeletonStats: four cards keep the stylesheet's responsive grid", () => {
+  assert(!renderToStaticMarkup(<SkeletonStats />).includes("grid-template"));
+  assertStringIncludes(
+    renderToStaticMarkup(<SkeletonStats count={3} />),
+    "grid-template-columns:repeat(3, 1fr)",
+  );
 });

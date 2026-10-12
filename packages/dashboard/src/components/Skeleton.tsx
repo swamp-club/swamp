@@ -276,13 +276,20 @@ export function SkeletonStats({ count = 4 }: { count?: number }) {
     <div
       className="stats-grid"
       aria-hidden="true"
-      style={{ gridTemplateColumns: `repeat(${count}, 1fr)` }}
+      // Four is the stylesheet's own grid, which narrows on small screens.
+      style={count === 4
+        ? undefined
+        : { gridTemplateColumns: `repeat(${count}, 1fr)` }}
     >
       {Array.from(
         { length: count },
         (_, i) => (
           <div className="stat-card" key={i}>
-            <Skeleton width={70} height={10} style={{ marginBottom: 12 }} />
+            <Skeleton
+              width={70}
+              height={10}
+              style={{ display: "block", marginBottom: 12 }}
+            />
             <Skeleton width={i % 2 ? 54 : 80} height={26} />
           </div>
         ),
