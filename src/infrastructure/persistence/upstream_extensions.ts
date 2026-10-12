@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { errorPaths, markErrorPaths } from "../../domain/errors.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 
 /** Entry in upstream_extensions.json. */
 export interface UpstreamExtensionEntry {
@@ -42,6 +43,27 @@ export interface UpstreamExtensionEntry {
    * lockfile entries — consumers default to "stable" when missing.
    */
   channel?: string;
+  /**
+   * Release channel the registry listed the installed version on when it
+   * was pulled. Differs from `channel` (the channel the install follows)
+   * when an exact version was pulled from another channel. Absent when it
+   * was not known. Read it through {@link readPublishedChannel}.
+   */
+  publishedChannel?: string;
+}
+
+/**
+ * The entry's published channel, or null when it is absent or not a
+ * release channel name. The lockfile is repo-controlled, so a hand-edited
+ * value is ignored rather than shown.
+ */
+export function readPublishedChannel(
+  entry: Pick<UpstreamExtensionEntry, "publishedChannel">,
+): string | null {
+  const value = entry.publishedChannel;
+  return typeof value === "string" && ReleaseChannel.isValid(value)
+    ? value
+    : null;
 }
 
 /** Shape of upstream_extensions.json. */

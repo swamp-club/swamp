@@ -470,7 +470,7 @@ const PINNED: ReadonlyArray<
     calls: [
       "Math.max(...exts.map((ext) => ext.latestVersion ? ext.latestVersion.length + 1 : 1))",
       "Math.max(...exts.map((ext) => ext.name.length))",
-      'Math.max(...exts.map((ext) => { const tag = ext.channel && ext.channel !== "stable" ? ` [${ext.chann…',
+      "Math.max(...exts.map((ext) => ext.version.length + 1 + channelTag(ext).length))",
     ],
   },
   {

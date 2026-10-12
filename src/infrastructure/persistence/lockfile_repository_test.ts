@@ -581,3 +581,22 @@ Deno.test({
     });
   },
 });
+
+Deno.test("LockfileRepository.writeEntry: records publishedChannel next to channel, and omits it when unknown", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const repo = await LockfileRepository.create(path);
+    await repo.writeEntry("@scope/known", "2026.10.01.1", ["a.ts"], {
+      publishedChannel: "beta",
+    });
+    await repo.writeEntry("@scope/unknown", "2026.10.01.1", ["b.ts"], {
+      channel: "beta",
+    });
+
+    const onDisk = await readUpstreamExtensions(path);
+    assertEquals(onDisk["@scope/known"].publishedChannel, "beta");
+    assertEquals(onDisk["@scope/known"].channel, undefined);
+    assertEquals("publishedChannel" in onDisk["@scope/unknown"], false);
+    assertEquals(onDisk["@scope/unknown"].channel, "beta");
+  });
+});
