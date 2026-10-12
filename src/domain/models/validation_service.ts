@@ -393,10 +393,9 @@ export class DefaultModelValidationService implements ModelValidationService {
     checkContext?: CheckValidationContext,
     options?: ModelValidationOptions,
   ): Promise<ModelValidationOutcome> {
-    // Global arguments and checks read what a method run would give them:
-    // the definition after its upgrade chain, applied in memory and never
-    // saved (swamp-club#3196). Every other check reads the definition as
-    // authored.
+    // Global arguments and checks read static arguments as a method run
+    // would: after the upgrade chain, applied in memory and never saved
+    // (swamp-club#3196). Every other check reads the definition as authored.
     const upgrade = this.upgradeInMemory(definition, modelDef);
     const validations: Promise<ValidationResult>[] = [
       this.validateDefinitionSchema(definition),
@@ -465,14 +464,20 @@ export class DefaultModelValidationService implements ModelValidationService {
    * method run does before it reads the global arguments. Returns the
    * definition unchanged when no upgrade applies or its `typeVersion` is
    * malformed (the Type version check reports that). An upgrade that throws
-   * fails Global arguments, since the next method run throws the same way —
-   * unless a global argument holds a swamp expression: the run upgrades the
-   * evaluated values, so the arguments are checked as written instead.
+   * fails Global arguments, since the next method run throws the same way.
+   *
+   * Arguments holding a swamp expression are left as written: the run
+   * upgrades their evaluated values, and an upgrade run over the raw text
+   * (`Number()` of an expression, say) yields values the run never sees.
+   * The Global arguments check skips them until evaluation anyway.
    */
   private upgradeInMemory(
     definition: Definition,
     modelDef: ModelDefinition,
   ): { definition: Definition; failure?: ValidationResult } {
+    if (containsSwampExpression(definition.globalArguments)) {
+      return { definition };
+    }
     try {
       return {
         definition: new DefinitionUpgradeService().upgrade(definition, modelDef)
@@ -480,9 +485,8 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     } catch (error) {
       if (
-        (error instanceof UserError &&
-          error.code === MALFORMED_TYPE_VERSION_CODE) ||
-        containsSwampExpression(definition.globalArguments)
+        error instanceof UserError &&
+        error.code === MALFORMED_TYPE_VERSION_CODE
       ) {
         return { definition };
       }

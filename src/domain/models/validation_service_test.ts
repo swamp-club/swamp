@@ -2927,3 +2927,40 @@ Deno.test("validateModel: gives pre-flight checks the upgraded global arguments"
   );
   assertEquals(seen, { target: "example" });
 });
+
+Deno.test("validateModel: checks arguments as written when an upgrade would convert an expression-valued argument", async () => {
+  let seen: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    ...renamingModel((old) => ({ port: Number(old.port) })),
+    globalArguments: z.object({ port: z.number() }),
+    checks: {
+      "sees-args": {
+        description: "Records the global arguments",
+        execute: (context) => {
+          seen = context.globalArgs;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+  const definition = Definition.create({
+    name: "stale",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { port: "${{ inputs.port }}" },
+  });
+
+  const { results } = await new DefaultModelValidationService().validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext(),
+  );
+
+  // The run upgrades the evaluated value; run over the raw expression text,
+  // Number() would give a static NaN that the schema check rejects.
+  assertEquals(
+    results.find((r) => r.name === "Global arguments")?.passed,
+    true,
+  );
+  assertEquals(seen, { port: "${{ inputs.port }}" });
+});
