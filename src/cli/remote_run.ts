@@ -894,8 +894,10 @@ const HEALTH_PROBE_TIMEOUT_MS = 3_000;
 
 /**
  * Probes the server's unauthenticated /health endpoint to check if the
- * server is reachable and healthy. Used to disambiguate auth rejections
- * (server is up but returned 401/403) from genuine transport errors.
+ * server is reachable and healthy. A healthy probe only shows the server is
+ * up — not that it rejected the credentials — so a connection failure that
+ * carries no HTTP status keeps its own message and gains an auth hint
+ * (swamp-club#3276).
  */
 export async function probeServerHealth(wsUrl: string): Promise<boolean> {
   const httpUrl = toHttpUrl(wsUrl);
@@ -939,7 +941,7 @@ async function classifyConnectionError(
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
   if (await probeServerHealth(wsUrl)) {
-    return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+    return `${originalMessage} — ${wsUrl} answers its health check, so the connection failed after reaching the server; if this keeps happening the request may have been rejected for authentication — run: swamp auth server-login --server ${wsUrl}`;
   }
   return originalMessage;
 }

@@ -1350,6 +1350,95 @@ Deno.test({
   },
 });
 
+/**
+ * A server whose /health answers ok but which drops every WebSocket upgrade
+ * without a response — a transient connection failure that carries no HTTP
+ * status (swamp-club#3276).
+ */
+function connectionDroppingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+} {
+  const listener = Deno.listen({ port: 0, hostname: "127.0.0.1" });
+  const accepting = (async () => {
+    for await (const conn of listener) {
+      const buf = new Uint8Array(4096);
+      const n = await conn.read(buf).catch(() => null);
+      const head = new TextDecoder().decode(buf.subarray(0, n ?? 0));
+      if (!/upgrade: websocket/i.test(head)) {
+        const body = JSON.stringify({ status: "ok" });
+        await conn.write(
+          new TextEncoder().encode(
+            `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n` +
+              `content-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`,
+          ),
+        ).catch(() => {});
+      }
+      try {
+        conn.close();
+      } catch { /* already closed */ }
+    }
+  })();
+  return {
+    url: `ws://127.0.0.1:${(listener.addr as Deno.NetAddr).port}`,
+    shutdown: async () => {
+      listener.close();
+      await accepting.catch(() => {});
+    },
+  };
+}
+
+Deno.test({
+  name:
+    "remote run: a dropped connection to a healthy server keeps the original error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = connectionDroppingServer();
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "Could not connect to");
+      assertEquals(error.message.startsWith("Authentication failed"), false);
+      assertStringIncludes(error.message, "swamp auth server-login --server");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: a dropped connection to a healthy server keeps the original error, not an auth failure",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = connectionDroppingServer();
+    try {
+      const error = await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.grant.list" },
+          ),
+        UserError,
+      );
+      assertStringIncludes(error.message, "Could not connect to");
+      assertEquals(error.message.startsWith("Authentication failed"), false);
+      assertStringIncludes(error.message, "swamp auth server-login --server");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
 // ── rate-limit error classification tests ────────────────────────────
 
 function rateLimitingServer(): {
