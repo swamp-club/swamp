@@ -898,15 +898,18 @@ export function serverReloadCommand(server: string): string {
 const HANDSHAKE_PROBE_TIMEOUT_MS = 3_000;
 
 /**
- * Repeats a failed WebSocket handshake as an HTTP/1.1 request carrying the
- * same headers, and returns the status the server answers with — or
- * `undefined` when it does not answer.
+ * Repeats a failed WebSocket handshake as an HTTP/1.1 request and returns the
+ * status the server answers with — or `undefined` when it does not answer.
  *
  * Over TLS, Deno's WebSocket client negotiates HTTP/2, and a handshake the
  * server rejects (401, 429, …) surfaces as an opaque stream error with no
  * status in it (swamp-club#1482). Over HTTP/1.1 the same rejection comes back
- * as a status, so the error can be classified from what the server said
- * rather than guessed (swamp-club#3276).
+ * as a status (swamp-club#3276).
+ *
+ * The probe never sends the `Authorization` header — the other headers (proxy
+ * pass-through) are kept. Serve rejects a tokenless handshake before its
+ * per-token rate limit and audit log, so the probe spends no login attempt
+ * and cannot lock a token out.
  */
 export async function probeHandshakeStatus(
   wsUrl: string,
@@ -921,17 +924,18 @@ export async function probeHandshakeStatus(
       http2: false,
       ...(effectiveCaCerts?.length ? { caCerts: effectiveCaCerts } : {}),
     });
-    const key = btoa(
-      String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))),
-    );
+    const probeHeaders: Record<string, string> = {};
+    for (const [name, value] of Object.entries(headers)) {
+      if (name.toLowerCase() !== "authorization") probeHeaders[name] = value;
+    }
     const response = await fetch(toHttpUrl(wsUrl), {
       client,
       headers: {
-        ...headers,
+        ...probeHeaders,
         "Upgrade": "websocket",
         "Connection": "Upgrade",
         "Sec-WebSocket-Version": "13",
-        "Sec-WebSocket-Key": key,
+        "Sec-WebSocket-Key": randomWebSocketKey(),
       },
       signal: AbortSignal.timeout(HANDSHAKE_PROBE_TIMEOUT_MS),
     });
@@ -942,6 +946,15 @@ export async function probeHandshakeStatus(
   } finally {
     client?.close();
   }
+}
+
+/** A random base64 `Sec-WebSocket-Key` (RFC 6455: 16 random bytes). */
+function randomWebSocketKey(): string {
+  let binary = "";
+  for (const byte of crypto.getRandomValues(new Uint8Array(16))) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }
 
 /**
@@ -957,12 +970,44 @@ function describeHandshakeStatus(
     return "Rate-limited by server — try again later";
   }
   if (statusCode === 401 || statusCode === 403) {
-    return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+    return authFailedMessage(wsUrl);
   }
   if (statusCode >= 500) {
     return `Server error (HTTP ${statusCode}) while connecting to ${wsUrl} — check the server log for the cause`;
   }
   return originalMessage;
+}
+
+function authFailedMessage(wsUrl: string): string {
+  return `Authentication failed — run: swamp auth server-login --server ${wsUrl}`;
+}
+
+/**
+ * The message for a handshake that failed with no status in its error, given
+ * what the tokenless probe got back (`undefined`: no answer).
+ *
+ * A 401/403 to the probe only shows the server wants a token. When the
+ * failed handshake sent none, that is the cause. When it sent one over
+ * `ws://`, a rejection of that token would have carried its own status, so
+ * the failure was something else. Over `wss://` the token may have been
+ * rejected behind HTTP/2, so the auth guidance stays, with the original error
+ * kept beside it so a transient failure is still visible (swamp-club#3276).
+ */
+export function describeStatuslessFailure(
+  wsUrl: string,
+  originalMessage: string,
+  probedStatus: number | undefined,
+  sentToken: boolean,
+): string {
+  if (probedStatus === undefined) return originalMessage;
+  if (probedStatus === 401 || probedStatus === 403) {
+    if (!sentToken) return authFailedMessage(wsUrl);
+    if (new URL(wsUrl).protocol === "wss:") {
+      return `${authFailedMessage(wsUrl)} (${originalMessage})`;
+    }
+    return originalMessage;
+  }
+  return describeHandshakeStatus(wsUrl, probedStatus, originalMessage);
 }
 
 async function classifyConnectionError(
@@ -983,14 +1028,15 @@ async function classifyConnectionError(
   }
   const tlsGuidance = diagnoseTlsMessage(originalMessage);
   if (tlsGuidance) return tlsGuidance;
-  // A probe that is not rejected (e.g. 101) means the handshake works now,
-  // so the failure was something other than the server refusing it — keep
-  // the original error rather than guessing at a cause (swamp-club#3276).
-  const probedStatus = await probeHandshakeStatus(wsUrl, headers, caCerts);
-  if (probedStatus !== undefined && probedStatus >= 400) {
-    return describeHandshakeStatus(wsUrl, probedStatus, originalMessage);
-  }
-  return originalMessage;
+  const sentToken = Object.keys(headers).some((name) =>
+    name.toLowerCase() === "authorization"
+  );
+  return describeStatuslessFailure(
+    wsUrl,
+    originalMessage,
+    await probeHandshakeStatus(wsUrl, headers, caCerts),
+    sentToken,
+  );
 }
 
 /**

@@ -27,6 +27,7 @@ import { UserError } from "../domain/errors.ts";
 import { renderError } from "../presentation/output/error_output.ts";
 import {
   createTlsHttpClient,
+  describeStatuslessFailure,
   diagnoseTlsMessage,
   formatCommandTarget,
   probeHandshakeStatus,
@@ -1275,7 +1276,7 @@ function tokenCheckingServer(): {
 
 Deno.test({
   name:
-    "probeHandshakeStatus: returns the status a rejected handshake gets, sending the caller's headers",
+    "probeHandshakeStatus: never sends the caller's token, so a valid one is still answered 401",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1284,20 +1285,79 @@ Deno.test({
       assertEquals(await probeHandshakeStatus(server.url), 401);
       assertEquals(
         await probeHandshakeStatus(server.url, {
-          Authorization: "Bearer bad",
+          Authorization: "Bearer good",
         }),
         401,
       );
       assertEquals(
         await probeHandshakeStatus(server.url, {
-          Authorization: "Bearer good",
+          authorization: "Bearer good",
         }),
-        101,
+        401,
       );
     } finally {
       await server.shutdown();
     }
   },
+});
+
+Deno.test({
+  name: "probeHandshakeStatus: sends the caller's other headers",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) =>
+        new Response(null, {
+          status: req.headers.get("x-tunnel") === "yes" ? 418 : 400,
+        }),
+    );
+    try {
+      assertEquals(
+        await probeHandshakeStatus(`ws://127.0.0.1:${server.addr.port}`, {
+          "x-tunnel": "yes",
+        }),
+        418,
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test("describeStatuslessFailure: classifies from what the tokenless probe got", () => {
+  const ws = "ws://serve.test/";
+  const wss = "wss://serve.test/";
+  const original = "Could not connect to wss://serve.test/: stream error";
+  const auth = (url: string) =>
+    `Authentication failed — run: swamp auth server-login --server ${url}`;
+  const cases: Array<
+    [string, string, number | undefined, boolean, string]
+  > = [
+    ["no answer", wss, undefined, true, original],
+    ["429", wss, 429, true, "Rate-limited by server — try again later"],
+    [
+      "503",
+      wss,
+      503,
+      false,
+      `Server error (HTTP 503) while connecting to ${wss} — check the server log for the cause`,
+    ],
+    ["401, no token sent", wss, 401, false, auth(wss)],
+    ["403, no token sent", ws, 403, false, auth(ws)],
+    ["401, token sent over wss", wss, 401, true, `${auth(wss)} (${original})`],
+    ["401, token sent over ws", ws, 401, true, original],
+    ["101 (no auth required)", wss, 101, true, original],
+    ["404", ws, 404, false, original],
+  ];
+  for (const [label, url, status, sentToken, expected] of cases) {
+    assertEquals(
+      describeStatuslessFailure(url, original, status, sentToken),
+      expected,
+      label,
+    );
+  }
 });
 
 Deno.test({
@@ -1501,7 +1561,7 @@ const HTTP2_STREAM_ERROR =
 
 Deno.test({
   name:
-    "remote run: a handshake rejected without a status is classified from the probe's 401",
+    "remote run: a tokenless handshake rejected without a status is classified from the probe's 401",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1511,7 +1571,6 @@ Deno.test({
         for await (
           const _ of runWorkflowOverServer({
             server: server.url,
-            token: "bad",
             payload: { workflowIdOrName: "wf" },
             createSocket: opaquelyFailingSocket(HTTP2_STREAM_ERROR),
           })
@@ -1530,7 +1589,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "requestServerResponse: a handshake rejected without a status is classified from the probe's 401",
+    "requestServerResponse: a tokenless handshake rejected without a status is classified from the probe's 401",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -1559,7 +1618,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "requestServerResponse: a handshake failure the probe finds accepted keeps the original error",
+    "requestServerResponse: a token handshake over ws:// that fails without a status keeps the original error",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
