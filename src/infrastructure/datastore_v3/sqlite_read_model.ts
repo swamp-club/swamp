@@ -551,7 +551,12 @@ export class SqliteReadModel implements ReadModel {
         true,
         "the compacted base",
       );
-      if (path === undefined) continue;
+      if (path === undefined) {
+        // A replay never records ownership of a key the guards skip; the
+        // fold judged it from the key string alone, so forget it here.
+        this.#state.dropLoadFile(namespace, record_key);
+        continue;
+      }
       await this.#writeContent(namespace, path, content, signal);
     }
 

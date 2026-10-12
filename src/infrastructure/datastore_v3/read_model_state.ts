@@ -607,6 +607,18 @@ export class ReadModelState {
     return row.inline === null ? undefined : { inline: row.inline };
   }
 
+  /**
+   * Forgets the staged ownership of a file the load left alone because its
+   * path is refused, as a replay records none for it.
+   */
+  dropLoadFile(namespace: string, recordKey: string): void {
+    this.#transaction(() => {
+      this.#db.prepare(
+        "DELETE FROM load_files WHERE namespace = ? AND record_key = ?",
+      ).run(namespace, recordKey);
+    });
+  }
+
   /** Records files a load is about to write or remove, durably, first. */
   touchKeys(keys: readonly LoadKey[]): void {
     this.#transaction(() => {

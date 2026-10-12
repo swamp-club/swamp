@@ -3292,7 +3292,9 @@ keeps it that way until the opt-in wires it in.
      named by a commit or a base record, or released at or after
      `releasedSince`. `ChunkCollector` passes its cutoff (`now - grace`).
      Without the argument every released chunk counts, as before.
-   - Compaction forgets releases older than `DEFAULT_CHUNK_GRACE_MS`.
+   - Compaction forgets releases older than `releasedRetentionMs`
+     (`DEFAULT_CHUNK_GRACE_MS` by default), which must be at least the
+     longest grace period any sweep uses.
 
    #3249's guarantees are unchanged: the sweep's re-check and restore, and
    the writer's post-commit check. Compaction never names a new chunk.
@@ -3359,7 +3361,10 @@ copy:
 The base has no files, so refused keys and file/directory conflicts are judged
 from key strings against the base's present files. That is what the read model
 finds on a cache holding only materialised files. Like replay, a cache holding
-other files can differ (see "Path conflicts" above). Catalog rows are stored as
+other files can differ (see "Path conflicts" above). A key refused only by
+its resolved path (a state directory placed inside a synced one) passes the
+lexical check, so the load drops its ownership when the guards skip it, as a
+replay records none. Catalog rows are stored as
 versions and take their metadata from the live versions, which they always
 equal. A row that is not live fails the batch.
 
@@ -3383,6 +3388,10 @@ commits per transaction:
 2. in one `BEGIN IMMEDIATE`, check the point again, fold, move the txnIds,
    drop the references, write the snapshots, delete the rows and move the
    point.
+
+A point or a partition that changed between the two steps means another
+process is writing the store, and the batch says so rather than report
+damage.
 
 A failure or a crash leaves a batch whole or absent.
 `integration/datastore_v3_compaction_test.ts` stops one with an injected

@@ -39,6 +39,7 @@ import {
   type CommitStore,
 } from "../src/domain/datastore_v3/commit_store.ts";
 import { type Op, putOp, tombstoneOp } from "../src/domain/datastore_v3/op.ts";
+import { RecordKey } from "../src/domain/datastore_v3/record_key.ts";
 import {
   dataKey,
   modelIntent,
@@ -405,6 +406,84 @@ Deno.test("compaction: a chunk released within the sweep's grace period is kept"
     assertEquals(sweep.referenced, all.length);
     assertEquals(await storedChunks(env), all);
     assert(superseded.length > 0);
+  });
+});
+
+Deno.test("compaction: released chunks are forgotten after the release retention, which a caller sets", async () => {
+  await withV3Env(async (env) => {
+    const { superseded, present } = await supersedingHistory(env);
+    const hashes = [...superseded, ...present];
+    // Released an hour ago, then forgotten by a later batch keeping
+    // releases for less than that.
+    await env.store.compactHistory(5, {
+      clock: () => new Date(Date.now() - 60 * 60 * 1000),
+    });
+    assertEquals(
+      [...await env.store.referencedChunks("", hashes)].sort(),
+      [...hashes].sort(),
+    );
+    await appendAll(env, [[await savePut("d", 1), versionOp("d", 1)]], 6);
+    await env.store.compactHistory(6, { releasedRetentionMs: 1000 });
+    const referenced = await env.store.referencedChunks("", hashes);
+    assertEquals([...referenced].sort(), present);
+    await assertRejects(
+      () => env.store.compactHistory(5, { releasedRetentionMs: -1 }),
+      Error,
+      "releasedRetentionMs",
+    );
+  });
+});
+
+Deno.test("compaction: a key refused only by its path gets no ownership from a load, as from a replay", async () => {
+  await withV3Env(async (env) => {
+    // A state directory inside a synced one: keys under it pass the
+    // lexical check, and only the resolved path refuses them.
+    const view = (name: string) => {
+      const root = swampPath(join(env.dir, name));
+      const stateDir = join(root, "data", "state");
+      return {
+        readModel: env.openReadModel({ cacheRoot: () => root, stateDir }),
+        root,
+        stateDir,
+      };
+    };
+    const ownership = (stateDir: string) => {
+      const db = new DatabaseSync(join(stateDir, "_read_model_v3.db"), {
+        readOnly: true,
+      });
+      try {
+        return db.prepare(
+          "SELECT record_key, owner, mark, present FROM materialised_keys ORDER BY 1",
+        ).all();
+      } finally {
+        db.close();
+      }
+    };
+    const refused = await putOp({
+      intent: modelIntent({ kind: "data.save", name: "a", version: 1 }),
+      key: RecordKey.create("data/state/x"),
+      inline: btoa("x"),
+    });
+    await appendAll(env, [
+      [refused],
+      [await savePut("a", 1), versionOp("a", 1)],
+    ]);
+    const reference = view("reference");
+    const loaded = view("loaded");
+    try {
+      await reference.readModel.catchUp(signal());
+      await env.store.compactHistory(2);
+      await loaded.readModel.catchUp(signal());
+      assertEquals(ownership(loaded.stateDir), ownership(reference.stateDir));
+      const files = async (root: string) =>
+        [...await readTree(root)].filter(([key]) =>
+          !key.startsWith("data/state/")
+        );
+      assertEquals(await files(loaded.root), await files(reference.root));
+    } finally {
+      await reference.readModel.close();
+      await loaded.readModel.close();
+    }
   });
 });
 

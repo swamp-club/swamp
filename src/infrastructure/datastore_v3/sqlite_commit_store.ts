@@ -840,6 +840,12 @@ export class SqliteCommitStore implements CommitStore {
     const batchSize = options.batchSize ?? COMPACTION_BATCH;
     requirePositive(batchSize, "batchSize");
     const clock = options.clock ?? (() => new Date());
+    const retention = options.releasedRetentionMs ?? DEFAULT_CHUNK_GRACE_MS;
+    if (!Number.isSafeInteger(retention) || retention < 0) {
+      throw new Error(
+        `releasedRetentionMs must be a non-negative integer: ${retention}`,
+      );
+    }
     // Never past the last cursor assigned: a point above it would cover
     // commits not yet written.
     const last = (this.#db.prepare("SELECT MAX(cursor) AS cursor FROM commits")
@@ -888,11 +894,9 @@ export class SqliteCommitStore implements CommitStore {
           commit.seq,
         );
         if (rebuilt.seq !== commit.seq) {
-          throw new CommitStoreCorruptError(
-            commit.namespace,
-            partition,
-            commit.seq,
-            `rebuilding it for compaction reached seq ${rebuilt.seq}`,
+          // Its commits changed between reading the batch and rebuilding.
+          throw new Error(
+            `Partition ${partition} changed in commits.db during compaction: another process is writing the store`,
           );
         }
         snapshots.push({
@@ -928,7 +932,7 @@ export class SqliteCommitStore implements CommitStore {
           );
         }
         this.#base.setPoint(rows[rows.length - 1].cursor);
-        released += this.#base.finish(now - DEFAULT_CHUNK_GRACE_MS);
+        released += this.#base.finish(now - retention);
         options.beforeCommit?.();
         this.#db.exec("COMMIT");
       } catch (error) {
@@ -1147,8 +1151,10 @@ export type SqliteCompactHistoryOptions =
 
 /** One table of the compacted base, as {@link SqliteCompactedBase.readPage} pages it. */
 interface BaseSection {
-  /** The rows to page: a table, or a join whose key columns come first. */
+  /** The table paged by its key; `select` may join others onto it. */
   readonly table: string;
+  /** Extra columns and the join that supplies them, if any. */
+  readonly join?: string;
   /** The primary key, in order: the page order and the resume point. */
   readonly keys: readonly string[];
   readonly entry: (row: Record<string, unknown>) => CompactedBaseEntry;
@@ -1190,9 +1196,10 @@ const BASE_SECTIONS: readonly BaseSection[] = [
     },
   },
   {
-    table:
-      "(SELECT c.namespace, c.partition, c.name, c.version, v.metadata FROM base_catalog AS c " +
-      "JOIN base_versions AS v USING (namespace, partition, name, version))",
+    table: "base_catalog",
+    join:
+      "JOIN base_versions AS v ON v.namespace = t.namespace AND v.partition = t.partition " +
+      "AND v.name = t.name AND v.version = t.version",
     keys: ["namespace", "partition", "name", "version"],
     entry: (row) => ({
       kind: "catalog-row",
@@ -1566,13 +1573,18 @@ class SqliteCompactedBase implements CompactedBaseWriter {
     let { section, key } = parsePageToken(after);
     const entries: CompactedBaseEntry[] = [];
     while (section < BASE_SECTIONS.length) {
-      const { table, keys, entry } = BASE_SECTIONS[section];
-      const order = keys.join(", ");
+      const { table, join, keys, entry } = BASE_SECTIONS[section];
+      // Keyset paging on the table's own primary key, so each page is an
+      // index range however large the base.
+      const order = keys.map((k) => `t.${k}`).join(", ");
       const where = key === undefined
         ? ""
         : `WHERE (${order}) > (${keys.map(() => "?").join(", ")}) `;
+      const columns = join === undefined ? "t.*" : "t.*, v.metadata";
       const rows = this.#db.prepare(
-        `SELECT * FROM ${table} ${where}ORDER BY ${order} LIMIT ?`,
+        `SELECT ${columns} FROM ${table} AS t ${
+          join ?? ""
+        } ${where}ORDER BY ${order} LIMIT ?`,
       ).all(...(key ?? []), limit - entries.length) as Record<
         string,
         unknown

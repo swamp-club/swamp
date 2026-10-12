@@ -172,6 +172,12 @@ export interface CompactHistoryOptions {
   readonly signal?: AbortSignal;
   /** When chunks are released; the wall clock by default. */
   readonly clock?: () => Date;
+  /**
+   * How long a released chunk keeps counting as referenced before
+   * compaction forgets the release: at least the longest grace period any
+   * chunk sweep uses. `DEFAULT_CHUNK_GRACE_MS` by default.
+   */
+  readonly releasedRetentionMs?: number;
 }
 
 /** What {@link CommitStore.compactHistory} did. */
