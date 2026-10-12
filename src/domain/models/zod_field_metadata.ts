@@ -191,7 +191,10 @@ export function extractFieldsWithMetadata(
  * A value found under a schema node whose metadata matched, with its path.
  */
 export interface ValueWithMetadata {
-  /** Path to the value (e.g., "credentials.apiKey", "users[0].password") */
+  /**
+   * Path to the value (e.g., "credentials.apiKey", "users[0].password",
+   * `accounts["eu.west"].token`)
+   */
   path: string;
   /** The value found at that path */
   value: unknown;
@@ -204,6 +207,30 @@ export interface ValueWithMetadata {
   perElement: boolean;
 }
 
+/** Wrapper schema types that hold the wrapped schema in `innerType`. */
+const INNER_TYPE_WRAPPERS = new Set([
+  "optional",
+  "nullable",
+  "default",
+  "readonly",
+  "catch",
+  "prefault",
+  "nonoptional",
+]);
+
+/**
+ * Appends a key to a path. A key made of letters, digits, `_` and `-` is
+ * joined with a dot; any other key is written as a quoted, escaped index
+ * (`accounts["eu.west"]`), so a path names exactly one place in a value and a
+ * `[0]` segment is always an array index.
+ */
+function appendKey(path: string, key: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(key)) {
+    return `${path}[${JSON.stringify(key)}]`;
+  }
+  return path ? `${path}.${key}` : key;
+}
+
 /**
  * Returns the schema one wrapper level down, or undefined when `schema` is
  * not a wrapper. A pipe yields the side that describes the input value: the
@@ -213,23 +240,17 @@ function innerSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
   const schemaType = getSchemaType(schema);
   const def = getSchemaDef(schema);
 
-  const wrapperTypes = [
-    "optional",
-    "nullable",
-    "default",
-    "readonly",
-    "catch",
-    "prefault",
-    "nonoptional",
-  ];
-  if (wrapperTypes.includes(schemaType)) {
+  if (INNER_TYPE_WRAPPERS.has(schemaType)) {
     return def.innerType;
   }
   if (schemaType === "effects") {
     return def.schema;
   }
   if (schemaType === "lazy") {
-    return def.getter?.();
+    // Zod resolves the getter once and keeps the result; calling the getter
+    // here would build the schema again on every visit.
+    return (schema as unknown as { _zod?: { innerType?: z.ZodTypeAny } })._zod
+      ?.innerType ?? def.getter?.();
   }
   if (schemaType === "pipe") {
     return def.in && getSchemaType(def.in) === "transform" ? def.out : def.in;
@@ -330,6 +351,8 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
 interface ValueWalk {
   matches: (meta: FieldMetadata) => boolean;
   found: ValueWithMetadata[];
+  /** Paths already in `found`. */
+  foundPaths: Set<string>;
   /** Containers on the way down to the current value, to stop on a cycle. */
   ancestors: Set<object>;
 }
@@ -351,12 +374,10 @@ function visitValue(
   while (true) {
     const meta = readMetadata(current);
     if (!reported && meta && walk.matches(meta)) {
-      // Union and intersection members revisit one value; a second value at
-      // the same path (two record keys can spell one path) is kept.
-      const seen = walk.found.some((f) =>
-        f.path === path && Object.is(f.value, value)
-      );
-      if (!seen) {
+      // Union and intersection members revisit one value. A path names one
+      // place in the value, so a path seen before is that same value.
+      if (!walk.foundPaths.has(path)) {
+        walk.foundPaths.add(path);
         walk.found.push({ path, value, meta, perElement });
       }
       reported = true;
@@ -370,7 +391,7 @@ function visitValue(
 
   const schemaType = getSchemaType(current);
   const def = getSchemaDef(current);
-  const child = (key: string) => path ? `${path}.${key}` : key;
+  const child = (key: string) => appendKey(path, key);
 
   if (schemaType === "union") {
     for (const option of unionMembers(def, value)) {
@@ -434,8 +455,9 @@ function visitValue(
  *
  * The walk follows the value, so it visits at most what the value holds and
  * ends on a recursive schema; a value that contains itself is not entered
- * twice. Paths are for display: a record key containing a dot or bracket is
- * written as is, so two values can share a path, and both are returned.
+ * twice. Each path names one place in the value: a key holding anything but
+ * letters, digits, `_` and `-` is written quoted (`accounts["eu.west"]`), so
+ * it cannot be mistaken for nesting or for an array index.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param value - The value the schema describes
@@ -447,7 +469,12 @@ export function findValuesWithMetadata(
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
 ): ValueWithMetadata[] {
-  const walk: ValueWalk = { matches, found: [], ancestors: new Set() };
+  const walk: ValueWalk = {
+    matches,
+    found: [],
+    foundPaths: new Set(),
+    ancestors: new Set(),
+  };
   visitValue(walk, schema, value, "", false, true);
   return walk.found;
 }

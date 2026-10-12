@@ -80,12 +80,13 @@ element: `users[1].password`, `accounts.prod.token`.
   element would share it. A declared `vaultName` still applies. A field reached
   only through objects, unions or wrappers occurs once and keeps its declared
   `vaultKey`.
-- **Paths are for display.** A record key is written as is, so a key holding a
-  dot or bracket makes the path ambiguous, and two values can share a path.
-  Every value is still checked. A path naming an array element is not a
-  `--global-arg` key; the refusal says to pass the whole array with
-  `<name>:json=[...]`. Suggested vault keys that come out the same get a
-  numeric suffix.
+- **Paths.** A path names one place in the stored value. A key made of
+  letters, digits, `_` and `-` is joined with a dot. Any other key is written
+  quoted and escaped (`accounts["eu.west"].token`), so it cannot read as nesting
+  or as an array index, and a control character in a key is not printed raw. A
+  path naming an array element is not a `--global-arg` key; the refusal says to
+  pass the whole array with `<name>:json=[...]`. Suggested vault keys that come
+  out the same get a numeric suffix.
 
 The redaction and vaulting primitives in the same module
 (`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)

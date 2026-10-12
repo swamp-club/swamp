@@ -180,10 +180,9 @@ export function findLiteralSensitiveGlobalArgs(
   if (!schema || !args) {
     return [];
   }
-  const offending = findValuesWithMetadata(schema, args, isSensitive)
+  return findValuesWithMetadata(schema, args, isSensitive)
     .filter(({ value }) => isLiteralSecret(value))
     .map(({ path }) => path);
-  return [...new Set(offending)];
 }
 
 /**
@@ -213,13 +212,37 @@ export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
  * be passed back as a key. Says how to set such a field instead.
  */
 function arrayElementHint(paths: string[]): string {
-  const elementPath = paths.find((p) => p.includes("["));
-  if (!elementPath) {
+  const arrays = paths.map(outermostArrayPath).filter((a) => a !== undefined);
+  if (arrays.length === 0) {
     return "";
   }
-  const name = elementPath.slice(0, elementPath.indexOf("["));
+  // The array's own path is a usable key only when every segment above it is
+  // a plain dot-path segment.
+  const name = arrays.find((a) => /^[A-Za-z0-9_.-]+$/.test(a)) ?? "<name>";
   return ` A field inside an array is set by passing the whole array, e.g. ` +
     `--global-arg '${name}:json=[...]'.`;
+}
+
+/**
+ * Returns the part of a path before its first array index, or undefined when
+ * the path crosses no array. A quoted key (`["eu[1]"]`) is skipped whole, so
+ * brackets inside it are not read as an index.
+ */
+function outermostArrayPath(path: string): string | undefined {
+  for (let i = 0; i < path.length; i++) {
+    if (path[i] !== "[") {
+      continue;
+    }
+    if (path[i + 1] !== '"') {
+      return path.slice(0, i);
+    }
+    for (i += 2; i < path.length && path[i] !== '"'; i++) {
+      if (path[i] === "\\") {
+        i++;
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Machine-readable error code for a rejected literal sensitive global argument. */

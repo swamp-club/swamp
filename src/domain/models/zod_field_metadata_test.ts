@@ -215,7 +215,7 @@ Deno.test("findValuesWithMetadata: reaches tuple items and the tuple rest", () =
   );
 });
 
-Deno.test("findValuesWithMetadata: reaches record values, writing the key as is", () => {
+Deno.test("findValuesWithMetadata: reaches record values, quoting a key that is not a plain segment", () => {
   const schema = z.object({
     accounts: z.record(
       z.string(),
@@ -226,7 +226,7 @@ Deno.test("findValuesWithMetadata: reaches record values, writing the key as is"
     markedPaths(schema, {
       accounts: { prod: { token: "a" }, "eu.west": { token: "b" } },
     }),
-    ["accounts.prod.token", "accounts.eu.west.token"],
+    ["accounts.prod.token", 'accounts["eu.west"].token'],
   );
 });
 
@@ -385,7 +385,7 @@ Deno.test("findValuesWithMetadata: returns nothing for a schema this Zod did not
   assertEquals(markedPaths(v4WithForeignField, { a: "x", b: "y" }), ["b"]);
 });
 
-Deno.test("findValuesWithMetadata: returns both values when two record keys spell one path", () => {
+Deno.test("findValuesWithMetadata: gives values under dotted record keys distinct paths", () => {
   const schema = z.object({
     users: z.record(
       z.string(),
@@ -396,8 +396,8 @@ Deno.test("findValuesWithMetadata: returns both values when two record keys spel
     users: { a: { "b.c": "first" }, "a.b": { c: "second" } },
   }, isMarked);
   assertEquals(found.map((f) => [f.path, f.value]), [
-    ["users.a.b.c", "first"],
-    ["users.a.b.c", "second"],
+    ['users.a["b.c"]', "first"],
+    ['users["a.b"].c', "second"],
   ]);
 });
 
@@ -452,4 +452,60 @@ Deno.test("findValuesWithMetadata: visits a value an alias repeats in two places
   });
   const shared = { k: "x" };
   assertEquals(markedPaths(schema, { a: shared, b: shared }), ["a.k", "b.k"]);
+});
+
+Deno.test("findValuesWithMetadata: a record key cannot spell an array index, nesting or a control sequence", () => {
+  const schema = z.object({
+    rec: z.record(z.string(), z.string().meta({ marked: true })),
+    "dotted.field": z.string().meta({ marked: true }),
+  });
+  assertEquals(
+    markedPaths(schema, {
+      rec: {
+        "0": "a",
+        "[0]": "b",
+        "eu[1]": "c",
+        "": "d",
+        'q"uote': "e",
+        "\u001b[31mred": "f",
+        "plain-key_1": "g",
+      },
+      "dotted.field": "h",
+    }),
+    [
+      "rec.0",
+      'rec["[0]"]',
+      'rec["eu[1]"]',
+      'rec[""]',
+      'rec["q\\"uote"]',
+      'rec["\\u001b[31mred"]',
+      "rec.plain-key_1",
+      '["dotted.field"]',
+    ],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reports a value several union members mark once", () => {
+  const member = () => z.object({ k: z.string().meta({ marked: true }) });
+  const schema = z.object({
+    list: z.array(z.union([member(), member(), member()])),
+  });
+  const list = Array.from({ length: 50 }, (_, i) => ({ k: `v${i}` }));
+  const found = findValuesWithMetadata(schema, { list }, isMarked);
+  assertEquals(found.length, 50);
+  assertEquals(found[49].path, "list[49].k");
+});
+
+Deno.test("findValuesWithMetadata: resolves a lazy schema's getter once", () => {
+  let calls = 0;
+  const item = z.lazy(() => {
+    calls++;
+    return z.object({ k: z.string().meta({ marked: true }) });
+  });
+  const schema = z.object({ list: z.array(item) });
+  const paths = markedPaths(schema, {
+    list: [{ k: "a" }, { k: "b" }, { k: "c" }],
+  });
+  assertEquals(paths, ["list[0].k", "list[1].k", "list[2].k"]);
+  assertEquals(calls, 1);
 });

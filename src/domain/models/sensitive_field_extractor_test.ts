@@ -938,9 +938,8 @@ Deno.test("buildSensitiveArgRemediations: builds a vault key from a record key h
   assertEquals(remediations[0].vaultKey, "accounts-eu-west-1-x-token");
 });
 
-Deno.test("findLiteralSensitiveGlobalArgs: a vault reference does not hide a literal at the same path", () => {
-  // Record keys are written into the path as is, so these two values share
-  // the path users.a.b.c.
+Deno.test("findLiteralSensitiveGlobalArgs: a vault reference does not hide a literal under a dotted record key", () => {
+  // Written as plain dot paths, both values would read users.a.b.c.
   const schema = z.object({
     users: z.record(
       z.string(),
@@ -951,13 +950,13 @@ Deno.test("findLiteralSensitiveGlobalArgs: a vault reference does not hide a lit
     findLiteralSensitiveGlobalArgs(schema, {
       users: { a: { "b.c": VAULT_REF }, "a.b": { c: "hunter2" } },
     }),
-    ["users.a.b.c"],
+    ['users["a.b"].c'],
   );
   assertEquals(
     findLiteralSensitiveGlobalArgs(schema, {
       users: { a: { "b.c": "one" }, "a.b": { c: "two" } },
     }),
-    ["users.a.b.c"],
+    ['users.a["b.c"]', 'users["a.b"].c'],
   );
 });
 
@@ -1005,6 +1004,37 @@ Deno.test("literalSensitiveGlobalArgsMessage: says how to set a field inside an 
   assertStringIncludes(message, "'users[1].password'");
   assertStringIncludes(message, "--global-arg 'users:json=[...]'");
 
+  const nested = literalSensitiveGlobalArgsMessage([
+    "credentials.apiKey",
+    "cluster.nodes[0].token",
+  ]);
+  assertStringIncludes(nested, "--global-arg 'cluster.nodes:json=[...]'");
+
   const plain = literalSensitiveGlobalArgsMessage(["credentials.apiKey"]);
   assertEquals(plain.includes(":json="), false);
+});
+
+Deno.test("literalSensitiveGlobalArgsMessage: a record key holding a bracket is not taken for an array", () => {
+  const schema = z.object({
+    accounts: z.record(
+      z.string(),
+      z.object({ token: z.string().meta({ sensitive: true }) }),
+    ),
+  });
+  const paths = findLiteralSensitiveGlobalArgs(schema, {
+    accounts: { "eu[1]": { token: "literal" } },
+  });
+  assertEquals(paths, ['accounts["eu[1]"].token']);
+  assertEquals(
+    literalSensitiveGlobalArgsMessage(paths).includes(":json="),
+    false,
+  );
+});
+
+Deno.test("literalSensitiveGlobalArgsMessage: an array under a quoted record key gets the hint without a made-up key", () => {
+  const message = literalSensitiveGlobalArgsMessage([
+    `accounts["it's eu.west"].users[0].password`,
+  ]);
+  assertStringIncludes(message, "--global-arg '<name>:json=[...]'");
+  assertEquals(message.includes('accounts["it\'s eu.west"].users:json'), false);
 });
