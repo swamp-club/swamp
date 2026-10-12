@@ -170,7 +170,8 @@ export interface GracefulStopDeps {
  * Asks the swamp process `pid` to stop and save its work: SIGTERM on POSIX,
  * a stop request on Windows, where Deno's SIGTERM is `TerminateProcess`. A
  * Windows process that cannot be reached that way is sent SIGTERM anyway,
- * which ends it outright, as before stop requests existed.
+ * which ends it outright, as before stop requests existed. Returns true when
+ * a stop request reached the process.
  */
 export function sendGracefulStop(
   pid: number,
@@ -179,11 +180,35 @@ export function sendGracefulStop(
     requestStop: request = requestStop,
     kill = (target, signal) => Deno.kill(target, signal),
   }: GracefulStopDeps = {},
-): void {
-  if (os === "windows" && request(pid)) return;
+): boolean {
+  if (os === "windows" && request(pid)) return true;
   try {
     kill(pid, "SIGTERM");
   } catch { /* race: died between check and kill */ }
+  return false;
+}
+
+/**
+ * The children from the snapshot taken before the stop that are still to be
+ * killed once the parent is gone: those not in `current`, the snapshot taken
+ * just before a forced kill, less any pid reused during the wait. None after
+ * a stop request: the parent ended its own commands, its Job Objects end the
+ * rest, and Windows has no start times to tell a reused pid from a child
+ * through a wait that can last the whole grace.
+ */
+export function snapshotChildrenToKill(
+  snapshot: readonly number[],
+  current: readonly number[],
+  before: ReadonlyMap<number, string> | undefined,
+  after: ReadonlyMap<number, string> | undefined,
+  stopRequested: boolean,
+): number[] {
+  if (stopRequested) return [];
+  return withoutReusedPids(
+    snapshot.filter((child) => !current.includes(child)),
+    before,
+    after,
+  );
 }
 
 /**
@@ -213,7 +238,7 @@ export async function killProcessTree(
   const snapshot = await findChildPids(pid);
   const snapshotStarts = await processStartTimes(snapshot);
 
-  sendGracefulStop(pid);
+  const stopRequested = sendGracefulStop(pid);
 
   // Poll until parent exits or timeout
   const deadline = Date.now() + maxWaitMs;
@@ -236,10 +261,12 @@ export async function killProcessTree(
   // pid to an unrelated process; that pid is left alone.
   const children = [
     ...current,
-    ...withoutReusedPids(
-      snapshot.filter((child) => !current.includes(child)),
+    ...snapshotChildrenToKill(
+      snapshot,
+      current,
       snapshotStarts,
       await processStartTimes(snapshot),
+      stopRequested,
     ),
   ];
 

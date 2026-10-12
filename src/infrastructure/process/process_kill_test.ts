@@ -24,6 +24,7 @@ import {
   killChildGroups,
   killProcessTree,
   sendGracefulStop,
+  snapshotChildrenToKill,
   withoutReusedPids,
 } from "./process_kill.ts";
 
@@ -193,7 +194,7 @@ function gracefulStopSpy(delivered: boolean) {
 Deno.test("sendGracefulStop: sends a stop request on Windows, and no SIGTERM once it is delivered", () => {
   const { sent, deps } = gracefulStopSpy(true);
 
-  sendGracefulStop(4242, { os: "windows", ...deps });
+  assertEquals(sendGracefulStop(4242, { os: "windows", ...deps }), true);
 
   assertEquals(sent, ["request 4242"]);
 });
@@ -201,7 +202,7 @@ Deno.test("sendGracefulStop: sends a stop request on Windows, and no SIGTERM onc
 Deno.test("sendGracefulStop: falls back to SIGTERM on Windows when no process takes the request", () => {
   const { sent, deps } = gracefulStopSpy(false);
 
-  sendGracefulStop(4242, { os: "windows", ...deps });
+  assertEquals(sendGracefulStop(4242, { os: "windows", ...deps }), false);
 
   assertEquals(sent, ["request 4242", "SIGTERM 4242"]);
 });
@@ -210,10 +211,28 @@ Deno.test("sendGracefulStop: sends SIGTERM on POSIX", () => {
   for (const os of ["darwin", "linux"] as const) {
     const { sent, deps } = gracefulStopSpy(true);
 
-    sendGracefulStop(4242, { os, ...deps });
+    assertEquals(sendGracefulStop(4242, { os, ...deps }), false, os);
 
     assertEquals(sent, ["SIGTERM 4242"], os);
   }
+});
+
+Deno.test("snapshotChildrenToKill: kills first-snapshot children not in the later snapshot and not reused", () => {
+  const before = new Map([[10, "a"], [11, "b"], [12, "c"]]);
+  const after = new Map([[10, "a"], [11, "reused"], [12, "c"]]);
+
+  assertEquals(
+    snapshotChildrenToKill([10, 11, 12], [12], before, after, false),
+    [10],
+  );
+});
+
+Deno.test("snapshotChildrenToKill: kills none of the first snapshot after a stop request", () => {
+  // Windows: no start times, and the wait can last the whole grace.
+  assertEquals(
+    snapshotChildrenToKill([10, 11], [], undefined, undefined, true),
+    [],
+  );
 });
 
 Deno.test("sendGracefulStop: a process gone before SIGTERM is not an error", () => {
