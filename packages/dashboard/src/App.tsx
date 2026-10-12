@@ -240,7 +240,9 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "workflows" && (
                 <Workflows onOpenWorkflow={openWorkflow} />
               )}
-              {view === "executions" && <Executions onOpenRun={openRun} />}
+              {view === "executions" && (
+                <Executions health={health} onOpenRun={openRun} />
+              )}
               {view === "models" && <Models onOpenModel={openModel} />}
               {view === "schedules" && (
                 <Schedules health={health} denied={healthDenied} />
