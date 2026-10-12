@@ -70,3 +70,29 @@ Deno.test("describeTimeRange: preset labels", () => {
     "All time",
   );
 });
+
+Deno.test("describeTimeRange: whole local days drop the times", () => {
+  const range = {
+    kind: "custom" as const,
+    from: new Date(2026, 9, 3).toISOString(),
+    to: new Date(2026, 9, 9, 23, 59, 59, 999).toISOString(),
+  };
+  assertEquals(describeTimeRange(range, "en-US"), "Oct 3 – Oct 9");
+  assertEquals(
+    describeTimeRange({
+      ...range,
+      to: new Date(2026, 9, 3, 23, 59, 59, 999).toISOString(),
+    }, "en-US"),
+    "Oct 3",
+  );
+});
+
+Deno.test("describeTimeRange: partial days keep their times", () => {
+  const label = describeTimeRange({
+    kind: "custom",
+    from: new Date(2026, 9, 3, 9, 30).toISOString(),
+    to: new Date(2026, 9, 3, 17, 0).toISOString(),
+  }, "en-US");
+  assertEquals(label.includes("09:30"), true);
+  assertEquals(label.includes("05:00") || label.includes("17:00"), true);
+});
