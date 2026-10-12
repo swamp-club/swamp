@@ -637,103 +637,350 @@ body {
 }
 
 /* Filter bar shared by workflow-based pages */
-.filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
+.time-range button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
-.filter-search {
+/* Guided search: one box with filter chips and a suggestion menu */
+.qbar {
   position: relative;
   display: flex;
   align-items: center;
-  flex: 1 1 240px;
-  max-width: 360px;
-  color: var(--text-3);
+  gap: 10px;
+  margin-bottom: 16px;
 }
-.filter-search svg {
-  position: absolute;
-  left: 10px;
-  pointer-events: none;
-}
-.filter-search input {
-  width: 100%;
-  font: inherit;
-  font-size: 0.82rem;
-  padding: 6px 30px 6px 30px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.qbar-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 720px;
+  min-height: 36px;
+  padding: 4px 8px 4px 32px;
+  position: relative;
   background: var(--surface);
-  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: text;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
-.filter-search input:focus {
-  outline: none;
+.qbar-field:focus-within,
+.qbar-field.is-open {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-subtle);
 }
-.filter-search kbd {
+.qbar-icon {
   position: absolute;
-  right: 8px;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.qbar-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 0.84rem;
+  color: var(--text-1);
+  padding: 3px 0;
+}
+.qbar-input::placeholder {
+  color: var(--text-3);
+}
+.qbar-field kbd,
+.qbar-menu-foot kbd {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.65rem;
   padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text-3);
-  pointer-events: none;
+  background: var(--surface);
 }
-
-.filter-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.72rem;
-  color: var(--text-3);
-}
-.filter-select > span {
-  font-family: "JetBrains Mono", monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-size: 0.62rem;
-}
-.time-range button:focus-visible,
-.filter-toggle input:focus-visible,
-.filter-clear:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.filter-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  color: var(--text-2);
-  cursor: pointer;
-  user-select: none;
-}
-.filter-toggle input {
-  accent-color: var(--accent);
-}
-
-.filter-summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  font-size: 0.75rem;
-  color: var(--text-3);
-}
-.filter-clear {
+.qbar-clear {
   font: inherit;
   font-size: 0.75rem;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.qbar-clear:hover {
+  color: var(--text-1);
+}
+.qbar-clear:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.qchip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+.qchip-key {
+  padding: 0 6px 0 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.65rem;
+  color: var(--accent);
+  text-transform: lowercase;
+}
+.qchip-key::after {
+  content: ":";
+}
+.qchip-val {
+  color: var(--text-1);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qchip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 100%;
+  margin-left: 2px;
   border: none;
   background: none;
-  color: var(--accent);
+  color: var(--text-3);
   cursor: pointer;
-  padding: 0;
+}
+.qchip-x:hover,
+.qchip-x:focus-visible {
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  outline: none;
+}
+
+.qbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  width: min(560px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  animation: sel-in 0.12s ease-out;
+}
+.qbar-menu-head {
+  padding: 10px 14px 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.qbar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.qbar-opt {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.qbar-opt.is-active {
+  background: var(--surface-inset);
+}
+.qbar-opt-key {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+.qbar-opt-main {
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qbar-opt-main.is-current {
+  font-weight: 600;
+}
+.qbar-opt-hint {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.qbar-empty {
+  padding: 8px;
+  font-size: 0.8rem;
+  color: var(--text-3);
+}
+.qbar-menu-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg);
+  font-size: 0.7rem;
+  color: var(--text-3);
+}
+.qbar-menu-foot kbd + kbd {
+  margin-left: 2px;
+}
+.qbar-menu-foot kbd {
+  margin-right: 4px;
+}
+.qbar-count {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* View menu: sort, grouping and display toggles behind one button */
+.view-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+.view-menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  position: relative;
+}
+.view-menu-button:hover {
+  color: var(--text-1);
+}
+.view-menu-button:focus-visible,
+.view-menu.is-open .view-menu-button {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.view-menu-summary {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: 0.75rem;
+}
+.view-menu-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.view-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: 240px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+  animation: sel-in 0.12s ease-out;
+}
+.view-menu-section {
+  border: none;
+  margin: 0;
+  padding: 4px 0;
+}
+.view-menu-section + .view-menu-section,
+.view-menu-section + .view-menu-toggle {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+.view-menu-section legend {
+  float: left;
+  width: 100%;
+  padding: 2px 8px 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.view-menu-option {
+  clear: both;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.view-menu-option:hover {
+  background: var(--surface-inset);
+}
+.view-menu-option input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+.view-menu-option input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qbar-menu,
+  .view-menu-panel {
+    animation: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .qbar {
+    flex-wrap: wrap;
+  }
+  .qbar-field {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .qbar-menu {
+    width: 100%;
+  }
+  .qbar-menu-foot {
+    display: none;
+  }
 }
 
 /* Select: the themed dropdown used everywhere instead of <select> */

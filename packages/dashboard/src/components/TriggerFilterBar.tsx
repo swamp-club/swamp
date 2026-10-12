@@ -20,8 +20,8 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource react */
 
-import { type ReactNode, useEffect, useRef } from "react";
-import { FilterSelect } from "./FilterBar.tsx";
+import type { ReactNode } from "react";
+import { SearchBar, type SearchFacet } from "./SearchBar.tsx";
 import { formatCount } from "../lib/format.ts";
 
 interface TriggerFilterBarProps {
@@ -39,14 +39,13 @@ interface TriggerFilterBarProps {
   shown: number;
   total: number;
   noun: string;
-  active: boolean;
   onClear: () => void;
   children?: ReactNode;
 }
 
 /**
- * Search (with the "/" shortcut), an optional prefix select and segmented
- * state filter, styled like the workflow pages' filter bar.
+ * The trigger pages' guided search: names plus a state and prefix facet,
+ * through the same search box as the workflow pages.
  */
 export function TriggerFilterBar(
   {
@@ -62,107 +61,47 @@ export function TriggerFilterBar(
     shown,
     total,
     noun,
-    active,
     onClear,
     children,
   }: TriggerFilterBarProps,
 ) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
+  const facets: SearchFacet[] = [];
+  if (segments && onSegment) {
+    const [all, ...rest] = segments;
+    facets.push({
+      key: "state",
+      label: "State",
+      description: `Only ${noun} in a given state`,
+      values: rest.map((s) => ({ value: s.value, label: s.label })),
+      selected: segment && segment !== all.value ? segment : null,
+      onSelect: (v) => onSegment(v ?? all.value),
+    });
+  }
+  if (onPrefix && prefixes.length > 0) {
+    facets.push({
+      key: "prefix",
+      label: "Prefix",
+      description: "Workflows whose name starts with a prefix",
+      values: prefixes.map((p) => ({
+        value: p.prefix,
+        label: p.prefix,
+        hint: formatCount(p.count),
+      })),
+      selected: prefix,
+      onSelect: onPrefix,
+    });
+  }
   return (
-    <div className="filter-bar trig-filter" role="search">
-      <div className="filter-search">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          aria-hidden="true"
-        >
-          <circle cx="7" cy="7" r="5" />
-          <path d="M11 11l3.5 3.5" strokeLinecap="round" />
-        </svg>
-        <input
-          ref={inputRef}
-          type="search"
-          value={query}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          onChange={(e) => onQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && query) {
-              e.stopPropagation();
-              onQuery("");
-            }
-          }}
-        />
-        {!query && <kbd aria-hidden="true">/</kbd>}
-      </div>
-
-      {segments && onSegment && (
-        <div className="time-range" role="group" aria-label="State">
-          {segments.map((s) => (
-            <button
-              type="button"
-              key={s.value}
-              className={segment === s.value ? "active" : ""}
-              aria-pressed={segment === s.value}
-              onClick={() => onSegment(s.value)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {onPrefix && prefixes.length > 0 && (
-        <FilterSelect
-          label="Prefix"
-          value={prefix ?? ""}
-          onChange={(v) => onPrefix(v || null)}
-          options={[
-            { value: "", label: "All prefixes" },
-            ...prefixes.map((p) => ({
-              value: p.prefix,
-              label: p.prefix,
-              hint: formatCount(p.count),
-            })),
-          ]}
-        />
-      )}
-
-      {children}
-
-      <div className="filter-summary">
-        {active && (
-          <span aria-live="polite">
-            {formatCount(shown)} of {formatCount(total)} {noun}
-          </span>
-        )}
-        {active && (
-          <button type="button" className="filter-clear" onClick={onClear}>
-            Clear filters
-          </button>
-        )}
-      </div>
-    </div>
+    <SearchBar
+      query={query}
+      onQuery={onQuery}
+      facets={facets}
+      placeholder={placeholder}
+      shown={shown}
+      total={total}
+      noun={noun}
+      onClear={onClear}
+      trailing={children}
+    />
   );
 }

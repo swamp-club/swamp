@@ -41,12 +41,7 @@ import { RouteLink } from "../components/RouteLink";
 import { RunHistoryBar } from "../components/RunHistoryBar";
 import { type Stat, StatPills } from "../components/StatPills";
 import { EmptyState } from "../components/EmptyState";
-import {
-  FilterBar,
-  FilterSelect,
-  useWorkflowFilter,
-} from "../components/FilterBar";
-import { RunStatusFilter } from "../components/RunStatusFilter";
+import { FilterBar, useWorkflowFilter } from "../components/FilterBar";
 import { FailureLink } from "../components/FailureLink";
 import {
   type SkeletonColumn,
@@ -108,6 +103,14 @@ const COLUMNS: SkeletonColumn[] = [
 ];
 
 const STATUS_PARAM = oneOf<StatusValue>(["", ...RUN_STATUSES], "");
+
+const STATUS_LABELS: Record<(typeof RUN_STATUSES)[number], string> = {
+  succeeded: "Succeeded",
+  failed: "Failed",
+  running: "Running",
+  suspended: "Suspended",
+  cancelled: "Cancelled",
+};
 const SOURCE_PARAM = oneOf<RunSourceFilter>(["", ...RUN_SOURCES], "");
 
 /** "in the last 7 days", "of all time", "between Oct 3 and Oct 9". */
@@ -458,6 +461,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
     );
   }
 
+  const statusTotals = statusCounts(totals);
   return (
     <div className="executions-page">
       <div className="page-header">
@@ -482,32 +486,39 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
         onChange={setFilter}
         prefixes={catalog.prefixes}
         webhooks={catalog.webhookRoutes}
-        placeholder="Search workflows"
+        placeholder="Search workflows or filter by status, trigger, prefix…"
         shown={workflowNames?.length}
         total={catalog.workflows.length}
         noun="workflows"
-      >
-        <FilterSelect<RunSourceFilter>
-          label="Started by"
-          value={source}
-          onChange={setSource}
-          options={[
-            { value: "", label: "Anything" },
-            ...RUN_SOURCES.map((s) => ({
-              value: s,
-              label: RUN_SOURCE_LABELS[s],
+        extraFacets={[
+          {
+            key: "status",
+            label: "Status",
+            description: "How the run ended, or that it's still going",
+            values: RUN_STATUSES.map((st) => ({
+              value: st,
+              label: STATUS_LABELS[st],
+              hint: statusTotals ? formatCount(statusTotals[st]) : undefined,
             })),
-          ]}
-        />
-      </FilterBar>
+            selected: status || null,
+            onSelect: (v) => setStatus((v ?? "") as StatusValue),
+          },
+          {
+            key: "started",
+            label: "Started by",
+            description: "What started the run: schedule, webhook, API or CLI",
+            values: RUN_SOURCES.map((src) => ({
+              value: src,
+              label: RUN_SOURCE_LABELS[src],
+            })),
+            selected: source || null,
+            onSelect: (v) => setSource((v ?? "") as RunSourceFilter),
+          },
+        ]}
+      />
 
       <div className="panel">
         <div className="exec-toolbar">
-          <RunStatusFilter
-            value={status}
-            onChange={setStatus}
-            counts={statusCounts(totals)}
-          />
           <div className="exec-toolbar-right">
             {refreshing && (
               <span className="exec-updating" role="status">

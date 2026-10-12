@@ -38,8 +38,6 @@ import {
 } from "../client/useQueryState.ts";
 import {
   FilterBar,
-  FilterSelect,
-  FilterToggle,
   type SelectOption,
   useWorkflowFilter,
 } from "../components/FilterBar.tsx";
@@ -261,27 +259,36 @@ export function Workflows({ health, onOpenWorkflow }: WorkflowsProps) {
         webhooks={catalog.webhookRoutes}
         shown={visible.length}
         total={catalog.workflows.length}
-      >
-        <FilterSelect
-          label="Group"
-          value={group}
-          onChange={setGroup}
-          options={groupOptions}
-        />
-        <FilterSelect
-          label="Sort"
-          value={sortValue}
-          onChange={(v) => setSort(v === "recent" && !searching ? "auto" : v)}
-          options={sortOptions}
-        />
-        {summary !== null && (neverRanCount > 0 || showAll) && (
-          <FilterToggle
-            label={`Show never run (${formatCount(neverRanCount)})`}
-            checked={showAll}
-            onChange={setShowAll}
-          />
-        )}
-      </FilterBar>
+        view={[
+          {
+            kind: "choice",
+            label: "Sort",
+            value: sortValue,
+            defaultValue: sortOptions[0].value,
+            options: sortOptions,
+            onChange: (v) =>
+              setSort(
+                (v === "recent" && !searching ? "auto" : v) as typeof sort,
+              ),
+          },
+          {
+            kind: "choice",
+            label: "Group by",
+            value: group,
+            defaultValue: "none",
+            options: groupOptions,
+            onChange: (v) => setGroup(v as typeof group),
+          },
+          ...(summary !== null && (neverRanCount > 0 || showAll)
+            ? [{
+              kind: "toggle" as const,
+              label: `Show never run (${formatCount(neverRanCount)})`,
+              checked: showAll,
+              onChange: setShowAll,
+            }]
+            : []),
+        ]}
+      />
 
       {summaryUnavailable && !catalog.loading && (
         <div className="notice notice-warning" role="status">

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type MouseEvent, useEffect, useMemo, useRef } from "react";
+import { type MouseEvent, useMemo } from "react";
 import { useRequest } from "../client/useRequest.ts";
 import { extractArray } from "../client/extract.ts";
 import {
@@ -33,7 +33,8 @@ import {
   useTimeRange,
 } from "../client/time_range.ts";
 import { EmptyState } from "../components/EmptyState.tsx";
-import { FilterSelect } from "../components/FilterBar.tsx";
+import { SearchBar, type SearchFacet } from "../components/SearchBar.tsx";
+import { ViewMenu } from "../components/ViewMenu.tsx";
 import { RouteLink } from "../components/RouteLink.tsx";
 import { RunHistoryBar } from "../components/RunHistoryBar.tsx";
 import {
@@ -156,7 +157,6 @@ export function Models({ onOpenModel }: ModelsProps) {
   );
 
   const loaded = data !== null;
-  const active = Boolean(filter.query || filter.type || filter.prefix);
   const rangeText = describeTimeRange(range);
   const truncated = extractArray<ModelOutput>(outputData).length >=
     OUTPUT_LIMIT;
@@ -238,7 +238,6 @@ export function Models({ onOpenModel }: ModelsProps) {
               shown={shown.length}
               sort={sort}
               onSort={setSort}
-              active={active}
             />
             {shown.length === 0
               ? (
@@ -280,110 +279,58 @@ export function Models({ onOpenModel }: ModelsProps) {
 }
 
 function ModelFilterBar(
-  { filter, onChange, models, shown, sort, onSort, active }: {
+  { filter, onChange, models, shown, sort, onSort }: {
     filter: ModelFilter;
     onChange: (next: ModelFilter) => void;
     models: readonly ModelSummary[];
     shown: number;
     sort: ModelSort;
     onSort: (s: ModelSort) => void;
-    active: boolean;
   },
 ) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
   const types = modelTypeOptions(models);
   const prefixes = modelPrefixOptions(models);
-
+  const facets: SearchFacet[] = [
+    {
+      key: "type",
+      label: "Type",
+      description: "Models of one model type",
+      values: types.length > 1 ? types : [],
+      selected: filter.type,
+      onSelect: (v) => onChange({ ...filter, type: v }),
+    },
+    {
+      key: "prefix",
+      label: "Prefix",
+      description: "Models whose name starts with a prefix",
+      values: prefixes.length > 1 ? prefixes : [],
+      selected: filter.prefix,
+      onSelect: (v) => onChange({ ...filter, prefix: v }),
+    },
+  ];
   return (
-    <div className="filter-bar" role="search">
-      <div className="filter-search">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          aria-hidden="true"
-        >
-          <circle cx="7" cy="7" r="5" />
-          <path d="M11 11l3.5 3.5" strokeLinecap="round" />
-        </svg>
-        <input
-          ref={inputRef}
-          type="search"
-          value={filter.query}
-          placeholder="Search models and types"
-          aria-label="Search models and types"
-          onChange={(e) => onChange({ ...filter, query: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && filter.query) {
-              e.stopPropagation();
-              onChange({ ...filter, query: "" });
-            }
-          }}
+    <SearchBar
+      query={filter.query}
+      onQuery={(query) => onChange({ ...filter, query })}
+      facets={facets}
+      placeholder="Search models or filter by type, prefix…"
+      shown={shown}
+      total={models.length}
+      noun="models"
+      onClear={() => onChange({ query: "", type: null, prefix: null })}
+      trailing={
+        <ViewMenu
+          sections={[{
+            kind: "choice",
+            label: "Sort",
+            value: sort,
+            defaultValue: SORTS[0],
+            options: SORTS.map((s) => ({ value: s, label: SORT_LABELS[s] })),
+            onChange: (v) => onSort(v as ModelSort),
+          }]}
         />
-        {!filter.query && <kbd aria-hidden="true">/</kbd>}
-      </div>
-
-      {types.length > 1 && (
-        <FilterSelect
-          label="Type"
-          value={filter.type ?? ""}
-          onChange={(v) => onChange({ ...filter, type: v || null })}
-          options={[{ value: "", label: "All types" }, ...types]}
-        />
-      )}
-
-      {prefixes.length > 1 && (
-        <FilterSelect
-          label="Prefix"
-          value={filter.prefix ?? ""}
-          onChange={(v) => onChange({ ...filter, prefix: v || null })}
-          options={[{ value: "", label: "All prefixes" }, ...prefixes]}
-        />
-      )}
-
-      <FilterSelect
-        label="Sort"
-        value={sort}
-        onChange={onSort}
-        options={SORTS.map((s) => ({ value: s, label: SORT_LABELS[s] }))}
-      />
-
-      <div className="filter-summary">
-        {active && (
-          <>
-            <span aria-live="polite">
-              {formatCount(shown)} of {formatCount(models.length)} models
-            </span>
-            <button
-              type="button"
-              className="filter-clear"
-              onClick={() => onChange({ query: "", type: null, prefix: null })}
-            >
-              Clear filters
-            </button>
-          </>
-        )}
-      </div>
-    </div>
+      }
+    />
   );
 }
 

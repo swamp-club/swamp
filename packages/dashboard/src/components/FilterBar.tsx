@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type ReactNode, useEffect, useId, useMemo, useRef } from "react";
-import { Select, type SelectOption } from "./Select.tsx";
+import { useMemo } from "react";
+
+import { SearchBar, type SearchFacet } from "./SearchBar.tsx";
+import { ViewMenu, type ViewSection } from "./ViewMenu.tsx";
 import {
   asNullableString,
   asString,
@@ -28,7 +30,6 @@ import {
 } from "../client/useQueryState.ts";
 import {
   EMPTY_FILTER,
-  isFilterActive,
   type TriggerFilter,
   type WorkflowFilter,
 } from "../lib/workflow_facets.ts";
@@ -96,13 +97,67 @@ interface FilterBarProps {
   shown?: number;
   total?: number;
   noun?: string;
-  /** Group/sort selects and toggles, rendered on the right. */
-  children?: ReactNode;
+  /** Page-specific facets after prefix / trigger / webhook (e.g. status). */
+  extraFacets?: readonly SearchFacet[];
+  /** Sort, grouping and toggles, behind the View button. */
+  view?: readonly ViewSection[];
+}
+
+const TRIGGER_DESCRIPTIONS: Record<Exclude<TriggerFilter, "all">, string> = {
+  schedule: "Runs on a cron schedule",
+  webhook: "Started by a webhook",
+  manual: "Only run by hand or the API",
+};
+
+/** The workflow facets every workflow-based page filters by. */
+export function workflowFacets(
+  filter: WorkflowFilter,
+  onChange: (next: WorkflowFilter) => void,
+  prefixes: ReadonlyArray<{ prefix: string; count: number }>,
+  webhooks: readonly string[],
+): SearchFacet[] {
+  return [
+    {
+      key: "prefix",
+      label: "Prefix",
+      description: "Workflows whose name starts with a prefix",
+      values: prefixes.map((p) => ({
+        value: p.prefix,
+        label: p.prefix,
+        hint: formatCount(p.count),
+      })),
+      selected: filter.prefix,
+      onSelect: (v) => onChange({ ...filter, prefix: v }),
+    },
+    {
+      key: "trigger",
+      label: "Trigger",
+      description: "What starts the workflow: cron, webhook or manual",
+      values: TRIGGERS.filter((t) => t !== "all").map((t) => ({
+        value: t,
+        label: `${TRIGGER_LABELS[t]} — ${
+          TRIGGER_DESCRIPTIONS[t as Exclude<TriggerFilter, "all">]
+        }`,
+      })),
+      selected: filter.trigger === "all" ? null : filter.trigger,
+      onSelect: (v) =>
+        onChange({ ...filter, trigger: (v ?? "all") as TriggerFilter }),
+    },
+    {
+      key: "webhook",
+      label: "Webhook",
+      description: "Workflows a webhook route starts",
+      values: webhooks.map((w) => ({ value: w, label: w })),
+      selected: filter.webhook,
+      onSelect: (v) => onChange({ ...filter, webhook: v }),
+    },
+  ];
 }
 
 /**
- * Search, prefix, trigger and webhook filters shared by the workflow-based
- * pages. "/" focuses the search box from anywhere on the page.
+ * The workflow pages' guided search: one box for names and every facet
+ * (prefix, trigger, webhook, plus any page-specific ones), and a View
+ * button for sort and grouping.
  */
 export function FilterBar(
   {
@@ -110,168 +165,32 @@ export function FilterBar(
     onChange,
     prefixes,
     webhooks,
-    placeholder = "Search workflows",
+    placeholder = "Search workflows or filter by prefix, trigger, webhook…",
     shown,
     total,
     noun = "workflows",
-    children,
+    extraFacets = [],
+    view,
   }: FilterBarProps,
 ) {
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
-
-  const active = isFilterActive(filter);
-
+  const facets = [
+    ...workflowFacets(filter, onChange, prefixes, webhooks),
+    ...extraFacets,
+  ];
   return (
-    <div className="filter-bar" role="search">
-      <div className="filter-search">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          aria-hidden="true"
-        >
-          <circle cx="7" cy="7" r="5" />
-          <path d="M11 11l3.5 3.5" strokeLinecap="round" />
-        </svg>
-        <input
-          ref={inputRef}
-          type="search"
-          value={filter.query}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          onChange={(e) => onChange({ ...filter, query: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && filter.query) {
-              e.stopPropagation();
-              onChange({ ...filter, query: "" });
-            }
-          }}
-        />
-        {!filter.query && <kbd aria-hidden="true">/</kbd>}
-      </div>
-
-      <div className="time-range" role="group" aria-label="Trigger">
-        {TRIGGERS.map((t) => (
-          <button
-            type="button"
-            key={t}
-            className={filter.trigger === t ? "active" : ""}
-            aria-pressed={filter.trigger === t}
-            onClick={() => onChange({ ...filter, trigger: t })}
-          >
-            {TRIGGER_LABELS[t]}
-          </button>
-        ))}
-      </div>
-
-      {prefixes.length > 0 && (
-        <FilterSelect
-          label="Prefix"
-          value={filter.prefix ?? ""}
-          onChange={(v) => onChange({ ...filter, prefix: v || null })}
-          options={[
-            { value: "", label: "All prefixes" },
-            ...prefixes.map((p) => ({
-              value: p.prefix,
-              label: p.prefix,
-              hint: formatCount(p.count),
-            })),
-          ]}
-        />
-      )}
-
-      {webhooks.length > 0 && (
-        <FilterSelect
-          label="Webhook"
-          value={filter.webhook ?? ""}
-          onChange={(v) => onChange({ ...filter, webhook: v || null })}
-          options={[
-            { value: "", label: "Any webhook" },
-            ...webhooks.map((w) => ({ value: w, label: w })),
-          ]}
-        />
-      )}
-
-      {children}
-
-      <div className="filter-summary">
-        {active && shown !== undefined && total !== undefined && (
-          <span aria-live="polite">
-            {formatCount(shown)} of {formatCount(total)} {noun}
-          </span>
-        )}
-        {active && (
-          <button
-            type="button"
-            className="filter-clear"
-            onClick={() => onChange(EMPTY_FILTER)}
-          >
-            Clear filters
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** A labelled dropdown styled to match the filter bar. */
-export function FilterSelect<T extends string>(
-  { label, value, onChange, options }: {
-    label: string;
-    value: T;
-    onChange: (value: T) => void;
-    options: ReadonlyArray<SelectOption<T>>;
-  },
-) {
-  const labelId = useId();
-  return (
-    <div className="filter-select">
-      <span id={labelId}>{label}</span>
-      <Select
-        value={value}
-        onChange={onChange}
-        options={options}
-        labelledBy={labelId}
-      />
-    </div>
-  );
-}
-
-/** A checkbox toggle styled to match the filter bar. */
-export function FilterToggle(
-  { label, checked, onChange }: {
-    label: ReactNode;
-    checked: boolean;
-    onChange: (checked: boolean) => void;
-  },
-) {
-  return (
-    <label className="filter-toggle">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span>{label}</span>
-    </label>
+    <SearchBar
+      query={filter.query}
+      onQuery={(query) => onChange({ ...filter, query })}
+      facets={facets}
+      placeholder={placeholder}
+      shown={shown}
+      total={total}
+      noun={noun}
+      onClear={() => {
+        onChange(EMPTY_FILTER);
+        for (const f of extraFacets) f.onSelect(null);
+      }}
+      trailing={view && view.length > 0 ? <ViewMenu sections={view} /> : null}
+    />
   );
 }

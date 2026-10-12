@@ -100,7 +100,6 @@ export function Webhooks(
     })
     .sort((a, b) => a.route.localeCompare(b.route));
   const filtered = filterWebhooks(rows, query);
-  const filterActive = query.trim() !== "";
 
   const rangeLabel = describeTimeRange(range);
   const stats: Stat[] = [
@@ -135,11 +134,10 @@ export function Webhooks(
         <TriggerFilterBar
           query={query}
           onQuery={setQuery}
-          placeholder="Search routes and workflows"
+          placeholder="Search webhook routes and workflows…"
           shown={filtered.length}
           total={rows.length}
           noun="webhooks"
-          active={filterActive}
           onClear={() => setQuery("")}
         />
       )}

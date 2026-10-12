@@ -145,8 +145,6 @@ export function Schedules(
     query,
     (r) => [r.workflowName, r.cron, r.description ?? ""],
   );
-  const filterActive = query.trim() !== "" || prefix !== null ||
-    stateFilter !== "all";
   const clearFilters = () => {
     setQuery("");
     setPrefix(null);
@@ -205,7 +203,7 @@ export function Schedules(
         <TriggerFilterBar
           query={query}
           onQuery={setQuery}
-          placeholder="Search schedules"
+          placeholder="Search schedules or filter by state, prefix…"
           prefixes={prefixOptions(names)}
           prefix={prefix}
           onPrefix={setPrefix}
@@ -215,7 +213,6 @@ export function Schedules(
           shown={filtered.length}
           total={rows.length}
           noun="schedules"
-          active={filterActive}
           onClear={clearFilters}
         />
       )}
