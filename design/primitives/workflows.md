@@ -1294,16 +1294,34 @@ record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
 - A slot the key has passed, with no claim left that reads it, is removed
   whole. A build from before pending signals leaves such slots when it
   collects a run. A slot whose claim still exists is left for that claim's
-  removal. The claims are listed once, before the slots are looked at, so a
-  claim made after the listing is checked for at each slot: when the key's
-  highest record is a claim that reads the slot, the slot is left, because
-  its step may be about to take the signal.
+  removal. The claims that read a slot are two records of its own key at most
+  (`claimsReadingSlot`): the claim of the slot's generation, with or without
+  `acceptEarly`, and the claim one generation up when it was created over a
+  release. Generations only grow and a claim reads no further than one below
+  its own, so a claim made after the key's highest record was read cannot
+  read a slot the key had passed by then. A slot is left as it is when either
+  record cannot be read: a damaged claim keeps its slot's pending records
+  until the workflow is deleted.
+
+_What a sweep reads._ One listing of `wait-pending/`, then for each slot that
+holds a record: the highest record of the slot's key, and either the slot's
+highest pending record (a live slot) or the one or two key records that could
+read it (a slot the key has passed). It never lists the key records of other
+workflows (swamp-club#3308), so its cost follows the number of slots holding a
+pending record, not the number of keyed workflows. A lapse stays until its
+slot is claimed, so a key that lapsed once and is not waited on again is read
+on every sweep from then on.
 
 This part of the sweep reads key records and never a run record, so unlike
-the rest it runs on every datastore. `swamp serve` runs it with each
-continuation pass (`sweepHeldSignals`), since a signal by key is held through
-serve and nothing else there sweeps wait records; where the continuation sweep
-does not start, it is left to `workflow waits` and the run garbage collection.
+the rest it runs on every datastore. `swamp serve` runs it from the
+continuation sweep (`heldSignalSweeper`), since a signal by key is held through
+serve and nothing else there sweeps wait records: with the boot pass, and then
+with the first pass after ten minutes have gone by since it last ran
+(`HELD_SIGNAL_SWEEP_INTERVAL_MS`), not with every pass. Nothing waits on it
+being prompt: a signal lapses a day after its age limit, and a signaller
+removes the signal it stores over. The time of the last sweep is kept in the
+process, so each instance keeps its own. Where the continuation sweep does not
+start, it is left to `workflow waits` and the run garbage collection.
 Nothing is audited: it reports a count (`WaitRecordSweep.pendingSignals`).
 
 _Idempotency keys._ A sender may name a signal with an idempotency key

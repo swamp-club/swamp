@@ -142,7 +142,9 @@ Table notes:
   in workflows.md). On a synced datastore it does not start when the boot
   hydration failed, and it runs only its boot pass when the sync service has
   no `fetchContent` to compare a run record with the remote one. Two instances never resume the same run: see
-  "Continuation claims" in workflows.md.
+  "Continuation claims" in workflows.md. The sweep of pending signals rides
+  these passes on its own, longer cadence: at boot, then at most every ten
+  minutes whatever this interval is (see "Early signals" in workflows.md).
 - `--max-signal-wait-timeout` is not a timer and is not capped at 24.8 days:
   it is compared with a step's `timeout` when the step would open its wait
   (`parseMaxSignalWaitTimeout`, `src/cli/commands/serve.ts`). Waits already
