@@ -174,6 +174,8 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     cronExpression: "* * * * *",
     nextRun: null,
     running: true,
+    paused: false,
+    source: "workflow",
     queued: 3,
     oldestQueuedAt: "2026-01-01T00:00:00.000Z",
     lastQueueDelayMs: 49 * 60_000,
@@ -183,6 +185,8 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     cronExpression: "0 * * * *",
     nextRun: null,
     running: false,
+    paused: false,
+    source: "workflow",
     queued: 0,
     oldestQueuedAt: null,
     lastQueueDelayMs: null,
@@ -191,6 +195,34 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     "enabled",
     "schedules",
   ]);
+});
+
+Deno.test("HealthCollector: reports a paused schedule with its source and no next run", async () => {
+  const deps = makeDeps({
+    scheduleEnabled: true,
+    scheduleProvider: {
+      listSchedules: () => [{
+        workflowId: "wf-1",
+        workflowName: "held",
+        cronExpression: "0 3 * * *",
+        nextRun: new Date("2026-01-01T03:00:00Z"),
+        paused: true,
+        source: "override",
+      }],
+      isRunning: () => false,
+      queueStatus: () => ({
+        queued: 0,
+        oldestQueuedAt: null,
+        lastQueueDelayMs: null,
+      }),
+    },
+  });
+
+  const snapshot = await new HealthCollector(deps).collect();
+
+  assertEquals(snapshot.scheduling.schedules[0].paused, true);
+  assertEquals(snapshot.scheduling.schedules[0].source, "override");
+  assertEquals(snapshot.scheduling.schedules[0].nextRun, null);
 });
 
 Deno.test("HealthCollector: includes webhook endpoints", async () => {

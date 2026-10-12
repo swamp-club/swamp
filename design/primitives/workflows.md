@@ -2477,6 +2477,10 @@ swamp workflow trigger set daily-report --schedule "0 8 * * 1-5"
 # Show the effective trigger (built-in merged with override)
 swamp workflow trigger get @swamp/cve/researcher/scan
 
+# Pause and resume a workflow's schedule (built-in or overridden)
+swamp workflow trigger set daily-report --paused
+swamp workflow trigger set daily-report --resume
+
 # Remove a trigger override
 swamp workflow trigger remove daily-report
 ```
@@ -2499,8 +2503,16 @@ override `schedule` **replaces** the workflow's built-in schedule
 (`resolveSchedule` in `src/libswamp/workflows/scheduled_execution.ts`). An
 override `inputs` map is deep-merged over the built-in `trigger.inputs` at fire
 time. A workflow with no built-in trigger block gets one from the override.
-`swamp workflow trigger set` requires `--schedule`
-(`src/cli/commands/workflow_trigger_set.ts`). Unknown keys in an override entry
+`swamp workflow trigger set` needs `--schedule`, `--paused` or `--resume`
+(`src/cli/commands/workflow_trigger_set.ts`); `--input` only with
+`--schedule`. A set merges into the existing entry (`mergeTriggerOverride` in
+`src/serve/serve_config.ts`): a schedule replaces the entry's schedule and
+inputs together, and an omitted `paused` keeps the current pause state, so a
+retime never resumes a paused schedule and a pause never drops the override. A
+resume stores no `paused` key and removes an entry left empty. A paused
+override neither fires nor queues; resuming waits for the next cron tick. A
+`paused: true` entry with no schedule pauses the workflow's built-in schedule.
+Unknown keys in an override entry
 produce a warning and are ignored (`src/serve/serve_config.ts`).
 
 **Override behavior:**

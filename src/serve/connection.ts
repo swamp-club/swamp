@@ -1279,8 +1279,9 @@ const WorkflowTriggerSetRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     workflowName: z.string().min(1),
-    schedule: z.string().min(1),
+    schedule: z.string().min(1).optional(),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    paused: z.boolean().optional(),
   }),
 });
 
@@ -1616,6 +1617,17 @@ export function validateServerRequest(
  * echoed back so it can match the error to its pending request.
  * Falls back to `"unknown"` when the id is absent or not a string.
  */
+/**
+ * The audit action of a `workflow.trigger.set`: a request that pauses or
+ * resumes the schedule is recorded as such, so the trail reads as a pause
+ * or resume rather than as one more override write.
+ */
+export function triggerSetAuditAction(paused: boolean | undefined): string {
+  if (paused === true) return "workflow.trigger.pause";
+  if (paused === false) return "workflow.trigger.resume";
+  return "workflow.trigger.set";
+}
+
 export function extractRequestId(data: unknown): string {
   if (
     typeof data === "object" && data !== null &&
@@ -3755,11 +3767,14 @@ export function handleMessage(
           controller,
           principal,
         ),
-        auditOpts(
-          "admin",
-          "workflow",
-          request.payload?.workflowName ?? "*",
-        ),
+        {
+          ...auditOpts(
+            "admin",
+            "workflow",
+            request.payload?.workflowName ?? "*",
+          ),
+          action: triggerSetAuditAction(request.payload?.paused),
+        },
       );
       break;
     case "workflow.trigger.get":

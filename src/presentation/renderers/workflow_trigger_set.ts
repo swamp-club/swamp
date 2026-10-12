@@ -23,7 +23,10 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
 export interface WorkflowTriggerSetData {
   readonly workflowName: string;
+  /** The override as stored; `{}` when a resume left nothing to store. */
   readonly entry: TriggerOverrideEntry;
+  /** The pause state the command asked for, when it asked for one. */
+  readonly paused?: boolean;
 }
 
 export function renderWorkflowTriggerSet(
@@ -34,14 +37,23 @@ export function renderWorkflowTriggerSet(
     console.log(JSON.stringify(data, null, 2));
   } else {
     const logger = getSwampLogger(["workflow", "trigger", "set"]);
-    logger
-      .info`Set trigger override for ${data.workflowName}: schedule ${data.entry.schedule}`;
+    if (data.entry.schedule !== undefined) {
+      logger
+        .info`Set trigger override for ${data.workflowName}: schedule ${data.entry.schedule}`;
+    }
     if (data.entry.inputs && Object.keys(data.entry.inputs).length > 0) {
       logger.info`  inputs: ${
         Object.entries(data.entry.inputs).map(([k, v]) => `${k}=${v}`).join(
           ", ",
         )
       }`;
+    }
+    if (data.paused === true) {
+      logger.info`Paused the schedule of ${data.workflowName}`;
+    } else if (data.paused === false) {
+      logger.info`Resumed the schedule of ${data.workflowName}`;
+    } else if (data.entry.paused === true) {
+      logger.info`  the schedule stays paused`;
     }
   }
 }

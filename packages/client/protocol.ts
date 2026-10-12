@@ -534,14 +534,21 @@ export interface EffectiveTrigger {
   readonly inputs: Record<string, unknown>;
 }
 
+/** The trigger the scheduler applies: built-in merged with the override. */
+export interface EffectiveTriggerState extends EffectiveTrigger {
+  /** True while the override pauses the schedule. */
+  readonly paused: boolean;
+}
+
 export interface WorkflowTriggerGetResult {
   readonly workflowName: string;
   readonly builtIn: EffectiveTrigger | null;
   readonly override: {
     readonly schedule?: string;
     readonly inputs?: Record<string, unknown>;
+    readonly paused?: boolean;
   } | null;
-  readonly effective: EffectiveTrigger;
+  readonly effective: EffectiveTriggerState;
 }
 
 // ── Server admin ─────────────────────────────────────────────────────────
