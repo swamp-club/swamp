@@ -89,16 +89,16 @@ Deno.test("sortModels: by name, by recent use and by executions", () => {
 
 Deno.test("modelTypeOptions: one option per type with counts", () => {
   assertEquals(modelTypeOptions(models), [
-    { value: "@acme/aws/ec2", label: "@acme/aws/ec2 (1)" },
-    { value: "@acme/aws/s3", label: "@acme/aws/s3 (1)" },
-    { value: "command/shell", label: "command/shell (2)" },
+    { value: "@acme/aws/ec2", label: "@acme/aws/ec2", hint: "1" },
+    { value: "@acme/aws/s3", label: "@acme/aws/s3", hint: "1" },
+    { value: "command/shell", label: "command/shell", hint: "2" },
   ]);
 });
 
 Deno.test("modelPrefixOptions: groups names by prefix", () => {
   assertEquals(modelPrefixOptions(models), [
-    { value: "data", label: "data (1)" },
-    { value: "deploy", label: "deploy (2)" },
+    { value: "data", label: "data", hint: "1" },
+    { value: "deploy", label: "deploy", hint: "2" },
   ]);
 });
 

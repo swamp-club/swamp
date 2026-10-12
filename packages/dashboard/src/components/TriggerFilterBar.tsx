@@ -142,7 +142,8 @@ export function TriggerFilterBar(
             { value: "", label: "All prefixes" },
             ...prefixes.map((p) => ({
               value: p.prefix,
-              label: `${p.prefix} (${formatCount(p.count)})`,
+              label: p.prefix,
+              hint: formatCount(p.count),
             })),
           ]}
         />

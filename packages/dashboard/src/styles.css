@@ -698,18 +698,6 @@ body {
   letter-spacing: 0.05em;
   font-size: 0.62rem;
 }
-.filter-select select {
-  font: inherit;
-  font-size: 0.78rem;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text-1);
-  max-width: 220px;
-  cursor: pointer;
-}
-.filter-select select:focus-visible,
 .time-range button:focus-visible,
 .filter-toggle input:focus-visible,
 .filter-clear:focus-visible {
@@ -746,6 +734,176 @@ body {
   color: var(--accent);
   cursor: pointer;
   padding: 0;
+}
+
+/* Select: the themed dropdown used everywhere instead of <select> */
+.sel {
+  position: relative;
+  display: inline-block;
+  min-width: 0;
+}
+.sel-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-width: 120px;
+  max-width: 260px;
+  padding: 5px 8px 5px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  color: var(--text-1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.sel-trigger:hover {
+  border-color: color-mix(in srgb, var(--text-3) 55%, var(--border));
+}
+.sel-trigger:focus-visible,
+.sel.is-open .sel-trigger {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.sel-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sel-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sel-value.is-placeholder {
+  color: var(--text-3);
+}
+.sel-chevron {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform 0.15s ease;
+}
+.sel.is-open .sel-chevron {
+  transform: rotate(180deg);
+}
+
+.sel-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.08);
+  animation: sel-in 0.12s ease-out;
+}
+.sel-menu.is-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.sel-menu.is-end {
+  left: auto;
+  right: 0;
+}
+.sel-search {
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 4px;
+}
+.sel-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 5px 8px;
+  color: var(--text-1);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.sel-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.sel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  outline: none;
+  overscroll-behavior: contain;
+}
+.sel-option {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.sel-option.is-active {
+  background: var(--surface-inset);
+}
+.sel-option.is-selected {
+  color: var(--accent);
+  font-weight: 600;
+}
+.sel-option[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+.sel-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sel-check {
+  color: var(--accent);
+}
+.sel-hint {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+.sel-empty {
+  padding: 8px;
+  font-size: 0.78rem;
+  color: var(--text-3);
+}
+
+@keyframes sel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sel-menu,
+  .sel-chevron,
+  .sel-trigger {
+    animation: none;
+    transition: none;
+  }
 }
 
 /* Group headings in grouped lists */

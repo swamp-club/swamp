@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { Select } from "../components/Select.tsx";
 import { useState } from "react";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
@@ -54,7 +55,9 @@ export function Data() {
   // Keep the chosen model selectable while its results load.
   const models = [
     ...new Set(
-      [modelFilter, ...allItems.map((i) => i.modelName)].filter(Boolean),
+      [modelFilter, ...allItems.map((i) => i.modelName)].filter(
+        (m): m is string => Boolean(m),
+      ),
     ),
   ];
   const totalPages = Math.ceil(allItems.length / PAGE_SIZE);
@@ -70,23 +73,15 @@ export function Data() {
       <div className="page-header">
         <h1>Data</h1>
         <div className="header-right">
-          <select
+          <Select
             value={modelFilter}
-            onChange={(e) => handleModelChange(e.target.value)}
-            style={{
-              fontFamily: "inherit",
-              fontSize: "0.82rem",
-              padding: "5px 10px",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              background: "var(--surface)",
-              color: "var(--text-1)",
-              cursor: "pointer",
-            }}
-          >
-            <option value="">All models</option>
-            {models.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
+            onChange={handleModelChange}
+            ariaLabel="Model"
+            options={[
+              { value: "", label: "All models" },
+              ...models.map((m) => ({ value: m, label: m })),
+            ]}
+          />
           {state === "loading"
             ? <Skeleton width={96} height={28} radius={20} />
             : (

@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { type ReactNode, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef } from "react";
+import { Select, type SelectOption } from "./Select.tsx";
 import {
   asNullableString,
   asString,
@@ -83,10 +84,7 @@ export function useWorkflowFilter(): [
   return [filter, set];
 }
 
-export interface SelectOption<T extends string> {
-  value: T;
-  label: string;
-}
+export type { SelectOption } from "./Select.tsx";
 
 interface FilterBarProps {
   filter: WorkflowFilter;
@@ -194,7 +192,8 @@ export function FilterBar(
             { value: "", label: "All prefixes" },
             ...prefixes.map((p) => ({
               value: p.prefix,
-              label: `${p.prefix} (${formatCount(p.count)})`,
+              label: p.prefix,
+              hint: formatCount(p.count),
             })),
           ]}
         />
@@ -234,7 +233,7 @@ export function FilterBar(
   );
 }
 
-/** A labelled native select styled to match the filter bar. */
+/** A labelled dropdown styled to match the filter bar. */
 export function FilterSelect<T extends string>(
   { label, value, onChange, options }: {
     label: string;
@@ -243,18 +242,17 @@ export function FilterSelect<T extends string>(
     options: ReadonlyArray<SelectOption<T>>;
   },
 ) {
+  const labelId = useId();
   return (
-    <label className="filter-select">
-      <span>{label}</span>
-      <select
+    <div className="filter-select">
+      <span id={labelId}>{label}</span>
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value as T)}
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </label>
+        onChange={onChange}
+        options={options}
+        labelledBy={labelId}
+      />
+    </div>
   );
 }
 

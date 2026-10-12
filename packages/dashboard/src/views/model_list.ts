@@ -85,6 +85,7 @@ export function sortModels(
 export interface CountedOption {
   value: string;
   label: string;
+  hint: string;
 }
 
 function counted(values: Iterable<string>): CountedOption[] {
@@ -92,7 +93,7 @@ function counted(values: Iterable<string>): CountedOption[] {
   for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
   return [...counts.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([value, n]) => ({ value, label: `${value} (${formatCount(n)})` }));
+    .map(([value, n]) => ({ value, label: value, hint: formatCount(n) }));
 }
 
 /** One option per model type, with how many models use it. */
