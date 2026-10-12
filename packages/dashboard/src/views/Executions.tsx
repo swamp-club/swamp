@@ -63,7 +63,9 @@ import {
   runSearchWindow,
   type RunSourceFilter,
   type RunStatusFilter as StatusValue,
+  splitWorkflowFilter,
   statusCounts,
+  totalsOfWorkflows,
   workflowNamesForFilter,
 } from "../lib/run_filters";
 import {
@@ -147,6 +149,11 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   );
   const matchesNoWorkflow = workflowNames !== null &&
     workflowNames.length === 0;
+  // Past serve's cap on a `workflows` filter, rows are filtered here.
+  const { server: serverNames, local: localNames } = useMemo(
+    () => splitWorkflowFilter(workflowNames),
+    [workflowNames],
+  );
   const enabled = !resolvingFilter && !matchesNoWorkflow;
 
   // Any change to what is listed starts again at the first page. Keyed on
@@ -166,7 +173,7 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
       pageSize: PAGE_SIZE,
       status,
       source,
-      workflows: workflowNames,
+      workflows: serverNames,
       since: searchWindow.since,
       until: searchWindow.until,
     }),
@@ -175,18 +182,29 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
   // A new page or filter keeps the rows on screen (dimmed) until the
   // reply lands, instead of flashing an empty table.
   const shown = useKeepPrevious(search.data, !enabled);
-  const runs = extractArray<RunItem>(shown);
-  const total = extractTotal(shown) ?? runs.length;
+  const pageRuns = extractArray<RunItem>(shown);
+  const runs = useMemo(
+    () =>
+      localNames
+        ? pageRuns.filter((r) => localNames.has(r.workflowName))
+        : pageRuns,
+    [pageRuns, localNames],
+  );
+  const total = extractTotal(shown) ?? pageRuns.length;
   const refreshing = search.loading && shown !== null;
 
   // Totals for the header and the status counts: every status, the same
   // workflows, source and time range.
   const totalsQuery: RunSummaryQuery = {};
-  if (workflowNames !== null) totalsQuery.workflows = workflowNames;
+  if (serverNames !== null) totalsQuery.workflows = [...serverNames];
   if (source) totalsQuery.triggerSource = source;
   const totalsRequest = useRunSummary(totalsQuery, { enabled });
   const summary = useKeepPrevious(totalsRequest.summary, !enabled);
-  const totals = summary?.totals ?? null;
+  const totals = summary
+    ? localNames
+      ? totalsOfWorkflows(summary.workflows, localNames)
+      : summary.totals
+    : null;
 
   // Recent runs of the workflows on this page, one strip per row.
   const pageWorkflows = useMemo(
@@ -290,6 +308,14 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
         rows={PAGE_SIZE / 2}
         label="Loading executions"
       />
+    );
+  } else if (runs.length === 0 && pageRuns.length > 0) {
+    body = (
+      <EmptyState title="No matching executions on this page">
+        This filter selects too many workflows to send to serve, so it is
+        applied to each page of runs here. Try the next page, or narrow the
+        filter.
+      </EmptyState>
     );
   } else if (runs.length === 0) {
     body = anyFilter
@@ -514,7 +540,13 @@ export function Executions({ health, onOpenRun }: ExecutionsProps) {
         </div>
         {refreshing && <div className="exec-progress" aria-hidden="true" />}
         {body}
-        {runs.length > 0 && !matchesNoWorkflow && (
+        {localNames && pageRuns.length > 0 && (
+          <p className="exec-local-note">
+            Filtered on this page: the filter selects more than 1,000 workflows,
+            so pages may hold fewer rows.
+          </p>
+        )}
+        {pageRuns.length > 0 && !matchesNoWorkflow && (
           <Pager
             page={page}
             pageSize={PAGE_SIZE}

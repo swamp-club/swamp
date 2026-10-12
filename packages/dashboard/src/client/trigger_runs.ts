@@ -37,6 +37,7 @@ import {
   type TriggerRun,
   type WorkflowRunSummary,
 } from "../lib/triggers.ts";
+import { MAX_WORKFLOW_NAMES } from "../lib/run_filters.ts";
 
 export interface TriggerRunSummaries {
   byWorkflow: Map<string, WorkflowRunSummary>;
@@ -56,23 +57,27 @@ export function useTriggerRunSummaries(
   const enabled = (options.enabled ?? true) && workflows.length > 0;
   const recentLimit = options.recentLimit ?? 20;
   const names = useMemo(() => [...new Set(workflows)].sort(), [workflows]);
+  // Past serve's cap on a `workflows` filter, ask for every workflow; the
+  // results are narrowed to `names` below either way.
+  const sent = names.length <= MAX_WORKFLOW_NAMES ? names : undefined;
   const summary = useRunSummary(
-    { triggerSource, workflows: names, recentLimit },
+    { triggerSource, workflows: sent, recentLimit },
     { enabled },
   );
   // Older serves don't know the summary request: fall back to a search.
   const fallback = enabled && summary.error !== null;
   const bounds = useTimeBounds();
   const search = useTriggerSearch(
-    { triggerSource, workflows: names, limit: 500 },
+    { triggerSource, workflows: sent, limit: 500 },
     bounds,
     fallback,
   );
 
   return useMemo(() => {
     if (!fallback) {
+      const keep = new Set(names);
       const list = (summary.summary?.workflows ?? []).filter((w) =>
-        names.includes(w.workflowName)
+        keep.has(w.workflowName)
       );
       return {
         byWorkflow: new Map(list.map((w) => [w.workflowName, w])),

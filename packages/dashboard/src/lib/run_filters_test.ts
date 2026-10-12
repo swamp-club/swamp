@@ -20,9 +20,12 @@
 import { assertEquals } from "@std/assert";
 import {
   filterRowsByWorkflow,
+  MAX_WORKFLOW_NAMES,
   runSearchPayload,
   runSearchWindow,
+  splitWorkflowFilter,
   statusCounts,
+  totalsOfWorkflows,
   workflowNamesForFilter,
 } from "./run_filters.ts";
 import {
@@ -205,5 +208,47 @@ Deno.test("runSearchWindow: presets as durations, custom as ISO bounds", () => {
       to: "2026-10-02T00:00:00.000Z",
     }),
     { since: "2026-10-01T00:00:00.000Z", until: "2026-10-02T00:00:00.000Z" },
+  );
+});
+
+Deno.test("splitWorkflowFilter: sends names up to serve's cap, filters locally past it", () => {
+  assertEquals(splitWorkflowFilter(null), { server: null, local: null });
+  const few = ["a", "b"];
+  assertEquals(splitWorkflowFilter(few), { server: few, local: null });
+  const atCap = Array.from({ length: MAX_WORKFLOW_NAMES }, (_, i) => `w${i}`);
+  assertEquals(splitWorkflowFilter(atCap).server, atCap);
+  const many = [...atCap, "extra"];
+  const split = splitWorkflowFilter(many);
+  assertEquals(split.server, null);
+  assertEquals(split.local?.size, MAX_WORKFLOW_NAMES + 1);
+  assertEquals(split.local?.has("extra"), true);
+});
+
+Deno.test("totalsOfWorkflows: sums only the kept workflows", () => {
+  const row = (workflowName: string, runs: number) => ({
+    workflowName,
+    runs,
+    succeeded: runs,
+    failed: 0,
+    running: 0,
+    suspended: 0,
+    cancelled: 0,
+    durationMs: runs * 10,
+  });
+  assertEquals(
+    totalsOfWorkflows(
+      [row("a", 2), row("b", 3), row("c", 5)],
+      new Set(["a", "c"]),
+    ),
+    {
+      runs: 7,
+      succeeded: 7,
+      failed: 0,
+      running: 0,
+      suspended: 0,
+      cancelled: 0,
+      durationMs: 70,
+      workflows: 2,
+    },
   );
 });

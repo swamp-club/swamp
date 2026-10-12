@@ -65,6 +65,12 @@
   font-size: 0.72rem;
   color: var(--text-3);
 }
+.exec-local-note {
+  margin: 0;
+  padding: 8px 16px 0;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
 .exec-refresh {
   display: inline-flex;
   align-items: center;

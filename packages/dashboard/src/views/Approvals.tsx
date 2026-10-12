@@ -61,7 +61,7 @@ import {
   SkeletonRunHistory,
 } from "../components/Skeleton";
 import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
-import { filterRowsByWorkflow } from "../lib/run_filters";
+import { filterRowsByWorkflow, MAX_WORKFLOW_NAMES } from "../lib/run_filters";
 import { formatWait, oldestFirst } from "../lib/wait_order";
 import type { WorkflowJobDef } from "../lib/gate_dag";
 import {
@@ -258,7 +258,13 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     [namesKey],
   );
   const historyRequest = useRunSummary(
-    { workflows: workflowNames, recentLimit: HISTORY_SLOTS },
+    {
+      // Past serve's cap, every workflow's history; looked up by name.
+      workflows: workflowNames.length <= MAX_WORKFLOW_NAMES
+        ? workflowNames
+        : undefined,
+      recentLimit: HISTORY_SLOTS,
+    },
     { enabled: workflowNames.length > 0 },
   );
   const history = summariesByName(historyRequest.summary);

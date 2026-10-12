@@ -140,6 +140,54 @@ export function runSearchWindow(
   return range.preset === "all" ? {} : { since: range.preset };
 }
 
+/** The most names serve takes in one `workflows` filter. */
+export const MAX_WORKFLOW_NAMES = 1_000;
+
+/**
+ * Splits a resolved workflow filter into what serve is sent and what the
+ * caller applies itself: a list over serve's cap would be refused, so it
+ * is not sent, and `local` names the workflows to keep. Null means none.
+ */
+export function splitWorkflowFilter(
+  names: readonly string[] | null,
+): { server: readonly string[] | null; local: ReadonlySet<string> | null } {
+  if (names === null || names.length <= MAX_WORKFLOW_NAMES) {
+    return { server: names, local: null };
+  }
+  return { server: null, local: new Set(names) };
+}
+
+/** Run totals summed over the per-workflow summaries `keep` names. */
+export function totalsOfWorkflows(
+  workflows: ReadonlyArray<
+    RunTotals & { workflowName: string; durationMs: number }
+  >,
+  keep: ReadonlySet<string>,
+): RunTotals & { durationMs: number; workflows: number } {
+  const total = {
+    runs: 0,
+    succeeded: 0,
+    failed: 0,
+    running: 0,
+    suspended: 0,
+    cancelled: 0,
+    durationMs: 0,
+    workflows: 0,
+  };
+  for (const w of workflows) {
+    if (!keep.has(w.workflowName)) continue;
+    total.workflows++;
+    total.runs += w.runs;
+    total.succeeded += w.succeeded;
+    total.failed += w.failed;
+    total.running += w.running;
+    total.suspended += w.suspended;
+    total.cancelled += w.cancelled;
+    total.durationMs += w.durationMs;
+  }
+  return total;
+}
+
 export interface RunTotals {
   runs: number;
   succeeded: number;
