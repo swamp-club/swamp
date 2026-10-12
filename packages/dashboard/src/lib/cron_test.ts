@@ -130,7 +130,9 @@ Deno.test("parseCron: rejects malformed expressions with a reason", () => {
 });
 
 Deno.test("parseCron: flags syntax it can't preview as unsupported", () => {
-  for (const expr of ["0 0 L * *", "0 0 15W * *", "0 0 * * 5#3"]) {
+  for (
+    const expr of ["0 0 L * *", "0 0 15W * *", "0 0 * * 5#3", "0 9 ? * MON"]
+  ) {
     const parsed = parseCron(expr);
     assertEquals(parsed.ok, false, expr);
     if (!parsed.ok) assertEquals(parsed.unsupported, true, expr);
@@ -138,7 +140,7 @@ Deno.test("parseCron: flags syntax it can't preview as unsupported", () => {
 });
 
 Deno.test("parseCron: expands lists, ranges, steps and names", () => {
-  const parsed = parseCron("5/20 1-3,8 ? JAN-MAR SUN,7");
+  const parsed = parseCron("5/20 1-3,8 * JAN-MAR SUN,7");
   assert(parsed.ok);
   if (!parsed.ok) return;
   assertEquals(parsed.schedule.minutes, [5, 25, 45]);

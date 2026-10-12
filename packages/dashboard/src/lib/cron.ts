@@ -23,8 +23,9 @@
 // an edit as it is typed, describes common patterns in English ("Every 5
 // minutes", "Every weekday at 09:00") and lists upcoming fire times for a
 // preview. Patterns it cannot describe return null, and the caller shows
-// the raw expression; syntax it does not model (L, W, #) parses as
-// unsupported, so serve stays the judge of what is valid.
+// the raw expression; syntax it does not model (L, W, #, and `?`, which
+// croner replaces with the current date's value when the schedule is
+// loaded) parses as unsupported, so serve stays the judge of what is valid.
 
 export interface CronSchedule {
   hasSeconds: boolean;
@@ -35,7 +36,7 @@ export interface CronSchedule {
   months: number[];
   /** 0 = Sunday. */
   weekdays: number[];
-  /** Day-of-month / day-of-week were `*` or `?` (unrestricted). */
+  /** Day-of-month / day-of-week were `*` (unrestricted). */
   daysAny: boolean;
   weekdaysAny: boolean;
   /** The fields as written, after nickname expansion. */
@@ -137,7 +138,7 @@ function parseValue(token: string, spec: FieldSpec): number {
     if (i >= 0) return i + (spec.nameBase ?? 0);
   }
   if (!/^\d+$/.test(token)) {
-    if (/[LW#]/i.test(token)) {
+    if (/[LW#?]/i.test(token)) {
       throw new CronError(`"${token}" can't be previewed here`, true);
     }
     throw new CronError(`"${token}" is not a valid ${spec.name}`);
@@ -169,7 +170,7 @@ function parseField(raw: string, spec: FieldSpec): Set<number> {
     }
     let lo: number;
     let hi: number;
-    if (range === "*" || range === "?") {
+    if (range === "*") {
       lo = spec.min;
       hi = spec.max === 7 ? 6 : spec.max;
     } else if (range.includes("-")) {
@@ -228,8 +229,8 @@ export function parseCron(expression: string): CronParse {
         days: sorted(parseField(dom, DAY)),
         months: sorted(parseField(mon, MONTH)),
         weekdays: sorted(weekdays),
-        daysAny: dom === "*" || dom === "?",
-        weekdaysAny: dow === "*" || dow === "?",
+        daysAny: dom === "*",
+        weekdaysAny: dow === "*",
         fields,
       },
     };
