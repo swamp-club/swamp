@@ -48,7 +48,6 @@ import {
   formatCompactCount,
   formatCount,
   formatRelativeTime,
-  pluralize,
 } from "../lib/format.ts";
 import {
   filterModels,
@@ -57,6 +56,8 @@ import {
   type ModelSort,
   type ModelSummary,
   modelTypeOptions,
+  partialCount,
+  partialPlural,
   sortModels,
 } from "./model_list.ts";
 import {
@@ -180,7 +181,7 @@ export function Models({ onOpenModel }: ModelsProps) {
     });
     stats.push({
       label: "failed",
-      value: formatCompactCount(failed),
+      value: `${formatCompactCount(failed)}${truncated ? "+" : ""}`,
       tone: failed > 0 ? "danger" : "neutral",
       title: `Failed method runs · ${rangeText}`,
     });
@@ -266,6 +267,7 @@ export function Models({ onOpenModel }: ModelsProps) {
                       usage={usageOf(m)}
                       usageState={usageState}
                       rangeText={rangeText}
+                      partial={truncated}
                       onOpen={onOpenModel}
                     />
                   ))}
@@ -386,12 +388,14 @@ function ModelFilterBar(
 }
 
 function ModelCard(
-  { model, usage, usageState, rangeText, onOpen }: {
+  { model, usage, usageState, rangeText, partial, onOpen }: {
     model: ModelSummary;
     usage: ModelUsage | undefined;
     /** Usage comes from one page-wide request; "failed" hides the strip. */
     usageState: UsageState;
     rangeText: string;
+    /** The page-wide request hit its cap: counts are lower bounds. */
+    partial: boolean;
     onOpen?: (name: string) => void;
   },
 ) {
@@ -465,13 +469,25 @@ function ModelCard(
                   </time>
                 </span>
               )
-              : <span>No executions · {rangeText}</span>}
+              : (
+                <span>
+                  {partial
+                    ? `No executions in the newest ${formatCount(OUTPUT_LIMIT)}`
+                    : `No executions · ${rangeText}`}
+                </span>
+              )}
             {usage && (
-              <span>
-                {pluralize(usage.executions, "run")}
+              <span
+                title={partial
+                  ? `Counted from the newest ${
+                    formatCount(OUTPUT_LIMIT)
+                  } executions · ${rangeText}`
+                  : undefined}
+              >
+                {partialPlural(usage.executions, "run", partial)}
                 {usage.failed > 0 && (
                   <span className="tone-danger">
-                    {` · ${formatCount(usage.failed)} failed`}
+                    {` · ${partialCount(usage.failed, partial)} failed`}
                   </span>
                 )}
               </span>

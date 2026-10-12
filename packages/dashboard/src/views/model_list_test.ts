@@ -23,6 +23,8 @@ import {
   modelPrefixOptions,
   type ModelSummary,
   modelTypeOptions,
+  partialCount,
+  partialPlural,
   sortModels,
 } from "./model_list.ts";
 import type { ModelUsage } from "./model_executions.ts";
@@ -98,4 +100,12 @@ Deno.test("modelPrefixOptions: groups names by prefix", () => {
     { value: "data", label: "data (1)" },
     { value: "deploy", label: "deploy (2)" },
   ]);
+});
+
+Deno.test("partialCount / partialPlural: mark counts from a capped page", () => {
+  assertEquals(partialCount(1234, false), "1,234");
+  assertEquals(partialCount(1234, true), "1,234+");
+  assertEquals(partialPlural(1, "run", false), "1 run");
+  assertEquals(partialPlural(1, "run", true), "1+ runs");
+  assertEquals(partialPlural(5000, "run", true), "5,000+ runs");
 });

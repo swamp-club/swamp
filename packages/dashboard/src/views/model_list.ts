@@ -113,3 +113,23 @@ export function modelPrefixOptions(
   }
   return counted(prefixes);
 }
+
+/**
+ * A count from a capped page of executions: "1,234", or "1,234+" when the
+ * page hit its cap, so the real number may be higher.
+ */
+export function partialCount(n: number, partial: boolean): string {
+  return `${formatCount(n)}${partial ? "+" : ""}`;
+}
+
+/** "3 runs", "1 run", or "3+ runs" from a capped page. */
+export function partialPlural(
+  n: number,
+  singular: string,
+  partial: boolean,
+  plural = `${singular}s`,
+): string {
+  return `${partialCount(n, partial)} ${
+    n === 1 && !partial ? singular : plural
+  }`;
+}
