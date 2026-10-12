@@ -17,7 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { CSSProperties, ReactNode } from "react";
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
+import { type CSSProperties, Fragment, type ReactNode } from "react";
 
 // Loading placeholders shaped like the content they stand in for. Every
 // block shares one shimmer pinned to the viewport, so a page of
@@ -282,6 +284,158 @@ export function SkeletonStats({ count = 4 }: { count?: number }) {
           <div className="stat-card" key={i}>
             <Skeleton width={70} height={10} style={{ marginBottom: 12 }} />
             <Skeleton width={i % 2 ? 54 : 80} height={26} />
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+// Bar heights as a share of the plot, varied so the silhouette reads as a
+// chart rather than a bar code; fixed so it never reshuffles.
+const BAR_HEIGHTS = [46, 68, 54, 82, 62, 38, 74, 58, 88, 50, 70, 42];
+
+/**
+ * A bar chart's silhouette: gridlines with y-axis tick placeholders, a
+ * baseline, bars of varied height and x-axis label placeholders. Its
+ * insets match the Overview's canvas chart (top 8, right 12, bottom 28,
+ * left 36) so the real chart lands exactly where the placeholder was.
+ * Decorative only — wrap it in a `SkeletonRegion` to announce loading.
+ */
+export function SkeletonChart(
+  { bars = 7, height = 180, gridLines = 4 }: {
+    bars?: number;
+    height?: number | string;
+    gridLines?: number;
+  },
+) {
+  const plot = { top: 8, right: 12, bottom: 28, left: 36 };
+  const lines = Math.max(1, gridLines);
+  return (
+    <div
+      aria-hidden="true"
+      className="skel-chart"
+      style={{ position: "relative", height }}
+    >
+      {Array.from({ length: lines + 1 }, (_, i) => {
+        const top = `calc(${plot.top}px + (100% - ${
+          plot.top + plot.bottom
+        }px) * ${i / lines})`;
+        const baseline = i === lines;
+        return (
+          <Fragment key={i}>
+            <span
+              style={{
+                position: "absolute",
+                left: plot.left,
+                right: plot.right,
+                top,
+                height: 1,
+                background: baseline ? "var(--border)" : "var(--border-subtle)",
+              }}
+            />
+            <Skeleton
+              width={i === lines ? 8 : 18}
+              height={8}
+              style={{
+                position: "absolute",
+                right: `calc(100% - ${plot.left - 6}px)`,
+                top: `calc(${top} - 4px)`,
+              }}
+            />
+          </Fragment>
+        );
+      })}
+      <div
+        style={{
+          position: "absolute",
+          left: plot.left,
+          right: plot.right,
+          top: plot.top,
+          bottom: plot.bottom,
+          display: "flex",
+          alignItems: "flex-end",
+        }}
+      >
+        {Array.from({ length: bars }, (_, i) => (
+          <span
+            key={i}
+            style={{
+              flex: 1,
+              height: "100%",
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent: "center",
+            }}
+          >
+            <Skeleton
+              width="55%"
+              height={`${BAR_HEIGHTS[i % BAR_HEIGHTS.length]}%`}
+              radius="3px 3px 0 0"
+              style={{ maxWidth: 40 }}
+            />
+          </span>
+        ))}
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: plot.left,
+          right: plot.right,
+          bottom: 6,
+          display: "flex",
+        }}
+      >
+        {Array.from({ length: bars }, (_, i) => (
+          <span
+            key={i}
+            style={{ flex: 1, display: "flex", justifyContent: "center" }}
+          >
+            <Skeleton width={30} height={8} />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Key/value rows — a settings or details panel — with a placeholder for
+ * each value. Pass `keys` when the labels are known up front so they show
+ * for real from the first paint; omit them for `rows` placeholder keys.
+ * Pass the loaded layout's row and key classes (`sys-row`/`sys-key`,
+ * `detail-row`/`detail-key`) so rows keep their final height. Decorative
+ * only — wrap it in a `SkeletonRegion` to announce loading.
+ */
+export function SkeletonKeyValues(
+  {
+    keys,
+    rows = 4,
+    rowClassName = "sys-row",
+    keyClassName = "sys-key",
+    rowStyle,
+  }: {
+    keys?: readonly string[];
+    rows?: number;
+    rowClassName?: string;
+    keyClassName?: string;
+    rowStyle?: CSSProperties;
+  },
+) {
+  const count = keys?.length ?? rows;
+  return (
+    <div aria-hidden="true">
+      {Array.from(
+        { length: count },
+        (_, i) => (
+          <div className={rowClassName} style={rowStyle} key={keys?.[i] ?? i}>
+            {keys
+              ? <span className={keyClassName}>{keys[i]}</span>
+              : <Skeleton width={i % 2 ? 72 : 96} height={10} />}
+            <Skeleton
+              width={i % 3 === 0 ? 96 : i % 3 === 1 ? 64 : 120}
+              height={10}
+            />
           </div>
         ),
       )}
