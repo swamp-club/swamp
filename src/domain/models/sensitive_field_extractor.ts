@@ -272,9 +272,20 @@ export interface SensitiveArgRemediation {
 /** Fallback vault name used when a sensitive field declares no `vaultName`. */
 const DEFAULT_REMEDIATION_VAULT = "my-vault";
 
+/** Reads a quoted path segment back; a malformed one is returned as is. */
+function unquoteKey(quoted: string): string {
+  try {
+    return String(JSON.parse(quoted));
+  } catch {
+    return quoted;
+  }
+}
+
 /**
- * Returns the last key a path names, unquoted: `apiKey` for
- * `credentials.apiKey`, `api key` for `credentials["api key"]`.
+ * Returns the last key a path names, as a vault key: `apiKey` for
+ * `credentials.apiKey`. A quoted key holds characters that do not belong in a
+ * vault key or a shell command, so it is reduced the way an element path is:
+ * `api-key` for `credentials["api key"]`.
  */
 function lastKeyOf(path: string): string {
   let key = "";
@@ -287,7 +298,7 @@ function lastKeyOf(path: string): string {
       while (end < path.length && path[end] !== '"') {
         end += path[end] === "\\" ? 2 : 1;
       }
-      key = JSON.parse(path.slice(i + 1, end + 1));
+      key = vaultKeyForElementPath(unquoteKey(path.slice(i + 1, end + 1)));
       i = end + 2;
     } else if (path[i] === "[") {
       const end = path.indexOf("]", i);
@@ -331,7 +342,8 @@ function vaultKeyForElementPath(path: string): string {
  * so its key is built from the whole path (`users[0].password` gives
  * `users-0-password`) rather than from a declared `vaultKey` or the leaf
  * segment, either of which would point every element at the same secret.
- * When two such keys come out the same, the later one gets a numeric suffix.
+ * When such a key equals another key suggested in the same call, it gets a
+ * numeric suffix.
  * These paths, and any path holding a quoted key, are only matched to their
  * field's metadata when `args` is given.
  *
@@ -370,18 +382,24 @@ export function buildSensitiveArgRemediations(
       }
     }
   }
-  const elementKeys = new Set<string>();
+  const onceKey = (path: string) =>
+    fieldsByPath.get(path)?.vaultKey ?? lastKeyOf(path);
+  // An element key must differ from every other key suggested here, the
+  // keys of fields that occur once included.
+  const takenKeys = new Set(
+    leakedPaths.filter((path) => !elementPaths.has(path)).map(onceKey),
+  );
   return leakedPaths.map((path) => {
     const meta = fieldsByPath.get(path);
     const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    let vaultKey = meta?.vaultKey ?? lastKeyOf(path);
+    let vaultKey = onceKey(path);
     if (elementPaths.has(path)) {
       const base = vaultKeyForElementPath(path);
       vaultKey = base;
-      for (let n = 2; elementKeys.has(vaultKey); n++) {
+      for (let n = 2; takenKeys.has(vaultKey); n++) {
         vaultKey = `${base}-${n}`;
       }
-      elementKeys.add(vaultKey);
+      takenKeys.add(vaultKey);
     }
     return {
       path,

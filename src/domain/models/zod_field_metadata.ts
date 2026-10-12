@@ -54,6 +54,7 @@ interface ZodDef {
   getter?: () => z.ZodTypeAny;
   catchall?: z.ZodTypeAny;
   coerce?: boolean;
+  entries?: Record<string, unknown>;
   in?: z.ZodTypeAny;
   out?: z.ZodTypeAny;
   values?: unknown[];
@@ -324,9 +325,11 @@ const SCALAR_TYPES = [
 ];
 
 /**
- * Reports whether a value has the container kind a union member describes: an
- * object for an object or record, an array for an array or tuple, neither for
- * a scalar. A member of any other type, a coerced scalar, or one behind a
+ * Reports whether a value has the kind a union member describes: an object
+ * for an object or record, an array for an array or tuple, a scalar for a
+ * scalar. A number, boolean or bigint fits only a scalar member of its own
+ * type, or a literal or enum that lists it; a string fits every scalar
+ * member. A member of any other type, a coerced scalar, or one behind a
  * `z.preprocess()`, is taken to fit every value.
  */
 function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
@@ -342,43 +345,88 @@ function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
     return Array.isArray(value);
   }
   if (SCALAR_TYPES.includes(memberType)) {
-    // `z.coerce.string()` accepts an array or object by converting it.
-    return getSchemaDef(core).coerce === true || typeof value !== "object";
+    const def = getSchemaDef(core);
+    // `z.coerce.string()` accepts any value by converting it.
+    if (def.coerce === true) {
+      return true;
+    }
+    if (typeof value === "object") {
+      return false;
+    }
+    // A stored string can stand for a scalar of any type: an expression is
+    // kept as text until it is resolved.
+    if (typeof value === "string") {
+      return true;
+    }
+    if (memberType === "literal") {
+      return def.values?.includes(value) ?? true;
+    }
+    if (memberType === "enum") {
+      return def.entries ? Object.values(def.entries).includes(value) : true;
+    }
+    return typeof value === memberType;
   }
   return true;
 }
 
 /**
+ * Returns the literal values an object member requires for its keys: for
+ * `z.object({ kind: z.literal("token") })`, `kind` mapped to `["token"]`.
+ * Empty for a member that is not a plain object schema.
+ */
+function literalTags(member: z.ZodTypeAny): Map<string, unknown[]> {
+  const tags = new Map<string, unknown[]>();
+  const memberSchema = unwrapSchema(member);
+  if (getSchemaType(memberSchema) !== "object") {
+    return tags;
+  }
+  for (
+    const [key, fieldSchema] of Object.entries(
+      getSchemaDef(memberSchema).shape ?? {},
+    )
+  ) {
+    const fieldDef = getSchemaDef(unwrapSchema(fieldSchema));
+    if (fieldDef?.type === "literal" && fieldDef.values) {
+      tags.set(key, fieldDef.values);
+    }
+  }
+  return tags;
+}
+
+/**
  * Picks the members of a union a value can belong to, without running any
- * member's validation. Members whose container kind the value does not have
- * are dropped, and a discriminated union is narrowed by the value's
- * discriminator when that names members exactly. Every other case keeps the
- * member, so a field one member marks is never missed because another member
- * also accepts the value.
+ * member's validation. Two kinds of member are dropped, both certain to
+ * reject the value: one of another kind (see {@link fitsShape}), and an
+ * object member requiring a literal for a key where the value holds a
+ * literal that a different member requires there (the value is tagged as
+ * that other member). Every other case keeps the member, so a field one
+ * member marks is never missed because another member also accepts the
+ * value. When nothing is left, every member is kept.
  */
 function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
   const all = def.options ?? [];
   const fitting = all.filter((option) => fitsShape(option, value));
   const options = fitting.length > 0 ? fitting : all;
-  if (!def.discriminator || !isPlainObject(value)) {
+  if (!isPlainObject(value)) {
     return options;
   }
-  const tag = value[def.discriminator];
-  const tagged: z.ZodTypeAny[] = [];
-  for (const option of options) {
-    const optionDef = getSchemaDef(unwrapSchema(option));
-    const tagSchema = optionDef?.shape?.[def.discriminator];
-    const tagDef = tagSchema
-      ? getSchemaDef(unwrapSchema(tagSchema))
-      : undefined;
-    if (tagDef?.type !== "literal" || !tagDef.values) {
-      return options;
+  const tags = options.map(literalTags);
+  const untagged = options.filter((_, index) => {
+    for (const [key, required] of tags[index]) {
+      const held = value[key];
+      if (held === undefined || required.includes(held)) {
+        continue;
+      }
+      const tagsAnotherMember = tags.some((other, otherIndex) =>
+        otherIndex !== index && other.get(key)?.includes(held)
+      );
+      if (tagsAnotherMember) {
+        return false;
+      }
     }
-    if (tagDef.values.includes(tag)) {
-      tagged.push(option);
-    }
-  }
-  return tagged.length > 0 ? tagged : options;
+    return true;
+  });
+  return untagged.length > 0 ? untagged : options;
 }
 
 /** State carried through one {@link findValuesWithMetadata} walk. */
@@ -512,8 +560,10 @@ function visitValue(
  * `.catchall()` keys, union members and intersections, and through
  * `.transform()`, `.readonly()` and `z.lazy()` wrappers. It reads the value
  * as stored: a `z.preprocess()` that turns a string into a container is not
- * run, so fields inside that string are not reached. A matching node is reported once, and its children
- * are still visited. Metadata on the root schema itself is not reported.
+ * run, so fields inside that string are not reached. A matching node is
+ * reported once, and its children are still visited. When union members
+ * reach one path in different ways, the first member decides `perElement`.
+ * Metadata on the root schema itself is not reported.
  *
  * The walk follows the value, so it visits at most what the value holds and
  * ends on a recursive schema; a value that contains itself is not entered

@@ -76,10 +76,16 @@ Each schema is walked once per place in the value, so the cost grows with the
 size of the value even when union members overlap in a recursive schema.
 
 - **Unions.** No member's validation runs. Every member the value could belong
-  to is checked: members of the wrong container kind are dropped (a coerced
-  scalar or a member behind `z.preprocess()` fits any value and is kept), and a
-  discriminated union is narrowed by its discriminator when the value carries a
-  literal one. A value is refused if any remaining member marks it sensitive.
+  to is checked, and a value is refused if any of them marks it sensitive. Only
+  members certain to reject the value are dropped:
+  - a member of another kind: an object member for an array, a string member for
+    a number or boolean. A stored string fits every scalar member, because an
+    expression is text until it is resolved. A coerced scalar or a member behind
+    `z.preprocess()` fits any value and is kept.
+  - an object member that requires a literal for a key where the value holds a
+    literal another member requires there. `{ kind: "env", ... }` is not checked
+    against a member declaring `kind: z.literal("secret")`. A tag that names no
+    member, or is still an expression, drops nothing.
 - **Vault keys.** A field inside an array element or record value occurs once
   per element, so its suggested vault key is built from the whole path
   (`users-1-password`). A declared `vaultKey` is not used there, because every
@@ -92,8 +98,9 @@ size of the value even when union members overlap in a recursive schema.
   or as an array index. Control characters and bidirectional marks in a key are
   written as `\uXXXX` escapes. A path naming an array element is not a
   `--global-arg` key; the refusal says to pass the whole array with
-  `<name>:json=[...]`. Suggested vault keys that come out the same get a numeric
-  suffix.
+  `<name>:json=[...]`. A suggested vault key built from a path or from a quoted
+  key holds only letters, digits, `_` and `-`, and gets a numeric suffix when
+  it equals another key suggested for the same definition.
 
 The redaction and vaulting primitives in the same module
 (`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)

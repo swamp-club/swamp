@@ -1060,9 +1060,9 @@ Deno.test("buildSensitiveArgRemediations: derives the vault key from a quoted la
     'creds["say \\"hi\\""]',
   ]);
   assertEquals(remediations.map((r) => r.vaultKey), [
-    "$token",
-    "api.key",
-    'say "hi"',
+    "token",
+    "api-key",
+    "say-hi",
   ]);
 });
 
@@ -1091,7 +1091,7 @@ Deno.test("findLiteralSensitiveGlobalArgs: flags an array a coerced sensitive un
   assertEquals(findLiteralSensitiveGlobalArgs(schema, { pw: [VAULT_REF] }), []);
 });
 
-Deno.test("buildSensitiveArgRemediations: reads back a key written with escapes", () => {
+Deno.test("buildSensitiveArgRemediations: a key written with escapes gives a plain vault key", () => {
   const schema = z.object({
     "rtl\u202ekey": z.string().meta({ sensitive: true }),
   });
@@ -1100,5 +1100,121 @@ Deno.test("buildSensitiveArgRemediations: reads back a key written with escapes"
   const remediations = buildSensitiveArgRemediations(paths, schema, args);
 
   assertEquals(paths, ['["rtl\\u202ekey"]']);
-  assertEquals(remediations[0].vaultKey, "rtl\u202ekey");
+  assertEquals(remediations[0].vaultKey, "rtl-key");
+  assertEquals(
+    remediations[0].expression,
+    "${{ vault.get('my-vault', 'rtl-key') }}",
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: a non-string scalar is not checked against a sensitive string union member", () => {
+  const schema = z.object({
+    auth: z.union([z.literal(false), z.string().meta({ sensitive: true })]),
+    flag: z.union([z.boolean(), z.string().meta({ sensitive: true })]),
+    port: z.union([z.number(), z.string().meta({ sensitive: true })]),
+    mode: z.union([z.enum(["a", "b"]), z.number().meta({ sensitive: true })]),
+  });
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      auth: false,
+      flag: true,
+      port: 8080,
+      mode: "a",
+    }),
+    // A string fits every scalar member, the sensitive number included.
+    ["mode"],
+  );
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      auth: "hunter2",
+      flag: "hunter2",
+      port: "hunter2",
+      mode: 7,
+    }),
+    ["auth", "flag", "port", "mode"],
+  );
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      auth: VAULT_REF,
+      flag: VAULT_REF,
+      port: VAULT_REF,
+      mode: VAULT_REF,
+    }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: a plain union is narrowed by the literal tag the value carries", () => {
+  const schema = z.object({
+    cred: z.union([
+      z.object({ kind: z.literal("env"), value: z.string() }),
+      z.object({
+        kind: z.literal("secret"),
+        value: z.string().meta({ sensitive: true }),
+      }),
+    ]),
+  });
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      cred: { kind: "env", value: "API_TOKEN_VAR" },
+    }),
+    [],
+  );
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      cred: { kind: "secret", value: "hunter2" },
+    }),
+    ["cred.value"],
+  );
+  // A tag that names no member, or is still an expression, keeps both.
+  for (const kind of ["other", "${{ inputs.kind }}", undefined]) {
+    assertEquals(
+      findLiteralSensitiveGlobalArgs(schema, {
+        cred: { kind, value: "hunter2" },
+      }),
+      ["cred.value"],
+    );
+  }
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: a tag another member requires does not drop a member that tolerates it", () => {
+  // `.catch()` lets the first member accept any kind, so it stays a candidate.
+  const schema = z.object({
+    cred: z.union([
+      z.object({
+        kind: z.literal("secret").catch("secret"),
+        value: z.string().meta({ sensitive: true }),
+      }),
+      z.object({ kind: z.literal("env"), value: z.string() }),
+    ]),
+  });
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      cred: { kind: "env", value: "hunter2" },
+    }),
+    ["cred.value"],
+  );
+});
+
+Deno.test("buildSensitiveArgRemediations: an element key differs from a key of a field that occurs once", () => {
+  const schema = z.object({
+    "users-0-password": z.string().meta({ sensitive: true }),
+    users: z.array(z.object({
+      password: z.string().meta({ sensitive: true }),
+    })),
+  });
+  const args = {
+    users: [{ password: "one" }],
+    "users-0-password": "two",
+  };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(
+    Object.fromEntries(remediations.map((r) => [r.path, r.vaultKey])),
+    {
+      "users-0-password": "users-0-password",
+      "users[0].password": "users-0-password-2",
+    },
+  );
 });
