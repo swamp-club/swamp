@@ -31,6 +31,10 @@ export interface RunHistoryEntry {
   duration?: number;
   /** Needed to link the pip; falls back to the bar's `workflowName`. */
   workflowName?: string;
+  /** Unique key when several entries share a run (a model's executions). */
+  id?: string;
+  /** Second tooltip line in place of "run <id>" (e.g. a method name). */
+  label?: string;
 }
 
 interface RunHistoryBarProps {
@@ -59,7 +63,7 @@ function pipTitle(run: RunHistoryEntry): string {
   const parts = [run.status];
   if (run.duration !== undefined) parts.push(formatDuration(run.duration));
   if (run.startedAt) parts.push(formatShortDateTime(run.startedAt));
-  return `${parts.join(" · ")}\nrun ${run.runId.slice(0, 8)}`;
+  return `${parts.join(" · ")}\n${run.label ?? `run ${run.runId.slice(0, 8)}`}`;
 }
 
 /**
@@ -100,7 +104,7 @@ export function RunHistoryBar(
         if (!wf) {
           return (
             <span
-              key={run.runId}
+              key={run.id ?? run.runId}
               role="listitem"
               className={cls}
               title={title}
@@ -127,7 +131,7 @@ export function RunHistoryBar(
         };
         return (
           <a
-            key={run.runId}
+            key={run.id ?? run.runId}
             role="listitem"
             className={cls}
             href={buildPath(to)}
