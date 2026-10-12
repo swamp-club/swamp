@@ -191,6 +191,67 @@ Deno.test("handles optional object wrapper", () => {
   assertEquals(result, { meta: { k: "v" } });
 });
 
+Deno.test("coerces JSON object string to record (swamp-club#3286)", () => {
+  const schema = z.object({ labels: z.record(z.string(), z.string()) });
+  const result = coerceMethodArgs({ labels: '{"env":"prod"}' }, schema);
+  assertEquals(result, { labels: { env: "prod" } });
+});
+
+Deno.test("coerces JSON object string to record through optional, nullable and default wrappers (swamp-club#3286)", () => {
+  const record = z.record(z.string(), z.number());
+  const schema = z.object({
+    a: record.optional(),
+    b: record.nullable(),
+    c: record.default({}),
+  });
+  const result = coerceMethodArgs(
+    { a: '{"x":1}', b: '{"y":2}', c: '{"z":3}' },
+    schema,
+  );
+  assertEquals(result, { a: { x: 1 }, b: { y: 2 }, c: { z: 3 } });
+});
+
+Deno.test("coerces a record whose values are expressions, keeping the expression strings (swamp-club#3286)", () => {
+  const schema = z.object({ tokens: z.record(z.string(), z.string()) });
+  const result = coerceMethodArgs(
+    { tokens: '{"a":"${{ vault.get(default, tok) }}"}' },
+    schema,
+  );
+  assertEquals(result, { tokens: { a: "${{ vault.get(default, tok) }}" } });
+});
+
+Deno.test("invalid JSON for record stays as string (swamp-club#3286)", () => {
+  const schema = z.object({ labels: z.record(z.string(), z.string()) });
+  const result = coerceMethodArgs({ labels: "${{ inputs.labels }}" }, schema);
+  assertEquals(result, { labels: "${{ inputs.labels }}" });
+});
+
+Deno.test("JSON null, array, number and string do not coerce to record (swamp-club#3286)", () => {
+  const schema = z.object({ labels: z.record(z.string(), z.string()) });
+  for (const value of ["null", '["a"]', "42", '"text"']) {
+    assertEquals(coerceMethodArgs({ labels: value }, schema), {
+      labels: value,
+    });
+  }
+});
+
+Deno.test("passes through a record value that is already a map (swamp-club#3286)", () => {
+  const schema = z.object({ labels: z.record(z.string(), z.string()) });
+  const result = coerceMethodArgs({ labels: { env: "prod" } }, schema);
+  assertEquals(result, { labels: { env: "prod" } });
+});
+
+Deno.test("coerces JSON object string to a Zod v3 record (swamp-club#3286)", () => {
+  const v3Schema = {
+    _def: {
+      typeName: "ZodObject",
+      shape: () => ({ labels: { _def: { typeName: "ZodRecord" } } }),
+    },
+  } as unknown as z.ZodTypeAny;
+  const result = coerceMethodArgs({ labels: '{"env":"prod"}' }, v3Schema);
+  assertEquals(result, { labels: { env: "prod" } });
+});
+
 // ---------- getObjectShape ----------
 
 Deno.test("getObjectShape returns shape for plain ZodObject", () => {
