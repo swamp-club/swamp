@@ -23,6 +23,7 @@ import { extractArray, extractTotal } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { Pager } from "../components/Pager";
+import { RunHistoryBar } from "../components/RunHistoryBar";
 
 interface WorkflowDef {
   id: string;
@@ -35,6 +36,7 @@ interface RunSummary {
   runId: string;
   workflowName: string;
   status: string;
+  startedAt?: string;
   triggerSource?: string;
 }
 
@@ -50,7 +52,9 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
-  const { data: runsData } = useRequest("workflow.run.search", { limit: 200 });
+  // One search at serve's default page size rather than one per card:
+  // serve reads every run file for any run search, filtered or not.
+  const { data: runsData } = useRequest("workflow.run.search", {});
 
   const workflows = extractArray<WorkflowDef>(workflowsData);
   const workflowTotal = extractTotal(workflowsData) ?? workflows.length;
@@ -85,11 +89,6 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
         {workflows.map((w) => {
           const wRuns = runsByWorkflow.get(w.name) ?? [];
           const lastRun = wRuns[0];
-          const succeeded = wRuns.filter((r) =>
-            r.status === "succeeded"
-          ).length;
-          const failed = wRuns.filter((r) => r.status === "failed").length;
-          const total = wRuns.length || 1;
 
           return (
             <div
@@ -111,15 +110,8 @@ export function Workflows({ onOpenWorkflow }: WorkflowsProps) {
                 {!w.trigger?.schedule && <TriggerBadge trigger="manual" />}
                 <span>{w.stepCount} steps</span>
               </div>
-              <div className="ratio-bar" style={{ marginTop: 12 }}>
-                <div
-                  className="ratio-seg success"
-                  style={{ width: `${(succeeded / total) * 100}%` }}
-                />
-                <div
-                  className="ratio-seg failure"
-                  style={{ width: `${(failed / total) * 100}%` }}
-                />
+              <div style={{ marginTop: 12 }}>
+                <RunHistoryBar runs={wRuns} />
               </div>
             </div>
           );

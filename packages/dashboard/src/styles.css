@@ -633,28 +633,19 @@ body {
   transition: width 0.5s ease;
 }
 
-/* Success ratio bar */
-.ratio-bar {
+/* Per-workflow run history: one segment per run */
+.run-history {
   display: flex;
-  height: 4px;
-  border-radius: 2px;
-  overflow: hidden;
-  gap: 1px;
-  background: var(--surface-inset);
+  gap: 2px;
+  height: 6px;
 }
 
-.ratio-seg {
-  height: 100%;
+.run-history-seg {
+  flex: 1;
   border-radius: 1px;
 }
-.ratio-seg.success {
-  background: var(--success);
-}
-.ratio-seg.failure {
-  background: var(--danger);
-}
-.ratio-seg.warning {
-  background: var(--warning);
+.run-history-seg.empty {
+  background: var(--surface-inset);
 }
 
 /* Schedule rows */
