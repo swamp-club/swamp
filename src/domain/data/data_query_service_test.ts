@@ -1203,6 +1203,83 @@ Deno.test("DataQueryService: a foreign row the include filter rejects is never f
   catalog.close();
 });
 
+Deno.test("DataQueryService: a select that reads no attributes fetches no foreign content", async () => {
+  let fetchCount = 0;
+  const { catalog, service } = setupForeignTest(() => {
+    fetchCount++;
+    return Promise.resolve(jsonBytes({ content: "security" }));
+  });
+  catalog.upsert(foreignRow());
+
+  assertEquals(
+    await service.query('ns == "security"', { select: "name" }),
+    ["results"],
+  );
+  assertEquals(
+    await service.query('ns == "security"', { select: "version" }),
+    [1],
+  );
+  assertEquals(fetchCount, 0);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: a foreign row whose fields would leave its namespace's data tree is never fetched", async () => {
+  const fetched: string[] = [];
+  const { catalog, service } = setupForeignTest((_namespace, relPath) => {
+    fetched.push(relPath);
+    return Promise.resolve(jsonBytes({ leaked: true }));
+  });
+  const escapes: Array<Partial<CatalogRow>> = [
+    { data_name: "../../../infra/data/x" },
+    { data_name: ".." },
+    { data_name: "a/b" },
+    { data_name: "a\\b" },
+    { model_id: "../other-model" },
+    { type_normalized: "test/../../infra" },
+    { type_normalized: "/abs" },
+  ];
+  for (const [i, fields] of escapes.entries()) {
+    catalog.upsert(foreignRow({
+      model_name: `escape-${i}`,
+      id: `uuid-escape-${i}`,
+      ...fields,
+    }));
+  }
+  // A multi-segment model type is an ordinary path and is still fetched.
+  catalog.upsert(foreignRow({
+    model_name: "ordinary",
+    id: "uuid-ordinary",
+    type_normalized: "command/shell",
+  }));
+
+  // Some of these rows are refused earlier, by the local read's own
+  // containment check; the rest reach the fetch. Either way nothing outside
+  // the namespace's data tree is asked for.
+  for (let i = 0; i < escapes.length; i++) {
+    let attributes: Record<string, unknown> = {};
+    try {
+      const [record] = await service.query(
+        `ns == "security" && modelName == "escape-${i}"`,
+      ) as DataRecord[];
+      attributes = record.attributes;
+    } catch {
+      // refused by the local containment check
+    }
+    assertEquals(attributes, {}, JSON.stringify(escapes[i]));
+  }
+  assertEquals(fetched, []);
+
+  const [ordinary] = await service.query(
+    'ns == "security" && modelName == "ordinary"',
+  ) as DataRecord[];
+  assertEquals(ordinary.attributes, { leaked: true });
+  assertEquals(fetched.length, 1);
+  assertEquals(fetched[0].startsWith("data/command/shell/"), true);
+
+  catalog.close();
+});
+
 Deno.test("DataQueryService: a failed foreign fetch is retried on the next read, a success is not", async () => {
   let calls = 0;
   const { catalog, service } = setupForeignTest(() => {

@@ -274,6 +274,8 @@ interface MatchResult {
   selectParsed?: (ctx: Record<string, unknown>) => unknown;
   /** Whether the select expression reads the items' bytes. */
   selectReadsContent: boolean;
+  /** Whether the select expression reads the items' `attributes`. */
+  selectReadsAttributes: boolean;
   /**
    * Rows whose predicate read `content` although their content type is not
    * text, as metadata-only records, in evaluation order. `matchesBefore`
@@ -289,6 +291,15 @@ interface MatchResult {
 interface ProjectedContent {
   content: unknown;
   contentEncoding: ContentEncoding | null;
+}
+
+/**
+ * Whether `segment` is one path component that stays where it is put: not
+ * empty, not `.` or `..`, and holding no separator or NUL.
+ */
+function isSafePathSegment(segment: string): boolean {
+  return segment !== "" && segment !== "." && segment !== ".." &&
+    !/[/\\\0]/.test(segment);
 }
 
 /** Identifies one version of one data item in the catalog. */
@@ -613,6 +624,20 @@ export class DataQueryService {
       record.contentType !== "application/json" ||
       Object.keys(record.attributes).length > 0
     ) return;
+    // The row is the other namespace's to write, so its fields are checked
+    // before they name a remote object: none may step out of that
+    // namespace's own data tree, whatever the datastore does with the path.
+    if (
+      !isSafePathSegment(record.namespace) ||
+      !record.modelType.split("/").every(isSafePathSegment) ||
+      !isSafePathSegment(record.modelId) ||
+      !isSafePathSegment(record.name) ||
+      !Number.isSafeInteger(record.version) || record.version < 0
+    ) {
+      logger
+        .debug`Not fetching ${record.namespace}:${record.modelName}/${record.name}@v${record.version}: its catalog row does not name a path inside that namespace`;
+      return;
+    }
     const relPath =
       `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
     const cacheKey = `${record.namespace}:${relPath}`;
@@ -816,8 +841,11 @@ export class DataQueryService {
       ) {
         // Before projection, so a select that reads attributes sees them, and
         // after include, so a record the caller may not read is never fetched.
-        for (const record of accepted) {
-          await this.hydrateForeignRecord(record);
+        // A select that reads no attributes fetches nothing.
+        if (!matched.selectParsed || matched.selectReadsAttributes) {
+          for (const record of accepted) {
+            await this.hydrateForeignRecord(record);
+          }
         }
         results = this.project(
           accepted,
@@ -1208,9 +1236,11 @@ export class DataQueryService {
     let needsAttributes = options?.loadAttributes ??
       (referencesAttributes(filterAst) || needsContent);
     let readsContentInSelect = false;
+    let readsAttributesInSelect = false;
     if (options?.select) {
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
       readsContentInSelect = selectReadsContent(selectAst);
+      readsAttributesInSelect = referencesAttributes(selectAst);
       if (!needsAttributes) {
         needsAttributes = referencesAttributes(selectAst) ||
           readsContentInSelect;
@@ -1290,6 +1320,7 @@ export class DataQueryService {
           records: [],
           selectParsed,
           selectReadsContent: readsContentInSelect,
+          selectReadsAttributes: readsAttributesInSelect,
           violations: [],
           hitLimit: false,
         };
@@ -1463,6 +1494,7 @@ export class DataQueryService {
       records: results,
       selectParsed,
       selectReadsContent: readsContentInSelect,
+      selectReadsAttributes: readsAttributesInSelect,
       violations,
       hitLimit,
     };

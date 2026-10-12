@@ -3784,8 +3784,15 @@ repository of their own (workflow runs, `workflow evaluate`, `model evaluate`,
 
 Every reader hydrates a foreign JSON record: `query()` (before projection, so a
 `select` over `attributes` sees them, and after the `include` filter, so a
-record the caller may not read is never fetched) and `getLatestRecord`, which
-serves a namespace-prefixed `data.latest()`. A `select` that reads `content`
+record the caller may not read is never fetched; a `select` that reads no
+`attributes` fetches nothing) and `getLatestRecord`, which serves a
+namespace-prefixed `data.latest()`.
+
+The path fetched is built from the foreign row's namespace, model type, model
+id, data name and version. Those fields are the other namespace's to write, so
+a row is fetched only when each is a plain path segment: one holding `..`, a
+separator or nothing at all could name an object outside that namespace's data
+tree, and is left with empty attributes. A `select` that reads `content`
 rather than `attributes` still sees no bytes for a foreign record, and a
 predicate over a foreign record's `attributes` is matched before hydration,
 against empty attributes.
