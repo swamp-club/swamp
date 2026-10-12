@@ -20,12 +20,12 @@
 import { assert, assertEquals } from "@std/assert";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { sendGracefulStop } from "./process_kill.ts";
-import { registerShutdownHandler } from "./shutdown_handlers.ts";
 import {
   createStopRequestListener,
   EVENT_MODIFY_STATE,
   type Kernel32Events,
   listenForStopRequests,
+  loadKernel32Events,
   type PollScheduler,
   requestStop,
   sendStopRequest,
@@ -373,28 +373,47 @@ Deno.test("listenForStopRequests: listens only on Windows", () => {
   assertEquals(subscribed, ["subscribe"]);
 });
 
+Deno.test("createStopRequestListener: a handler that throws does not keep the request from the others", () => {
+  const { kernel32 } = fakeKernel32();
+  const { listener, tick } = listenerFor(kernel32);
+  const heard: string[] = [];
+  listener.subscribe(() => {
+    throw new Error("handler failure");
+  });
+  listener.subscribe(() => heard.push("b"));
+
+  sendStopRequest(kernel32, 4242);
+  tick();
+
+  assertEquals(heard, ["b"]);
+});
+
 Deno.test({
   name:
-    "stop requests: sendGracefulStop reaches a registerShutdownHandler handler through kernel32 (Windows)",
-  // The real event, created and set by name, in one process: what workflow
-  // cancel and the run's owner each do (swamp-club#3267).
+    "stop requests: sendGracefulStop reaches a listener through kernel32 (Windows)",
+  // The real event, created and set by name: what the run's owner and
+  // workflow cancel each do (swamp-club#3267). Test files run in parallel in
+  // one process, so they share Deno.pid; the event is named for a pid no
+  // process has, so this test never reaches another file's listener.
   ignore: Deno.build.os !== "windows",
   fn: async () => {
+    const pid = 2 ** 32 + parseInt(crypto.randomUUID().slice(0, 8), 16);
     let stops = 0;
-    const handle = registerShutdownHandler({
-      handler: () => {
+    const end = createStopRequestListener(loadKernel32Events, pid).subscribe(
+      () => {
         stops++;
       },
-    });
+    );
+    assert(end, "the listener creates its event");
     const kills: number[] = [];
     try {
-      sendGracefulStop(Deno.pid, { kill: (pid) => kills.push(pid) });
+      sendGracefulStop(pid, { kill: (target) => kills.push(target) });
 
-      await waitFor(() => stops === 1, "stop request to reach the handler");
+      await waitFor(() => stops === 1, "stop request to reach the listener");
       assertEquals(kills, [], "no TerminateProcess fallback");
     } finally {
-      handle.dispose();
+      end();
     }
-    assertEquals(requestStop(Deno.pid), false, "nothing listens after dispose");
+    assertEquals(requestStop(pid), false, "nothing listens once it ended");
   },
 });

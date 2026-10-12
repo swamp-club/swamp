@@ -151,7 +151,16 @@ export function createStopRequestListener(
     if (open.kernel32.WaitForSingleObject(open.event, 0) !== WAIT_OBJECT_0) {
       return;
     }
-    for (const subscription of [...subscriptions]) subscription.handler();
+    // One handler that throws must not keep the request from the others,
+    // nor escape the interval as an uncaught error.
+    for (const subscription of [...subscriptions]) {
+      try {
+        subscription.handler();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        logger.error`Stop request handler failed: ${reason}`;
+      }
+    }
   }
 
   /** Creates the event and starts polling it; false leaves nothing open. */
@@ -206,7 +215,8 @@ export function createStopRequestListener(
 
 let kernel32Events: Kernel32Events | null | undefined;
 
-function loadKernel32(): Kernel32Events | null {
+/** kernel32, or null where it cannot be loaded. Loaded once. */
+export function loadKernel32Events(): Kernel32Events | null {
   if (kernel32Events === undefined) {
     try {
       kernel32Events = Deno.dlopen("kernel32.dll", KERNEL32_SYMBOLS).symbols;
@@ -224,7 +234,7 @@ let processListener: StopRequestListener | undefined;
 
 /** The listener for the stop requests sent to this process. */
 function processStopRequests(): StopRequestListener {
-  processListener ??= createStopRequestListener(loadKernel32, Deno.pid);
+  processListener ??= createStopRequestListener(loadKernel32Events, Deno.pid);
   return processListener;
 }
 
@@ -251,7 +261,7 @@ export function listenForStopRequests(
 export function requestStop(
   pid: number,
   os: typeof Deno.build.os = Deno.build.os,
-  load: () => Kernel32Events | null = loadKernel32,
+  load: () => Kernel32Events | null = loadKernel32Events,
 ): boolean {
   if (os !== "windows") return false;
   const kernel32 = load();

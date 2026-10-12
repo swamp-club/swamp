@@ -2965,8 +2965,10 @@ workflow run, as a workflow step's method run does, gets the workflow cancel
 grace instead, so its cleanup steps can run. `--all` stops the owning
 processes together, each once. A run its owner finished another way during
 the wait keeps that status, and the command reports it as finished before the
-cancel took effect (`finished` in `--json`) rather than as cancelled. On
-Windows the SIGTERM is a stop request, as for a workflow cancel (see
+cancel took effect (`finished` in `--json`) rather than as cancelled. When the
+owner is a workflow run, stopping it cancels the whole run, so every running
+step of the run ends, not only the cancelled method run's. On Windows the
+SIGTERM is a stop request, as for a workflow cancel (see
 [Cancellation](#cancellation)).
 A step's method run that a cancel stops records `cancelled`, in its method-run
 output and its tracker row, as a standalone method run does; the step itself
