@@ -332,3 +332,17 @@ Deno.test("runsWithin: keeps runs started inside the bounds", () => {
   );
   assertEquals(runsWithin(runs, {}).length, 4);
 });
+
+Deno.test("runsWithin: since is inclusive, until exclusive", () => {
+  const runs = [
+    { startedAt: "2026-10-02T00:00:00Z" },
+    { startedAt: "2026-10-06T00:00:00Z" },
+  ];
+  assertEquals(
+    runsWithin(runs, {
+      since: "2026-10-02T00:00:00Z",
+      until: "2026-10-06T00:00:00Z",
+    }),
+    [{ startedAt: "2026-10-02T00:00:00Z" }],
+  );
+});

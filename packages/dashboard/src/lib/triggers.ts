@@ -150,7 +150,10 @@ export function legacySince(
   return `${Math.max(1, Math.ceil((now - t) / 3_600_000))}h`;
 }
 
-/** Runs that started inside the bounds (either end may be open). */
+/**
+ * Runs that started inside the bounds (either end may be open). `since` is
+ * inclusive and `until` exclusive, as in the run search protocol.
+ */
 export function runsWithin<T extends { startedAt?: string }>(
   runs: readonly T[],
   bounds: { since?: string; until?: string },
@@ -160,7 +163,7 @@ export function runsWithin<T extends { startedAt?: string }>(
   return runs.filter((r) => {
     if (!r.startedAt) return true;
     const t = Date.parse(r.startedAt);
-    return Number.isNaN(t) || (t >= lo && t <= hi);
+    return Number.isNaN(t) || (t >= lo && t < hi);
   });
 }
 
