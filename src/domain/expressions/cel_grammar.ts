@@ -276,3 +276,43 @@ export function collectReferences(
       for (const a of node.args as ASTNode[]) collectReferences(a, bound, out);
   }
 }
+
+/** A static read of a binding: `inputs.a.b`, `self["x"][0]`, `model.web-1a.definition`. */
+export interface StaticAccess {
+  root: string;
+  segments: (string | number)[];
+}
+
+/**
+ * The binding an expression reads when it is nothing but a chain of field
+ * and literal-index accesses from a free root identifier, or undefined for
+ * any other expression (a computation, a call, a dynamic index).
+ */
+export function staticAccessPath(
+  celExpression: string,
+): StaticAccess | undefined {
+  let node = parseForEvaluation(celExpression);
+  const segments: (string | number)[] = [];
+  while (node) {
+    if (node.op === "id") {
+      return { root: node.args as string, segments: segments.reverse() };
+    }
+    if (node.op === "." || node.op === ".?") {
+      segments.push(node.args[1] as string);
+      node = node.args[0] as ASTNode;
+      continue;
+    }
+    if (node.op === "[]") {
+      const [target, key] = node.args as [ASTNode, ASTNode];
+      if (key.op !== "value") return undefined;
+      if (typeof key.args === "string") segments.push(key.args);
+      else if (typeof key.args === "bigint") segments.push(Number(key.args));
+      else if (typeof key.args === "number") segments.push(key.args);
+      else return undefined;
+      node = target;
+      continue;
+    }
+    return undefined;
+  }
+  return undefined;
+}

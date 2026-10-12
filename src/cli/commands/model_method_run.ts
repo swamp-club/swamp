@@ -81,10 +81,12 @@ import { createModelMethodRunRenderer } from "../../presentation/renderers/model
 import {
   CA_CERT_DESCRIPTION,
   CA_CERT_FLAG,
+  requestServerResponse,
   resolveServerTokenFromOptions,
   resolveServeUrl,
   runModelMethodOverServer,
 } from "../remote_run.ts";
+import { SERVE_CAPABILITY_LITERAL_INPUTS } from "../../serve/protocol.ts";
 import { redactServerUrl } from "../../domain/auth/server_url.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -120,6 +122,10 @@ export const modelMethodRunCommand = new Command()
   .example(
     "Pipe inputs from stdin",
     'echo \'{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
+  )
+  .example(
+    "Pass text you did not write as data",
+    "swamp model method run github-pr update-body --literal-inputs --input-file body.json",
   )
   .example(
     "Batch run via NDJSON from stdin",
@@ -175,6 +181,11 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
     "Input values from YAML file (cannot combine with --stdin)",
   )
   .option("--stdin", "Read inputs from stdin (piped data)", { default: false })
+  .option(
+    "--literal-inputs",
+    "Treat input values as data: no expression evaluation, no @file reading (with --server, needs a serve that supports it)",
+    { default: false },
+  )
   .option(
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",
@@ -311,6 +322,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           inputFile: stdinItems
             ? undefined
             : options.inputFile as string | undefined,
+          literal: options.literalInputs === true,
         });
 
         // Parse runtime tags
@@ -352,12 +364,14 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
           saveEvaluatedDefinition: (
             type,
             definition,
+            provenance,
             authoredExpressions,
             writtenReferences,
           ) =>
             repoContext.evaluatedDefinitionRepo.save(
               type,
               definition,
+              provenance,
               authoredExpressions,
               undefined,
               writtenReferences,
@@ -531,6 +545,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                       modelIdOrName,
                       methodName,
                       inputs: inputSets[i],
+                      literalInputs: options.literalInputs === true,
                       lastEvaluated: options.lastEvaluated as boolean,
                       typeArg,
                       definitionName,
@@ -631,9 +646,11 @@ async function runMethodViaServer(
     }
     stdinItems = parseStdinContent(stdinContent);
   }
+  const literalInputs = options.literalInputs === true;
   const { inputs: cliInputs } = await parseInputs({
     input: mergeInputArgs(options),
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
+    literal: literalInputs,
   });
   const runtimeTags = options.tag
     ? parseTags(options.tag as string[])
@@ -661,6 +678,25 @@ async function runMethodViaServer(
   );
 
   try {
+    // An older server ignores literalInputs and evaluates the inputs, so the
+    // flag is only sent to one that says it honours it (swamp-club#3205). The
+    // probe costs one extra request, and only under --literal-inputs; it must
+    // not be dropped, or the flag would fail open against an old server. It
+    // runs inside the try so the shutdown handler is always disposed, and
+    // under the run's signal so --timeout bounds it too.
+    if (literalInputs) {
+      const version = await requestServerResponse<
+        { version: string; capabilities?: string[] }
+      >(
+        { server: options.server as string, token, signal: abort.signal },
+        { type: "server.version" },
+      );
+      if (!version.capabilities?.includes(SERVE_CAPABILITY_LITERAL_INPUTS)) {
+        throw new UserError(
+          `The server (swamp ${version.version}) does not support --literal-inputs, so it would evaluate expressions in the inputs. Upgrade swamp serve, or run without --server.`,
+        );
+      }
+    }
     for (let i = 0; i < inputSets.length; i++) {
       if (inputSets.length > 1) {
         ctx.logger
@@ -685,6 +721,7 @@ async function runMethodViaServer(
             modelIdOrName,
             methodName,
             inputs: inputSets[i],
+            ...(literalInputs ? { literalInputs: true } : {}),
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
             typeArg: info.typeArg,

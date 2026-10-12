@@ -26,10 +26,17 @@ import { extractDependencies } from "./dependency_extractor.ts";
 import { ExpressionError } from "./errors.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import {
-  replaceExpressions,
+  replaceExpressionsTracked,
+  type SpliceOrigin,
   type SpliceSanitizer,
 } from "./expression_parser.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
+import {
+  attachBindingProvenance,
+  bindingProvenanceOf,
+  spliceOrigin,
+} from "./splice_origin.ts";
 import { isSwampExpression, type SwampScope } from "./swamp_namespaces.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
 
@@ -43,7 +50,26 @@ export interface DefinitionExpressionPassResult {
    */
   sanitizedData?: DefinitionData;
   failedExpressions: FailedExpressions;
+  /** Where data sits in `data`. */
+  provenance: ProvenanceMap;
+  /** Where data sits in `sanitizedData`, when present. */
+  sanitizedProvenance?: ProvenanceMap;
 }
+
+/**
+ * Where data sits in the definition data a pass starts from: `raw` for
+ * `definitionData`, `sanitized` for the sanitized base.
+ */
+export interface DefinitionPassProvenance {
+  raw: ProvenanceMap;
+  sanitized: ProvenanceMap;
+}
+
+/** A definition read from source: no data anywhere in either copy. */
+export const AUTHORED_DEFINITION: DefinitionPassProvenance = {
+  raw: ProvenanceMap.authored(),
+  sanitized: ProvenanceMap.authored(),
+};
 
 /** Offsets a sanitizer's paths so it sees full definition paths. */
 function underPath(
@@ -103,7 +129,18 @@ export async function evaluateDefinitionExpressions(
    * apply to it unchanged.
    */
   sanitizedBase: DefinitionData = definitionData,
+  /**
+   * Where data already sits in `definitionData` and `sanitizedBase` (a
+   * direct-execution step's routed arguments, say). An expression
+   * occurrence overlapping data is neither evaluated nor substituted.
+   */
+  provenance: DefinitionPassProvenance = AUTHORED_DEFINITION,
 ): Promise<DefinitionExpressionPassResult> {
+  expressions = expressions.filter((expr) =>
+    expr.start === undefined || expr.end === undefined
+      ? !provenance.raw.hasDataAtOrBelow(expr.path)
+      : !provenance.raw.overlapsData(expr.path, expr.start, expr.end)
+  );
   const failedExpressions = new Map<string, Error>();
   const declaredInputs = new Set(
     Object.keys(definitionData.inputs?.properties ?? {}),
@@ -112,6 +149,7 @@ export async function evaluateDefinitionExpressions(
   const evaluateAll = async (
     batch: readonly ExpressionLocation[],
     ctx: ExpressionContext,
+    origins: Map<string, SpliceOrigin>,
   ): Promise<Map<string, unknown>> => {
     const scope: SwampScope = {
       isBound: (root) => (ctx as Record<string, unknown>)[root] !== undefined,
@@ -132,10 +170,9 @@ export async function evaluateDefinitionExpressions(
         continue;
       }
       try {
-        values.set(
-          expr.raw,
-          await celEvaluator.evaluateAsync(expr.celExpression, ctx),
-        );
+        const value = await celEvaluator.evaluateAsync(expr.celExpression, ctx);
+        values.set(expr.raw, value);
+        origins.set(expr.raw, spliceOrigin(expr.celExpression, ctx, value));
       } catch (error) {
         // Only now is the text classified, so a classification mistake can
         // never stop an expression that evaluates from resolving. Text that
@@ -157,48 +194,109 @@ export async function evaluateDefinitionExpressions(
     return values;
   };
 
+  const globalOrigins = new Map<string, SpliceOrigin>();
   const globalValues = await evaluateAll(
     expressions.filter((expr) => isGlobalArgumentPath(expr.path)),
     context,
+    globalOrigins,
   );
-  const globalArguments = replaceExpressions(
+  const globalOriginOf = originLookup(globalOrigins);
+  const globals = replaceExpressionsTracked(
     definitionData.globalArguments ?? {},
     globalValues,
-  ) as Record<string, unknown>;
+    provenance.raw.subtree("globalArguments"),
+    globalOriginOf,
+  );
+  const globalArguments = globals.data as Record<string, unknown>;
 
   const rest = expressions.filter((expr) => !isGlobalArgumentPath(expr.path));
+  const restOrigins = new Map<string, SpliceOrigin>();
   const restValues = rest.length === 0
     ? new Map<string, unknown>()
     : await evaluateAll(
       rest,
-      context.self
-        ? { ...context, self: { ...context.self, globalArguments } }
-        : context,
+      context.self ? withEvaluatedGlobals(context, globals) : context,
+      restOrigins,
     );
+  const restOriginOf = originLookup(restOrigins);
 
   // The same raw text can resolve differently in the two phases
   // (`self.globalArguments.*` does), so each section takes its own values.
-  const data = replaceExpressions(definitionData, restValues) as DefinitionData;
+  const restSplice = replaceExpressionsTracked(
+    definitionData,
+    restValues,
+    provenance.raw,
+    restOriginOf,
+  );
+  const data = restSplice.data as DefinitionData;
+  const dataProvenance = restSplice.provenance.graft(
+    "globalArguments",
+    globals.provenance,
+  );
   if (!sanitizer) {
-    return { data: { ...data, globalArguments }, failedExpressions };
+    return {
+      data: { ...data, globalArguments },
+      failedExpressions,
+      provenance: dataProvenance,
+    };
   }
-  const sanitizedGlobals = replaceExpressions(
+  const sanitizedGlobals = replaceExpressionsTracked(
     sanitizedBase.globalArguments ?? {},
     globalValues,
+    provenance.sanitized.subtree("globalArguments"),
+    globalOriginOf,
     undefined,
     underPath(sanitizer, "globalArguments"),
-  ) as Record<string, unknown>;
-  const sanitizedRest = replaceExpressions(
+  );
+  const sanitizedRest = replaceExpressionsTracked(
     sanitizedBase,
     restValues,
+    provenance.sanitized,
+    restOriginOf,
     undefined,
     sanitizer,
-  ) as DefinitionData;
+  );
   return {
     data: { ...data, globalArguments },
-    sanitizedData: { ...sanitizedRest, globalArguments: sanitizedGlobals },
+    sanitizedData: {
+      ...(sanitizedRest.data as DefinitionData),
+      globalArguments: sanitizedGlobals.data as Record<string, unknown>,
+    },
     failedExpressions,
+    provenance: dataProvenance,
+    sanitizedProvenance: sanitizedRest.provenance.graft(
+      "globalArguments",
+      sanitizedGlobals.provenance,
+    ),
   };
+}
+
+function originLookup(
+  origins: Map<string, SpliceOrigin>,
+): (raw: string) => SpliceOrigin {
+  return (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() };
+}
+
+/**
+ * The context for the second phase: `self.globalArguments` bound to the
+ * evaluated globals, with their provenance, so an argument that copies a
+ * global inherits where its data sits.
+ */
+function withEvaluatedGlobals(
+  context: ExpressionContext,
+  globals: { data: unknown; provenance: ProvenanceMap },
+): ExpressionContext {
+  const next: ExpressionContext = {
+    ...context,
+    self: {
+      ...context.self!,
+      globalArguments: globals.data as Record<string, unknown>,
+    },
+  };
+  const self = bindingProvenanceOf(context).self ?? ProvenanceMap.authored();
+  return attachBindingProvenance(next, {
+    self: self.graft("globalArguments", globals.provenance),
+  });
 }
 
 /**

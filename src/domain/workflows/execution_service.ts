@@ -28,6 +28,7 @@ import { gateTimeoutSeconds } from "./approval_timeout.ts";
 import { severityAtOrAbove } from "./assert_severity.ts";
 import {
   type ExpandedStep,
+  type ForEachBinding,
   ForEachExpansionService,
 } from "./for_each_expansion_service.ts";
 import { coerceToSuffix } from "./data_suffix.ts";
@@ -199,14 +200,13 @@ import {
   type AuthoredExpressions,
   collectAuthoredExpressions,
   ExpressionEvaluationService,
-  partitionAuthored,
+  partitionAuthoredAt,
 } from "../expressions/expression_evaluation_service.ts";
 import {
   type DeferredExpression,
   deferredExpressionReference,
 } from "../expressions/deferred_expression.ts";
 import {
-  resolveAvailableExpressions,
   resolveAvailableExpressionsPair,
 } from "../expressions/available_expression_resolver.ts";
 import {
@@ -229,7 +229,9 @@ import {
   extractExpressions,
   extractInputReferencesFromCel,
   replaceExpressions,
+  replaceExpressionsTracked,
 } from "../expressions/expression_parser.ts";
+import { replaceExpressionSpans } from "../expressions/expression_scanner.ts";
 import { requiresModelNamespace } from "../expressions/dependency_extractor.ts";
 import { extractStepDefinitionReferences } from "./model_reference_extractor.ts";
 import {
@@ -247,9 +249,35 @@ import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
   type SanitizedTaskOverlay,
+  StepProvenanceOverlay,
   type WorkflowEvaluationResult,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
+import {
+  attachInputsProvenance,
+  vouchInherited,
+  workflowInputsProvenance,
+} from "./input_provenance.ts";
+import {
+  alignProvenance,
+  type DirectInputsProvenance,
+  keyPath,
+  keySegment,
+  methodArgumentPath,
+  ProvenanceMap,
+  routedGlobalProvenance,
+  sentinelResolverOf,
+} from "../expressions/provenance_map.ts";
+import {
+  attachBindingProvenance,
+  bindingProvenanceOf,
+  spliceOrigin,
+} from "../expressions/splice_origin.ts";
+import {
+  AUTHORED_DEFINITION,
+  type DefinitionPassProvenance,
+} from "../expressions/definition_expression_pass.ts";
+import { resolveAvailableExpressionsTracked } from "../expressions/available_expression_resolver.ts";
 import {
   assertMethodArgumentsEvaluated,
   type FailedExpressions,
@@ -302,7 +330,9 @@ function inlineUnscopedDeferred<T>(
   data: T,
   records: readonly DeferredExpression[],
   authored: ReadonlySet<string>,
-): { data: T; authored: ReadonlySet<string> } {
+  /** Where data sits in `data`; a reference in data is never inlined. */
+  provenance: ProvenanceMap,
+): { data: T; authored: ReadonlySet<string>; provenance: ProvenanceMap } {
   const byReference = new Map(
     records.map((record) => [deferredExpressionReference(record.id), record]),
   );
@@ -311,10 +341,25 @@ function inlineUnscopedDeferred<T>(
   for (const expr of extractExpressions(data)) {
     const record = byReference.get(expr.raw);
     if (!record || SCOPED_REFERENCE.test(record.expression)) continue;
+    if (
+      expr.start !== undefined && expr.end !== undefined &&
+      provenance.overlapsData(expr.path, expr.start, expr.end)
+    ) continue;
     values.set(expr.raw, record.expression);
     vouched.add(record.expression);
   }
-  return { data: replaceExpressions(data, values) as T, authored: vouched };
+  // The inlined text is the parent's authored expression.
+  const tracked = replaceExpressionsTracked(
+    data,
+    values,
+    provenance,
+    () => ({ map: ProvenanceMap.authored() }),
+  );
+  return {
+    data: tracked.data as T,
+    authored: vouched,
+    provenance: tracked.provenance,
+  };
 }
 
 /** Replaces sensitive values in a definition's tag values with placeholders. */
@@ -343,6 +388,8 @@ function stepInputPair(
   return new SplicePair(
     record(taskArgs.raw.inputs),
     record(taskArgs.sanitized.inputs),
+    taskArgs.rawProvenance.subtree("inputs"),
+    taskArgs.sanitizedProvenance.subtree("inputs"),
   );
 }
 
@@ -398,6 +445,59 @@ function sanitizedDirectExecution(
 }
 
 /**
+ * Where data sits in a step's merged placement fields: each field takes the
+ * map of the level whose value it inherits, as mergePlacementFields picks it.
+ */
+function placementProvenance(
+  workflow: Workflow,
+  job: Job,
+  step: Step,
+  workflowMap: ProvenanceMap,
+  stepMap: ProvenanceMap,
+): ProvenanceMap {
+  const jobIndex = workflow.jobs.indexOf(job);
+  const jobMap = jobIndex >= 0
+    ? workflowMap.subtree(`jobs[${jobIndex}]`)
+    : ProvenanceMap.authored();
+  let map = ProvenanceMap.authored();
+  for (const field of ["target", "labels", "platform"] as const) {
+    const level = step.placementFields[field] !== undefined
+      ? stepMap
+      : job.placementFields[field] !== undefined
+      ? jobMap
+      : workflowMap;
+    map = map.graft(field, level.subtree(field));
+  }
+  return map;
+}
+
+/**
+ * Task-argument provenance after whole-field record expressions resolved: a
+ * field that was a record expression takes the origin of its evaluation, any
+ * other keeps its map.
+ */
+function recordProvenance(
+  map: ProvenanceMap,
+  task: { inputs?: unknown; globalArgs?: unknown },
+  inputs: Record<string, unknown> | undefined,
+  globalArgs: Record<string, unknown> | undefined,
+  context: Record<string, unknown> | undefined,
+): ProvenanceMap {
+  let out = map;
+  for (
+    const [field, source, resolved] of [
+      ["inputs", task.inputs, inputs],
+      ["globalArgs", task.globalArgs, globalArgs],
+    ] as const
+  ) {
+    if (typeof source !== "string") continue;
+    const cel = extractCelExpression(source) ?? "";
+    out = out.graft(field, spliceOrigin(cel, context, resolved).map);
+  }
+  return out;
+}
+
+/**
  * Resolves a task field that may be a record, an expression string, or a
  * non-record value left behind by resolveAvailableExpressions. Returns a
  * validated Record or undefined. Throws UserError for user-authored mistakes
@@ -408,6 +508,8 @@ async function resolveRecordExpression(
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
   authored: AuthoredExpressions,
+  /** Where data sits in `value`. */
+  provenance: ProvenanceMap,
 ): Promise<Record<string, unknown> | undefined> {
   if (value === undefined) return undefined;
   if (typeof value !== "string") {
@@ -431,7 +533,10 @@ async function resolveRecordExpression(
       `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
     );
   }
-  if (partitionAuthored(extractExpressions(value), authored).length !== 1) {
+  if (
+    partitionAuthoredAt(extractExpressions(value), authored, provenance)
+      .length !== 1
+  ) {
     throw new UserError(`${fieldName} must be an authored record expression`);
   }
   const celEvaluator = new CelEvaluator();
@@ -465,6 +570,8 @@ async function resolveScalarExpression(
   fieldName: string,
   expressionContext: Record<string, unknown> | undefined,
   authored: AuthoredExpressions,
+  /** Where data sits in `value`. */
+  provenance: ProvenanceMap,
 ): Promise<string | undefined> {
   if (value === undefined) return undefined;
   const expressions = extractExpressions(value);
@@ -476,7 +583,10 @@ async function resolveScalarExpression(
       }" could not be resolved: no expression context available`,
     );
   }
-  if (partitionAuthored(expressions, authored).length !== expressions.length) {
+  if (
+    partitionAuthoredAt(expressions, authored, provenance).length !==
+      expressions.length
+  ) {
     throw new UserError(`${fieldName} must be an authored expression`);
   }
   const celEvaluator = new CelEvaluator();
@@ -684,7 +794,7 @@ export interface StepExecutionContext {
    */
   mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
-  forEachVariable?: { name: string; value: unknown };
+  forEachVariable?: ForEachBinding;
   /** Zero-based forEach iteration index, exposed as self._index */
   forEachIndex?: number;
   /**
@@ -718,6 +828,8 @@ export interface StepExecutionContext {
    * workflow evaluation spliced sensitive values into them.
    */
   sanitizedTasks?: SanitizedTaskOverlay;
+  /** Where data sits in each evaluated step (swamp-club#3205). */
+  stepProvenance?: StepProvenanceOverlay;
   /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -762,6 +874,11 @@ export interface StepExecutionContext {
     import("../models/workflow_gate_service.ts").WorkflowGateService;
   /** Workflow-level placement defaults (inherited by all steps unless overridden) */
   workflowPlacement?: import("./placement.ts").PlacementFields;
+  /**
+   * Where data sits in the merged placement fields, taken from the level
+   * whose value each field inherits (swamp-club#3205).
+   */
+  placementProvenance?: ProvenanceMap;
   /** Job-level placement defaults (inherited by steps in this job unless overridden) */
   jobPlacement?: import("./placement.ts").PlacementFields;
   /**
@@ -1134,6 +1251,11 @@ export type DirectTypeResolver = (
    * are written as the vault references they came from.
    */
   sensitiveValues?: RunSensitiveValues,
+  /**
+   * Where data sits in `inputs` and `globalArgs`, so a global argument
+   * holding expression text in data is never persisted.
+   */
+  provenance?: DirectInputsProvenance,
 ) => Promise<DirectTypeResolveResult>;
 
 export interface StepLockResult {
@@ -1423,6 +1545,7 @@ export class DefaultStepExecutor implements StepExecutor {
       ctx.step?.placementFields,
     );
     let resolvedPlacement = resolvePlacement(effectiveFields);
+    let placementMap = ctx.placementProvenance ?? ProvenanceMap.authored();
 
     // This step's bag. Sensitive data values spliced into the step's
     // arguments become its sentinels: from the workflow-level overlay, the
@@ -1439,6 +1562,24 @@ export class DefaultStepExecutor implements StepExecutor {
     const overlay = ctx.step
       ? ctx.sanitizedTasks?.forStep(ctx.step, stepSecretBag)
       : undefined;
+    // Where data sits in the step's task, raw and sanitized (swamp-club#3205).
+    const stepMaps = (ctx.stepProvenance ?? StepProvenanceOverlay.authored())
+      .forStep(ctx.step);
+    let taskProvenance = stepMaps.raw.subtree("task");
+    // The overlay's map is in the workflow bag's sentinels; the step reads
+    // them re-issued from its own bag, whose sentinels can differ in length.
+    const overlayEntry = ctx.step
+      ? ctx.sanitizedTasks?.entryFor(ctx.step)
+      : undefined;
+    const sanitizedTaskProvenance = overlay && overlayEntry
+      ? alignProvenance(
+        stepMaps.sanitized.subtree("task"),
+        { inputs: overlayEntry.inputs, globalArgs: overlayEntry.globalArgs },
+        { inputs: overlay.inputs, globalArgs: overlay.globalArgs },
+        sentinelResolverOf(ctx.sanitizedTasks!.bag),
+        sentinelResolverOf(stepSecretBag),
+      )
+      : stepMaps.sanitized.subtree("task");
     let taskArgs = new SplicePair<TaskArgs>(
       { inputs: task.inputs, globalArgs: task.globalArgs },
       overlay
@@ -1447,6 +1588,8 @@ export class DefaultStepExecutor implements StepExecutor {
           globalArgs: overlay.globalArgs as TaskArgs["globalArgs"],
         }
         : { inputs: task.inputs, globalArgs: task.globalArgs },
+      taskProvenance,
+      sanitizedTaskProvenance,
     );
 
     // Resolve every available expression (self.* from the forEach variable,
@@ -1466,12 +1609,14 @@ export class DefaultStepExecutor implements StepExecutor {
         [task, taskArgs.raw, resolvedPlacement],
         ctx.expressionContext,
       );
-      task = resolveAvailableExpressions(
+      const resolvedTask = resolveAvailableExpressionsTracked(
         task,
+        taskProvenance,
         ctx.expressionContext,
         evaluate,
         ctx.authoredExpressions,
-      ) as typeof task;
+      );
+      task = resolvedTask.data as typeof task;
       taskArgs = resolveAvailableExpressionsPair(
         taskArgs,
         ctx.expressionContext,
@@ -1480,13 +1625,19 @@ export class DefaultStepExecutor implements StepExecutor {
         argumentSanitizer,
       );
       task = { ...task, ...taskArgs.raw };
+      taskProvenance = resolvedTask.provenance
+        .graft("inputs", taskArgs.rawProvenance.subtree("inputs"))
+        .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs"));
       if (resolvedPlacement) {
-        resolvedPlacement = resolveAvailableExpressions(
+        const tracked = resolveAvailableExpressionsTracked(
           resolvedPlacement,
+          placementMap,
           ctx.expressionContext,
           evaluate,
           ctx.authoredExpressions,
-        ) as typeof resolvedPlacement;
+        );
+        resolvedPlacement = tracked.data as typeof resolvedPlacement;
+        placementMap = tracked.provenance;
       }
     }
 
@@ -1496,6 +1647,7 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.expressionContext ?? { model: {}, env: {} },
         ctx.secretRedactor,
         ctx.authoredExpressions,
+        placementMap,
       ) as typeof resolvedPlacement;
     }
 
@@ -1521,6 +1673,7 @@ export class DefaultStepExecutor implements StepExecutor {
         ctx.secretRedactor,
         ctx.expressionContext,
         ctx.authoredExpressions,
+        taskProvenance,
       ) as typeof selectors,
     };
 
@@ -1537,12 +1690,14 @@ export class DefaultStepExecutor implements StepExecutor {
         "task.modelIdOrName",
         ctx.expressionContext,
         ctx.authoredExpressions,
+        taskProvenance.subtree("modelIdOrName"),
       ),
       modelName: await resolveScalarExpression(
         task.modelName,
         "task.modelName",
         ctx.expressionContext,
         ctx.authoredExpressions,
+        taskProvenance.subtree("modelName"),
       ),
     };
 
@@ -1553,12 +1708,14 @@ export class DefaultStepExecutor implements StepExecutor {
       "task.inputs",
       ctx.expressionContext,
       ctx.authoredExpressions,
+      taskProvenance.subtree("inputs"),
     );
     const recordGlobalArgs = await resolveRecordExpression(
       task.globalArgs,
       "task.globalArgs",
       ctx.expressionContext,
       ctx.authoredExpressions,
+      taskProvenance.subtree("globalArgs"),
     );
     // A whole-field record expression was evaluated just now, so its
     // sanitized counterpart is its result through the sanitizer; otherwise
@@ -1571,6 +1728,13 @@ export class DefaultStepExecutor implements StepExecutor {
       typeof raw === "string"
         ? argumentSanitizer.whole(resolved, "") as Record<string, unknown>
         : sanitized;
+    const recordMap = recordProvenance(
+      taskArgs.rawProvenance,
+      task,
+      recordInputs,
+      recordGlobalArgs,
+      ctx.expressionContext,
+    );
     taskArgs = new SplicePair<TaskArgs>(
       { inputs: recordInputs, globalArgs: recordGlobalArgs },
       {
@@ -1585,9 +1749,26 @@ export class DefaultStepExecutor implements StepExecutor {
           taskArgs.sanitized.globalArgs,
         ),
       },
+    ).withProvenance(
+      recordMap,
+      alignProvenance(
+        recordMap,
+        { inputs: recordInputs, globalArgs: recordGlobalArgs },
+        {
+          inputs: taskArgs.sanitized.inputs,
+          globalArgs: taskArgs.sanitized.globalArgs,
+        },
+        undefined,
+        sentinelResolverOf(stepSecretBag),
+      ),
     );
+    taskProvenance = taskProvenance
+      .graft("inputs", taskArgs.rawProvenance.subtree("inputs"))
+      .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs"));
     task = { ...task, inputs: recordInputs, globalArgs: recordGlobalArgs };
 
+    // Where data sits in the evaluated and executed definitions.
+    let definitionProvenance: DefinitionPassProvenance = AUTHORED_DEFINITION;
     let originalDefinition: Definition;
     let modelType: ModelType;
     /**
@@ -1633,13 +1814,20 @@ export class DefaultStepExecutor implements StepExecutor {
         { inputs: task.inputs, globalArgs: task.globalArgs },
         ctx.expressionContext?.deferredExpressions ?? [],
         ctx.authoredExpressions,
+        taskArgs.rawProvenance,
       );
       const inlinedSanitized = inlineUnscopedDeferred(
         taskArgs.sanitized,
         ctx.expressionContext?.deferredExpressions ?? [],
         ctx.authoredExpressions,
+        taskArgs.sanitizedProvenance,
       );
-      taskArgs = new SplicePair<TaskArgs>(inlined.data, inlinedSanitized.data);
+      taskArgs = new SplicePair<TaskArgs>(
+        inlined.data,
+        inlinedSanitized.data,
+        inlined.provenance,
+        inlinedSanitized.provenance,
+      );
       const { modelType: typeArg, modelName, methodName } = task;
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
@@ -1652,6 +1840,10 @@ export class DefaultStepExecutor implements StepExecutor {
         task.globalArgs as Record<string, unknown> | undefined,
         authoredForDirect,
         ctx.sensitiveValues,
+        {
+          inputs: taskArgs.rawProvenance.subtree("inputs"),
+          globalArgs: taskArgs.rawProvenance.subtree("globalArgs"),
+        },
       );
 
       originalDefinition = result.definition;
@@ -1693,6 +1885,41 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       }
 
+      // Routed global arguments keep the provenance of the inputs they came
+      // from, so self.globalArguments and the definition pass see where data
+      // sits in them (swamp-club#3205).
+      const routedGlobals = routedGlobalProvenance(
+        result.definition.globalArguments as Record<string, unknown>,
+        (task.globalArgs ?? task.inputs ?? {}) as Record<string, unknown>,
+        taskArgs.rawProvenance.subtree(
+          task.globalArgs ? "globalArgs" : "inputs",
+        ),
+      );
+      const routedSanitizedGlobals = routedGlobalProvenance(
+        executedDirect.definition.globalArguments as Record<string, unknown>,
+        (taskArgs.sanitized.globalArgs ?? taskArgs.sanitized.inputs ??
+          {}) as Record<string, unknown>,
+        taskArgs.sanitizedProvenance.subtree(
+          task.globalArgs ? "globalArgs" : "inputs",
+        ),
+      );
+      definitionProvenance = {
+        raw: ProvenanceMap.authored().graft("globalArguments", routedGlobals),
+        sanitized: ProvenanceMap.authored().graft(
+          "globalArguments",
+          routedSanitizedGlobals,
+        ),
+      };
+      const methodInputsProvenance = (
+        map: ProvenanceMap,
+        inputs: Record<string, unknown>,
+      ) => {
+        let out = ProvenanceMap.authored();
+        for (const key of Object.keys(inputs)) {
+          out = out.graft(keySegment(key), map.subtree(keyPath("inputs", key)));
+        }
+        return out;
+      };
       task = {
         ...task,
         inputs: result.routedMethodInputs,
@@ -1703,6 +1930,27 @@ export class DefaultStepExecutor implements StepExecutor {
           inputs: sanitizedStepInputs,
           globalArgs: taskArgs.sanitized.globalArgs,
         },
+        ProvenanceMap.authored()
+          .graft(
+            "inputs",
+            methodInputsProvenance(
+              taskArgs.rawProvenance,
+              result.routedMethodInputs,
+            ),
+          )
+          .graft("globalArgs", taskArgs.rawProvenance.subtree("globalArgs")),
+        ProvenanceMap.authored()
+          .graft(
+            "inputs",
+            methodInputsProvenance(
+              taskArgs.sanitizedProvenance,
+              sanitizedStepInputs ?? {},
+            ),
+          )
+          .graft(
+            "globalArgs",
+            taskArgs.sanitizedProvenance.subtree("globalArgs"),
+          ),
       );
     } else if (task.modelIdOrName) {
       // Standard path: look up existing definition
@@ -1835,6 +2083,12 @@ export class DefaultStepExecutor implements StepExecutor {
             `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
         );
       }
+      if (lastEvaluated.provenance === "unreadable") {
+        throw new UserError(
+          `The evaluated definition cached for "${originalDefinition.name}" has an unreadable provenance record, so it is not replayed. ` +
+            `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+        );
+      }
       // Sensitive values are cached as vault references; restore them, real
       // values into evaluatedDefinition and sentinels into the executed copy.
       const restored = await rehydrateEvaluatedDefinition(
@@ -1846,6 +2100,19 @@ export class DefaultStepExecutor implements StepExecutor {
       );
       evaluatedDefinition = restored.definition;
       executedDefinition = restored.executedDefinition;
+      // A cache without provenance predates it and replays as it always did.
+      const cachedProvenance = lastEvaluated.provenance ??
+        ProvenanceMap.authored();
+      definitionProvenance = {
+        raw: cachedProvenance,
+        sanitized: alignProvenance(
+          cachedProvenance,
+          evaluatedDefinition.toData(),
+          executedDefinition.toData(),
+          undefined,
+          sentinelResolverOf(stepSecretBag),
+        ),
+      };
       if (ctx.expressionContext) {
         // The workflow cache may already have supplied the same records;
         // de-dup by id so the definition cache does not grow per replay.
@@ -1894,6 +2161,21 @@ export class DefaultStepExecutor implements StepExecutor {
         globalArguments: originalDefinition.globalArguments,
         ...forEachVars,
       };
+      // A forEach item bound over a definition field keeps its own map:
+      // the item's value wins in `self`, so its provenance must too.
+      let selfProvenance = (bindingProvenanceOf(ctx.expressionContext).self ??
+        ProvenanceMap.authored()).graft(
+          "globalArguments",
+          definitionProvenance.raw.subtree("globalArguments"),
+        );
+      if (ctx.forEachVariable?.name) {
+        selfProvenance = selfProvenance.graft(
+          keySegment(ctx.forEachVariable.name),
+          ctx.forEachVariable.provenance ??
+            ProvenanceMap.authored(),
+        );
+      }
+      attachBindingProvenance(ctx.expressionContext, { self: selfProvenance });
 
       // Evaluate step task inputs and merge into context
       if (task.inputs) {
@@ -1906,14 +2188,28 @@ export class DefaultStepExecutor implements StepExecutor {
       }
 
       // Merge step inputs with existing context inputs (step inputs take
-      // precedence). The context always holds real values.
+      // precedence). The context always holds real values, and carries where
+      // data sits in each of them.
       const originalInputs = ctx.expressionContext.inputs ?? {};
       ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs.raw };
+      let inputsProvenance =
+        bindingProvenanceOf(ctx.expressionContext).inputs ??
+          ProvenanceMap.authored();
+      for (const key of Object.keys(stepInputs.raw)) {
+        inputsProvenance = inputsProvenance.graft(
+          keySegment(key),
+          stepInputs.rawProvenance.subtree(keySegment(key)),
+        );
+      }
+      attachBindingProvenance(ctx.expressionContext, {
+        inputs: inputsProvenance,
+      });
 
       ({
         definition: evaluatedDefinition,
         sanitizedDefinition: executedDefinition,
         failedExpressions,
+        provenance: definitionProvenance,
       } = await new DefinitionExpressionEvaluator(
         new CelEvaluator(),
       ).evaluate(
@@ -1922,6 +2218,7 @@ export class DefaultStepExecutor implements StepExecutor {
         authoredExpressions,
         stepSecretBag,
         executedDefinition,
+        definitionProvenance,
       ));
     }
 
@@ -1933,9 +2230,23 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     for (const [key, value] of Object.entries(stepInputs.raw)) {
       evaluatedDefinition.setMethodArgument(task.methodName, key, value);
+      definitionProvenance = {
+        ...definitionProvenance,
+        raw: definitionProvenance.raw.graft(
+          methodArgumentPath(task.methodName, key),
+          stepInputs.rawProvenance.subtree(keySegment(key)),
+        ),
+      };
     }
     for (const [key, value] of Object.entries(stepInputs.sanitized)) {
       executedDefinition.setMethodArgument(task.methodName, key, value);
+      definitionProvenance = {
+        ...definitionProvenance,
+        sanitized: definitionProvenance.sanitized.graft(
+          methodArgumentPath(task.methodName, key),
+          stepInputs.sanitizedProvenance.subtree(keySegment(key)),
+        ),
+      };
     }
 
     // A failed expression the method is about to receive would otherwise be
@@ -1978,6 +2289,8 @@ export class DefaultStepExecutor implements StepExecutor {
       await evaluatedDefRepo.save(
         modelType,
         persisted.definition,
+        // In raw-copy coordinates, which rehydrate restores exactly.
+        definitionProvenance.raw,
         authoredExpressions,
         persisted.deferredExpressions,
         persisted.writtenReferences,
@@ -2006,6 +2319,7 @@ export class DefaultStepExecutor implements StepExecutor {
           {
             secretBag: stepSecretBag,
             rawGlobalArguments: evaluatedDefinition.globalArguments,
+            provenance: definitionProvenance.sanitized,
           },
         );
       evaluatedDefinition = runtimeResult.definition;
@@ -2760,6 +3074,9 @@ interface StepOptions {
   secretRedactor?: SecretRedactor;
   sensitiveValues: RunSensitiveValues;
   sanitizedTasks?: SanitizedTaskOverlay;
+  stepProvenance?: StepProvenanceOverlay;
+  /** Where data sits in the evaluated workflow (swamp-club#3205). */
+  workflowProvenance?: ProvenanceMap;
   signal?: AbortSignal;
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -3014,6 +3331,13 @@ export class WorkflowExecutionService {
        */
       authoredExpressions?: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
+      /**
+       * Where data sits in `inputs`, when the caller knows (a nested run
+       * gets its parent step's map). Otherwise derived from the workflow:
+       * a value equal to its default or static trigger literal is authored,
+       * anything else came from the caller and is data.
+       */
+      inputsProvenance?: ProvenanceMap;
       signal?: AbortSignal;
       /** Report filter options for per-step report execution */
       reportFilterOptions?: ReportFilterOptions;
@@ -3119,6 +3443,8 @@ export class WorkflowExecutionService {
       let evaluatedWorkflowFingerprint: string | undefined;
       let definitionFingerprint: string | undefined;
       let sanitizedTasks: SanitizedTaskOverlay | undefined;
+      let stepProvenance = StepProvenanceOverlay.authored();
+      let workflowProvenance = ProvenanceMap.authored();
       let persistedWorkflow: PersistedEvaluatedWorkflow | undefined;
       const secretRedactor = options?.secretRedactor ?? new SecretRedactor();
       const sensitiveValues = options?.sensitiveValues ??
@@ -3171,6 +3497,12 @@ export class WorkflowExecutionService {
                 `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
             );
           }
+          if (lastEvaluated.provenance === "unreadable") {
+            throw new UserError(
+              `The evaluated workflow cached for "${workflow.name}" has an unreadable provenance record, so it is not replayed. ` +
+                `Run the workflow without --last-evaluated to evaluate it again; that rewrites the cache.`,
+            );
+          }
           // Sensitive values are cached as vault references: restore real
           // values into the workflow and sentinels into the step overlay.
           const vaultService = lastEvaluated.writtenReferences.length > 0
@@ -3187,6 +3519,24 @@ export class WorkflowExecutionService {
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
           workflow = restored.workflow;
           sanitizedTasks = restored.sanitizedTasks;
+          // A cache without provenance predates it and replays as it always
+          // did (swamp-club#3205).
+          const cachedProvenance = lastEvaluated.provenance ??
+            ProvenanceMap.authored();
+          workflowProvenance = cachedProvenance;
+          stepProvenance = StepProvenanceOverlay.fromWorkflowMaps(
+            workflow,
+            cachedProvenance,
+            alignProvenance(
+              cachedProvenance,
+              workflow.toData(),
+              sanitizedTasks?.sanitizedData ?? workflow.toData(),
+              undefined,
+              sanitizedTasks
+                ? sentinelResolverOf(sanitizedTasks.bag)
+                : undefined,
+            ),
+          );
           deferredExpressions = [
             ...deferredExpressions,
             ...restored.deferredExpressions,
@@ -3205,6 +3555,17 @@ export class WorkflowExecutionService {
           if (options?.inputs) {
             expressionContext.inputs = options.inputs;
           }
+          attachInputsProvenance(
+            expressionContext,
+            options?.inputsProvenance ??
+              vouchInherited(
+                workflowInputsProvenance(options?.inputs, found, {
+                  webhook: options?.triggerSource === "webhook",
+                }),
+                options?.inputs,
+                options?.authoredExpressions ?? new Set(),
+              ),
+          );
         } else {
           // Fingerprint the definition as loaded, before evaluation resolves
           // its expressions, so recovery can compare it with the current
@@ -3227,6 +3588,17 @@ export class WorkflowExecutionService {
           if (options?.inputs) {
             expressionContext.inputs = options.inputs;
           }
+          attachInputsProvenance(
+            expressionContext,
+            options?.inputsProvenance ??
+              vouchInherited(
+                workflowInputsProvenance(options?.inputs, found, {
+                  webhook: options?.triggerSource === "webhook",
+                }),
+                options?.inputs,
+                options?.authoredExpressions ?? new Set(),
+              ),
+          );
 
           const evaluation = await this.evaluateWorkflow(
             workflow,
@@ -3235,6 +3607,8 @@ export class WorkflowExecutionService {
           );
           workflow = evaluation.workflow;
           sanitizedTasks = evaluation.sanitizedTasks;
+          stepProvenance = evaluation.stepProvenance;
+          workflowProvenance = evaluation.provenance;
           // Written with sensitive values as the vault references they came
           // from; the fingerprint is taken over the same form, so it holds
           // nothing that could be used to guess a secret.
@@ -3247,6 +3621,8 @@ export class WorkflowExecutionService {
           );
           await this.evaluatedWorkflowRepo.save(
             persistedWorkflow.workflow,
+            // In raw-copy coordinates, which rehydrate restores exactly.
+            evaluation.provenance,
             authoredExpressions,
             persistedWorkflow.deferredExpressions,
             persistedWorkflow.writtenReferences,
@@ -3288,6 +3664,10 @@ export class WorkflowExecutionService {
         }
         if (options?.inputs) {
           run.captureInputs(options.inputs);
+          run.captureInputsProvenance(
+            bindingProvenanceOf(expressionContext).inputs ??
+              ProvenanceMap.authored(),
+          );
         }
         // Only what a parent passed in: the run's own source is re-collected
         // on resume, so persisting it would keep deleted expressions vouched.
@@ -3419,6 +3799,8 @@ export class WorkflowExecutionService {
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
+        stepProvenance,
+        workflowProvenance,
         signal: options?.signal,
         nestedRuns,
         inFlightMethodRuns,
@@ -4145,6 +4527,8 @@ export class WorkflowExecutionService {
     const {
       expressionContext,
       sanitizedTasks,
+      stepProvenance,
+      workflowProvenance,
       authoredExpressions,
       resolvedWorkflow,
       workflowLogPath,
@@ -4165,6 +4549,30 @@ export class WorkflowExecutionService {
         { ...existingRun.inputs },
         resumeInputs,
       );
+      // The provenance the run recorded when it started; runs recorded
+      // before it existed fall back to deriving it. Resume-time inputs come
+      // from the caller and are judged like a fresh run's.
+      let resumedProvenance = existingRun.inputsProvenance ??
+        vouchInherited(
+          workflowInputsProvenance(existingRun.inputs, workflow, {
+            webhook: existingRun.triggerSource === "webhook",
+          }),
+          existingRun.inputs,
+          new Set(existingRun.inheritedExpressions),
+        );
+      const resumeProvenance = workflowInputsProvenance(
+        resumeInputs,
+        workflow,
+        {
+          webhook: existingRun.triggerSource === "webhook",
+        },
+      );
+      // Resume inputs are deep-merged over the recorded ones, so data in
+      // either stays data. A key the resume replaces keeps its old ranges,
+      // which are in the old value's offsets: that can only mark more of the
+      // new value as data, never less.
+      resumedProvenance = resumedProvenance.union(resumeProvenance);
+      attachInputsProvenance(expressionContext, resumedProvenance);
 
       expressionContext.workflowRunId = existingRun.id;
       expressionContext.run = {
@@ -4214,6 +4622,8 @@ export class WorkflowExecutionService {
       );
       const resolvedWorkflow = evaluated.workflow;
       const sanitizedTasks = evaluated.sanitizedTasks;
+      const stepProvenance = evaluated.stepProvenance;
+      const workflowProvenance = evaluated.provenance;
 
       // Re-register the log file sink so resume output is captured.
       // Append to preserve records from earlier attempts.
@@ -4233,6 +4643,8 @@ export class WorkflowExecutionService {
       return {
         expressionContext,
         sanitizedTasks,
+        stepProvenance,
+        workflowProvenance,
         authoredExpressions,
         resolvedWorkflow,
         workflowLogPath,
@@ -4278,6 +4690,8 @@ export class WorkflowExecutionService {
         secretRedactor,
         sensitiveValues,
         sanitizedTasks,
+        stepProvenance,
+        workflowProvenance,
         signal: options?.signal,
         nestedRuns,
         inFlightMethodRuns,
@@ -4598,7 +5012,14 @@ export class WorkflowExecutionService {
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext) {
         expandedStepsMap = await new ForEachExpansionService(new CelEvaluator())
-          .expand(job, expressionContext, options.authoredExpressions);
+          .expand(
+            job,
+            expressionContext,
+            options.authoredExpressions,
+            (step) =>
+              (options.stepProvenance ?? StepProvenanceOverlay.authored())
+                .forStep(step).raw,
+          );
         // Rewrite the jobRun's step list to match the expansion. The
         // template StepRun (the step as written in the workflow) never
         // executes once forEach expands, so leaving it in place makes it
@@ -4702,7 +5123,7 @@ export class WorkflowExecutionService {
         const levelIterations = new Set<string>();
         const stepStreams = level.map((stepName) => {
           // Find the expanded step info if applicable
-          let forEachVar: { name: string; value: unknown } | undefined;
+          let forEachVar: ForEachBinding | undefined;
           let originalStep: Step | undefined;
 
           let forEachIndex: number | undefined;
@@ -4945,7 +5366,7 @@ export class WorkflowExecutionService {
     jobRun: JobRun,
     stepName: string,
     originalStep: Step | undefined,
-    forEachVar: { name: string; value: unknown } | undefined,
+    forEachVar: ForEachBinding | undefined,
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
     forEachIndex?: number,
@@ -4989,7 +5410,7 @@ export class WorkflowExecutionService {
     jobRun: JobRun,
     stepName: string,
     originalStep: Step | undefined,
-    forEachVar: { name: string; value: unknown } | undefined,
+    forEachVar: ForEachBinding | undefined,
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
     forEachIndex?: number,
@@ -5105,6 +5526,13 @@ export class WorkflowExecutionService {
           [forEachVar.name]: forEachVar.value,
         },
       };
+      attachBindingProvenance(stepExprContext, {
+        self: (bindingProvenanceOf(stepExprContext).self ??
+          ProvenanceMap.authored()).graft(
+            keySegment(forEachVar.name),
+            forEachVar.provenance ?? ProvenanceMap.authored(),
+          ),
+      });
       // An item iterated out of a resume-time input carries that input's
       // value, so it is excluded from deferred bindings like the input.
       const resumeKeys = (options.resumeDerived ?? [])
@@ -5167,9 +5595,13 @@ export class WorkflowExecutionService {
           options,
         );
         if (
-          partitionAuthored(
+          partitionAuthoredAt(
             extractExpressions(step.guard),
             options.authoredExpressions,
+            // Guards are skipped by run-start evaluation but not by its
+            // substitution, so a guard can hold a spliced value.
+            (options.stepProvenance ?? StepProvenanceOverlay.authored())
+              .forStep(step).raw.subtree("guard"),
           ).length !== 1
         ) {
           throw new UserError("Guard must be an authored expression");
@@ -5600,14 +6032,22 @@ export class WorkflowExecutionService {
           if (abandonedByAbort(stepRun, options)) return;
           const passed = !!result;
 
-          // Interpolate ${{ }} expressions in the message
-          let resolvedMessage = task.message;
+          // Interpolate ${{ }} expressions in the message. Only authored
+          // occurrences are resolved and substituted: run-start evaluation
+          // can splice data into the message (swamp-club#3205).
+          const messageProvenance = (options.stepProvenance ??
+            StepProvenanceOverlay.authored()).forStep(step).raw.subtree(
+              "task.message",
+            );
+          const messageValues = new Map<string, unknown>();
           for (
-            const expr of partitionAuthored(
+            const expr of partitionAuthoredAt(
               extractExpressions(task.message),
               options.authoredExpressions,
+              messageProvenance,
             )
           ) {
+            if (messageValues.has(expr.raw)) continue;
             try {
               const value = await this.expressionEvaluator
                 .resolveAllExpressionsInData(
@@ -5616,14 +6056,20 @@ export class WorkflowExecutionService {
                   options.secretRedactor,
                   options.authoredExpressions,
                 );
-              resolvedMessage = resolvedMessage.replace(
-                expr.raw,
-                () => String(value ?? ""),
-              );
+              messageValues.set(expr.raw, String(value ?? ""));
             } catch {
               // Leave the expression as-is if evaluation fails.
             }
           }
+          // Every authored occurrence takes its value, as the per-occurrence
+          // replace always did; an occurrence in data stays literal.
+          let resolvedMessage = messageValues.size === 0
+            ? task.message
+            : replaceExpressionSpans(task.message, (span) =>
+              !messageValues.has(span.raw) ||
+                messageProvenance.overlapsData("", span.start, span.end)
+                ? span.raw
+                : messageValues.get(span.raw) as string);
           // Redact once, before the message reaches the step error, the
           // events, or the span; a vault.get() in the message resolves to
           // plaintext above.
@@ -5748,6 +6194,7 @@ export class WorkflowExecutionService {
             stepExprContext,
             options,
             !!step.allowFailure,
+            step,
           ),
         );
         return;
@@ -5780,6 +6227,7 @@ export class WorkflowExecutionService {
           secretRedactor: options.secretRedactor,
           sensitiveValues: options.sensitiveValues,
           sanitizedTasks: options.sanitizedTasks,
+          stepProvenance: options.stepProvenance,
           authoredExpressions: options.authoredExpressions,
           authoredStep: options.authoredWorkflow?.getJob(job.name)?.getStep(
             forEachTemplate ?? stepName,
@@ -5805,6 +6253,14 @@ export class WorkflowExecutionService {
           workflowGateService: this.workflowGateService,
           workflowPlacement: workflow.placementFields,
           jobPlacement: job.placementFields,
+          placementProvenance: placementProvenance(
+            workflow,
+            job,
+            step,
+            options.workflowProvenance ?? ProvenanceMap.authored(),
+            (options.stepProvenance ?? StepProvenanceOverlay.authored())
+              .forStep(step).raw,
+          ),
           affinityKey: workflow.affinity
             ? run.id
             : job.affinity
@@ -6236,10 +6692,14 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
     allowFailure: boolean,
+    step: Step,
   ): AsyncGenerator<
     WorkflowExecutionEvent,
     Record<string, unknown> | undefined
   > {
+    // Where data sits in the step's task (swamp-club#3205).
+    let taskProvenance = (options.stepProvenance ??
+      StepProvenanceOverlay.authored()).forStep(step).raw.subtree("task");
     // Resolve every available expression (self.* from the forEach variable,
     // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
     // detection, ancestor-set additions, and the child invocation, so they all
@@ -6250,16 +6710,20 @@ export class WorkflowExecutionService {
       const celEvaluator = new CelEvaluator();
       // Synchronous pass: make what it reads local first (swamp-club#3179).
       await prepareExpressionsIn(task, expressionContext);
-      task = resolveAvailableExpressions(
+      const resolved = resolveAvailableExpressionsTracked(
         task,
+        taskProvenance,
         expressionContext,
         (expr, context) => celEvaluator.evaluate(expr, context),
         options.authoredExpressions,
-      ) as typeof task;
+      );
+      task = resolved.data as typeof task;
+      taskProvenance = resolved.provenance;
     }
 
     // Resolve whole-field expression string for inputs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
+    const sourceInputs = task.inputs;
     task = {
       ...task,
       workflowIdOrName: await this.expressionEvaluator
@@ -6268,14 +6732,23 @@ export class WorkflowExecutionService {
           options.secretRedactor,
           expressionContext,
           options.authoredExpressions,
+          taskProvenance.subtree("workflowIdOrName"),
         ) as string,
       inputs: await resolveRecordExpression(
         task.inputs,
         "task.inputs",
         expressionContext,
         options.authoredExpressions,
+        taskProvenance.subtree("inputs"),
       ),
     };
+    taskProvenance = recordProvenance(
+      taskProvenance,
+      { inputs: sourceInputs },
+      task.inputs as Record<string, unknown> | undefined,
+      undefined,
+      expressionContext,
+    );
 
     // The task target survives the passes above when it was deferred past
     // run-start evaluation — it reads step output, or its step carries a
@@ -6288,6 +6761,7 @@ export class WorkflowExecutionService {
         "task.workflowIdOrName",
         expressionContext,
         options.authoredExpressions,
+        taskProvenance.subtree("workflowIdOrName"),
       ) as string,
     };
 
@@ -6338,14 +6812,18 @@ export class WorkflowExecutionService {
     // Evaluate inputs using the expression context. Reuse the
     // per-instance evaluator (was previously constructed per call).
     let evaluatedInputs = task.inputs as Record<string, unknown> | undefined;
+    let inputsProvenance = taskProvenance.subtree("inputs");
     if (task.inputs && typeof task.inputs !== "string" && expressionContext) {
       // The parent's authored set: the child re-collects its own from its
       // YAML once it re-enters executeWorkflow.
-      evaluatedInputs = await this.expressionEvaluator.evaluateData(
+      const tracked = await this.expressionEvaluator.evaluateDataTracked(
         task.inputs,
+        inputsProvenance,
         expressionContext,
         options.authoredExpressions,
-      ) as Record<string, unknown>;
+      );
+      evaluatedInputs = tracked.data as Record<string, unknown>;
+      inputsProvenance = tracked.provenance;
     }
 
     // Deferred bindings are persisted by the child, so resume-derived values
@@ -6358,16 +6836,25 @@ export class WorkflowExecutionService {
         expressionContext,
         options.authoredExpressions,
         options.resumeDerived,
+        inputsProvenance,
       )
-      : { data: evaluatedInputs, deferredExpressions: [] };
+      : {
+        data: evaluatedInputs,
+        deferredExpressions: [],
+        provenance: inputsProvenance,
+      };
     evaluatedInputs = deferred.data as Record<string, unknown> | undefined;
+    inputsProvenance = deferred.provenance;
 
     // Runtime expressions (env, vault) the parent author wrote as child
     // inputs survive evaluateData unresolved. They are legitimate provenance
     // in the child, so carry exactly those across; anything else left in the
     // inputs arrived as data content and stays refused.
     const inheritedExpressions = new Set(
-      [...collectAuthoredExpressions(evaluatedInputs)].filter((expr) =>
+      extractExpressions(evaluatedInputs).filter((expr) =>
+        !(expr.start !== undefined && expr.end !== undefined &&
+          inputsProvenance.overlapsData(expr.path, expr.start, expr.end))
+      ).map((expr) => expr.raw).filter((expr) =>
         options.authoredExpressions.has(expr) ||
         deferred.deferredExpressions.some(
           (record) => deferredExpressionReference(record.id) === expr,
@@ -6423,6 +6910,7 @@ export class WorkflowExecutionService {
     let childSuspended: WorkflowRun | undefined;
     const childEvents = childService.run(task.workflowIdOrName, {
       inputs: evaluatedInputs,
+      inputsProvenance,
       authoredExpressions: inheritedExpressions,
       deferredExpressions: deferred.deferredExpressions,
       workflowNestingDepth: depth + 1,
@@ -6651,6 +7139,7 @@ export class WorkflowExecutionService {
           secretRedactor: options.secretRedactor,
           sensitiveValues: options.sensitiveValues,
           sanitizedTasks: options.sanitizedTasks,
+          stepProvenance: options.stepProvenance,
           authoredExpressions: options.authoredExpressions,
         }, options);
         const methodResult = result as {

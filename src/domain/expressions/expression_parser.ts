@@ -20,6 +20,14 @@
 import { maskLiteralCalls } from "./cel_string_lexer.ts";
 import type { ExpressionLocation } from "./expression.ts";
 import {
+  alignProvenance,
+  alignStrings,
+  type DataRange,
+  keyPath,
+  ProvenanceMap,
+  type SentinelResolver,
+} from "./provenance_map.ts";
+import {
   matchSingleExpression,
   replaceExpressionSpans,
   scanExpressions,
@@ -159,7 +167,13 @@ function extractExpressionsRecursive(
   if (skipPath?.(path)) return;
   if (typeof data === "string") {
     for (const span of scanExpressions(data)) {
-      locations.push({ path, raw: span.raw, celExpression: span.inner });
+      locations.push({
+        path,
+        raw: span.raw,
+        celExpression: span.inner,
+        start: span.start,
+        end: span.end,
+      });
     }
   } else if (Array.isArray(data)) {
     // Recursively process array elements
@@ -170,7 +184,7 @@ function extractExpressionsRecursive(
   } else if (data !== null && typeof data === "object") {
     // Recursively process object properties
     for (const [key, value] of Object.entries(data)) {
-      const propPath = path ? `${path}.${key}` : key;
+      const propPath = keyPath(path, key);
       extractExpressionsRecursive(value, propPath, locations, skipPath);
     }
   }
@@ -186,6 +200,8 @@ function extractExpressionsRecursive(
 export interface SpliceSanitizer {
   whole(value: unknown, path: string): unknown;
   embedded(text: string, path: string): string;
+  /** The real value of a sentinel this sanitizer writes, for provenance. */
+  resolve?: SentinelResolver;
 }
 
 /**
@@ -252,7 +268,7 @@ function replaceExpressionsRecursive(
   } else if (data !== null && typeof data === "object") {
     const result: Record<string, unknown> = Object.create(null);
     for (const [key, value] of Object.entries(data)) {
-      const propPath = path ? `${path}.${key}` : key;
+      const propPath = keyPath(path, key);
       Object.defineProperty(result, key, {
         value: replaceExpressionsRecursive(
           value,
@@ -270,6 +286,250 @@ function replaceExpressionsRecursive(
   }
 
   return data;
+}
+
+/**
+ * Where an evaluated value came from, relative to the value itself: `map`
+ * marks the parts that are data. When the value cannot be spliced with its
+ * map intact (an object rendered as JSON inside a string, or text a sanitizer
+ * rewrote), the spliced text is data except expression occurrences whose raw
+ * text is in `authoredRaws`, the read-set rule.
+ */
+export interface SpliceOrigin {
+  map: ProvenanceMap;
+  authoredRaws?: ReadonlySet<string>;
+}
+
+/** An evaluated value that came entirely from authored source. */
+export const AUTHORED_ORIGIN: SpliceOrigin = { map: ProvenanceMap.authored() };
+
+/** A tree after substitution, with where data now sits in it. */
+export interface TrackedSplice {
+  data: unknown;
+  provenance: ProvenanceMap;
+}
+
+/**
+ * {@link replaceExpressions} that also tracks provenance. Substitution stays
+ * keyed on raw text, so every authored occurrence of an evaluated raw
+ * receives its value exactly as before; an occurrence that overlaps data in
+ * `provenance` is never substituted. The returned map records where data sits
+ * in the result: the input map carried through, plus each spliced value's
+ * origin at its new position.
+ */
+export function replaceExpressionsTracked(
+  data: unknown,
+  values: Map<string, unknown>,
+  provenance: ProvenanceMap,
+  originOf: (raw: string) => SpliceOrigin,
+  skipPath?: (path: string) => boolean,
+  sanitizer?: SpliceSanitizer,
+): TrackedSplice {
+  const state = { provenance, originOf, skipPath, sanitizer, values };
+  // Each visited path is written once and paths never nest, so the changes
+  // are collected and applied in one pass.
+  const changes: [string, ProvenanceMap][] = [];
+  const result = replaceTracked(data, "", state, (path, map) => {
+    changes.push([path, map]);
+  });
+  return { data: result, provenance: provenance.graftAll(changes) };
+}
+
+interface TrackedState {
+  provenance: ProvenanceMap;
+  originOf: (raw: string) => SpliceOrigin;
+  skipPath?: (path: string) => boolean;
+  sanitizer?: SpliceSanitizer;
+  values: Map<string, unknown>;
+}
+
+function replaceTracked(
+  data: unknown,
+  path: string,
+  state: TrackedState,
+  update: (path: string, map: ProvenanceMap) => void,
+): unknown {
+  if (state.skipPath?.(path)) return data;
+  if (state.provenance.isWholeDataAt(path)) return data;
+  if (typeof data === "string") {
+    if (!containsExpression(data)) return data;
+    const single = matchSingleExpression(data);
+    if (single) {
+      if (state.provenance.overlapsData(path, single.start, single.end)) {
+        return data;
+      }
+      if (!state.values.has(single.raw)) return data;
+      const evaluated = state.values.get(single.raw);
+      if (evaluated === undefined) return data;
+      const value = state.sanitizer
+        ? state.sanitizer.whole(evaluated, path)
+        : evaluated;
+      const origin = state.originOf(single.raw);
+      update(
+        path,
+        wholeSpliceMap(value, evaluated, origin, state.sanitizer?.resolve),
+      );
+      return value;
+    }
+    const inRanges = state.provenance.rangesAt(path);
+    const outRanges: DataRange[] = [];
+    let out = "";
+    let last = 0;
+    const copy = (from: number, to: number) => {
+      const offset = out.length - from;
+      for (const [s, e] of inRanges) {
+        const cs = Math.max(s, from);
+        const ce = Math.min(e, to);
+        if (cs < ce) outRanges.push([cs + offset, ce + offset]);
+      }
+      out += data.slice(from, to);
+    };
+    for (const span of scanExpressions(data)) {
+      copy(last, span.start);
+      last = span.end;
+      if (
+        state.provenance.overlapsData(path, span.start, span.end) ||
+        !state.values.has(span.raw)
+      ) {
+        copy(span.start, span.end);
+        continue;
+      }
+      const value = state.values.get(span.raw);
+      if (value === null || value === undefined) continue;
+      const rendered = typeof value === "object"
+        ? JSON.stringify(value, null, 2)
+        : String(value);
+      const text = state.sanitizer
+        ? state.sanitizer.embedded(rendered, path)
+        : rendered;
+      const origin = state.originOf(span.raw);
+      for (
+        const [s, e] of embeddedRanges(
+          value,
+          rendered,
+          text,
+          origin,
+          state.sanitizer?.resolve,
+        )
+      ) {
+        outRanges.push([s + out.length, e + out.length]);
+      }
+      out += text;
+    }
+    copy(last, data.length);
+    update(path, ProvenanceMap.authored().withRanges("", outRanges));
+    return out;
+  } else if (Array.isArray(data)) {
+    return data.map((item, index) =>
+      replaceTracked(item, `${path}[${index}]`, state, update)
+    );
+  } else if (data !== null && typeof data === "object") {
+    const result: Record<string, unknown> = Object.create(null);
+    for (const [key, value] of Object.entries(data)) {
+      const propPath = keyPath(path, key);
+      Object.defineProperty(result, key, {
+        value: replaceTracked(value, propPath, state, update),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return result;
+  }
+  return data;
+}
+
+/**
+ * The map of a value spliced as a whole field. The origin's map applies when
+ * the value is spliced unchanged; a value a sanitizer rewrote falls back to
+ * the read-set rule over the rewritten value.
+ */
+function wholeSpliceMap(
+  value: unknown,
+  evaluated: unknown,
+  origin: SpliceOrigin,
+  resolve: SentinelResolver | undefined,
+): ProvenanceMap {
+  if (origin.map.isAuthored) return origin.map;
+  if (value === evaluated) return origin.map;
+  // A sanitizer swapped sensitive values for sentinels: carry the map
+  // across by position, so data stays data wherever it now sits.
+  return alignProvenance(origin.map, evaluated, value, undefined, resolve);
+}
+
+/**
+ * Data ranges, relative to `text`, of a value spliced inside a string.
+ * A string spliced unchanged keeps its own ranges; anything rendered or
+ * rewritten falls back to the read-set rule.
+ */
+function embeddedRanges(
+  value: unknown,
+  rendered: string,
+  text: string,
+  origin: SpliceOrigin,
+  resolve: SentinelResolver | undefined,
+): DataRange[] {
+  if (origin.map.isAuthored) return [];
+  if (typeof value === "string") {
+    const ranges: DataRange[] = origin.map.isWholeDataAt("")
+      ? [[0, rendered.length]]
+      : [...origin.map.rangesAt("")];
+    return text === rendered
+      ? ranges
+      : alignStrings(ranges, rendered, text, undefined, resolve);
+  }
+  // An object rendered as JSON: positions do not survive, so the read-set
+  // rule decides, over the text as it is spliced.
+  return readSetRanges(text, origin.authoredRaws);
+}
+
+/**
+ * The read-set rule over a whole value: every string in it is data except
+ * expression occurrences whose raw text is in `authoredRaws`.
+ */
+export function readSetMap(
+  value: unknown,
+  authoredRaws: ReadonlySet<string> | undefined,
+): ProvenanceMap {
+  // Nothing in it is vouched for: all of it is data, as one entry.
+  if (!authoredRaws?.size || !valueContainsExpression(value)) {
+    return ProvenanceMap.data();
+  }
+  const ranges: [string, DataRange[]][] = [];
+  const visit = (node: unknown, path: string) => {
+    if (typeof node === "string") {
+      const found = readSetRanges(node, authoredRaws);
+      if (found.length > 0) ranges.push([path, found]);
+    } else if (Array.isArray(node)) {
+      node.forEach((item, index) => visit(item, `${path}[${index}]`));
+    } else if (node !== null && typeof node === "object") {
+      for (const [key, item] of Object.entries(node)) {
+        visit(item, keyPath(path, key));
+      }
+    }
+  };
+  visit(value, "");
+  return ProvenanceMap.fromEntries([], ranges);
+}
+
+/**
+ * The read-set rule over one string: all of it is data except expression
+ * occurrences whose raw text is in `authoredRaws`.
+ */
+function readSetRanges(
+  text: string,
+  authoredRaws: ReadonlySet<string> | undefined,
+): DataRange[] {
+  if (text.length === 0) return [];
+  const ranges: DataRange[] = [];
+  let last = 0;
+  for (const span of scanExpressions(text)) {
+    if (!authoredRaws?.has(span.raw)) continue;
+    if (span.start > last) ranges.push([last, span.start]);
+    last = span.end;
+  }
+  if (last < text.length) ranges.push([last, text.length]);
+  return ranges;
 }
 
 /**

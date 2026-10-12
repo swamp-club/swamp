@@ -151,6 +151,7 @@ export async function createWorkflowRunDeps(
         globalArgs,
         authoredExpressions,
         sensitiveValues,
+        provenance,
       ) => {
         let resolvedType = ModelType.create(typeArg);
         let modelDef = await resolveModelType(resolvedType, getAutoResolver());
@@ -195,6 +196,7 @@ export async function createWorkflowRunDeps(
           repoContext.autoDefinitionsDir,
           authoredExpressions,
           sensitiveValues,
+          provenance,
         );
         if (!result.ok) throw new Error(result.error.message);
         return {
@@ -309,12 +311,14 @@ export async function createModelMethodRunDeps(
     saveEvaluatedDefinition: (
       type,
       definition,
+      provenance,
       authoredExpressions,
       writtenReferences,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
         definition,
+        provenance,
         authoredExpressions,
         undefined,
         writtenReferences,

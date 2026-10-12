@@ -65,6 +65,15 @@ import {
 } from "../../domain/secrets/mod.ts";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import {
+  alignProvenance,
+  keySegment,
+  methodArgumentPath,
+  ProvenanceMap,
+  routedGlobalProvenance,
+  sentinelResolverOf,
+} from "../../domain/expressions/provenance_map.ts";
+import { attachBindingProvenance } from "../../domain/expressions/splice_origin.ts";
+import {
   mayHoldPlaintextSensitiveValues,
   persistEvaluatedDefinition,
   rehydrateEvaluatedDefinition,
@@ -227,12 +236,16 @@ export interface ModelMethodRunDeps {
       authoredExpressions: ReadonlySet<string>;
       deferredExpressions?: readonly DeferredExpression[];
       writtenReferences?: readonly WrittenReference[];
+      /** See the evaluated cache's `provenance`; absent on older caches. */
+      provenance?: ProvenanceMap | "unreadable";
       sensitiveFormat?: number;
     } | null
   >;
   saveEvaluatedDefinition: (
     type: ModelType,
     definition: Definition,
+    /** Where data sits in the definition's raw copy (swamp-club#3205). */
+    provenance: ProvenanceMap,
     authoredExpressions: ReadonlySet<string>,
     writtenReferences?: readonly WrittenReference[],
   ) => Promise<void>;
@@ -281,6 +294,12 @@ export interface ModelMethodRunInput {
   expectedName?: string;
   methodName: string;
   inputs: Record<string, unknown>;
+  /**
+   * Treat `inputs` as data: expression text in them is never evaluated, and
+   * a global argument holding any is refused rather than persisted
+   * (swamp-club#3205). Cannot be combined with `lastEvaluated`.
+   */
+  literalInputs?: boolean;
   lastEvaluated: boolean;
   /** When present, enables direct type execution (auto-create-then-run). */
   typeArg?: string;
@@ -352,11 +371,29 @@ export async function* modelMethodRun(
 
           // --- Validate inputs phase ---
           yield { kind: "validating_inputs" };
+          if (input.literalInputs && input.lastEvaluated) {
+            // The cached evaluation may hold expressions an earlier run's
+            // operator-written inputs vouched for; replaying it under
+            // literal inputs would trust them.
+            yield {
+              kind: "error",
+              error: validationFailed(
+                "--literal-inputs cannot be combined with --last-evaluated: the cached evaluation may hold expressions an earlier run's inputs vouched for.",
+              ),
+            };
+            return;
+          }
+          // Keys the caller supplied; under literalInputs they are data.
+          const callerInputKeys = new Set(Object.keys(input.inputs));
 
           // --- Resolve model ---
           yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
 
           let definition: Definition;
+          // Where data sits in the definition before evaluation: the global
+          // arguments a direct execution routed from literal inputs
+          // (swamp-club#3205). Authored everywhere else.
+          let routedGlobalsProvenance = ProvenanceMap.authored();
           let modelType: ModelType;
           let modelDef: ModelDefinition;
 
@@ -448,8 +485,16 @@ export async function* modelMethodRun(
               resolvedModelDef,
               undefined,
               deps.autoDefinitionsDir,
-              // Inputs are typed by the operator running the command.
-              "unrestricted",
+              // Inputs are typed by the operator running the command, unless
+              // the caller marked them as data.
+              input.literalInputs ? new Set() : "unrestricted",
+              undefined,
+              input.literalInputs
+                ? {
+                  inputs: ProvenanceMap.data(),
+                  globalArgs: ProvenanceMap.data(),
+                }
+                : undefined,
             );
 
             if (!result.ok) {
@@ -476,6 +521,13 @@ export async function* modelMethodRun(
             definition = result.definition;
             modelType = result.modelType;
             modelDef = result.modelDef;
+            if (input.literalInputs) {
+              routedGlobalsProvenance = routedGlobalProvenance(
+                result.routedInputs.globalArguments,
+                input.inputs,
+                ProvenanceMap.data(),
+              );
+            }
 
             // Use routed method arguments as the inputs for downstream processing.
             // Global args are already stored in the auto-created definition.
@@ -632,6 +684,10 @@ export async function* modelMethodRun(
             // sentinels from this step's bag. evaluatedDefinition keeps real
             // values for caching, reports and self.globalArguments.
             let executedDefinition = definition;
+            // Where data sits in the executed copy's data (swamp-club#3205).
+            let executedProvenance = ProvenanceMap.authored();
+            // Where data sits in the raw copy, as the evaluated cache stores it.
+            let rawProvenance = ProvenanceMap.authored();
             const stepSecretBag = new VaultSecretBag();
 
             // Provenance for the runtime pass, collected from the SOURCE
@@ -641,15 +697,29 @@ export async function* modelMethodRun(
             // running the command (or an authenticated serve caller), so
             // expressions in them — schema-declared or method overrides — are
             // author-written too.
-            const authoredExpressions = collectAuthoredExpressions(
-              inputs,
-              collectAuthoredExpressions(definition.toData()),
-            );
+            // Under literalInputs the caller's inputs are data: they vouch for
+            // nothing, and every key they supplied is data in the context.
+            const authoredExpressions = input.literalInputs
+              ? collectAuthoredExpressions(definition.toData())
+              : collectAuthoredExpressions(
+                inputs,
+                collectAuthoredExpressions(definition.toData()),
+              );
+            let inputsProvenance = ProvenanceMap.authored();
+            if (input.literalInputs) {
+              for (const key of Object.keys(inputs)) {
+                if (!callerInputKeys.has(key)) continue;
+                inputsProvenance = inputsProvenance.withWholeData(
+                  keySegment(key),
+                );
+              }
+            }
 
             let deferredExpressions: readonly DeferredExpression[] = [];
             let failedExpressions: FailedExpressions = new Map();
             let pendingSave: Definition | undefined;
             let pendingReferences: readonly WrittenReference[] = [];
+            let pendingProvenance = ProvenanceMap.authored();
             if (input.lastEvaluated) {
               const lastEval = await deps.loadEvaluatedDefinition(
                 modelType,
@@ -673,6 +743,15 @@ export async function* modelMethodRun(
                 };
                 return;
               }
+              if (lastEval.provenance === "unreadable") {
+                exprSpan.end();
+                setupSpan.end();
+                yield {
+                  kind: "error",
+                  error: evaluatedCacheProvenanceUnreadable(definition.name),
+                };
+                return;
+              }
               // Sensitive values are cached as vault references; restore them,
               // real values into evaluatedDefinition and sentinels into the
               // executed copy, exactly as a fresh evaluation would.
@@ -693,6 +772,16 @@ export async function* modelMethodRun(
               evaluatedDefinition = restored.definition;
               executedDefinition = restored.executedDefinition;
               deferredExpressions = restored.deferredExpressions;
+              // A cache without provenance predates it and replays as it
+              // always did.
+              rawProvenance = lastEval.provenance ?? ProvenanceMap.authored();
+              executedProvenance = alignProvenance(
+                rawProvenance,
+                evaluatedDefinition.toData(),
+                executedDefinition.toData(),
+                undefined,
+                sentinelResolverOf(stepSecretBag),
+              );
               for (const expression of lastEval.authoredExpressions) {
                 authoredExpressions.add(expression);
               }
@@ -705,10 +794,27 @@ export async function* modelMethodRun(
                   inputs,
                   undefined,
                   stepSecretBag,
+                  {
+                    inputs: inputsProvenance,
+                    definition: {
+                      raw: ProvenanceMap.authored().graft(
+                        "globalArguments",
+                        routedGlobalsProvenance,
+                      ),
+                      sanitized: ProvenanceMap.authored().graft(
+                        "globalArguments",
+                        routedGlobalsProvenance,
+                      ),
+                    },
+                  },
                 );
                 evaluatedDefinition = evalResult.definition;
                 executedDefinition = evalResult.sanitizedDefinition ??
                   evalResult.definition;
+                rawProvenance = evalResult.provenance ??
+                  ProvenanceMap.authored();
+                executedProvenance = evalResult.sanitizedProvenance ??
+                  evalResult.provenance ?? ProvenanceMap.authored();
                 failedExpressions = evalResult.failedExpressions ??
                   failedExpressions;
               }
@@ -727,6 +833,8 @@ export async function* modelMethodRun(
               );
               pendingSave = persisted.definition;
               pendingReferences = persisted.writtenReferences;
+              // In raw-copy coordinates, which rehydrate restores exactly.
+              pendingProvenance = rawProvenance;
             }
 
             // Merge override inputs into method arguments.
@@ -778,6 +886,13 @@ export async function* modelMethodRun(
                     value,
                   );
                 }
+                // The override replaces whatever was evaluated there, data
+                // included. Operator-typed inputs are authored, literal ones
+                // data.
+                executedProvenance = executedProvenance.graft(
+                  methodArgumentPath(input.methodName, key),
+                  inputsProvenance.subtree(keySegment(key)),
+                );
               }
             }
 
@@ -807,6 +922,7 @@ export async function* modelMethodRun(
               await deps.saveEvaluatedDefinition(
                 modelType,
                 pendingSave,
+                pendingProvenance,
                 authoredExpressions,
                 pendingReferences,
               );
@@ -840,6 +956,16 @@ export async function* modelMethodRun(
               inputs,
               deferredExpressions,
             );
+            attachBindingProvenance(runtimeContext, {
+              inputs: inputsProvenance,
+              // Bound as self.globalArguments in the runtime pass.
+              self: ProvenanceMap.authored().graft(
+                "globalArguments",
+                rawProvenance.subtree("globalArguments").union(
+                  routedGlobalsProvenance,
+                ),
+              ),
+            });
             const runtimeResult = await evaluationService
               .resolveRuntimeExpressionsInDefinition(
                 executedDefinition,
@@ -849,6 +975,7 @@ export async function* modelMethodRun(
                 {
                   secretBag: stepSecretBag,
                   rawGlobalArguments: evaluatedDefinition.globalArguments,
+                  provenance: executedProvenance,
                 },
               );
             evaluatedDefinition = runtimeResult.definition;
@@ -1538,6 +1665,18 @@ export function evaluatedCacheMayHoldSecrets(name: string): SwampError {
     code: "evaluated_cache_may_hold_secrets",
     message:
       `The evaluated definition cached for "${name}" was written by an older swamp and may hold sensitive values in plaintext, so it is not replayed. Run the method without --last-evaluated to evaluate it again; that rewrites the cache.`,
+  };
+}
+
+/**
+ * Creates a SwampError for a cached evaluation whose provenance record does
+ * not parse: replaying it could evaluate data as authored (swamp-club#3205).
+ */
+export function evaluatedCacheProvenanceUnreadable(name: string): SwampError {
+  return {
+    code: "evaluated_cache_provenance_unreadable",
+    message:
+      `The evaluated definition cached for "${name}" has an unreadable provenance record, so it is not replayed. Run the method without --last-evaluated to evaluate it again; that rewrites the cache.`,
   };
 }
 

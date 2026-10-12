@@ -1089,6 +1089,7 @@ const evaluatedDefinitionRows: Row[] = [
         h.ctx.evaluatedDefinitionRepo.save(
           TYPE,
           makeDefinition(crypto.randomUUID(), "probe"),
+          undefined,
         )
       ),
   },
@@ -1100,9 +1101,14 @@ const evaluatedDefinitionRows: Row[] = [
       await h.ctx.evaluatedDefinitionRepo.save(
         TYPE,
         makeDefinition(id, "probe"),
+        undefined,
       );
       return () =>
-        h.ctx.evaluatedDefinitionRepo.save(TYPE, makeDefinition(id, "renamed"));
+        h.ctx.evaluatedDefinitionRepo.save(
+          TYPE,
+          makeDefinition(id, "renamed"),
+          undefined,
+        );
     },
   },
   {
@@ -1113,6 +1119,7 @@ const evaluatedDefinitionRows: Row[] = [
       await h.ctx.evaluatedDefinitionRepo.save(
         TYPE,
         makeDefinition(id, "probe"),
+        undefined,
       );
       const typeDir = join(
         h.cacheRoot,
@@ -1128,6 +1135,7 @@ const evaluatedDefinitionRows: Row[] = [
         cold.ctx.evaluatedDefinitionRepo.save(
           TYPE,
           makeDefinition(id, "probe"),
+          undefined,
         );
     },
   },
@@ -1136,7 +1144,7 @@ const evaluatedDefinitionRows: Row[] = [
     method: "delete",
     prepare: async (h) => {
       const definition = makeDefinition(crypto.randomUUID(), "probe");
-      await h.ctx.evaluatedDefinitionRepo.save(TYPE, definition);
+      await h.ctx.evaluatedDefinitionRepo.save(TYPE, definition, undefined);
       return () => h.ctx.evaluatedDefinitionRepo.delete(TYPE, definition.id);
     },
   },
@@ -1145,7 +1153,7 @@ const evaluatedDefinitionRows: Row[] = [
     method: "delete(dual-file)",
     prepare: async (h) => {
       const definition = makeDefinition(crypto.randomUUID(), "probe");
-      await h.ctx.evaluatedDefinitionRepo.save(TYPE, definition);
+      await h.ctx.evaluatedDefinitionRepo.save(TYPE, definition, undefined);
       const typeDir = join(
         h.cacheRoot,
         "definitions-evaluated",
@@ -1166,6 +1174,7 @@ const evaluatedDefinitionRows: Row[] = [
       await h.ctx.evaluatedDefinitionRepo.save(
         TYPE,
         makeDefinition(crypto.randomUUID(), "probe"),
+        undefined,
       );
       return () => h.ctx.evaluatedDefinitionRepo.clearAll();
     },
@@ -1178,7 +1187,10 @@ const evaluatedWorkflowRows: Row[] = [
     method: "save",
     prepare: (h) =>
       Promise.resolve(() =>
-        h.evaluatedWorkflowRepo.save(makeWorkflow(crypto.randomUUID(), "probe"))
+        h.evaluatedWorkflowRepo.save(
+          makeWorkflow(crypto.randomUUID(), "probe"),
+          undefined,
+        )
       ),
   },
   {
@@ -1186,8 +1198,9 @@ const evaluatedWorkflowRows: Row[] = [
     method: "save(rename)",
     prepare: async (h) => {
       const id = crypto.randomUUID();
-      await h.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"));
-      return () => h.evaluatedWorkflowRepo.save(makeWorkflow(id, "renamed"));
+      await h.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"), undefined);
+      return () =>
+        h.evaluatedWorkflowRepo.save(makeWorkflow(id, "renamed"), undefined);
     },
   },
   {
@@ -1195,14 +1208,15 @@ const evaluatedWorkflowRows: Row[] = [
     method: "save(legacy)",
     prepare: async (h) => {
       const id = crypto.randomUUID();
-      await h.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"));
+      await h.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"), undefined);
       const dir = join(h.cacheRoot, "workflows-evaluated");
       await Deno.rename(
         join(dir, "workflow-probe.yaml"),
         join(dir, `workflow-${id}.yaml`),
       );
       const cold = h.fresh();
-      return () => cold.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"));
+      return () =>
+        cold.evaluatedWorkflowRepo.save(makeWorkflow(id, "probe"), undefined);
     },
   },
   {
@@ -1210,7 +1224,7 @@ const evaluatedWorkflowRows: Row[] = [
     method: "delete",
     prepare: async (h) => {
       const workflow = makeWorkflow(crypto.randomUUID(), "probe");
-      await h.evaluatedWorkflowRepo.save(workflow);
+      await h.evaluatedWorkflowRepo.save(workflow, undefined);
       return () => h.evaluatedWorkflowRepo.delete(workflow.id);
     },
   },
@@ -1219,7 +1233,7 @@ const evaluatedWorkflowRows: Row[] = [
     method: "delete(dual-file)",
     prepare: async (h) => {
       const workflow = makeWorkflow(crypto.randomUUID(), "probe");
-      await h.evaluatedWorkflowRepo.save(workflow);
+      await h.evaluatedWorkflowRepo.save(workflow, undefined);
       const dir = join(h.cacheRoot, "workflows-evaluated");
       await Deno.copyFile(
         join(dir, "workflow-probe.yaml"),
@@ -1235,6 +1249,7 @@ const evaluatedWorkflowRows: Row[] = [
     prepare: async (h) => {
       await h.evaluatedWorkflowRepo.save(
         makeWorkflow(crypto.randomUUID(), "probe"),
+        undefined,
       );
       await h.evaluatedWorkflowRepo.saveForRun(
         crypto.randomUUID(),

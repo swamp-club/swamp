@@ -495,7 +495,8 @@ function resolvedRunAllowed(
  * wrote them (swamp-club#2755, swamp-club#2786): data they read must be
  * readable by the caller, and `env` needs write on the model, as authoring
  * it in the definition would. Inputs with no expressions pass untouched.
- * Replies and returns false on a refusal.
+ * Replies and returns false on a refusal. With `literalInputs` nothing in the
+ * inputs is evaluated, so there is nothing to authorize (swamp-club#3205).
  */
 async function authorizeRunInputs(
   socket: WebSocket,
@@ -505,6 +506,7 @@ async function authorizeRunInputs(
   target: MethodRunTarget,
   ctx: ConnectionContext,
 ): Promise<boolean> {
+  if (payload.literalInputs === true) return true;
   const expressions = analyzeContentExpressions(payload.inputs ?? {});
   if (expressions.length === 0) return true;
   const runOn = target.run?.resource ?? target.resource;
@@ -698,6 +700,7 @@ export async function handleModelMethodRun(
                       expectedName: target.expectedName,
                       methodName: payload.methodName,
                       inputs: payload.inputs ?? {},
+                      literalInputs: payload.literalInputs === true,
                       lastEvaluated: payload.lastEvaluated ?? false,
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,
@@ -989,6 +992,7 @@ export async function handleModelMethodRun(
                       expectedName: target.expectedName,
                       methodName: payload.methodName,
                       inputs: payload.inputs ?? {},
+                      literalInputs: payload.literalInputs === true,
                       lastEvaluated: payload.lastEvaluated ?? false,
                       runtimeTags: payload.runtimeTags,
                       typeArg: payload.typeArg,

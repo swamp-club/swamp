@@ -148,9 +148,14 @@ async function resolveFileValue(
  *   The `@file` and `\@literal` interactions are bypassed when `:json`
  *   is set — the value is read as a literal JSON string. JSON parse
  *   failures are hard errors.
+ *
+ * With `literal`, every value is kept exactly as given: a leading `@` is
+ * never read as a file path and `\@` keeps its backslash, so text the caller
+ * did not write cannot make swamp read a file (swamp-club#3205).
  */
 export async function parseKeyValueInputs(
   entries: string[],
+  options: { literal?: boolean } = {},
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
 
@@ -194,6 +199,11 @@ export async function parseKeyValueInputs(
     }
 
     let value: string = rawValue;
+
+    if (options.literal) {
+      setNestedValue(result, key, value);
+      continue;
+    }
 
     if (value.startsWith("\\@")) {
       // Escaped @ — use literal value without the backslash
@@ -264,6 +274,8 @@ async function parseInputFile(
 export async function parseInputs(options: {
   input?: string | string[];
   inputFile?: string;
+  /** Keep key=value values verbatim; see {@link parseKeyValueInputs}. */
+  literal?: boolean;
 }): Promise<ParsedInputs> {
   const inputEntries = normalizeInputOption(options.input);
 
@@ -291,7 +303,9 @@ export async function parseInputs(options: {
 
   // Key-value mode (possibly combined with --input-file)
   if (inputEntries.length > 0) {
-    const kvInputs = await parseKeyValueInputs(inputEntries);
+    const kvInputs = await parseKeyValueInputs(inputEntries, {
+      literal: options.literal,
+    });
 
     if (options.inputFile) {
       const fileInputs = await parseInputFile(options.inputFile);

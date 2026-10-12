@@ -55,6 +55,8 @@ import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
 import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
+import { keyPath, ProvenanceMap } from "../expressions/provenance_map.ts";
+import { attachBindingProvenance } from "../expressions/splice_origin.ts";
 
 const MAX_INVOCATION_DEPTH = 10;
 const MAX_INVOCATION_BREADTH = 100;
@@ -420,9 +422,16 @@ export class ModelInvocationService {
 
     let evaluatedDefinition = Definition.fromData(definition.toData());
     const templatedGlobalArgs: Record<string, unknown> = {};
+    // Caller values are data: a template-free one set here is spliced by
+    // the definition pass like any other data, so it can never complete an
+    // expression that reads as authored (swamp-club#3205).
+    let definitionMap = ProvenanceMap.authored();
     for (const [key, value] of Object.entries(routedGlobalArgs)) {
       if (extractExpressions(value).length === 0) {
         evaluatedDefinition.setGlobalArgument(key, value);
+        definitionMap = definitionMap.withWholeData(
+          keyPath("globalArguments", key),
+        );
       } else {
         templatedGlobalArgs[key] = value;
       }
@@ -431,6 +440,10 @@ export class ModelInvocationService {
     let executedDefinition = evaluatedDefinition;
     const stepSecretBag = new VaultSecretBag();
     let failedExpressions: ReadonlyMap<string, Error> = new Map();
+    // Where data sits in each copy, carried into the runtime pass so data
+    // the definition pass spliced is never resolved there.
+    let rawProvenance = definitionMap;
+    let executedProvenance = definitionMap;
     if (evaluationService.hasDefinitionExpressions(evaluatedDefinition)) {
       const evalResult = await evaluationService.evaluateDefinition(
         evaluatedDefinition,
@@ -439,11 +452,14 @@ export class ModelInvocationService {
         inputs,
         undefined,
         stepSecretBag,
+        { definition: { raw: definitionMap, sanitized: definitionMap } },
       );
       evaluatedDefinition = evalResult.definition;
       executedDefinition = evalResult.sanitizedDefinition ??
         evalResult.definition;
       failedExpressions = evalResult.failedExpressions ?? failedExpressions;
+      rawProvenance = evalResult.provenance ?? definitionMap;
+      executedProvenance = evalResult.sanitizedProvenance ?? rawProvenance;
     }
 
     const runtimeContext = await evaluationService.buildRuntimeContext(
@@ -451,6 +467,12 @@ export class ModelInvocationService {
       sensitiveValues,
       inputs,
     );
+    attachBindingProvenance(runtimeContext, {
+      self: ProvenanceMap.authored().graft(
+        "globalArguments",
+        rawProvenance.subtree("globalArguments"),
+      ),
+    });
     const runtimeResult = await evaluationService
       .resolveRuntimeExpressionsInDefinition(
         executedDefinition,
@@ -460,6 +482,7 @@ export class ModelInvocationService {
         {
           secretBag: stepSecretBag,
           rawGlobalArguments: evaluatedDefinition.globalArguments,
+          provenance: executedProvenance,
         },
       );
     const resolvedDefinition = runtimeResult.definition;

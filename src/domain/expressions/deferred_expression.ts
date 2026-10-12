@@ -20,6 +20,7 @@
 import { z } from "zod";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { matchSingleExpression } from "./expression_scanner.ts";
+import { ProvenanceMapDataSchema } from "./provenance_map.ts";
 
 /**
  * Zod v4 z.record() explicitly skips __proto__ keys, silently dropping
@@ -95,6 +96,11 @@ export const DeferredExpressionSchema = z.object({
       }),
     ).optional(),
   }),
+  /**
+   * Where data sits in `bindings` (keyed `inputs.x`, `self.globalArguments.y`,
+   * ...), captured with them. Absent on records written before provenance.
+   */
+  provenance: ProvenanceMapDataSchema.optional(),
 });
 
 export type DeferredExpression = z.infer<typeof DeferredExpressionSchema>;

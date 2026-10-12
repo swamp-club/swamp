@@ -51,10 +51,20 @@ export interface WorkflowRunPayload {
   lockHolderTokens?: string;
 }
 
+/** `server.version` capability: the server honours `literalInputs`. */
+export const SERVE_CAPABILITY_LITERAL_INPUTS = "literal-inputs";
+
 export interface ModelMethodRunPayload {
   modelIdOrName: string;
   methodName: string;
   inputs?: Record<string, unknown>;
+  /**
+   * Treat `inputs` as data: expression text in them is never evaluated
+   * (swamp-club#3205). Only send to a server whose `server.version` reply
+   * lists {@link SERVE_CAPABILITY_LITERAL_INPUTS}; an older server ignores
+   * the field and evaluates.
+   */
+  literalInputs?: boolean;
   lastEvaluated?: boolean;
   runtimeTags?: Record<string, string>;
   typeArg?: string;
@@ -1748,7 +1758,12 @@ export type ServerMessage =
   | {
     type: "server.version";
     id: string;
-    payload: { version: string; gitSha: string };
+    payload: {
+      version: string;
+      gitSha: string;
+      /** Optional request features this server honours; absent on older servers. */
+      capabilities?: string[];
+    };
   }
   | { type: "access.grant.list"; id: string; payload: AccessGrantListResponse }
   | {
