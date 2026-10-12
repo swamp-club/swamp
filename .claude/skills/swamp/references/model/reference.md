@@ -235,6 +235,10 @@ edit directly with the Edit tool, then validate with
 - Interactive: `swamp model edit my-shell` (opens in system editor)
 - Stdin: `cat updated.yaml | swamp model edit my-shell --json`
 
+A stdin update whose `name` differs from the model being edited is refused. Add
+`--allow-rename` to rename on purpose; a name another model holds is refused
+either way.
+
 ## Delete a Model
 
 Delete a model and all related artifacts (data, outputs, logs).

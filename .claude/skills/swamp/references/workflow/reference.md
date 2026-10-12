@@ -191,6 +191,10 @@ then edit directly with the Edit tool, then validate with
 - Interactive: `swamp workflow edit my-workflow` (opens in system editor)
 - Stdin: `cat updated.yaml | swamp workflow edit my-workflow --json`
 
+A stdin update whose `name` differs from the workflow being edited is refused.
+Add `--allow-rename` to rename on purpose; a name another workflow holds is
+refused either way.
+
 ## Delete a Workflow
 
 Delete a workflow and all its run history.

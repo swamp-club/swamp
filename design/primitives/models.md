@@ -235,6 +235,12 @@ hand, which never passes through `save()` at all. `model edit` checks after a
 blocking editor exits and after a stdin write. A non-blocking editor returns
 before the person has typed anything, so there is nothing to check yet.
 
+A stdin write does not rename. The piped body carries a `name`, and a body
+written for one model is easily piped at another, so `model edit` refuses a
+stdin update whose `name` differs from the stored one unless `--allow-rename`
+is passed, and refuses a name another model holds even then.
+`workflow edit` applies the same rule.
+
 There is no pre-CalVer compatibility path. `typeVersion` was a number for three
 days in February 2026, between `#203` and `#230`, and the persistence restamp
 removed in swamp-club#900 stamped any such definition to current CalVer on its

@@ -42,3 +42,11 @@ Deno.test("workflowEditCommand is registered as subcommand of workflowCommand", 
   const editCmd = commands.find((c) => c.getName() === "edit");
   assertEquals(editCmd !== undefined, true);
 });
+
+Deno.test("workflowEditCommand offers --allow-rename", async () => {
+  const { workflowEditCommand } = await import("./workflow_edit.ts");
+  assertEquals(
+    workflowEditCommand.getOption("allow-rename")?.name,
+    "allow-rename",
+  );
+});
