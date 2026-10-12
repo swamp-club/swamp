@@ -337,7 +337,7 @@ async function handleDeviceToken(
       });
     }
 
-    const principalId = `user:${userInfo.sub}`;
+    const principalId = oauthPrincipalId(userInfo.sub);
     const token = await withSpan(
       "swamp.serve.auth.mint",
       { "auth.principal.id": principalId },
@@ -586,6 +586,11 @@ async function mintServerTokenImpl(
   });
 
   return `${tokenName}.${plaintext}`;
+}
+
+/** The principal id a server token minted at OAuth login carries. */
+export function oauthPrincipalId(sub: string): string {
+  return `user:${sub}`;
 }
 
 export function oauthAccessTokenKey(tokenName: string): string {

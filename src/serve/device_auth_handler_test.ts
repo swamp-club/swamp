@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   type DeviceAuthDeps,
   handleDeviceAuth,
+  oauthPrincipalId,
 } from "./device_auth_handler.ts";
 import { DeviceGrantPollError } from "./oauth_client.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
@@ -890,4 +891,8 @@ Deno.test("handleDeviceAuth: POST /auth/device traces the upstream device grant"
       SpanStatusCode.OK,
     );
   });
+});
+
+Deno.test("oauthPrincipalId: prefixes the OAuth subject with user:", () => {
+  assertEquals(oauthPrincipalId("abc-123"), "user:abc-123");
 });
