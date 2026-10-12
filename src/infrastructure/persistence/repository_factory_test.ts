@@ -203,7 +203,12 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   };
 }
 
-function setupCatalogExportFixture(): {
+function setupCatalogExportFixture(
+  { createCacheDir = true, createNamespaceDir = true }: {
+    createCacheDir?: boolean;
+    createNamespaceDir?: boolean;
+  } = {},
+): {
   store: CatalogStore;
   cachePath: string;
   cleanup: () => void;
@@ -211,7 +216,11 @@ function setupCatalogExportFixture(): {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-export-test-" });
   const dbPath = join(dir, "_catalog.db");
   const cachePath = join(dir, "cache");
-  Deno.mkdirSync(join(cachePath, "test-ns"), { recursive: true });
+  if (createNamespaceDir) {
+    Deno.mkdirSync(join(cachePath, "test-ns"), { recursive: true });
+  } else if (createCacheDir) {
+    Deno.mkdirSync(cachePath, { recursive: true });
+  }
   const store = new CatalogStore(dbPath);
   return {
     store,
@@ -235,6 +244,42 @@ Deno.test("writeCatalogExport: empty namespace produces valid empty JSON array",
     );
     const parsed = JSON.parse(content);
     assertEquals(parsed, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: creates a missing namespace directory", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture({
+    createNamespaceDir: false,
+  });
+  try {
+    store.upsert(makeRow());
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    assertEquals(count, 1);
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    const parsed = JSON.parse(content) as CatalogRow[];
+    assertEquals(parsed.length, 1);
+    assertEquals(parsed[0].model_id, "model-001");
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("writeCatalogExport: empty catalog with no cache directory writes an empty array", async () => {
+  const { store, cachePath, cleanup } = setupCatalogExportFixture({
+    createCacheDir: false,
+    createNamespaceDir: false,
+  });
+  try {
+    const count = await writeCatalogExport(store, cachePath, "test-ns");
+    assertEquals(count, 0);
+    const content = await Deno.readTextFile(
+      join(cachePath, "test-ns", ".catalog-export.json"),
+    );
+    assertEquals(JSON.parse(content), []);
   } finally {
     cleanup();
   }
