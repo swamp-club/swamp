@@ -37,6 +37,7 @@ import {
   ALWAYS_LOCAL_SUBDIRS,
   DEFAULT_DATASTORE_SUBDIRS,
 } from "../../domain/datastore/datastore_config.ts";
+import { lexicalRefusal } from "../../domain/datastore_v3/materialisation.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { swampPath } from "../persistence/paths.ts";
 
@@ -63,9 +64,6 @@ export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
   ),
 );
 
-/** A catalog database or one of its SQLite side files. */
-const CATALOG_DATABASE = /^_catalog.*\.db(?:-wal|-shm|-journal)?$/i;
-
 /**
  * Why the read model must not write or remove `key` under `root`, or
  * undefined when it may. `stateDir` is the read model's state directory.
@@ -75,15 +73,9 @@ export function refusedKeyReason(
   root: string,
   stateDir: string,
 ): string | undefined {
+  const lexical = lexicalRefusal(key.toString(), MATERIALISED_SUBDIRS);
+  if (lexical !== undefined) return lexical;
   const segments = key.toString().split("/");
-  if (!MATERIALISED_SUBDIRS.has(segments[0])) {
-    return `its first segment ${
-      segments[0]
-    } is not a datastore-synced directory`;
-  }
-  if (CATALOG_DATABASE.test(segments[segments.length - 1])) {
-    return "it names a catalog database";
-  }
   // With the state directory at `.swamp/_read_model_v3` the first-segment
   // check already refuses it; this one still holds if a caller passes a
   // state directory inside a synced one. Compared without case, so a
