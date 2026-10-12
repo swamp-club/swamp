@@ -40,7 +40,7 @@
  * marker.
  */
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import {
   assertPinnedSet,
@@ -200,10 +200,11 @@ Deno.test("serve run entries: the scheduler's executor passes vaultAccess", asyn
   );
 });
 
-Deno.test("serve run entries: serve's HTTP handler starts every request outside any vault scope", async () => {
+Deno.test("serve run entries: serve's HTTP handler starts every request outside every ambient store", async () => {
   // Deno can call a serve handler with the async context a run left
   // behind (a first-time dynamic import inside a run does), so every
-  // request — WebSocket upgrades included — must leave it first.
+  // request — WebSocket upgrades included — must leave it first
+  // (swamp-club#3125).
   const serve = await Deno.readTextFile(
     join(SRC_DIR, "cli", "commands", "serve.ts"),
   );
@@ -215,7 +216,51 @@ Deno.test("serve run entries: serve's HTTP handler starts every request outside 
     "serve's Deno.serve handler must be wrapped in unscopedHttpHandler",
   );
   assert(
-    /function unscopedHttpHandler[\s\S]*?withoutVaultAccess\(/.test(serve),
-    "unscopedHttpHandler must run the handler under withoutVaultAccess",
+    /function unscopedHttpHandler[\s\S]*?runOutsideAmbientContext\(/.test(
+      serve,
+    ),
+    "unscopedHttpHandler must run the handler under runOutsideAmbientContext",
+  );
+});
+
+Deno.test("serve run entries: the ambient root context is captured at startup", async () => {
+  // The snapshot holds whatever context the module is evaluated in, so it
+  // must be taken at top level and the module reached only through static
+  // imports from the entry point, before any run enters a scope.
+  const helper = await Deno.readTextFile(
+    join(SRC_DIR, "infrastructure", "runtime", "ambient_context.ts"),
+  );
+  assert(
+    /^const \w+ = AsyncLocalStorage\.snapshot\(\);$/m.test(helper),
+    "ambient_context.ts must take AsyncLocalStorage.snapshot() at top level",
+  );
+  const staticImport = (source: string, specifier: string) =>
+    new RegExp(`^import [^;]*from "${specifier.replaceAll(".", "\\.")}";`, "m")
+      .test(source);
+  const chain: Array<[string, string]> = [
+    [join(SRC_DIR, "..", "main.ts"), "./src/cli/mod.ts"],
+    [join(SRC_DIR, "cli", "mod.ts"), "./commands/serve.ts"],
+    [
+      join(SRC_DIR, "cli", "commands", "serve.ts"),
+      "../../infrastructure/runtime/ambient_context.ts",
+    ],
+  ];
+  for (const [file, specifier] of chain) {
+    assert(
+      staticImport(await Deno.readTextFile(file), specifier),
+      `${repoRelative(file)} must import ${specifier} statically`,
+    );
+  }
+  const dynamic: string[] = [];
+  for await (const path of productionSourceFiles(SRC_DIR)) {
+    const source = await Deno.readTextFile(path);
+    if (/import\(\s*["'`][^"'`]*ambient_context\.ts/.test(source)) {
+      dynamic.push(repoRelative(path));
+    }
+  }
+  assertEquals(
+    dynamic,
+    [],
+    "ambient_context.ts must never be imported dynamically",
   );
 });
