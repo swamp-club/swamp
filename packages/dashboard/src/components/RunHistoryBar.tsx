@@ -41,6 +41,8 @@ interface RunHistoryBarProps {
   height?: number;
   /** What the runs are, for the accessible label ("schedule runs"). */
   noun?: string;
+  /** The run on screen, marked as the current page. */
+  currentRunId?: string;
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -64,8 +66,14 @@ function pipTitle(run: RunHistoryEntry): string {
  * colored by status. Each pip links to its run; running pips pulse.
  */
 export function RunHistoryBar(
-  { runs, workflowName, slots = 20, height = 14, noun = "runs" }:
-    RunHistoryBarProps,
+  {
+    runs,
+    workflowName,
+    slots = 20,
+    height = 14,
+    noun = "runs",
+    currentRunId,
+  }: RunHistoryBarProps,
 ) {
   const shown = runs.slice(0, slots).reverse();
   const empty = Math.max(0, slots - shown.length);
@@ -92,7 +100,10 @@ export function RunHistoryBar(
       ))}
       {shown.map((run) => {
         const wf = run.workflowName ?? workflowName;
-        const cls = `run-pip ${STATUS_CLASS[run.status] ?? "other"}`;
+        const current = run.runId === currentRunId;
+        const cls = `run-pip ${STATUS_CLASS[run.status] ?? "other"}${
+          current ? " current" : ""
+        }`;
         const title = pipTitle(run);
         if (!wf) {
           return (
@@ -114,6 +125,7 @@ export function RunHistoryBar(
             role="listitem"
             className={cls}
             href={buildPath(to)}
+            aria-current={current ? "page" : undefined}
             title={title}
             aria-label={title.replace("\n", ", ")}
             onClick={(e) => {
