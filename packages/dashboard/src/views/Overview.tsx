@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
 import { extractArray } from "../client/extract";
@@ -37,6 +37,7 @@ import { LoadError } from "../components/LoadError";
 import { Skeleton, SkeletonList } from "../components/Skeleton";
 import { loadState } from "../client/load_state.ts";
 import { useRunSummary } from "../client/run_summary.ts";
+import { useKeepPrevious } from "../client/useKeepPrevious.ts";
 import { useTimeBounds } from "../client/time_range.ts";
 import { type ChartBar, chartBars } from "./overview_chart.ts";
 import {
@@ -100,8 +101,14 @@ export function Overview(
   // time range, so they are exact rather than "the newest 500 runs".
   const bounds = useTimeBounds();
   const summaryReq = useRunSummary({ timeline: true, recentLimit: 0 });
-  const totals = summaryReq.summary?.totals;
-  const summaryState = loadState(summaryReq, () => (totals?.runs ?? 0) === 0);
+  // The time window moves every minute, re-keying the request: hold the
+  // last answer meanwhile so the stats and chart don't flash skeletons.
+  const summary = useKeepPrevious(summaryReq.summary);
+  const totals = summary?.totals;
+  const summaryState = loadState(
+    { data: summary, loading: summaryReq.loading, error: summaryReq.error },
+    (s) => s.totals.runs === 0,
+  );
   const totalRuns = totals?.runs ?? 0;
   const finishedRuns = totals
     ? totals.succeeded + totals.failed + totals.cancelled
@@ -109,9 +116,10 @@ export function Overview(
   const successRate = totals && finishedRuns > 0
     ? `${((totals.succeeded / finishedRuns) * 100).toFixed(1)}%`
     : "—";
-  const bars = summaryReq.summary
-    ? chartBars(summaryReq.summary.timeline ?? [], bounds)
-    : [];
+  const bars = useMemo(
+    () => summary ? chartBars(summary.timeline ?? [], bounds) : [],
+    [summary, bounds],
+  );
   const failedRuns = runs.filter((r) => r.status === "failed").slice(0, 4);
   const liveRuns = runs.filter(
     (r) => r.status === "running" || r.status === "suspended",
