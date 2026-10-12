@@ -2395,7 +2395,7 @@ function racingStore(
   hooks: {
     /** Once, after the signal's pending record is created. */
     afterStored?: () => Promise<void>;
-    /** Once, before the claims are listed to look for the signal's taker. */
+    /** Once, before the claims are read to look for the signal's taker. */
     beforeTakerLookup?: () => Promise<void>;
   },
 ): InMemorySignalWaitStore {
@@ -2415,13 +2415,15 @@ function racingStore(
           return created;
         };
       }
-      if (property === "listKeyRecords") {
-        return async () => {
+      if (property === "findKeyRecord") {
+        return async (
+          at: Parameters<InMemorySignalWaitStore["findKeyRecord"]>[0],
+        ) => {
           if (stored && !looked) {
             looked = true;
             await hooks.beforeTakerLookup?.();
           }
-          return await target.listKeyRecords();
+          return await target.findKeyRecord(at);
         };
       }
       const value = Reflect.get(target, property, receiver);
@@ -2529,6 +2531,7 @@ Deno.test("workflowSignal: a held signal another reader gave to a suspended wait
   const waits = new InMemorySignalWaitStore();
   const claimedAt = new Date(IN_TIME.getTime() + 1_000);
   let opened: { run: WorkflowRun; waitId: string } | undefined;
+  let swept = false;
   const fixture = await fixtureOf([], { waits, workflows: [workflow] });
   fixture.deps.signalWaits = {
     supported: true,
@@ -2544,10 +2547,14 @@ Deno.test("workflowSignal: a held signal another reader gave to a suspended wait
       // looks for who took it.
       beforeTakerLookup: async () => {
         assertEquals(await takePendingSignalsOfRun(waits, opened!.run), 1);
+        swept = true;
       },
     }),
   };
   const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  // The hook is tied to the store call the taker lookup makes: a lookup that
+  // reads another way leaves the signal with no reader, and nothing to test.
+  assert(swept, "the sweep never ran: racingStore missed the taker lookup");
   assert(sent.kind === "completed", `got ${sent.kind}`);
   assertEquals(sent.data.taken, true);
   assertEquals(sent.data.waitId, opened!.waitId);
