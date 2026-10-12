@@ -1,0 +1,294 @@
+/* Approvals page: gate queues with inline context. */
+
+.approvals-page .panel + .panel,
+.approvals-page .panel + .approvals-notice,
+.approvals-page .approvals-notice + .panel {
+  margin-top: 14px;
+}
+.approvals-page h2.panel-title {
+  margin: 0;
+}
+.approvals-order {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+
+.approvals-notices:empty {
+  display: none;
+}
+.approvals-notice {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+.approvals-notice.is-error {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.approvals-cancelled {
+  margin: 0 0 12px;
+}
+
+.approval-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.approval-item {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.approval-item:last-child {
+  border-bottom: none;
+}
+
+.approval-main {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 140px auto;
+  grid-template-areas: "toggle body history side";
+  align-items: center;
+  gap: 4px 14px;
+  padding: 12px 18px 12px 10px;
+  cursor: pointer;
+}
+.approval-item:not(.is-open) .approval-main:hover {
+  background: var(--surface-hover);
+}
+.approval-item.is-open .approval-main {
+  background: var(--surface-hover);
+}
+.approval-toggle,
+.approval-toggle-spacer {
+  grid-area: toggle;
+}
+.approval-body {
+  grid-area: body;
+  min-width: 0;
+}
+.approval-history {
+  grid-area: history;
+}
+.approval-side {
+  grid-area: side;
+  justify-self: end;
+}
+/* No expanding for runs awaiting resume: the spacer keeps columns aligned */
+.approval-item:has(.approval-toggle-spacer) .approval-main {
+  cursor: default;
+}
+
+.approval-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.approval-toggle svg {
+  transition: transform 0.15s ease;
+}
+.approval-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.approval-toggle:hover {
+  color: var(--text-1);
+  background: var(--surface-inset);
+}
+
+.approval-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.86rem;
+}
+.approval-workflow {
+  font-weight: 600;
+  color: var(--text-1);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.approval-sep {
+  color: var(--text-3);
+}
+.approval-step {
+  font-size: 0.78rem;
+  color: var(--text-1);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--warning-bg);
+}
+.approval-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+.approval-run {
+  font-size: 0.72rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+.approval-workflow:hover,
+.approval-run:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.approval-wait {
+  font-variant-numeric: tabular-nums;
+}
+.approval-wait.is-long {
+  color: var(--warning);
+  font-weight: 500;
+}
+.approval-prompt {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-note {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+/* Decision buttons: consistent, with clear busy and disabled states */
+.approvals-page .approval-actions {
+  display: flex;
+  gap: 6px;
+}
+.approvals-page .btn-sm {
+  min-height: 28px;
+}
+.approvals-page .btn-sm:focus-visible,
+.approval-toggle:focus-visible,
+.approval-workflow:focus-visible,
+.approval-run:focus-visible,
+.gate-details a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.approvals-page .btn-sm:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.approvals-page .approval-actions[aria-busy="true"] .btn-sm {
+  cursor: progress;
+}
+.approvals-page
+  .btn-sm:not(.btn-approve):not(.btn-reject):hover:not(:disabled) {
+  color: var(--text-1);
+  border-color: var(--text-3);
+}
+
+/* Inline context under an expanded gate */
+.approval-details {
+  padding: 4px 18px 16px 48px;
+  background: var(--surface-hover);
+}
+.approval-details[hidden] {
+  display: none;
+}
+.gate-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.gate-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 20px;
+  margin: 0;
+}
+.gate-facts > div {
+  min-width: 0;
+}
+.gate-facts .gate-prompt {
+  grid-column: 1 / -1;
+}
+.gate-facts dt {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  margin-bottom: 3px;
+}
+.gate-facts dd {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.gate-facts .mono {
+  font-size: 0.75rem;
+}
+.gate-prompt dd {
+  white-space: pre-wrap;
+  color: var(--text-2);
+}
+.gate-muted {
+  color: var(--text-3);
+}
+.gate-job {
+  margin-left: 4px;
+}
+.gate-details .approval-run {
+  font-size: 0.75rem;
+}
+.gate-error {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--danger);
+}
+.gate-dag-loading {
+  display: flex;
+  gap: 36px;
+  align-items: center;
+}
+
+@media (max-width: 768px) {
+  .approval-main {
+    grid-template-columns: 24px minmax(0, 1fr);
+    grid-template-areas:
+      "toggle body"
+      ". history"
+      ". side";
+    padding: 12px 12px 12px 6px;
+  }
+  .approval-history {
+    max-width: 180px;
+  }
+  .approval-side {
+    justify-self: start;
+  }
+  .approval-details {
+    padding: 4px 12px 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval-toggle svg {
+    transition: none;
+  }
+}
