@@ -5128,11 +5128,15 @@ export class WorkflowExecutionService {
         for (const node of stepNodes) {
           const expanded = expandedStepsMap.get(node.name);
           if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step
-            for (const exp of expanded) {
+            // Create nodes for each expanded step, grouped under the forEach
+            // step so its iterations run in list order (swamp-club#3318)
+            for (const [index, exp] of expanded.entries()) {
               effectiveNodes.push({
                 name: exp.expandedName,
                 weight: node.weight,
+                group: exp.forEachVar.name !== ""
+                  ? { key: node.name, index }
+                  : undefined,
                 // Map dependencies to all expanded step names
                 dependencies: node.dependencies.flatMap((dep) => {
                   const depExpanded = expandedStepsMap!.get(dep);

@@ -314,3 +314,58 @@ Deno.test("sorts forEach-expanded nodes where each expansion depends on all expa
     ["smoke-test-dev", "smoke-test-prod", "smoke-test-staging"],
   );
 });
+
+// --- forEach iterations keep list order (swamp-club#3318) ---
+
+/** The iterations a forEach expands to, in list order, grouped under `template`. */
+function iterations(
+  template: string,
+  names: string[],
+  weight = 0,
+): GraphNode[] {
+  return names.map((name, index) => ({
+    name,
+    weight,
+    dependencies: [],
+    group: { key: template, index },
+  }));
+}
+
+Deno.test("TopologicalSortService.sort: index-named iterations keep list order past ten items", () => {
+  const names = Array.from({ length: 12 }, (_, i) => `operate-${i}`);
+  const result = service.sort(iterations("operate", names));
+  assertEquals(result.levels, [names]);
+});
+
+Deno.test("TopologicalSortService.sort: named iterations keep list order, not name order", () => {
+  const names = ["deploy-prod", "deploy-dev", "deploy-staging"];
+  const result = service.sort(iterations("deploy-${{ self.env }}", names));
+  assertEquals(result.levels, [names]);
+});
+
+Deno.test("TopologicalSortService.sort: iterations stay together among plain steps of their level", () => {
+  const nodes: GraphNode[] = [
+    { name: "zeta", weight: 0, dependencies: [] },
+    ...iterations("migrate", ["migrate-z", "migrate-a"]),
+    { name: "alpha", weight: 0, dependencies: [] },
+    { name: "migrate-m", weight: 0, dependencies: [] },
+  ];
+  const result = service.sort(nodes);
+  assertEquals(result.levels, [[
+    "alpha",
+    "migrate-z",
+    "migrate-a",
+    "migrate-m",
+    "zeta",
+  ]]);
+});
+
+Deno.test("TopologicalSortService.sort: weight still orders iterations against other steps", () => {
+  const nodes: GraphNode[] = [
+    { name: "late", weight: 5, dependencies: [] },
+    ...iterations("op", ["op-10", "op-2"], 1),
+    { name: "early", weight: 0, dependencies: [] },
+  ];
+  const result = service.sort(nodes);
+  assertEquals(result.levels, [["early", "op-10", "op-2", "late"]]);
+});

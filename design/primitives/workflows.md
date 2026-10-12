@@ -2949,7 +2949,10 @@ The options pass from the CLI through `WorkflowRunInput` →
 
 A run executes the jobs and steps in dependency order. The order should be a
 weighted topological sort, so that identical inputs should give the same run
-order.
+order. Within a level, steps sort by weight, then by name. The iterations of a
+`forEach` step stay together in list order, placed by the step's name as
+written (its expressions unresolved), so `operate-10` runs after `operate-9`
+and a list of `prod, dev` runs `prod` first.
 
 The run record is written to the datastore at
 `workflow-runs/{workflow-uuid}/workflow-run-{run-uuid}.yaml` (default path:
