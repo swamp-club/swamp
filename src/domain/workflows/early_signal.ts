@@ -176,6 +176,8 @@ export interface EarlySignal {
   acceptEarly: number;
   /** The idempotency key the sender gave, if any. */
   idempotencyKey?: string;
+  /** The workflow name the sender was authorized to signal, if it was. */
+  authorizedFor?: string;
 }
 
 /** How the arrival of an early signal ended. */
@@ -292,6 +294,9 @@ export async function holdEarlySignal(
       ...(signal.idempotencyKey !== undefined
         ? { idempotencyKey: signal.idempotencyKey }
         : {}),
+      ...(signal.authorizedFor !== undefined
+        ? { authorizedFor: signal.authorizedFor }
+        : {}),
     };
     const created = await store.createPendingRecord(record);
     if (created.kind !== "found") return { kind: "unreadable" };
@@ -357,10 +362,14 @@ export type EarlierSignal =
  * The signal already received for `key` under `idempotencyKey`, if the
  * records still say so: a retry of it is answered with that signal, and is
  * neither delivered nor held again. Looked for in the pending signal of each
- * live slot, and in the outcomes of the key's two highest claims: the wait
- * that last held the key, and the one before it for a retry that arrives
- * once the next run has opened its wait. It reads at most six records and
+ * live slot, and in the outcomes of the claims among the key's two highest
+ * records: the wait that last held the key, and the one before it for a
+ * retry that arrives once the next run has opened its wait. It reads at most six records and
  * writes nothing.
+ *
+ * A key names a signal of its sender only: another sender's signal under the
+ * same key is not a match, so nobody is shown a receipt that is not theirs
+ * and nobody's signal is dropped for a key someone else used.
  *
  * A key is remembered as long as its receipt is: until the run that took the
  * signal is removed, the key has been claimed twice since, or the pending
@@ -371,9 +380,10 @@ export async function findSignalByIdempotencyKey(
     & Pick<WaitKeyRecords, "highestKeyRecord" | "findKeyRecord" | "findOutcome">
     & Pick<PendingSignalRecords, "highestPendingRecord">,
   at: { workflowId: string; key: string },
-  idempotencyKey: string,
+  sent: { idempotencyKey: string; submittedBy: string },
   now: Date,
 ): Promise<EarlierSignal | undefined> {
+  const { idempotencyKey, submittedBy } = sent;
   const { workflowId, key } = at;
   const highest = await store.highestKeyRecord(workflowId, key);
   // Whoever acts on the key next reports a record that cannot be read.
@@ -384,6 +394,7 @@ export async function findSignalByIdempotencyKey(
     if (
       head.kind === "found" && head.record.kind === "pending" &&
       head.record.idempotencyKey === idempotencyKey &&
+      head.record.submittedBy === submittedBy &&
       isPendingHeld(head.record, now)
     ) return { kind: "pending", record: head.record };
   }
@@ -403,7 +414,8 @@ export async function findSignalByIdempotencyKey(
       // An outcome that names another run is not that wait's outcome.
       outcome.record.runId === claim.runId &&
       outcome.record.workflowId === workflowId &&
-      outcome.record.receipt.idempotencyKey === idempotencyKey
+      outcome.record.receipt.idempotencyKey === idempotencyKey &&
+      outcome.record.receipt.submittedBy === submittedBy
     ) return { kind: "settled", claim, outcome: outcome.record };
   }
   return undefined;

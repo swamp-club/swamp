@@ -7365,7 +7365,7 @@ export const serveCommand = new Command()
             takeover: !synced || boot,
             isStopping,
           });
-          await sweepHeldSignals(connectionCtx);
+          if (!isStopping()) await sweepHeldSignals(connectionCtx);
           return result;
         },
       });

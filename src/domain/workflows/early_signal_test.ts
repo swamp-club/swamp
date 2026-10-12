@@ -566,7 +566,10 @@ Deno.test("findSignalByIdempotencyKey: finds the held signal while it is within 
   const store = new InMemorySignalWaitStore();
   const at = { workflowId: WORKFLOW, key: KEY };
   assertEquals(
-    await findSignalByIdempotencyKey(store, at, "order-1", NOW),
+    await findSignalByIdempotencyKey(store, at, {
+      idempotencyKey: "order-1",
+      submittedBy: "camera",
+    }, NOW),
     undefined,
   );
   const held = await holdEarlySignal(
@@ -577,16 +580,25 @@ Deno.test("findSignalByIdempotencyKey: finds the held signal while it is within 
   assert(held.kind === "pending");
   assertEquals(held.record.idempotencyKey, "order-1");
   assertEquals(
-    await findSignalByIdempotencyKey(store, at, "order-1", WITHIN),
+    await findSignalByIdempotencyKey(store, at, {
+      idempotencyKey: "order-1",
+      submittedBy: "camera",
+    }, WITHIN),
     { kind: "pending", record: held.record },
   );
   assertEquals(
-    await findSignalByIdempotencyKey(store, at, "order-2", WITHIN),
+    await findSignalByIdempotencyKey(store, at, {
+      idempotencyKey: "order-2",
+      submittedBy: "camera",
+    }, WITHIN),
     undefined,
   );
   // Past its limit no wait takes it, so a retry is not a repeat of it.
   assertEquals(
-    await findSignalByIdempotencyKey(store, at, "order-1", AFTER_LIMIT),
+    await findSignalByIdempotencyKey(store, at, {
+      idempotencyKey: "order-1",
+      submittedBy: "camera",
+    }, AFTER_LIMIT),
     undefined,
   );
 });
@@ -607,14 +619,20 @@ Deno.test("findSignalByIdempotencyKey: finds the signal a wait took under the ke
   );
   assert(taken.kind === "found" && taken.record.kind === "accepted");
 
-  const found = await findSignalByIdempotencyKey(store, at, "order-1", WITHIN);
+  const found = await findSignalByIdempotencyKey(store, at, {
+    idempotencyKey: "order-1",
+    submittedBy: "camera",
+  }, WITHIN);
   assert(found?.kind === "settled", `got ${found?.kind}`);
   assertEquals(found.claim.waitId, first.claim.waitId);
   assertEquals(found.outcome.receipt.id, held.record.receiptId);
 
   // The next run opens its wait: the claim below the highest still says so.
   const second = await claim(store, new Date(NOW.getTime() + 60_000));
-  const below = await findSignalByIdempotencyKey(store, at, "order-1", WITHIN);
+  const below = await findSignalByIdempotencyKey(store, at, {
+    idempotencyKey: "order-1",
+    submittedBy: "camera",
+  }, WITHIN);
   assert(below?.kind === "settled", `got ${below?.kind}`);
   assertEquals(below.claim.waitId, first.claim.waitId);
 
@@ -627,7 +645,44 @@ Deno.test("findSignalByIdempotencyKey: finds the signal a wait took under the ke
   );
   await claim(store, new Date(NOW.getTime() + 120_000));
   assertEquals(
-    await findSignalByIdempotencyKey(store, at, "order-1", WITHIN),
+    await findSignalByIdempotencyKey(store, at, {
+      idempotencyKey: "order-1",
+      submittedBy: "camera",
+    }, WITHIN),
+    undefined,
+  );
+});
+
+Deno.test("findSignalByIdempotencyKey: a key names a signal of its sender only", async () => {
+  const store = new InMemorySignalWaitStore();
+  const at = { workflowId: WORKFLOW, key: KEY };
+  const held = await holdEarlySignal(
+    store,
+    signal({ idempotencyKey: "order-1" }),
+    NOW,
+  );
+  assert(held.kind === "pending");
+  assertEquals(
+    await findSignalByIdempotencyKey(
+      store,
+      at,
+      { idempotencyKey: "order-1", submittedBy: "doorbell" },
+      WITHIN,
+    ),
+    undefined,
+  );
+  const first = await claim(store, WITHIN);
+  await takePendingSignal(
+    store,
+    earlyWaitRef({ ...waitRefOfClaim(first.claim), schema: SCHEMA })!,
+  );
+  assertEquals(
+    await findSignalByIdempotencyKey(
+      store,
+      at,
+      { idempotencyKey: "order-1", submittedBy: "doorbell" },
+      WITHIN,
+    ),
     undefined,
   );
 });

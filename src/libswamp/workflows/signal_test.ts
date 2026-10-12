@@ -16,6 +16,7 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+import { outcomeAt } from "../../domain/workflows/signal_wait_cleanup.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
@@ -2087,4 +2088,119 @@ Deno.test("workflowSignal: a slot keeps one record however many early signals ag
       head.record.receiptId,
     last,
   );
+});
+
+Deno.test("workflowSignal: a held signal is not taken by a wait its sender is refused for, by the signaller or by a later reader", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const empty = await fixtureOf([], { waits, workflows: [workflow] });
+  // Authorized on the workflow as it is named now; no wait exists to ask of.
+  const early = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), empty.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "ship" },
+      submittedBy: "tux",
+      authorize: () => Promise.resolve(true),
+    }),
+  );
+  assertEquals(early.at(-1)?.kind, "pending");
+
+  // A run recorded under the workflow's earlier name opens its wait.
+  const opened = await suspendedAtEarlyWait(
+    workflow,
+    waits,
+    new Date(IN_TIME.getTime() + 5_000),
+  );
+  const [ref] = opened.run.findSignalWaits();
+  await waits.register(registrationOf(
+    {
+      workflowId: workflow.id,
+      workflowName: "release-old",
+      runId: opened.run.id,
+      jobName: ref.jobName,
+      stepName: ref.stepName,
+    },
+    ref.wait!,
+    new Date(IN_TIME.getTime() + 5_000),
+  ));
+  const later = await fixtureOf([], {
+    waits,
+    workflows: [workflow],
+    now: new Date(IN_TIME.getTime() + 6_000),
+  });
+  // The next reader of the wait leaves the signal where it is.
+  const registration = await waits.findRegistration(opened.waitId);
+  assert(registration.kind === "found");
+  assertEquals(
+    (await outcomeAt(
+      waits,
+      registration.record,
+      new Date(IN_TIME.getTime() + 6_000),
+    )).kind,
+    "absent",
+  );
+  // And a sender refused for that wait is told nothing, with nothing applied.
+  const refused = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), later.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "fix" },
+      submittedBy: "tux",
+      authorize: () => Promise.resolve(false),
+    }),
+  );
+  assertEquals(refusalOf(refused.at(-1)!).kind, "unknown");
+  assertEquals((await waits.findOutcome(opened.waitId)).kind, "absent");
+});
+
+Deno.test("workflowSignal: an idempotency key another sender used is not a match, and shows no receipt", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const first = await sendByKey(
+    fixture,
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "build-1",
+  );
+  assert(first.kind === "pending");
+  const other = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "ship" },
+      submittedBy: "penguin",
+      idempotencyKey: "build-1",
+    }),
+  );
+  // Their own signal, refused as any second signal is while one is held.
+  assertEquals(refusalOf(other.at(-1)!).kind, "already_pending");
+});
+
+Deno.test("workflowSignal: a caller that cannot be told a signal is held is not told so of a duplicate either", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const first = await sendByKey(
+    fixture,
+    "release",
+    KEY,
+    { verdict: "ship" },
+    "build-1",
+  );
+  assert(first.kind === "pending");
+  const events = await collect<WorkflowSignalEvent>(
+    workflowSignal(createLibSwampContext(), fixture.deps, {
+      workflow: "release",
+      key: KEY,
+      payload: { verdict: "ship" },
+      submittedBy: "tux",
+      idempotencyKey: "build-1",
+      holdEarly: false,
+    }),
+  );
+  assertEquals(refusalOf(events.at(-1)!).kind, "no_open_wait");
+  assertEquals(waits.pendingRecords.size, 1);
 });

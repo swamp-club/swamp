@@ -1313,11 +1313,15 @@ hyphens and underscores (`isIdempotencyKey`). The key is kept on the pending
 record and on the receipt, so it lives exactly as long as they do and needs no
 record of its own. A signal whose key matches one already received is
 answered with that signal's receipt, marked `duplicate`, and is neither
-delivered nor held:
+delivered nor held. A key names a signal of its sender only (the receipt's
+`submittedBy`): another sender's signal under the same key is not a match, so
+nobody is shown a receipt that is not theirs, and nobody's signal is dropped
+for a key someone else used. It is looked for:
 
 - By key, before the key's holder is asked (`findSignalByIdempotencyKey`): the
   pending signal of each live slot, while it is within its age limit, and the
-  outcomes of the key's two highest claims. The second covers a retry that
+  outcomes of the claims among the key's two highest records. A caller that
+  cannot read a pending answer is not given one for a duplicate either. The second covers a retry that
   arrives once the next run has opened its wait, which would otherwise be
   delivered to that wait.
 - At the wait (`deliver`): a wait whose accepted outcome carries the key
@@ -1785,10 +1789,15 @@ every iteration would claim it.
   the slot above, and the next claim takes that one. And a claim removed with
   its run after it took a signal, before the signaller's second read, cannot
   be found as the taker, so the signal arrives again for the next run.
-- A `swamp workflow signal --server` client from before pending signals does
-  not understand a pending reply and fails after the signal was stored.
-  Upgrade the clients that signal a workflow before one of its waits sets
-  `acceptEarly`, as well as the hosts.
+- A `swamp workflow signal --server` client from before pending signals has
+  no early signal held for it: it does not set `acceptsPending`, so it is
+  refused `no_open_wait` and nothing is stored. Upgrade the clients that
+  signal a workflow before relying on `acceptEarly` through them.
+- A signal held through serve is taken only by a wait whose run recorded the
+  workflow name its sender was authorized under (`authorizedFor` on the
+  pending record). A workflow renamed between the signal and the run's start
+  is one the sender was never authorized for a wait of, so the signal is left
+  and lapses; it is not delivered and the sender was answered `pending`.
 - A signal that found another wait open on its second read (the third case of
   "Arrival") leaves its pending record, payload included, in a slot nothing
   reads until that slot's claim is removed with its run.

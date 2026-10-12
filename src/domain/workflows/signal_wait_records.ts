@@ -161,11 +161,13 @@ export type AcceptedWaitOutcome = Extract<WaitOutcome, { kind: "accepted" }>;
  * The facts of a wait an outcome is built from. `key`, `early` and `schema`
  * are carried for a wait whose step set `acceptEarly`, so whoever settles it
  * can give it its key's pending signal first (swamp-club#3212); no outcome
- * stores them.
+ * stores them. `workflowName` is the name the wait's run recorded, which a
+ * pending signal held for an authorized caller is matched against.
  */
 export interface WaitRef {
   waitId: string;
   workflowId: string;
+  workflowName?: string;
   runId: string;
   deadline: string;
   key?: string;

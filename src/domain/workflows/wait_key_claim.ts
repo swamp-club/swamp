@@ -385,7 +385,11 @@ async function outcomeOfClaim(
     const early = registration.kind === "found" &&
         registration.record.workflowId === claim.workflowId &&
         registration.record.key === claim.key
-      ? earlyWaitRef({ ...ref, schema: registration.record.schema })
+      ? earlyWaitRef({
+        ...ref,
+        schema: registration.record.schema,
+        workflowName: registration.record.workflowName,
+      })
       : undefined;
     if (early) {
       const taken = own(await takePendingSignal(store, early));

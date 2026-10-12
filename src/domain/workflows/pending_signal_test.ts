@@ -375,3 +375,29 @@ Deno.test("pendingOutcome: the receipt keeps the idempotency key the signal was 
     { kind: "unreadable" },
   );
 });
+
+Deno.test("pendingOutcome: a signal held for an authorized caller is taken only by a wait whose run recorded that workflow name", () => {
+  const record = pending({ authorizedFor: "kitchen" });
+  assertEquals(
+    decodePendingRecord(encodePendingRecord(record), record),
+    { kind: "found", record },
+  );
+  assertEquals(
+    pendingOutcome(record, { ...ref(), workflowName: "kitchen" })?.kind,
+    "accepted",
+  );
+  // Renamed since the run started, or a copy that shares the ID.
+  assertEquals(
+    pendingOutcome(record, { ...ref(), workflowName: "pantry" }),
+    undefined,
+  );
+  assertEquals(
+    pendingOutcome(record, { ...ref(), workflowName: undefined }),
+    undefined,
+  );
+  // A signal the local command stored names no workflow and is not held to one.
+  assertEquals(
+    pendingOutcome(pending(), { ...ref(), workflowName: "pantry" })?.kind,
+    "accepted",
+  );
+});

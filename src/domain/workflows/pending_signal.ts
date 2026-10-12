@@ -94,6 +94,14 @@ export const PendingSignalSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
   /** The age limit the definition declared when the signal arrived, in seconds. */
   acceptEarly: z.number().positive().max(SIGNAL_ACCEPT_EARLY_MAX_SECONDS),
+  /**
+   * The workflow name the sender was authorized to signal, when the signal
+   * came through a caller that authorizes. Workflow IDs are not unique and a
+   * workflow can be renamed while a run of it is in flight, so only a wait
+   * whose run recorded this name takes the signal: the sender was never
+   * authorized for a wait under another.
+   */
+  authorizedFor: z.string().min(1).optional(),
   /** The idempotency key the sender gave, if any; the receipt keeps it. */
   idempotencyKey: z.string().refine(isIdempotencyKey).optional(),
 });
@@ -290,7 +298,8 @@ export function heldUntil(pending: PendingSignal): Date {
  * The outcome a pending signal gives a wait, or undefined when it does not
  * apply. Decided from stored facts alone, so every reader reaches the same
  * answer whenever it looks: the record names the wait's workflow and key in a
- * slot the wait's claim reads, it was received no earlier than the wait
+ * slot the wait's claim reads, the wait's run recorded the workflow name its
+ * sender was authorized for, it was received no earlier than the wait
  * allows and no later than its deadline, and the schema the wait captured
  * allows the payload. The outcome is the same whoever builds it.
  */
@@ -301,6 +310,10 @@ export function pendingOutcome(
   if (pending.workflowId !== ref.workflowId || pending.key !== ref.key) {
     return undefined;
   }
+  if (
+    pending.authorizedFor !== undefined &&
+    pending.authorizedFor !== ref.workflowName
+  ) return undefined;
   if (!earlySlots(ref.early).includes(pending.slot)) return undefined;
   const received = new Date(pending.receivedAt).getTime();
   if (

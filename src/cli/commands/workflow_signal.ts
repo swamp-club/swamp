@@ -156,7 +156,11 @@ export function renderSignalResult(
   if (cliCtx.verbosity === "quiet") return;
   if (data.duplicate) {
     writeOutput(
-      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.`,
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt} and settled the wait. This one was not delivered again.` +
+        // The reply that was lost is where the sender would have read this.
+        (data.awaitingResume
+          ? ` If the run was not resumed since: ${data.resumeCommand}`
+          : ""),
     );
     return;
   }
@@ -424,7 +428,7 @@ export const workflowSignalCommand = withRemoteOptions(
     )
     .option(
       "--idempotency-key <key:string>",
-      "Names this signal across retries: one sent again with the same key after it was received is answered with the first, and is not delivered or held twice",
+      "Names this signal across retries (1-128 letters, digits, '.', ':', '-', '_'): one sent again with the same key after it was received is answered with the first, and is not delivered or held twice",
     ),
 )
   .action(async function (options: AnyOptions, waitId?: string) {

@@ -70,6 +70,7 @@ export function waitRefOf(
   return {
     waitId: wait.id,
     workflowId: run.workflowId,
+    workflowName: run.workflowName,
     runId: run.id,
     deadline: wait.deadline.toISOString(),
     ...(wait.key !== undefined && wait.early !== undefined

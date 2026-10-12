@@ -205,7 +205,8 @@ export type WorkflowSignalInput = WorkflowSignalAddress & {
   /**
    * What names this signal across its sender's retries, in the form
    * `isIdempotencyKey` accepts. A signal whose key matches one already
-   * received for the wait or its key is answered with that signal's receipt,
+   * received from the same sender for the wait or its key is answered with
+   * that signal's receipt,
    * marked `duplicate`, and is neither delivered nor held again.
    */
   idempotencyKey?: string;
@@ -333,6 +334,13 @@ export function createWorkflowSignalDeps(
     signalWaits,
     findWorkflow: (idOrName) => findWorkflowByIdOrName(workflowRepo, idOrName),
   };
+}
+
+/** Who a signal is recorded as sent by. */
+function senderOf(input: Pick<WorkflowSignalInput, "submittedBy">): string {
+  // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
+  return input.submittedBy || Deno.env.get("USER") ||
+    Deno.env.get("USERNAME") || "unknown";
 }
 
 /** The step of `run` that holds the wait, in any status. */
@@ -802,9 +810,7 @@ async function deliver(
   let delivered: WaitOutcome | undefined;
   let duplicate = false;
   if (stored.kind === "absent") {
-    // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
-    const submittedBy = input.submittedBy || Deno.env.get("USER") ||
-      Deno.env.get("USERNAME") || "unknown";
+    const submittedBy = senderOf(input);
     const decision = decideSignal(
       registration,
       input.payload,
@@ -846,9 +852,11 @@ async function deliver(
   } else if (
     input.idempotencyKey !== undefined && stored.kind === "found" &&
     stored.record.kind === "accepted" &&
-    stored.record.receipt.idempotencyKey === input.idempotencyKey
+    stored.record.receipt.idempotencyKey === input.idempotencyKey &&
+    stored.record.receipt.submittedBy === senderOf(input)
   ) {
-    // A retry of the signal that settled the wait: answered with that one.
+    // The sender's retry of the signal that settled the wait: answered
+    // with that one.
     delivered = stored.record;
     duplicate = true;
   }
@@ -991,10 +999,15 @@ async function deliverByKey(
     const earlier = await findSignalByIdempotencyKey(
       store,
       { workflowId: workflow.id, key: input.key },
-      input.idempotencyKey,
+      {
+        idempotencyKey: input.idempotencyKey,
+        submittedBy: senderOf(input),
+      },
       deps.now?.() ?? new Date(),
     );
-    if (earlier?.kind === "pending") {
+    // A caller that cannot be told a signal is held is not told this one
+    // is: it goes on to the refusal it can read.
+    if (earlier?.kind === "pending" && input.holdEarly !== false) {
       const { pending } = pendingAnswer(input, workflow, earlier.record);
       return { pending: { ...pending, duplicate: true } };
     }
@@ -1221,9 +1234,7 @@ async function arriveEarly(
       ),
     };
   }
-  // `||`, not `??`: a receipt needs a sender, and USER can be set but empty.
-  const submittedBy = input.submittedBy || Deno.env.get("USER") ||
-    Deno.env.get("USERNAME") || "unknown";
+  const submittedBy = senderOf(input);
   const arrival = await holdEarlySignal(store, {
     workflowId: workflow.id,
     key: input.key,
@@ -1233,6 +1244,9 @@ async function arriveEarly(
     ...(input.idempotencyKey !== undefined
       ? { idempotencyKey: input.idempotencyKey }
       : {}),
+    // Only a wait whose run recorded the name the caller was authorized
+    // under takes the signal. The local command authorizes nobody.
+    ...(input.authorize ? { authorizedFor: workflow.name } : {}),
   }, now);
   // The signal it was stored over is read by nothing now. A failure here
   // leaves that record for the sweep; the signal itself is stored.
@@ -1262,7 +1276,8 @@ async function arriveEarly(
       // The same signal, sent twice at the same moment: one was stored.
       if (
         input.idempotencyKey !== undefined &&
-        arrival.record.idempotencyKey === input.idempotencyKey
+        arrival.record.idempotencyKey === input.idempotencyKey &&
+        arrival.record.submittedBy === submittedBy
       ) {
         const { pending } = pendingAnswer(input, workflow, arrival.record);
         return { pending: { ...pending, duplicate: true } };

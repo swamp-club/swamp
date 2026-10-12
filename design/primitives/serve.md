@@ -699,7 +699,10 @@ What differs by key, in order:
   holds the signal as the key's pending signal (swamp-club#3212, "Early
   signals" in [workflows](workflows.md)). It is stored only after the caller
   was authorized for `signal` on the workflow, under the workflow ID that was
-  authorized. The reply is `pending`; no run is continued, since none took the
+  authorized, and it records the authorized workflow name: only a wait whose
+  run recorded that name takes it, which keeps the second authorization of a
+  signal by key (a workflow renamed since the wait's run started) for a
+  signal that arrived before the wait did. The reply is `pending`; no run is continued, since none took the
   signal yet. It is audited as `workflow.signal.pending` with the receipt ID,
   the key and until when it is held, never the payload. A second signal while
   one is held is refused `already_pending` with `pending.heldUntil`, and the
@@ -710,10 +713,11 @@ What differs by key, in order:
   always holds.
 - A request may carry an idempotency key: `idempotencyKey` over the WebSocket,
   the `Idempotency-Key` header over HTTP (400 for one not in the form
-  `isIdempotencyKey` accepts). One that matches a signal already received for
-  the wait or its key is answered with that signal's receipt and
-  `duplicate: true`, to any caller who may signal, and nothing is delivered or
-  stored; the audit detail carries `duplicate=true`. See "Idempotency keys" in
+  `isIdempotencyKey` accepts). One that matches a signal the same principal
+  already sent for the wait or its key is answered with that signal's receipt
+  and `duplicate: true`, and nothing is delivered or stored; a key another
+  principal used is not a match, so no caller is shown a receipt that is not
+  their own; the audit detail carries `duplicate=true`. See "Idempotency keys" in
   [workflows](workflows.md) for where it is looked for and for how long.
 - A declared key that no open wait holds is otherwise refused `no_open_wait`. Only a
   caller who may signal the workflow gets this far, and such a caller already
