@@ -368,6 +368,47 @@ Deno.test("WorkerGateway: dispatch to a busy worker rejects", async () => {
   await first;
 });
 
+Deno.test("WorkerGateway: onRegistered fires once, when the dispatch is already listed (swamp-club#3293)", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const gate = Promise.withResolvers<void>();
+  workerChannel.register(WorkerMethod.dispatch, async () => {
+    await gate.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+
+  const listedAtRegistration: string[][] = [];
+  const onRegistered = () =>
+    listedAtRegistration.push(
+      h.gateway.worker("ci-runner-3")?.activeDispatchIds ?? [],
+    );
+  const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"), {
+    onRegistered,
+  });
+  // Registered before dispatch() first yields, not at some later turn.
+  assertEquals(listedAtRegistration, [["d-1"]]);
+
+  // A dispatch refused on a precondition never took a slot.
+  await assertRejects(
+    () =>
+      h.gateway.dispatch("ci-runner-3", dispatchParams("d-2"), {
+        onRegistered,
+      }),
+    Error,
+    "at capacity",
+  );
+  await assertRejects(
+    () => h.gateway.dispatch("ghost", dispatchParams("d-3"), { onRegistered }),
+    Error,
+    "not in the pool",
+  );
+  gate.resolve();
+  await first;
+  assertEquals(listedAtRegistration, [["d-1"]]);
+});
+
 Deno.test("WorkerGateway: dispatch to an unknown worker rejects", async () => {
   const h = createHarness();
   await assertRejects(
