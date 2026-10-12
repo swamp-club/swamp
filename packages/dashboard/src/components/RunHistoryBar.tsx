@@ -70,7 +70,8 @@ function pipTitle(run: RunHistoryEntry): string {
 
 /**
  * One pip per recent run, oldest on the left and newest on the right,
- * colored by status. Each pip links to its run; running pips pulse.
+ * colored by status. Each pip links to its run; running pips pulse. The
+ * pips are a labelled group of plain links, so each keeps its link role.
  */
 export function RunHistoryBar(
   {
@@ -94,7 +95,7 @@ export function RunHistoryBar(
   return (
     <div
       className="run-history"
-      role="list"
+      role="group"
       aria-label={label}
       style={{ height }}
     >
@@ -116,9 +117,10 @@ export function RunHistoryBar(
           return (
             <span
               key={run.id ?? run.runId}
-              role="listitem"
+              role="img"
               className={cls}
               title={title}
+              aria-label={title.replace("\n", ", ")}
             />
           );
         }
@@ -127,7 +129,6 @@ export function RunHistoryBar(
           return (
             <a
               key={run.id ?? run.runId}
-              role="listitem"
               className={cls}
               href={failureHref(wf, run.runId)}
               title={title}
@@ -144,7 +145,6 @@ export function RunHistoryBar(
         return (
           <a
             key={run.id ?? run.runId}
-            role="listitem"
             className={cls}
             href={buildPath(to)}
             title={title}

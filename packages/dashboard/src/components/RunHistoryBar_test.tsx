@@ -70,6 +70,23 @@ Deno.test("RunHistoryBar: failed pips link to the failure, others to the run", (
   assertEquals(html.includes("run-ok?focus"), false);
 });
 
+Deno.test("RunHistoryBar: pips are plain links in a labelled group", () => {
+  const html = renderToStaticMarkup(
+    <RunHistoryBar
+      workflowName="deploy"
+      runs={[{ runId: "run-ok", status: "succeeded" }]}
+      slots={1}
+    />,
+  );
+  assertStringIncludes(html, 'role="group"');
+  assertStringIncludes(
+    html,
+    'aria-label="Last 1 runs: 1 not failed, 0 failed"',
+  );
+  assertEquals(html.includes("listitem"), false);
+  assertEquals(/<a [^>]*role=/.test(html), false);
+});
+
 Deno.test("FailureLink: a labelled link to the failure", () => {
   const html = renderToStaticMarkup(
     <FailureLink workflowName="deploy" runId="run-failed" />,
