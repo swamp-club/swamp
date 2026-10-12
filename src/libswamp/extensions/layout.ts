@@ -109,8 +109,14 @@ const GEN1_PREFIX = "extensions/";
  * gen-2 model file path. The install flow filters skill dir entries via
  * `isSkillDirEntry` before reaching the classifier — see
  * `needsInstallOrMigration` and `sweepLegacyPaths` in `install.ts`.
+ *
+ * The path is normalised to forward slashes before matching, so a
+ * lockfile written on Windows (where `@std/path` `relative()` returns
+ * backslash-separated paths) classifies the same as one written on
+ * POSIX.
  */
-export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
+export function classifyExtensionFile(path: string): ExtensionLayoutGeneration {
+  const file = path.replaceAll("\\", "/");
   if (file.startsWith(GEN1_PREFIX)) {
     const firstSegment = file.slice(GEN1_PREFIX.length).split("/")[0];
     if (PULLED_TYPE_DIRS.has(firstSegment)) {

@@ -2259,7 +2259,10 @@ path would look like a gen-2 path and the freshly restored skill dir would be
 deleted. On its own, the path-only `classifyExtensionFile` helper flags only the
 documented gen-1 shape, `extensions/<known-type>/...` with `<known-type>` in
 `PULLED_TYPE_DIRS`. Any other non-`.swamp/` path, or a path it doesn't
-recognise, counts as current-layout and is ignored rather than swept.
+recognise, counts as current-layout and is ignored rather than swept. It matches
+on path segments, not separators: a lockfile written on Windows stores
+backslash-separated paths, and those classify the same as their forward-slash
+form.
 
 ## Removal
 

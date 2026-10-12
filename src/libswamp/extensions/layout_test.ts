@@ -717,3 +717,92 @@ Deno.test("classifyExtensionFile: managed config paths outside pulled-extensions
     "current",
   );
 });
+
+// ============================================================================
+// Windows separators (swamp-club#3271)
+// ============================================================================
+
+Deno.test("classifyExtensionFile: backslash gen-1 path is gen-1", () => {
+  assertEquals(
+    classifyExtensionFile("extensions\\models\\stack72\\foo.ts"),
+    "gen-1",
+  );
+  assertEquals(classifyExtensionFile("extensions\\vaults\\bar.ts"), "gen-1");
+});
+
+Deno.test("classifyExtensionFile: backslash flat under .swamp is gen-2", () => {
+  assertEquals(
+    classifyExtensionFile(".swamp\\pulled-extensions\\models\\foo.ts"),
+    "gen-2",
+  );
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp\\config\\pulled-extensions\\workflows\\foo.yaml",
+    ),
+    "gen-2",
+  );
+});
+
+Deno.test("classifyExtensionFile: backslash per-extension subtree is current", () => {
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp\\pulled-extensions\\@stack72\\system-extensions\\models\\foo.ts",
+    ),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(
+      ".swamp\\config\\pulled-extensions\\@scope\\name\\models\\foo.ts",
+    ),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".swamp\\bundles\\abc123\\foo.js"),
+    "current",
+  );
+});
+
+Deno.test("classifyExtensionFile: mixed separators classify by structure", () => {
+  assertEquals(classifyExtensionFile("extensions\\models/foo.ts"), "gen-1");
+  assertEquals(
+    classifyExtensionFile(".swamp/pulled-extensions\\models\\foo.ts"),
+    "gen-2",
+  );
+});
+
+Deno.test("detectLegacyExtensionLayout: detects backslash legacy paths and keeps the native string", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@scope/ext": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            "extensions\\models\\ext.ts",
+            ".swamp\\pulled-extensions\\models\\other.ts",
+            ".swamp\\bundles\\abc123\\ext.js",
+          ],
+        },
+      }),
+    );
+
+    const legacy = await detectLegacyExtensionLayout(lockfilePath);
+    assertEquals(legacy, [
+      {
+        extensionName: "@scope/ext",
+        file: "extensions\\models\\ext.ts",
+        generation: "gen-1",
+      },
+      {
+        extensionName: "@scope/ext",
+        file: ".swamp\\pulled-extensions\\models\\other.ts",
+        generation: "gen-2",
+      },
+    ]);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
