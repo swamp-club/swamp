@@ -76,7 +76,7 @@ export function gateContext(
       if (seen.has(name)) continue;
       seen.add(name);
       downstream.push(name);
-      queue.push(...(dependents.get(name) ?? []));
+      for (const next of dependents.get(name) ?? []) queue.push(next);
     }
   }
   const waiting = new Set(downstream);

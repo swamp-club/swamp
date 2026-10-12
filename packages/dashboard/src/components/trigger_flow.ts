@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "../lib/array_extrema.ts";
+
 // Layout for the trigger → inputs → workflow → jobs diagram. Columns run
 // left to right; jobs are layered by their dependencies (a job sits one
 // column right of its latest dependency) and each column is centred on
@@ -216,7 +218,7 @@ export function layoutFlow(spec: FlowSpec): FlowLayout {
 
   const colHeight = (col: Omit<FlowNode, "x" | "y">[]) =>
     col.reduce((sum, n) => sum + n.h, 0) + GAP_Y * (col.length - 1);
-  const height = Math.max(...columns.map(colHeight)) + MARGIN * 2;
+  const height = (maxOf(columns.map(colHeight)) ?? 0) + MARGIN * 2;
   const nodes: FlowNode[] = [];
   columns.forEach((col, ci) => {
     let y = MARGIN + (height - MARGIN * 2 - colHeight(col)) / 2;

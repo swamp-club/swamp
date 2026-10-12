@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "../lib/array_extrema.ts";
+
 // Layered left-to-right layout for a run's job graph, in the style of a
 // CI run graph: every job sits in the column after its deepest dependency,
 // columns are ordered to keep edges from crossing, and each job is placed
@@ -221,7 +223,7 @@ export function layoutGraph(
     chains.push(chain);
   });
 
-  const levelCount = ids.length === 0 ? 0 : Math.max(...level) + 1;
+  const levelCount = ids.length === 0 ? 0 : (maxOf(level) ?? -1) + 1;
   let layers: Item[][] = Array.from({ length: levelCount }, () => []);
   for (const item of items) layers[item.level].push(item);
   for (const layer of layers) layer.sort((a, b) => compareSeed(a.seed, b.seed));

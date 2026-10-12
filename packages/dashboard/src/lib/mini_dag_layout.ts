@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { maxOf } from "./array_extrema.ts";
+
 // Layered layout for small DAGs (a workflow's jobs, a job's steps): nodes
 // flow left to right in columns by dependency depth. Pure, so it is unit
 // tested and reusable outside React.
@@ -110,10 +112,11 @@ export function dagLevels(
   const queue = nodes.filter((n) => indegree.get(n.id) === 0).map((n) => n.id);
   const remaining = new Map(indegree);
   const settle = (id: string) => {
-    const l = Math.max(
-      -1,
-      ...preds.get(id)!.filter((p) => level.has(p)).map((p) => level.get(p)!),
-    ) + 1;
+    let l = 0;
+    for (const p of preds.get(id)!) {
+      const pl = level.get(p);
+      if (pl !== undefined && pl + 1 > l) l = pl + 1;
+    }
     level.set(id, l);
   };
   const drain = () => {
@@ -149,7 +152,9 @@ export function layoutDag(
     ...options,
   };
   const levels = dagLevels(nodes, edges);
-  const columnCount = nodes.length === 0 ? 0 : Math.max(...levels.values()) + 1;
+  const columnCount = nodes.length === 0
+    ? 0
+    : (maxOf(levels.values()) ?? -1) + 1;
 
   const inputIndex = new Map(nodes.map((n, i) => [n.id, i]));
   const predsOf = new Map<string, string[]>();
@@ -191,7 +196,7 @@ export function layoutDag(
     column.forEach((n, i) => rowOf.set(n.id, i));
   }
 
-  const tallest = Math.max(0, ...columns.map((c) => c.length));
+  const tallest = maxOf(columns.map((c) => c.length)) ?? 0;
   const height = tallest === 0
     ? 0
     : tallest * nodeHeight + (tallest - 1) * rowGap;

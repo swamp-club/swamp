@@ -41,7 +41,7 @@ export async function fetchAllPages<T>(
     const reply = await fetchPage(items.length, pageSize);
     const batch = extractArray<T>(reply);
     total = extractTotal(reply);
-    items.push(...batch);
+    for (const item of batch) items.push(item);
     if (total === null || batch.length < pageSize || items.length >= total) {
       break;
     }
