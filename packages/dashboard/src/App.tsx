@@ -24,6 +24,7 @@ import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { pendingApprovals } from "./client/approvals";
 import { Logo } from "./components/Logo";
+import { AppShellSkeleton } from "./components/AppShellSkeleton.tsx";
 import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
 import {
   MOBILE_MEDIA_QUERY,
@@ -64,7 +65,7 @@ function AppShell() {
   const { connected, token, authMode, sessionReady, logout } = useSwamp();
 
   if (authMode === null || !sessionReady) {
-    return <div className="loading">Connecting...</div>;
+    return <AppShellSkeleton label="Connecting" />;
   }
 
   if (authMode !== "none" && token === null) {
@@ -72,7 +73,7 @@ function AppShell() {
   }
 
   if (!connected) {
-    return <div className="loading">Connecting to swamp serve...</div>;
+    return <AppShellSkeleton label="Connecting to swamp serve" />;
   }
 
   return (
