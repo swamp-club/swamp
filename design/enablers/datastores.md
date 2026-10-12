@@ -3690,11 +3690,77 @@ model, catalog), catches the read model up whenever a context opens, and
 v2's sync machinery runs: no pull or push at the locks, no sync gate, no access,
 runtime or config pull in serve, no lazy hydration. `datastore sync`,
 `datastore catalog pull` and `datastore migrate-index` refuse a filesystem
-datastore already. On v3, `datastore config migrate` and `datastore namespace
-set|unset|migrate` refuse too: moving existing config or records, or a
-checkout, between namespaces is Phase 6. A namespace is chosen by running
-`namespace set` before `setup filesystem --format 3`, which needs no
-`--skip-migration` (swamp-club#3301).
+datastore already. On v3, `datastore namespace set|unset|migrate` refuse
+too: moving existing records, or a checkout, between namespaces is Phase 6.
+A namespace is chosen by running `namespace set` before `setup filesystem
+--format 3`, which needs no `--skip-migration` (swamp-club#3301).
+`datastore config migrate` has a v3 form of its own (below).
+
+**Managed config on v3** (swamp-club#3300). With managedConfig on, model
+definitions, workflows and vault configs are read from the config tier, so a
+repo that turns it on must commit the config it already has, or that config
+disappears from view (the default vault `repo init` writes among it).
+`v3_config_adoption.ts` reads the repo-local `models/`, `workflows/` and
+`vaults/` trees and commits each file into its managed-config partition as
+`definition.create`, expecting its key absent, through
+`definitionSaveBatches` with no priors. The file lands at the same relative
+path under the config base, so a later save of it stages the same key.
+
+- **The commit log is the migration record.** v2's sentinel file has no v3
+  intent. A name is adopted only while its partition has no commit
+  (`CommitStore.head`, whose rows compaction never deletes). So a re-run
+  adopts nothing, a name deleted from the tier after adoption is never
+  brought back, and a name another checkout committed is never overwritten.
+  A file with a config-tier copy at its path is skipped before it is parsed
+  or the commit log read, whatever bytes an edit has since given that copy,
+  so a repo adopted long ago pays one `lstat` per file.
+- **Files follow the commit.** Adoption stages its puts in a root of its own
+  and writes the config-tier files only once that root has committed, so a
+  tier copy always means a committed name (a copy placed there by hand
+  aside). When the commit fails, nothing is written, a re-run adopts again,
+  and any partition that did commit reaches the checkout at its next
+  catch-up, as another checkout's commits do (for serve, at its next
+  start).
+- **Stale writes are refused.** A checkout whose view of the commit log is
+  stale creates a key that exists, and its `absent` precondition refuses the
+  commit (`ConfigAdoptionRefusedError`, a `UserError` saying to run the
+  command again). The single writer lock already rules this out within one
+  datastore today; the precondition is what holds once there are more
+  writers.
+- **Only regular files are read.** Symlinks in the repo's trees, a tree's
+  root included, are neither read nor followed, so a repo-controlled link never commits bytes from
+  outside the repo, and every target is checked to stay in the config base.
+  Secrets are never read: only vault configs are committed.
+- **The extension lockfile moves too.** Turning managedConfig on moves the
+  lockfile from the repo's extension models directory to the config tier, so
+  adoption commits the repo's own lockfile into the lockfile partition (a
+  `lockfile.write` put, as `v3_lockfile_sync.ts` stages) while that partition
+  has no commit, and writes it to `upstream_extensions.json` in the tier after
+  the commit. With it, `.swamp/pulled-extensions` is copied into the managed
+  root `.swamp/config/pulled-extensions` in this checkout only: pulled sources
+  have no v3 intent, as after an `extension pull` on v3.
+- **`datastore config migrate` on v3** runs adoption, then sets
+  `managedConfig: true`. It confirms each config-tier copy against the commit
+  log instead of trusting it, so a copy the log never held (left by an
+  earlier setup, or placed by hand) does not stop its name being committed.
+  Its JSON keeps the v2 shape (`copiedLockfile`, `copiedPulledExtensions`;
+  `pushed` is false) and adds `committed` and `skipped`: files declaring no
+  name, a name an earlier file of their kind declares, a path no record key
+  can name, a file or directory that could not be read, or a name the commit
+  log already holds with no tier copy at the file's path (another checkout's
+  definition of it, or one renamed or deleted since).
+- **managedConfig set by hand** in `.swamp.yaml` adopts on the first writing
+  command: `requireInitializedRepo` and `requireInitializedRepoUnlocked` run
+  adoption in a root of their own, with no flush (on v3 a root's flush
+  releases the command's locks), before the command's own root. Adopt rather
+  than refuse, because the user asked to keep what they have, and the hand
+  path and `config migrate` then share one implementation. Anything that
+  stops adoption there (a refusal, an unreadable file) is a warning and the
+  command goes on; `config migrate` surfaces the cause. A read-only context
+  cannot commit, so it warns that the config is not in the tier yet, and
+  never fails the command over that check. Serve opens its context once, so a
+  by-hand change made while serve runs is adopted at its next start (a CLI
+  write is refused while serve holds the writer lock anyway).
 
 **Tier rules.** A record key outside the repository's configured `directories`
 or matching its `exclude` stays in the checkout and is never committed: the

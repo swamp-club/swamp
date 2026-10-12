@@ -171,6 +171,11 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // commits the lockfile at its transaction root's checkpoint.
   "src/cli/managed_config_sync.ts -> src/infrastructure/datastore_v3/v3_lockfile_sync.ts",
   "src/serve/handlers/admin_handlers.ts -> src/infrastructure/datastore_v3/v3_lockfile_sync.ts",
+  // swamp-club#3300: `datastore config migrate` commits the repo's existing
+  // config into the config tier, and a writing context adopts it when
+  // managedConfig was turned on by hand (a read-only one warns).
+  "src/cli/commands/datastore_config_migrate.ts -> src/infrastructure/datastore_v3/v3_config_adoption.ts",
+  "src/cli/repo_context.ts -> src/infrastructure/datastore_v3/v3_config_adoption.ts",
   // swamp-club#3279: catalogDbPath returns the read model's catalog on a v3
   // datastore, and setup leaves the stream directories out of its
   // records check.
