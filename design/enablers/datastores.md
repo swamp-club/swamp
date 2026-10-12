@@ -829,7 +829,11 @@ It lives at `{namespace}/.namespace.json` in the remote (extension backends) or
   already exists with a different `repoId`.
 - **Discovery**: `swamp datastore namespace list` scans for `.namespace.json`
   files (`src/cli/commands/datastore_namespaces.ts`,
-  `src/libswamp/datastores/namespace_list.ts`).
+  `src/libswamp/datastores/namespace_list.ts`). A v3 datastore writes no
+  manifests: there the list is the namespaces its `commits.db` partition heads
+  name, read with a read-only connection, plus the current namespace before
+  its first commit (swamp-club#3301). `createNamespaceListDeps` builds the
+  listing for the CLI and serve alike.
 
 For extension datastores, `DatastoreProvider.registerNamespace()` and
 `DatastoreProvider.listNamespaces()` manage manifests through the remote API
@@ -3688,7 +3692,9 @@ runtime or config pull in serve, no lazy hydration. `datastore sync`,
 `datastore catalog pull` and `datastore migrate-index` refuse a filesystem
 datastore already. On v3, `datastore config migrate` and `datastore namespace
 set|unset|migrate` refuse too: moving existing config or records, or a
-checkout, between namespaces is Phase 6.
+checkout, between namespaces is Phase 6. A namespace is chosen by running
+`namespace set` before `setup filesystem --format 3`, which needs no
+`--skip-migration` (swamp-club#3301).
 
 **Tier rules.** A record key outside the repository's configured `directories`
 or matching its `exclude` stays in the checkout and is never committed: the
@@ -4820,7 +4826,19 @@ Each setup command (`src/libswamp/datastores/setup.ts`):
    or `.swamp/` (swamp-club#3238). A filesystem datastore root that is missing,
    or that holds none of the datastore subdirs (an unmounted mount point),
    stops setup before anything moves or `.swamp.yaml` changes; it is never
-   replaced by `.swamp/`. A destination whose real path is the migration
+   replaced by `.swamp/`. The exception is a fresh namespace start
+   (swamp-club#3301): `namespace set` before any setup points the current
+   datastore at the repo's own `.swamp/<namespace>`, which holds only its
+   `.namespace.json` or nothing. That root is not a mount point, so setup takes
+   it as nothing to move rather than as inaccessible, provided `.swamp/` holds
+   no un-namespaced records (the stream directories, the catalog and the
+   instance-local config aside); otherwise it refuses and points at `namespace
+   migrate --confirm`. Every setup keeps the namespace: v2 filesystem setup
+   creates the datastore subdirs under `{path}/{namespace}` and registers the
+   namespace there, refusing one another repo registered; extension setup
+   skips only the copy into the cache. A v2 namespaced datastore that holds
+   data still moves to the new root without its namespace, as before. A
+   destination whose real path is the migration
    source (for example `--path .swamp` on a repo already there) has nothing to
    move: setup skips the copy, the verification and the cleanup, and only
    writes the datastore block (swamp-club#3162). A destination inside one of

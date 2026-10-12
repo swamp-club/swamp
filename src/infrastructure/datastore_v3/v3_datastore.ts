@@ -34,6 +34,7 @@
  * @module
  */
 
+import { DatabaseSync } from "node:sqlite";
 import { ensureDirSync } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -385,6 +386,38 @@ export async function isFreshV3Skeleton(
     return history.storedCommits === 0 && history.compactedThrough === 0;
   } finally {
     await store.close();
+  }
+}
+
+/**
+ * The namespaces that hold commits in the v3 datastore at `datastorePath`
+ * (swamp-club#3301), sorted, the unnamespaced "" left out. Empty when the
+ * datastore has no `commits.db` yet. The database is opened read-only, so
+ * this never creates, migrates or locks it and runs beside a writer.
+ */
+export function listV3Namespaces(datastorePath: string): string[] {
+  const path = join(datastorePath, COMMITS_DB_FILE);
+  try {
+    Deno.statSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
+  }
+  return queryNamespaces(new DatabaseSync(path, { readOnly: true }));
+}
+
+/** The non-empty namespaces of the partition heads in `db`, which it closes. */
+function queryNamespaces(db: DatabaseSync): string[] {
+  try {
+    // A partition head is written with every commit and never deleted, so
+    // it names each namespace that ever committed, compacted or not.
+    const rows = db.prepare(
+      "SELECT DISTINCT namespace FROM partition_heads WHERE namespace != '' " +
+        "ORDER BY namespace",
+    ).all() as { namespace: string }[];
+    return rows.map((row) => row.namespace);
+  } finally {
+    db.close();
   }
 }
 

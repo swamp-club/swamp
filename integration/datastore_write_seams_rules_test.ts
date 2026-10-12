@@ -1556,6 +1556,10 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   "src/cli/commands/datastore_status.ts: datastoreStatusCommand",
   "src/cli/commands/serve.ts: serveCommand",
   "src/serve/handlers/admin_handlers.ts: handleDatastoreStatus",
+  // `datastore namespace list`, CLI and serve: a v3 datastore has no
+  // namespace manifests, so its commits.db names the namespaces
+  // (swamp-club#3301).
+  "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
   // Run-record artifacts resolve through resolveRunArtifact on v3.
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",

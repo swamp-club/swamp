@@ -4089,3 +4089,329 @@ Deno.test("datastoreSetupExtension: leaves the audit trail and run logs in .swam
     }
   });
 });
+
+// swamp-club#3301: `namespace set` before any setup leaves the repo's own
+// .swamp/<namespace> holding only its manifest, or nothing. Setup takes that
+// as a fresh start, not an inaccessible datastore.
+
+/** A repo whose datastore is its own .swamp with `team` set before setup. */
+async function writeFreshNamespaceRepo(
+  tmp: string,
+  manifest: boolean,
+): Promise<{ repoDir: string; namespaceRoot: string }> {
+  const repoDir = join(tmp, "repo");
+  await writeMarker(repoDir, {
+    type: "filesystem",
+    path: join(repoDir, ".swamp"),
+    namespace: "team",
+  });
+  const namespaceRoot = join(repoDir, ".swamp", "team");
+  if (manifest) {
+    await writeTestFile(
+      join(namespaceRoot, ".namespace.json"),
+      JSON.stringify({
+        namespace: "team",
+        repoId: "repo-2837",
+        registeredAt: "2026-10-12T00:00:00.000Z",
+      }),
+    );
+  }
+  return { repoDir, namespaceRoot };
+}
+
+Deno.test("datastoreSetupFilesystem: format 3 after namespace set creates a namespaced v3 datastore without --skip-migration", async () => {
+  for (const manifest of [true, false]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        manifest,
+      );
+      const datastorePath = join(tmp, "v3");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath,
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+            format: 3,
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as CompletedEvent;
+      assertEquals(completed.kind, "completed", `manifest: ${manifest}`);
+      assertEquals(completed.data.format, 3);
+      const block = await readDatastoreBlock(repoDir);
+      assertEquals(block?.namespace, "team");
+      assertEquals(block?.format, 3);
+      assertPathEquals(block?.path ?? "", datastorePath);
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: format 3 after namespace set still refuses a repo that holds records", async () => {
+  for (const records of ["data/a.json", "team/data/a.json"]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        true,
+      );
+      await writeTestFile(join(repoDir, ".swamp", records), "{}");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath: join(tmp, "v3"),
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+            format: 3,
+          },
+        ),
+      );
+
+      const error = events.at(-1) as Extract<
+        DatastoreSetupEvent,
+        { kind: "error" }
+      >;
+      assertEquals(error.kind, "error", records);
+      assertEquals(await pathExists(join(tmp, "v3")), false);
+      assertEquals((await readDatastoreBlock(repoDir))?.format, undefined);
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set keeps the namespace and registers it at the new path", async () => {
+  for (const manifest of [true, false]) {
+    await withSetupTempDir(async (tmp) => {
+      const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+        tmp,
+        manifest,
+      );
+      const datastorePath = join(tmp, "shared");
+
+      const events = await collect<DatastoreSetupEvent>(
+        datastoreSetupFilesystem(
+          createLibSwampContext(),
+          createDatastoreSetupDeps(repoDir, noTier),
+          {
+            datastorePath,
+            repoDir,
+            skipMigration: false,
+            outgoingDatastorePath: namespaceRoot,
+          },
+        ),
+      );
+
+      const completed = events.at(-1) as CompletedEvent;
+      assertEquals(completed.kind, "completed", `manifest: ${manifest}`);
+      assertEquals(completed.data.filesCopied, 0);
+      assertEquals(completed.data.errors, []);
+      const block = await readDatastoreBlock(repoDir);
+      assertEquals(block?.namespace, "team");
+      assertPathEquals(block?.path ?? "", datastorePath);
+      assertEquals(
+        await pathExists(join(datastorePath, "team", "data")),
+        true,
+      );
+      assertEquals(await pathExists(join(datastorePath, "data")), false);
+      assertEquals(
+        (await readNamespaceManifest(datastorePath, "team"))?.repoId,
+        "repo-2837",
+      );
+    });
+  }
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses while .swamp holds un-namespaced records", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+    const datastorePath = join(tmp, "shared");
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "namespace migrate --confirm");
+    assertEquals(await pathExists(join(datastorePath, "team")), false);
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      join(repoDir, ".swamp"),
+    );
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set leaves instance-local config out of the records check", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(
+      join(repoDir, ".swamp", "config", "pulled-extensions", "x", "mod.ts"),
+      "export {};",
+    );
+    const deps = createDatastoreSetupDeps(repoDir, noTier);
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        {
+          ...deps,
+          resolveInRepoConfigRole: () => Promise.resolve("instance_local"),
+        },
+        {
+          datastorePath: join(tmp, "shared"),
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals((await readDatastoreBlock(repoDir))?.namespace, "team");
+  });
+});
+
+Deno.test("datastoreSetupFilesystem: v2 setup after namespace set refuses a namespace another repo registered at the target", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    const datastorePath = join(tmp, "shared");
+    await writeTestFile(
+      join(datastorePath, "team", ".namespace.json"),
+      JSON.stringify({
+        namespace: "team",
+        repoId: "another-repo",
+        registeredAt: "2026-10-12T00:00:00.000Z",
+      }),
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupFilesystem(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          datastorePath,
+          repoDir,
+          skipMigration: false,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "another-repo");
+    assertEquals(await pathExists(join(datastorePath, "team", "data")), false);
+    assertPathEquals(
+      (await readDatastoreBlock(repoDir))?.path ?? "",
+      join(repoDir, ".swamp"),
+    );
+  });
+});
+
+Deno.test("datastoreSetupExtension: setup after namespace set completes and keeps the namespace", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      false,
+    );
+    const type = registerTempDirRemoteType(
+      join(tmp, "remote"),
+      join(tmp, "cache"),
+    );
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2837",
+          skipMigration: false,
+          namespace: "team",
+          namespaceAlreadyBound: true,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const completed = events.at(-1) as CompletedEvent;
+    assertEquals(completed.kind, "completed");
+    assertEquals(completed.data.errors, []);
+    const block = await readDatastoreBlock(repoDir);
+    assertEquals(block?.type, type);
+    assertEquals(block?.namespace, "team");
+  });
+});
+
+Deno.test("datastoreSetupExtension: setup after namespace set refuses while .swamp holds un-namespaced records", async () => {
+  await withSetupTempDir(async (tmp) => {
+    const { repoDir, namespaceRoot } = await writeFreshNamespaceRepo(
+      tmp,
+      true,
+    );
+    await writeTestFile(join(repoDir, ".swamp", "data", "a.json"), "{}");
+    const remoteDir = join(tmp, "remote");
+    const type = registerTempDirRemoteType(remoteDir, join(tmp, "cache"));
+
+    const events = await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(
+        createLibSwampContext(),
+        createDatastoreSetupDeps(repoDir, noTier),
+        {
+          type,
+          config: {},
+          repoDir,
+          repoId: "repo-2837",
+          skipMigration: false,
+          namespace: "team",
+          namespaceAlreadyBound: true,
+          outgoingDatastorePath: namespaceRoot,
+        },
+      ),
+    );
+
+    const error = events.at(-1) as Extract<
+      DatastoreSetupEvent,
+      { kind: "error" }
+    >;
+    assertEquals(error.kind, "error");
+    assertStringIncludes(error.error.message, "namespace migrate --confirm");
+    assertEquals(await pathExists(remoteDir), false);
+    assertEquals((await readDatastoreBlock(repoDir))?.type, "filesystem");
+  });
+});
