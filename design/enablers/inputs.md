@@ -337,8 +337,10 @@ Direct type execution (`swamp model @type method run ...`) has no
 If a key is in both schemas, the method argument wins (the narrower scope).
 
 `coerceMethodArgs` coerces string values to the schema types (e.g., `"428"` →
-`428` for a number field). It reads the Zod schema directly and handles Zod v3
-and v4 (`src/domain/models/zod_type_coercion.ts`).
+`428` for a number field). A string for an array, object or record field is
+parsed as JSON when it holds JSON of that shape, so `--input 'tags={"k":"v"}'`
+works without the `:json` suffix. It reads the Zod schema directly and handles
+Zod v3 and v4 (`src/domain/models/zod_type_coercion.ts`).
 
 Routing happens when the definition is created. Global arguments are stored in
 the auto-created definition; method arguments go to the method's execute

@@ -87,8 +87,9 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
  * Coerces string values in `args` to match the expected types in a Zod object schema.
  *
  * When CLI flags like `--input key=true` are parsed, all values arrive as strings.
- * This function converts `"true"`/`"false"` to booleans and numeric strings to numbers
- * so that Zod validation succeeds.
+ * This function converts `"true"`/`"false"` to booleans and numeric strings to numbers,
+ * and JSON-parses strings for array, object and record fields, so that Zod validation
+ * succeeds.
  *
  * Non-string values and strings that don't match a known coercion pass through unchanged.
  * Keys not present in the schema are also passed through unchanged (Zod will handle them).
@@ -145,7 +146,7 @@ export function coerceMethodArgs(
       } catch {
         // Not valid JSON — leave as string for downstream validation
       }
-    } else if (leafType === "object") {
+    } else if (leafType === "object" || leafType === "record") {
       try {
         const parsed = JSON.parse(value);
         if (
