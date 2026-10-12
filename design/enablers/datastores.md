@@ -1935,14 +1935,20 @@ these.
    - a cancelled or failed run's record is its outcome.
 
    A unit ended by an error or an early stop discards, except a `completed`
-   stream followed by `return()`, which counts as success.
+   stream followed by `return()`, which counts as success. `completed` is
+   the status `WorkflowRun` records as `succeeded` (swamp-club#3257). An
+   `interrupted` run does not commit through its own unit: the run's unit
+   never ends that way, since shutdown and the reapers record it from
+   another path.
 6. **Checkpoints.** `checkpoint()` commits each partition touched so far, in
    the order of decision 7, and keeps the unit open. Later changes to the
    same partitions go into later commits.
 7. **No atomicity across partitions.** Each partition commits on its own. A
    workflow run that writes several models commits the data partitions
    first and the run record last, so a run record never names data that has
-   not landed.
+   not landed. A refused data partition holds the run record back until the
+   run is saved again with the steps that wrote it failed ("Run records and
+   refusals" in "v3 commit-log unit of work", swamp-club#3257).
 
 **Decisions found while building the model.**
 
@@ -2377,7 +2383,8 @@ and partition, so two units in one process never take the same seq; the lock
 is released on every outcome and its entry dropped when its queue drains.
 
 - **No atomicity across partitions.** When a partition fails, the partitions
-  before it stay committed and the ones after it are not tried.
+  before it stay committed and the ones after it are not tried. A refusal is
+  the exception: the flush goes on past it (below).
 - **Pending groups.** A partition whose commit failed stays pending with its
   txnId. The unit's next `checkpoint`, or its `commit`, rebuilds it at the
   current head with the same txnId, so a commit that had landed is reported
@@ -2385,12 +2392,20 @@ is released on every outcome and its entry dropped when its queue drains.
   succeeds (the `UnitOfWork` contract), so what is still pending when the
   unit's own commit fails is lost with it until the Phase 4 outbox makes it
   durable; a caller that must retry checkpoints first.
-- **Refusals.** `CommitRejectedError` surfaces unchanged, and the refused
-  partition's changes are dropped: they can never land as they are, and
-  keeping them would block every partition staged after them. A `seq-gap`
-  is the exception: another append moved the head first, so the append is
-  rebuilt at the new head once more in the same flush, and if that also
-  meets a gap the partition stays pending for the next checkpoint.
+- **Refusals.** The refused partition's changes are dropped: they can never
+  land as they are, and keeping them would block every partition staged
+  after them. The flush goes on to the other partitions, then throws one
+  `PartitionsRefusedError` (swamp-club#3257). It is a `CommitRejectedError`
+  with the first refusal's reason, its message carries each refusal's, and
+  it lists every refusal not yet acknowledged, earlier flushes' included,
+  each with the data versions its changes recorded. Every flush throws it
+  until the refusals are acknowledged, so none is cleared unseen. When
+  another failure stops the flush after a refusal (a transient append
+  error, or a second `seq-gap`), the refusal is thrown with that failure as
+  its `cause`, and the failed partition stays pending. A `seq-gap` is not a
+  refusal: another append moved the head first, so the append is rebuilt at
+  the new head once more in the same flush, and if that also meets a gap the
+  partition stays pending for the next checkpoint and the flush stops.
 - **Splits (swamp-club#3250).** A partition holding more than
   `MAX_COMMIT_OPS` changes in one flush forms several groups, split between
   `stageOps` batches, so one batch always lands in one commit. Each split has
@@ -2410,11 +2425,44 @@ is released on every outcome and its entry dropped when its queue drains.
 - **Abandon** discards staged and pending changes (decision 4). A
   checkpoint already in progress finishes first, so what it commits stays
   committed. Chunks already stored stay for chunk garbage collection.
-- **Run records and refusals.** Run partitions commit after the others of
-  the same flush, but a data partition dropped as refused does not hold back
-  a run partition that a later checkpoint commits. Keeping a run record from
-  naming refused data is left to the issue that stages run records
-  (decision 7).
+- **Run records and refusals (swamp-club#3257).** A run record never names
+  data whose partition was refused. The issue offered two ways: hold the run
+  record back (or commit it with the step failed), or have the record name
+  only versions that landed. This takes the first, with the step failed:
+  - Naming only landed versions would make the committed record differ from
+    the local file, which every read-model gate compares by bytes; would
+    leave the step `succeeded` with its provenance silently gone, though
+    later steps may have read that data; and the run cannot know at save
+    time what will land, only at commit.
+  - A run's record is rewritten whole on each save, so a save after a
+    refusal still names what it refused. So the unit holds every run
+    partition back for the rest of its life once a non-run partition is
+    refused, not for one flush, and keeps it pending rather than dropping
+    it, so the run's snapshot is not lost with it.
+  - `acknowledgeRefusals()` releases them. A root that ends without it
+    throws the refusal again, and its held run records are lost with it, as
+    on any failed commit. The local record stays, still naming the refused
+    data.
+  - `runInCommitLogRoot`'s `onRefused` settles a refusal at the root, where
+    a checkpoint is possible (a use case's unit is a child and cannot): a
+    root that commits checkpoints first (again, up to three times, after a
+    transient failure, so a refusal behind it is still met there) and, on a
+    refusal, runs `onRefused` with itself ambient, acknowledges, commits,
+    then throws the refusal. A step's failure reason carries the refusals'
+    messages, not the held-run list.
+    `reconcileRefusedRuns` (`refused_run_records.ts`) is the callback for a
+    workflow run: it saves each held run again with
+    `WorkflowRun.failStepsNamingRefusedData`, which fails the steps whose
+    data artifacts name a refused version (by data id and version, which
+    both the refusal and the step record), their jobs, and a succeeded run
+    (also when only a workflow-scope report artifact names one). A
+    suspended or cancelled run keeps its status. The re-save supersedes the
+    held record, so the store, and every later save of the run, records
+    those steps failed. The refusals `onRefused` sees are all that
+    acknowledging clears. When `onRefused` throws, the refusal is logged
+    and the root is discarded.
+  - Dormant: only tests pass `onRefused` until the v3 opt-in wires a
+    workflow run's root.
 - **Checkpoint** commits what is staged so far and keeps the unit open
   (decision 6).
 
@@ -2434,10 +2482,15 @@ the way `pushWhen` decides a legacy root's push: by default it commits when
 decision 5 for a workflow run: commit when the run ends `completed`,
 `failed`, `suspended` or `cancelled`, discard on a throw. A failed or
 cancelled run must resolve with its status, not throw, or its record is
-discarded. `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) is unchanged: it
-abandons a use case's unit when the consumer stops at `completed` with
-`return()`. The issues that make repositories stage typed ops must teach it
-that this counts as success before use cases run on v3.
+discarded. `withUnitOfWork` (`src/libswamp/unit_of_work.ts`) ends a v3
+unit, which `takesTypedChanges` tells apart, as decision 5 says
+(swamp-club#3257): it commits once the stream yields `completed`,
+`suspended` or `cancelled` with no `error`, including when the consumer
+then stops with `return()`, and abandons on an `error`, a throw, or a stop
+before any of them. A legacy unit ends as before. `result()` stops at
+`completed`, before the executor's last save of the run, so a run read
+that way commits the record as the run last saved it, still `running`, as
+v2 leaves the local file; the CLI and serve drain the stream.
 
 **The v2 gate.** `integration/usecase_sync_characterization_routing_test.ts`
 recorded today's routing before the registry landed (a root, a use-case
@@ -2525,9 +2578,9 @@ The output repository (`yaml_output_repository.ts`) stages an `output.save`
 put of a record's YAML after `save`, and an `output.delete` tombstone after
 removing one (`delete`, `deleteOlderThan`, `deleteByMethodLifetime`). A record
 that never parsed has no output id, so no repository ever put it, and its
-removal stages nothing. Run logs have no typed change: nothing puts them on
-v3 yet, and their removals inside a datastore declare `typed` so they are not
-refused. Staging run logs belongs to the run staging issue.
+removal stages nothing. Run logs have no typed change: they are local-only
+(swamp-club#3257, below), and their removals inside a datastore declare
+`typed` so they are not refused.
 
 **The `bulk` mapping.** Neither repository stages a `bulk` change on v2. Their
 directory marks (a data name's or a version's directory) become per-key
@@ -2589,7 +2642,8 @@ removed file is classified by the directory it is in, not by the
 repository's role (`config_staging.ts`):
 
 - inside the managed config base, a managed-config definition or workflow,
-  in `config--{model|workflow}--{name}`;
+  in `config--{model|workflow}--{name}` (and a vault config in
+  `config--vault--{name}`, swamp-club#3257);
 - inside a directory named `auto-definitions`, an auto-definition, in
   `definition--{id}`;
 - anywhere else, a git-tracked file, which stages nothing. Its path change
@@ -2693,6 +2747,88 @@ tiers, a git-tracked write that stages nothing, and run snapshot removals
 of a stray and an empty run directory. It also covers a rename's commit
 order and crash states, a stale edit, a concurrent create, and a file out
 of step. Dropping any staged change fails it.
+
+#### Workflow run and vault config repositories (swamp-club#3257)
+
+The third staging group: `yaml_workflow_run_repository.ts` and
+`yaml_vault_config_repository.ts` stage typed changes for every write they
+make on v3, through the same two calls. v2 does not change: every read a
+typed change needs runs behind `typedStagingActive`, and every builder
+inside `stageTyped`.
+
+**The mapping.**
+
+| Write | Typed changes |
+|---|---|
+| Run `save` | A `run.create` put of the record when the file was new, else `run.update`, in `run--{workflowId}--{runId}`, with no precondition. The content is a stream of the written file |
+| Run `deleteAllByWorkflowId` | One `run.delete` tombstone per run record the directory held, listed before the removal, each its own batch |
+| Run `deleteOlderThan` (GC) | A `run.delete` tombstone of each record it removes, terminal or unparseable; a dry run stages nothing |
+| Vault `save` | #3256's `definitionSaveBatches` with kind `vault`: a `definition.create` expecting the key absent, a `definition.edit` expecting the replaced bytes' digest, or a rename as two partitions (the path is by id, so a vault rename is always a same-key rename). A save of the bytes the file already held stages nothing |
+| Vault `delete` | A `definition.delete` tombstone in the partition of the name the file declared, when the removal happened |
+
+The record key is the file's path under the namespace root:
+`workflow-runs/{workflowId}/workflow-run-{runId}.yaml` and
+`config/vaults/{type}/{id}.yaml`.
+
+**Run records.**
+
+- A run is saved many times in one unit, so its record is a stream put
+  with no `expect`: the unit elides each earlier save still unread, and a
+  flush commits the last one, under that save's intent (`run.update` after a
+  `run.create` in the same unit). A put with an `expect` is never elided.
+- No precondition: a run has one writer at a time under its lock, and
+  cancel, recovery and the reapers rewrite the record as well as the run,
+  so a digest would refuse the next save whenever the local file is out of
+  step with the store.
+- Removals find runs by directory and file name. A workflow or run id that
+  is not a UUID stages nothing (no repository put it), so GC never aborts on
+  a stray file. A record a hook-less write truncated is still tombstoned.
+- Run logs and the run indexes (`.runs-index.json`) are local-only: the
+  executor writes the log under the repository's own `.swamp`, whatever the
+  datastore, and the indexes are a local cache. Neither stages anything;
+  run GC and `deleteAllByWorkflowId` remove logs where runs write them
+  (swamp-club#3266) with no signal.
+- A run's snapshot is #3256's (`run-snapshot.*`, same partition).
+
+**The `bulk` mapping.** Neither repository stages a `bulk` change on v2.
+`deleteAllByWorkflowId`'s directory removal, the only directory mark,
+becomes one tombstone per run record listed before the removal.
+
+**Vault configs.**
+
+- Only managed config makes a vault config a datastore file. A repo-local
+  `vaults/` file is git-tracked and stages nothing, which includes the
+  default vault `repo init` writes (swamp-club#3259): a new repository has
+  no config tier. A default vault saved under managed config names no host
+  path, so none reaches a commit.
+- The typed change carries exactly the YAML the repository wrote. Secrets
+  are the vault provider's, written under `.swamp/secrets` with no hook, so
+  none ever reaches a typed change. A registry vault type that keeps a
+  token in its config file already syncs it on v2; v3 carries no more.
+- A migration to another type saves the new type's path (a create) and
+  deletes the old one, both in the vault name's partition.
+
+**Writers this does not cover.** These write vault configs without a hook,
+so they stage nothing on v3 until the opt-in wires them: `repo init`
+(repo-local, as above), `datastore setup`
+(`src/libswamp/datastores/setup.ts`, `src/cli/commands/datastore_setup.ts`),
+the CLI's fallback repository in `src/cli/mod.ts`, serve
+(`src/cli/commands/serve.ts`), and the `vault create` and `vault edit`
+fallbacks when no repository is injected.
+
+**The gate.** `integration/datastore_v3_run_staging_test.ts` runs the run
+repository on v3 in a commit-log root, solo and namespaced, and compares a
+caught-up read model's run records with the repository's for every path
+above. It also runs the `workflowRun` use case on a v3 context: the unit
+commits a succeeded, failed, suspended and cancelled run and discards an
+early stop; and after a real `version-live` refusal and an `expect-failed`
+one, the committed record has the step that wrote the refused data failed,
+as does a later unit's save of the run. Without `onRefused` no run record
+commits. `integration/datastore_v3_vault_staging_test.ts` covers create,
+edit, an unchanged save, a rename's commit order, a migration, the default
+vault, delete, a stale edit, a secret and a repo-local config that commit
+nothing, and v2 reading no file. Dropping any staged change or rule fails a
+gate.
 
 ### v3 read model (datastore rework Phase 3)
 

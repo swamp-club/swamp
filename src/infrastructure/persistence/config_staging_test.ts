@@ -332,6 +332,64 @@ Deno.test("definitionDeleteBatches: one batch per partition, without preconditio
   assertEquals(remove(undefined, ["/c/vpc.yaml"]), []);
 });
 
+Deno.test("definitionSaveBatches and definitionDeleteBatches: a vault config stages in config--vault--{name} (swamp-club#3257)", () => {
+  const vault = (
+    name: string,
+    priors: Record<string, PriorFile> = {},
+  ) =>
+    rows(definitionSaveBatches({
+      kind: "vault",
+      id: ID,
+      name,
+      targetPath: "/c/vpc.yaml",
+      content: CONTENT,
+      removed: [],
+      priors: new Map(Object.entries(priors)),
+      tierOf: (path) => TIERS[path],
+    }));
+  assertEquals(vault("vpc"), [[[
+    "config--vault--vpc",
+    "put",
+    "definition.create",
+    "config/models/t/vpc.yaml",
+    "absent",
+  ]]]);
+  // The path is by id, so a vault rename is always a same-key rename.
+  assertEquals(vault("net", { "/c/vpc.yaml": prior("vpc") }), [
+    [[
+      "config--vault--net",
+      "put",
+      "definition.rename-to",
+      "config/models/t/vpc.yaml",
+      "absent",
+    ]],
+    [[
+      "config--vault--vpc",
+      "tombstone",
+      "definition.rename-from",
+      "config/models/t/vpc.yaml",
+      "present",
+    ]],
+  ]);
+  assertEquals(
+    rows(definitionDeleteBatches({
+      kind: "vault",
+      id: ID,
+      name: "vpc",
+      removed: ["/c/vpc.yaml"],
+      priors: new Map(),
+      tierOf: (path) => TIERS[path],
+    })),
+    [[[
+      "config--vault--vpc",
+      "tombstone",
+      "definition.delete",
+      "config/models/t/vpc.yaml",
+      null,
+    ]]],
+  );
+});
+
 Deno.test("stagingTierOf and keyUnder: tier and key come from the file's own directory", () => {
   const repoDir = join(Deno.cwd(), `staging-tier-${crypto.randomUUID()}`);
   const configBase = join(repoDir, ".swamp", "config");

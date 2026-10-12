@@ -62,7 +62,10 @@ import {
   type RepositoryContext,
 } from "../src/infrastructure/persistence/repository_factory.ts";
 import { unitOfWorkBinding } from "../src/infrastructure/persistence/unit_of_work_binding.ts";
-import { UnscopedWriteRefusedError } from "../src/infrastructure/persistence/unit_of_work_scope.ts";
+import {
+  signalChange,
+  UnscopedWriteRefusedError,
+} from "../src/infrastructure/persistence/unit_of_work_scope.ts";
 
 await initializeLogging({});
 
@@ -462,16 +465,22 @@ Deno.test("commit-log unit: a repository write outside every unit on a v3 contex
   });
 });
 
-Deno.test("commit-log unit: a repository's path-only write inside a commit-log root is refused", async () => {
+Deno.test("commit-log unit: a path-only write inside a commit-log root is refused", async () => {
   await withV3(async (v3) => {
     const ctx = await repositoryContext(v3.dir, v3.hook);
     try {
+      // Every repository declares its writes typed (swamp-club#3257), so a
+      // write that does not is signalled directly.
       await assertRejects(
         () =>
           runInCommitLogRoot(
             ctx,
             v3.options(),
-            () => ctx.vaultConfigRepo.save(vault()),
+            () =>
+              signalChange(ctx.markDirty, {
+                kind: "write",
+                path: join(v3.dir, "untyped.yaml"),
+              }),
           ),
         Error,
         "commits only typed changes",

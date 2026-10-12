@@ -181,6 +181,15 @@ export function typedStagingActive(
     boundTypedStager(markDirty) !== undefined;
 }
 
+/**
+ * Whether `uow` takes typed changes: a v3 commit-log unit (swamp-club#3257).
+ * `withUnitOfWork` asks it to choose decision 5's ending for a v3 unit; a
+ * legacy unit is never one, so v2 endings do not change.
+ */
+export function takesTypedChanges(uow: UnitOfWork): boolean {
+  return typedStagers.stagerOf(uow) !== undefined;
+}
+
 /** The ambient unit's typed stager, when that unit is bound to the hook. */
 function boundTypedStager(markDirty: MarkDirtyHook) {
   const uow = currentUnitOfWork();

@@ -124,12 +124,19 @@ const PINNED_V3_IMPORTERS: readonly string[] = [
   // repositories share; it runs only inside stageTyped or behind
   // typedStagingActive, so never on v2.
   "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
+  "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/partition_key.ts",
   "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/record_key.ts",
   "src/infrastructure/persistence/config_staging.ts -> src/domain/datastore_v3/repository_changes.ts",
   "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/infrastructure/persistence/yaml_evaluated_definition_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
   "src/infrastructure/persistence/yaml_evaluated_workflow_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  // swamp-club#3257, the workflow run repository's typed builder: the run
+  // record's factory, run only inside stageTyped.
+  "src/infrastructure/persistence/yaml_workflow_run_repository.ts -> src/domain/datastore_v3/repository_changes.ts",
+  // swamp-club#3257, the persistence test helper's typed recording unit: a
+  // type-only import of the `TypedChange` batches it records.
+  "src/infrastructure/persistence/test_helpers/staged_change_helpers.ts -> src/domain/datastore_v3/commit_log_unit_of_work.ts",
 ];
 
 Deno.test("datastore v3: no production code outside v3 imports it", async () => {

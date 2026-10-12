@@ -19,10 +19,17 @@
 
 import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
 import {
+  DATA_ID,
   MemoryStorage,
+  modelCommit,
   modelPartition,
   savePut,
+  versionOp,
 } from "../../domain/datastore_v3/v3_test_helpers.ts";
+import {
+  type CommitLogUnitOfWork,
+  PartitionsRefusedError,
+} from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { initializeLogging } from "../logging/logger.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
 import {
@@ -33,6 +40,7 @@ import {
 } from "../persistence/unit_of_work_scope.ts";
 import {
   type CommitLogOutcome,
+  type CommitLogRoot,
   defaultDisposition,
   RUN_COMMIT_STATUSES,
   runInCommitLogRoot,
@@ -255,7 +263,7 @@ Deno.test("defaultDisposition: commits a completed operation, discards a failed 
   );
 });
 
-Deno.test("runOutcomeDisposition: commits a run that ended completed, failed, suspended or cancelled; discards anything else", () => {
+Deno.test("runOutcomeDisposition: commits a run that ended succeeded, failed, suspended or cancelled; discards anything else", () => {
   for (const status of RUN_COMMIT_STATUSES) {
     assertEquals(
       runOutcomeDisposition({ completed: true, value: { status } }),
@@ -263,7 +271,7 @@ Deno.test("runOutcomeDisposition: commits a run that ended completed, failed, su
       status,
     );
   }
-  for (const status of ["running", "pending", "interrupted"]) {
+  for (const status of ["running", "pending", "interrupted", "completed"]) {
     assertEquals(
       runOutcomeDisposition({ completed: true, value: { status } }),
       "discard",
@@ -331,5 +339,136 @@ Deno.test("runInCommitLogRoot: a repository's typed declaration and stageTyped l
   await assertRejects(
     () => stageTyped(hook, () => [{ partition: MODEL, op: put }]),
     UnscopedWriteRefusedError,
+  );
+});
+
+/** A sink whose model partition refuses a unit fenced at 3 (stale fence). */
+async function fencedSink(): Promise<MemorySink> {
+  const sink = new MemorySink();
+  await sink.append(modelCommit(1, [await savePut("seed", 1)], { fence: 5 }));
+  return sink;
+}
+
+/** A run that wrote a data version, then saved its record. */
+async function runWritingData(root: CommitLogRoot): Promise<void> {
+  await root.stageOps([
+    { partition: MODEL, op: await savePut("a", 1) },
+    { partition: MODEL, op: versionOp("a", 1) },
+  ]);
+  await root.stageOp({
+    partition: runPartition(),
+    op: await runPut("succeeded"),
+  });
+}
+
+Deno.test("runInCommitLogRoot: onRefused re-saves the held run in the root, which commits it and then throws the refusal (swamp-club#3257)", async () => {
+  const sink = await fencedSink();
+  const seen: PartitionsRefusedError[] = [];
+  const error = await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(sink, memory(), { fence: 3 }),
+          onRefused: async (refusal) => {
+            seen.push(refusal);
+            // The re-save stages into the root, which is ambient.
+            const root = currentUnitOfWork() as CommitLogUnitOfWork;
+            await root.stageOp({
+              partition: runPartition(),
+              op: await runPut("failed"),
+            });
+          },
+        },
+        async (root) => {
+          await runWritingData(root);
+          return "done";
+        },
+      ),
+    PartitionsRefusedError,
+  );
+  assertStrictEquals(seen[0], error);
+  assertEquals(error.refusals[0].versions, [{ dataId: DATA_ID, version: 1 }]);
+  assertEquals(error.heldRuns.map(String), [runPartition().toString()]);
+  // Both run puts commit, in order: the last one is the re-saved record.
+  const ops = sink.commitsOf(runPartition()).flatMap((commit) => commit.ops);
+  assertEquals(
+    ops.map((op) =>
+      op.kind === "put" && "inline" in op.content
+        ? atob(op.content.inline)
+        : op.kind
+    ),
+    ["succeeded", "failed"],
+  );
+});
+
+Deno.test("runInCommitLogRoot: without onRefused, a refusal commits no run record; a failing onRefused discards the root (swamp-club#3257)", async () => {
+  const plain = await fencedSink();
+  await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        unitOptions(plain, memory(), { fence: 3 }),
+        (root) => runWritingData(root),
+      ),
+    PartitionsRefusedError,
+  );
+  assertEquals(plain.commitsOf(runPartition()), []);
+
+  const failing = await fencedSink();
+  await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(failing, memory(), { fence: 3 }),
+          onRefused: () => Promise.reject(new Error("cannot re-save")),
+        },
+        (root) => runWritingData(root),
+      ),
+    Error,
+    "cannot re-save",
+  );
+  assertEquals(failing.commitsOf(runPartition()), []);
+});
+
+Deno.test("runInCommitLogRoot: a refusal behind a transient checkpoint failure is still settled by onRefused (swamp-club#3257)", async () => {
+  const sink = await fencedSink();
+  let transient = true;
+  sink.beforeAppend = (commit) => {
+    if (transient && commit.partition.equals(MODEL)) {
+      transient = false;
+      throw new Error("connection reset");
+    }
+  };
+  const seen: PartitionsRefusedError[] = [];
+  await assertRejects(
+    () =>
+      runInCommitLogRoot(
+        { markDirty: contextHook() },
+        {
+          ...unitOptions(sink, memory(), { fence: 3 }),
+          onRefused: async (refusal) => {
+            seen.push(refusal);
+            const root = currentUnitOfWork() as CommitLogUnitOfWork;
+            await root.stageOp({
+              partition: runPartition(),
+              op: await runPut("failed"),
+            });
+          },
+        },
+        (root) => runWritingData(root),
+      ),
+    PartitionsRefusedError,
+  );
+  assertEquals(seen.length, 1);
+  const ops = sink.commitsOf(runPartition()).flatMap((commit) => commit.ops);
+  assertEquals(
+    ops.map((op) =>
+      op.kind === "put" && "inline" in op.content
+        ? atob(op.content.inline)
+        : op.kind
+    ),
+    ["succeeded", "failed"],
   );
 });

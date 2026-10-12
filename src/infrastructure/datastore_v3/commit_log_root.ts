@@ -26,8 +26,9 @@
  */
 
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
-import type {
-  CommitLogUnitOfWork,
+import {
+  type CommitLogUnitOfWork,
+  PartitionsRefusedError,
 } from "../../domain/datastore_v3/commit_log_unit_of_work.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { unitOfWorkBinding } from "../persistence/unit_of_work_binding.ts";
@@ -61,6 +62,17 @@ export interface CommitLogRootOptions<T>
    * {@link runOutcomeDisposition}.
    */
   readonly disposition?: (outcome: CommitLogOutcome<T>) => CommitLogDisposition;
+  /**
+   * Settles a refusal before a root commits (decision 7, swamp-club#3257).
+   * When given, a root that commits checkpoints first; if a partition was
+   * refused, it runs this with the root ambient, so the caller can save each
+   * held run again with the steps that wrote refused data failed
+   * ({@link reconcileRefusedRuns}), then releases the held run records,
+   * commits, and throws the refusal. Without it, a refusal holds every run
+   * record back and surfaces when the root commits. A child never runs it:
+   * its root commits.
+   */
+  readonly onRefused?: (error: PartitionsRefusedError) => Promise<void>;
 }
 
 /**
@@ -79,9 +91,13 @@ export function defaultDisposition<T>(
   return outcome.completed ? "commit" : "discard";
 }
 
-/** The terminal statuses a workflow run's unit commits on (decision 5). */
+/**
+ * The terminal statuses a workflow run's unit commits on (decision 5), as
+ * `WorkflowRun` records them: decision 5's "completed" is `succeeded`
+ * (swamp-club#3257).
+ */
 export const RUN_COMMIT_STATUSES = [
-  "completed",
+  "succeeded",
   "failed",
   "suspended",
   "cancelled",
@@ -131,11 +147,10 @@ export async function runInCommitLogRoot<T>(
     );
   }
   unitOfWorkBinding.requireUnit(markDirty);
-  const { disposition = defaultDisposition, ...unitOptions } = options;
-  const root = createCommitLogUnitOfWork(markDirty, {
-    ...unitOptions,
-    parent: commitLogParentFor(markDirty, currentUnitOfWork()),
-  });
+  const { disposition = defaultDisposition, onRefused, ...unitOptions } =
+    options;
+  const parent = commitLogParentFor(markDirty, currentUnitOfWork());
+  const root = createCommitLogUnitOfWork(markDirty, { ...unitOptions, parent });
   const view: CommitLogRoot = {
     stageOp: (change) => root.stageOp(change),
     stageOps: (changes) => root.stageOps(changes),
@@ -158,10 +173,67 @@ export async function runInCommitLogRoot<T>(
     }
     throw error;
   }
-  if (disposition({ completed: true, value }) === "commit") {
-    await root.commit();
-  } else {
+  if (disposition({ completed: true, value }) !== "commit") {
     await root.abandon();
+    return value;
   }
+  const refused = onRefused === undefined || parent !== undefined
+    ? undefined
+    : await settleRefusals(root, onRefused);
+  await root.commit();
+  if (refused !== undefined) throw refused;
   return value;
+}
+
+/**
+ * Checkpoints `root`; on a refusal, runs `onRefused` with the root ambient
+ * and releases the held run records. Returns the refusal, which the caller
+ * throws once the root has committed. Another checkpoint error is retried a
+ * few times, then left to the commit, which retries what is pending and
+ * surfaces it.
+ */
+async function settleRefusals(
+  root: CommitLogUnitOfWork,
+  onRefused: (error: PartitionsRefusedError) => Promise<void>,
+): Promise<PartitionsRefusedError | undefined> {
+  // A transient failure leaves its partition pending; checkpoint again, so a
+  // refusal behind it is met here, where it can be settled, rather than at
+  // the commit, which would lose the held run records.
+  for (let attempt = 1;; attempt++) {
+    try {
+      await root.checkpoint();
+      return undefined;
+    } catch (error) {
+      if (error instanceof PartitionsRefusedError) {
+        return await settle(root, onRefused, error);
+      }
+      if (attempt === SETTLE_CHECKPOINT_ATTEMPTS) return undefined;
+    }
+  }
+}
+
+/** How often a root checkpoints to settle refusals before it commits. */
+const SETTLE_CHECKPOINT_ATTEMPTS = 3;
+
+/** Runs `onRefused` for `error` in `root` and releases its held runs. */
+async function settle(
+  root: CommitLogUnitOfWork,
+  onRefused: (error: PartitionsRefusedError) => Promise<void>,
+  error: PartitionsRefusedError,
+): Promise<PartitionsRefusedError> {
+  try {
+    await runInUnitOfWork(root, () => onRefused(error));
+  } catch (callbackError) {
+    logger
+      .warn`Settling a refused datastore commit failed, so its root was discarded: ${error.message}`;
+    try {
+      await root.abandon();
+    } catch (endError) {
+      logger
+        .warn`Ending a commit-log unit of work after a failed operation also failed: ${endError}`;
+    }
+    throw callbackError;
+  }
+  root.acknowledgeRefusals();
+  return error;
 }

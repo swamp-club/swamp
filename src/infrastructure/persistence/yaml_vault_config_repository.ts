@@ -23,7 +23,19 @@ import { resolveEffectiveVaultsDir } from "./paths.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
-import { signalChange } from "./unit_of_work_scope.ts";
+import {
+  signalChange,
+  stageTyped,
+  typedStagingActive,
+} from "./unit_of_work_scope.ts";
+import {
+  definitionDeleteBatches,
+  definitionSaveBatches,
+  type PriorFile,
+  readPriorFile,
+  sha256Hex,
+  stagingTierOf,
+} from "./config_staging.ts";
 import { comparePathsBySegment } from "./sorted_dir_entries.ts";
 import {
   VaultConfig,
@@ -204,8 +216,16 @@ export class YamlVaultConfigRepository {
 
     const data = config.toData();
     const content = stringifyYaml(data as unknown as Record<string, unknown>);
-    await signalChange(this.markDirty, { kind: "write", path });
+    await signalChange(this.markDirty, { kind: "write", path }, {
+      typed: true,
+    });
+    // On v3, the file the save replaces: an edit's precondition, and the
+    // name that tells a rename apart (the path is by id, not name).
+    const prior = typedStagingActive(this.markDirty)
+      ? await readPriorFile(path)
+      : undefined;
     await atomicWriteTextFile(path, content);
+    await this.stageSave(config, path, content, prior);
 
     // Emit event
     if (this.eventBus) {
@@ -221,9 +241,16 @@ export class YamlVaultConfigRepository {
    */
   async delete(config: VaultConfig): Promise<void> {
     const path = this.getPath(config.type, config.id);
-    await signalChange(this.markDirty, { kind: "remove", path });
+    await signalChange(this.markDirty, { kind: "remove", path }, {
+      typed: true,
+    });
+    const prior = typedStagingActive(this.markDirty)
+      ? await readPriorFile(path)
+      : undefined;
+    let removed = false;
     try {
       await Deno.remove(path);
+      removed = true;
 
       // Emit event
       if (this.eventBus) {
@@ -235,6 +262,62 @@ export class YamlVaultConfigRepository {
         throw error;
       }
     }
+    if (!typedStagingActive(this.markDirty)) return;
+    for (
+      const batch of definitionDeleteBatches({
+        kind: "vault",
+        id: config.id,
+        name: config.name,
+        removed: removed ? [path] : [],
+        priors: prior === undefined ? new Map() : new Map([[path, prior]]),
+        tierOf: (p) => this.stagingTierOf(p),
+      })
+    ) {
+      await stageTyped(this.markDirty, () => batch);
+    }
+  }
+
+  /**
+   * On v3, the typed changes of a save (swamp-club#3257), from #3256's
+   * definition batches with kind `vault`: a create expecting the key absent,
+   * an edit expecting the replaced bytes' digest, or a rename as two
+   * partitions. A save that wrote the bytes the file already held stages
+   * nothing. The content is the file the repository wrote and nothing else:
+   * secrets are the vault provider's and never reach a typed change.
+   */
+  private async stageSave(
+    config: VaultConfig,
+    path: string,
+    content: string,
+    prior: PriorFile | undefined,
+  ): Promise<void> {
+    if (!typedStagingActive(this.markDirty)) return;
+    const bytes = new TextEncoder().encode(content);
+    if (prior !== undefined && prior.sha256 === await sha256Hex(bytes)) return;
+    for (
+      const batch of definitionSaveBatches({
+        kind: "vault",
+        id: config.id,
+        name: config.name,
+        targetPath: path,
+        content: bytes,
+        removed: [],
+        priors: prior === undefined ? new Map() : new Map([[path, prior]]),
+        tierOf: (p) => this.stagingTierOf(p),
+      })
+    ) {
+      await stageTyped(this.markDirty, () => batch);
+    }
+  }
+
+  /**
+   * A managed-config vault file's record key; undefined for a repo-local
+   * vault config (`{repo}/vaults`, as repo init writes), which stages
+   * nothing.
+   */
+  private stagingTierOf(path: string) {
+    const tier = stagingTierOf(this.repoDir, [], path);
+    return tier?.tier === "config" ? tier : undefined;
   }
 
   /**

@@ -26,6 +26,7 @@ import {
   ConfigChanges,
   ModelChanges,
   recordKeyOf,
+  RunChanges,
   RunSnapshotChanges,
 } from "./repository_changes.ts";
 import { metadata, MODEL_ID, MODEL_TYPE } from "./v3_test_helpers.ts";
@@ -320,6 +321,33 @@ Deno.test("RunSnapshotChanges and evaluated definitions land in the run's and th
     shape(changes.removeEvaluatedDefinition(evaluated)).intent,
     { kind: "evaluated-definition.delete", model: MODEL },
   );
+});
+
+Deno.test("RunChanges: a run record's puts and tombstone land in the run's partition, with no precondition", () => {
+  const run = new RunChanges(ID, RUN);
+  assert(run.partition.equals(new RunSnapshotChanges(ID, RUN).partition));
+  const key = recordKeyOf([
+    "workflow-runs",
+    ID,
+    `workflow-run-${RUN}.yaml`,
+  ]);
+  const ref = { workflowId: ID.toLowerCase(), runId: RUN };
+  const stream = () => ReadableStream.from([bytes("r")]);
+  const created = run.write("run.create", key, stream);
+  assertEquals(shape(created), {
+    put: key.toString(),
+    intent: { kind: "run.create", run: ref },
+  });
+  assertEquals(expectOf(created), undefined);
+  const updated = run.write("run.update", key, bytes("r"));
+  assertEquals(shape(updated).intent, { kind: "run.update", run: ref });
+  assertEquals(expectOf(updated), undefined);
+  const removed = run.remove(key);
+  assertEquals(shape(removed), {
+    tombstone: key.toString(),
+    intent: { kind: "run.delete", run: ref },
+  });
+  assertEquals(expectOf(removed), undefined);
 });
 
 Deno.test("recordKeyOf: refuses a segment holding a separator, and an unsafe key", () => {

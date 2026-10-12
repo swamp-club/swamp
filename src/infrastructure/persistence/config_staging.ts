@@ -20,7 +20,9 @@
 /**
  * What the definition, workflow and evaluated repositories need to stage
  * typed changes on v3 (swamp-club#3256): which tier a file is in, its record
- * key, and what a file held before a write replaced or removed it.
+ * key, and what a file held before a write replaced or removed it. The
+ * vault config repository shares the save and delete batches, with kind
+ * `vault` (swamp-club#3257).
  *
  * Everything here reads the filesystem or the managed config registry, so
  * repositories call it only inside a `stageTyped` builder or behind
@@ -37,6 +39,7 @@ import {
   ConfigChanges,
   recordKeyOf,
 } from "../../domain/datastore_v3/repository_changes.ts";
+import type { DefinitionKind } from "../../domain/datastore_v3/partition_key.ts";
 import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { getManagedConfigBase, SWAMP_SUBDIRS } from "./paths.ts";
 import { markErrorPaths } from "../../domain/errors.ts";
@@ -188,9 +191,9 @@ export function unlessUnpartitionable<T>(build: () => T): T | undefined {
   }
 }
 
-/** A definition or workflow save, as the repository did it. */
+/** A definition, workflow or vault config save, as the repository did it. */
 export interface DefinitionSave {
-  readonly kind: "model" | "workflow";
+  readonly kind: DefinitionKind;
   readonly id: string;
   readonly name: string;
   readonly targetPath: string;
@@ -316,7 +319,7 @@ export function definitionSaveBatches(save: DefinitionSave): TypedChange[][] {
  * a file whose name is unknown stages nothing.
  */
 export function definitionDeleteBatches(remove: {
-  readonly kind: "model" | "workflow";
+  readonly kind: DefinitionKind;
   readonly id: string;
   readonly name: string | undefined;
   readonly removed: readonly string[];
