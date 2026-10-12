@@ -20,9 +20,9 @@
 import { assertEquals } from "@std/assert";
 import { assertErrors, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import { runStatusBucket } from "./run_search.ts";
 import {
   clampRecentLimit,
-  runStatusBucket,
   summarizeWorkflowRuns,
   workflowRunSummary,
   type WorkflowRunSummaryDeps,

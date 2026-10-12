@@ -82,6 +82,35 @@ const EMPTY_COUNTS: RunCounts = {
 
 const FINISHED = new Set(["succeeded", "failed", "cancelled"]);
 
+type StatusBucket =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "running"
+  | "suspended";
+
+/**
+ * The count a run status lands in, as serve's run summary buckets it:
+ * `interrupted` counts as failed and `pending` as running. Undefined for a
+ * status this dashboard does not know.
+ */
+export function runStatusBucket(status: string): StatusBucket | undefined {
+  switch (status) {
+    case "succeeded":
+    case "cancelled":
+    case "suspended":
+    case "failed":
+    case "running":
+      return status;
+    case "interrupted":
+      return "failed";
+    case "pending":
+      return "running";
+    default:
+      return undefined;
+  }
+}
+
 function startedMs(run: { startedAt?: string }): number {
   const t = run.startedAt ? Date.parse(run.startedAt) : NaN;
   return Number.isNaN(t) ? 0 : t;
@@ -158,12 +187,9 @@ export function summarizeRuns(
       byName.set(run.workflowName, s);
     }
     s.runs++;
-    if (run.status === "succeeded") s.succeeded++;
-    else if (run.status === "failed") s.failed++;
-    else if (run.status === "cancelled") s.cancelled++;
-    else if (run.status === "running") s.running++;
-    else if (run.status === "suspended") s.suspended++;
-    if (FINISHED.has(run.status) && run.duration !== undefined) {
+    const bucket = runStatusBucket(run.status);
+    if (bucket) s[bucket]++;
+    if (bucket && FINISHED.has(bucket) && run.duration !== undefined) {
       s.durationMs += run.duration;
     }
     if (s.recent.length < recentLimit) {

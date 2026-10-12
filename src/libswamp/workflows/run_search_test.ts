@@ -135,6 +135,39 @@ Deno.test("workflowRunSearch: filters by status", async () => {
   assertEquals(completed.data.results[0].status, "failed");
 });
 
+Deno.test("workflowRunSearch: a bucket status filter matches the whole bucket", async () => {
+  const runs = ["failed", "interrupted", "running", "pending", "succeeded"]
+    .map((status, i) =>
+      makeRun({
+        id: `run-${status}`,
+        workflowId: "wf-1",
+        workflowName: "deploy",
+        status,
+        startedAt: new Date(now - (i + 1) * 1000),
+      })
+    );
+  const deps = makeDeps({
+    findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),
+    findAllRunsByWorkflowId: () => Promise.resolve(runs),
+  });
+  const ids = async (status: string) => {
+    const events = await collect<WorkflowRunSearchEvent>(
+      workflowRunSearch(createLibSwampContext(), deps, { status }),
+    );
+    const completed = events[1] as Extract<
+      WorkflowRunSearchEvent,
+      { kind: "completed" }
+    >;
+    return completed.data.results.map((r) => r.runId);
+  };
+
+  assertEquals(await ids("failed"), ["run-failed", "run-interrupted"]);
+  assertEquals(await ids("RUNNING"), ["run-running", "run-pending"]);
+  // Any other status still matches exactly.
+  assertEquals(await ids("interrupted"), ["run-interrupted"]);
+  assertEquals(await ids("pending"), ["run-pending"]);
+});
+
 Deno.test("workflowRunSearch: filters by since", async () => {
   const deps = makeDeps({
     findAllWorkflows: () => Promise.resolve([{ id: "wf-1", name: "deploy" }]),

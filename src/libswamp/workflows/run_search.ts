@@ -133,6 +133,11 @@ export interface WorkflowRunSearchInput {
    * now or an ISO timestamp.
    */
   until?: string;
+  /**
+   * Keeps runs with this status, ignoring case. `failed` also keeps
+   * interrupted runs and `running` also keeps pending ones, matching the run
+   * summary's counts.
+   */
   status?: string;
   /** Keeps runs of the workflow with this name, ignoring case. */
   workflow?: string;
@@ -162,6 +167,51 @@ export function parseRunTimeBound(value: string, now: number): number {
     );
   }
   return ms;
+}
+
+/** The status groups the run summary counts runs in. */
+export type RunStatusBucket =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "running"
+  | "suspended";
+
+/**
+ * The bucket a run status counts in, or undefined for a status this
+ * version does not know. `interrupted` (a run that ended without settling)
+ * counts as failed; `pending` (accepted, not yet started) as running.
+ */
+export function runStatusBucket(status: string): RunStatusBucket | undefined {
+  switch (status) {
+    case "succeeded":
+      return "succeeded";
+    case "failed":
+    case "interrupted":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "running":
+    case "pending":
+      return "running";
+    case "suspended":
+      return "suspended";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether a run's status matches a lower-cased status filter. A bucket name
+ * matches every status in that bucket (`failed` also matches `interrupted`,
+ * `running` also matches `pending`), so a filtered search agrees with the
+ * run summary's counts; any other filter matches the status exactly.
+ */
+function runStatusMatches(status: string, filter: string): boolean {
+  const actual = status.toLowerCase();
+  if (actual === filter) return true;
+  return (filter === "failed" || filter === "running") &&
+    runStatusBucket(actual) === filter;
 }
 
 /**
@@ -307,7 +357,7 @@ export async function* workflowRunSearch(
 
       if (input.status) {
         const status = input.status.toLowerCase();
-        results = results.filter((r) => r.status.toLowerCase() === status);
+        results = results.filter((r) => runStatusMatches(r.status, status));
       }
 
       if (input.workflow) {

@@ -24,6 +24,8 @@ import { UserError } from "../../domain/errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
   parseRunTimeBound,
+  type RunStatusBucket,
+  runStatusBucket,
   workflowRunSearch,
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchItem,
@@ -126,31 +128,7 @@ export interface WorkflowRunSummaryOptions {
   until?: string;
 }
 
-type StatusBucket = Exclude<keyof WorkflowRunStatusCounts, "runs">;
-
-/**
- * The bucket a run status counts in, or undefined for a status this
- * version does not know. `interrupted` (a run that ended without settling)
- * counts as failed; `pending` (accepted, not yet started) as running.
- */
-export function runStatusBucket(status: string): StatusBucket | undefined {
-  switch (status) {
-    case "succeeded":
-      return "succeeded";
-    case "failed":
-    case "interrupted":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "running":
-    case "pending":
-      return "running";
-    case "suspended":
-      return "suspended";
-    default:
-      return undefined;
-  }
-}
+type StatusBucket = RunStatusBucket;
 
 const FINISHED_BUCKETS: ReadonlySet<StatusBucket> = new Set([
   "succeeded",

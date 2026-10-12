@@ -28,6 +28,7 @@ import {
   parseInputsJson,
   routesByWorkflow,
   runsOfTrigger,
+  runStatusBucket,
   runsWithin,
   scheduleErrorMessage,
   successRate,
@@ -108,6 +109,22 @@ Deno.test("summarizeRuns: counts by status, sums finished durations and keeps re
   assertEquals(deploy.recent.map((r) => r.runId), ["3", "2"]);
   const other = summaries.find((s) => s.workflowName === "other")!;
   assertEquals(other.cancelled, 1);
+});
+
+Deno.test("summarizeRuns: buckets interrupted as failed and pending as running, like serve", () => {
+  const [deploy] = summarizeRuns([
+    run({ runId: "1", status: "interrupted", duration: 100 }),
+    run({ runId: "2", status: "pending" }),
+    run({ runId: "3", status: "mystery", duration: 5 }),
+  ]);
+  assertEquals(deploy.runs, 3);
+  assertEquals(deploy.failed, 1);
+  assertEquals(deploy.running, 1);
+  assertEquals(deploy.durationMs, 100);
+  assertEquals(runStatusBucket("interrupted"), "failed");
+  assertEquals(runStatusBucket("pending"), "running");
+  assertEquals(runStatusBucket("succeeded"), "succeeded");
+  assertEquals(runStatusBucket("mystery"), undefined);
 });
 
 Deno.test("sumCounts / averageDuration / successRate: over finished runs only", () => {
