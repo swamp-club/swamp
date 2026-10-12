@@ -204,6 +204,21 @@ Deno.test("buildDiagramSpec: with serve's fields uses declared outputs, reports 
   });
 });
 
+Deno.test("buildDiagramSpec: a declared report generated only with a variant shows once per variant", () => {
+  const spec = buildDiagramSpec({
+    ...base,
+    reports: [{ name: "@acme/cost", description: "Monthly cost" }],
+  }, [{
+    name: "report-acme-cost-eu",
+    type: "report",
+    tags: { type: "report", reportName: "@acme/cost", varySuffix: "eu" },
+  }]);
+  const reports = group(spec, "reports")!;
+  assertEquals(reports.nodes.map((n) => [n.label, n.detail, n.description]), [
+    ["@acme/cost · eu", "report · generated", "Monthly cost"],
+  ]);
+});
+
 Deno.test("buildDiagramSpec: a model with nothing shows placeholders, not empty columns", () => {
   const spec = buildDiagramSpec({ name: "bare", type: "x/y" }, []);
   assertEquals(group(spec, "arguments")!.nodes[0].kind, "placeholder");

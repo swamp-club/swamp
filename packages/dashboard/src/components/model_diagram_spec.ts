@@ -272,8 +272,33 @@ function reportRoute(
 }
 
 function reportNodes(model: ModelInfo, rows: ModelDataRow[]): DiagramNode[] {
+  const declared = new Map((model.reports ?? []).map((r) => [r.name, r]));
   const nodes = new Map<string, DiagramNode>();
-  for (const r of model.reports ?? []) {
+  const generated = new Set<string>();
+  for (const row of rows) {
+    const tags = row.tags ?? {};
+    if (tags.type !== "report" || !tags.reportName) continue;
+    if (row.name !== reportDataName(tags.reportName, tags.varySuffix)) continue;
+    generated.add(tags.reportName);
+    const variant = tags.varySuffix || undefined;
+    const key = variant
+      ? `${tags.reportName}\u0000${variant}`
+      : tags.reportName;
+    const scope = tags.reportScope ? `${tags.reportScope} report` : "report";
+    const decl = declared.get(tags.reportName);
+    nodes.set(key, {
+      id: `report:${key}`,
+      label: variant ? `${tags.reportName} · ${variant}` : tags.reportName,
+      detail: decl ? `${scope} · generated` : scope,
+      kind: "report",
+      to: reportRoute(model.name, tags.reportName, variant),
+      description: decl?.description,
+    });
+  }
+  // A declared report shows as "not generated yet" only when no run has
+  // generated it, with or without a variant.
+  for (const r of declared.values()) {
+    if (generated.has(r.name)) continue;
     nodes.set(r.name, {
       id: `report:${r.name}`,
       label: r.name,
@@ -281,25 +306,6 @@ function reportNodes(model: ModelInfo, rows: ModelDataRow[]): DiagramNode[] {
       kind: "report",
       to: reportRoute(model.name, r.name),
       description: r.description,
-    });
-  }
-  for (const row of rows) {
-    const tags = row.tags ?? {};
-    if (tags.type !== "report" || !tags.reportName) continue;
-    if (row.name !== reportDataName(tags.reportName, tags.varySuffix)) continue;
-    const variant = tags.varySuffix || undefined;
-    const key = variant
-      ? `${tags.reportName}\u0000${variant}`
-      : tags.reportName;
-    const scope = tags.reportScope ? `${tags.reportScope} report` : "report";
-    const declared = nodes.get(key);
-    nodes.set(key, {
-      id: `report:${key}`,
-      label: variant ? `${tags.reportName} · ${variant}` : tags.reportName,
-      detail: declared ? `${scope} · generated` : scope,
-      kind: "report",
-      to: reportRoute(model.name, tags.reportName, variant),
-      description: declared?.description,
     });
   }
   return [...nodes.values()].sort(byLabel);
