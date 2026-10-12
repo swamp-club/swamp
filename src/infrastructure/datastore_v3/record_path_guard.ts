@@ -26,8 +26,9 @@
  * (`design/enablers/datastores.md`, "Authorisation requirements"). In solo
  * layout the cache root is `.swamp/` itself, which also holds repo-local
  * files. So the read model writes or removes a key only when its first
- * segment is a datastore-synced subdirectory, it names no catalog database,
- * and it does not land in the read model's own state directory.
+ * segment is a datastore-synced subdirectory other than a repo-local stream
+ * directory, it names no catalog database, and it does not land in the read
+ * model's own state directory.
  *
  * @module
  */
@@ -57,10 +58,32 @@ export function readModelStateDir(repoDir: string): string {
   return swampPath(repoDir, READ_MODEL_STATE_DIR);
 }
 
-/** The first segments a materialised key may have: the synced subdirectories. */
+/**
+ * Datastore subdirectories that have no v3 home because nothing writes them
+ * through the datastore (swamp-club#3278). Audit, vault-audit and telemetry
+ * files are written to the checkout's own `.swamp`, or the user-global
+ * telemetry spool, whatever the datastore, and nothing writes `logs/` or
+ * `files/`. They stay repo-local on v3, so no commit may materialise into
+ * them: a key there could overwrite a checkout's own audit trail in solo
+ * layout. See "v3 stream directories" in `design/enablers/datastores.md`.
+ */
+export const REPO_LOCAL_STREAM_SUBDIRS = [
+  "audit",
+  "telemetry",
+  "logs",
+  "files",
+] as const;
+
+/**
+ * The first segments a materialised key may have: the synced subdirectories,
+ * less the repo-local stream directories. The read model and history
+ * compaction both materialise by this set, so a compacted base matches a
+ * replay.
+ */
 export const MATERIALISED_SUBDIRS: ReadonlySet<string> = new Set(
   DEFAULT_DATASTORE_SUBDIRS.filter((dir) =>
-    !(ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(dir)
+    !(ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(dir) &&
+    !(REPO_LOCAL_STREAM_SUBDIRS as readonly string[]).includes(dir)
   ),
 );
 

@@ -27,6 +27,7 @@ import {
   READ_MODEL_STATE_DIR,
   readModelStateDir,
   refusedKeyReason,
+  REPO_LOCAL_STREAM_SUBDIRS,
 } from "./record_path_guard.ts";
 
 // Paths are only resolved lexically: nothing here touches the filesystem.
@@ -71,6 +72,24 @@ Deno.test("refusedKeyReason: refuses always-local, unknown and state-directory f
       refused(key) ?? "",
       "not a datastore-synced directory",
     );
+  }
+});
+
+Deno.test("refusedKeyReason: refuses keys under a repo-local stream directory", () => {
+  for (const dir of REPO_LOCAL_STREAM_SUBDIRS) {
+    assertEquals(MATERIALISED_SUBDIRS.has(dir), false);
+    for (
+      const key of [
+        `${dir}/commands-2026-10-12.jsonl`,
+        `${dir}/x/1/raw`,
+        dir,
+      ]
+    ) {
+      assertStringIncludes(
+        refused(key) ?? "",
+        "not a datastore-synced directory",
+      );
+    }
   }
 });
 
