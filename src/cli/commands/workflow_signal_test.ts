@@ -16,7 +16,12 @@
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type {
   WorkflowSignalAddress,
   WorkflowSignalData,
@@ -347,6 +352,51 @@ Deno.test("signalUserError: a refusal keeps its kind and the key's last wait for
     refusal: "no_open_wait",
     lastWait: LAST_WAIT,
   });
+});
+
+Deno.test("signalUserError: an already_pending refusal keeps until when the earlier signal is held, and its receipt, for JSON output", () => {
+  const receipt = {
+    id: "7a1f6f0c-2d5e-4a51-9d0b-1f6f8f0f3a22",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "tester",
+  };
+  const heldUntil = "2026-01-01T00:00:10.000Z";
+  // As the use case reports it: beside the refusal.
+  const local = signalUserError({
+    code: "validation_failed",
+    message: "A signal is already pending.",
+    details: { refusal: "already_pending", receipt, heldUntil },
+  });
+  assertEquals(buildErrorJson(local), {
+    error: "A signal is already pending.",
+    code: "validation_failed",
+    refusal: "already_pending",
+    pending: { heldUntil, receipt },
+  });
+  // As a server reports it to a caller who may only signal: under
+  // `pending`, with no receipt and a message that names no time.
+  const remote = remoteSignalUserError(
+    new ServerResponseError({
+      code: "workflow_signal_refused",
+      message: "A signal is already pending for that key.",
+      details: { refusal: "already_pending", pending: { heldUntil } },
+    }),
+  );
+  assert(remote instanceof SignalRefusedUserError);
+  assertEquals(buildErrorJson(remote), {
+    error:
+      `Server reported workflow_signal_refused: A signal is already pending for that key. The earlier signal is held until ${heldUntil}.`,
+    code: "workflow_signal_refused",
+    refusal: "already_pending",
+    pending: { heldUntil },
+  });
+  // The receipt of another refusal is not read as a pending signal's.
+  const settled = signalUserError({
+    code: "validation_failed",
+    message: "already settled",
+    details: { refusal: "already_settled", receipt, heldUntil },
+  });
+  assertEquals("pending" in buildErrorJson(settled), false);
 });
 
 Deno.test("signalUserError: an error that is no refusal stays a plain user error", () => {

@@ -307,6 +307,7 @@ export function signalUserError(error: SwampError): UserError {
       plain.code,
       refusal.refusal,
       refusal.lastWait,
+      refusal.pending,
     ),
     errorPaths(plain),
   );
@@ -324,11 +325,16 @@ export function remoteSignalUserError(error: unknown): unknown {
   ) return error;
   const refusal = signalRefusalFromDetails(error.details);
   if (!refusal) return error;
+  // A caller who may only signal gets a fixed sentence that names no time.
+  const until = refusal.pending?.heldUntil;
   return new SignalRefusedUserError(
-    error.message,
+    until !== undefined && !error.message.includes(until)
+      ? `${error.message} The earlier signal is held until ${until}.`
+      : error.message,
     error.code,
     refusal.refusal,
     refusal.lastWait,
+    refusal.pending,
   );
 }
 
@@ -365,7 +371,7 @@ export const workflowSignalCommand = withRemoteOptions(
     )
     .option(
       "--key <key:string>",
-      "With --workflow, in place of a wait ID: the key a wait_for_signal step declares",
+      "With --workflow, in place of a wait ID: the key a wait_for_signal step declares. A step that sets acceptEarly holds a signal sent before its wait opens",
     )
     .option(
       "--payload <json:string>",

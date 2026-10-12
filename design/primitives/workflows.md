@@ -1136,6 +1136,9 @@ _Arrival._ A signal by key whose workflow declares the key on a step with
    is within its age limit (received no more than its `acceptEarly` seconds
    before now) refuses this one as `already_pending`, with the stored receipt
    in the error's details. A key holds one pending signal; the first is kept.
+   The command's `--json` error carries `refusal` and `pending` (`heldUntil`,
+   and the receipt for a caller who may be told it), so a sender knows when
+   it can send again without reading the message.
 3. Otherwise the signal is created at the next number of the slot. Two
    signals at the same moment create the same number and one create wins; the
    loser reads the winner back and is refused as in 2.

@@ -1108,7 +1108,7 @@ async function arriveEarly(
           "already_pending",
           `A signal is already pending for ${named}: signal ${arrival.record.receiptId}, held until ${
             heldUntil(arrival.record).toISOString()
-          }. This one was not stored. A key holds one pending signal.`,
+          }. This one was not stored. A key holds one pending signal. Send again after that time if no step has taken it.`,
           {
             receipt: receiptOfPending(arrival.record),
             heldUntil: heldUntil(arrival.record).toISOString(),
