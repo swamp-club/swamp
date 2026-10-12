@@ -770,6 +770,7 @@ jobs:
     name: Auto-merge PR
     needs:
       [
+        changes,
         claude-adversarial-review,
         claude-ci-security-review,
         claude-review-integrity,
@@ -781,8 +782,23 @@ jobs:
       pull-requests: write
     # Only auto-merge PRs from the same repo (not forks) for security
     # Skip auto-merge if PR has the 'hold' label
+    # Fail closed: every prerequisite must succeed. A review may be skipped
+    # only when change detection succeeded and said it was not required — a
+    # review that was cancelled, or skipped because change detection never
+    # finished, blocks the merge (swamp-club#3048).
     if: |
-      !failure() && !cancelled() &&
+      !cancelled() &&
+      needs.changes.result == 'success' &&
+      needs.validate-attestation.result == 'success' &&
+      (needs.claude-adversarial-review.result == 'success' ||
+        (needs.claude-adversarial-review.result == 'skipped' &&
+          needs.changes.outputs.core != 'true')) &&
+      (needs.claude-ci-security-review.result == 'success' ||
+        (needs.claude-ci-security-review.result == 'skipped' &&
+          needs.changes.outputs.ci != 'true')) &&
+      (needs.claude-review-integrity.result == 'success' ||
+        (needs.claude-review-integrity.result == 'skipped' &&
+          needs.changes.outputs.trust_root != 'true')) &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !contains(github.event.pull_request.labels.*.name, 'hold')
 
@@ -791,7 +807,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Merge PR
-        run: gh pr merge --squash --delete-branch "$PR_NUMBER"
+        # Merge only the commit this run checked, never a newer push.
+        run: gh pr merge --squash --delete-branch --match-head-commit "$HEAD_SHA" "$PR_NUMBER"
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.UAT_TRIGGER_TOKEN }}
