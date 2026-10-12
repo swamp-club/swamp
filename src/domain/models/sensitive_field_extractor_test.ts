@@ -937,3 +937,74 @@ Deno.test("buildSensitiveArgRemediations: builds a vault key from a record key h
   assertEquals(remediations.length, 1);
   assertEquals(remediations[0].vaultKey, "accounts-eu-west-1-x-token");
 });
+
+Deno.test("findLiteralSensitiveGlobalArgs: a vault reference does not hide a literal at the same path", () => {
+  // Record keys are written into the path as is, so these two values share
+  // the path users.a.b.c.
+  const schema = z.object({
+    users: z.record(
+      z.string(),
+      z.record(z.string(), z.string().meta({ sensitive: true })),
+    ),
+  });
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      users: { a: { "b.c": VAULT_REF }, "a.b": { c: "hunter2" } },
+    }),
+    ["users.a.b.c"],
+  );
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      users: { a: { "b.c": "one" }, "a.b": { c: "two" } },
+    }),
+    ["users.a.b.c"],
+  );
+});
+
+Deno.test("buildSensitiveArgRemediations: keeps a declared vaultKey for a field under a union or wrapper", () => {
+  const password = () =>
+    z.string().meta({ sensitive: true, vaultKey: "db-pass" });
+  const schema = z.object({
+    auth: z.union([z.object({ password: password() }), z.string()]),
+    frozen: z.object({ password: password() }).readonly(),
+  });
+  const args = { auth: { password: "one" }, frozen: { password: "two" } };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(paths, ["auth.password", "frozen.password"]);
+  assertEquals(remediations.map((r) => r.vaultKey), ["db-pass", "db-pass"]);
+});
+
+Deno.test("buildSensitiveArgRemediations: element paths that reduce to one vault key get distinct keys", () => {
+  const schema = z.object({
+    accounts: z.record(
+      z.string(),
+      z.object({ token: z.string().meta({ sensitive: true }) }),
+    ),
+  });
+  const args = {
+    accounts: {
+      "a b": { token: "one" },
+      "a-b": { token: "two" },
+      "a.b": { token: "three" },
+    },
+  };
+  const paths = findLiteralSensitiveGlobalArgs(schema, args);
+  const remediations = buildSensitiveArgRemediations(paths, schema, args);
+
+  assertEquals(remediations.map((r) => r.vaultKey), [
+    "accounts-a-b-token",
+    "accounts-a-b-token-2",
+    "accounts-a-b-token-3",
+  ]);
+});
+
+Deno.test("literalSensitiveGlobalArgsMessage: says how to set a field inside an array", () => {
+  const message = literalSensitiveGlobalArgsMessage(["users[1].password"]);
+  assertStringIncludes(message, "'users[1].password'");
+  assertStringIncludes(message, "--global-arg 'users:json=[...]'");
+
+  const plain = literalSensitiveGlobalArgsMessage(["credentials.apiKey"]);
+  assertEquals(plain.includes(":json="), false);
+});

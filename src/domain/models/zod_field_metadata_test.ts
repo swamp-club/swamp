@@ -161,8 +161,18 @@ Deno.test("findValuesWithMetadata: returns top-level and object-nested values wi
       outer: { inner: "3" },
     }, isMarked),
     [
-      { path: "a", value: "1", meta: { marked: true, note: "x" } },
-      { path: "outer.inner", value: "3", meta: { marked: true } },
+      {
+        path: "a",
+        value: "1",
+        meta: { marked: true, note: "x" },
+        perElement: false,
+      },
+      {
+        path: "outer.inner",
+        value: "3",
+        meta: { marked: true },
+        perElement: false,
+      },
     ],
   );
 });
@@ -355,4 +365,91 @@ Deno.test("findValuesWithMetadata: skips absent values and values of the wrong s
 Deno.test("findValuesWithMetadata: does not report metadata on the root schema", () => {
   const schema = z.object({ a: z.string() }).meta({ marked: true });
   assertEquals(markedPaths(schema, { a: "x" }), []);
+});
+
+Deno.test("findValuesWithMetadata: returns nothing for a schema this Zod did not build", () => {
+  // The shape of a Zod v3 schema: `typeName` in place of `type`, a function
+  // for `shape`, and no registry entry.
+  const v3Like = {
+    _def: {
+      typeName: "ZodObject",
+      shape: () => ({ a: { _def: { typeName: "ZodString" } } }),
+    },
+  } as unknown as z.ZodTypeAny;
+  assertEquals(markedPaths(v3Like, { a: "x" }), []);
+
+  const v4WithForeignField = z.object({
+    a: { _def: { typeName: "ZodString" } } as unknown as z.ZodTypeAny,
+    b: z.string().meta({ marked: true }),
+  });
+  assertEquals(markedPaths(v4WithForeignField, { a: "x", b: "y" }), ["b"]);
+});
+
+Deno.test("findValuesWithMetadata: returns both values when two record keys spell one path", () => {
+  const schema = z.object({
+    users: z.record(
+      z.string(),
+      z.record(z.string(), z.string().meta({ marked: true })),
+    ),
+  });
+  const found = findValuesWithMetadata(schema, {
+    users: { a: { "b.c": "first" }, "a.b": { c: "second" } },
+  }, isMarked);
+  assertEquals(found.map((f) => [f.path, f.value]), [
+    ["users.a.b.c", "first"],
+    ["users.a.b.c", "second"],
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: marks values inside arrays, tuples and records as per element", () => {
+  const leaf = z.object({ k: z.string().meta({ marked: true }) });
+  const schema = z.object({
+    once: z.union([leaf, z.string()]),
+    wrapped: leaf.readonly(),
+    list: z.array(leaf),
+    pair: z.tuple([leaf]),
+    map: z.record(z.string(), leaf),
+    deep: z.array(z.object({ inner: leaf })),
+  });
+  const v = { k: "x" };
+  const found = findValuesWithMetadata(schema, {
+    once: v,
+    wrapped: v,
+    list: [v],
+    pair: [v],
+    map: { a: v },
+    deep: [{ inner: v }],
+  }, isMarked);
+  assertEquals(found.map((f) => [f.path, f.perElement]), [
+    ["once.k", false],
+    ["wrapped.k", false],
+    ["list[0].k", true],
+    ["pair[0].k", true],
+    ["map.a.k", true],
+    ["deep[0].inner.k", true],
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: does not enter a value that contains itself", () => {
+  type Node = { secret: string; children?: Node[] };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      secret: z.string().meta({ marked: true }),
+      children: z.array(node).optional(),
+    })
+  );
+  const root: Node = { secret: "a", children: [] };
+  root.children!.push(root);
+  assertEquals(markedPaths(z.object({ root: node }), { root }), [
+    "root.secret",
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: visits a value an alias repeats in two places", () => {
+  const schema = z.object({
+    a: z.object({ k: z.string().meta({ marked: true }) }),
+    b: z.object({ k: z.string().meta({ marked: true }) }),
+  });
+  const shared = { k: "x" };
+  assertEquals(markedPaths(schema, { a: shared, b: shared }), ["a.k", "b.k"]);
 });

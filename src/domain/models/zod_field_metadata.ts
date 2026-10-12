@@ -197,6 +197,11 @@ export interface ValueWithMetadata {
   value: unknown;
   /** The metadata that matched */
   meta: FieldMetadata;
+  /**
+   * Whether the value sits inside an array element, tuple item or record
+   * value, and so occurs once per element rather than once per schema.
+   */
+  perElement: boolean;
 }
 
 /**
@@ -230,6 +235,18 @@ function innerSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
     return def.in && getSchemaType(def.in) === "transform" ? def.out : def.in;
   }
   return undefined;
+}
+
+/**
+ * Reads a schema's registered metadata. A schema this Zod did not build (one
+ * from an extension's own Zod v3, say) has none, and the registry throws on
+ * it, so it is answered as having no metadata.
+ */
+function readMetadata(schema: z.ZodTypeAny): FieldMetadata | undefined {
+  if (!(schema as { _zod?: unknown })?._zod) {
+    return undefined;
+  }
+  return z.globalRegistry.get(schema) as FieldMetadata | undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -309,12 +326,20 @@ function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
   return tagged.length > 0 ? tagged : options;
 }
 
+/** State carried through one {@link findValuesWithMetadata} walk. */
+interface ValueWalk {
+  matches: (meta: FieldMetadata) => boolean;
+  found: ValueWithMetadata[];
+  /** Containers on the way down to the current value, to stop on a cycle. */
+  ancestors: Set<object>;
+}
+
 function visitValue(
+  walk: ValueWalk,
   schema: z.ZodTypeAny,
   value: unknown,
-  matches: (meta: FieldMetadata) => boolean,
   path: string,
-  found: Map<string, ValueWithMetadata>,
+  perElement: boolean,
   atRoot = false,
 ): void {
   if (value === undefined || value === null) {
@@ -324,10 +349,15 @@ function visitValue(
   let current = schema;
   let reported = atRoot;
   while (true) {
-    const meta = z.globalRegistry.get(current) as FieldMetadata | undefined;
-    if (!reported && meta && matches(meta)) {
-      if (!found.has(path)) {
-        found.set(path, { path, value, meta });
+    const meta = readMetadata(current);
+    if (!reported && meta && walk.matches(meta)) {
+      // Union and intersection members revisit one value; a second value at
+      // the same path (two record keys can spell one path) is kept.
+      const seen = walk.found.some((f) =>
+        f.path === path && Object.is(f.value, value)
+      );
+      if (!seen) {
+        walk.found.push({ path, value, meta, perElement });
       }
       reported = true;
     }
@@ -342,42 +372,52 @@ function visitValue(
   const def = getSchemaDef(current);
   const child = (key: string) => path ? `${path}.${key}` : key;
 
+  if (schemaType === "union") {
+    for (const option of unionMembers(def, value)) {
+      visitValue(walk, option, value, path, perElement, atRoot);
+    }
+    return;
+  }
+  if (schemaType === "intersection") {
+    for (const side of [def.left, def.right]) {
+      if (side) {
+        visitValue(walk, side, value, path, perElement, atRoot);
+      }
+    }
+    return;
+  }
+  if (typeof value !== "object" || walk.ancestors.has(value)) {
+    return;
+  }
+
+  walk.ancestors.add(value);
   if (schemaType === "object" && isPlainObject(value)) {
     for (const [key, fieldSchema] of Object.entries(def.shape ?? {})) {
-      visitValue(fieldSchema, value[key], matches, child(key), found);
+      visitValue(walk, fieldSchema, value[key], child(key), perElement);
     }
   } else if (schemaType === "record" && isPlainObject(value)) {
     const valueSchema = def.valueType;
     if (valueSchema) {
       for (const [key, entry] of Object.entries(value)) {
-        visitValue(valueSchema, entry, matches, child(key), found);
+        visitValue(walk, valueSchema, entry, child(key), true);
       }
     }
   } else if (schemaType === "array" && Array.isArray(value)) {
     const elementSchema = def.element;
     if (elementSchema) {
       value.forEach((element, index) =>
-        visitValue(elementSchema, element, matches, `${path}[${index}]`, found)
+        visitValue(walk, elementSchema, element, `${path}[${index}]`, true)
       );
     }
   } else if (schemaType === "tuple" && Array.isArray(value)) {
     value.forEach((element, index) => {
       const itemSchema = def.items?.[index] ?? def.rest;
       if (itemSchema) {
-        visitValue(itemSchema, element, matches, `${path}[${index}]`, found);
+        visitValue(walk, itemSchema, element, `${path}[${index}]`, true);
       }
     });
-  } else if (schemaType === "union") {
-    for (const option of unionMembers(def, value)) {
-      visitValue(option, value, matches, path, found, atRoot);
-    }
-  } else if (schemaType === "intersection") {
-    for (const side of [def.left, def.right]) {
-      if (side) {
-        visitValue(side, value, matches, path, found, atRoot);
-      }
-    }
   }
+  walk.ancestors.delete(value);
 }
 
 /**
@@ -393,8 +433,9 @@ function visitValue(
  * are still visited. Metadata on the root schema itself is not reported.
  *
  * The walk follows the value, so it visits at most what the value holds and
- * ends on a recursive schema. Paths are for display: a record key containing
- * a dot or bracket is written as is.
+ * ends on a recursive schema; a value that contains itself is not entered
+ * twice. Paths are for display: a record key containing a dot or bracket is
+ * written as is, so two values can share a path, and both are returned.
  *
  * @param schema - A Zod schema (typically an object schema)
  * @param value - The value the schema describes
@@ -406,7 +447,7 @@ export function findValuesWithMetadata(
   value: unknown,
   matches: (meta: FieldMetadata) => boolean,
 ): ValueWithMetadata[] {
-  const found = new Map<string, ValueWithMetadata>();
-  visitValue(schema, value, matches, "", found, true);
-  return [...found.values()];
+  const walk: ValueWalk = { matches, found: [], ancestors: new Set() };
+  visitValue(walk, schema, value, "", false, true);
+  return walk.found;
 }

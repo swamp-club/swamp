@@ -77,9 +77,15 @@ element: `users[1].password`, `accounts.prod.token`.
 - **Vault keys.** A field inside an array element or record value occurs once
   per element, so its suggested vault key is built from the whole path
   (`users-1-password`). A declared `vaultKey` is not used there, because every
-  element would share it. A declared `vaultName` still applies.
+  element would share it. A declared `vaultName` still applies. A field reached
+  only through objects, unions or wrappers occurs once and keeps its declared
+  `vaultKey`.
 - **Paths are for display.** A record key is written as is, so a key holding a
-  dot or bracket makes the path ambiguous.
+  dot or bracket makes the path ambiguous, and two values can share a path.
+  Every value is still checked. A path naming an array element is not a
+  `--global-arg` key; the refusal says to pass the whole array with
+  `<name>:json=[...]`. Suggested vault keys that come out the same get a
+  numeric suffix.
 
 The redaction and vaulting primitives in the same module
 (`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)

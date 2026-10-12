@@ -180,9 +180,10 @@ export function findLiteralSensitiveGlobalArgs(
   if (!schema || !args) {
     return [];
   }
-  return findValuesWithMetadata(schema, args, isSensitive)
+  const offending = findValuesWithMetadata(schema, args, isSensitive)
     .filter(({ value }) => isLiteralSecret(value))
     .map(({ path }) => path);
+  return [...new Set(offending)];
 }
 
 /**
@@ -203,8 +204,22 @@ export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
     `reference it with a vault.get expression, e.g. ` +
     `--global-arg "apiKey=\${{ vault.get('my-vault', 'api-key') }}". If a ` +
     `stored definition already holds the value, run \`swamp doctor secrets\` ` +
-    `to find it.`
+    `to find it.` + arrayElementHint(paths)
   );
+}
+
+/**
+ * `--global-arg` keys are dot paths, so a path naming an array element cannot
+ * be passed back as a key. Says how to set such a field instead.
+ */
+function arrayElementHint(paths: string[]): string {
+  const elementPath = paths.find((p) => p.includes("["));
+  if (!elementPath) {
+    return "";
+  }
+  const name = elementPath.slice(0, elementPath.indexOf("["));
+  return ` A field inside an array is set by passing the whole array, e.g. ` +
+    `--global-arg '${name}:json=[...]'.`;
 }
 
 /** Machine-readable error code for a rejected literal sensitive global argument. */
@@ -216,7 +231,11 @@ export const LITERAL_SENSITIVE_GLOBAL_ARG_CODE = "literal_sensitive_global_arg";
  * coordinates to migrate the secret to — never the secret value itself.
  */
 export interface SensitiveArgRemediation {
-  /** Dot-path of the offending sensitive global argument. */
+  /**
+   * Path of the offending sensitive global argument, for display: a field in
+   * an array element reads `users[0].password`, which is not a
+   * `--global-arg` key.
+   */
   path: string;
   /** Suggested vault name to store the secret under. */
   vaultName: string;
@@ -256,6 +275,7 @@ function vaultKeyForElementPath(path: string): string {
  * so its key is built from the whole path (`users[0].password` gives
  * `users-0-password`) rather than from a declared `vaultKey` or the leaf
  * segment, either of which would point every element at the same secret.
+ * When two such keys come out the same, the later one gets a numeric suffix.
  * These paths are only recognised when `args` is given.
  *
  * @param leakedPaths - Paths returned by `findLiteralSensitiveGlobalArgs`
@@ -269,32 +289,43 @@ export function buildSensitiveArgRemediations(
   args?: Record<string, unknown>,
 ): SensitiveArgRemediation[] {
   const fieldsByPath = new Map<string, SensitiveFieldInfo>();
-  const elementFieldsByPath = new Map<string, SensitiveFieldInfo>();
+  const elementPaths = new Set<string>();
   if (schema) {
-    for (const field of extractSensitiveFields(schema)) {
-      fieldsByPath.set(field.path, field);
-    }
     if (args) {
       for (
-        const { path, meta } of findValuesWithMetadata(
+        const { path, meta, perElement } of findValuesWithMetadata(
           schema,
           args,
           isSensitive,
         )
       ) {
         if (!fieldsByPath.has(path)) {
-          elementFieldsByPath.set(path, toSensitiveFieldInfo(path, meta));
+          fieldsByPath.set(path, toSensitiveFieldInfo(path, meta));
+          if (perElement) {
+            elementPaths.add(path);
+          }
         }
       }
     }
+    for (const field of extractSensitiveFields(schema)) {
+      if (!fieldsByPath.has(field.path)) {
+        fieldsByPath.set(field.path, field);
+      }
+    }
   }
+  const elementKeys = new Set<string>();
   return leakedPaths.map((path) => {
-    const elementMeta = elementFieldsByPath.get(path);
-    const meta = elementMeta ?? fieldsByPath.get(path);
+    const meta = fieldsByPath.get(path);
     const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    const vaultKey = elementMeta
-      ? vaultKeyForElementPath(path)
-      : meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    let vaultKey = meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    if (elementPaths.has(path)) {
+      const base = vaultKeyForElementPath(path);
+      vaultKey = base;
+      for (let n = 2; elementKeys.has(vaultKey); n++) {
+        vaultKey = `${base}-${n}`;
+      }
+      elementKeys.add(vaultKey);
+    }
     return {
       path,
       vaultName,
