@@ -1764,3 +1764,58 @@ Deno.test("continueSettledRun: a copy of a run that matches the datastore's is l
   assertEquals(registry.registered.length, 1);
   await registry.registered[0].completion;
 });
+
+Deno.test("continueSettledRun: gives an open wait the pending signal of its key, and launches the run without timing anything out", async () => {
+  const workflow = waitingWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("review")!;
+  step.start();
+  const opened = new Date();
+  // A keyed wait whose step set acceptEarly, open over a signal its step
+  // never read: the signaller stored it and stopped (swamp-club#3212).
+  const wait = SignalWait.open(WAIT_SCHEMA, 60, opened, undefined, "verdict")
+    .withEarly({
+      generation: 1,
+      overRelease: false,
+      from: new Date(opened.getTime() - 10_000).toISOString(),
+    });
+  step.waitForSignal(wait);
+  run.suspend();
+  const { ctx, registry, audit, waits } = continuationHarness([workflow], [
+    run,
+  ]);
+  await registerWait(waits, run, wait);
+  const target = { workflowId: workflow.id, runId: run.id };
+  const beforeDeadline = wait.deadline.getTime() - 1;
+
+  // Nothing pending: the wait is open and the run stays suspended.
+  assertEquals(
+    await continueSettledRun(ctx, target, SWEEP, () => beforeDeadline),
+    false,
+  );
+  await waits.createPendingRecord({
+    kind: "pending",
+    workflowId: workflow.id,
+    key: "verdict",
+    slot: 1,
+    number: 1,
+    receiptId: crypto.randomUUID(),
+    receivedAt: opened.toISOString(),
+    submittedBy: "camera",
+    payload: { verdict: "ship" },
+    acceptEarly: 10,
+  });
+  assertEquals(
+    await continueSettledRun(ctx, target, SWEEP, () => beforeDeadline),
+    true,
+  );
+  const outcome = await waits.findOutcome(wait.id);
+  assert(outcome.kind === "found");
+  assertEquals(outcome.record.kind, "accepted");
+  assertEquals(registry.registered.map((r) => r.runId), [run.id]);
+  assertEquals((audit[0].detail ?? "").includes("waitsTimedOut"), false);
+  await registry.registered[0].completion;
+});

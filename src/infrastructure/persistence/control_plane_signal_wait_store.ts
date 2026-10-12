@@ -45,6 +45,19 @@ import {
   waitKeyRecordKey,
   waitKeyWorkflowPrefix,
 } from "../../domain/workflows/wait_key_claim.ts";
+import {
+  decodePendingRecord,
+  encodePendingRecord,
+  type HighestPendingRecord,
+  PENDING_SIGNAL_PREFIX,
+  type PendingAddress,
+  pendingAddressFromKey,
+  type PendingRecord,
+  pendingRecordKey,
+  type PendingSlot,
+  pendingSlotPrefix,
+  pendingWorkflowPrefix,
+} from "../../domain/workflows/pending_signal.ts";
 
 /** A control-plane store that can create a record only if it is absent. */
 export type AtomicControlPlaneStore =
@@ -66,9 +79,9 @@ const HIGHEST_KEY_RECORD_READS = 4;
 
 /**
  * {@link SignalWaitStore} over a {@link ControlPlaneStore}: registrations
- * under `waits/`, outcomes under `wait-outcomes/` and key records under
- * `wait-keys/`, each written with `putIfAbsent` so the first writer of a
- * key holds it.
+ * under `waits/`, outcomes under `wait-outcomes/`, key records under
+ * `wait-keys/` and pending signals under `wait-pending/`, each written with
+ * `putIfAbsent` so the first writer of a key holds it.
  */
 export class ControlPlaneSignalWaitStore implements SignalWaitStore {
   readonly #store: AtomicControlPlaneStore;
@@ -209,6 +222,70 @@ export class ControlPlaneSignalWaitStore implements SignalWaitStore {
   async removeKeyRecordsOfWorkflow(workflowId: string): Promise<void> {
     const prefix = waitKeyWorkflowPrefix(workflowId);
     for (const storeKey of await this.#store.list(prefix)) {
+      await this.#store.delete(storeKey);
+    }
+  }
+
+  async highestPendingRecord(at: PendingSlot): Promise<HighestPendingRecord> {
+    // As for a key's highest record: read from the names, so one record is
+    // fetched however many signals the slot has held.
+    let number = 0;
+    for (let attempt = 0; attempt < HIGHEST_KEY_RECORD_READS; attempt++) {
+      number = 0;
+      for (const storeKey of await this.#store.list(pendingSlotPrefix(at))) {
+        const found = pendingAddressFromKey(storeKey);
+        if (found !== undefined && found.number > number) {
+          number = found.number;
+        }
+      }
+      if (number === 0) return { kind: "none" };
+      const stored = await this.findPendingRecord({ ...at, number });
+      if (stored.kind === "found") return stored;
+      if (stored.kind === "unreadable") return { kind: "unreadable", number };
+      // Listed and gone again: lapsed and removed in between.
+    }
+    return { kind: "unreadable", number };
+  }
+
+  async createPendingRecord(
+    record: PendingRecord,
+  ): Promise<StoredWaitRecord<PendingRecord>> {
+    await this.#store.putIfAbsent(
+      pendingRecordKey(record),
+      encodePendingRecord(record),
+    );
+    // Read back, as `settle` does: the create's own answer is not trusted.
+    return await this.findPendingRecord(record);
+  }
+
+  async findPendingRecord(
+    at: PendingAddress,
+  ): Promise<StoredWaitRecord<PendingRecord>> {
+    return decodePendingRecord(
+      await this.#store.get(pendingRecordKey(at)),
+      at,
+    );
+  }
+
+  async listPendingAddresses(): Promise<PendingAddress[]> {
+    const found: PendingAddress[] = [];
+    for (const storeKey of await this.#store.list(PENDING_SIGNAL_PREFIX)) {
+      const at = pendingAddressFromKey(storeKey);
+      if (at !== undefined) found.push(at);
+    }
+    return found;
+  }
+
+  async removePendingRecord(at: PendingAddress): Promise<void> {
+    await this.#store.delete(pendingRecordKey(at));
+  }
+
+  async removePendingRecordsOfWorkflow(workflowId: string): Promise<void> {
+    for (
+      const storeKey of await this.#store.list(
+        pendingWorkflowPrefix(workflowId),
+      )
+    ) {
       await this.#store.delete(storeKey);
     }
   }

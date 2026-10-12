@@ -23,14 +23,16 @@ import type {
   WaitRegistration,
 } from "./signal_wait_records.ts";
 import type { WaitKeyRecords } from "./wait_key_claim.ts";
+import type { PendingSignalRecords } from "./pending_signal.ts";
 
 /**
  * Where the registrations and outcomes of signal waits are kept
  * (swamp-club#3093), and the records of the keys waits hold
  * (swamp-club#3209). Every process on the datastore reads and writes the
- * same records, without the run claim and without the run record.
+ * same records, without the run claim and without the run record. It also
+ * keeps the pending signals of keys (swamp-club#3212).
  */
-export interface SignalWaitStore extends WaitKeyRecords {
+export interface SignalWaitStore extends WaitKeyRecords, PendingSignalRecords {
   /**
    * Records a wait. A registration that already exists is left as it is, so
    * a backfill and the executor never overwrite each other.
@@ -143,4 +145,10 @@ export const UNSHARED_SIGNAL_WAITS: SignalWaitStore = {
   listKeyRecords: () => Promise.resolve([]),
   removeKeyRecord: () => Promise.resolve(),
   removeKeyRecordsOfWorkflow: () => Promise.resolve(),
+  highestPendingRecord: () => Promise.resolve({ kind: "none" }),
+  createPendingRecord: (record) => Promise.resolve({ kind: "found", record }),
+  findPendingRecord: () => Promise.resolve({ kind: "absent" }),
+  listPendingAddresses: () => Promise.resolve([]),
+  removePendingRecord: () => Promise.resolve(),
+  removePendingRecordsOfWorkflow: () => Promise.resolve(),
 };

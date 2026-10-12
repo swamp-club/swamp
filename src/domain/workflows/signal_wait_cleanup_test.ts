@@ -48,10 +48,17 @@ import {
   removeWaitRecordsOfRuns,
   settleExpiredWaits,
   settleReenteredWait,
+  sweepPendingSignals,
   sweepWaitRecords,
+  takePendingSignalsOfRun,
   waitIdsOf,
   waitRefOf,
 } from "./signal_wait_cleanup.ts";
+import {
+  PENDING_SIGNAL_LAPSE_GRACE_MS,
+  type PendingSignal,
+} from "./pending_signal.ts";
+import { holdEarlySignal } from "./early_signal.ts";
 import { claimWaitKey, type WaitKeyClaim } from "./wait_key_claim.ts";
 
 const OPENED = new Date("2026-01-01T00:00:00.000Z");
@@ -361,7 +368,12 @@ Deno.test("sweepWaitRecords: closes the registration of an ended run, keeps its 
     localRunAbsenceIsAuthoritative: true,
   });
 
-  assertEquals(swept, { registrations: 1, outcomes: 0, keyRecords: 0 });
+  assertEquals(swept, {
+    registrations: 1,
+    outcomes: 0,
+    keyRecords: 0,
+    pendingSignals: 0,
+  });
   assertEquals(
     (await store.listRegistrations()).map((r) => r.runId),
     [live.id],
@@ -390,6 +402,7 @@ Deno.test("sweepWaitRecords: records of a run that cannot be found go only once 
       registrations: 0,
       outcomes: 0,
       keyRecords: 0,
+      pendingSignals: 0,
     },
   );
   assertEquals((await store.listRegistrations()).length, 2);
@@ -402,6 +415,7 @@ Deno.test("sweepWaitRecords: records of a run that cannot be found go only once 
       registrations: 2,
       outcomes: 1,
       keyRecords: 0,
+      pendingSignals: 0,
     },
   );
   assertEquals(store.registrations.size, 0);
@@ -420,7 +434,7 @@ Deno.test("sweepWaitRecords: uncertain run absence retains records regardless of
       await sweepWaitRecords(store, () => Promise.resolve(null), farFuture, {
         localRunAbsenceIsAuthoritative: authority,
       }),
-      { registrations: 0, outcomes: 0, keyRecords: 0 },
+      { registrations: 0, outcomes: 0, keyRecords: 0, pendingSignals: 0 },
     );
     assertEquals((await store.listRegistrations()).length, 1);
     assertEquals(await store.listOutcomes(), [accepted]);
@@ -543,6 +557,7 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
     registrations: 0,
     outcomes: 0,
     keyRecords: 0,
+    pendingSignals: 0,
   });
   assertEquals((await store.listRegistrations()).length, 1);
   assertEquals(store.outcomes.size, 0);
@@ -557,6 +572,7 @@ Deno.test("sweepWaitRecords: a wait registered after the run record here says th
     registrations: 1,
     outcomes: 0,
     keyRecords: 0,
+    pendingSignals: 0,
   });
   assertEquals((await store.listOutcomes()).map((o) => o.kind), ["cancelled"]);
 });
@@ -588,6 +604,7 @@ Deno.test("sweepWaitRecords: where run records are not the datastore's own it ch
       registrations: 0,
       outcomes: 0,
       keyRecords: 0,
+      pendingSignals: 0,
     });
     assertEquals(store.registrations, before.registrations);
     assertEquals(store.outcomes, before.outcomes);
@@ -615,7 +632,12 @@ Deno.test("sweepWaitRecords: a run that cannot be read is skipped, and the rest 
     AUTHORITATIVE,
   );
 
-  assertEquals(swept, { registrations: 1, outcomes: 0, keyRecords: 0 });
+  assertEquals(swept, {
+    registrations: 1,
+    outcomes: 0,
+    keyRecords: 0,
+    pendingSignals: 0,
+  });
   // Nothing is known about the damaged run, so its records stay.
   assertEquals(
     (await store.listRegistrations()).map((r) => r.runId),
@@ -772,4 +794,306 @@ Deno.test("sweepWaitRecords: the claim of a run that exists, or that cannot be r
     assertEquals(swept.keyRecords, 0);
     assertEquals(await store.listKeyRecords(), [claim]);
   }
+});
+
+// Pending signals (swamp-club#3212).
+
+const EARLY_KEY = "kitchen-verdict";
+const EARLY_SCHEMA = { type: "object" as const };
+
+function earlyWorkflow(): Workflow {
+  return Workflow.create({
+    name: "kitchen",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "identify",
+            task: StepTask.waitForSignal(60, EARLY_SCHEMA, EARLY_KEY, 10),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** A run suspended at a keyed wait a step with acceptEarly opened at `at`. */
+async function suspendedAtEarlyWait(
+  store: InMemorySignalWaitStore,
+  workflow: Workflow,
+  at: Date,
+): Promise<{ run: WorkflowRun; waitId: string; claim: WaitKeyClaim }> {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const step = job.getStep("identify")!;
+  step.start();
+  let wait = SignalWait.open(EARLY_SCHEMA, 60, at, undefined, EARLY_KEY);
+  const claimed = await claimWaitKey(store, {
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    waitId: wait.id,
+    runId: run.id,
+    jobName: "main",
+    stepName: "identify",
+    deadline: wait.deadline.toISOString(),
+    acceptEarly: 10,
+  }, at);
+  assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+  wait = wait.withEarly(claimed.claim.early!);
+  await store.register(registrationOf(
+    {
+      workflowId: workflow.id,
+      workflowName: workflow.name,
+      runId: run.id,
+      jobName: "main",
+      stepName: "identify",
+    },
+    wait,
+    at,
+  ));
+  step.waitForSignal(wait);
+  run.suspend();
+  return { run, waitId: wait.id, claim: claimed.claim };
+}
+
+function pendingFor(
+  workflow: Workflow,
+  overrides: Partial<PendingSignal> = {},
+): PendingSignal {
+  return {
+    kind: "pending",
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    slot: 1,
+    number: 1,
+    receiptId: crypto.randomUUID(),
+    receivedAt: IN_TIME.toISOString(),
+    submittedBy: "camera",
+    payload: { verdict: "known" },
+    acceptEarly: 10,
+    ...overrides,
+  };
+}
+
+Deno.test("outcomeAt: a wait at its deadline with a pending signal received before it succeeds, and does not time out", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  const pending = pendingFor(workflow);
+  await store.createPendingRecord(pending);
+  const step = run.getJob("main")!.getStep("identify")!;
+  const ref = waitRefOf(run, step)!;
+
+  const stored = await outcomeAt(store, ref, TOO_LATE);
+  assert(stored.kind === "found" && stored.record.kind === "accepted");
+  assertEquals(stored.record.receipt.id, pending.receiptId);
+
+  // The resume that follows succeeds the step with the payload.
+  assertEquals(await applyAcceptedSignals(store, run, TOO_LATE), undefined);
+  assertEquals(step.status, "succeeded");
+});
+
+Deno.test("outcomeAt: a pending signal received after the deadline does not stop the timeout", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  await store.createPendingRecord(
+    pendingFor(workflow, { receivedAt: TOO_LATE.toISOString() }),
+  );
+  const ref = waitRefOf(run, run.getJob("main")!.getStep("identify")!)!;
+  const stored = await outcomeAt(store, ref, TOO_LATE);
+  assertEquals(stored.kind === "found" && stored.record.kind, "timed_out");
+});
+
+Deno.test("outcomeAt: an open wait takes a pending signal a signaller left unapplied, whoever looks", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  const ref = waitRefOf(run, run.getJob("main")!.getStep("identify")!)!;
+  assertEquals(await outcomeAt(store, ref, IN_TIME), { kind: "absent" });
+  await store.createPendingRecord(pendingFor(workflow));
+  const stored = await outcomeAt(store, ref, IN_TIME);
+  assertEquals(stored.kind === "found" && stored.record.kind, "accepted");
+});
+
+Deno.test("claimWaitKey: an overdue holder with a pending signal received before its deadline is settled as signalled, not timed out", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const holder = await suspendedAtEarlyWait(store, workflow, OPENED);
+  await store.createPendingRecord(pendingFor(workflow));
+  // A second run claims the key after the holder's deadline.
+  const next = await claimWaitKey(store, {
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    waitId: crypto.randomUUID(),
+    runId: crypto.randomUUID(),
+    jobName: "main",
+    stepName: "identify",
+    deadline: new Date(TOO_LATE.getTime() + 60_000).toISOString(),
+    acceptEarly: 10,
+  }, TOO_LATE);
+  assertEquals(next.kind, "acquired");
+  const outcome = await store.findOutcome(holder.waitId);
+  assertEquals(outcome.kind === "found" && outcome.record.kind, "accepted");
+});
+
+Deno.test("settleExpiredWaits: an expired wait with an applicable pending signal is not counted as timed out", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run, waitId } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  await store.createPendingRecord(pendingFor(workflow));
+  assertEquals(await settleExpiredWaits(store, run, TOO_LATE), 0);
+  const outcome = await store.findOutcome(waitId);
+  assertEquals(outcome.kind === "found" && outcome.record.kind, "accepted");
+});
+
+Deno.test("takePendingSignalsOfRun: gives each open wait of the run its pending signal and counts them", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run, waitId } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  assertEquals(await takePendingSignalsOfRun(store, run), 0);
+  await store.createPendingRecord(pendingFor(workflow));
+  assertEquals(await takePendingSignalsOfRun(store, run), 1);
+  // Settled now, so a second pass takes nothing.
+  assertEquals(await takePendingSignalsOfRun(store, run), 0);
+  // A wait whose registration is gone belongs to a run that ended.
+  const other = new InMemorySignalWaitStore();
+  const gone = await suspendedAtEarlyWait(other, workflow, OPENED);
+  await other.createPendingRecord(pendingFor(workflow));
+  await other.removeRegistration(gone.waitId);
+  assertEquals(await takePendingSignalsOfRun(other, gone.run), 0);
+  assertEquals((await store.findOutcome(waitId)).kind, "found");
+});
+
+Deno.test("removeWaitRecordsOfRuns: the pending signals of a deleted run's slot go with its claim", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  await store.createPendingRecord(pendingFor(workflow));
+  // A signal for the next claim is not this run's.
+  await store.createPendingRecord(pendingFor(workflow, { slot: 2 }));
+  await outcomeAt(
+    store,
+    waitRefOf(run, run.getJob("main")!.getStep("identify")!)!,
+    IN_TIME,
+  );
+  await removeWaitRecordsOfRuns(store, new Set([run.id]), TOO_LATE);
+  assertEquals(
+    (await store.listPendingAddresses()).map((at) => at.slot),
+    [2],
+  );
+  assertEquals(store.outcomes.size, 0);
+});
+
+const LONG_AFTER = new Date(
+  IN_TIME.getTime() + 10_000 + PENDING_SIGNAL_LAPSE_GRACE_MS + 1,
+);
+
+Deno.test("sweepPendingSignals: a pending signal no wait took is superseded by a lapse once past its age limit and the grace period, and no number is reused", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const pending = pendingFor(workflow);
+  await store.createPendingRecord(pending);
+
+  // Within the grace period it is kept.
+  assertEquals(
+    await sweepPendingSignals(store, new Date(LONG_AFTER.getTime() - 2)),
+    0,
+  );
+  assertEquals(await sweepPendingSignals(store, LONG_AFTER), 1);
+  const left = await store.listPendingAddresses();
+  assertEquals(left.map((at) => at.number), [2]);
+  const head = await store.findPendingRecord(left[0]);
+  assertEquals(head.kind === "found" && head.record.kind, "lapse");
+  // The lapse holds no payload.
+  assertEquals("payload" in (head.kind === "found" ? head.record : {}), false);
+  // It stays as the highest of its slot: a later sweep leaves it.
+  assertEquals(await sweepPendingSignals(store, LONG_AFTER), 0);
+  // The next signal is stored above it.
+  const next = await holdEarlySignal(store, {
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    payload: {},
+    submittedBy: "camera",
+    acceptEarly: 10,
+  }, LONG_AFTER);
+  assert(next.kind === "pending");
+  assertEquals([next.record.slot, next.record.number], [1, 3]);
+});
+
+Deno.test("sweepPendingSignals: the signals a newer one superseded are removed, and the newest is kept", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  await store.createPendingRecord(pendingFor(workflow));
+  const newest = pendingFor(workflow, {
+    number: 2,
+    receivedAt: new Date(IN_TIME.getTime() + 20_000).toISOString(),
+  });
+  await store.createPendingRecord(newest);
+  assertEquals(
+    await sweepPendingSignals(store, new Date(IN_TIME.getTime() + 21_000)),
+    1,
+  );
+  assertEquals(await store.listPendingAddresses(), [{
+    workflowId: workflow.id,
+    key: EARLY_KEY,
+    slot: 1,
+    number: 2,
+  }]);
+});
+
+Deno.test("sweepPendingSignals: the records of a slot whose claim still exists are left for the run that took them", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  await suspendedAtEarlyWait(store, workflow, OPENED);
+  await store.createPendingRecord(pendingFor(workflow));
+  assertEquals(await sweepPendingSignals(store, LONG_AFTER), 0);
+  assertEquals((await store.listPendingAddresses()).length, 1);
+});
+
+Deno.test("sweepPendingSignals: a slot the key has passed, with no claim left to read it, is removed whole", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  // Three claims, each settled; the first two are then removed by a build
+  // that does not know pending signals, which leaves their slots behind.
+  const claims: WaitKeyClaim[] = [];
+  for (let generation = 1; generation <= 3; generation++) {
+    const held = await suspendedAtEarlyWait(store, workflow, OPENED);
+    await store.settle(
+      cancelledOutcome(
+        waitRefOf(held.run, held.run.getJob("main")!.getStep("identify")!)!,
+        OPENED,
+      ),
+    );
+    claims.push(held.claim);
+  }
+  await store.removeKeyRecord(claims[0]);
+  await store.removeKeyRecord(claims[1]);
+  await store.createPendingRecord(pendingFor(workflow, { slot: 1 }));
+  await store.createPendingRecord(pendingFor(workflow, { slot: 3 }));
+  assertEquals(await sweepPendingSignals(store, IN_TIME), 1);
+  assertEquals(
+    (await store.listPendingAddresses()).map((at) => at.slot),
+    [3],
+  );
+});
+
+Deno.test("sweepWaitRecords: pending signals are swept where run records say nothing about a wait", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  await store.createPendingRecord(pendingFor(workflow));
+  const swept = await sweepWaitRecords(
+    store,
+    () => Promise.resolve(null),
+    LONG_AFTER,
+  );
+  assertEquals(swept, {
+    registrations: 0,
+    outcomes: 0,
+    keyRecords: 0,
+    pendingSignals: 1,
+  });
 });

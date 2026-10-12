@@ -380,7 +380,7 @@ Deno.test("deliverSignalForCaller: an unsupported datastore is said in general t
   };
   const result = await deliver(ctx, f.waitId);
   assertEquals(result.status, "unsupported");
-  assert(result.status !== "delivered");
+  assert(result.status !== "delivered" && result.status !== "pending");
   assertEquals(result.message.includes("internal-name"), false);
 });
 
@@ -663,4 +663,143 @@ Deno.test("deliverSignalForCaller: by key, a payload over the limit is refused b
     },
   );
   assertEquals(result.status, "invalid_payload");
+});
+
+// A signal by key held before its wait opens (swamp-club#3212).
+
+const EARLY_KEY = "kitchen-verdict";
+
+/** `f` with a workflow whose keyed wait takes an early signal, and no run of it. */
+function withEarlyWorkflow(f: Fixture): Workflow {
+  const workflow = Workflow.create({
+    name: "kitchen",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "identify",
+            task: StepTask.waitForSignal(3600, SCHEMA, EARLY_KEY, 600),
+          }),
+        ],
+      }),
+    ],
+  });
+  f.workflows.set(workflow.name, workflow);
+  return workflow;
+}
+
+Deno.test("deliverSignalForCaller: by key, a signal before the wait opens is held, and a reader is told for which key and workflow", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const result = await deliverByKey(
+    f.ctxWith([grantOf(["signal", "read"])]),
+    workflow.name,
+    EARLY_KEY,
+  );
+  assert(result.status === "pending", `got ${result.status}`);
+  assertEquals(result.workflow, { id: workflow.id, name: workflow.name });
+  assertEquals(result.data.key, EARLY_KEY);
+  assertEquals(result.data.workflowId, workflow.id);
+  assertEquals(result.data.workflowName, workflow.name);
+  assertEquals(result.data.signal.submittedBy, `user:${CALLER_ID}`);
+  assertEquals(
+    new Date(result.data.heldUntil).getTime() -
+      new Date(result.data.signal.receivedAt).getTime(),
+    600_000,
+  );
+  assertEquals(f.waits.pendingRecords.size, 1);
+  assertEquals(f.waits.outcomes.size, 0);
+});
+
+Deno.test("deliverSignalForCaller: by key, a caller with signal alone is told the receipt of a held signal and nothing of the workflow", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const result = await deliverByKey(
+    f.ctxWith([grantOf(["signal"])]),
+    workflow.name,
+    EARLY_KEY,
+  );
+  assert(result.status === "pending", `got ${result.status}`);
+  assertEquals(Object.keys(result.data).sort(), ["heldUntil", "signal"]);
+});
+
+Deno.test("deliverSignalForCaller: by key, a caller who may not signal the workflow has no early signal stored", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  for (
+    const grants of [
+      [grantOf(["read"])],
+      [grantOf(["signal"], "release")],
+      [grantOf(["signal"]), grantOf(["signal"], workflow.name, "deny")],
+    ]
+  ) {
+    assertEquals(
+      await deliverByKey(
+        withUnreadableWaits(f, grants),
+        workflow.name,
+        EARLY_KEY,
+      ),
+      NOT_FOUND,
+    );
+  }
+  assertEquals(f.waits.pendingRecords.size, 0);
+});
+
+Deno.test("deliverSignalForCaller: by key, a second early signal is refused, and only a reader is shown the earlier receipt", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const reader = f.ctxWith([grantOf(["signal", "read"])]);
+  const first = await deliverByKey(reader, workflow.name, EARLY_KEY);
+  assert(first.status === "pending");
+
+  const again = await deliverByKey(reader, workflow.name, EARLY_KEY);
+  assert(again.status === "already_pending", `got ${again.status}`);
+  assertEquals(again.pending, {
+    heldUntil: first.data.heldUntil,
+    receipt: first.data.signal,
+  });
+
+  const signalOnly = await deliverByKey(
+    f.ctxWith([grantOf(["signal"])]),
+    workflow.name,
+    EARLY_KEY,
+  );
+  assert(signalOnly.status === "already_pending");
+  assertEquals(signalOnly.pending, { heldUntil: first.data.heldUntil });
+  assertEquals(signalOnly.message.includes(first.data.signal.id), false);
+  assertEquals(signalOnly.message.includes(CALLER_ID), false);
+  assertEquals(f.waits.pendingRecords.size, 1);
+});
+
+Deno.test("deliverSignalForCaller: by key, an early payload the schema refuses is refused and nothing is stored", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const result = await deliverSignalForCaller(
+    f.ctxWith([grantOf(["signal"])]),
+    CALLER,
+    {
+      requestId: "req-1",
+      workflow: workflow.name,
+      key: EARLY_KEY,
+      payload: { verdict: "maybe" },
+    },
+  );
+  assert(result.status === "invalid_payload", `got ${result.status}`);
+  assertEquals(
+    result.message.startsWith("Payload refused; nothing was stored"),
+    true,
+  );
+  assertEquals(f.waits.pendingRecords.size, 0);
+});
+
+Deno.test("continueAfterSignal: does nothing for a signal that is only held", async () => {
+  const f = await fixture();
+  const workflow = withEarlyWorkflow(f);
+  const ctx = f.ctxWith([grantOf(["signal"])]);
+  const result = await deliverByKey(ctx, workflow.name, EARLY_KEY);
+  assertEquals(result.status, "pending");
+  // No run took the signal, so there is nothing to launch; a launcher that
+  // was asked would throw on this context, which has none.
+  await continueAfterSignal(ctx, result, SUBJECT);
 });

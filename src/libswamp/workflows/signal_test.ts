@@ -1619,3 +1619,220 @@ Deno.test("workflowSignal: by key on a datastore that cannot hold wait records i
   );
   assertEquals(refusal.kind, "unsupported");
 });
+
+// A signal that arrives before its wait opens (swamp-club#3212).
+
+function earlyWorkflow(name = "release"): Workflow {
+  return Workflow.create({
+    name,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(60, SCHEMA, KEY, 10),
+          }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** A run suspended at its keyed wait, opened at `at` by a step with acceptEarly. */
+async function suspendedAtEarlyWait(
+  workflow: Workflow,
+  waits: InMemorySignalWaitStore,
+  at: Date,
+): Promise<{ run: WorkflowRun; waitId: string }> {
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("main")!;
+  job.start();
+  const review = job.getStep("review")!;
+  review.start();
+  const wait = SignalWait.open(SCHEMA, 60, at, undefined, KEY);
+  const claimed = await claimWaitKey(waits, {
+    workflowId: workflow.id,
+    key: KEY,
+    waitId: wait.id,
+    runId: run.id,
+    jobName: "main",
+    stepName: "review",
+    deadline: wait.deadline.toISOString(),
+    acceptEarly: 10,
+  }, at);
+  assert(claimed.kind === "acquired", `got ${claimed.kind}`);
+  review.waitForSignal(wait.withEarly(claimed.claim.early!));
+  run.suspend();
+  return { run, waitId: wait.id };
+}
+
+Deno.test("workflowSignal: a signal by key before the wait opens is held, with its receipt and until when", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "pending", `got ${sent.kind}`);
+  assertEquals(sent.data.pending, true);
+  assertEquals(sent.data.key, KEY);
+  assertEquals(sent.data.workflowId, workflow.id);
+  assertEquals(sent.data.workflowName, "release");
+  assertEquals(sent.data.signal.receivedAt, IN_TIME.toISOString());
+  assertEquals(sent.data.signal.submittedBy, "tux");
+  assertEquals(sent.data.heldUntil, "2026-01-01T00:00:40.000Z");
+  // One pending record, and nothing that names a wait or a run.
+  assertEquals(waits.pendingRecords.size, 1);
+  assertEquals(waits.outcomes.size, 0);
+  assertEquals(waits.keyRecords.size, 0);
+  assertEquals(waits.registrations.size, 0);
+  assertEquals(fixture.calls, []);
+});
+
+Deno.test("workflowSignal: a second early signal while one is pending is refused with the stored receipt, and names no person", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const first = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(first.kind === "pending");
+  const second = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
+  );
+  assertEquals(second.kind, "already_pending");
+  assertEquals(second.details.receipt, first.data.signal);
+  assertEquals(second.details.heldUntil, first.data.heldUntil);
+  assertStringIncludes(second.message, first.data.signal.id);
+  assertEquals(second.message.includes("tux"), false);
+  assertEquals(waits.pendingRecords.size, 1);
+});
+
+Deno.test("workflowSignal: an early payload the definition's schema refuses is refused on arrival and nothing is stored", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "maybe" }),
+  );
+  assertEquals(refusal.kind, "invalid_payload");
+  assertEquals(refusal.details.early, true);
+  assertStringIncludes(refusal.message, "nothing was stored");
+  assertEquals(waits.pendingRecords.size, 0);
+});
+
+Deno.test("workflowSignal: a keyed wait without acceptEarly refuses an early signal as before and stores nothing", async () => {
+  const waits = new InMemorySignalWaitStore();
+  const fixture = await fixtureOf([], {
+    waits,
+    workflows: [keyedWorkflow()],
+  });
+  const refusal = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "ship" }),
+  );
+  assertEquals(refusal.kind, "no_open_wait");
+  assertEquals(waits.pendingRecords.size, 0);
+});
+
+Deno.test("workflowSignal: a wait opened over a pending signal its step never read is given that signal by the next signal that looks", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const empty = await fixtureOf([], { waits, workflows: [workflow] });
+  const early = await sendByKey(empty, "release", KEY, { verdict: "ship" });
+  assert(early.kind === "pending");
+  // The step opens its wait five seconds later and stops before it reads
+  // the slot: the wait is open and registered, with the signal unapplied.
+  const opened = await suspendedAtEarlyWait(
+    workflow,
+    waits,
+    new Date(IN_TIME.getTime() + 5_000),
+  );
+  const fixture = await fixtureOf([opened.run], {
+    waits,
+    workflows: [workflow],
+    now: new Date(IN_TIME.getTime() + 6_000),
+  });
+  const later = refusalOf(
+    await sendByKey(fixture, "release", KEY, { verdict: "fix" }),
+  );
+  // The earlier signal is the wait's outcome; this one came second.
+  assertEquals(later.kind, "already_settled");
+  const outcome = await waits.findOutcome(opened.waitId);
+  assert(outcome.kind === "found" && outcome.record.kind === "accepted");
+  assertEquals(outcome.record.payload, { verdict: "ship" });
+  assertEquals(outcome.record.receipt.id, early.data.signal.id);
+  assertEquals(outcome.record.receipt.waitId, opened.waitId);
+});
+
+Deno.test("workflowSignal: a signal that finds its key held by a wait past its deadline settles that wait and is held for the next", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  const old = await suspendedAtEarlyWait(workflow, waits, OPENED);
+  const fixture = await fixtureOf([old.run], {
+    waits,
+    workflows: [workflow],
+    now: TOO_LATE,
+  });
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "pending", `got ${sent.kind}`);
+  const outcome = await waits.findOutcome(old.waitId);
+  assertEquals(
+    outcome.kind === "found" && outcome.record.kind,
+    "timed_out",
+  );
+  // Stored for the claim after the one that timed out.
+  const [address] = await waits.listPendingAddresses();
+  assertEquals(address.slot, 2);
+});
+
+Deno.test("workflowSignal: a signal sent as the step opens its wait is delivered, whichever of them reads second", async () => {
+  const workflow = earlyWorkflow();
+  const waits = new InMemorySignalWaitStore();
+  // The step claims and registers between the signal's create and its
+  // second read, and has not read the slot.
+  let opened: { run: WorkflowRun; waitId: string } | undefined;
+  let first = true;
+  const racing = new Proxy(waits, {
+    get(target, property, receiver) {
+      if (property !== "createPendingRecord") {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (
+        record: Parameters<InMemorySignalWaitStore["createPendingRecord"]>[0],
+      ) => {
+        const stored = await target.createPendingRecord(record);
+        if (first) {
+          first = false;
+          opened = await suspendedAtEarlyWait(workflow, target, IN_TIME);
+          const [ref] = opened.run.findSignalWaits();
+          await target.register(registrationOf(
+            {
+              workflowId: workflow.id,
+              workflowName: workflow.name,
+              runId: opened.run.id,
+              jobName: ref.jobName,
+              stepName: ref.stepName,
+            },
+            ref.wait!,
+            IN_TIME,
+          ));
+        }
+        return stored;
+      };
+    },
+  });
+  const fixture = await fixtureOf([], { waits, workflows: [workflow] });
+  fixture.deps.signalWaits = { supported: true, store: racing };
+  const sent = await sendByKey(fixture, "release", KEY, { verdict: "ship" });
+  assert(sent.kind === "completed", `got ${sent.kind}`);
+  assertEquals(sent.data.waitId, opened!.waitId);
+  assertEquals(sent.data.key, KEY);
+  const outcome = await waits.findOutcome(opened!.waitId);
+  assert(outcome.kind === "found" && outcome.record.kind === "accepted");
+  // The receipt is the one the pending record carries: one signal, stored
+  // once as pending and once as the outcome.
+  assertEquals(outcome.record.receipt.id, sent.data.signal.id);
+  const [address] = await waits.listPendingAddresses();
+  const pending = await waits.findPendingRecord(address);
+  assert(pending.kind === "found" && pending.record.kind === "pending");
+  assertEquals(pending.record.receiptId, sent.data.signal.id);
+});

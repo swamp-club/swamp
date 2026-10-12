@@ -1705,3 +1705,80 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "serve signal by key: a signal before the wait opens is held (202 over HTTP), and a second is refused as already pending",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      resetRateLimitState();
+      const early = (name: string) =>
+        Workflow.create({
+          name,
+          jobs: [
+            Job.create({
+              name: "main",
+              steps: [
+                Step.create({
+                  name: "review",
+                  task: StepTask.waitForSignal(3600, SCHEMA, KEY, 600),
+                }),
+              ],
+            }),
+          ],
+        });
+      const overSocket = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
+      const overHttp = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
+      await repo.repoContext.workflowRepo.save(overSocket);
+      await repo.repoContext.workflowRepo.save(overHttp);
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      const payload = { verdict: "ship" };
+
+      // Over the WebSocket the reply carries `pending` in place of `data`.
+      const frames = await signalByKey(ctx, overSocket.name, KEY, payload);
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+      const reply = frames.find((f) => f.type === "workflow.signal");
+      assert(reply, JSON.stringify(frames));
+      const held = reply.payload!.pending as Record<string, unknown>;
+      assert(held, JSON.stringify(reply));
+      assertEquals("data" in reply.payload!, false);
+      // A caller with `signal` alone is told the receipt and until when.
+      assertEquals(Object.keys(held).sort(), ["heldUntil", "signal"]);
+
+      const again = refusalOf(
+        await signalByKey(ctx, overSocket.name, KEY, payload),
+      );
+      assertEquals(again.code, "workflow_signal_refused");
+      assertEquals(again.details, {
+        refusal: "already_pending",
+        pending: { heldUntil: held.heldUntil },
+      });
+
+      // Over HTTP: accepted and not yet acted on.
+      const address = { workflow: overHttp.name, key: KEY };
+      const posted = await postByKey(ctx, { ...address, payload });
+      assertEquals(posted.status, 202);
+      const body = posted.body as Record<string, unknown>;
+      assertEquals(body.status, "pending");
+      assertEquals(Object.keys(body).sort(), ["data", "status"]);
+      assertEquals(
+        Object.keys(body.data as Record<string, unknown>).sort(),
+        ["heldUntil", "signal"],
+      );
+      const second = await postByKey(ctx, { ...address, payload });
+      assertEquals(second.status, 409);
+      assertEquals(
+        (second.body as Record<string, unknown>).status,
+        "already_pending",
+      );
+      // A payload the schema refuses stores nothing.
+      const refused = await postByKey(ctx, {
+        workflow: overHttp.name,
+        key: KEY,
+        payload: { verdict: "maybe" },
+      });
+      assertEquals(refused.status, 422);
+    });
+  },
+});

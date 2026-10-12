@@ -1317,11 +1317,33 @@ export interface WorkflowSignalResponseData {
   awaitingResume?: boolean;
   runRecordAvailable?: boolean;
   resumeCommand?: string;
+  /** True when the step took the signal as it opened its wait. */
+  taken?: true;
 }
 
-export interface WorkflowSignalResponse {
-  data: WorkflowSignalResponseData;
+/**
+ * A signal by key held as the key's pending signal (swamp-club#3212): no
+ * wait or run took it yet. The key and the workflow are present only for a
+ * caller who may also read the workflow.
+ */
+export interface WorkflowSignalPendingResponseData {
+  /** What swamp recorded about the signal. */
+  signal: {
+    id: string;
+    receivedAt: string;
+    submittedBy: string;
+  };
+  /** When the signal stops being taken by a wait that opens. */
+  heldUntil: string;
+  key?: string;
+  workflowId?: string;
+  workflowName?: string;
 }
+
+/** `data` for a delivered signal; `pending` for one that is held. */
+export type WorkflowSignalResponse =
+  | { data: WorkflowSignalResponseData; pending?: undefined }
+  | { data?: undefined; pending: WorkflowSignalPendingResponseData };
 
 export interface WorkflowWaitsResponse {
   data: Record<string, unknown>;

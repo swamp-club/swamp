@@ -782,6 +782,12 @@ swamp workflow resume release           # continues the run
   (`isWaitKey` in `src/domain/workflows/signal_wait.ts`). It takes no
   expression, so the workflow definition is the list of its valid keys. See
   "Keys" below.
+- `acceptEarly` (optional, swamp-club#3212): the number of seconds a signal by
+  key may arrive before the wait opens, at most 3600. It needs a `key`, and a
+  wait that sets it may hold no expression in its schema, `inputs.*` included:
+  an early payload is checked against the schema in the definition, before any
+  run exists to resolve one. `workflow validate` refuses both. See "Early
+  signals" below.
 
 **Terms.** A _wait_ is one pause of one step for one message. Its _wait ID_ is a
 random UUID issued when the step starts waiting. A _signal_ is the message
@@ -791,8 +797,14 @@ record that says where it lives and what it accepts. Its _outcome_ is how it was
 settled: an accepted signal, `timed_out` or `cancelled`. A wait's _key_ is the
 name its step declared, if any; a _claim_ is the record that says which wait
 holds a key, and a _release_ is the record that takes the place of a removed
-claim and leaves the key free. These are distinct from an approval gate and
-its `waiting_approval` status.
+claim and leaves the key free. A key's _pending signal_ is a signal by key
+that arrived while no wait held the key and is kept for the next one. Its _age
+limit_ is the step's `acceptEarly`, which is separate from a wait's deadline:
+the deadline says how long an open wait takes a signal, the age limit how long
+before the wait opens a signal may have come. A pending signal is stored in a
+_slot_, the generation of the claim it is meant for, and a _lapse_ is the
+record that takes the place of a pending signal no wait took. These are
+distinct from an approval gate and its `waiting_approval` status.
 
 **The wait is state on the step, and its outcome is a record of its own.**
 `WorkflowRun` stays the aggregate root and the run record stays the only source
@@ -1045,10 +1057,11 @@ Each refusal has its own message:
 | Refusal           | When                                                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- |
 | not found         | No registration, outcome or run record holds a wait with that ID. By key: the workflow does not exist, or no step of it declares the key. |
-| no open wait      | By key only: the workflow declares the key and no open wait holds it. Nothing is stored (holding such a signal is swamp-club#3212). While the claim of the wait that last held the key is still the key's highest record, the error's details carry `lastWait` (the wait ID, how and when it was settled, and the receipt of a signal that settled it) and the message says how and when, which is how a sender that retries after a lost reply tells its signal landed from being early for the next run (`findSettledKeyHolder`, swamp-club#3211). The command's `--json` error carries `refusal` and `lastWait`. |
+| no open wait      | By key only: the workflow declares the key on a step without `acceptEarly` and no open wait holds it. Nothing is stored. With `acceptEarly` the signal is held instead (see "Early signals"). While the claim of the wait that last held the key is still the key's highest record, the error's details carry `lastWait` (the wait ID, how and when it was settled, and the receipt of a signal that settled it) and the message says how and when, which is how a sender that retries after a lost reply tells its signal landed from being early for the next run (`findSettledKeyHolder`, swamp-club#3211). The command's `--json` error carries `refusal` and `lastWait`. |
 | expired           | The deadline has passed. The wait is settled as `timed_out` on the spot; the message names the resume that fails the step. |
 | payload refused   | The payload is not allowed. The validation errors are listed and the wait stays open.                                |
 | already settled   | A signal already settled the wait. The stored receipt is shown.                                                      |
+| already pending   | By key only: the key's step sets `acceptEarly`, no open wait holds the key, and an earlier signal is pending within its age limit. The stored receipt is in the error's details. Nothing is stored. |
 | closed            | The run ended, or its step was reset, before a signal arrived.                                                       |
 | cannot be read    | The outcome does not parse, the registration does not and no run record here can rebuild it, or the run record here shows the step holding an unreadable wait. |
 | not supported     | The datastore cannot hold wait records.                                                                              |
@@ -1083,6 +1096,192 @@ step still shows `waiting`, the record's derived `awaitingResume` is unset, and
 signal's own result are where a settled wait shows. Serve resumes the run
 itself once its last wait is settled, when the workflow's auto-resume policy
 allows (see "Continuation" under Manual Approval).
+
+**Early signals.** A signaller that holds a key can send before the run
+reaches its wait: the event it reports can come first, or the steps ahead of
+the wait can be slow. A keyed step that sets `acceptEarly` lets such a signal
+be held (swamp-club#3212). Without `acceptEarly` an early signal is refused
+`no_open_wait` and nothing is stored, as before.
+
+_Records._ A pending signal is a record of its own,
+`wait-pending/<workflowId>/<key>/<slot>/<number>`
+(`src/domain/workflows/pending_signal.ts`), created once with `putIfAbsent` and
+read back, never trusted by the create's own answer. The slot is the
+generation the next claim of the key will have: the generation of the key's
+highest record plus one, read when the signal arrives. The number counts the
+pending signals of one slot from 1. A record holds the payload, the receipt ID,
+who sent it, when it was received and the `acceptEarly` the definition
+declared then. A slot belongs to one claim, so a signal a wait took is never
+taken by a later wait; and neither a slot nor a number comes back into use,
+because key generations do not and the highest record of a slot is never
+deleted to be replaced. A record is plaintext in the store, like an outcome,
+and must not carry secrets. It is validated on every read: one that is too
+large, does not parse, is stored under another address than it names, or whose
+payload does not survive parsing unchanged is unreadable.
+
+A claim that is the highest record of its key can be superseded by a release
+when its run is deleted. A signal that read the claim's generation and one that
+read the release's then name different slots for the same next claim. So the
+slots of a key that are _live_ are the generations above its last claim: one,
+or two when the highest record is a release. A signaller reads both before it
+writes, and a claim created over a release reads both.
+
+_Arrival._ A signal by key whose workflow declares the key on a step with
+`acceptEarly`, and whose key no open wait holds:
+
+1. The payload is checked against the schema in the workflow definition, and
+   under the limits of any payload. A refused payload is answered
+   `invalid_payload` and nothing is stored.
+2. The highest record of each live slot is read. A pending signal there that
+   is within its age limit (received no more than its `acceptEarly` seconds
+   before now) refuses this one as `already_pending`, with the stored receipt
+   in the error's details. A key holds one pending signal; the first is kept.
+3. Otherwise the signal is created at the next number of the slot. Two
+   signals at the same moment create the same number and one create wins; the
+   loser reads the winner back and is refused as in 2.
+4. The key's holder is read again:
+   - the key is free and its highest generation is below the slot: the answer
+     is _pending_, with the receipt and the time until which the signal is
+     held (received plus `acceptEarly`);
+   - a claim holds the key and reads this slot: the pending signal is taken
+     for that wait (below), and the answer is the one a delivered signal gets.
+     If the wait is not registered yet its captured schema cannot be read, so
+     nothing is taken and the answer is pending: the step registers before it
+     reads the slot, and so has not read it yet;
+   - a claim holds the key and reads another slot, which takes a claim made
+     and settled and a second claim made, all between the read in 2 and the
+     create in 3: the signal is delivered to that open wait as a signal by key
+     is today. The record it created stays in a slot nothing reads and goes
+     with that slot;
+   - the key is free and its highest generation has reached the slot, with
+     the claim of that generation settled by this very signal: a step took
+     it on opening its wait and its run went on. The answer is the one a
+     delivered signal gets, built from the claim, since the run may have
+     ended and its registration with it. The result says `taken`, and the
+     command suggests no resume;
+   - the key is free and its highest generation has reached the slot some
+     other way: the arrival runs again from 2 at the new slot, with the same
+     receipt ID and received time, at most eight times
+     (`WAIT_KEY_CLAIM_ATTEMPTS`), then the signal is refused.
+
+The arrival is `holdEarlySignal` in `src/domain/workflows/early_signal.ts`,
+over two pure decisions: `liveSlotsOf` and `decideEarlySignal`. The use case
+(`arriveEarly` in `src/libswamp/workflows/signal.ts`) checks the payload,
+calls it, and answers. A wait it finds is signalled through the same
+`deliver` as any wait, so the caller is authorized against that wait and the
+records that place it must name the addressed workflow and key.
+
+A holder past its deadline with no outcome still holds its key to a reader
+that writes nothing. A signal that finds one settles it as timed out, as every
+reader of a wait does, and then arrives as above: it is early for the next
+run, not late for that one. The same holds for a holder closed between the
+resolve and the delivery. Without `acceptEarly` both are answered expired or
+closed, as before.
+
+_Opening._ A step with `acceptEarly` claims its key, registers its wait, and
+only then reads the highest record of its claim's slot, and of the slot below
+when its claim was created over a release. The wait keeps what a later reader
+needs to do the same, in an `early` field on the wait in the run record, on
+the registration and on the claim: the claim's generation, whether it was
+created over a release, and the earliest time a signal may have been
+received. A claim whose `early` names another generation than its own is
+unreadable. A wait without `acceptEarly` keeps none of it and costs no read.
+
+_Taking._ Whether a pending signal applies to a wait is decided from stored
+facts alone (`pendingOutcome`, a pure function): it was received no earlier
+than the claim's `recordedAt` minus `acceptEarly`, no later than the wait's
+deadline, and the schema the wait captured allows the payload. No reader's
+clock enters the decision, so every reader reaches the same one whenever it
+looks. Taking creates the wait's `accepted` outcome through the same
+write-once `settle` as any outcome, with the pending signal's receipt ID,
+sender and received time and the wait's ID; whoever takes it creates the same
+outcome. A pending record is taken only when it names the workflow and key of
+the record that places the wait, in a slot that wait's own claim generation
+allows. A claim, a registration or a pending record altered to point elsewhere
+is unreadable and nothing is taken, by the rule that keeps a signal by key
+from being carried to another workflow's wait. A pending signal that does not
+apply is ignored and the wait opens as usual.
+
+A step that took a signal on opening succeeds at once with the payload and the
+receipt, in the outputs of any signalled step, and the steps after it in the
+same run read them as after a resume. It emits `step_completed` and no
+`signal_wait_requested`. The run does not suspend on it. If the slot cannot be
+read when the step opens its wait, the step waits and logs a warning: the wait
+is open and registered, and its next reader takes the signal.
+Its registration stays until the run ends, so a retry of the signal is
+answered already settled.
+
+_Every reader finishes the job._ Whoever settles a wait takes an applicable
+pending signal first, whether the deadline has passed or not: `outcomeAt`,
+which `workflow signal`, `workflow waits` and `workflow resume` use; a claimant
+judging a holder (`outcomeOfClaim`, which reads the wait's registration for
+the captured schema and takes nothing without one); and serve's sweep, which
+gives the open waits of a run held back only by its waits their pending
+signals (`takePendingSignalsOfRun`) before it times any out
+(`settleExpiredWaits`), and so continues a run whose signaller stopped between
+its create and its second read.
+
+_The interleavings._ `S` is the signaller, `P` the step, `g` the highest
+generation of the key before either starts, so the slot is `g+1`.
+
+1. A signal and a wait at the same moment. `S` creates its record and then
+   reads the holder; `P` creates its claim and registration and then reads the
+   slot. Each writes before it reads, so at least one read comes after the
+   other's write.
+   - `S` creates, `P` claims, `P` registers, `P` reads the slot and takes;
+     `S` reads the holder, finds the outcome carrying its receipt, and answers
+     delivered.
+   - `P` claims, `P` registers, `P` reads the slot (empty) and suspends; `S`
+     creates, `S` reads the holder, finds the claim, and takes. The run is
+     continued as after any signal.
+   - `P` claims, `S` creates, `S` reads the holder, finds the claim with no
+     registration yet and answers pending; `P` registers, reads the slot and
+     takes. `P` registers before it reads, so a step that missed the record
+     had registered before the record existed, and `S` then finds the
+     registration.
+   - As the second, but `S` stops after its create. The wait is open with an
+     applicable pending signal. The next reader takes it: a signal, a
+     listing, a resume or serve's sweep. It is not lost, and the wait cannot
+     time out over it (2).
+2. A pending signal against a timeout. The wait is at its deadline, with a
+   pending signal received before it and not yet taken (the last case of 1).
+   Any reader takes the pending signal before it would settle the wait as
+   timed out, so the outcome is `accepted`. A reader on a build from before
+   pending signals settles `timed_out` instead; see "Mixing builds".
+3. Two early signals at once. Both read the slot empty and both create number
+   1. One create wins. The loser reads the winner back, finds it is not its
+   own, and is refused `already_pending` with the winner's receipt. Exactly
+   one is stored.
+4. Two steps opening at once with one pending signal. Both create the claim
+   of generation `g+1` and one wins. The winner reads slot `g+1` and takes.
+   The loser holds no claim, reads no slot and fails with `wait_key_held`.
+   Once the winner's wait is settled, a later claim has generation `g+2` and
+   reads slot `g+2`, never `g+1`.
+
+_Removal._ Pending records are removed with the run that took them: when a
+claim is removed (`releaseKeyClaims`), after it has been superseded, the
+records of the slots it read go with it. Deleting a workflow removes every
+record under its `wait-pending/<workflowId>/` prefix. The wait-record sweep
+(`sweepPendingSignals`) removes the rest:
+
+- A pending signal no wait took is _lapsed_ once its received time plus its
+  `acceptEarly` plus 24 hours has passed: the sweep creates a lapse, a record
+  with no payload, at the next number of the slot, and then deletes the
+  numbers below it. That is how a claim is superseded by a release, and for
+  the same reason: a number deleted to be replaced would let a signaller that
+  read the old highest and one that read after the delete both store a
+  signal. One lapse is left per slot until the slot is claimed.
+- In a live slot the numbers below the highest are removed: each was past its
+  age limit when the next was stored over it.
+- A slot the key has passed, with no claim left that reads it, is removed
+  whole. A build from before pending signals leaves such slots when it
+  collects a run. A slot whose claim still exists is left for that claim's
+  removal.
+
+This part of the sweep reads key records and never a run record, so unlike
+the rest it runs on every datastore. Nothing is audited: the sweep runs from
+local commands, which have no audit log; it reports a count
+(`WaitRecordSweep.pendingSignals`).
 
 **A wait with no usable registration.** When the registration is missing or
 cannot be read, `workflow signal` falls back to scanning run records and
@@ -1136,6 +1335,16 @@ holds, and a later build's claim does not see it. Its run garbage collection
 and its workflow deletion also leave key records behind (see the limits
 below). Upgrade every host that runs
 a workflow before giving one of its waits a key.
+
+A binary from before swamp-club#3212 does not know `acceptEarly`. It opens the
+wait without reading the key's pending signal, and it settles a wait at its
+deadline as timed out over one. A signal a newer host answered as pending is
+then never taken, and the step times out. That binary's `workflow signal`
+still refuses an early signal `no_open_wait`. When it saves a run it drops the
+slots a newer build recorded on a wait, which turns that wait into a plain
+one. There is no guard: upgrade every host that runs, resumes, lists or sweeps
+a workflow, serve instances included, before giving one of its waits
+`acceptEarly`.
 
 The `signal` access action (swamp-club#3094) has a mixed-build hazard of its
 own: a build from before it drops any stored grant that names `signal`,
@@ -1225,9 +1434,11 @@ signal`, `workflow waits` and `workflow resume` each settle a wait as
 `timed_out` when it has no outcome and its deadline has passed (`outcomeAt`).
 The create decides between that and a signal arriving at the same moment, so
 every reader agrees whatever its clock says, and a signal accepted before the
-deadline still holds after it. The next resume fails the step with error
-`wait_timeout`, so `failed` handlers run. `allowFailure` decides whether that
-fails the job and the run.
+deadline still holds after it. A wait whose step set `acceptEarly` is first
+given a pending signal that applies to it, so one received before the deadline
+succeeds the step instead (see "Early signals"). The next resume fails the
+step with error `wait_timeout`, so `failed` handlers run. `allowFailure`
+decides whether that fails the job and the run.
 
 Under `swamp serve` the continuation sweep is one more reader that looks
 (swamp-club#3109). When `continueSettledRun` finds a run held back only by
@@ -1359,6 +1570,9 @@ that has the run record is still answered from that record. A run file that
 cannot be read is skipped, so one damaged run does not stop the sweep, and a
 sweep that fails does not fail `workflow waits`.
 The sweep runs from `workflow waits` and from the run garbage collection.
+A pending signal lives as long as the claim that took it and is removed with
+it; one no wait took is lapsed by the sweep, on any datastore (see "Early
+signals").
 
 **Supersede.** `workflow run` cancels suspended runs of the same workflow with
 matching inputs. It leaves alone a run that has a step waiting for a signal, or
@@ -1487,6 +1701,22 @@ every iteration would claim it.
   deleted.
 - A key record that cannot be read as the highest of its key blocks the key
   until the workflow is deleted or the record is removed by hand.
+- A pending answer says the signal is held until a time, not that it will be
+  delivered: the step may never reach its wait, may reach it after the age
+  limit, or may capture nothing an older build left it (see "Mixing builds").
+- A pending signal's received time is stamped by the host that took the
+  signal, and the claim's time by the host that opened the wait. There is no
+  allowance for skew between them: it moves the window by as much. A signaller
+  whose clock runs ahead also judges a pending signal past its age limit
+  early and stores its own over it; the sender of the first was told it was
+  held.
+- `workflow waits` lists open waits, not pending signals. A held signal shows
+  only in the answer its sender got, until a step takes it.
+- A signal that found another wait open on its second read (the third case of
+  "Arrival") leaves its pending record, payload included, in a slot nothing
+  reads until that slot's claim is removed with its run.
+- `acceptEarly` has one maximum, 3600 seconds. `swamp serve` cannot lower it
+  as it lowers a wait's timeout.
 - The dashboard lists suspended runs as awaiting approval, expired or awaiting
   resume, and lists waits for a signal with their state and the commands to run
   next. It cannot send a signal: there is no payload form. Expired

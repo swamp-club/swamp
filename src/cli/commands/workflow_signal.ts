@@ -24,6 +24,7 @@ import {
   workflowSignal,
   type WorkflowSignalAddress,
   type WorkflowSignalData,
+  type WorkflowSignalPendingData,
 } from "../../libswamp/workflows/signal.ts";
 import { userErrorFromSwampError } from "../../libswamp/errors.ts";
 import {
@@ -53,6 +54,7 @@ import {
 } from "../remote_run.ts";
 import type {
   WorkflowSignalPayload,
+  WorkflowSignalPendingResponseData,
   WorkflowSignalResponse,
   WorkflowSignalResponseData,
 } from "../../serve/protocol.ts";
@@ -137,6 +139,12 @@ export function renderSignalResult(
       .info`Signalled step ${data.stepName} in workflow ${data.workflowName}: wait ${data.waitId} holding key ${data.key}, signal ${data.signal.id}`;
   }
   if (cliCtx.verbosity === "quiet") return;
+  if (data.taken) {
+    writeOutput(
+      "The step took the signal as it opened its wait, and its run went on without waiting.",
+    );
+    return;
+  }
   // The step shows as waiting until the resume applies the signal.
   writeOutput(
     data.awaitingResume
@@ -145,6 +153,33 @@ export function renderSignalResult(
       ? `This host has no copy of the run, so it cannot tell whether the run still waits on something else. ` +
         `Check with "swamp workflow waits", then resume where the run is: ${data.resumeCommand}`
       : `The run still waits on something else. Once that settles: ${data.resumeCommand}`,
+  );
+}
+
+/**
+ * Renders a signal that is held as its key's pending signal, in log or JSON
+ * mode (swamp-club#3212). A server names the key and the workflow only to a
+ * caller who may read the workflow. Nothing is said of a run: none took the
+ * signal, and none may.
+ */
+export function renderPendingSignalResult(
+  cliCtx: CommandContext,
+  data: WorkflowSignalPendingData | WorkflowSignalPendingResponseData,
+): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify({ ...data, pending: true }));
+    return;
+  }
+  if (data.key !== undefined && data.workflowName !== undefined) {
+    cliCtx.logger
+      .info`Signal ${data.signal.id} is held for key ${data.key} of workflow ${data.workflowName} until ${data.heldUntil}`;
+  } else {
+    cliCtx.logger
+      .info`Signal ${data.signal.id} is held until ${data.heldUntil}`;
+  }
+  if (cliCtx.verbosity === "quiet") return;
+  writeOutput(
+    "No wait holds the key yet. A step that opens its wait by then takes the signal and does not wait; after that the signal is ignored.",
   );
 }
 
@@ -226,6 +261,7 @@ export function renderRemoteSignalResult(
         awaitingResume: data.awaitingResume ?? false,
         runRecordAvailable: data.runRecordAvailable ?? false,
         resumeCommand: data.resumeCommand,
+        ...(data.taken ? { taken: true as const } : {}),
       },
       formatCommandTarget({ server }),
     );
@@ -353,6 +389,10 @@ export const workflowSignalCommand = withRemoteOptions(
       } catch (error) {
         throw remoteSignalUserError(error);
       }
+      if (response.pending !== undefined) {
+        renderPendingSignalResult(cliCtx, response.pending);
+        return;
+      }
       renderRemoteSignalResult(
         cliCtx,
         response.data,
@@ -384,6 +424,9 @@ export const workflowSignalCommand = withRemoteOptions(
         resolving: () => {},
         completed: (e) => {
           renderSignalResult(cliCtx, e.data, commandTarget);
+        },
+        pending: (e) => {
+          renderPendingSignalResult(cliCtx, e.data);
         },
         error: (e) => {
           throw signalUserError(e.error);

@@ -97,9 +97,11 @@ Approvals page lists open, signalled and expired waits.
 | HTTP status | Meaning                                                        |
 | ----------- | -------------------------------------------------------------- |
 | 200         | Delivered; the body carries the receipt                        |
+| 202, by key | Held for a wait not yet open (`status: pending`, `heldUntil`)  |
 | 404         | No such wait, or the token may not signal it (same answer)     |
 | 404, by key | Unknown workflow, undeclared key, or not allowed (same)        |
 | 409, by key | `no_open_wait`; compare `lastWait.settledAt` with your attempt |
+| 409, by key | `already_pending`: an earlier signal is held for the key       |
 | 422         | Payload refused; `errors` lists why and the wait stays open    |
 | 409         | Already settled                                                |
 | 410         | Expired, or closed before a signal arrived                     |

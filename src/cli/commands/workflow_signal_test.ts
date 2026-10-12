@@ -29,6 +29,7 @@ import {
   parseSignalPayload,
   remoteSignalPayload,
   remoteSignalUserError,
+  renderPendingSignalResult,
   renderRemoteSignalResult,
   renderSignalResult,
   signalUserError,
@@ -392,4 +393,62 @@ Deno.test("remoteSignalUserError: a last wait that is not in the form of one is 
   assertEquals(remoteSignalUserError(notFound), notFound);
   const other = new Error("socket closed");
   assertEquals(remoteSignalUserError(other), other);
+});
+
+const HELD = {
+  pending: true as const,
+  key: "kitchen-verdict",
+  workflowId: "0a5c1e8e-7f4b-4c55-9a3e-2b1c0d9e8f7a",
+  workflowName: "kitchen",
+  signal: {
+    id: "2b1c0d9e-7f4b-4c55-9a3e-0a5c1e8e8f7a",
+    receivedAt: "2026-01-01T00:00:00.000Z",
+    submittedBy: "tester",
+  },
+  heldUntil: "2026-01-01T00:00:10.000Z",
+};
+
+Deno.test("renderPendingSignalResult: log mode says the signal is held, not delivered, and names no run", () => {
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext(), HELD)
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "No wait holds the key yet");
+  assertEquals(lines[0].includes("resume"), false);
+  assertEquals(
+    captureStdout(() =>
+      renderPendingSignalResult(hintTestContext({ verbosity: "quiet" }), HELD)
+    ),
+    [],
+  );
+});
+
+Deno.test("renderPendingSignalResult: json mode prints the receipt and until when the signal is held", () => {
+  const lines = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext({ outputMode: "json" }), HELD)
+  );
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), HELD);
+  // A server's reply to a caller who may only signal names no workflow; the
+  // document still says the signal is pending.
+  const { signal, heldUntil } = HELD;
+  const remote = captureStdout(() =>
+    renderPendingSignalResult(hintTestContext({ outputMode: "json" }), {
+      signal,
+      heldUntil,
+    })
+  );
+  assertEquals(JSON.parse(remote[0]), { signal, heldUntil, pending: true });
+});
+
+Deno.test("renderSignalResult: a signal a step took on opening its wait suggests no resume", () => {
+  const lines = captureStdout(() =>
+    renderSignalResult(
+      hintTestContext(),
+      signalled({ awaitingResume: false, taken: true }),
+    )
+  );
+  assertEquals(lines, [
+    "The step took the signal as it opened its wait, and its run went on without waiting.",
+  ]);
 });

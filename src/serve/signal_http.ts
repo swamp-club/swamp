@@ -108,9 +108,12 @@ export interface SignalHttpDeps {
 
 const STATUS: Record<SignalDeliveryResult["status"], number> = {
   delivered: 200,
+  // Held for a wait that has not opened: accepted, and not yet acted on.
+  pending: 202,
   not_found: 404,
   invalid_payload: 422,
   already_settled: 409,
+  already_pending: 409,
   // The key is declared and nothing waits on it now: the request is right
   // and the workflow's state refuses it. The body's `status` tells it from
   // a wait that is already settled.
@@ -294,9 +297,9 @@ export async function handleSignalHttpRequest(
   });
 
   // The run is for the server alone; the caller is told it only in `data`.
-  const { status, run: _run, ...rest } = result as typeof result & {
-    run?: unknown;
-  };
+  const { status, run: _run, workflow: _workflow, ...rest } = result as
+    & typeof result
+    & { run?: unknown; workflow?: unknown };
   return Response.json({ status, ...rest }, { status: STATUS[status] });
 }
 
@@ -316,9 +319,10 @@ function emitResponseAudit(
 ): void {
   if (!ctx.auditEmitter) return;
   const { principal, sourceIp } = caller;
-  const outcome: AuditOutcome = result.status === "delivered"
-    ? "success"
-    : "failure";
+  const outcome: AuditOutcome =
+    result.status === "delivered" || result.status === "pending"
+      ? "success"
+      : "failure";
   ctx.auditEmitter.emit(buildAuditEvent({
     instanceId: ctx.instanceId ?? "unknown",
     category: "execution",
@@ -326,9 +330,10 @@ function emitResponseAudit(
     outcome,
     action: "workflow.signal",
     resourceKind: "workflow",
-    resourceName:
-      (result.status === "delivered" ? result.data.workflowName : undefined) ??
-        named,
+    resourceName: (result.status === "delivered" || result.status === "pending"
+      ? result.data.workflowName
+      : undefined) ??
+      named,
     principalKind: principal?.kind ?? "anonymous",
     principalId: principal?.id ?? "anonymous",
     initiatedBy: principal ? resolveDisplayPrincipal(principal, ctx) : "ghost",

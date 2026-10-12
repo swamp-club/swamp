@@ -33,6 +33,13 @@ import { extractExpressions } from "../expressions/expression_parser.ts";
  */
 export const SIGNAL_WAIT_MAX_TIMEOUT_SECONDS = 365 * 24 * 60 * 60;
 
+/**
+ * The longest a signal by key may arrive before its wait opens, in seconds:
+ * one hour (swamp-club#3212). The signal is held in plaintext with no run to
+ * remove it, so the limit is kept short.
+ */
+export const SIGNAL_ACCEPT_EARLY_MAX_SECONDS = 60 * 60;
+
 /** The largest signal payload accepted, as serialised JSON, in bytes. */
 export const SIGNAL_PAYLOAD_MAX_BYTES = 16 * 1024;
 
@@ -122,6 +129,31 @@ export const SignalReceiptSchema = z.object({
 export type SignalReceipt = z.infer<typeof SignalReceiptSchema>;
 
 /**
+ * What a wait whose step set `acceptEarly` keeps so that any reader can find
+ * the key's pending signal and decide whether it applies (swamp-club#3212):
+ * the generation of the wait's claim, whether that claim was created over a
+ * release, and the earliest time a signal may have been received.
+ */
+export const WaitEarlySchema = z.object({
+  generation: z.number().int().min(1),
+  overRelease: z.boolean(),
+  from: z.string().datetime(),
+});
+
+export type WaitEarly = z.infer<typeof WaitEarlySchema>;
+
+/**
+ * The slots a wait reads for a pending signal: its claim's own, then the one
+ * below when the claim was created over a release, which a signal that read
+ * the key before the release wrote to.
+ */
+export function earlySlots(early: WaitEarly): number[] {
+  return early.overRelease && early.generation > 1
+    ? [early.generation, early.generation - 1]
+    : [early.generation];
+}
+
+/**
  * A wait as stored on a step. `kind` leaves room for other kinds of wait.
  */
 export const SignalWaitSchema = z.object({
@@ -134,6 +166,8 @@ export const SignalWaitSchema = z.object({
   receipt: SignalReceiptSchema.optional(),
   // The key the step declared, if any (swamp-club#3209).
   key: z.string().refine(isWaitKey).optional(),
+  // Set when the step declared `acceptEarly` (swamp-club#3212).
+  early: WaitEarlySchema.optional(),
 });
 
 export type SignalWaitData = z.infer<typeof SignalWaitSchema>;
@@ -366,6 +400,7 @@ export class SignalWait {
     readonly deadline: Date,
     readonly receipt: SignalReceipt | undefined,
     readonly key: string | undefined,
+    readonly early: WaitEarly | undefined = undefined,
   ) {}
 
   /**
@@ -412,6 +447,25 @@ export class SignalWait {
       new Date(validated.deadline),
       validated.receipt,
       validated.key,
+      validated.early,
+    );
+  }
+
+  /**
+   * This wait with the facts a reader needs to give it the pending signal of
+   * its key. Throws for a wait that holds no key.
+   */
+  withEarly(early: WaitEarly): SignalWait {
+    if (this.key === undefined) {
+      throw new Error("Only a wait that holds a key takes an early signal.");
+    }
+    return new SignalWait(
+      this.id,
+      this.schema,
+      this.deadline,
+      this.receipt,
+      this.key,
+      { ...early },
     );
   }
 
@@ -493,6 +547,7 @@ export class SignalWait {
       this.deadline,
       { ...receipt },
       this.key,
+      this.early,
     );
   }
 
@@ -508,6 +563,7 @@ export class SignalWait {
     };
     if (this.receipt) data.receipt = { ...this.receipt };
     if (this.key !== undefined) data.key = this.key;
+    if (this.early !== undefined) data.early = { ...this.early };
     return data;
   }
 

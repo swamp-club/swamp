@@ -167,6 +167,9 @@ export function createWorkflowDeleteDeps(
             // or not the runs' records could be removed: no sweep removes
             // the highest record of a key (swamp-club#3209).
             await signalWaits.store.removeKeyRecordsOfWorkflow(workflowId);
+            await signalWaits.store.removePendingRecordsOfWorkflow(
+              workflowId,
+            );
           }
         }
         // The continuation claims of a run go with it (swamp-club#3108).

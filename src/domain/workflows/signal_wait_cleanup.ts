@@ -37,6 +37,14 @@ import {
 } from "./signal_wait_records.ts";
 import { settledBy, type SignalWaitStore } from "./signal_wait_store.ts";
 import { releaseKeyClaims } from "./wait_key_claim.ts";
+import {
+  earlyWaitRef,
+  heldUntil,
+  PENDING_SIGNAL_LAPSE_GRACE_MS,
+  type PendingAddress,
+  type PendingLapse,
+  takePendingSignal,
+} from "./pending_signal.ts";
 
 /**
  * How long after its deadline a record is kept when its run is confirmed
@@ -63,6 +71,9 @@ export function waitRefOf(
     workflowId: run.workflowId,
     runId: run.id,
     deadline: wait.deadline.toISOString(),
+    ...(wait.key !== undefined && wait.early !== undefined
+      ? { key: wait.key, early: wait.early, schema: wait.schema }
+      : {}),
   };
 }
 
@@ -71,6 +82,11 @@ export function waitRefOf(
  * and its deadline has passed. A deadline is enforced here, lazily, by
  * whoever looks: the create decides between this timeout and a signal that
  * arrives at the same moment.
+ *
+ * A wait whose step set `acceptEarly` is first given its key's pending
+ * signal, whether its deadline has passed or not (swamp-club#3212): a
+ * signaller that stopped after storing one leaves the wait to its next
+ * reader, and a signal received before the deadline is never timed out.
  */
 export async function outcomeAt(
   store: SignalWaitStore,
@@ -78,7 +94,13 @@ export async function outcomeAt(
   now: Date,
 ): Promise<StoredWaitRecord<WaitOutcome>> {
   const stored = belongsTo(ref, await store.findOutcome(ref.waitId));
-  if (stored.kind !== "absent" || !isWaitExpired(ref, now)) return stored;
+  if (stored.kind !== "absent") return stored;
+  const early = earlyWaitRef(ref);
+  if (early) {
+    const taken = belongsTo(ref, await takePendingSignal(store, early));
+    if (taken.kind !== "absent") return taken;
+  }
+  if (!isWaitExpired(ref, now)) return stored;
   return belongsTo(ref, await store.settle(timedOutOutcome(ref, now)));
 }
 
@@ -193,11 +215,46 @@ export async function settleExpiredWaits(
       if (!ref || !isWaitExpired(ref, now)) continue;
       if ((await store.findOutcome(ref.waitId)).kind !== "absent") continue;
       if ((await store.findRegistration(ref.waitId)).kind !== "found") continue;
+      // A pending signal received before the deadline is not timed out.
+      const early = earlyWaitRef(ref);
+      if (early && (await takePendingSignal(store, early)).kind !== "absent") {
+        continue;
+      }
       const outcome = timedOutOutcome(ref, now);
       if (settledBy(await store.settle(outcome), outcome)) settled++;
     }
   }
   return settled;
+}
+
+/**
+ * Gives each wait of `run` that has no outcome and is still registered the
+ * pending signal of its key, where one applies, and returns how many took
+ * one (swamp-club#3212). For the sweep of `swamp serve`: a signaller that
+ * stopped between storing its signal and reading the key again leaves a wait
+ * open that nothing else would look at before its deadline. The run record
+ * is not changed; the resume that follows succeeds the steps.
+ */
+export async function takePendingSignalsOfRun(
+  store: SignalWaitStore,
+  run: WorkflowRun,
+): Promise<number> {
+  let taken = 0;
+  for (const job of run.jobs) {
+    for (const step of job.steps) {
+      if (!step.isSignalWait) continue;
+      const ref = waitRefOf(run, step);
+      const early = ref && earlyWaitRef(ref);
+      if (!early) continue;
+      if ((await store.findOutcome(early.waitId)).kind !== "absent") continue;
+      if ((await store.findRegistration(early.waitId)).kind !== "found") {
+        continue;
+      }
+      const stored = await takePendingSignal(store, early);
+      if (stored.kind === "found" && stored.record.kind === "accepted") taken++;
+    }
+  }
+  return taken;
 }
 
 /**
@@ -397,6 +454,91 @@ export interface WaitRecordSweep {
   outcomes: number;
   /** Key claims of runs that are gone, and releases since superseded. */
   keyRecords: number;
+  /** Pending signals no wait took, and records in slots nothing reads. */
+  pendingSignals: number;
+}
+
+/**
+ * Removes the pending signals nothing will take (swamp-club#3212), and
+ * returns how many records it removed. It reads key records and never a run
+ * record, so it is safe on every datastore.
+ *
+ * A slot the key has passed, whose claim is gone, is removed whole. In a slot
+ * the next claim will still read, a pending signal past its age limit plus
+ * {@link PENDING_SIGNAL_LAPSE_GRACE_MS} is superseded by a lapse at the next
+ * number, and the numbers below the slot's highest are then removed. The
+ * highest record of such a slot is never deleted: a number that came back
+ * into use would let a signaller that read the old highest and one that read
+ * after the delete both store a signal. A slot whose highest record cannot
+ * be read is left as it is.
+ */
+export async function sweepPendingSignals(
+  store: SignalWaitStore,
+  now: Date,
+): Promise<number> {
+  const bySlot = new Map<string, PendingAddress[]>();
+  for (const at of await store.listPendingAddresses()) {
+    const id = `${at.workflowId}/${at.key}/${at.slot}`;
+    bySlot.set(id, [...(bySlot.get(id) ?? []), at]);
+  }
+  if (bySlot.size === 0) return 0;
+  // The claims that still read a slot: their own, and the one below for a
+  // claim created over a release. Their records go with them.
+  const read = new Set<string>();
+  for (const record of await store.listKeyRecords()) {
+    if (record.kind !== "claim") continue;
+    read.add(`${record.workflowId}/${record.key}/${record.generation}`);
+    if (record.early?.overRelease) {
+      read.add(`${record.workflowId}/${record.key}/${record.generation - 1}`);
+    }
+  }
+
+  let removed = 0;
+  for (const [id, addresses] of bySlot) {
+    const { workflowId, key, slot } = addresses[0];
+    const highest = await store.highestKeyRecord(workflowId, key);
+    if (highest.kind === "unreadable") continue;
+    const generation = highest.kind === "found" ? highest.record.generation : 0;
+    const live = generation < slot ||
+      (generation === slot && highest.kind === "found" &&
+        highest.record.kind === "release");
+    if (!live) {
+      if (read.has(id)) continue;
+      for (const at of addresses) {
+        await store.removePendingRecord(at);
+        removed++;
+      }
+      continue;
+    }
+
+    const head = await store.highestPendingRecord({ workflowId, key, slot });
+    if (head.kind !== "found") continue;
+    let floor = head.record.number;
+    if (
+      head.record.kind === "pending" &&
+      now.getTime() >
+        heldUntil(head.record).getTime() + PENDING_SIGNAL_LAPSE_GRACE_MS
+    ) {
+      const lapse: PendingLapse = {
+        kind: "lapse",
+        workflowId,
+        key,
+        slot,
+        number: floor + 1,
+        recordedAt: now.toISOString(),
+      };
+      // Whatever holds the next number supersedes the signal: this lapse,
+      // or a signal stored over it in the meantime.
+      if ((await store.createPendingRecord(lapse)).kind !== "found") continue;
+      floor++;
+    }
+    for (const at of addresses) {
+      if (at.number >= floor) continue;
+      await store.removePendingRecord(at);
+      removed++;
+    }
+  }
+  return removed;
 }
 
 /**
@@ -409,7 +551,8 @@ export interface WaitRecordSweep {
  * exists is never removed here: it lives as long as the run. A key claim
  * goes by the same rule as an outcome, and before it.
  *
- * Anywhere else it does nothing. A run record that reaches this host later
+ * Anywhere else it removes only the pending signals nothing will take
+ * ({@link sweepPendingSignals}), which no run record is read for. A run record that reaches this host later
  * than the wait's records, or not at all, says nothing true about the wait:
  * a stale `failed` record hides a retry whose new wait is live, and a run
  * kept in another repository looks deleted. Acting on either would cancel a
@@ -433,7 +576,10 @@ export async function sweepWaitRecords(
     registrations: 0,
     outcomes: 0,
     keyRecords: 0,
+    pendingSignals: 0,
   };
+  // Decided from key records alone, so it is not held to the rule below.
+  swept.pendingSignals = await sweepPendingSignals(store, now);
   if (!options.localRunAbsenceIsAuthoritative) return swept;
   const orphaned = (ref: { deadline: string }) =>
     now.getTime() >

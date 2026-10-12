@@ -884,6 +884,7 @@ it. Use it when a step needs a value, not a yes or no:
     type: wait_for_signal
     timeout: 86400 # Required: seconds the wait stays open (max 31536000; a server may set less)
     key: release-verdict # Optional: one open wait of the workflow holds a key at a time
+    acceptEarly: 10 # Optional, needs key: seconds a signal by key may arrive before the wait opens (max 3600)
     schema: # Required: needs "type: object" or "properties"
       type: object
       additionalProperties: false
@@ -947,6 +948,19 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   found; new key: `no_open_wait`, no `lastWait`): signal it by wait ID, or let
   it settle first. Upgrade every host before adding a key: an older swamp
   ignores it and opens the wait unclaimed.
+- `acceptEarly` holds a signal by key that arrives before the wait opens,
+  instead of refusing it `no_open_wait`. The signal's result then has
+  `pending: true`, the receipt and `heldUntil`, and names no wait or run: it is
+  a hold, not a delivery. A step that opens its wait within `acceptEarly`
+  seconds of the signal takes it, succeeds at once with the usual outputs, and
+  the run does not suspend there; a signal older than that is ignored and the
+  wait opens as usual. A key holds one pending signal: a second while the first
+  is held is refused `already_pending`. The payload is checked on arrival
+  against the schema as written, so the schema of such a step may hold no
+  expression, `inputs.*` included (`workflow validate` refuses one). A pending
+  signal is stored in plaintext like any payload, and `workflow waits` does not
+  list it. Upgrade every host that runs, resumes or lists the workflow before
+  adding `acceptEarly`: an older swamp never takes a held signal.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt
   (`id`, `waitId`, `receivedAt`, `submittedBy`).
