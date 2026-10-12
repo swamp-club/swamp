@@ -121,16 +121,16 @@ function buildContextSuggestions(
     `${cmd.getPath()} ${unknownName}`,
     [...pathSpellings(cmd), new Set([unknownName])],
   );
-  // `swamp model @type method ping name` — the legacy direct-type form with
-  // `run` left out, which `rewriteDirectTypeArgs` does not rewrite. `method`
-  // (and a `run` after it) is the command word, not the method the user meant.
-  const legacyDirectType = parentName === "model" &&
-    unknownName.startsWith("@") && trailing[0] === "method";
+  // `swamp model my-model method run create`, or `swamp model @type method
+  // ping name` with `run` left out, which `rewriteDirectTypeArgs` does not
+  // rewrite — the legacy model-first order. `method` (and a `run` after it)
+  // is the command word, not the method the user meant.
+  const legacyModelFirst = parentName === "model" && trailing[0] === "method";
   // `swamp behavior my-server run deploy` — `run` after the model instead of
   // before it. Here too `run` is the command word, not the method.
   const misorderedRun = parentName === "behavior" && trailing[0] === "run";
   let afterCommandWords = trailing;
-  if (legacyDirectType) {
+  if (legacyModelFirst) {
     afterCommandWords = trailing.slice(trailing[1] === "run" ? 2 : 1);
   } else if (misorderedRun) {
     afterCommandWords = trailing.slice(1);

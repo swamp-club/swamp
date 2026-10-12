@@ -167,6 +167,29 @@ Deno.test("buildUnknownCommandMessage - legacy direct-type form without run does
   assertStringIncludes(bare, "swamp behavior run @acme/t <method> <name>");
 });
 
+Deno.test("buildUnknownCommandMessage - legacy named-model order does not suggest method as the method name", () => {
+  const cmd = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("my-model", cmd, [
+    "model",
+    "my-model",
+    "method",
+    "run",
+    "create",
+    "--server",
+    "ws://localhost:9999",
+  ]);
+  assertStringIncludes(msg, "swamp behavior run my-model create");
+  assertEquals(msg.includes("run my-model method"), false);
+
+  const bare = buildUnknownCommandMessage("my-model", cmd, [
+    "model",
+    "my-model",
+    "method",
+    "run",
+  ]);
+  assertStringIncludes(bare, "swamp behavior run my-model <method>");
+});
+
 Deno.test("buildUnknownCommandMessage - run after the model under behavior does not suggest run as the method name", () => {
   const cmd = buildCommand("behavior", ["run"]);
   const direct = buildUnknownCommandMessage("@acme/t", cmd, [
