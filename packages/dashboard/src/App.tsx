@@ -69,7 +69,9 @@ const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
   "approvals",
   "models",
 ]);
-const TIMED_DETAILS = new Set(["run", "workflow", "model"]);
+// Details whose content follows the time range. A run page doesn't: it is
+// one run, and its recent-runs strip deliberately ignores the range.
+const TIMED_DETAILS = new Set(["workflow", "model", "schedule", "webhook"]);
 
 export function App() {
   return (

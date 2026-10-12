@@ -119,7 +119,6 @@ export const SCHEDULE_COLUMNS = [
   "Workflow",
   "Schedule",
   "Next run",
-  "Source",
   "Scheduled runs",
   "Last run",
   "State",
@@ -161,6 +160,12 @@ export function ScheduleTable(
                   {row.description && (
                     <span className="trig-cron-desc">{row.description}</span>
                   )}
+                  {
+                    // The workflow file is the norm; only flag an override.
+                    row.source === "override" && (
+                      <SourceTag source={row.source} />
+                    )
+                  }
                 </span>
               </td>
               <td>
@@ -169,9 +174,6 @@ export function ScheduleTable(
                   : row.nextRun
                   ? <RelativeTime iso={row.nextRun} now={now} />
                   : <span className="trig-muted">—</span>}
-              </td>
-              <td>
-                <SourceTag source={row.source} />
               </td>
               <td className="trig-pips">
                 {runsLoading

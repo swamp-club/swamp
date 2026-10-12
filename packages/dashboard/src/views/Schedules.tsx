@@ -232,8 +232,7 @@ export function Schedules(
                 header,
                 cell: header === "Scheduled runs"
                   ? "strip"
-                  : header === "Schedule" || header === "Source" ||
-                      header === "State"
+                  : header === "Schedule" || header === "State"
                   ? "pill"
                   : header === "Next run" || header === "Last run"
                   ? "mono"

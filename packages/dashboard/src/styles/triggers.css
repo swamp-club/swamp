@@ -6,6 +6,11 @@
 .trig-table td {
   vertical-align: middle;
 }
+.trig-table th,
+.trig-table td {
+  padding-left: 14px;
+  padding-right: 14px;
+}
 .trig-table th.num,
 .trig-table td.num {
   text-align: right;

@@ -41,10 +41,11 @@ import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
 
 // ── Overview ───────────────────────────────────────────────────────────
 
-const CHART_LEGEND: Array<[string, string]> = [
+const CHART_LEGEND: ReadonlyArray<readonly [string, string]> = [
   ["Succeeded", "var(--chart-bar-1)"],
   ["Failed", "var(--chart-bar-2)"],
-  ["Suspended", "var(--chart-bar-3)"],
+  ["Cancelled", "var(--chart-bar-5)"],
+  ["Running / waiting", "var(--chart-bar-4)"],
 ];
 
 /** The Executions chart's panel: title, legend, and the plot area. */

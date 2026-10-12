@@ -66,7 +66,9 @@ Deno.test("ExecutionChartSkeleton: real title and legend over a bar silhouette",
     "Loading executions chart",
   );
   assertStringIncludes(html, '<span class="chart-title">Executions</span>');
-  for (const label of ["Succeeded", "Failed", "Suspended"]) {
+  for (
+    const label of ["Succeeded", "Failed", "Cancelled", "Running / waiting"]
+  ) {
     assertStringIncludes(html, label);
   }
   assertStringIncludes(html, "chart-area");

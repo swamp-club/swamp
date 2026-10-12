@@ -36,6 +36,9 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadError } from "../components/LoadError";
 import { Skeleton, SkeletonList } from "../components/Skeleton";
 import { loadState } from "../client/load_state.ts";
+import { useRunSummary } from "../client/run_summary.ts";
+import { useTimeBounds } from "../client/time_range.ts";
+import { type ChartBar, chartBars } from "./overview_chart.ts";
 import {
   formatCount,
   formatDuration,
@@ -93,11 +96,22 @@ export function Overview(
   const runsLoading = runsState === "loading";
   const healthLoading = healthState === "loading";
 
-  const totalRuns = runs.length;
-  const succeededRuns = runs.filter((r) => r.status === "succeeded").length;
-  const successRate = totalRuns > 0
-    ? `${((succeededRuns / totalRuns) * 100).toFixed(1)}%`
+  // Totals and the chart come from serve's run summary for the selected
+  // time range, so they are exact rather than "the newest 500 runs".
+  const bounds = useTimeBounds();
+  const summaryReq = useRunSummary({ timeline: true, recentLimit: 0 });
+  const totals = summaryReq.summary?.totals;
+  const summaryState = loadState(summaryReq, () => (totals?.runs ?? 0) === 0);
+  const totalRuns = totals?.runs ?? 0;
+  const finishedRuns = totals
+    ? totals.succeeded + totals.failed + totals.cancelled
+    : 0;
+  const successRate = totals && finishedRuns > 0
+    ? `${((totals.succeeded / finishedRuns) * 100).toFixed(1)}%`
     : "—";
+  const bars = summaryReq.summary
+    ? chartBars(summaryReq.summary.timeline ?? [], bounds)
+    : [];
   const failedRuns = runs.filter((r) => r.status === "failed").slice(0, 4);
   const liveRuns = runs.filter(
     (r) => r.status === "running" || r.status === "suspended",
@@ -176,16 +190,21 @@ export function Overview(
         <div className="stat-card">
           <div className="stat-label">Total Runs</div>
           <div className="stat-value">
-            {runsLoading ? <StatValueSkeleton /> : formatCount(totalRuns)}
+            {summaryState === "loading"
+              ? <StatValueSkeleton />
+              : formatCount(totalRuns)}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Success Rate</div>
           <div
             className="stat-value"
-            style={totalRuns > 0 ? { color: "var(--success)" } : undefined}
+            style={finishedRuns > 0 ? { color: "var(--success)" } : undefined}
+            title="Succeeded out of finished runs in the selected time range"
           >
-            {runsLoading ? <StatValueSkeleton width={96} /> : successRate}
+            {summaryState === "loading"
+              ? <StatValueSkeleton width={96} />
+              : successRate}
           </div>
         </div>
         <div className="stat-card">
@@ -213,26 +232,26 @@ export function Overview(
         </div>
       </div>
 
-      {runsState === "loading" && <ExecutionChartSkeleton />}
-      {runsState === "error" && (
+      {summaryState === "loading" && <ExecutionChartSkeleton />}
+      {summaryState === "error" && (
         <ExecutionChartFrame>
           <LoadError
             subject="runs"
-            message={runsReq.error}
-            onRetry={refetchRuns}
+            message={summaryReq.error}
+            onRetry={summaryReq.refetch}
             style={{ marginBottom: 0 }}
           />
         </ExecutionChartFrame>
       )}
-      {runsState === "empty" && (
+      {summaryState === "empty" && (
         <ExecutionChartFrame>
-          <EmptyState title="No runs yet">
+          <EmptyState title="No runs in this time range">
             Runs started by a schedule, a webhook or{" "}
             <code>swamp workflow run</code> are charted here by day.
           </EmptyState>
         </ExecutionChartFrame>
       )}
-      {runsState === "ready" && <ExecutionChart runs={runs} />}
+      {summaryState === "ready" && <ExecutionChart bars={bars} />}
 
       <div className="panels-grid">
         <div className="panel">
@@ -505,7 +524,7 @@ interface BarHit {
   data: Record<string, number>;
 }
 
-function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
+function ExecutionChart({ bars }: { bars: ChartBar[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const barsRef = useRef<BarHit[]>([]);
@@ -520,7 +539,7 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || runs.length === 0) return;
+    if (!canvas || bars.length === 0) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -532,32 +551,15 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
     const W = rect.width;
     const H = rect.height;
 
-    const buckets = new Map<string, Record<string, number>>();
-    for (const run of runs) {
-      const day = run.startedAt.slice(0, 10);
-      if (!buckets.has(day)) {
-        buckets.set(day, {
-          succeeded: 0,
-          failed: 0,
-          suspended: 0,
-          running: 0,
-          cancelled: 0,
-        });
-      }
-      const b = buckets.get(day)!;
-      b[run.status] = (b[run.status] ?? 0) + 1;
-    }
-
-    const days = [...buckets.keys()].sort().slice(-7);
-    const data = days.map((d) => buckets.get(d)!);
+    const days = bars.map((bar) => bar.day);
+    const data: Record<string, number>[] = bars.map((bar) => bar.data);
 
     const style = getComputedStyle(document.documentElement);
     const colors: Record<string, string> = {
       succeeded: style.getPropertyValue("--chart-bar-1").trim(),
       failed: style.getPropertyValue("--chart-bar-2").trim(),
-      suspended: style.getPropertyValue("--chart-bar-3").trim(),
-      running: style.getPropertyValue("--chart-bar-4").trim(),
       cancelled: style.getPropertyValue("--chart-bar-5").trim(),
+      other: style.getPropertyValue("--chart-bar-4").trim(),
     };
     const gridColor = style.getPropertyValue("--chart-grid").trim();
     const labelColor = style.getPropertyValue("--chart-label").trim();
@@ -571,7 +573,13 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
       ...data.map((d) => Object.values(d).reduce((a, b) => a + b, 0)),
       1,
     );
-    const niceMax = Math.ceil(maxVal / 50) * 50 || 50;
+    // Four gridlines at a 1/2/5×10ⁿ step, so a quiet week isn't drawn
+    // against an axis sized for a busy one.
+    const rawStep = maxVal / 4;
+    const mag = 10 ** Math.floor(Math.log10(rawStep));
+    const step = [1, 2, 5, 10].map((m) => m * mag).find((v) => v >= rawStep) ??
+      10 * mag;
+    const niceMax = Math.max(4, Math.ceil(maxVal / step) * step);
     const barW = Math.min((chartW / days.length) * 0.55, 40);
     const gap = chartW / days.length;
 
@@ -595,7 +603,7 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
       );
     }
 
-    const keys = ["succeeded", "failed", "suspended", "running", "cancelled"];
+    const keys = ["succeeded", "failed", "cancelled", "other"];
     data.forEach((d, i) => {
       const x = pad.left + gap * i + (gap - barW) / 2;
       let y = pad.top + chartH;
@@ -630,12 +638,15 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
       ctx.fillStyle = labelColor;
       ctx.font = '10px "JetBrains Mono", monospace';
       ctx.textAlign = "center";
-      const label = days[i].slice(5);
-      ctx.fillText(label, x + barW / 2, H - 6);
+      // Thin the labels out so long ranges don't overprint.
+      const every = Math.ceil(days.length / Math.max(1, chartW / 48));
+      if (i % every === 0) {
+        ctx.fillText(bars[i].label, x + barW / 2, H - 6);
+      }
     });
 
     barsRef.current = hits;
-  }, [runs]);
+  }, [bars]);
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -707,19 +718,14 @@ function ExecutionChart({ runs }: { runs: WorkflowRunSearchItem[] }) {
                 {tooltip.data.failed} failed
               </div>
             )}
-            {tooltip.data.suspended > 0 && (
-              <div style={{ color: "var(--warning)" }}>
-                {tooltip.data.suspended} suspended
-              </div>
-            )}
-            {tooltip.data.running > 0 && (
-              <div style={{ color: "var(--running)" }}>
-                {tooltip.data.running} running
-              </div>
-            )}
             {tooltip.data.cancelled > 0 && (
               <div style={{ color: "var(--cancelled)" }}>
                 {tooltip.data.cancelled} cancelled
+              </div>
+            )}
+            {tooltip.data.other > 0 && (
+              <div style={{ color: "var(--running)" }}>
+                {tooltip.data.other} running or waiting
               </div>
             )}
           </div>
