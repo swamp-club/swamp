@@ -92,3 +92,27 @@ export function chartBars(
   }
   return bars;
 }
+
+export interface ChartAxis {
+  /** Distance between gridlines; a whole number of runs. */
+  step: number;
+  /** Top of the axis: always exactly four steps. */
+  max: number;
+  /** Gridline values from 0 to `max`. */
+  ticks: number[];
+}
+
+/**
+ * A y-axis with four gridlines at a 1/2/5×10ⁿ step, so a quiet week isn't
+ * drawn against an axis sized for a busy one. The top is exactly four steps,
+ * so every gridline lands on a round label.
+ */
+export function chartAxis(maxVal: number): ChartAxis {
+  const rawStep = Math.max(maxVal, 1) / 4;
+  const mag = 10 ** Math.floor(Math.log10(rawStep));
+  const nice = [1, 2, 5, 10].map((m) => m * mag).find((v) => v >= rawStep) ??
+    10 * mag;
+  const step = Math.max(1, nice);
+  const max = 4 * step;
+  return { step, max, ticks: [0, 1, 2, 3, 4].map((i) => i * step) };
+}

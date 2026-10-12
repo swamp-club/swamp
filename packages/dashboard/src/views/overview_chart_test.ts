@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { chartBars, MAX_DAILY_BARS } from "./overview_chart.ts";
+import { chartAxis, chartBars, MAX_DAILY_BARS } from "./overview_chart.ts";
 
 // Day keys in UTC so the test doesn't depend on the machine's zone.
 const utcKey = (iso: string) => iso.slice(0, 10);
@@ -95,4 +95,30 @@ Deno.test("chartBars: long ranges switch to weekly bars", () => {
   // Jul 1–7 holds the first bucket; Jul 8–14 the second.
   assertEquals(bars[0].data.succeeded, 3);
   assertEquals(bars[1].data.succeeded, 2);
+});
+
+Deno.test("chartAxis: the top is exactly four steps", () => {
+  assertEquals(chartAxis(5), { step: 2, max: 8, ticks: [0, 2, 4, 6, 8] });
+  assertEquals(chartAxis(8), { step: 2, max: 8, ticks: [0, 2, 4, 6, 8] });
+  assertEquals(chartAxis(9).ticks, [0, 5, 10, 15, 20]);
+  assertEquals(chartAxis(40).ticks, [0, 10, 20, 30, 40]);
+  assertEquals(chartAxis(130).ticks, [0, 50, 100, 150, 200]);
+});
+
+Deno.test("chartAxis: small counts keep a whole-number step of at least 1", () => {
+  for (const maxVal of [0, 1, 3, 4]) {
+    assertEquals(chartAxis(maxVal), {
+      step: 1,
+      max: 4,
+      ticks: [0, 1, 2, 3, 4],
+    }, String(maxVal));
+  }
+});
+
+Deno.test("chartAxis: every value fits under the top", () => {
+  for (let maxVal = 1; maxVal <= 5000; maxVal += 7) {
+    const axis = chartAxis(maxVal);
+    assertEquals(axis.max >= maxVal, true, String(maxVal));
+    assertEquals(axis.max, 4 * axis.step, String(maxVal));
+  }
 });

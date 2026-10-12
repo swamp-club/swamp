@@ -39,7 +39,7 @@ import { loadState } from "../client/load_state.ts";
 import { useRunSummary } from "../client/run_summary.ts";
 import { useKeepPrevious } from "../client/useKeepPrevious.ts";
 import { useTimeBounds } from "../client/time_range.ts";
-import { type ChartBar, chartBars } from "./overview_chart.ts";
+import { chartAxis, type ChartBar, chartBars } from "./overview_chart.ts";
 import {
   formatCount,
   formatDuration,
@@ -581,13 +581,8 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
       ...data.map((d) => Object.values(d).reduce((a, b) => a + b, 0)),
       1,
     );
-    // Four gridlines at a 1/2/5×10ⁿ step, so a quiet week isn't drawn
-    // against an axis sized for a busy one.
-    const rawStep = maxVal / 4;
-    const mag = 10 ** Math.floor(Math.log10(rawStep));
-    const step = [1, 2, 5, 10].map((m) => m * mag).find((v) => v >= rawStep) ??
-      10 * mag;
-    const niceMax = Math.max(4, Math.ceil(maxVal / step) * step);
+    const axis = chartAxis(maxVal);
+    const niceMax = axis.max;
     const barW = Math.min((chartW / days.length) * 0.55, 40);
     const gap = chartW / days.length;
 
@@ -605,7 +600,7 @@ function ExecutionChart({ bars }: { bars: ChartBar[] }) {
       ctx.font = '10px "JetBrains Mono", monospace';
       ctx.textAlign = "right";
       ctx.fillText(
-        String(Math.round((niceMax * i) / 4)),
+        String(axis.ticks[i]),
         pad.left - 6,
         y + 3.5,
       );
