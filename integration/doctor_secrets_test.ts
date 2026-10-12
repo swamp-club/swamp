@@ -228,3 +228,79 @@ Deno.test("doctor secrets: also scans auto-definitions, not just models/", async
     assertEquals(JSON.stringify(data).includes(CLEARTEXT), false);
   });
 });
+
+Deno.test("doctor secrets: flags a cleartext sensitive field inside an array element (swamp-club#3275)", async () => {
+  await withTempDir(async (repoDir) => {
+    await ensureDir(join(repoDir, "models"));
+
+    const typeName = `@test-doctor-secrets/users-${
+      crypto.randomUUID().slice(0, 8)
+    }`;
+    const modelType = ModelType.create(typeName);
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({
+        users: z.array(z.object({
+          userId: z.string(),
+          password: z.string().meta({ sensitive: true }),
+        })).default([]),
+      }),
+      resources: {},
+      methods: {},
+    });
+
+    const repo = new YamlDefinitionRepository(repoDir);
+    const clean = Definition.create({
+      name: "clean-users",
+      type: modelType.normalized,
+      globalArguments: { users: [{ userId: "a", password: VAULT_EXPR }] },
+    });
+    await repo.save(modelType, clean);
+
+    // Planted directly, as a definition written before the guard reached
+    // array elements would be.
+    const typeDir = dirname(
+      await findYamlForId(join(repoDir, "models"), clean.id),
+    );
+    const leakyId = crypto.randomUUID();
+    await Deno.writeTextFile(
+      join(typeDir, `${leakyId}.yaml`),
+      stringifyYaml({
+        id: leakyId,
+        name: "leaky-users",
+        version: 1,
+        type: modelType.normalized,
+        tags: {},
+        globalArguments: {
+          users: [
+            { userId: "a", password: VAULT_EXPR },
+            { userId: "b", password: CLEARTEXT },
+          ],
+        },
+      }),
+    );
+
+    const deps = await createDoctorSecretsDeps(repoDir);
+    const events = await collect<DoctorSecretsEvent>(
+      doctorSecrets(createLibSwampContext(), deps),
+    );
+    const completed = events.find((e) => e.kind === "completed");
+    if (!completed || completed.kind !== "completed") {
+      throw new Error("expected a completed event");
+    }
+    const { data } = completed;
+
+    assertEquals(data.scanned, 2);
+    assertEquals(data.findings.length, 1);
+    assertEquals(data.findings[0].definitionName, "leaky-users");
+    assertEquals(data.findings[0].leakedPaths, ["users[1].password"]);
+    assertEquals(data.findings[0].remediations, [{
+      path: "users[1].password",
+      vaultName: "my-vault",
+      vaultKey: "users-1-password",
+      expression: "${{ vault.get('my-vault', 'users-1-password') }}",
+    }]);
+    assertEquals(JSON.stringify(data).includes(CLEARTEXT), false);
+  });
+});

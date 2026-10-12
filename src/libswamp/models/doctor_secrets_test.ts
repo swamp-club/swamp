@@ -230,3 +230,43 @@ Deno.test("doctorSecrets: flags a constant expression, whose text is stored in c
   assertEquals(data.findings.map((f) => f.leakedPaths), [["apiKey"]]);
   assertEquals(JSON.stringify(data).includes("hunter2"), false);
 });
+
+Deno.test("doctorSecrets: flags a cleartext sensitive field inside an array element with a per-element remediation", async () => {
+  const usersSchema = z.object({
+    users: z.array(z.object({
+      userId: z.string(),
+      password: z.string().meta({ sensitive: true, vaultName: "prod-creds" }),
+    })),
+  });
+  const deps = makeDeps(
+    [{
+      definition: {
+        id: "def-1",
+        name: "my-users",
+        globalArguments: {
+          users: [
+            { userId: "a", password: "${{ vault.get('prod-creds', 'a') }}" },
+            { userId: "b", password: SECRET },
+          ],
+        },
+      },
+      type: "acme/users",
+    }],
+    () => ({ globalArguments: usersSchema }),
+  );
+
+  const events = await collect<DoctorSecretsEvent>(
+    doctorSecrets(createLibSwampContext(), deps),
+  );
+  const data = completedData(events);
+
+  assertEquals(data.findings.length, 1);
+  assertEquals(data.findings[0].leakedPaths, ["users[1].password"]);
+  assertEquals(data.findings[0].remediations, [{
+    path: "users[1].password",
+    vaultName: "prod-creds",
+    vaultKey: "users-1-password",
+    expression: "${{ vault.get('prod-creds', 'users-1-password') }}",
+  }]);
+  assertEquals(JSON.stringify(data).includes(SECRET), false);
+});
