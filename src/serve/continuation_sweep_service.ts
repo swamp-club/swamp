@@ -152,7 +152,9 @@ export const HELD_SIGNAL_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
  * A {@link sweepHeldSignals} that runs on the first call and then no more
  * often than every `intervalMs`, for calling with each continuation pass.
  * A call that is not due reads nothing and returns 0. The time of the last
- * sweep is kept here, in this process: every instance keeps its own.
+ * sweep is kept here, in this process: every instance keeps its own. A call
+ * timed before the last sweep means the clock was set back, and sweeps: the
+ * schedule must not stand still until the clock has caught up.
  */
 export function heldSignalSweeper(
   intervalMs: number = HELD_SIGNAL_SWEEP_INTERVAL_MS,
@@ -162,7 +164,8 @@ export function heldSignalSweeper(
 ) => Promise<number> {
   let last: number | undefined;
   return async (ctx, now = new Date()) => {
-    if (last !== undefined && now.getTime() - last < intervalMs) return 0;
+    const since = last === undefined ? intervalMs : now.getTime() - last;
+    if (since >= 0 && since < intervalMs) return 0;
     last = now.getTime();
     return await sweepHeldSignals(ctx, now);
   };

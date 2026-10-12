@@ -251,6 +251,29 @@ Deno.test("heldSignalSweeper: sweeps on the first call, then only once the inter
   assertEquals(sweeps, 4);
 });
 
+Deno.test("heldSignalSweeper: a clock set back sweeps, and the interval runs from that sweep", async () => {
+  let sweeps = 0;
+  const store = new class extends InMemorySignalWaitStore {
+    override listPendingAddresses() {
+      sweeps++;
+      return super.listPendingAddresses();
+    }
+  }();
+  const ctx = waitsCtx(store);
+  const boot = new Date("2026-01-01T12:00:00.000Z");
+  const at = (ms: number) => new Date(boot.getTime() + ms);
+  const sweep = heldSignalSweeper(600_000);
+
+  await sweep(ctx, boot);
+  // Six hours earlier: without this the next sweep would be six hours away.
+  await sweep(ctx, at(-21_600_000));
+  assertEquals(sweeps, 2);
+  await sweep(ctx, at(-21_600_000 + 599_999));
+  assertEquals(sweeps, 2);
+  await sweep(ctx, at(-21_600_000 + 600_000));
+  assertEquals(sweeps, 3);
+});
+
 Deno.test("heldSignalSweeper: a sweep that fails is not retried before the interval has passed", async () => {
   let attempts = 0;
   const failing = new class extends InMemorySignalWaitStore {
