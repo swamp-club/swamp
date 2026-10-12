@@ -21,30 +21,9 @@
 /** @jsxImportSource react */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
+import { WorkflowCard } from "./WorkflowCard.tsx";
 import type { CardRunSummary } from "./WorkflowCard.tsx";
 import type { WorkflowFacets } from "../lib/workflow_facets.ts";
-
-// The router reads the page location when it loads, and the dashboard's
-// browser globals aren't in Deno's test types. Each test file runs in its
-// own isolate, so stubbing them here touches nothing else.
-declare global {
-  var history: {
-    state: unknown;
-    pushState(data: unknown, unused: string, url?: string | URL | null): void;
-    replaceState(
-      data: unknown,
-      unused: string,
-      url?: string | URL | null,
-    ): void;
-  };
-}
-if (!globalThis.location) {
-  Object.defineProperty(globalThis, "location", {
-    value: new URL("http://localhost/"),
-    configurable: true,
-  });
-}
-const { WorkflowCard } = await import("./WorkflowCard.tsx");
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");
 

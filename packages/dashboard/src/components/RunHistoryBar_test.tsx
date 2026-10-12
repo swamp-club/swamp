@@ -21,29 +21,8 @@
 /** @jsxImportSource react */
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-
-// The router reads the page location when it loads, and the dashboard's
-// browser globals aren't in Deno's test types. Each test file runs in its
-// own isolate, so stubbing them here touches nothing else.
-declare global {
-  var history: {
-    state: unknown;
-    pushState(data: unknown, unused: string, url?: string | URL | null): void;
-    replaceState(
-      data: unknown,
-      unused: string,
-      url?: string | URL | null,
-    ): void;
-  };
-}
-if (!globalThis.location) {
-  Object.defineProperty(globalThis, "location", {
-    value: new URL("http://localhost/"),
-    configurable: true,
-  });
-}
-const { RunHistoryBar } = await import("./RunHistoryBar.tsx");
-const { FailureLink, failureHref } = await import("./FailureLink.tsx");
+import { RunHistoryBar } from "./RunHistoryBar.tsx";
+import { failureHref, FailureLink } from "./FailureLink.tsx";
 
 Deno.test("failureHref: run path with the failure focus param, segments encoded", () => {
   assertEquals(

@@ -27,6 +27,7 @@ import {
   type RouteState,
   viewForDetail,
 } from "../routes.ts";
+import { browserHistory } from "../components/dom_types.ts";
 
 // `location` is absent outside a browser (deno test renders components that
 // import this module); start at the overview there.
@@ -53,7 +54,7 @@ function getSnapshot(): RouteState {
 function pushState(next: RouteState) {
   const path = buildPath(next);
   if (path !== buildPath(currentState)) {
-    history.pushState(null, "", path);
+    browserHistory()?.pushState(null, "", path);
   }
   currentState = next;
   notify();
