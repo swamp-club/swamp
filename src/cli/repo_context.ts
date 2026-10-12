@@ -141,7 +141,10 @@ import {
   slowLockAdvice,
 } from "../domain/datastore/slow_lock_advice.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
-import { HydrateContractViolationError } from "../domain/datastore/datastore_sync_service.ts";
+import {
+  HydrateContractViolationError,
+  UnpublishedDataVersionError,
+} from "../domain/datastore/datastore_sync_service.ts";
 import type {
   DatastoreSyncService,
   HydrateFileHook,
@@ -149,8 +152,11 @@ import type {
   PushManifest,
   SyncCapabilities,
   SyncContext,
+  WrittenVersion,
 } from "../domain/datastore/datastore_sync_service.ts";
 import type { ForeignContentFetcher } from "../domain/data/repositories.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { pushModelLockScope } from "../infrastructure/persistence/push_paths.ts";
 import {
@@ -2273,7 +2279,7 @@ export interface ModelLockResult {
    * (swamp-club#3055). Everything else pushes through a root unit of work
    * with {@link push} and calls {@link release} after the root ends.
    */
-  flush: () => Promise<void>;
+  flush: (written?: readonly WrittenVersion[]) => Promise<void>;
   /**
    * Pushes changed files for sync-capable datastores (single- or two-phase),
    * without releasing the locks. A command that runs in a root unit of work
@@ -2281,6 +2287,14 @@ export interface ModelLockResult {
    * has ended (swamp-club#3033).
    */
   push: () => Promise<void>;
+  /**
+   * {@link push}, given the data versions the work under these locks wrote:
+   * it publishes each one and checks the remote holds it, retrying a
+   * bounded number of times; see {@link AcquireModelLocksOptions.dataRepo}
+   * (swamp-club#3146). A root calls its flush with its outcome, so pass
+   * this to a root through a closure.
+   */
+  pushWritten: (written: readonly WrittenVersion[]) => Promise<void>;
   /** Releases every per-model lock these locks took. */
   release: () => Promise<void>;
   /**
@@ -2423,8 +2437,17 @@ export async function reclaimModelLocks(
   }
 }
 
-/** Runs a datastore sync call; see {@link AcquireModelLocksOptions}. */
-export type SyncCallWrapper = <T>(fn: () => Promise<T>) => Promise<T>;
+/**
+ * Runs a datastore sync call; see {@link AcquireModelLocksOptions}. `kind`
+ * says whether the call pulls (the step-start pull), pushes (the flush), or
+ * pushes alone: the last publish attempt of a push whose earlier attempts
+ * other syncs undid, which must not run alongside any other sync
+ * (swamp-club#3146).
+ */
+export type SyncCallWrapper = <T>(
+  fn: () => Promise<T>,
+  kind: "pull" | "push" | "push-alone",
+) => Promise<T>;
 
 /** Optional behaviour for {@link acquireModelLocks}. */
 export interface AcquireModelLocksOptions {
@@ -2435,6 +2458,149 @@ export interface AcquireModelLocksOptions {
    * shared sync gate here so run syncs exclude its poller pulls.
    */
   wrapSync?: SyncCallWrapper;
+  /**
+   * The repository context the locked models' data is written through.
+   * With it, a push given the versions its work wrote makes sure the remote
+   * holds them (swamp-club#3146): another sync in this process can undo a
+   * push, by clearing the extension's dirty marks before the push walked
+   * them or by pulling an older latest marker over the local one. Before
+   * each push it moves each version's latest marker forward again and
+   * stages the version and the marker after the write; after it, it reads
+   * both back from the remote and repeats while either is missing or behind.
+   */
+  repoContext?: Pick<
+    RepositoryContext,
+    "markDirty" | "commitLog" | "unifiedDataRepo"
+  >;
+}
+
+/** Pushes made to publish a step's written versions before giving up. */
+export const PUBLISH_ATTEMPTS = 3;
+
+/** How long one read of a published file from the remote datastore may take. */
+export const PUBLISH_CHECK_FETCH_TIMEOUT_MS = 30_000;
+
+/** The cache-relative, forward-slash path of `absPath`, or undefined outside it. */
+function cacheRelativePath(
+  cachePath: string,
+  absPath: string,
+): string | undefined {
+  const rel = relative(cachePath, absPath);
+  if (escapesRoot(rel)) return undefined;
+  return SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+}
+
+/** One written version and the cache paths that publish it. */
+interface PublishTarget {
+  readonly written: WrittenVersion;
+  readonly metadataRel: string;
+  readonly latestRel: string;
+}
+
+/**
+ * Moves each data name's latest marker forward to the highest version in
+ * `written` that is still on disk, and stages that version's directory and
+ * the marker again, after the write, for the next push. A name whose
+ * versions are all gone (deleted, garbage collected or rolled back on
+ * purpose) is left alone. Returns what to check on the remote afterwards.
+ *
+ * The staging runs in a root unit of work with no push: inside a command's
+ * root it rolls up into that root, and after the root has ended (a method
+ * run's push is its root's flush) it reaches the mark hook on its own.
+ */
+async function stageVersionsForPublish(
+  written: readonly WrittenVersion[],
+  repoContext: Pick<
+    RepositoryContext,
+    "markDirty" | "commitLog" | "unifiedDataRepo"
+  >,
+  cachePath: string,
+): Promise<PublishTarget[]> {
+  const byName = new Map<string, WrittenVersion[]>();
+  for (const w of written) {
+    const key = JSON.stringify([w.modelType, w.modelId, w.dataName]);
+    const list = byName.get(key);
+    if (list) list.push(w);
+    else byName.set(key, [w]);
+  }
+  return await runInRootUnitOfWork(
+    repoContext,
+    { flush: undefined },
+    async () => {
+      const targets: PublishTarget[] = [];
+      for (const versions of byName.values()) {
+        const descending = [...versions].sort((a, b) => b.version - a.version);
+        for (const w of descending) {
+          const paths = await repoContext.unifiedDataRepo
+            .reassertLatestVersion(
+              ModelType.create(w.modelType),
+              w.modelId,
+              w.dataName,
+              w.version,
+            );
+          if (paths === undefined) continue;
+          const dirRel = cacheRelativePath(cachePath, paths.versionDir);
+          const latestRel = cacheRelativePath(cachePath, paths.latestPath);
+          if (dirRel !== undefined && latestRel !== undefined) {
+            targets.push({
+              written: w,
+              metadataRel: `${dirRel}/metadata.yaml`,
+              latestRel,
+            });
+          } else {
+            getSwampLogger(["datastore", "lock"])
+              .debug`Version ${w.version} of ${w.dataName} is outside the datastore cache; not checked`;
+          }
+          break;
+        }
+      }
+      return targets;
+    },
+  );
+}
+
+/** Remote reads a publish check runs at once. */
+const PUBLISH_CHECK_CONCURRENCY = 8;
+
+/**
+ * The targets the remote datastore does not hold yet, or undefined when a
+ * read failed: a push that cannot be checked counts as unverified, not as
+ * lost, so an unreachable remote never fails work whose push succeeded.
+ */
+async function unpublishedTargets(
+  targets: readonly PublishTarget[],
+  fetchContent: NonNullable<DatastoreSyncService["fetchContent"]>,
+  namespace: string | undefined,
+): Promise<PublishTarget[] | undefined> {
+  const options = () => ({
+    namespace,
+    signal: AbortSignal.timeout(PUBLISH_CHECK_FETCH_TIMEOUT_MS),
+  });
+  const isBehind = async (target: PublishTarget): Promise<boolean> => {
+    const metadata = await fetchContent(target.metadataRel, options());
+    if (metadata === null) return true;
+    const latest = await fetchContent(target.latestRel, options());
+    if (latest === null) return true;
+    const remoteLatest = parseInt(new TextDecoder().decode(latest).trim(), 10);
+    return isNaN(remoteLatest) || remoteLatest < target.written.version;
+  };
+  const behind: PublishTarget[] = [];
+  try {
+    for (let i = 0; i < targets.length; i += PUBLISH_CHECK_CONCURRENCY) {
+      const batch = targets.slice(i, i + PUBLISH_CHECK_CONCURRENCY);
+      const results = await Promise.all(batch.map(isBehind));
+      batch.forEach((target, j) => {
+        if (results[j]) behind.push(target);
+      });
+    }
+  } catch (error) {
+    getSwampLogger(["datastore", "lock"]).warn(
+      "Could not check the datastore holds the pushed data versions: {error}",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+    return undefined;
+  }
+  return behind;
 }
 
 /**
@@ -2727,7 +2893,7 @@ export async function acquireModelLocks(
             }
             if (ns) return syncService.pullChanged({ namespace: ns });
             return syncService.pullChanged();
-          });
+          }, "pull");
           // 0 means the local cache is unchanged; void means unknown.
           if (pulled !== 0) synced = true;
         } catch (error) {
@@ -2750,7 +2916,12 @@ export async function acquireModelLocks(
   // concurrent lock holders in this process cannot clear it under each other.
   processLockHolderMarker.markHoldingLocks();
 
-  const push = async () => {
+  // `beforePush` runs inside the same wrapped call as the push, so in serve
+  // no run pull can land between it and the upload (swamp-club#3146).
+  const pushOnce = async (
+    beforePush?: () => Promise<void>,
+    kind: "push" | "push-alone" = "push",
+  ) => {
     // For custom sync-capable datastores: push changes to remote
     if (
       customSyncService && customProvider && isCustomDatastoreConfig(config)
@@ -2766,8 +2937,9 @@ export async function acquireModelLocks(
         // Two-phase push: file uploads outside global lock, index
         // merge under global lock. Narrows the critical section from
         // "entire sync" to "index read-modify-write" only.
-        await wrapSync(() =>
-          flushTwoPhasePush(
+        await wrapSync(async () => {
+          await beforePush?.();
+          return await flushTwoPhasePush(
             provider,
             syncService,
             config,
@@ -2777,12 +2949,13 @@ export async function acquireModelLocks(
             catalogStore,
             logger,
             progressWriter,
-          )
-        );
+          );
+        }, kind);
       } else {
         // Single-phase fallback: everything under global lock
-        await wrapSync(() =>
-          flushSinglePhasePush(
+        await wrapSync(async () => {
+          await beforePush?.();
+          return await flushSinglePhasePush(
             provider,
             syncService,
             config,
@@ -2792,15 +2965,66 @@ export async function acquireModelLocks(
             catalogStore,
             logger,
             progressWriter,
-          )
-        );
+          );
+        }, kind);
       }
     }
   };
 
-  const flush = async () => {
+  const lockedModels = new Set(
+    unique.map((m) => JSON.stringify([m.modelType, m.modelId])),
+  );
+  const push = async (written?: readonly WrittenVersion[]) => {
+    const publishContext = options?.repoContext;
+    // Only versions of models these locks hold: no other writer can own a
+    // newer marker for them while the push runs.
+    const ours = (written ?? []).filter((w) =>
+      lockedModels.has(JSON.stringify([w.modelType, w.modelId]))
+    );
+    if (
+      ours.length === 0 || publishContext === undefined ||
+      // A v3 context commits through its commit log, not this push.
+      publishContext.commitLog !== undefined ||
+      !customSyncService ||
+      !isCustomDatastoreConfig(config) || !config.cachePath
+    ) {
+      await pushOnce();
+      return;
+    }
+    const syncService = customSyncService;
+    const cachePath = config.cachePath;
+    let pending: readonly WrittenVersion[] = ours;
+    for (let attempt = 1; attempt <= PUBLISH_ATTEMPTS; attempt++) {
+      let targets: PublishTarget[] = [];
+      const stage = pending;
+      // The last attempt runs alone, so no other sync can undo it.
+      await pushOnce(
+        async () => {
+          targets = await stageVersionsForPublish(
+            stage,
+            publishContext,
+            cachePath,
+          );
+        },
+        attempt === PUBLISH_ATTEMPTS ? "push-alone" : "push",
+      );
+      if (!syncService.fetchContent || targets.length === 0) return;
+      const behind = await unpublishedTargets(
+        targets,
+        syncService.fetchContent.bind(syncService),
+        config.namespace,
+      );
+      if (behind === undefined || behind.length === 0) return;
+      pending = behind.map((t) => t.written);
+      logger
+        .debug`Datastore lacks ${pending.length} written version(s) after push ${attempt}; publishing again`;
+    }
+    throw new UnpublishedDataVersionError(pending, PUBLISH_ATTEMPTS);
+  };
+
+  const flush = async (written?: readonly WrittenVersion[]) => {
     try {
-      await push();
+      await push(written);
     } finally {
       // Always release per-model locks, even if push fails
       await release();
@@ -2824,7 +3048,15 @@ export async function acquireModelLocks(
           : ".datastore.lock",
       }),
   };
-  return { flush, push, release, synced, heldLockIds: lockIds(), lentLocks };
+  return {
+    flush,
+    push: () => push(),
+    pushWritten: push,
+    release,
+    synced,
+    heldLockIds: lockIds(),
+    lentLocks,
+  };
 }
 
 /**

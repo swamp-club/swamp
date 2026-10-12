@@ -166,9 +166,11 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import type {
-  HydrateFileHook,
-  MarkDirtyHook,
+import {
+  type HydrateFileHook,
+  type MarkDirtyHook,
+  UnpublishedDataVersionError,
+  type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
@@ -189,6 +191,7 @@ import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import {
   DefaultMethodExecutionService,
   recoveredDataHandles,
+  writtenVersionsOf,
 } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
@@ -1261,8 +1264,34 @@ export type DirectTypeResolver = (
   provenance?: DirectInputsProvenance,
 ) => Promise<DirectTypeResolveResult>;
 
+/**
+ * Runs a step lock's flush with what the step wrote. A step that already
+ * failed keeps its own error: a version its flush could not publish is
+ * logged instead (swamp-club#3146). Any other flush error is thrown.
+ */
+async function flushStepLock(
+  flush: (written?: readonly WrittenVersion[]) => Promise<void>,
+  written: readonly WrittenVersion[],
+  stepFailed: boolean,
+  logger: { error: (message: string, props: Record<string, unknown>) => void },
+): Promise<void> {
+  try {
+    await flush(written);
+  } catch (error) {
+    if (!stepFailed || !(error instanceof UnpublishedDataVersionError)) {
+      throw error;
+    }
+    logger.error("{message}", { message: error.message });
+  }
+}
+
 export interface StepLockResult {
-  flush: () => Promise<void>;
+  /**
+   * Pushes the step's changes and releases its locks. `written` lists the
+   * data versions the step wrote, which the push publishes and checks
+   * (swamp-club#3146).
+   */
+  flush: (written?: readonly WrittenVersion[]) => Promise<void>;
   /**
    * The nonces of the lock files the hook took. The step runs inside
    * `processLockHolderMarker.runHolding` with them, so a swamp the step
@@ -2273,7 +2302,23 @@ export class DefaultStepExecutor implements StepExecutor {
     // (report data), so a single flush pushes everything to the remote
     // datastore. Taking it first also means a lock timeout fails the step
     // before any record is left at running.
-    let flushLock: (() => Promise<void>) | null = null;
+    let flushLock:
+      | ((written?: readonly WrittenVersion[]) => Promise<void>)
+      | null = null;
+    // Declared outside try so the catch block can record artifacts written
+    // before a throw (e.g. model writes data then throws on verdict=FAIL),
+    // and the lock's flush can publish them. Each phase owns its mutations
+    // of this list; the orchestrator only creates and threads it.
+    const savedArtifacts: Array<{
+      dataId: string;
+      name: string;
+      version: number;
+      tags: Record<string, string>;
+    }> = [];
+    // Versions a worker wrote before its step failed, which reach this
+    // process only on the error (swamp-club#3146).
+    const failedRemoteWrites: WrittenVersion[] = [];
+    let stepFailed = false;
     // Undefined when a hook took locks without naming them.
     let heldLockIds: readonly string[] | LentLocks | undefined = [];
     if (this.stepLockHook) {
@@ -2394,16 +2439,6 @@ export class DefaultStepExecutor implements StepExecutor {
         runTracker.register(activeRun);
       }
 
-      // Declared outside try so the catch block can record artifacts written
-      // before a throw (e.g. model writes data then throws on verdict=FAIL).
-      // Each phase owns its mutations of this list; the orchestrator only
-      // creates and threads it.
-      const savedArtifacts: Array<{
-        dataId: string;
-        name: string;
-        version: number;
-        tags: Record<string, string>;
-      }> = [];
       // Start heartbeat inside try so it's always cleaned up on error.
       if (runTracker) {
         heartbeatInterval = setInterval(() => {
@@ -2502,11 +2537,24 @@ export class DefaultStepExecutor implements StepExecutor {
           output,
           savedArtifacts,
         });
+        for (const version of writtenVersionsOf(error)) {
+          failedRemoteWrites.push(version);
+        }
+        stepFailed = true;
         throw error;
       }
     } finally {
       if (flushLock) {
-        await flushLock();
+        const written: WrittenVersion[] = [
+          ...savedArtifacts.map((artifact) => ({
+            modelType: modelType.normalized,
+            modelId: evaluatedDefinition.id,
+            dataName: artifact.name,
+            version: artifact.version,
+          })),
+          ...failedRemoteWrites,
+        ];
+        await flushStepLock(flushLock, written, stepFailed, runLogger);
       }
     }
   }

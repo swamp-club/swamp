@@ -28,6 +28,7 @@ import {
   type PollerGateState,
   pollerGateTiming,
   SYNC_GATED_REQUESTS,
+  withRunSyncGate,
   withSharedSyncGate,
   withSyncGate,
 } from "./sync_gate.ts";
@@ -478,4 +479,55 @@ Deno.test("sync gate: the same interleaving resurrects the item without a gate",
   await Promise.all([pull, mutation]);
 
   assertEquals(datastore.remote.has("data/item"), true);
+});
+
+Deno.test("withSharedSyncGate: a run pull waits for a run push in flight, while pushes run together (swamp-club#3146)", async () => {
+  const gate = createSyncGate();
+  const order: string[] = [];
+  let finishPush: () => void = () => {};
+  const pushing = new Promise<void>((resolve) => finishPush = resolve);
+  const push = withSharedSyncGate(gate, async () => {
+    order.push("push start");
+    await pushing;
+    order.push("push end");
+  });
+  const secondPush = withSharedSyncGate(gate, () => {
+    order.push("second push");
+    return Promise.resolve();
+  });
+  await waitFor(() => order.length === 2, "both pushes started");
+  const pull = withSharedSyncGate(gate, () => {
+    order.push("pull");
+    return Promise.resolve();
+  }, "pull");
+  await secondPush;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(order, ["push start", "second push"]);
+
+  finishPush();
+  await Promise.all([push, pull]);
+  assertEquals(order, ["push start", "second push", "push end", "pull"]);
+});
+
+Deno.test("withRunSyncGate: a push that must run alone takes the gate exclusively (swamp-club#3146)", async () => {
+  const gate = createSyncGate();
+  let finishPull: () => void = () => {};
+  const pulling = new Promise<void>((resolve) => finishPull = resolve);
+  const order: string[] = [];
+  const pull = withRunSyncGate(gate, async () => {
+    order.push("pull start");
+    await pulling;
+    order.push("pull end");
+  }, "pull");
+  await waitFor(() => order.length === 1, "the pull started");
+  const alone = withRunSyncGate(gate, () => {
+    order.push(`alone (exclusive=${gate.exclusiveHeld})`);
+    return Promise.resolve();
+  }, "push-alone");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertEquals(order, ["pull start"]);
+
+  finishPull();
+  await Promise.all([pull, alone]);
+  assertEquals(order, ["pull start", "pull end", "alone (exclusive=true)"]);
 });

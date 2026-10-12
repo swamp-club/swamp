@@ -576,8 +576,24 @@ const ROWS: AnyRow[] = [
   row({
     name: "workflow run",
     rootUnit: { cli: true },
-    // Recorded before the CLI adopted a root unit (swamp-club#3033).
-    syncOrder: { cli: ["pull", "prepare", "commit", "release", "push"] },
+    // Recorded before the CLI adopted a root unit (swamp-club#3033). Since
+    // swamp-club#3146 the step's lock reads each written version's metadata
+    // and latest marker back from the remote after its commit, while it still
+    // holds the model lock: two report versions, four fetches.
+    syncOrder: {
+      cli: [
+        "pull",
+        "prepare",
+        "commit",
+        "release",
+        "fetch",
+        "fetch",
+        "fetch",
+        "fetch",
+        "release",
+        "push",
+      ],
+    },
     seed: seedModelAndWorkflow,
     cli: (repos) => ({ args: ["workflow", "run", "wf1", ...json(repos)] }),
     // The serve side of this use case belongs to swamp-club#3034.
@@ -867,8 +883,16 @@ const EXPECTED: Record<string, PinnedRow> = {
         "markDirty outputs/<type>/noop/<id>-<time>.yaml",
         "markDirty data/<type>/<id>/report-swamp-method-summary",
         "markDirty data/<type>/<id>/report-swamp-method-summary-json",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary/latest",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/1",
+        "markDirty data/<type>/<id>/report-swamp-method-summary-json/latest",
         "prepare[11]",
         "commit[11]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
+        "fetch[1]",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty workflow-runs/<id>/workflow-run-<id>.yaml",
         "markDirty data/workflow/<id>/report-swamp-workflow-summary",

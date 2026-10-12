@@ -354,6 +354,7 @@ export const workflowResumeCommand = withRemoteOptions(
         unlocked.syncService,
         repoContext.catalogStore,
         createLockProgressWriter(modelId),
+        { repoContext },
       );
       if (result.synced) repoContext.catalogStore.invalidate();
       return result;

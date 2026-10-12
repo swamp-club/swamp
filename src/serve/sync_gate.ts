@@ -42,8 +42,13 @@
  * - **Shared** — every run push unit and step-start pull, via
  *   {@link withSharedSyncGate}: the per-step model-lock pull and flush
  *   (`acquireModelLocks` `wrapSync`), and the post-run / post-resume pushes.
- *   Shared holders exclude pulls and handler mutations but not each other,
- *   so fan-out workflows keep their parallel uploads.
+ *   Shared holders exclude poller pulls and handler mutations. Within the
+ *   shared mode, run pulls and run pushes are two lanes that exclude each
+ *   other ({@link RunSyncLanes}, swamp-club#3146), so fan-out workflows keep
+ *   their parallel uploads and step-start pulls run side by side, but a pull
+ *   never lands inside another run's push. A model lock's last publish
+ *   attempt, after other syncs undid the earlier ones, takes the exclusive
+ *   mode instead ({@link withRunSyncGate}).
  *
  * Pollers acquire opportunistically (see {@link gatedPull}), so runs never
  * queue behind a waiting poller except during a bounded escalation. Handler
@@ -70,6 +75,7 @@
  */
 
 import { ReadWriteLock } from "../infrastructure/stream/read_write_lock.ts";
+import { type RunSyncLane, RunSyncLanes } from "./run_sync_lanes.ts";
 import { runBoundedSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../infrastructure/tracing/mod.ts";
@@ -236,8 +242,11 @@ export function withSyncGate<T>(
 
 /**
  * Runs `fn` holding the sync gate in shared mode. Used for run push units and
- * step-start pulls: they exclude pulls and handler mutations, but run
- * alongside each other.
+ * step-start pulls: they exclude poller pulls and handler mutations. Within
+ * the shared mode, `lane` keeps run pulls and run pushes apart
+ * ({@link RunSyncLanes}, swamp-club#3146): pushes run alongside pushes and
+ * pulls alongside pulls, never a pull alongside a push. Run pushes are the
+ * default; only a step-start pull passes `"pull"`.
  *
  * Must never be called from inside an exclusively gated handler — the gate is
  * not reentrant. With no gate wired it returns `fn()` directly.
@@ -245,9 +254,68 @@ export function withSyncGate<T>(
 export function withSharedSyncGate<T>(
   gate: SyncGate | undefined,
   fn: () => Promise<T>,
+  lane: RunSyncLane = "push",
 ): Promise<T> {
   if (!gate) return fn();
-  return runGated(gate, "shared", fn);
+  return runGated(gate, "shared", () => inRunSyncLane(gate, lane, fn));
+}
+
+/**
+ * The sync wrapper serve passes `acquireModelLocks` (its `wrapSync`): a
+ * step-start pull and a push take the shared mode in their lane, and a push
+ * that must run alone (the last publish attempt, swamp-club#3146) takes the
+ * exclusive mode, so no other sync overlaps it.
+ */
+export function withRunSyncGate<T>(
+  gate: SyncGate | undefined,
+  fn: () => Promise<T>,
+  kind: RunSyncLane | "push-alone",
+): Promise<T> {
+  if (kind === "push-alone") return withSyncGate(gate, fn);
+  return withSharedSyncGate(gate, fn, kind);
+}
+
+/** The lanes of each gate, created with its first shared holder. */
+const runSyncLanes = new WeakMap<SyncGate, RunSyncLanes>();
+
+/** The run sync lanes of `gate` (test introspection). */
+export function runSyncLanesOf(gate: SyncGate): RunSyncLanes {
+  let lanes = runSyncLanes.get(gate);
+  if (lanes === undefined) {
+    lanes = new RunSyncLanes();
+    runSyncLanes.set(gate, lanes);
+  }
+  return lanes;
+}
+
+/**
+ * Runs `fn` in `lane`, waiting at most {@link GATE_WAIT_TIMEOUT_MS} and then
+ * proceeding without it, as the gate itself degrades.
+ */
+async function inRunSyncLane<T>(
+  gate: SyncGate,
+  lane: RunSyncLane,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const lanes = runSyncLanesOf(gate);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GATE_WAIT_TIMEOUT_MS);
+  Deno.unrefTimer(timer);
+  let held = false;
+  try {
+    await lanes.acquire(lane, controller.signal);
+    held = true;
+  } catch {
+    const waitedSec = GATE_WAIT_TIMEOUT_MS / 1000;
+    logger
+      .warn`Run sync ${lane} lane not acquired within ${waitedSec}s; proceeding without it — a concurrent run sync could undo this one`;
+  }
+  clearTimeout(timer);
+  try {
+    return await fn();
+  } finally {
+    if (held) lanes.release();
+  }
 }
 
 async function runGated<T>(

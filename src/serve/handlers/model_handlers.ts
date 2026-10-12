@@ -91,7 +91,7 @@ import {
   type TypeSearchDeps,
 } from "../../libswamp/types/search.ts";
 import { createModelMethodRunDeps } from "../deps.ts";
-import { withSharedSyncGate } from "../sync_gate.ts";
+import { withRunSyncGate, withSharedSyncGate } from "../sync_gate.ts";
 import { createCommandTelemetry } from "../telemetry.ts";
 import { serializeEvent } from "../serializer.ts";
 import type {
@@ -185,6 +185,10 @@ import {
   unresolvedAccessResource,
 } from "./resource_resolution.ts";
 import { runInRootUnitOfWork } from "../../infrastructure/persistence/repo_unit_of_work.ts";
+import {
+  UnpublishedDataVersionError,
+  type WrittenVersion,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import {
   analyzeContentExpressions,
   definitionRetargetSourcesChanged,
@@ -352,6 +356,11 @@ async function releaseModelLocks(
   pushFailure: { error: unknown } | undefined,
 ): Promise<void> {
   let failure = pushFailure;
+  if (pushFailure?.error instanceof UnpublishedDataVersionError) {
+    // The client got its result before the push; the loss is logged only.
+    logger.error("{message}", { message: pushFailure.error.message });
+    failure = undefined;
+  }
   try {
     await modelLocks.release();
   } catch (error) {
@@ -545,6 +554,8 @@ export async function handleModelMethodRun(
     let modelLocks = undefined as ModelLockResult | undefined;
     let mutating = true;
     let lockPushFailure: { error: unknown } | undefined;
+    // What the run wrote, for the lock's push to publish (swamp-club#3146).
+    const written: WrittenVersion[] = [];
     // The run's error, once it was answered inside the root.
     let answered = false;
     let answeredError: unknown;
@@ -620,7 +631,7 @@ export async function handleModelMethodRun(
           flush: async ({ completed }) => {
             if (modelLocks) {
               try {
-                await modelLocks.push();
+                await modelLocks.pushWritten(written);
               } catch (error) {
                 lockPushFailure = { error };
               }
@@ -662,7 +673,11 @@ export async function handleModelMethodRun(
                   ctx.syncService,
                   ctx.repoContext.catalogStore,
                   undefined,
-                  { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+                  {
+                    wrapSync: (fn, kind) =>
+                      withRunSyncGate(ctx.syncGate, fn, kind),
+                    repoContext: ctx.repoContext,
+                  },
                 );
                 if (lockResult.synced) {
                   ctx.repoContext.catalogStore.invalidate();
@@ -684,6 +699,12 @@ export async function handleModelMethodRun(
             const libCtx = handlerLibSwampContext(ctx, {
               signal: controller.signal,
             });
+            const runDeps: typeof deps = {
+              ...deps,
+              onWrittenVersions: (versions) => {
+                for (const version of versions) written.push(version);
+              },
+            };
 
             if (ctx.cancelRegistry) {
               ctx.cancelRegistry.register("method-run", requestId, controller);
@@ -694,7 +715,7 @@ export async function handleModelMethodRun(
                 const event of runGeneratorWithVaultAccess(
                   vaultAccess?.access,
                   () =>
-                    modelMethodRun(libCtx, deps, {
+                    modelMethodRun(libCtx, runDeps, {
                       modelIdOrName: target.modelIdOrName,
                       byId: target.byId,
                       expectedName: target.expectedName,
@@ -884,6 +905,8 @@ export async function handleModelMethodRun(
     // Assigned in the root below, which control flow analysis cannot see.
     let modelLocks = undefined as ModelLockResult | undefined;
     let lockPushFailure: { error: unknown } | undefined;
+    // What the run wrote, for the lock's push to publish (swamp-club#3146).
+    const written: WrittenVersion[] = [];
     // The run's error, once it was answered inside the root.
     let answered = false;
     let answeredError: unknown;
@@ -927,7 +950,7 @@ export async function handleModelMethodRun(
           flush: async ({ completed }) => {
             if (modelLocks) {
               try {
-                await modelLocks.push();
+                await modelLocks.pushWritten(written);
               } catch (error) {
                 lockPushFailure = { error };
               }
@@ -961,7 +984,11 @@ export async function handleModelMethodRun(
                 ctx.syncService,
                 ctx.repoContext.catalogStore,
                 undefined,
-                { wrapSync: (fn) => withSharedSyncGate(ctx.syncGate, fn) },
+                {
+                  wrapSync: (fn, kind) =>
+                    withRunSyncGate(ctx.syncGate, fn, kind),
+                  repoContext: ctx.repoContext,
+                },
               );
               if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
               modelLocks = lockResult;
@@ -980,13 +1007,19 @@ export async function handleModelMethodRun(
             const libCtx = handlerLibSwampContext(ctx, {
               signal: runController.signal,
             });
+            const runDeps: typeof deps = {
+              ...deps,
+              onWrittenVersions: (versions) => {
+                for (const version of versions) written.push(version);
+              },
+            };
 
             const doRun = async () => {
               for await (
                 const event of runGeneratorWithVaultAccess(
                   vaultAccess?.access,
                   () =>
-                    modelMethodRun(libCtx, deps, {
+                    modelMethodRun(libCtx, runDeps, {
                       modelIdOrName: target.modelIdOrName,
                       byId: target.byId,
                       expectedName: target.expectedName,

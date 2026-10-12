@@ -1627,6 +1627,55 @@ because the extension resets the whole dirty set when a push completes.
 swamp-club#2421 tracks the proper fix: repositories that mark after the write,
 and extensions that clear only the marks a push handled.
 
+**Data versions written under a model lock (swamp-club#3146).** Concurrent
+runs of one serve process share its sync service, so another run's push can
+clear the marks of a version a step just wrote, and a pull (another run's
+step-start pull, or the poller) can put the remote's older `latest` marker back
+over the step's unpushed one. Both lost versions silently. The lock's push now
+publishes what the work under it wrote and checks it landed:
+
+- Each step and method run reports the data versions it wrote: the step's
+  saved artifacts, the versions a failed in-process method left
+  (`error.dataHandles`), and those a worker wrote before its dispatch failed,
+  which the data plane records per dispatch and the dispatch error carries as
+  `writtenVersions`. The list reaches the lock's push in process only
+  (`StepLockResult.flush(written)`, `ModelLockResult.pushWritten`, and
+  `ModelMethodRunDeps.onWrittenVersions` for method runs), never the event
+  stream.
+- Before each push, per data name, the highest written version still on disk
+  has its `latest` marker moved forward again if a pull reverted it
+  (`UnifiedDataRepository.reassertLatestVersion`, never lowering it), and its
+  version directory and marker are staged again, after the write, so a commit
+  that cleared the earlier marks cannot drop them. A version deleted, garbage
+  collected or rolled back on purpose is skipped.
+- After the push, while the model lock is still held, the push reads the
+  version's `metadata.yaml` and the `latest` marker back with `fetchContent`.
+  If either is missing or behind it repeats, up to `PUBLISH_ATTEMPTS` rounds,
+  then fails with `UnpublishedDataVersionError`. A step or method run that
+  already failed keeps its own error and logs this one; a serve method run,
+  which answers its client before it pushes, logs it. A read that fails or
+  times out leaves the push unverified, with a warning, rather than failing
+  work whose push succeeded. The reads run eight at a time. A namespaced datastore
+  whose root data is still migrating pushes nothing on the first round and
+  converges on the next, because each round marks again. A sync service
+  without `fetchContent` gets one unverified round.
+
+What stays exposed until the S3/GCS extensions clear only the marks a push
+handled and stop overwriting paths with a pending mark:
+
+- In serve, the run lanes keep a run pull out of every run push, so a pull
+  can no longer revert a marker, locally or on the remote, after a push
+  verified it. Two processes sharing one cache (a CLI next to serve) are not
+  covered: there a pull can still do both.
+- Run records, evaluated definitions, output records, definition YAML and
+  appends to an existing version can still be reverted locally by an
+  overlapping pull; only data versions are verified.
+- A published version a peer's GC or a 404 cleanup drops from the remote index
+  can be deleted locally by a pull despite a directory mark, and the push then
+  treats it as removed on purpose.
+- A worker data-plane request still running when a failed dispatch's bounded
+  wait (`DISPATCH_WRITES_SETTLE_TIMEOUT_MS`) expires is not reported.
+
 **Writes outside a hooked repository.** Some serve mutations write cache files
 that no hooked repository covers. Each marks exactly those files, by path, after
 writing:
@@ -1724,10 +1773,20 @@ The gate has two modes:
   each step's model-lock pull and flush push (serve passes `acquireModelLocks` a
   `wrapSync` hook, normally through `createStepLockHook`), and the post-run and
   post-resume pushes of `workflow.run`, `workflow.resume`, `model.method.run`,
-  scheduled, webhook and auto-resumed runs. Shared holders exclude pulls and
-  handler mutations but not each other, so fan-out workflows keep their
+  scheduled, webhook and auto-resumed runs. Shared holders exclude poller pulls
+  and handler mutations but not each other, so fan-out workflows keep their
   parallel uploads. The `wrapSync` hook covers only the sync calls, never the
   model-lock wait.
+- **Run lanes** inside the shared mode (`RunSyncLanes`, swamp-club#3146): run
+  pulls and run pushes exclude each other, first come first served, while
+  holders of one lane run together. Without them a step-start pull that read
+  the remote's older `latest` marker before another run's push committed wrote
+  it over the local marker after that push had verified it, and the next upload
+  of the marker published the older version again. A lane wait degrades like
+  the gate after `GATE_WAIT_TIMEOUT_MS`. A model lock's last publish attempt
+  runs alone: `wrapSync` is called with `push-alone` and serve takes the
+  exclusive mode (`withRunSyncGate`), so a run whose earlier attempts other
+  pushes undid still publishes under heavy fan-out.
 
 The fitness test in `integration/serve_deps_rules_test.ts` fails the build if a
 serve function pushes outside the gate: a raw push outside a

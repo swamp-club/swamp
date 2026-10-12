@@ -298,6 +298,10 @@ export interface DatastoreSyncService {
    * file. Used where core must compare its cached copy of a file with the
    * remote one before acting on it: `pullChanged` and `hydrateFile` would
    * replace the local copy, including one with a change not pushed yet.
+   * A model lock's push also reads each data version it published back with
+   * it, and fails the step when the remote still lacks it after its retries
+   * (swamp-club#3146): a `null` must mean the file is absent at the
+   * namespaced key, never that an older root-level copy was not consulted.
    *
    * Contract:
    *
@@ -684,5 +688,45 @@ export class HydrateContractViolationError extends UserError {
     this.datastoreType = datastoreType;
     this.relPath = relPath;
     this.absPath = absPath;
+  }
+}
+
+/**
+ * A data version a step or method run wrote while it held its model's lock.
+ * The lock's push publishes each one and checks the remote holds it
+ * (swamp-club#3146).
+ */
+export interface WrittenVersion {
+  readonly modelType: string;
+  readonly modelId: string;
+  readonly dataName: string;
+  readonly version: number;
+}
+
+/**
+ * Thrown when the remote datastore still lacks a data version after the
+ * lock's push published it and retried (swamp-club#3146): another sync in
+ * the same process undid the push. A workflow step or CLI method run that
+ * wrote the version fails with it; a serve method run, which has already
+ * answered its client when it pushes, logs it.
+ *
+ * Extends `UserError` so the message renders clean at the CLI error boundary.
+ */
+export class UnpublishedDataVersionError extends UserError {
+  readonly versions: readonly WrittenVersion[];
+
+  constructor(versions: readonly WrittenVersion[], attempts: number) {
+    const names = versions.map((v) =>
+      `${v.modelType}/${v.modelId} ${v.dataName} version ${v.version}`
+    ).join(", ");
+    super(
+      `The datastore does not hold ${names} after ${attempts} push ` +
+        `attempts: each time, a concurrent run or the serve poller synced ` +
+        `the datastore over the push. The data is on this host only; run ` +
+        `the step or method again to write and publish it.`,
+      "datastore_unpublished_data_version",
+    );
+    this.name = "UnpublishedDataVersionError";
+    this.versions = versions;
   }
 }

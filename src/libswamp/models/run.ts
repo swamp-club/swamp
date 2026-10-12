@@ -46,9 +46,11 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import {
   type MethodExecutionService,
   recoveredDataHandles,
+  writtenVersionsOf,
 } from "../../domain/models/method_execution_service.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import type { WrittenVersion } from "../../domain/datastore/datastore_sync_service.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
@@ -214,6 +216,15 @@ export interface RunLog {
  */
 export interface ModelMethodRunDeps {
   repoDir: string;
+  /**
+   * Told, in this process, the data versions the method wrote, on success
+   * and on failure, so the caller's model lock can publish them and check
+   * the remote holds them (swamp-club#3146). Never part of the event stream.
+   */
+  onWrittenVersions?: (
+    versions: readonly WrittenVersion[],
+    outcome: "completed" | "failed",
+  ) => void;
   /** Looks up by name, then by exact id. */
   lookupDefinition: (
     idOrName: string,
@@ -1300,6 +1311,16 @@ export async function* modelMethodRun(
                 }
               }
 
+              deps.onWrittenVersions?.([
+                ...recoveredDataHandles(error).map((handle) => ({
+                  modelType: modelType.normalized,
+                  modelId: evaluatedDefinition.id,
+                  dataName: handle.name,
+                  version: handle.version,
+                })),
+                ...writtenVersionsOf(error),
+              ], "failed");
+
               if (output.status === "cancelled") {
                 return;
               }
@@ -1320,6 +1341,15 @@ export async function* modelMethodRun(
               "swamp.model.method.post_execute",
             );
             const dataArtifacts: DataArtifactView[] = [];
+            deps.onWrittenVersions?.(
+              (execResult.dataHandles ?? []).map((handle) => ({
+                modelType: modelType.normalized,
+                modelId: evaluatedDefinition.id,
+                dataName: handle.name,
+                version: handle.version,
+              })),
+              "completed",
+            );
             if (execResult.dataHandles && execResult.dataHandles.length > 0) {
               for (const handle of execResult.dataHandles) {
                 const dataPath = deps.dataRepo.getPath(
