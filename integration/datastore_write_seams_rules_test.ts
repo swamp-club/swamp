@@ -590,6 +590,9 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlWorkflowRepository",
   // Built directly in src/libswamp/repo/.
   "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
+  // swamp start's summary lists a workspace's models and workflows by name.
+  "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
+  "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
   // Built directly in src/libswamp/vaults/.
   "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/audit_trail.ts: createVaultAuditTrailDeps: JsonlVaultAuditRepository",
@@ -633,6 +636,9 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
 
 const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   // Read only: these repositories never write.
+  // swamp start's summary only lists a workspace's models and workflows.
+  "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
+  "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
   // Read a run's evaluated snapshot to settle a cancelled run against it.
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",

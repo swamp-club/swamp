@@ -69,6 +69,15 @@ const VIEWS: ReadonlySet<string> = new Set<View>([
 ]);
 
 /**
+ * True for the `swamp start` page. It is served by `swamp start`'s own
+ * loopback server, not by `swamp serve`, so the app renders it before any
+ * serve connection, auth probe or sidebar is set up.
+ */
+export function isStartPath(pathname: string): boolean {
+  return pathname === `${BASE}/start` || pathname === `${BASE}/start/`;
+}
+
+/**
  * Percent-encodes one path segment. `@` stays readable (it is legal in a
  * path segment) so scoped names read as `@swamp%2Fworkflow-summary`; `/`
  * must be encoded as `%2F`. Links built by hand for scoped names have to

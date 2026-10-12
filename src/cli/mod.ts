@@ -78,6 +78,7 @@ import { serveCommand } from "./commands/serve.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
+import { startCommand } from "./commands/start.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -381,6 +382,8 @@ const NON_REPO_COMMANDS = new Set([
   "telemetry",
   "issue",
   "quest",
+  // Manages its own home workspace by path; never runs a model.
+  "start",
 ]);
 
 /**
@@ -2026,7 +2029,8 @@ export function registerCommands(cli: AnyCommand): void {
     .command("serve", serveCommand)
     .command("agent", agentCommand)
     .command("worker", workerCommand)
-    .command("quest", questCommand);
+    .command("quest", questCommand)
+    .command("start", startCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));

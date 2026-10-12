@@ -24,6 +24,7 @@ import {
   type ClickLike,
   encodeSegment,
   isPlainLeftClick,
+  isStartPath,
   parentOf,
   parseRoute,
   type RouteState,
@@ -600,4 +601,25 @@ Deno.test("absoluteUrl: prefixes the origin", () => {
     ),
     "https://ops.example.com/dashboard/models/m/data/d/versions/2",
   );
+});
+
+Deno.test("isStartPath: matches the start page with or without a slash", () => {
+  assertEquals(isStartPath("/dashboard/start"), true);
+  assertEquals(isStartPath("/dashboard/start/"), true);
+});
+
+Deno.test("isStartPath: rejects every other path", () => {
+  assertEquals(isStartPath("/dashboard"), false);
+  assertEquals(isStartPath("/dashboard/"), false);
+  assertEquals(isStartPath("/dashboard/starts"), false);
+  assertEquals(isStartPath("/dashboard/start/x"), false);
+  assertEquals(isStartPath("/dashboard/models/start"), false);
+  assertEquals(isStartPath("/start"), false);
+});
+
+Deno.test("isStartPath: the start path is not a serve view", () => {
+  assertEquals(parseRoute("/dashboard/start"), {
+    view: "overview",
+    detail: null,
+  });
 });

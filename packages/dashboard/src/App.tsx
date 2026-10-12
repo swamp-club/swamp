@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
 import { auditEnabled } from "./client/audit_state.ts";
@@ -55,7 +62,7 @@ import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
 import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
 import { WebhookDetail } from "./views/WebhookDetail.tsx";
-import { buildPath } from "./routes.ts";
+import { buildPath, isStartPath } from "./routes.ts";
 import "./styles/shell.css";
 
 // Views whose content is runs over time, which the dashboard-wide time
@@ -73,7 +80,21 @@ const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
 // one run, and its recent-runs strip deliberately ignores the range.
 const TIMED_DETAILS = new Set(["workflow", "model", "schedule", "webhook"]);
 
+// Only `swamp start` serves the start page, so it loads as its own chunk.
+const Start = lazy(() =>
+  import("./views/start/Start").then((m) => ({ default: m.Start }))
+);
+
 export function App() {
+  // The `swamp start` page talks only to its own loopback server, so it
+  // must never mount the serve provider, its auth probe or its socket.
+  if (isStartPath(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="loading">Loading...</div>}>
+        <Start />
+      </Suspense>
+    );
+  }
   return (
     <SwampProvider>
       <AppShell />

@@ -443,6 +443,9 @@ function Main {
 
         # Install binary
         Write-Header "Installing binary"
+        # Only a first install goes straight into `swamp start`; an upgrade
+        # leaves the user where they were.
+        $script:FirstInstall = -not (Test-Path (Join-Path $Destination $BinExe))
         Install-Binary -SourcePath $binaryPath -DestinationDir $Destination
 
         # Add to PATH
@@ -489,8 +492,22 @@ function Main {
     Write-Info "  Extension Registry:   https://swamp-club.com/extension-registry-terms"
     Write-Host ""
 
-    # Prompt to connect to SWAMP CLUB when running interactively
-    if ([Environment]::UserInteractive -and [Console]::KeyAvailable -ne $null) {
+    # On a first, interactive install, go straight into `swamp start`: it
+    # signs the user in, sets up a workspace and launches their agent. Skip in
+    # CI, when SWAMP_NONINTERACTIVE is set, over SSH, and on upgrades.
+    $interactive = $false
+    if ($script:FirstInstall -and -not $env:CI -and -not $env:SWAMP_NONINTERACTIVE -and -not $env:SSH_CONNECTION -and [Environment]::UserInteractive) {
+        try {
+            # Throws when stdin is redirected (e.g. piped into the installer).
+            $null = [Console]::KeyAvailable
+            $interactive = $true
+        } catch {
+            $interactive = $false
+        }
+    }
+    # Prompt to connect to SWAMP CLUB when running interactively. `swamp start`
+    # signs the user in itself, so a run that goes into it skips this prompt.
+    if (-not $interactive -and [Environment]::UserInteractive -and [Console]::KeyAvailable -ne $null) {
         Write-Host ""
         Write-Header "Swamp is better with SWAMP CLUB (swamp-club.com)"
         Write-Info ""
@@ -523,15 +540,43 @@ function Main {
 
     Write-Info "Next steps:"
     Write-Info ""
-    Write-Info "  1. Initialize a swamp repository:"
-    Write-Info "       cd your-project; swamp repo init"
-    Write-Info ""
-    Write-Info "  2. Set up shell completions (optional):"
+    $step = 1
+    # A run that goes into `swamp start` next doesn't list it as a step.
+    if (-not $interactive) {
+        Write-Info "  $step. Get started (opens your browser):"
+        Write-Info "       swamp start"
+        Write-Info ""
+        $step++
+    }
+    Write-Info "  $step. Set up shell completions (optional):"
     Write-Info "       swamp completions --help"
     Write-Info ""
-    Write-Info "  3. Join the community:"
+    $step++
+    Write-Info "  $step. Join the community:"
     Write-Info "       https://discord.gg/swamp-club"
     Write-Info ""
+
+    if ($interactive) {
+        Write-Header "Starting swamp"
+        Write-Info ""
+        $installedBinary = Join-Path $Destination $BinExe
+        try {
+            & $installedBinary start
+            # 130 and -1073741510 (STATUS_CONTROL_C_EXIT) mean the user
+            # stopped it with Ctrl-C, which is how `swamp start` is stopped.
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 130 -and $LASTEXITCODE -ne -1073741510) {
+                throw "swamp start exited with code $LASTEXITCODE"
+            }
+        } catch {
+            Write-Warn ""
+            Write-Warn "swamp start didn't finish. Run it again when you're ready:"
+            Write-Warn ""
+            Write-Warn "    swamp start"
+            Write-Warn ""
+        }
+        Write-Host ""
+    }
+
     Write-Info "Learn more: https://github.com/swamp-club/swamp"
 
     if (-not $AddToPath) {

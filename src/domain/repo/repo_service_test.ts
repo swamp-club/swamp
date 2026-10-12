@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
@@ -30,6 +35,7 @@ import { RepoPath } from "./repo_path.ts";
 import { SKILL_DIRS } from "./skill_dirs.ts";
 import { SUPERSEDED_SKILLS, supersededSkillDirs } from "./superseded_skills.ts";
 import { UserError } from "../errors.ts";
+import { BRIEF_HEADER } from "../start/brief.ts";
 import {
   type AiTool,
   RepoMarkerRepository,
@@ -973,6 +979,23 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
     assertStringIncludes(content, "## Skills");
     assertStringIncludes(content, "`swamp`");
     assertStringIncludes(content, "plan mode");
+  });
+});
+
+Deno.test("RepoService.init: instruction rule points agents at the swamp start brief header", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tools: ["claude", "codex"] });
+
+    for (const file of ["CLAUDE.md", "AGENTS.md"]) {
+      const content = await Deno.readTextFile(join(tempDir, file));
+      assertStringIncludes(content, `\`${BRIEF_HEADER}\``, file);
+      assertStringIncludes(content, "task brief under `tasks/`", file);
+      assert(!content.includes("TASK.md"), file);
+      assertStringIncludes(content, "brief entry point", file);
+    }
   });
 });
 
