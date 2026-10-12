@@ -4,8 +4,9 @@ description: >
   Swamp CLI — create and run models, build and validate workflows, query and
   manage data, store and retrieve vault secrets, develop and publish extensions,
   initialize repos, run reports, file issues, and troubleshoot errors. Triggers
-  on swamp commands (swamp model, swamp workflow, swamp vault, swamp data),
-  extension development, repo setup, or diagnostic questions. Do NOT use for
+  on swamp commands (swamp model, swamp behavior run, swamp workflow, swamp
+  vault, swamp data), extension development, repo setup, or diagnostic
+  questions. Do NOT use for
   getting started / onboarding (use swamp-getting-started), pull requests, git
   operations, worktree management, cron/agent scheduling, or general coding
   tasks unrelated to swamp.
@@ -53,7 +54,7 @@ Route to the right guide based on what the user needs.
 ```bash
 # Models
 swamp model create <type> <name>               # create a model definition
-swamp behavior run @<type> <method> <name> # run a method on a model
+swamp behavior run @<type> <method> <name>     # run a method on a model
 swamp model get <name> --json                  # inspect current model state
 swamp model type search [query]                # find available model types
 swamp model list                               # list all models in the repo

@@ -327,6 +327,12 @@ function isKnownFlag(option: string): boolean {
     "--prune",
     "--streaming",
     "--last-evaluated",
+    // Boolean flags of a method run: without these, `--skip-checks create
+    // my-def` would shift the definition name into the categorical method
+    // slot and record it (swamp-club#3265).
+    "--skip-checks",
+    "--skip-reports",
+    "--stdin",
   ]);
   return flags.has(option);
 }

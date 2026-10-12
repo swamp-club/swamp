@@ -247,6 +247,37 @@ Deno.test("extractCommandInfo redacts the type and definition name of a direct-t
   assertEquals(info.optionKeys, ["--input"]);
 });
 
+Deno.test("extractCommandInfo: a boolean run flag before the method does not shift the definition name into the categorical slot", () => {
+  for (const command of ["behavior", "behaviour"]) {
+    const info = extractCommandInfo([
+      command,
+      "run",
+      "@acme/t",
+      "--skip-checks",
+      "create",
+      "my-secret-def",
+    ]);
+    assertEquals(info.args, ["<REDACTED>", "create", "<REDACTED>"]);
+  }
+  const legacy = extractCommandInfo([
+    "model",
+    "method",
+    "run",
+    "my-secret-model",
+    "--skip-reports",
+    "create",
+  ]);
+  assertEquals(legacy.args, ["run", "<REDACTED>", "create"]);
+  const stdin = extractCommandInfo([
+    "behavior",
+    "run",
+    "my-model",
+    "--stdin",
+    "deploy",
+  ]);
+  assertEquals(stdin.args, ["<REDACTED>", "deploy"]);
+});
+
 Deno.test("extractCommandInfo redacts all args for commands without schema", () => {
   const info = extractCommandInfo(["model", "get", "my-model"]);
 

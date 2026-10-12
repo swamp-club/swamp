@@ -131,6 +131,21 @@ Deno.test("buildUnknownCommandMessage - behavior context suggestions (swamp-club
   assertStringIncludes(msg, "swamp behavior run my-server <method>");
 });
 
+Deno.test("buildUnknownCommandMessage - an @type under behavior suggests the direct-type form", () => {
+  const cmd = buildCommand("behavior", ["run"]);
+  const msg = buildUnknownCommandMessage("@swamp/echo", cmd);
+  assertStringIncludes(msg, "swamp behavior run @swamp/echo <method> <name>");
+  assertEquals(msg.includes("@swamp/echo <method>\n"), false);
+});
+
+Deno.test("buildUnknownCommandMessage - an @type under model suggests only the direct-type run", () => {
+  const cmd = buildCommand("model", ["create", "get", "method"]);
+  const msg = buildUnknownCommandMessage("@swamp/echo", cmd);
+  assertStringIncludes(msg, "swamp behavior run @swamp/echo <method> <name>");
+  assertEquals(msg.includes("swamp model get @swamp/echo"), false);
+  assertEquals(msg.includes("swamp model validate @swamp/echo"), false);
+});
+
 Deno.test("buildUnknownCommandMessage - vault context suggestions", () => {
   const cmd = buildCommand("vault", [
     "create",
@@ -211,6 +226,40 @@ Deno.test("extractPositionalArgs - returns empty for no positional args", () => 
   const args = ["extension", "search"];
   const result = extractPositionalArgs(args, "extension search");
   assertEquals(result, []);
+});
+
+Deno.test("extractPositionalArgs - accepts a typed alias for a path segment (swamp-club#3265)", () => {
+  const args = ["behaviour", "run", "my-model", "deploy", "extra1", "extra2"];
+  const spellings = [
+    new Set(["swamp"]),
+    new Set(["behavior", "behaviour"]),
+    new Set(["run"]),
+  ];
+  assertEquals(
+    extractPositionalArgs(args, "swamp behavior run", spellings),
+    ["my-model", "deploy", "extra1", "extra2"],
+  );
+});
+
+Deno.test("buildTooManyArgumentsMessage - matches the alias the user typed (swamp-club#3265)", () => {
+  const behavior = new Command()
+    .name("behavior")
+    .alias("behaviour")
+    .command("run", new Command().name("run"));
+  const root = new Command().name("swamp").command("behavior", behavior);
+  const runCmd = root.getCommand("behavior")!.getCommand("run")!;
+  const msg = buildTooManyArgumentsMessage(runCmd, [
+    "behaviour",
+    "run",
+    "my-model",
+    "deploy",
+    "extra1",
+    "extra2",
+  ]);
+  assertStringIncludes(
+    msg,
+    'swamp behavior run "my-model deploy extra1 extra2"',
+  );
 });
 
 Deno.test("buildTooManyArgumentsMessage - suggests quoting multi-word input", () => {

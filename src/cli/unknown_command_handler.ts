@@ -96,20 +96,26 @@ function buildContextSuggestions(
   // Collect remaining args from the command path onward
   // (we don't have access to original args here, so use the unknown name itself)
 
+  // An `@type` can only be run directly, and that form needs both a method
+  // and a definition name (swamp-club#3265).
+  const runSuggestion = unknownName.startsWith("@")
+    ? `swamp behavior run ${unknownName} <method> <name>`
+    : `swamp behavior run ${unknownName} <method>`;
+
   if (parentName === "model") {
-    suggestions.push(
-      `swamp model get ${unknownName}`,
-    );
-    suggestions.push(
-      `swamp behavior run ${unknownName} <method>`,
-    );
-    suggestions.push(
-      `swamp model validate ${unknownName}`,
-    );
+    if (!unknownName.startsWith("@")) {
+      suggestions.push(
+        `swamp model get ${unknownName}`,
+      );
+    }
+    suggestions.push(runSuggestion);
+    if (!unknownName.startsWith("@")) {
+      suggestions.push(
+        `swamp model validate ${unknownName}`,
+      );
+    }
   } else if (parentName === "method" || parentName === "behavior") {
-    suggestions.push(
-      `swamp behavior run ${unknownName} <method>`,
-    );
+    suggestions.push(runSuggestion);
   } else if (parentName === "workflow") {
     suggestions.push(
       `swamp workflow get ${unknownName}`,
@@ -194,17 +200,21 @@ function buildContextSuggestions(
 export function extractPositionalArgs(
   rawArgs: string[],
   commandPath: string,
+  spellings: ReadonlyArray<ReadonlySet<string>> = [],
 ): string[] {
   const pathSegments = commandPath.split(" ");
   let i = 0;
-  for (const segment of pathSegments) {
+  for (const [index, segment] of pathSegments.entries()) {
     while (i < rawArgs.length && rawArgs[i].startsWith("-")) {
       i++;
       if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
         i++;
       }
     }
-    if (i < rawArgs.length && rawArgs[i] === segment) {
+    if (
+      i < rawArgs.length &&
+      (rawArgs[i] === segment || spellings[index]?.has(rawArgs[i]))
+    ) {
       i++;
     }
   }
@@ -228,6 +238,24 @@ export function extractPositionalArgs(
 }
 
 /**
+ * The spellings each segment of `cmd`'s path may have been typed as — the
+ * command's name and its aliases, root first. `cmd.getPath()` is the
+ * canonical spelling, so without these an alias (`behaviour` for `behavior`)
+ * would be taken for a positional (swamp-club#3265).
+ */
+function pathSpellings(cmd: Command): ReadonlySet<string>[] {
+  const chain: Command[] = [];
+  for (
+    let current: Command | undefined = cmd;
+    current;
+    current = current.getParent()
+  ) {
+    chain.unshift(current);
+  }
+  return chain.map((c) => new Set([c.getName(), ...c.getAliases()]));
+}
+
+/**
  * Builds a helpful error message when a command receives too many positional
  * arguments — typically because the user passed an unquoted multi-word value.
  */
@@ -236,7 +264,11 @@ export function buildTooManyArgumentsMessage(
   rawArgs: string[],
 ): string {
   const commandPath = cmd.getPath();
-  const positional = extractPositionalArgs(rawArgs, commandPath);
+  const positional = extractPositionalArgs(
+    rawArgs,
+    commandPath,
+    pathSpellings(cmd),
+  );
   const quoted = positional.join(" ");
 
   if (positional.length >= 2) {
