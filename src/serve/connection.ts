@@ -1170,6 +1170,7 @@ const ModelEditRequestSchema = z.object({
   payload: z.object({
     modelIdOrName: z.string().min(1),
     content: z.string().optional(),
+    allowRename: z.boolean().optional(),
   }),
 });
 
@@ -1211,6 +1212,7 @@ const WorkflowEditRequestSchema = z.object({
   payload: z.object({
     workflowIdOrName: z.string().min(1),
     content: z.string().optional(),
+    allowRename: z.boolean().optional(),
   }),
 });
 

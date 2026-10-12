@@ -303,6 +303,8 @@ export async function* workflowEdit(
                   );
                   return false;
                 }
+                // Catches the mistake, not a race: the check and the save are
+                // separate steps, so this does not make names unique.
                 const holder = await deps.findByName(candidate.name);
                 if (holder && holder.id !== stored.id) {
                   renameRefusal = validationFailed(

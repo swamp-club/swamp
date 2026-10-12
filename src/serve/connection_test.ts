@@ -116,6 +116,36 @@ Deno.test("validateServerRequest accepts a valid workflow.run request", () => {
   assertEquals(typeof result, "object");
 });
 
+Deno.test("validateServerRequest keeps allowRename on model.edit and workflow.edit", () => {
+  const model = validateServerRequest({
+    type: "model.edit",
+    id: "req-1",
+    payload: {
+      modelIdOrName: "foo",
+      content: "name: bar\n",
+      allowRename: true,
+    },
+  });
+  const workflow = validateServerRequest({
+    type: "workflow.edit",
+    id: "req-2",
+    payload: {
+      workflowIdOrName: "foo",
+      content: "name: bar\n",
+      allowRename: true,
+    },
+  });
+
+  assertEquals(typeof model, "object");
+  assertEquals(typeof workflow, "object");
+  if (typeof model === "object" && model.type === "model.edit") {
+    assertEquals(model.payload.allowRename, true);
+  }
+  if (typeof workflow === "object" && workflow.type === "workflow.edit") {
+    assertEquals(workflow.payload.allowRename, true);
+  }
+});
+
 Deno.test("validateServerRequest accepts a valid model.method.run request", () => {
   const input = {
     type: "model.method.run",

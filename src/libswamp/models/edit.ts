@@ -286,6 +286,8 @@ export async function* modelEdit(
                   );
                   return false;
                 }
+                // Catches the mistake, not a race: the check and the save are
+                // separate steps, so this does not make names unique.
                 const holder = await deps.lookupDefinition(candidate.name);
                 if (holder && holder.definition.id !== stored.id) {
                   renameRefusal = validationFailed(
