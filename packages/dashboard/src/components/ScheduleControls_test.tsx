@@ -21,90 +21,62 @@
 /** @jsxImportSource react */
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderToStaticMarkup } from "react-dom/server";
-import { resetConfirmText, ScheduleControls } from "./ScheduleControls.tsx";
+import { ScheduleControls } from "./ScheduleControls.tsx";
 import { ScheduleEditorForm } from "./ScheduleEditorForm.tsx";
 
 const noop = () => {};
-const handlers = {
-  onPause: noop,
-  onResume: noop,
-  onEdit: noop,
-  onReset: noop,
-};
+const handlers = { onEdit: noop, onReset: noop };
 
-Deno.test("ScheduleControls: an active schedule offers Pause and Edit", () => {
+Deno.test("ScheduleControls: a workflow-file schedule offers Edit only", () => {
   const html = renderToStaticMarkup(
-    <ScheduleControls
-      workflowName="deploy"
-      paused={false}
-      canReset={false}
-      {...handlers}
-    />,
+    <ScheduleControls workflowName="deploy" canReset={false} {...handlers} />,
   );
-  assertStringIncludes(html, ">Pause</button>");
   assertStringIncludes(html, ">Edit</button>");
   assertEquals(html.includes(">Reset</button>"), false);
   assertEquals(html.includes("disabled"), false);
 });
 
-Deno.test("ScheduleControls: a paused override offers Resume and Reset", () => {
+Deno.test("ScheduleControls: an override offers Edit and Reset", () => {
   const html = renderToStaticMarkup(
-    <ScheduleControls
-      workflowName="deploy"
-      paused
-      canReset
-      {...handlers}
-    />,
+    <ScheduleControls workflowName="deploy" canReset {...handlers} />,
   );
-  assertStringIncludes(html, ">Resume</button>");
-  assertStringIncludes(html, 'aria-pressed="true"');
+  assertStringIncludes(html, ">Edit</button>");
   assertStringIncludes(html, ">Reset</button>");
-});
-
-Deno.test("ScheduleControls: no pause control when serve can't pause", () => {
-  const html = renderToStaticMarkup(
-    <ScheduleControls workflowName="deploy" canReset={false} {...handlers} />,
-  );
-  assertEquals(html.includes("Pause"), false);
-  assertEquals(html.includes("Resume"), false);
 });
 
 Deno.test("ScheduleControls: a change in flight disables every control", () => {
   const html = renderToStaticMarkup(
     <ScheduleControls
       workflowName="deploy"
-      paused={false}
       canReset
-      pending="pause"
+      pending="save"
       {...handlers}
     />,
   );
-  assertStringIncludes(html, "Pausing…");
-  assertEquals(html.match(/disabled=""/g)?.length, 3);
+  assertStringIncludes(html, "Saving…");
+  assertEquals(html.match(/disabled=""/g)?.length, 2);
 });
 
 Deno.test("ScheduleControls: announces success and alerts on refusal", () => {
   const ok = renderToStaticMarkup(
     <ScheduleControls
       workflowName="deploy"
-      paused={false}
       canReset={false}
-      feedback={{ tone: "success", text: "Resumed." }}
+      feedback={{ tone: "success", text: "Schedule saved." }}
       {...handlers}
     />,
   );
   assertStringIncludes(ok, 'aria-live="polite"');
-  assertStringIncludes(ok, "Resumed.");
+  assertStringIncludes(ok, "Schedule saved.");
   assertEquals(ok.includes('role="alert"'), false);
 
   const refused = renderToStaticMarkup(
     <ScheduleControls
       workflowName="deploy"
-      paused={false}
       canReset={false}
       feedback={{
         tone: "danger",
-        text: "You don't have permission to pause the schedule of deploy.",
+        text: "You don't have permission to change the schedule of deploy.",
       }}
       {...handlers}
     />,
@@ -181,12 +153,6 @@ Deno.test("ScheduleEditorForm: shows a save error and the saving state", () => {
   assertStringIncludes(html, 'role="alert"');
   assertStringIncludes(html, "Couldn&#x27;t change the schedule: boom");
   assertStringIncludes(html, "Saving…");
-});
-
-Deno.test("resetConfirmText: says a paused schedule stays paused", () => {
-  assertStringIncludes(resetConfirmText(true), "It stays paused.");
-  assertEquals(resetConfirmText(false).includes("paused"), false);
-  assertEquals(resetConfirmText(undefined).includes("paused"), false);
 });
 
 Deno.test("ScheduleEditorForm: previews in serve's zone and adds the viewer's time", () => {

@@ -38,16 +38,10 @@ import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import { type LookupOptions, selectLookup } from "../lookup_by_id.ts";
 import {
-  buildDataOutputSpecs,
-  type DataOutputSpecDescribeData,
   type MethodDescribeData,
   toMethodDescribeData,
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
-import { reportRegistry } from "../../domain/reports/report_registry.ts";
-import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
-import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
-import { join } from "@std/path";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -80,32 +74,6 @@ export interface ModelGetData {
     string,
     { arguments: Record<string, unknown> }
   >;
-  /**
-   * The data the model type declares it writes (resources and files), as
-   * `swamp model type describe` reports them. Absent when the type is
-   * unavailable or declares none.
-   */
-  dataOutputs?: DataOutputSpecDescribeData[];
-  /** The reports the model type names as its defaults. */
-  reports?: ModelGetReport[];
-  /**
-   * The extension that provides the model type. Absent for built-in types
-   * and for models authored in the repository's own `models/` directory.
-   */
-  extension?: ModelGetExtension;
-}
-
-/** A report a model type names as one of its defaults. */
-export interface ModelGetReport {
-  name: string;
-  description?: string;
-}
-
-/** The extension that provides a model type. */
-export interface ModelGetExtension {
-  name: string;
-  /** The installed version, from the pulled extension's manifest. */
-  version?: string;
 }
 
 export type ModelGetEvent =
@@ -131,23 +99,12 @@ export interface ModelGetDeps {
   getModelDef: (
     type: ModelType,
   ) => ModelDefinition | undefined | Promise<ModelDefinition | undefined>;
-  /** The description of a named report, or undefined when it is unknown. */
-  describeReport?: (name: string) => Promise<string | undefined>;
-  /** The installed version of a pulled extension, or undefined. */
-  extensionVersion?: (name: string) => string | undefined;
 }
 
-/**
- * Wires real infrastructure into ModelGetDeps.
- *
- * @param options.repoDir When given, the providing extension's installed
- *   version is read from its pulled manifest under this repository.
- */
+/** Wires real infrastructure into ModelGetDeps. */
 export async function createModelGetDeps(
   definitionRepo: YamlDefinitionRepository,
-  options: { repoDir?: string } = {},
 ): Promise<ModelGetDeps> {
-  const { repoDir } = options;
   await modelRegistry.ensureLoaded();
   const withAutoCreated = async (
     result: DefinitionLookupResult | null,
@@ -170,21 +127,6 @@ export async function createModelGetDeps(
       await modelRegistry.ensureTypeLoaded(type);
       return modelRegistry.get(type);
     },
-    describeReport: async (name) => {
-      try {
-        await reportRegistry.ensureTypeLoaded(name);
-      } catch {
-        // A report whose bundle fails to load is still listed by name.
-        return undefined;
-      }
-      return reportRegistry.get(name)?.description;
-    },
-    extensionVersion: repoDir === undefined
-      ? undefined
-      : (name) =>
-        readManifestIdentityAt(
-          join(resolvePulledExtensionsRoot(repoDir), name, "manifest.yaml"),
-        )?.version,
   };
 }
 
@@ -243,27 +185,6 @@ export async function* modelGet(
         };
       }
 
-      const dataOutputs = modelDef
-        ? buildDataOutputSpecs(modelDef.resources, modelDef.files)
-        : [];
-      const reports: ModelGetReport[] = [];
-      for (const name of modelDef?.reports ?? []) {
-        const description = await deps.describeReport?.(name);
-        reports.push(
-          description === undefined ? { name } : {
-            name,
-            description,
-          },
-        );
-      }
-      let extension: ModelGetExtension | undefined;
-      if (modelDef?.extensionName) {
-        const version = deps.extensionVersion?.(modelDef.extensionName);
-        extension = version === undefined
-          ? { name: modelDef.extensionName }
-          : { name: modelDef.extensionName, version };
-      }
-
       const data: ModelGetData = {
         id: definition.id,
         name: definition.name,
@@ -293,9 +214,6 @@ export async function* modelGet(
         configuredMethods: Object.keys(configuredMethods).length > 0
           ? configuredMethods
           : undefined,
-        ...(dataOutputs.length > 0 ? { dataOutputs } : {}),
-        ...(reports.length > 0 ? { reports } : {}),
-        ...(extension ? { extension } : {}),
       };
 
       yield { kind: "completed", data };

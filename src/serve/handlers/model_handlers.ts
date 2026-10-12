@@ -77,7 +77,6 @@ import {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
-  type ModelOutputSearchInput,
   type ModelOutputSearchItem,
   type ModelOutputSearchModel,
 } from "../../libswamp/models/output_search.ts";
@@ -1329,9 +1328,7 @@ export async function handleModelGet(
 
   try {
     const libCtx = handlerLibSwampContext(ctx);
-    const deps = await createModelGetDeps(ctx.repoContext.definitionRepo, {
-      repoDir: ctx.repoDir,
-    });
+    const deps = await createModelGetDeps(ctx.repoContext.definitionRepo);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -1909,16 +1906,100 @@ export async function handleModelOutputSearch(
   ) return;
 
   try {
-    const data = await searchReadableOutputs(
-      ctx,
-      socket,
-      principal,
-      payload ?? {},
+    const libCtx = handlerLibSwampContext(ctx);
+    const outputRepo = ctx.repoContext.outputRepo;
+    const definitionRepo = ctx.repoContext.definitionRepo;
+    const workflowRepo = ctx.repoContext.workflowRepo;
+
+    const deps: ModelOutputSearchDeps = {
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobalSince: (cutoff) =>
+        outputRepo.findAllGlobalSince(cutoff),
+      findDefinitionById: (type, definitionId) =>
+        definitionRepo.findById(
+          ModelType.create(type.normalized),
+          createDefinitionId(definitionId),
+        ),
+      resolveModel: async (idOrName) => {
+        const found = new Map<string, ModelOutputSearchModel>();
+        const add = (definition: Definition, type: ModelType) => {
+          const key = JSON.stringify([type.normalized, definition.id]);
+          if (!found.has(key)) {
+            found.set(key, {
+              definitionId: definition.id,
+              name: definition.name,
+              type: { normalized: type.normalized },
+            });
+          }
+        };
+        const byName = await definitionRepo.findByNameGlobal(idOrName);
+        if (byName) add(byName.definition, byName.type);
+        const byId = definitionRepo.findAllByIdGlobal
+          ? await definitionRepo.findAllByIdGlobal(createDefinitionId(idOrName))
+          : (await definitionRepo.findAllGlobal()).filter((d) =>
+            d.definition.id === idOrName
+          );
+        for (const { definition, type } of byId) add(definition, type);
+        return [...found.values()];
+      },
+      findOutputsByDefinition: (type, definitionId) =>
+        outputRepo.findByDefinition(
+          ModelType.create(type.normalized),
+          createDefinitionId(definitionId),
+        ),
+      resolveWorkflowNames: async (ids) => {
+        const names = new Map<string, string>();
+        for (const workflow of await workflowRepo.findAll()) {
+          if (ids.has(workflow.id) && !names.has(workflow.id)) {
+            names.set(workflow.id, workflow.name);
+          }
+        }
+        return names;
+      },
+    };
+
+    let result: ModelOutputSearchData | undefined;
+    await consumeStream(
+      // Limit only after model authorization, then redact unreadable run links.
+      modelOutputSearch(libCtx, deps, {
+        ...payload,
+        limit: undefined,
+        includeProvenance: true,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
     );
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
+    }
+
+    const data = (result ?? {}) as {
+      results?: ModelOutputSearchItem[];
+    };
+    if (data.results) {
+      data.results = await filterOutputItems(
+        data.results,
+        socket,
+        principal,
+        ctx,
+      );
+      if (payload?.limit !== undefined) {
+        data.results = data.results.slice(0, payload.limit);
+      }
+      await redactWorkflowLinks(
+        data.results,
+        ctx.authConfig.mode === "none",
+        nestedRunReadDecider(ctx, socket, principal),
+      );
     }
 
     send(socket, {
@@ -2134,13 +2215,48 @@ export async function handleModelMethodHistorySearch(
   ) return;
 
   try {
-    const data = await searchReadableOutputs(ctx, socket, principal, {
-      query: payload?.query,
-    });
+    const libCtx = handlerLibSwampContext(ctx);
+    const outputRepo = ctx.repoContext.outputRepo;
+    const definitionRepo = ctx.repoContext.definitionRepo;
+
+    const deps: ModelOutputSearchDeps = {
+      findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findDefinitionById: (type, definitionId) =>
+        definitionRepo.findById(
+          ModelType.create(type.normalized),
+          createDefinitionId(definitionId),
+        ),
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      modelOutputSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
 
     if (controller.signal.aborted) {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
+    }
+
+    const data = (result ?? {}) as {
+      results?: ModelOutputSearchItem[];
+    };
+    if (data.results) {
+      data.results = await filterOutputItems(
+        data.results,
+        socket,
+        principal,
+        ctx,
+      );
     }
 
     send(socket, {
@@ -2680,102 +2796,6 @@ export async function handleModelTypeSearch(
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_type_search_failed", message);
   }
-}
-
-/**
- * Searches model outputs and returns only what the principal may read: each
- * output is authorized on its model, the limit is applied to the readable
- * outputs, and a workflow linkage (workflow id and name, run id, step) is
- * kept only when the principal may read that workflow (swamp-club#2736).
- */
-async function searchReadableOutputs(
-  ctx: ConnectionContext,
-  socket: WebSocket,
-  principal: Principal | null,
-  input: ModelOutputSearchInput,
-): Promise<{ query?: string; results?: ModelOutputSearchItem[] }> {
-  const libCtx = handlerLibSwampContext(ctx);
-  const outputRepo = ctx.repoContext.outputRepo;
-  const definitionRepo = ctx.repoContext.definitionRepo;
-  const workflowRepo = ctx.repoContext.workflowRepo;
-
-  const deps: ModelOutputSearchDeps = {
-    findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
-    findAllOutputsGlobalSince: (cutoff) =>
-      outputRepo.findAllGlobalSince(cutoff),
-    findDefinitionById: (type, definitionId) =>
-      definitionRepo.findById(
-        ModelType.create(type.normalized),
-        createDefinitionId(definitionId),
-      ),
-    resolveModel: async (idOrName) => {
-      const found = new Map<string, ModelOutputSearchModel>();
-      const add = (definition: Definition, type: ModelType) => {
-        const key = JSON.stringify([type.normalized, definition.id]);
-        if (!found.has(key)) {
-          found.set(key, {
-            definitionId: definition.id,
-            name: definition.name,
-            type: { normalized: type.normalized },
-          });
-        }
-      };
-      const byName = await definitionRepo.findByNameGlobal(idOrName);
-      if (byName) add(byName.definition, byName.type);
-      const byId = definitionRepo.findAllByIdGlobal
-        ? await definitionRepo.findAllByIdGlobal(createDefinitionId(idOrName))
-        : (await definitionRepo.findAllGlobal()).filter((d) =>
-          d.definition.id === idOrName
-        );
-      for (const { definition, type } of byId) add(definition, type);
-      return [...found.values()];
-    },
-    findOutputsByDefinition: (type, definitionId) =>
-      outputRepo.findByDefinition(
-        ModelType.create(type.normalized),
-        createDefinitionId(definitionId),
-      ),
-    resolveWorkflowNames: async (ids) => {
-      const names = new Map<string, string>();
-      for (const workflow of await workflowRepo.findAll()) {
-        if (ids.has(workflow.id) && !names.has(workflow.id)) {
-          names.set(workflow.id, workflow.name);
-        }
-      }
-      return names;
-    },
-  };
-
-  let result: ModelOutputSearchData | undefined;
-  await consumeStream(
-    // The limit applies to what the principal may read, so it is taken
-    // after authorization below, not by the search.
-    modelOutputSearch(libCtx, deps, { ...input, limit: undefined }),
-    {
-      resolving: () => {},
-      completed: (e) => {
-        result = e.data;
-      },
-      error: (e) => {
-        throw new Error(e.error.message);
-      },
-    },
-  );
-  if (!result) return {};
-
-  let results = await filterOutputItems(
-    result.results,
-    socket,
-    principal,
-    ctx,
-  );
-  if (input.limit !== undefined) results = results.slice(0, input.limit);
-  await redactWorkflowLinks(
-    results,
-    ctx.authConfig.mode === "none",
-    nestedRunReadDecider(ctx, socket, principal),
-  );
-  return { ...result, results };
 }
 
 /**

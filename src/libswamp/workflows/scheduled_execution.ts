@@ -221,15 +221,6 @@ export interface TriggerOverride {
   readonly inputs?: Record<string, unknown>;
 }
 
-/** Where a schedule's effective cron expression comes from. */
-export type ScheduleSource = "workflow" | "override";
-
-/** A registered schedule as the service lists it. */
-export interface ListedSchedule extends ScheduleEntry {
-  readonly workflowName: string;
-  readonly source: ScheduleSource;
-}
-
 export interface ScheduledExecutionDeps {
   workflowRepo: WorkflowRepository;
   repoDir: string;
@@ -435,18 +426,12 @@ export class ScheduledExecutionService {
   /**
    * Returns all registered schedules and their next fire times.
    */
-  listSchedules(): ListedSchedule[] {
-    return this.scheduler.listSchedules().map((entry) => {
-      const workflowName = this.workflowNames.get(entry.workflowId) ??
-        entry.workflowId;
-      return {
-        ...entry,
-        workflowName,
-        source: this.triggerOverrides.get(workflowName)?.schedule !== undefined
-          ? "override"
-          : "workflow",
-      };
-    });
+  listSchedules(): Array<ScheduleEntry & { workflowName: string }> {
+    return this.scheduler.listSchedules().map((entry) => ({
+      ...entry,
+      workflowName: this.workflowNames.get(entry.workflowId) ??
+        entry.workflowId,
+    }));
   }
 
   /**

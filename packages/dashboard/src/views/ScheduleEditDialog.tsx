@@ -32,12 +32,10 @@ export interface TriggerInfo {
   override: {
     schedule?: string;
     inputs?: Record<string, unknown>;
-    paused?: boolean;
   } | null;
   effective: {
     schedule: string | null;
     inputs: Record<string, unknown>;
-    paused?: boolean;
   };
 }
 

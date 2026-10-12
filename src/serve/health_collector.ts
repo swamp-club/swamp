@@ -42,11 +42,6 @@ export interface HealthSnapshotSchedule {
   readonly cronExpression: string;
   readonly nextRun: string | null;
   readonly running: boolean;
-  /**
-   * Where the effective cron expression comes from: the workflow's own
-   * `trigger.schedule`, or a serve trigger override.
-   */
-  readonly source: "workflow" | "override";
   /** Fires waiting to start. */
   readonly queued: number;
   /** ISO-8601 fire (or, for a replayed run, enqueue) time of the oldest waiting fire. */
@@ -89,8 +84,6 @@ export interface ScheduleProvider {
     readonly workflowName: string;
     readonly cronExpression: string;
     readonly nextRun: Date | null;
-    /** Defaults to "workflow". */
-    readonly source?: "workflow" | "override";
   }>;
   isRunning(workflowId: string): boolean;
   queueStatus(workflowId: string): {
@@ -218,7 +211,6 @@ export class HealthCollector {
         cronExpression: s.cronExpression,
         nextRun: s.nextRun?.toISOString() ?? null,
         running: this.#deps.scheduleProvider!.isRunning(String(s.workflowId)),
-        source: s.source ?? "workflow",
         ...this.#deps.scheduleProvider!.queueStatus(String(s.workflowId)),
       }))
       : [];

@@ -20,12 +20,6 @@
 .trig-row {
   cursor: pointer;
 }
-.trig-row.is-paused td {
-  background: color-mix(in srgb, var(--warning-bg) 45%, transparent);
-}
-.trig-row.is-paused:hover td {
-  background: color-mix(in srgb, var(--warning-bg) 75%, transparent);
-}
 .trig-name a {
   color: var(--text-1);
   font-weight: 600;
@@ -78,11 +72,6 @@
 .trig-failed {
   color: var(--danger);
   font-weight: 600;
-}
-.trig-paused-text {
-  color: var(--warning);
-  font-weight: 600;
-  font-size: 0.78rem;
 }
 .trig-state {
   display: inline-flex;

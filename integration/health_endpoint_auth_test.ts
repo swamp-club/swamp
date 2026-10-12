@@ -174,7 +174,6 @@ Deno.test("health endpoint auth: a valid token without grants reads health with 
             cronExpression: "0 3 * * *",
             nextRun: null,
             running: false,
-            source: "workflow",
             queued: 0,
             oldestQueuedAt: null,
             lastQueueDelayMs: null,

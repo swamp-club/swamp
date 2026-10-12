@@ -80,16 +80,13 @@ Deno.test("layoutFlow: one column per stage, edges follow dependencies", () => {
   }
 });
 
-Deno.test("layoutFlow: caps input lines and marks a paused trigger", () => {
+Deno.test("layoutFlow: caps input lines", () => {
   const layout = layoutFlow({
     ...spec,
-    trigger: { ...spec.trigger, paused: true },
     inputs: ["a", "b", "c", "d", "e", "f"],
   });
   const inputs = layout.nodes.find((n) => n.id === "inputs")!;
   assertEquals(inputs.lines, ["a", "b", "c", "+3 more"]);
-  assertEquals(layout.nodes.find((n) => n.id === "trigger")!.muted, true);
-  assertEquals(layout.edges.find((e) => e.from === "trigger")!.dashed, true);
 });
 
 Deno.test("layoutFlow: a workflow without jobs still draws its stages", () => {

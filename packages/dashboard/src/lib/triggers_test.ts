@@ -175,11 +175,11 @@ Deno.test("filterWebhooks: fuzzy over route and workflow", () => {
 Deno.test("scheduleErrorMessage: permission refusals read as such", () => {
   for (const code of ["unauthorized", "forbidden", "access_not_configured"]) {
     assertStringIncludes(
-      scheduleErrorMessage("pause", "deploy-api", {
+      scheduleErrorMessage("reset", "deploy-api", {
         code,
         message: "Access denied: …",
       }),
-      "You don't have permission to pause the schedule of deploy-api",
+      "You don't have permission to reset the schedule of deploy-api",
     );
   }
   assertEquals(

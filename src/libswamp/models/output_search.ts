@@ -36,7 +36,7 @@ export interface ModelOutputSearchItem {
   startedAt: string;
   durationMs?: number;
   /** What started the method run, from the output's provenance. */
-  triggeredBy: TriggerType;
+  triggeredBy?: TriggerType;
   /** The workflow whose run executed the method, when one did. */
   workflowId?: string;
   /** The current name of `workflowId`; absent when it no longer resolves. */
@@ -68,7 +68,7 @@ export interface ModelOutputSearchOutput {
   status: string;
   startedAt: Date;
   durationMs?: number;
-  provenance: {
+  provenance?: {
     triggeredBy: TriggerType;
     workflowId?: string;
     workflowRunId?: string;
@@ -132,6 +132,8 @@ export interface ModelOutputSearchDeps {
  */
 export interface ModelOutputSearchInput {
   query?: string;
+  /** Opt in to provenance for output search; legacy history keeps its shape. */
+  includeProvenance?: boolean;
   /** Only outputs of this model, by exact name or id. */
   model?: string;
   /** Only outputs started at or after this ISO 8601 instant. */
@@ -233,7 +235,9 @@ export async function* modelOutputSearch(
           modelName !== input.model
         ) continue;
 
-        const provenance = output.provenance;
+        const provenance = input.includeProvenance
+          ? output.provenance
+          : undefined;
         items.push({
           id: output.id,
           definitionId: output.definitionId,
@@ -243,14 +247,14 @@ export async function* modelOutputSearch(
           status: output.status,
           startedAt: output.startedAt.toISOString(),
           durationMs: output.durationMs,
-          triggeredBy: provenance.triggeredBy,
-          ...(provenance.workflowId !== undefined
+          ...(provenance ? { triggeredBy: provenance.triggeredBy } : {}),
+          ...(provenance?.workflowId !== undefined
             ? { workflowId: provenance.workflowId }
             : {}),
-          ...(provenance.workflowRunId !== undefined
+          ...(provenance?.workflowRunId !== undefined
             ? { workflowRunId: provenance.workflowRunId }
             : {}),
-          ...(provenance.stepName !== undefined
+          ...(provenance?.stepName !== undefined
             ? { stepName: provenance.stepName }
             : {}),
         });

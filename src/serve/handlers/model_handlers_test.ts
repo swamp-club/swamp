@@ -24,6 +24,7 @@ import { join } from "@std/path";
 import {
   handleModelDelete,
   handleModelEdit,
+  handleModelMethodHistorySearch,
   handleModelOutputSearch,
   isMethodMutating,
   redactWorkflowLinks,
@@ -772,6 +773,41 @@ Deno.test("handleModelOutputSearch: drops the workflow linkage of a run whose wo
     assertEquals(results[1].workflowName, "readable-wf");
     assertEquals(results[1].workflowRunId, "run-readable");
     assertEquals(results[1].stepName, "step-a");
+
+    // History retains its original response even for workflow-owned outputs.
+    const historySocket = createMockSocket();
+    // The legacy global scan enumerates registered types.
+    modelRegistry.register({
+      type: EDIT_TEST_TYPE,
+      version: "2026.01.01.1",
+      methods: {},
+    });
+    try {
+      await handleModelMethodHistorySearch(
+        historySocket,
+        ctx,
+        "req-history",
+        new AbortController(),
+        EDITOR,
+        {},
+      );
+    } finally {
+      modelRegistry.invalidateType(EDIT_TEST_TYPE);
+    }
+    const [history] = frames(historySocket);
+    assertEquals(history.type, "model.method.history.search");
+    assertEquals(history.payload.data.results.length, 3);
+    for (const item of history.payload.data.results) {
+      assertEquals(Object.keys(item).sort(), [
+        "definitionId",
+        "id",
+        "methodName",
+        "modelName",
+        "startedAt",
+        "status",
+        "type",
+      ]);
+    }
   });
 });
 

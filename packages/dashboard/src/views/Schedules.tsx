@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { applyRowFacets, type RowFacetSpec } from "../lib/row_facets.ts";
-import { useEffect, useMemo, useState } from "react";
-import type { HealthSnapshot, ScheduleEntry } from "../client/useHealthStream";
+import { useMemo, useState } from "react";
+import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { HealthUnavailable } from "../components/HealthUnavailable";
 import { EmptyState } from "../components/EmptyState.tsx";
@@ -46,10 +46,7 @@ import {
   useRefetchOnChange,
   useTriggerRunSummaries,
 } from "../client/trigger_runs.ts";
-import {
-  type ScheduleMutations,
-  useScheduleMutations,
-} from "../client/schedule_mutations.ts";
+import { useScheduleMutations } from "../client/schedule_mutations.ts";
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import { describeCron } from "../lib/cron.ts";
 import { fuzzyFilter } from "../lib/fuzzy.ts";
@@ -70,14 +67,6 @@ const LAST_RUN_LABELS: Record<string, string> = {
 
 /** What the schedule table can be filtered by, beyond free text. */
 const SCHEDULE_FACETS: readonly RowFacetSpec<ScheduleRow>[] = [
-  {
-    key: "state",
-    label: "State",
-    description: "Active or paused schedules",
-    valueOf: (r) => (r.paused === true ? "paused" : "active"),
-    labelOf: (v) => (v === "paused" ? "Paused" : "Active"),
-    order: ["active", "paused"],
-  },
   {
     key: "activity",
     label: "Activity",
@@ -101,20 +90,8 @@ const SCHEDULE_FACETS: readonly RowFacetSpec<ScheduleRow>[] = [
     description: "Schedules whose workflow name starts with a prefix",
     valueOf: (r) => workflowPrefix(r.workflowName),
   },
-  {
-    key: "source",
-    label: "Source",
-    description: "Schedule from the workflow file, or a serve override",
-    valueOf: (r) => r.source ?? null,
-    labelOf: (v) => (v === "override" ? "Override" : "Workflow file"),
-  },
 ];
 const SCHEDULE_FACET_KEYS = SCHEDULE_FACETS.map((f) => f.key);
-
-/** The pause state the page shows: unconfirmed changes win. */
-function pausedOf(entry: ScheduleEntry, mutations: ScheduleMutations) {
-  return mutations.pausedOf(entry.workflowName, entry.paused);
-}
 
 export function Schedules(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
@@ -139,8 +116,6 @@ export function Schedules(
   useRefetchOnChange(fireKey, runs.refetch);
 
   const mutations = useScheduleMutations();
-  const { sync } = mutations;
-  useEffect(() => sync(schedules), [schedules, sync]);
 
   const [editing, setEditing] = useState<string | null>(null);
   const [query, setQuery] = useQueryState("q", "", asString);
@@ -155,8 +130,6 @@ export function Schedules(
       cron: s.cronExpression,
       description: describeCron(s.cronExpression),
       nextRun: s.nextRun,
-      paused: pausedOf(s, mutations),
-      source: s.source,
       running: s.running,
       runningCount: summary?.running ?? 0,
       queueLabel: scheduleQueueLabel(s, now),
@@ -175,21 +148,10 @@ export function Schedules(
     for (const key of SCHEDULE_FACET_KEYS) select(key, []);
   };
 
-  const pausedCount = rows.filter((r) => r.paused === true).length;
   const runningCount = rows.filter((r) => r.running).length;
   const rangeLabel = describeTimeRange(range);
   const stats: Stat[] = [
     { label: "schedules", value: formatCount(rows.length) },
-    {
-      label: "active",
-      value: formatCount(rows.length - pausedCount),
-      tone: "success",
-    },
-    {
-      label: "paused",
-      value: formatCount(pausedCount),
-      tone: pausedCount > 0 ? "warning" : "neutral",
-    },
     {
       label: "running now",
       value: formatCount(runningCount),
@@ -211,7 +173,7 @@ export function Schedules(
           {state === "ready"
             ? <StatPills stats={stats} label="Schedule summary" />
             : state === "loading"
-            ? <SkeletonPills count={5} />
+            ? <SkeletonPills count={3} />
             : null}
         </div>
       </div>
@@ -227,7 +189,7 @@ export function Schedules(
         <TriggerFilterBar
           query={query}
           onQuery={setQuery}
-          placeholder="Search schedules, or filter by state, last run, prefix…"
+          placeholder="Search schedules, or filter by activity, last run, prefix…"
           facets={facets}
           shown={filtered.length}
           total={rows.length}
@@ -290,17 +252,11 @@ export function Schedules(
               renderControls={(row) => (
                 <ScheduleControls
                   workflowName={row.workflowName}
-                  paused={row.paused}
-                  canReset={row.source === "override"}
+                  canReset={false}
                   pending={mutations.pending.get(row.workflowName)}
                   feedback={mutations.feedback.get(row.workflowName)}
-                  onPause={() =>
-                    void mutations.setPaused(row.workflowName, true)}
-                  onResume={() =>
-                    void mutations.setPaused(row.workflowName, false)}
                   onEdit={() => setEditing(row.workflowName)}
-                  onReset={() =>
-                    void mutations.reset(row.workflowName, row.paused === true)}
+                  onReset={() => void mutations.reset(row.workflowName)}
                 />
               )}
             />

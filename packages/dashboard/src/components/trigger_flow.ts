@@ -35,8 +35,6 @@ export interface FlowSpec {
     kind: "schedule" | "webhook";
     title: string;
     lines: string[];
-    /** A paused schedule draws muted with a dashed edge. */
-    paused?: boolean;
   };
   /** Input lines ("region = eu"); null when the trigger passes none. */
   inputs: string[] | null;
@@ -165,7 +163,6 @@ export function layoutFlow(spec: FlowSpec): FlowLayout {
     lines: spec.trigger.lines,
     w: NODE_W,
     h: nodeHeight(spec.trigger.lines.length),
-    muted: spec.trigger.paused,
   }]);
 
   const inputLines = spec.inputs === null
@@ -239,7 +236,7 @@ export function layoutFlow(spec: FlowSpec): FlowLayout {
       edges.push({ from, to, path: edgePath(a, b), ...(dashed && { dashed }) });
     }
   };
-  link("trigger", "inputs", spec.trigger.paused);
+  link("trigger", "inputs");
   link("inputs", "workflow");
   for (const job of spec.jobs) {
     // A dependency listed twice still draws one edge.

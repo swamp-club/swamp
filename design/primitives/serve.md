@@ -943,9 +943,7 @@ queue state (`queueStatus`): `queued` (fires waiting to start),
 visible) and `lastQueueDelayMs` (fire-to-start delay of the last run that
 started). `schedule_started` carries the same delay as `queueDelayMs`. Queue
 state is per schedule, so the per-token health view filters it with its
-schedule. Each entry also carries `source`: `"workflow"` when the cron comes
-from the workflow's `trigger.schedule`, `"override"` when from a `triggers.*`
-override. `scheduling.timeZone` names the IANA zone the scheduler evaluates
+schedule. `scheduling.timeZone` names the IANA zone the scheduler evaluates
 crons in; the per-token view includes it only for a reader who sees at least
 one schedule.
 

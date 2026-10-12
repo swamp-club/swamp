@@ -25,14 +25,10 @@ import type { ScheduleAction, ScheduleFeedback } from "../lib/triggers.ts";
 
 interface ScheduleControlsProps {
   workflowName: string;
-  /** Undefined when serve can't pause schedules (older versions). */
-  paused?: boolean;
   /** A serve override exists that a reset would remove. */
   canReset: boolean;
   pending?: ScheduleAction;
   feedback?: ScheduleFeedback;
-  onPause: () => void;
-  onResume: () => void;
   onEdit: () => void;
   onReset: () => void;
   /** "row" keeps the controls compact for a table cell. */
@@ -40,33 +36,21 @@ interface ScheduleControlsProps {
 }
 
 const PENDING_TEXT: Record<ScheduleAction, string> = {
-  pause: "Pausing…",
-  resume: "Resuming…",
   save: "Saving…",
   reset: "Resetting…",
 };
 
-/** The question Reset asks, saying what happens to a pause. */
-export function resetConfirmText(paused: boolean | undefined): string {
-  return paused
-    ? "Drop the override and use the workflow file's schedule? It stays paused."
-    : "Drop the override and use the workflow file's schedule?";
-}
-
 /**
- * Pause/Resume, Edit and Reset for one schedule. Reset removes the serve
+ * Edit and Reset for one schedule. Reset removes the serve
  * override, so it asks for a second click; every control is disabled while
  * a change is in flight, and the outcome is announced beside them.
  */
 export function ScheduleControls(
   {
     workflowName,
-    paused,
     canReset,
     pending,
     feedback,
-    onPause,
-    onResume,
     onEdit,
     onReset,
     layout = "row",
@@ -86,7 +70,7 @@ export function ScheduleControls(
           ? (
             <>
               <span className="sched-confirm-text">
-                {resetConfirmText(paused)}
+                Drop the override and use the workflow file's schedule?
               </span>
               <button
                 type="button"
@@ -111,24 +95,6 @@ export function ScheduleControls(
           )
           : (
             <>
-              {paused !== undefined && (
-                <button
-                  type="button"
-                  className={`trig-btn${paused ? " primary" : ""}`}
-                  disabled={busy}
-                  aria-pressed={paused}
-                  title={paused
-                    ? "Start firing this schedule again"
-                    : "Stop new scheduled runs until resumed"}
-                  onClick={paused ? onResume : onPause}
-                >
-                  {pending === "pause" || pending === "resume"
-                    ? PENDING_TEXT[pending]
-                    : paused
-                    ? "Resume"
-                    : "Pause"}
-                </button>
-              )}
               <button
                 type="button"
                 className="trig-btn"

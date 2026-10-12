@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { useRequest } from "../client/useRequest";
@@ -39,7 +39,6 @@ import { TriggerFlow } from "../components/TriggerFlow.tsx";
 import {
   RelativeTime,
   RUN_COLUMNS,
-  SourceTag,
   TriggerRunsTable,
   workflowRoute,
 } from "../components/TriggerTables.tsx";
@@ -107,10 +106,6 @@ export function ScheduleDetail(
 
   const { refetch: refetchTrigger } = trigger;
   const mutations = useScheduleMutations(refetchTrigger);
-  const { sync } = mutations;
-  useEffect(() => {
-    if (entry) sync([entry]);
-  }, [entry, sync]);
   const { refetch: refetchRuns } = runs;
   const { refetch: refetchSummary } = summary;
   const refetchAll = useCallback(() => {
@@ -123,10 +118,6 @@ export function ScheduleDetail(
   );
   const [editing, setEditing] = useState(false);
 
-  const paused = mutations.pausedOf(
-    workflowName,
-    entry?.paused ?? info?.effective.paused,
-  );
   const cron = entry?.cronExpression ?? info?.effective.schedule ?? null;
   const description = cron ? describeCron(cron) : null;
   const hasOverride = Boolean(
@@ -134,22 +125,20 @@ export function ScheduleDetail(
       (info.override.schedule !== undefined ||
         info.override.inputs !== undefined),
   );
-  const source = entry?.source ??
-    (info ? (hasOverride ? "override" : "workflow") : undefined);
   const now = Date.now();
   // Recomputed when the schedule fires (its next run moves), not per render.
   const firedAt = entry?.nextRun;
   // Serve's scheduler reads the expression in its own time zone.
   const serveZone = health?.scheduling?.timeZone;
   const upcoming = useMemo(() => {
-    if (!cron || paused) return [];
+    if (!cron) return [];
     const parsed = parseCron(cron);
     return parsed.ok
       ? nextFireTimes(parsed.schedule, new Date(), UPCOMING, {
         timeZone: serveZone,
       })
       : [];
-  }, [cron, paused, firedAt, serveZone]);
+  }, [cron, firedAt, serveZone]);
 
   const counts = summary.totals;
   const runningCount = runs.runs.filter((r) => r.status === "running").length;
@@ -200,22 +189,15 @@ export function ScheduleDetail(
           </button>
           <h1>{workflowName}</h1>
           {entry?.running && <RunningBadge count={Math.max(1, runningCount)} />}
-          {paused && <span className="trig-pill tone-warning">Paused</span>}
         </div>
         {!missing && cron && (
           <ScheduleControls
             workflowName={workflowName}
-            paused={entry?.paused !== undefined ||
-                info?.effective.paused !== undefined
-              ? paused
-              : undefined}
-            canReset={hasOverride || source === "override"}
+            canReset={hasOverride}
             pending={mutations.pending.get(workflowName)}
             feedback={mutations.feedback.get(workflowName)}
-            onPause={() => void mutations.setPaused(workflowName, true)}
-            onResume={() => void mutations.setPaused(workflowName, false)}
             onEdit={() => setEditing(true)}
-            onReset={() => void mutations.reset(workflowName, paused === true)}
+            onReset={() => void mutations.reset(workflowName)}
             layout="header"
           />
         )}
@@ -278,13 +260,7 @@ export function ScheduleDetail(
                       </dd>
                       <dt>Next run</dt>
                       <dd>
-                        {paused
-                          ? (
-                            <span className="trig-paused-text">
-                              Paused — no new runs until resumed
-                            </span>
-                          )
-                          : entry?.nextRun
+                        {entry?.nextRun
                           ? (
                             <>
                               <RelativeTime iso={entry.nextRun} now={now} />
@@ -294,18 +270,6 @@ export function ScheduleDetail(
                             </>
                           )
                           : "—"}
-                      </dd>
-                      <dt>Source</dt>
-                      <dd>
-                        <SourceTag source={source} />
-                        {info?.builtIn?.schedule && source === "override" && (
-                          <span className="trig-sub">
-                            Workflow file:{" "}
-                            <span className="mono">
-                              {info.builtIn.schedule}
-                            </span>
-                          </span>
-                        )}
                       </dd>
                       {entry && (entry.queued ?? 0) > 0 && (
                         <>
@@ -445,9 +409,8 @@ export function ScheduleDetail(
                         kind: "schedule",
                         title: cron ?? "Schedule",
                         lines: [
-                          paused ? "Paused" : description ?? "Custom schedule",
+                          description ?? "Custom schedule",
                         ],
-                        paused,
                       },
                       inputs: info ? flowInputs : null,
                       inputsTitle: "Inputs",
@@ -497,9 +460,7 @@ export function ScheduleDetail(
                 : runs.runs.length === 0
                 ? (
                   <EmptyState title="No scheduled runs in this range">
-                    {paused
-                      ? "This schedule is paused."
-                      : `Nothing ran on this schedule · ${rangeLabel.toLowerCase()}.`}
+                    {`Nothing ran on this schedule · ${rangeLabel.toLowerCase()}.`}
                   </EmptyState>
                 )
                 : (

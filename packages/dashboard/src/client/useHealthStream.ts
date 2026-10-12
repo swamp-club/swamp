@@ -55,17 +55,12 @@ export interface ScheduleEntry {
   workflowId: string;
   workflowName: string;
   cronExpression: string;
-  /** Null while the schedule is paused. */
   nextRun: string | null;
   running: boolean;
   /** Unset on servers that predate queue reporting (swamp-club#3046). */
   queued?: number;
   oldestQueuedAt?: string | null;
   lastQueueDelayMs?: number | null;
-  /** Unset on servers without schedule pause/resume. */
-  paused?: boolean;
-  /** Whether the schedule comes from the workflow file or a serve override. */
-  source?: "workflow" | "override";
 }
 
 export interface WebhookEntry {

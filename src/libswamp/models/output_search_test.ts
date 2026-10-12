@@ -151,7 +151,9 @@ Deno.test("modelOutputSearch: maps provenance and resolves workflow names in one
     },
   });
   const data = completedOf(
-    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {
+      includeProvenance: true,
+    })),
   );
 
   assertEquals(lookups, [["wf-1"]]);
@@ -169,7 +171,9 @@ Deno.test("modelOutputSearch: omits the workflow name when the id no longer reso
     resolveWorkflowNames: () => Promise.resolve(new Map()),
   });
   const data = completedOf(
-    await collect(modelOutputSearch(createLibSwampContext(), deps, {})),
+    await collect(modelOutputSearch(createLibSwampContext(), deps, {
+      includeProvenance: true,
+    })),
   );
   assertEquals(data.results[0].workflowId, "wf-1");
   assertEquals("workflowName" in data.results[0], false);

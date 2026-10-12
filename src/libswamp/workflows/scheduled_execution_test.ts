@@ -1797,27 +1797,3 @@ Deno.test("ScheduledExecutionService.queueStatus: records the delay of a replay 
     await service.stop();
   }
 });
-
-Deno.test("ScheduledExecutionService.listSchedules: reports where the cron comes from", async () => {
-  const builtIn = createTestWorkflow("builtin-wf", "0 12 * * *");
-  const overridden = createTestWorkflow("overridden-wf", "0 12 * * *");
-  const service = new ScheduledExecutionService({
-    workflowRepo: createMockWorkflowRepo([builtIn, overridden]),
-    repoDir: "/tmp/nonexistent-test-repo",
-    executeWorkflow: () => Promise.resolve(),
-    triggerOverrides: new Map([
-      ["overridden-wf", { schedule: "0 3 * * *" }],
-    ]),
-  });
-  await service.start();
-  try {
-    const byName = new Map(
-      service.listSchedules().map((s) => [s.workflowName, s]),
-    );
-    assertEquals(byName.get("builtin-wf")?.source, "workflow");
-    assertEquals(byName.get("overridden-wf")?.source, "override");
-    assertEquals(byName.get("overridden-wf")?.cronExpression, "0 3 * * *");
-  } finally {
-    await service.stop();
-  }
-});

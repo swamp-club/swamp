@@ -293,7 +293,7 @@ export function isDeniedCode(code: string | undefined): boolean {
   return code !== undefined && DENIED_CODES.has(code);
 }
 
-export type ScheduleAction = "pause" | "resume" | "save" | "reset";
+export type ScheduleAction = "save" | "reset";
 
 /** The message beside a schedule's controls after a change. */
 export interface ScheduleFeedback {
@@ -302,8 +302,6 @@ export interface ScheduleFeedback {
 }
 
 const ACTION_TEXT: Record<ScheduleAction, string> = {
-  pause: "pause",
-  resume: "resume",
   save: "change",
   reset: "reset",
 };
@@ -328,10 +326,6 @@ export function scheduleErrorMessage(
 /** What to say once a schedule change landed. */
 export function scheduleSuccessMessage(action: ScheduleAction): string {
   switch (action) {
-    case "pause":
-      return "Paused. No new scheduled runs will start.";
-    case "resume":
-      return "Resumed.";
     case "save":
       return "Schedule saved.";
     case "reset":

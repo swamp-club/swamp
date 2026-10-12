@@ -249,8 +249,6 @@ export {
   type ModelGetData,
   type ModelGetDeps,
   type ModelGetEvent,
-  type ModelGetExtension,
-  type ModelGetReport,
   type StalenessState,
 } from "./models/get.ts";
 export {

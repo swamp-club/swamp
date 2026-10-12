@@ -39,8 +39,6 @@ const schedule: ScheduleRow = {
   cron: "*/5 * * * *",
   description: "Every 5 minutes",
   nextRun: "2026-10-12T20:35:00.000Z",
-  paused: false,
-  source: "override",
   running: false,
   runningCount: 0,
   queueLabel: null,
@@ -72,7 +70,7 @@ Deno.test("ScheduleTable: links the schedule, describes the cron and shows its r
   assertStringIncludes(html, '<span class="cron-badge">*/5 * * * *</span>');
   assertStringIncludes(html, "Every 5 minutes");
   assertStringIncludes(html, "in 5m");
-  assertStringIncludes(html, "Override");
+  assertEquals(html.includes("Override"), false);
   assertStringIncludes(
     html,
     // A failed run's pip opens its failure log.
@@ -83,11 +81,16 @@ Deno.test("ScheduleTable: links the schedule, describes the cron and shows its r
   assertStringIncludes(html, "controls</button>");
 });
 
-Deno.test("ScheduleTable: paused, running and queued states", () => {
+Deno.test("ScheduleTable: running and queued states", () => {
   const html = renderToStaticMarkup(
     <ScheduleTable
       rows={[
-        { ...schedule, workflowName: "a", paused: true, nextRun: null },
+        {
+          ...schedule,
+          workflowName: "a",
+          queueLabel: "1 queued",
+          nextRun: null,
+        },
         {
           ...schedule,
           workflowName: "b",
@@ -102,8 +105,8 @@ Deno.test("ScheduleTable: paused, running and queued states", () => {
       renderControls={() => null}
     />,
   );
-  assertStringIncludes(html, 'class="trig-row is-paused"');
-  assertStringIncludes(html, ">Paused<");
+  assertEquals(html.includes("Paused"), false);
+  assertStringIncludes(html, ">Queued<");
   assertStringIncludes(html, "Running ×2");
   assertStringIncludes(html, "1 queued · waiting 3m");
 });

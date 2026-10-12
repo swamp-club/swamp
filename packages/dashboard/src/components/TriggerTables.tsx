@@ -106,8 +106,6 @@ export interface ScheduleRow {
   cron: string;
   description: string | null;
   nextRun: string | null;
-  paused?: boolean;
-  source?: "workflow" | "override";
   running: boolean;
   /** Scheduled runs in progress, when known; at least 1 while running. */
   runningCount: number;
@@ -146,7 +144,7 @@ export function ScheduleTable(
           {rows.map((row) => (
             <tr
               key={row.workflowName}
-              className={`trig-row${row.paused ? " is-paused" : ""}`}
+              className="trig-row"
               onClick={rowClick(() => onOpen(row.workflowName))}
             >
               <td className="trig-name">
@@ -160,18 +158,10 @@ export function ScheduleTable(
                   {row.description && (
                     <span className="trig-cron-desc">{row.description}</span>
                   )}
-                  {
-                    // The workflow file is the norm; only flag an override.
-                    row.source === "override" && (
-                      <SourceTag source={row.source} />
-                    )
-                  }
                 </span>
               </td>
               <td>
-                {row.paused
-                  ? <span className="trig-paused-text">Paused</span>
-                  : row.nextRun
+                {row.nextRun
                   ? <RelativeTime iso={row.nextRun} now={now} />
                   : <span className="trig-muted">—</span>}
               </td>
@@ -196,8 +186,6 @@ export function ScheduleTable(
                 <span className="trig-state">
                   {row.running
                     ? <RunningBadge count={Math.max(1, row.runningCount)} />
-                    : row.paused
-                    ? <span className="trig-pill tone-warning">Paused</span>
                     : row.queueLabel
                     ? <span className="trig-pill tone-info">Queued</span>
                     : <span className="trig-pill">Idle</span>}
@@ -213,29 +201,6 @@ export function ScheduleTable(
       </table>
     </div>
   );
-}
-
-export function SourceTag(
-  { source }: { source?: "workflow" | "override" },
-) {
-  if (source === "override") {
-    return (
-      <span
-        className="trig-pill tone-info"
-        title="Set on serve; overrides the workflow file"
-      >
-        Override
-      </span>
-    );
-  }
-  if (source === "workflow") {
-    return (
-      <span className="trig-pill" title="From the workflow file">
-        Workflow file
-      </span>
-    );
-  }
-  return <span className="trig-muted">—</span>;
 }
 
 // ── Webhooks ────────────────────────────────────────────────────────────

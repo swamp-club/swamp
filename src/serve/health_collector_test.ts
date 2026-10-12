@@ -174,7 +174,6 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     cronExpression: "* * * * *",
     nextRun: null,
     running: true,
-    source: "workflow",
     queued: 3,
     oldestQueuedAt: "2026-01-01T00:00:00.000Z",
     lastQueueDelayMs: 49 * 60_000,
@@ -184,7 +183,6 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
     cronExpression: "0 * * * *",
     nextRun: null,
     running: false,
-    source: "workflow",
     queued: 0,
     oldestQueuedAt: null,
     lastQueueDelayMs: null,
@@ -197,39 +195,6 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
   assertEquals(
     snapshot.scheduling.timeZone,
     Intl.DateTimeFormat().resolvedOptions().timeZone,
-  );
-});
-
-Deno.test("HealthCollector: reports where each schedule's cron comes from", async () => {
-  const deps = makeDeps({
-    scheduleEnabled: true,
-    scheduleProvider: {
-      listSchedules: () => [{
-        workflowId: "wf-1",
-        workflowName: "overridden",
-        cronExpression: "0 3 * * *",
-        nextRun: null,
-        source: "override",
-      }, {
-        workflowId: "wf-2",
-        workflowName: "built-in",
-        cronExpression: "0 4 * * *",
-        nextRun: null,
-      }],
-      isRunning: () => false,
-      queueStatus: () => ({
-        queued: 0,
-        oldestQueuedAt: null,
-        lastQueueDelayMs: null,
-      }),
-    },
-  });
-
-  const snapshot = await new HealthCollector(deps).collect();
-
-  assertEquals(
-    snapshot.scheduling.schedules.map((s) => s.source),
-    ["override", "workflow"],
   );
 });
 

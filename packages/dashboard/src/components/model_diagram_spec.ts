@@ -29,10 +29,9 @@ import type {
 } from "./model_diagram_layout.ts";
 
 // Turns serve's `model.get` result (plus the model's data, already fetched
-// for the page) into the diagram's boxes. Serve's newer fields — declared
-// data outputs, declared reports, the owning extension — are optional:
-// older servers omit them, and each falls back to what the dashboard can
-// work out itself.
+// for the page) into the diagram's boxes. Optional metadata can describe
+// declared outputs, reports and extensions; otherwise the diagram uses
+// observed data and marks extension names inferred from the type.
 
 /** Mirrors DataOutputSpecDescribeData in src/libswamp/types/schema_helpers.ts. */
 export interface DataOutputSpec {
