@@ -236,15 +236,18 @@ filter, so
 to limit 500; `workflow.search` has none, because the CLI's interactive picker
 needs the full list. `workflow.run.search` also filters, before paging, by
 `until` (exclusive), `workflows` (exact names) and `triggerSource`; `since` and
-`until` take a duration back from now or an ISO time.
+`until` take a duration back from now or an ISO time. `statuses` and
+`triggerSources` take several values and keep runs matching any of them
+(ignoring case; an empty list filters nothing); beside `status` or
+`triggerSource`, both filters must hold.
 
 `workflow.run.summary` counts runs instead of listing them: totals, per-workflow
 counts with each workflow's newest runs (`recentLimit`, default 20, clamped to
 0..100) and, with `timeline`, hourly UTC buckets. It takes the same `since`,
-`until`, `workflows` and `triggerSource` filters. The counts are taken after the
-per-workflow read filter (`src/libswamp/workflows/run_summary.ts` gets it as
-`keepReadable`), so an unreadable workflow never reaches totals or the
-timeline. `failed` includes interrupted runs and `running` pending ones; a
+`until`, `workflows`, `triggerSource` and `triggerSources` filters. The counts
+are taken after the per-workflow read filter
+(`src/libswamp/workflows/run_summary.ts` gets it as `keepReadable`), so an
+unreadable workflow never reaches totals or the timeline. `failed` includes interrupted runs and `running` pending ones; a
 status in no bucket counts in `runs` only.
 
 ## Identity and access
