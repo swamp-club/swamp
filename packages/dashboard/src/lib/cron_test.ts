@@ -79,7 +79,6 @@ Deno.test("describeCron: describes times of day and days", () => {
 Deno.test("describeCron: expands nicknames", () => {
   assertEquals(describeCron("@hourly"), "Every hour");
   assertEquals(describeCron("@daily"), "Every day at 00:00");
-  assertEquals(describeCron("@midnight"), "Every day at 00:00");
   assertEquals(describeCron("@weekly"), "Every Sunday at 00:00");
   assertEquals(describeCron("@monthly"), "On the 1st of every month at 00:00");
   assertEquals(describeCron("@yearly"), "Every year on January 1 at 00:00");
@@ -121,6 +120,7 @@ Deno.test("parseCron: rejects malformed expressions with a reason", () => {
     ["a * * * *", '"a" is not a valid minute'],
     ["1,,2 * * * *", "Empty item in minute"],
     ["@often", 'Unknown shortcut "@often"'],
+    ["@midnight", 'Unknown shortcut "@midnight"'],
   ];
   for (const [expr, error] of bad) {
     const parsed = parseCron(expr);
