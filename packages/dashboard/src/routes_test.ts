@@ -506,6 +506,89 @@ Deno.test("parentOf: existing details have no parent", () => {
   assertEquals(parentOf(null), null);
 });
 
+// ── Schedules and webhooks ──────────────────────────────────────────────
+
+Deno.test("parseRoute: schedule detail", () => {
+  assertEquals(parseRoute("/dashboard/schedules/nightly-backup"), {
+    view: "schedules",
+    detail: { kind: "schedule", workflowName: "nightly-backup" },
+  });
+});
+
+Deno.test("parseRoute: schedule detail of a scoped workflow", () => {
+  assertEquals(parseRoute("/dashboard/schedules/@acme%2Fquota-reset"), {
+    view: "schedules",
+    detail: { kind: "schedule", workflowName: "@acme/quota-reset" },
+  });
+});
+
+Deno.test("parseRoute: webhook detail decodes the route's slashes", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/%2Fhooks%2Fgithub-push"), {
+    view: "webhooks",
+    detail: { kind: "webhook", route: "/hooks/github-push" },
+  });
+});
+
+Deno.test("parseRoute: an unencoded webhook route keeps its first segment", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/hooks/github-push"), {
+    view: "webhooks",
+    detail: { kind: "webhook", route: "hooks" },
+  });
+});
+
+Deno.test("parseRoute: a garbled webhook link lands on the webhook list", () => {
+  assertEquals(parseRoute("/dashboard/webhooks/%E0%A4%A"), {
+    view: "webhooks",
+    detail: null,
+  });
+});
+
+Deno.test("buildPath: schedule and webhook details", () => {
+  assertEquals(
+    buildPath({
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: "@acme/quota-reset" },
+    }),
+    "/dashboard/schedules/@acme%2Fquota-reset",
+  );
+  assertEquals(
+    buildPath({
+      view: "webhooks",
+      detail: { kind: "webhook", route: "/hooks/github-push" },
+    }),
+    "/dashboard/webhooks/%2Fhooks%2Fgithub-push",
+  );
+});
+
+Deno.test("round-trip: schedule and webhook details", () => {
+  const states: RouteState[] = [
+    {
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: "deploy api/v2" },
+    },
+    {
+      view: "webhooks",
+      detail: { kind: "webhook", route: "/hooks/stripe events?x=1#y" },
+    },
+  ];
+  for (const state of states) {
+    assertEquals(parseRoute(buildPath(state)), state);
+  }
+});
+
+Deno.test("viewForDetail: schedule and webhook details keep their pages", () => {
+  assertEquals(
+    viewForDetail({ kind: "schedule", workflowName: "w" }),
+    "schedules",
+  );
+  assertEquals(viewForDetail({ kind: "webhook", route: "/h" }), "webhooks");
+});
+
+Deno.test("parentOf: schedule and webhook details close to their list", () => {
+  assertEquals(parentOf({ kind: "schedule", workflowName: "w" }), null);
+  assertEquals(parentOf({ kind: "webhook", route: "/h" }), null);
+});
+
 Deno.test("absoluteUrl: prefixes the origin", () => {
   assertEquals(
     absoluteUrl(

@@ -28,7 +28,16 @@ import {
   viewForDetail,
 } from "../routes.ts";
 
-let currentState: RouteState = parseRoute(location.pathname);
+/** The page's path, or "/" where there is no location (tests). */
+function currentPathname(): string {
+  try {
+    return globalThis.location?.pathname ?? "/";
+  } catch {
+    return "/";
+  }
+}
+
+let currentState: RouteState = parseRoute(currentPathname());
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -54,7 +63,7 @@ function pushState(next: RouteState) {
 }
 
 function onPopState() {
-  currentState = parseRoute(location.pathname);
+  currentState = parseRoute(currentPathname());
   notify();
 }
 
