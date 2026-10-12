@@ -44,15 +44,16 @@ import {
   workflowRoute,
 } from "../components/TriggerTables.tsx";
 import { flowJobsOf, type WorkflowJobDef } from "../components/trigger_flow.ts";
-import { useTriggerRuns } from "../client/trigger_runs.ts";
+import {
+  useTriggerRuns,
+  useTriggerRunSummaries,
+} from "../client/trigger_runs.ts";
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import {
   averageDuration,
   compareRuns,
   type RunDetailJob,
   successRate,
-  sumCounts,
-  summarizeRuns,
   toggleCompare,
 } from "../lib/triggers.ts";
 import { formatCount, formatDuration } from "../lib/format.ts";
@@ -102,6 +103,12 @@ export function WebhookDetail(
   const runs = useTriggerRuns("webhook", workflowName, {
     enabled: entry !== undefined,
   });
+  // Exact counts over the whole time range; `runs` is only the newest page.
+  const names = useMemo(() => [workflowName], [workflowName]);
+  const summary = useTriggerRunSummaries("webhook", names, {
+    enabled: entry !== undefined,
+    recentLimit: 0,
+  });
   const { range } = useTimeRange();
   const rangeLabel = describeTimeRange(range);
   const now = Date.now();
@@ -125,13 +132,11 @@ export function WebhookDetail(
     [runA, runB, jobsA.jobs, jobsB.jobs],
   );
 
-  const counts = useMemo(() => sumCounts(summarizeRuns(runs.runs)), [
-    runs.runs,
-  ]);
+  const counts = summary.totals;
   const stats: Stat[] = [
     {
       label: "webhook runs",
-      value: formatCount(runs.total ?? counts.runs),
+      value: formatCount(counts.runs),
       title: rangeLabel,
     },
     {
@@ -233,7 +238,7 @@ export function WebhookDetail(
     <>
       {header}
       <div className="trig-detail">
-        {runs.loading
+        {summary.loading
           ? <SkeletonPills count={5} />
           : <StatPills stats={stats} label="Webhook runs summary" />}
 

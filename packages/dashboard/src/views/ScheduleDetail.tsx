@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { useRequest } from "../client/useRequest";
@@ -44,7 +44,11 @@ import {
   workflowRoute,
 } from "../components/TriggerTables.tsx";
 import { flowJobsOf, type WorkflowJobDef } from "../components/trigger_flow.ts";
-import { useRefetchOnChange, useTriggerRuns } from "../client/trigger_runs.ts";
+import {
+  useRefetchOnChange,
+  useTriggerRuns,
+  useTriggerRunSummaries,
+} from "../client/trigger_runs.ts";
 import { useScheduleMutations } from "../client/schedule_mutations.ts";
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
 import {
@@ -58,8 +62,6 @@ import {
   inputRows,
   isDeniedCode,
   successRate,
-  sumCounts,
-  summarizeRuns,
   valueText,
 } from "../lib/triggers.ts";
 import {
@@ -96,6 +98,11 @@ export function ScheduleDetail(
   const wf = useRequest("workflow.get", { workflowIdOrName: workflowName });
   const workflow = wf.error ? null : extractObject<WorkflowDef>(wf.data);
   const runs = useTriggerRuns("schedule", workflowName);
+  // Exact counts over the whole time range; `runs` is only the newest page.
+  const names = useMemo(() => [workflowName], [workflowName]);
+  const summary = useTriggerRunSummaries("schedule", names, {
+    recentLimit: 0,
+  });
   const { range } = useTimeRange();
 
   const { refetch: refetchTrigger } = trigger;
@@ -104,9 +111,15 @@ export function ScheduleDetail(
   useEffect(() => {
     if (entry) sync([entry]);
   }, [entry, sync]);
+  const { refetch: refetchRuns } = runs;
+  const { refetch: refetchSummary } = summary;
+  const refetchAll = useCallback(() => {
+    refetchRuns();
+    refetchSummary();
+  }, [refetchRuns, refetchSummary]);
   useRefetchOnChange(
     entry ? `${entry.nextRun}:${entry.running}` : "",
-    runs.refetch,
+    refetchAll,
   );
   const [editing, setEditing] = useState(false);
 
@@ -138,15 +151,13 @@ export function ScheduleDetail(
       : [];
   }, [cron, paused, firedAt, serveZone]);
 
-  const counts = useMemo(() => sumCounts(summarizeRuns(runs.runs)), [
-    runs.runs,
-  ]);
+  const counts = summary.totals;
   const runningCount = runs.runs.filter((r) => r.status === "running").length;
   const rangeLabel = describeTimeRange(range);
   const stats: Stat[] = [
     {
       label: "scheduled runs",
-      value: formatCount(runs.total ?? counts.runs),
+      value: formatCount(counts.runs),
       title: rangeLabel,
     },
     {
@@ -239,7 +250,7 @@ export function ScheduleDetail(
         )
         : (
           <div className="trig-detail">
-            {runs.loading
+            {summary.loading
               ? <SkeletonPills count={5} />
               : <StatPills stats={stats} label="Scheduled runs summary" />}
 
