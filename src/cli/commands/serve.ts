@@ -6499,7 +6499,6 @@ export const serveCommand = new Command()
               cronExpression: s.cronExpression,
               nextRun: s.nextRun?.toISOString() ?? null,
               running: scheduledExecution!.isRunning(s.workflowId),
-              source: s.source,
               ...scheduledExecution!.queueStatus(s.workflowId),
             })) ?? [];
 
