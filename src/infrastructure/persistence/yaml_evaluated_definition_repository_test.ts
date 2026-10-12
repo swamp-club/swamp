@@ -75,7 +75,7 @@ Deno.test(
       });
 
       // save → per-definition yaml path (name-based for kebab-case names)
-      await repo.save(testType, definition);
+      await repo.save(testType, definition, undefined);
       assertEquals(calls.length, 1);
       const savedPath = repo.getPath(testType, definition.id);
       assertEquals(calls[0], savedPath);
@@ -90,7 +90,7 @@ Deno.test(
       assertEquals(calls.length, 2);
 
       // clearAll → baseDir path (whole evaluated-definitions tree removed)
-      await repo.save(testType, definition);
+      await repo.save(testType, definition, undefined);
       assertEquals(calls.length, 3);
       await repo.clearAll();
       assertEquals(calls.length, 4);
@@ -112,7 +112,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.save writes name-based filename", a
       name: "my-eval-def",
     });
 
-    await repo.save(testType, definition);
+    await repo.save(testType, definition, undefined);
 
     // File should be at {name}.yaml
     const path = repo.getPath(testType, definition.id);
@@ -151,7 +151,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.save migrates UUID file to name-bas
     // Load and re-save — should migrate
     const loaded = await repo.findById(testType, definition.id);
     assertNotEquals(loaded, null);
-    await repo.save(testType, loaded!);
+    await repo.save(testType, loaded!, undefined);
 
     // Name-based file should exist
     const namePath = join(typeDir, "migrate-eval.yaml");
@@ -178,7 +178,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.findByName fast path works", async 
       name: "find-by-name",
     });
 
-    await repo.save(testType, definition);
+    await repo.save(testType, definition, undefined);
 
     const found = await repo.findByName(testType, "find-by-name");
     assertNotEquals(found, null);
@@ -196,7 +196,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.findByName falls through when file 
       name: "actual-name",
     });
 
-    await repo.save(testType, definition);
+    await repo.save(testType, definition, undefined);
 
     // Rename file on disk but keep content name as "actual-name"
     const typeDir = join(
@@ -224,7 +224,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.delete handles name-based files on 
       typeVersion: "1",
       name: "cold-eval-delete",
     });
-    await repo1.save(testType, definition);
+    await repo1.save(testType, definition, undefined);
 
     // Delete with a fresh instance (cold cache)
     const repo2 = new YamlEvaluatedDefinitionRepository(dir);
@@ -244,7 +244,7 @@ Deno.test("YamlEvaluatedDefinitionRepository.clearAll also clears path cache", a
       name: "clear-cache",
     });
 
-    await repo.save(testType, definition);
+    await repo.save(testType, definition, undefined);
     assertNotEquals(await repo.findById(testType, definition.id), null);
 
     await repo.clearAll();
@@ -257,7 +257,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: reloads provenance from name and U
     const repo = new YamlEvaluatedDefinitionRepository(dir);
     const definition = Definition.create({ name: "provenance" });
     const authoredExpressions = new Set(["${{ env.HOME }}"]);
-    await repo.save(testType, definition, authoredExpressions);
+    await repo.save(testType, definition, undefined, authoredExpressions);
     const path = repo.getPath(testType, definition.id);
     const legacyPath = join(
       dir,
@@ -290,7 +290,12 @@ Deno.test("YamlEvaluatedDefinitionRepository: replacing a cache replaces its pro
   await withTempDir(async (dir) => {
     const repo = new YamlEvaluatedDefinitionRepository(dir);
     const definition = Definition.create({ name: "provenance" });
-    await repo.save(testType, definition, new Set(["${{ env.OLD }}"]));
+    await repo.save(
+      testType,
+      definition,
+      undefined,
+      new Set(["${{ env.OLD }}"]),
+    );
     for (
       const authored of [
         new Set(["${{ env.NEW }}"]),
@@ -298,7 +303,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: replacing a cache replaces its pro
         undefined,
       ]
     ) {
-      await repo.save(testType, definition, authored);
+      await repo.save(testType, definition, undefined, authored);
       const cached = await new YamlEvaluatedDefinitionRepository(dir)
         .findByNameWithProvenance(testType, definition.name);
       assertEquals(cached?.authoredExpressions, authored ?? new Set());
@@ -311,7 +316,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: rejects malformed provenance", asy
   await withTempDir(async (dir) => {
     const repo = new YamlEvaluatedDefinitionRepository(dir);
     const definition = Definition.create({ name: "provenance" });
-    await repo.save(testType, definition);
+    await repo.save(testType, definition, undefined);
     const path = repo.getPath(testType, definition.id);
     for (
       const authoredExpressions of [null, "${{ env.HOME }}", {}, [42], [
@@ -344,7 +349,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: records the source typeVersion ver
       globalArguments: { project: "demo" },
     });
 
-    await repo.save(type, definition);
+    await repo.save(type, definition, undefined);
 
     // Evaluated definitions are derived data replayed under --last-evaluated.
     // Restamping here would reintroduce the staleness masking that was fixed
@@ -370,7 +375,7 @@ Deno.test("YamlEvaluatedDefinitionRepository: records the sensitive format and w
       encoding: "raw" as const,
       dataOrigin: true,
     };
-    await repo.save(type, definition, new Set(), [], [reference]);
+    await repo.save(type, definition, undefined, new Set(), [], [reference]);
     const cached = await repo.findByNameWithProvenance(type, "ref-definition");
     assertEquals(cached?.sensitiveFormat, 1);
     assertEquals(cached?.writtenReferences, [reference]);

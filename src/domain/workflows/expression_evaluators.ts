@@ -29,13 +29,16 @@ import {
   isTaskInputsPath,
   isTaskTargetPath,
   isTriggerInputsPath,
-  replaceExpressions,
+  replaceExpressionsTracked,
+  type SpliceOrigin,
 } from "../expressions/expression_parser.ts";
+import { ProvenanceMap } from "../expressions/provenance_map.ts";
+import { spliceOrigin } from "../expressions/splice_origin.ts";
 import { maskLiteralCalls } from "../expressions/cel_string_lexer.ts";
 import {
   type AuthoredExpressions,
   containsRuntimeExpression,
-  partitionAuthored,
+  partitionAuthoredAt,
 } from "../expressions/expression_evaluation_service.ts";
 import {
   hasStepOutputDependency,
@@ -54,7 +57,11 @@ import type {
   CelExpressionEvaluator,
   CelExpressionValidator,
 } from "../expressions/cel_runtime.ts";
-import { evaluateDefinitionExpressions } from "../expressions/definition_expression_pass.ts";
+import {
+  AUTHORED_DEFINITION,
+  type DefinitionPassProvenance,
+  evaluateDefinitionExpressions,
+} from "../expressions/definition_expression_pass.ts";
 import type { FailedExpressions } from "../expressions/unresolved_expression_guard.ts";
 
 /** Collect template expressions and bare assertion predicates from source. */
@@ -133,6 +140,64 @@ export interface WorkflowEvaluationResult {
    * any. Held in memory only; see {@link SanitizedTaskOverlay}.
    */
   sanitizedTasks?: SanitizedTaskOverlay;
+  /** Where data sits in each evaluated step, keyed by Step instance. */
+  stepProvenance: StepProvenanceOverlay;
+  /** Where data sits in the evaluated workflow's data. */
+  provenance: ProvenanceMap;
+}
+
+/** Where data sits in one evaluated step, relative to the step's data. */
+export interface StepProvenance {
+  /** For the raw copy: CEL contexts, guards, caches. */
+  raw: ProvenanceMap;
+  /** For the sanitized copy the step executes. */
+  sanitized: ProvenanceMap;
+}
+
+/**
+ * Per step of an evaluated workflow, where data sits in it, keyed by the
+ * Step instance like {@link SanitizedTaskOverlay} (forEach expansion keeps
+ * the instance, so every iteration shares the entry).
+ */
+export class StepProvenanceOverlay {
+  private constructor(private readonly entries: Map<Step, StepProvenance>) {}
+
+  /** No data in any step. */
+  static authored(): StepProvenanceOverlay {
+    return new StepProvenanceOverlay(new Map());
+  }
+
+  /**
+   * Builds the overlay from the evaluated workflow's maps, taking each step's
+   * subtree at `jobs[i].steps[j]`.
+   */
+  static fromWorkflowMaps(
+    evaluated: Workflow,
+    raw: ProvenanceMap,
+    sanitized: ProvenanceMap,
+  ): StepProvenanceOverlay {
+    const entries = new Map<Step, StepProvenance>();
+    if (raw.isAuthored && sanitized.isAuthored) {
+      return new StepProvenanceOverlay(entries);
+    }
+    for (const [jobIndex, job] of evaluated.jobs.entries()) {
+      for (const [stepIndex, step] of job.steps.entries()) {
+        const path = `jobs[${jobIndex}].steps[${stepIndex}]`;
+        entries.set(step, {
+          raw: raw.subtree(path),
+          sanitized: sanitized.subtree(path),
+        });
+      }
+    }
+    return new StepProvenanceOverlay(entries);
+  }
+
+  /** The step's maps; authored when nothing in it is data. */
+  forStep(step: Step | undefined): StepProvenance {
+    const entry = step ? this.entries.get(step) : undefined;
+    return entry ??
+      { raw: ProvenanceMap.authored(), sanitized: ProvenanceMap.authored() };
+  }
 }
 
 /** A step's task inputs and global arguments as the step should execute them. */
@@ -185,6 +250,14 @@ export class SanitizedTaskOverlay {
     return new SanitizedTaskOverlay(bag, entries, sanitizedData);
   }
 
+  /**
+   * The step's sanitized fields as evaluation spliced them, with the
+   * workflow-level bag's sentinels, the coordinates its provenance map uses.
+   */
+  entryFor(step: Step): SanitizedTaskFields | undefined {
+    return this.entries.get(step);
+  }
+
   /** The step's sanitized fields, with sentinels issued from `stepBag`. */
   forStep(
     step: Step,
@@ -222,15 +295,30 @@ export class WorkflowExpressionEvaluator {
     workflow: Workflow,
     context: ExpressionContext,
     authored: AuthoredExpressions,
+    /**
+     * Where data already sits in the workflow's data: authored for a
+     * workflow loaded from source, the cached map on replay.
+     */
+    sourceProvenance: ProvenanceMap = ProvenanceMap.authored(),
   ): Promise<WorkflowEvaluationResult> {
     const workflowData = workflow.toData();
-    const expressions = partitionAuthored(
+    const expressions = partitionAuthoredAt(
       extractExpressions(workflowData, "", isAssertExprPath),
       authored,
+      sourceProvenance,
     );
 
     if (expressions.length === 0) {
-      return { workflow, expressionsEvaluated: 0 };
+      return {
+        workflow,
+        expressionsEvaluated: 0,
+        stepProvenance: StepProvenanceOverlay.fromWorkflowMaps(
+          workflow,
+          sourceProvenance,
+          sourceProvenance,
+        ),
+        provenance: sourceProvenance,
+      };
     }
 
     // Collect forEach.in expressions to skip during evaluation. They
@@ -255,6 +343,7 @@ export class WorkflowExpressionEvaluator {
     const deferredTargetPaths = new Set<string>();
 
     const evaluatedValues = new Map<string, unknown>();
+    const origins = new Map<string, SpliceOrigin>();
     for (const expr of expressions) {
       if (containsRuntimeExpression(expr.celExpression)) {
         continue;
@@ -317,26 +406,40 @@ export class WorkflowExpressionEvaluator {
         context,
       );
       evaluatedValues.set(expr.raw, value);
+      origins.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     }
 
     const skipPath = (path: string) =>
       isAssertExprPath(path) || deferredTargetPaths.has(path);
-    const evaluatedData = replaceExpressions(
+    const originOf = (raw: string) =>
+      origins.get(raw) ?? { map: ProvenanceMap.data() };
+    const tracked = replaceExpressionsTracked(
+      workflowData,
+      evaluatedValues,
+      sourceProvenance,
+      originOf,
+      skipPath,
+    );
+    const evaluated = WorkflowClass.fromData(tracked.data as WorkflowInput);
+    const sanitizedTasks = sanitizeTasks(
       workflowData,
       evaluatedValues,
       skipPath,
+      context,
+      evaluated,
+      sourceProvenance,
+      originOf,
     );
-    const evaluated = WorkflowClass.fromData(evaluatedData as WorkflowInput);
     return {
       workflow: evaluated,
       expressionsEvaluated: evaluatedValues.size,
-      sanitizedTasks: sanitizeTasks(
-        workflowData,
-        evaluatedValues,
-        skipPath,
-        context,
+      sanitizedTasks: sanitizedTasks?.overlay,
+      stepProvenance: StepProvenanceOverlay.fromWorkflowMaps(
         evaluated,
+        tracked.provenance,
+        sanitizedTasks?.provenance ?? tracked.provenance,
       ),
+      provenance: tracked.provenance,
     };
   }
 }
@@ -353,22 +456,33 @@ function sanitizeTasks(
   skipPath: (path: string) => boolean,
   context: ExpressionContext,
   evaluated: Workflow,
-): SanitizedTaskOverlay | undefined {
+  provenance: ProvenanceMap,
+  originOf: (raw: string) => SpliceOrigin,
+): { overlay: SanitizedTaskOverlay; provenance: ProvenanceMap } | undefined {
   const sensitiveValues = sensitiveValuesOf(context);
   if (!sensitiveValues || sensitiveValues.isEmpty) return undefined;
   const bag = new VaultSecretBag();
-  const sanitized = replaceExpressions(
+  const sanitized = replaceExpressionsTracked(
     workflowData,
     values,
+    provenance,
+    originOf,
     skipPath,
     sensitiveSpliceSanitizer(
       sensitiveValues,
       bag,
       (path) => TASK_ARGUMENT_PATH.test(path),
     ),
-  ) as WorkflowInput;
+  );
   if (bag.isEmpty) return undefined;
-  return SanitizedTaskOverlay.fromSanitizedData(bag, sanitized, evaluated);
+  return {
+    overlay: SanitizedTaskOverlay.fromSanitizedData(
+      bag,
+      sanitized.data as WorkflowInput,
+      evaluated,
+    ),
+    provenance: sanitized.provenance,
+  };
 }
 
 /**
@@ -409,6 +523,8 @@ export class DefinitionExpressionEvaluator {
     secretBag?: VaultSecretBag,
     /** The executed copy's base when it already differs; see evaluateDefinitionExpressions. */
     sanitizedBase: Definition = definition,
+    /** Where data already sits in `definition` and `sanitizedBase`. */
+    provenance: DefinitionPassProvenance = AUTHORED_DEFINITION,
   ): Promise<{
     definition: Definition;
     /**
@@ -418,11 +534,14 @@ export class DefinitionExpressionEvaluator {
      */
     sanitizedDefinition: Definition;
     failedExpressions: FailedExpressions;
+    /** Where data sits in `definition`'s and `sanitizedDefinition`'s data. */
+    provenance: DefinitionPassProvenance;
   }> {
     const definitionData = definition.toData();
-    const expressions = partitionAuthored(
+    const expressions = partitionAuthoredAt(
       extractExpressions(definitionData),
       authored,
+      provenance.raw,
     ).filter((expr) => !containsRuntimeExpression(expr.celExpression));
 
     if (expressions.length === 0) {
@@ -430,25 +549,32 @@ export class DefinitionExpressionEvaluator {
         definition,
         sanitizedDefinition: sanitizedBase,
         failedExpressions: new Map(),
+        provenance,
       };
     }
 
     const sensitiveValues = sensitiveValuesOf(context);
-    const { data, sanitizedData, failedExpressions } =
-      await evaluateDefinitionExpressions(
-        definitionData,
-        expressions,
-        context,
-        this.celEvaluator,
-        secretBag && sensitiveValues
-          ? sensitiveSpliceSanitizer(
-            sensitiveValues,
-            secretBag,
-            isDefinitionArgumentPath,
-          )
-          : undefined,
-        sanitizedBase.toData(),
-      );
+    const {
+      data,
+      sanitizedData,
+      failedExpressions,
+      provenance: rawOut,
+      sanitizedProvenance,
+    } = await evaluateDefinitionExpressions(
+      definitionData,
+      expressions,
+      context,
+      this.celEvaluator,
+      secretBag && sensitiveValues
+        ? sensitiveSpliceSanitizer(
+          sensitiveValues,
+          secretBag,
+          isDefinitionArgumentPath,
+        )
+        : undefined,
+      sanitizedBase.toData(),
+      provenance,
+    );
     const evaluated = Definition.fromData(data);
     return {
       definition: evaluated,
@@ -456,6 +582,10 @@ export class DefinitionExpressionEvaluator {
         ? Definition.fromData(sanitizedData)
         : evaluated,
       failedExpressions,
+      provenance: {
+        raw: rawOut,
+        sanitized: sanitizedData ? sanitizedProvenance ?? rawOut : rawOut,
+      },
     };
   }
 }

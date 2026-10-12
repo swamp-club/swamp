@@ -54,7 +54,7 @@ Deno.test("findByName returns workflow with matching name", async () => {
         },
       ],
     });
-    await repo.save(workflow);
+    await repo.save(workflow, undefined);
 
     const found = await repo.findByName("test-workflow");
     assertEquals(found?.name, "test-workflow");
@@ -113,6 +113,7 @@ Deno.test("YamlEvaluatedWorkflowRepository: persists provenance and every reader
     const authoredExpressions = new Set(["${{ env.HOME }}"]);
     await new YamlEvaluatedWorkflowRepository(tempDir).save(
       workflow,
+      undefined,
       authoredExpressions,
     );
 
@@ -147,8 +148,8 @@ Deno.test("YamlEvaluatedWorkflowRepository: a cache saved without provenance yie
   try {
     const workflow = provenanceWorkflow();
     const repo = new YamlEvaluatedWorkflowRepository(tempDir);
-    await repo.save(workflow, new Set(["${{ env.OLD }}"]));
-    await repo.save(workflow);
+    await repo.save(workflow, undefined, new Set(["${{ env.OLD }}"]));
+    await repo.save(workflow, undefined);
     const cached = await new YamlEvaluatedWorkflowRepository(tempDir)
       .findByNameWithProvenance(workflow.name);
     assertEquals(cached?.authoredExpressions, new Set());
@@ -192,7 +193,7 @@ Deno.test("YamlEvaluatedWorkflowRepository: clear calls markDirty with directory
       }],
     });
 
-    await repo.save(workflow);
+    await repo.save(workflow, undefined);
     assertEquals(calls.length, 1);
 
     await repo.clear();
@@ -293,7 +294,7 @@ Deno.test("YamlEvaluatedWorkflowRepository: snapshot methods reject run IDs that
     const repo = new YamlEvaluatedWorkflowRepository(tempDir);
     const keptRunId = crypto.randomUUID();
     await repo.saveForRun(keptRunId, provenanceWorkflow());
-    await repo.save(provenanceWorkflow());
+    await repo.save(provenanceWorkflow(), undefined);
 
     for (const runId of ["", ".", "..", "a/b", "../outputs"]) {
       await assertRejects(
@@ -365,7 +366,9 @@ Deno.test("save: records the sensitive format and written references (swamp-club
   const tempDir = await Deno.makeTempDir();
   try {
     const repo = new YamlEvaluatedWorkflowRepository(tempDir);
-    await repo.save(referencingWorkflow(), new Set(), [], [REFERENCE]);
+    await repo.save(referencingWorkflow(), undefined, new Set(), [], [
+      REFERENCE,
+    ]);
     const cached = await repo.findByNameWithProvenance("ref-workflow");
     assertEquals(cached?.sensitiveFormat, 1);
     assertEquals(cached?.writtenReferences, [REFERENCE]);

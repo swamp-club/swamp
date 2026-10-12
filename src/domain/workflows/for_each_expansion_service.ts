@@ -22,7 +22,7 @@ import { forEachNameWithoutSecrets } from "./persisted_workflow.ts";
 import { escapeControlCharacters } from "../control_characters.ts";
 import {
   type AuthoredExpressions,
-  partitionAuthored,
+  partitionAuthoredAt,
 } from "../expressions/expression_evaluation_service.ts";
 import {
   containsExpression,
@@ -38,6 +38,19 @@ import type { Step } from "./step.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
 import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import { UserError } from "../errors.ts";
+import { keySegment, ProvenanceMap } from "../expressions/provenance_map.ts";
+import { spliceOrigin } from "../expressions/splice_origin.ts";
+
+/** A forEach variable bound to one iteration. */
+export interface ForEachBinding {
+  name: string;
+  value: unknown;
+  /**
+   * Where data sits in `value`, taken from the `in` expression that produced
+   * it (swamp-club#3205). Absent means authored.
+   */
+  provenance?: ProvenanceMap;
+}
 
 /**
  * One concrete step produced by forEach expansion.
@@ -47,7 +60,7 @@ export interface ExpandedStep {
   /** The expanded step name after evaluating expressions. */
   expandedName: string;
   /** The forEach variable name and value bound to this iteration. */
-  forEachVar: { name: string; value: unknown };
+  forEachVar: ForEachBinding;
 }
 
 /**
@@ -76,12 +89,19 @@ export function resolveForEachStepName(
   celEvaluator: CelExpressionEvaluator,
   fallbackSuffix: string,
   authored: AuthoredExpressions,
+  /** Where data sits in `template` (swamp-club#3205). */
+  provenance: ProvenanceMap = ProvenanceMap.authored(),
 ): ResolvedStepName {
   if (hasExpression) {
     let hadEvalFailure = false;
     const resolved = replaceExpressionSpans(template, (span) => {
       if (
-        partitionAuthored(extractExpressions(span.raw), authored).length !== 1
+        provenance.overlapsData("", span.start, span.end) ||
+        partitionAuthoredAt(
+            extractExpressions(span.raw),
+            authored,
+            ProvenanceMap.authored(),
+          ).length !== 1
       ) {
         hadEvalFailure = true;
         return span.raw;
@@ -135,6 +155,9 @@ export class ForEachExpansionService {
     job: Job,
     context: ExpressionContext,
     authored: AuthoredExpressions,
+    /** Where data sits in each step, keyed by Step instance. */
+    stepProvenance: (step: Step) => ProvenanceMap = () =>
+      ProvenanceMap.authored(),
   ): Promise<Map<string, ExpandedStep[]>> {
     const result = new Map<string, ExpandedStep[]>();
 
@@ -161,16 +184,21 @@ export class ForEachExpansionService {
 
       // Async evaluator so data.* helpers (latest, findByTag, findBySpec,
       // query) that return Promises resolve here before we iterate.
-      if (
-        partitionAuthored(extractExpressions(inExpression), authored).length !==
-          1
-      ) {
+      const stepMap = stepProvenance(step);
+      const allowedIn = partitionAuthoredAt(
+        extractExpressions(inExpression),
+        authored,
+        stepMap.subtree("forEach.in"),
+      );
+      // The one allowed expression must be the one evaluated below.
+      if (allowedIn.length !== 1 || allowedIn[0].start !== first.start) {
         throw new UserError("forEach.in must be an authored expression");
       }
       const items = await this.celEvaluator.evaluateAsync(
         first.inner,
         context,
       );
+      const itemsProvenance = spliceOrigin(first.inner, context, items).map;
 
       const nameHasExpression = containsExpression(step.name);
       const expandedSteps: ExpandedStep[] = [];
@@ -186,6 +214,8 @@ export class ForEachExpansionService {
               index,
               nameHasExpression,
               authored,
+              itemsProvenance.subtree(`[${index}]`),
+              stepMap.subtree("name"),
             ),
           );
         }
@@ -201,6 +231,15 @@ export class ForEachExpansionService {
               index,
               nameHasExpression,
               authored,
+              ProvenanceMap.authored()
+                .graft(
+                  "key",
+                  itemsProvenance.isAuthored
+                    ? ProvenanceMap.authored()
+                    : ProvenanceMap.data(),
+                )
+                .graft("value", itemsProvenance.subtree(keySegment(key))),
+              stepMap.subtree("name"),
             ),
           );
         }
@@ -224,6 +263,8 @@ export class ForEachExpansionService {
     index: number,
     nameHasExpression: boolean,
     authored: AuthoredExpressions,
+    provenance: ProvenanceMap,
+    nameProvenance: ProvenanceMap,
   ): ExpandedStep {
     const stepContext = {
       ...context,
@@ -254,6 +295,7 @@ export class ForEachExpansionService {
       this.celEvaluator,
       fallbackSuffix,
       authored,
+      nameProvenance,
     );
     if (hadEvalFailure) {
       getLogger(["swamp", "workflows"]).warn(
@@ -267,7 +309,7 @@ export class ForEachExpansionService {
     return {
       step,
       expandedName: nameWithoutSecrets(expandedName, index, context),
-      forEachVar: { name: itemName, value: item },
+      forEachVar: { name: itemName, value: item, provenance },
     };
   }
 
@@ -280,6 +322,8 @@ export class ForEachExpansionService {
     index: number,
     nameHasExpression: boolean,
     authored: AuthoredExpressions,
+    provenance: ProvenanceMap,
+    nameProvenance: ProvenanceMap,
   ): ExpandedStep {
     const objItem = { key, value };
     const stepContext = {
@@ -294,6 +338,7 @@ export class ForEachExpansionService {
       this.celEvaluator,
       key,
       authored,
+      nameProvenance,
     );
     if (hadEvalFailure) {
       getLogger(["swamp", "workflows"]).warn(
@@ -307,7 +352,7 @@ export class ForEachExpansionService {
     return {
       step,
       expandedName: nameWithoutSecrets(expandedName, index, context),
-      forEachVar: { name: itemName, value: objItem },
+      forEachVar: { name: itemName, value: objItem, provenance },
     };
   }
 }

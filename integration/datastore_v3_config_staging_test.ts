@@ -511,13 +511,15 @@ for (const namespace of ["", "infra"]) {
       const defs = writer.evaluatedDefinitions();
       const vpc = definition("vpc");
       const scoped = definition("@team/vpc");
-      await writer.run(() => defs.save(TYPE, vpc));
-      await writer.run(() => defs.save(TYPE, scoped));
-      await writer.run(() => defs.save(TYPE, changed(vpc, { name: "net" })));
+      await writer.run(() => defs.save(TYPE, vpc, undefined));
+      await writer.run(() => defs.save(TYPE, scoped, undefined));
+      await writer.run(() =>
+        defs.save(TYPE, changed(vpc, { name: "net" }), undefined)
+      );
       await assertMatches(writer);
       await writer.run(() => defs.delete(TYPE, vpc.id));
       await assertMatches(writer);
-      await writer.run(() => defs.save(TYPE, vpc));
+      await writer.run(() => defs.save(TYPE, vpc, undefined));
       await writer.run(() => defs.clearAll());
       await assertMatches(writer);
 
@@ -525,15 +527,22 @@ for (const namespace of ["", "infra"]) {
       // commands build one.
       const deploy = workflow("deploy");
       const scopedWf = workflow("@team/deploy");
-      await writer.run(() => writer.evaluatedWorkflows().save(deploy));
-      await writer.run(() => writer.evaluatedWorkflows().save(scopedWf));
       await writer.run(() =>
-        writer.evaluatedWorkflows().save(renamed(scopedWf, "@team/ship"))
+        writer.evaluatedWorkflows().save(deploy, undefined)
+      );
+      await writer.run(() =>
+        writer.evaluatedWorkflows().save(scopedWf, undefined)
+      );
+      await writer.run(() =>
+        writer.evaluatedWorkflows().save(
+          renamed(scopedWf, "@team/ship"),
+          undefined,
+        )
       );
       await writer.run(async () => {
         const repo = writer.evaluatedWorkflows();
-        await repo.save(deploy);
-        await repo.save(renamed(deploy, "release"));
+        await repo.save(deploy, undefined);
+        await repo.save(renamed(deploy, "release"), undefined);
       });
       await assertMatches(writer);
 
@@ -802,7 +811,7 @@ Deno.test({
         writer.dir,
         evaluatedDir,
       );
-      await evaluated.save(deploy);
+      await evaluated.save(deploy, undefined);
       await evaluated.saveForRun(RUN_ID, deploy);
       const files = [
         join(workflowsDir, "workflow-deploy.yaml"),
@@ -836,7 +845,7 @@ Deno.test({
           evaluatedDir,
           hook,
         )
-          .save(edited);
+          .save(edited, undefined);
       };
 
       // v2: no hook, and a legacy unit over a hook.

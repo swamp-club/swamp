@@ -58,6 +58,10 @@ import {
   WAIT_UNREADABLE_STEP_ERROR,
 } from "./signal_wait.ts";
 import type { WaitOutcome } from "./signal_wait_records.ts";
+import {
+  ProvenanceMap,
+  ProvenanceMapDataSchema,
+} from "../expressions/provenance_map.ts";
 
 /**
  * Zod schema for an approval decision recorded on a manual_approval step.
@@ -312,6 +316,10 @@ export const WorkflowRunSchema = z.object({
   // admit them as provenance; the child's own YAML cannot reconstruct them.
   inheritedExpressions: z.array(z.string()).optional(),
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
+  // Where data sits in `inputs` (swamp-club#3205): ranges and paths only, so
+  // a resume knows which input text came from the caller. Absent on runs
+  // recorded before it existed.
+  inputsProvenance: ProvenanceMapDataSchema.optional(),
   initiatedBy: z.string().optional(),
   instanceId: z.string().optional(),
   // The pid and instance id the run had before a resume took it over, kept
@@ -1337,6 +1345,9 @@ export interface RunOwner {
  * WorkflowRun is an aggregate root that tracks the execution state of a workflow.
  */
 export class WorkflowRun implements TriggerEvaluationContext {
+  /** See {@link captureInputsProvenance}. */
+  private _inputsProvenance: ProvenanceMap | undefined;
+
   private constructor(
     readonly id: WorkflowRunId,
     readonly workflowId: string,
@@ -1482,7 +1493,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     const validated = WorkflowRunSchema.parse(data);
     const jobs = validated.jobs.map((j) => JobRun.fromData(j));
 
-    return new WorkflowRun(
+    const run = new WorkflowRun(
       createWorkflowRunId(validated.id),
       validated.workflowId,
       validated.workflowName,
@@ -1511,6 +1522,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.allowedVaults,
       validated.recovered ?? false,
     );
+    if (validated.inputsProvenance) {
+      run._inputsProvenance = ProvenanceMap.fromData(
+        validated.inputsProvenance,
+      );
+    }
+    return run;
   }
 
   get status():
@@ -1927,6 +1944,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._inheritedExpressions = [...expressions];
   }
 
+  /**
+   * Records where data sits in this run's inputs, so a resume treats the
+   * same input text as data that a fresh run did (swamp-club#3205).
+   */
+  captureInputsProvenance(provenance: ProvenanceMap): void {
+    this._inputsProvenance = provenance;
+  }
+
+  /** Where data sits in `inputs`; undefined for runs recorded before it. */
+  get inputsProvenance(): ProvenanceMap | undefined {
+    return this._inputsProvenance;
+  }
+
   /** Capture durable parent scopes so resume does not borrow child bindings. */
   captureDeferredExpressions(expressions: readonly DeferredExpression[]): void {
     this._deferredExpressions = structuredClone([...expressions]);
@@ -2259,6 +2289,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
     }
     if (this._inheritedExpressions.length > 0) {
       data.inheritedExpressions = [...this._inheritedExpressions];
+    }
+    // Written even when nothing is data, so an absent map always means a
+    // run recorded before provenance existed.
+    if (this._inputsProvenance) {
+      data.inputsProvenance = this._inputsProvenance.toData();
     }
     if (this._initiatedBy !== undefined) {
       data.initiatedBy = this._initiatedBy;

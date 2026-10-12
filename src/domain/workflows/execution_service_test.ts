@@ -2298,7 +2298,7 @@ Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)"
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
     const evalWorkflowRepo = new YamlEvaluatedWorkflowRepository(tempDir);
-    await evalWorkflowRepo.save(workflow);
+    await evalWorkflowRepo.save(workflow, undefined);
 
     const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
@@ -8280,6 +8280,7 @@ for (const target of ["name", "id", "direct"]) {
           await new YamlEvaluatedDefinitionRepository(tempDir).save(
             type,
             cached,
+            undefined,
           );
         }
         const reference = dependency === "dynamic"
@@ -8309,7 +8310,10 @@ for (const target of ["name", "id", "direct"]) {
         });
         const workflowRepo = new InMemoryWorkflowRepository();
         await workflowRepo.save(workflow);
-        await new YamlEvaluatedWorkflowRepository(tempDir).save(workflow);
+        await new YamlEvaluatedWorkflowRepository(tempDir).save(
+          workflow,
+          undefined,
+        );
         const executor = new RunContextCapturingExecutor();
         const catalog = new CatalogStore(join(tempDir, "_catalog.db"));
         try {
@@ -11243,7 +11247,10 @@ Deno.test("resume: --from still works on a run started from an evaluated forEach
     const { YamlEvaluatedWorkflowRepository } = await import(
       "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts"
     );
-    await new YamlEvaluatedWorkflowRepository(tempDir).save(evaluated);
+    await new YamlEvaluatedWorkflowRepository(tempDir).save(
+      evaluated,
+      undefined,
+    );
     executor.failing.add("prep");
     const failed = await service.execute(source.name, {
       lastEvaluated: true,

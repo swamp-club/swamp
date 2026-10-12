@@ -27,7 +27,10 @@ import {
   extractCelExpression,
   extractExpressions,
   replaceExpressions,
+  replaceExpressionsTracked,
+  type SpliceOrigin,
   type SpliceSanitizer,
+  type TrackedSplice,
 } from "./expression_parser.ts";
 import { sensitiveValuesOf } from "./sensitive_context.ts";
 import {
@@ -49,7 +52,17 @@ import {
   type ModelResolverRepositories,
 } from "./model_resolver.ts";
 import { CyclicDependencyError } from "./errors.ts";
-import { evaluateDefinitionExpressions } from "./definition_expression_pass.ts";
+import {
+  AUTHORED_DEFINITION,
+  type DefinitionPassProvenance,
+  evaluateDefinitionExpressions,
+} from "./definition_expression_pass.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
+import {
+  attachBindingProvenance,
+  bindingProvenanceOf,
+  spliceOrigin,
+} from "./splice_origin.ts";
 import { BINDING_MACROS, freeRoots } from "./cel_grammar.ts";
 import { maskLiteralCalls, stripStringLiterals } from "./cel_string_lexer.ts";
 import type { FailedExpressions } from "./unresolved_expression_guard.ts";
@@ -271,6 +284,57 @@ export function partitionAuthored(
 }
 
 /**
+ * {@link partitionAuthored}, then drops every occurrence that overlaps data in
+ * `provenance`: expression text that arrived as data never evaluates, even
+ * when its raw text matches an expression the author wrote. Strictly narrower
+ * than the raw-text rule alone.
+ */
+export function partitionAuthoredAt(
+  expressions: ExpressionLocation[],
+  authored: AuthoredExpressions,
+  provenance: ProvenanceMap,
+): ExpressionLocation[] {
+  const allowed = partitionAuthored(expressions, authored);
+  if (provenance.isAuthored) return allowed;
+  return allowed.filter((expr) => {
+    const inData = expr.start === undefined || expr.end === undefined
+      ? provenance.hasDataAtOrBelow(expr.path)
+      : provenance.overlapsData(expr.path, expr.start, expr.end);
+    if (inData) {
+      getLogger(["swamp", "expressions"]).warn(
+        `Refusing to evaluate expression at ${expr.path}: it sits in data content, not in the definition or workflow source. Left as literal text. Raw: ${expr.raw}`,
+      );
+    }
+    return !inData;
+  });
+}
+
+/**
+ * Where data sits in the `{ inputs, self, run, steps }` bindings a deferred
+ * reference resolves against: each namespace's binding provenance, with step
+ * outputs always data.
+ */
+function bindingTreeProvenance(context: ExpressionContext): ProvenanceMap {
+  const bindings = bindingProvenanceOf(context);
+  return ProvenanceMap.authored()
+    .graft("inputs", bindings.inputs ?? ProvenanceMap.authored())
+    .graft("self", bindings.self ?? ProvenanceMap.authored())
+    .graft("run", bindings.run ?? ProvenanceMap.authored())
+    .withWholeData("steps");
+}
+
+/**
+ * Where data sits in a deferred record's captured bindings, as recorded when
+ * it was captured. Records written before provenance existed carry none and
+ * keep the behaviour they had then.
+ */
+function deferredBindingsProvenance(record: DeferredExpression): ProvenanceMap {
+  return record.provenance === undefined
+    ? ProvenanceMap.authored()
+    : ProvenanceMap.fromData(record.provenance);
+}
+
+/**
  * Result of resolving runtime expressions in a definition.
  * Includes the resolved definition and a VaultSecretBag containing
  * sentinel-to-value mappings for any vault secrets encountered.
@@ -303,6 +367,13 @@ export interface EvaluatedDefinition {
    * reports and `self.globalArguments`.
    */
   sanitizedDefinition?: Definition;
+  /**
+   * Where data sits in `definition`'s data. Absent means nothing in it is
+   * data, as for a definition evaluated straight from source.
+   */
+  provenance?: ProvenanceMap;
+  /** Where data sits in `sanitizedDefinition`'s data, when present. */
+  sanitizedProvenance?: ProvenanceMap;
   /**
    * The definition as it was before evaluation. Its expression paths are the
    * positions a persisted evaluation must treat as values.
@@ -358,13 +429,22 @@ export class ExpressionEvaluationService {
     secretBag: VaultSecretBag,
   ): Promise<SplicePair<T>> {
     const sensitiveValues = sensitiveValuesOf(context);
-    const values = await this.evaluateDataValues(pair.raw, context, authored);
+    const origins = new Map<string, SpliceOrigin>();
+    const values = await this.evaluateDataValues(
+      pair.raw,
+      context,
+      authored,
+      pair.rawProvenance,
+      origins,
+    );
     if (values.size === 0) return pair;
     return pair.splice(
       values,
       sensitiveValues
         ? sensitiveSpliceSanitizer(sensitiveValues, secretBag)
         : { whole: (value) => value, embedded: (text) => text },
+      undefined,
+      (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
     );
   }
 
@@ -391,12 +471,46 @@ export class ExpressionEvaluationService {
     return replaceExpressions(data, values);
   }
 
+  /**
+   * {@link evaluateData} over data whose provenance is known: an occurrence
+   * overlapping data is neither evaluated nor substituted, and the result's
+   * map records where each spliced value's data now sits.
+   */
+  async evaluateDataTracked(
+    data: unknown,
+    provenance: ProvenanceMap,
+    context: ExpressionContext,
+    authored: AuthoredExpressions,
+  ): Promise<TrackedSplice> {
+    const origins = new Map<string, SpliceOrigin>();
+    const values = await this.evaluateDataValues(
+      data,
+      context,
+      authored,
+      provenance,
+      origins,
+    );
+    if (values.size === 0) return { data, provenance };
+    return replaceExpressionsTracked(
+      data,
+      values,
+      provenance,
+      (raw) => origins.get(raw) ?? { map: ProvenanceMap.data() },
+    );
+  }
+
   private async evaluateDataValues(
     data: unknown,
     context: ExpressionContext,
     authored: AuthoredExpressions,
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
+    origins?: Map<string, SpliceOrigin>,
   ): Promise<Map<string, unknown>> {
-    const expressions = partitionAuthored(extractExpressions(data), authored);
+    const expressions = partitionAuthoredAt(
+      extractExpressions(data),
+      authored,
+      provenance,
+    );
     if (expressions.length === 0) {
       return new Map();
     }
@@ -420,6 +534,7 @@ export class ExpressionEvaluationService {
         context,
       );
       evaluatedValues.set(expr.raw, value);
+      origins?.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     }
 
     return evaluatedValues;
@@ -467,8 +582,15 @@ export class ExpressionEvaluationService {
     inputValues?: Record<string, unknown>,
     context?: ExpressionContext,
     secretBag?: VaultSecretBag,
+    provenance: {
+      /** Where data already sits in the definition's data. */
+      definition?: DefinitionPassProvenance;
+      /** Where data sits in `inputValues`. */
+      inputs?: ProvenanceMap;
+    } = {},
   ): Promise<EvaluatedDefinition> {
     const definitionData = definition.toData();
+    const definitionProvenance = provenance.definition ?? AUTHORED_DEFINITION;
     const authoredExpressions = collectAuthoredExpressions(
       inputValues,
       collectAuthoredExpressions(definitionData),
@@ -481,6 +603,9 @@ export class ExpressionEvaluationService {
     // Add inputs to context if provided
     if (inputValues) {
       ctx.inputs = inputValues;
+      attachBindingProvenance(ctx, {
+        inputs: provenance.inputs ?? ProvenanceMap.authored(),
+      });
     }
 
     // Add self reference for the definition
@@ -491,6 +616,14 @@ export class ExpressionEvaluationService {
       tags: definition.tags,
       globalArguments: definition.globalArguments,
     };
+    // self is rebound, so its provenance is too: global arguments routed
+    // from data (a direct execution's literal inputs) stay data.
+    attachBindingProvenance(ctx, {
+      self: ProvenanceMap.authored().graft(
+        "globalArguments",
+        definitionProvenance.raw.subtree("globalArguments"),
+      ),
+    });
 
     // Extract expressions from definition data
     const expressions = extractExpressions(definitionData);
@@ -502,27 +635,35 @@ export class ExpressionEvaluationService {
         hadExpressions: false,
         authoredExpressions,
         sourceDefinition: definition,
+        provenance: definitionProvenance.raw,
       };
     }
 
     // Evaluate CEL-only expressions; runtime expressions (vault, env, and
     // mixed) are left raw — they are resolved at runtime only, never persisted.
-    const { data: evaluatedData, sanitizedData, failedExpressions } =
-      await evaluateDefinitionExpressions(
-        definitionData,
-        expressions.filter((expr) =>
-          !containsRuntimeExpression(expr.celExpression)
-        ),
-        ctx,
-        this.celEvaluator,
-        secretBag
-          ? sensitiveSpliceSanitizer(
-            sensitiveValuesOf(ctx) ?? sensitiveValues,
-            secretBag,
-            isDefinitionArgumentPath,
-          )
-          : undefined,
-      );
+    const {
+      data: evaluatedData,
+      sanitizedData,
+      failedExpressions,
+      provenance: evaluatedProvenance,
+      sanitizedProvenance,
+    } = await evaluateDefinitionExpressions(
+      definitionData,
+      expressions.filter((expr) =>
+        !containsRuntimeExpression(expr.celExpression)
+      ),
+      ctx,
+      this.celEvaluator,
+      secretBag
+        ? sensitiveSpliceSanitizer(
+          sensitiveValuesOf(ctx) ?? sensitiveValues,
+          secretBag,
+          isDefinitionArgumentPath,
+        )
+        : undefined,
+      definitionData,
+      definitionProvenance,
+    );
 
     // Create new Definition from evaluated data
     const evaluatedDefinition = DefinitionClass.fromData(evaluatedData);
@@ -534,8 +675,12 @@ export class ExpressionEvaluationService {
       authoredExpressions,
       failedExpressions,
       sourceDefinition: definition,
+      provenance: evaluatedProvenance,
       ...(sanitizedData
-        ? { sanitizedDefinition: DefinitionClass.fromData(sanitizedData) }
+        ? {
+          sanitizedDefinition: DefinitionClass.fromData(sanitizedData),
+          sanitizedProvenance,
+        }
         : {}),
     };
   }
@@ -546,21 +691,49 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     authored: AuthoredExpressions,
     omitBindings: readonly string[] = [],
+    /** Where data sits in `data`; occurrences in data are never deferred. */
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
   ) {
     const deferredExpressions = [...(context.deferredExpressions ?? [])];
     const values = new Map<string, unknown>();
     let bindings: DeferredExpression["bindings"] | undefined;
-    for (const expr of partitionAuthored(extractExpressions(data), authored)) {
+    let bindingsProvenance: ProvenanceMap | undefined;
+    for (
+      const expr of partitionAuthoredAt(
+        extractExpressions(data),
+        authored,
+        provenance,
+      )
+    ) {
       if (
         !containsRuntimeExpression(expr.celExpression) ||
         isDeferredExpression(expr.celExpression) || values.has(expr.raw)
       ) continue;
       const id = crypto.randomUUID();
       bindings ??= captureDeferredBindings(context, omitBindings);
-      deferredExpressions.push({ id, expression: expr.raw, bindings });
+      bindingsProvenance ??= bindingTreeProvenance(context);
+      deferredExpressions.push({
+        id,
+        expression: expr.raw,
+        bindings,
+        ...(bindingsProvenance.isAuthored
+          ? {}
+          : { provenance: bindingsProvenance.toData() }),
+      });
       values.set(expr.raw, deferredExpressionReference(id));
     }
-    return { data: replaceExpressions(data, values), deferredExpressions };
+    // A reference is swamp's own text, so it is spliced as authored.
+    const tracked = replaceExpressionsTracked(
+      data,
+      values,
+      provenance,
+      () => ({ map: ProvenanceMap.authored() }),
+    );
+    return {
+      data: tracked.data,
+      deferredExpressions,
+      provenance: tracked.provenance,
+    };
   }
 
   /**
@@ -745,20 +918,27 @@ export class ExpressionEvaluationService {
        * so CEL never reads the sentinels the executed copy carries.
        */
       rawGlobalArguments?: Record<string, unknown>;
+      /**
+       * Where data sits in `definition`'s data. An occurrence overlapping
+       * data is neither resolved nor substituted.
+       */
+      provenance?: ProvenanceMap;
     } = {},
   ): Promise<RuntimeResolutionResult> {
     const logger = getLogger(["swamp", "expressions"]);
     const secretBag = options.secretBag ?? new VaultSecretBag();
     const definitionData = definition.toData();
     const expressions = extractExpressions(definitionData);
+    const provenance = options.provenance ?? ProvenanceMap.authored();
 
     // Filter to only runtime expressions (vault or env), then to those the
-    // author actually wrote — see AuthoredExpressions.
-    const runtimeExpressions = partitionAuthored(
+    // author actually wrote at an authored position — see AuthoredExpressions.
+    const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
         containsRuntimeExpression(expr.celExpression)
       ),
       authored,
+      provenance,
     );
 
     logger.debug(
@@ -791,6 +971,7 @@ export class ExpressionEvaluationService {
       expressionContext,
       options.rawGlobalArguments,
       sanitizer,
+      provenance,
     );
 
     return { definition: resolvedDefinition, secretBag };
@@ -815,13 +996,16 @@ export class ExpressionEvaluationService {
     redactor: SecretRedactor | undefined,
     expressionContext: ExpressionContext | undefined,
     authored: AuthoredExpressions,
+    /** Where data sits in `data`. */
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
   ): Promise<unknown> {
     const expressions = extractExpressions(data);
-    const runtimeExpressions = partitionAuthored(
+    const runtimeExpressions = partitionAuthoredAt(
       expressions.filter((expr) =>
         containsRuntimeExpression(expr.celExpression)
       ),
       authored,
+      provenance,
     );
 
     if (runtimeExpressions.length === 0) {
@@ -840,6 +1024,8 @@ export class ExpressionEvaluationService {
       celContext,
       redactor,
       secretBag,
+      undefined,
+      provenance,
     );
 
     // For the data path, resolve sentinels to raw values immediately
@@ -873,13 +1059,21 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     redactor: SecretRedactor | undefined,
     authored: AuthoredExpressions,
+    /** Where data sits in `data`. */
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
   ): Promise<unknown> {
-    const afterCel = await this.evaluateData(data, context, authored);
+    const afterCel = await this.evaluateDataTracked(
+      data,
+      provenance,
+      context,
+      authored,
+    );
     return await this.resolveRuntimeExpressionsInData(
-      afterCel,
+      afterCel.data,
       redactor,
       context,
       authored,
+      afterCel.provenance,
     );
   }
 
@@ -933,6 +1127,7 @@ export class ExpressionEvaluationService {
     expressionContext?: ExpressionContext,
     rawGlobalArguments?: Record<string, unknown>,
     sanitizer?: SpliceSanitizer,
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
   ): Promise<Definition> {
     const celContext: ExpressionContext = {
       model: {},
@@ -955,6 +1150,7 @@ export class ExpressionEvaluationService {
       redactor,
       secretBag ?? new VaultSecretBag(),
       sanitizer,
+      provenance,
     );
     return DefinitionClass.fromData(
       resolvedData as ReturnType<Definition["toData"]>,
@@ -969,6 +1165,7 @@ export class ExpressionEvaluationService {
     redactor: SecretRedactor | undefined,
     secretBag: VaultSecretBag,
     sanitizer?: SpliceSanitizer,
+    provenance: ProvenanceMap = ProvenanceMap.authored(),
   ): Promise<unknown> {
     const records = new Map(
       (context.deferredExpressions ?? []).map((
@@ -988,25 +1185,38 @@ export class ExpressionEvaluationService {
       const { inputs, self, run, steps } = ctx;
       return {
         ...ctx,
-        ...await resolveBindings({ inputs, self, run, steps }, cel) as object,
+        ...await resolveBindings(
+          { inputs, self, run, steps },
+          cel,
+          bindingTreeProvenance(ctx),
+        ) as object,
       };
     };
 
     const resolveBindings = async (
       bindings: unknown,
       cel: string,
+      bindingMap: ProvenanceMap,
     ): Promise<unknown> => {
       const read = referencedBindingPaths(cel);
       const values = new Map<string, unknown>();
       for (const expr of extractExpressions(bindings)) {
         if (
           records.has(expr.raw) &&
-          read.some((path) => overlaps(path, expr.path))
+          read.some((path) => overlaps(path, expr.path)) &&
+          !(expr.start !== undefined && expr.end !== undefined &&
+            bindingMap.overlapsData(expr.path, expr.start, expr.end))
         ) {
           values.set(expr.raw, await resolve(expr, context));
         }
       }
-      return replaceExpressions(bindings, values);
+      if (bindingMap.isAuthored) return replaceExpressions(bindings, values);
+      return replaceExpressionsTracked(
+        bindings,
+        values,
+        bindingMap,
+        () => ({ map: ProvenanceMap.authored() }),
+      ).data;
     };
     const resolve = async (
       expr: ExpressionLocation,
@@ -1024,16 +1234,27 @@ export class ExpressionEvaluationService {
         const bindings = await resolveBindings(
           record.bindings,
           extractCelExpression(record.expression) ?? "",
+          deferredBindingsProvenance(record),
         ) as typeof record.bindings;
-        const value = await resolve(extractExpressions(record.expression)[0], {
-          ...context,
-          // Omitted parent bindings stay absent; never borrow the child's scope.
-          inputs: bindings.inputs,
-          self: bindings.self,
-          run: bindings.run,
-          workflowRunId: bindings.workflowRunId,
-          steps: bindings.steps,
-        });
+        // The parent's bindings carry the parent's provenance, never the
+        // child's: a reference left in data there stays unresolved.
+        const recordProvenance = deferredBindingsProvenance(record);
+        const value = await resolve(
+          extractExpressions(record.expression)[0],
+          attachBindingProvenance({
+            ...context,
+            // Omitted parent bindings stay absent; never borrow the child's scope.
+            inputs: bindings.inputs,
+            self: bindings.self,
+            run: bindings.run,
+            workflowRunId: bindings.workflowRunId,
+            steps: bindings.steps,
+          }, {
+            inputs: recordProvenance.subtree("inputs"),
+            self: recordProvenance.subtree("self"),
+            run: recordProvenance.subtree("run"),
+          }),
+        );
         resolving.delete(expr.raw);
         resolvedReferences.set(expr.raw, value);
         return value;
@@ -1068,7 +1289,18 @@ export class ExpressionEvaluationService {
       values.set(expr.raw, await resolve(expr, context));
     }
     // Only this final splice is sanitized; the binding resolution above builds
-    // context, which keeps raw values.
-    return replaceExpressions(data, values, undefined, sanitizer);
+    // context, which keeps raw values. An occurrence in data is never
+    // substituted, even when an authored occurrence shares its raw text.
+    if (provenance.isAuthored) {
+      return replaceExpressions(data, values, undefined, sanitizer);
+    }
+    return replaceExpressionsTracked(
+      data,
+      values,
+      provenance,
+      () => ({ map: ProvenanceMap.authored() }),
+      undefined,
+      sanitizer,
+    ).data;
   }
 }

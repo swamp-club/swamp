@@ -5158,3 +5158,23 @@ Deno.test("handleConnection: frames arriving on a closing session are not served
   assertEquals(fed, ["before"]);
   socket.onclose?.(new CloseEvent("close"));
 });
+
+Deno.test("handleMessage: server.version lists the literal-inputs capability (swamp-club#3205)", async () => {
+  const ctx = {
+    ...makeCtx(modeTokenConfig, []),
+    auditEmitter: { emit: () => {} },
+  } as unknown as ConnectionContext;
+  const mock = createMockSocket();
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    new Map<string, AbortController>(),
+    makeEvent(JSON.stringify({ type: "server.version", id: "req-cap" })),
+    testPrincipal,
+  );
+  await waitFor(() => mock.sent.length >= 1, "version reply sent");
+  const reply = parseSent(mock) as {
+    payload: { capabilities?: string[] };
+  };
+  assertEquals(reply.payload.capabilities, ["literal-inputs"]);
+});

@@ -275,6 +275,14 @@ swamp model @swamp/aws/ec2/vpc method run create my-vpc \
 `@swamp/aws/ec2/vpc` and runs `create`. The type's schemas route the `--input`
 values to global or method arguments; method arguments win on ambiguous keys.
 
+**Inputs are operator-written.** `--input`, `--input-file` and `--stdin` values
+are evaluated: a `${{ vault.get(...) }}` in them resolves. `--literal-inputs`
+makes them data instead (see `design/enablers/expressions.md`, "Position and
+Value Provenance"): they reach the method verbatim, `@` is not read as a file,
+and a routed global argument holding expression text is refused before it is
+persisted. Over `swamp serve` the client sends it only to a server whose
+`server.version` lists the `literal-inputs` capability.
+
 **Subsequent runs:** Swamp finds `my-vpc`, checks that its type matches
 `@swamp/aws/ec2/vpc` (a safety check), and runs. If the routed global arguments
 differ from the stored definition, the definition is updated and saved. This

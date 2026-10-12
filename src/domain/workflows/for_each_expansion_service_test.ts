@@ -204,11 +204,14 @@ Deno.test("ForEachExpansionService.expand: array iteration produces one entry pe
     "scan-staging",
     "scan-prod",
   ]);
-  assertEquals(expanded?.map((e) => e.forEachVar), [
-    { name: "env", value: "dev" },
-    { name: "env", value: "staging" },
-    { name: "env", value: "prod" },
-  ]);
+  assertEquals(
+    expanded?.map(({ forEachVar: { name, value } }) => ({ name, value })),
+    [
+      { name: "env", value: "dev" },
+      { name: "env", value: "staging" },
+      { name: "env", value: "prod" },
+    ],
+  );
 });
 
 Deno.test("ForEachExpansionService.expand: object iteration binds {key, value} objects", async () => {
@@ -410,5 +413,11 @@ Deno.test("ForEachExpansionService.expand: a control character in an item value 
     "deploy-c\\x1b]0;x\\x07",
   ]);
   // The item value itself is untouched; only the name is made printable.
-  assertEquals(expanded?.[0].forEachVar, { name: "host", value: "a\nb" });
+  assertEquals(
+    {
+      name: expanded?.[0].forEachVar.name,
+      value: expanded?.[0].forEachVar.value,
+    },
+    { name: "host", value: "a\nb" },
+  );
 });

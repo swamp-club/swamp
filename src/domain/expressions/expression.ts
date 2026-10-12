@@ -27,6 +27,10 @@ export interface ExpressionLocation {
   raw: string;
   /** The CEL expression extracted from the raw string (e.g., "model.foo.input.attributes.x") */
   celExpression: string;
+  /** Offset of the expression's opening `${{` in the string at `path`. */
+  start?: number;
+  /** Offset just past the expression's closing `}}`. */
+  end?: number;
 }
 
 /**

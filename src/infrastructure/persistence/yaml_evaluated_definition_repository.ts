@@ -50,6 +50,7 @@ import {
   isFilenameSafeDefinitionName,
 } from "../../domain/definitions/definition.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 import {
   SENSITIVE_FORMAT_VERSION,
   type WrittenReference,
@@ -58,6 +59,13 @@ import {
 
 interface EvaluatedDefinitionCache {
   definition: Definition;
+  /**
+   * Where data sits in the definition, in the coordinates of the raw copy
+   * rehydrate restores (swamp-club#3205). Absent in caches written before
+   * provenance was recorded; `"unreadable"` when present but malformed, which
+   * replay refuses rather than trusting the expressions it holds.
+   */
+  provenance?: ProvenanceMap | "unreadable";
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
   /** Where the file holds vault references in place of sensitive values. */
@@ -75,14 +83,27 @@ const CacheMetadataSchema = z.object({
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
+  provenance: z.unknown().optional(),
 });
 
 function parseCache(content: string): EvaluatedDefinitionCache | null {
   const data = parseYaml(content) as DefinitionData | null;
   if (!data) return null;
   const metadata = CacheMetadataSchema.parse(data);
+  let provenance: ProvenanceMap | "unreadable" | undefined;
+  if (metadata.provenance !== undefined) {
+    try {
+      provenance = ProvenanceMap.fromData(metadata.provenance);
+    } catch {
+      provenance = "unreadable";
+    }
+  }
+  const { provenance: _provenance, ...definitionData } = data as
+    & DefinitionData
+    & { provenance?: unknown };
   return {
-    definition: Definition.fromData(data),
+    definition: Definition.fromData(definitionData),
+    provenance,
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
@@ -361,6 +382,12 @@ export class YamlEvaluatedDefinitionRepository {
   async save(
     type: ModelType,
     definition: Definition,
+    /**
+     * Where data sits in the raw copy of `definition` (swamp-club#3205).
+     * Required so every writer states it; `undefined` writes the legacy
+     * format, which replays with the raw-text rule alone.
+     */
+    provenance: ProvenanceMap | undefined,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
@@ -386,6 +413,7 @@ export class YamlEvaluatedDefinitionRepository {
         ? writtenReferences
         : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+      provenance: provenance?.toData(),
     };
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;

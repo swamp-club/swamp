@@ -61,9 +61,17 @@ import type {
   RunSnapshotInfo,
   RunSnapshotRepository,
 } from "../../domain/workflows/repositories.ts";
+import { ProvenanceMap } from "../../domain/expressions/provenance_map.ts";
 
 export interface EvaluatedWorkflowCache {
   workflow: Workflow;
+  /**
+   * Where data sits in the workflow, in the coordinates of the raw copy
+   * rehydrate restores (swamp-club#3205). Absent in caches written before
+   * provenance was recorded; `"unreadable"` when present but malformed, which
+   * replay refuses.
+   */
+  provenance?: ProvenanceMap | "unreadable";
   /** Expressions the source workflow contained when the cache was written. */
   authoredExpressions: ReadonlySet<string>;
   deferredExpressions: readonly DeferredExpression[];
@@ -83,6 +91,7 @@ const CacheMetadataSchema = z.object({
   deferredExpressions: z.array(DeferredExpressionSchema).optional(),
   writtenReferences: z.array(WrittenReferenceSchema).optional(),
   sensitiveFormat: z.number().int().positive().optional(),
+  provenance: z.unknown().optional(),
 });
 
 function parseCache(content: string): EvaluatedWorkflowCache | null {
@@ -92,6 +101,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
       deferredExpressions?: unknown;
       writtenReferences?: unknown;
       sensitiveFormat?: unknown;
+      provenance?: unknown;
     })
     | null;
   if (!data) return null;
@@ -100,6 +110,7 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     deferredExpressions,
     writtenReferences,
     sensitiveFormat,
+    provenance: provenanceData,
     ...workflowData
   } = data;
   const metadata = CacheMetadataSchema.parse({
@@ -107,9 +118,19 @@ function parseCache(content: string): EvaluatedWorkflowCache | null {
     deferredExpressions,
     writtenReferences,
     sensitiveFormat,
+    provenance: provenanceData,
   });
+  let provenance: ProvenanceMap | "unreadable" | undefined;
+  if (metadata.provenance !== undefined) {
+    try {
+      provenance = ProvenanceMap.fromData(metadata.provenance);
+    } catch {
+      provenance = "unreadable";
+    }
+  }
   return {
     workflow: Workflow.fromData(workflowData),
+    provenance,
     authoredExpressions: new Set(metadata.authoredExpressions),
     deferredExpressions: metadata.deferredExpressions ?? [],
     writtenReferences: metadata.writtenReferences ?? [],
@@ -276,6 +297,12 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
    */
   async save(
     workflow: Workflow,
+    /**
+     * Where data sits in the raw copy of `workflow` (swamp-club#3205).
+     * Required so every writer states it; `undefined` writes the legacy
+     * format, which replays with the raw-text rule alone.
+     */
+    provenance: ProvenanceMap | undefined,
     authoredExpressions?: ReadonlySet<string>,
     deferredExpressions?: readonly DeferredExpression[],
     writtenReferences: readonly WrittenReference[] = [],
@@ -310,6 +337,7 @@ export class YamlEvaluatedWorkflowRepository implements RunSnapshotRepository {
         ? writtenReferences
         : undefined,
       sensitiveFormat: SENSITIVE_FORMAT_VERSION,
+      provenance: provenance?.toData(),
     };
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));

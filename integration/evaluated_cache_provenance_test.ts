@@ -187,7 +187,7 @@ Deno.test("evaluated cache: legacy caches authorize only source and current inpu
     const definition = inputDefinition();
     await repo.definitionRepo.save(type, definition);
     definition.setMethodArgument("run", "value", "${{ env.HOME }}");
-    await repo.evaluatedDefinitionRepo.save(type, definition);
+    await repo.evaluatedDefinitionRepo.save(type, definition, undefined);
     await runModel(dir, {}, true);
     await runModel(dir, { value: "${{ env.HOME }}" }, true);
     assertEquals(executions, [
@@ -616,6 +616,7 @@ for (const location of ["workflow", "definition", "file", "direct"]) {
           name: "producer",
           globalArguments: { prefix: ":wrong-cache" },
         }),
+        undefined,
       );
       const replay = await runWorkflow(repo, dir, workflow.name, true, {
         suffix: ":replay",
@@ -1315,6 +1316,7 @@ Deno.test("assert provenance: substituted messages stay literal and predicates c
         )
           .toData().jobs,
       }),
+      undefined,
       cached.authoredExpressions,
     );
     const substituted = await runWorkflow(repo, dir, "assert-predicate", true);

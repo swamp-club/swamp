@@ -486,8 +486,10 @@ steps:
 ### Inputs Are Inert and Recorded — Never Pass Secrets
 
 Workflow input values are never evaluated as expressions: a `${{ ... }}` passed
-with `--input` stays literal text. They are also **recorded** (after type
-coercion and schema defaults) in the run record, the history index that
+with `--input` stays literal text, even when it is identical to an expression
+the workflow itself contains (data from `data.latest`, step outputs and forEach
+items behaves the same way). They are also **recorded** (after type coercion and
+schema defaults) in the run record, the history index that
 `workflow history search --input` filters on, any child workflow run they are
 forwarded to, evaluated model definitions, and the data of any model that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,

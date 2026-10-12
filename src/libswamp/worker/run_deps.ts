@@ -86,12 +86,14 @@ export async function createWorkerModelRunDeps(
     saveEvaluatedDefinition: (
       type,
       definition,
+      provenance,
       authoredExpressions,
       writtenReferences,
     ) =>
       repoContext.evaluatedDefinitionRepo.save(
         type,
         definition,
+        provenance,
         authoredExpressions,
         undefined,
         writtenReferences,

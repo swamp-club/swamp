@@ -23,7 +23,10 @@
  */
 
 import { z } from "zod";
-import type { ServerRequest } from "./protocol.ts";
+import {
+  SERVE_CAPABILITY_LITERAL_INPUTS,
+  type ServerRequest,
+} from "./protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
@@ -259,6 +262,7 @@ const ModelMethodRunRequestSchema = z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    literalInputs: z.boolean().optional(),
     lastEvaluated: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
     typeArg: z.string().optional(),
@@ -1880,7 +1884,11 @@ export function handleMessage(
           send(socket, {
             type: "server.version",
             id: request.id,
-            payload: { version: SERVER_VERSION, gitSha: SERVER_GIT_SHA },
+            payload: {
+              version: SERVER_VERSION,
+              gitSha: SERVER_GIT_SHA,
+              capabilities: [SERVE_CAPABILITY_LITERAL_INPUTS],
+            },
           }),
         ),
         auditOpts("admin", "server", "*"),

@@ -357,15 +357,16 @@ single quotes keep literal.
 `swamp model method run --input` (and `--input-file`, `--stdin`) values are
 treated as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
 `${{ env.X }}` inside them resolves and reaches the method in plaintext (vault
-values are redacted in stored output; env values are not). Never put untrusted
-text — issue bodies, tickets, scraped pages — into a model method run input.
-Route it through a workflow input or model data, which are inert (left literal,
-with a warning), or neutralise `${{` first.
+values are redacted in stored output; env values are not). Pass untrusted text —
+issue bodies, tickets, scraped pages — with `--literal-inputs`, or route it
+through a workflow input or model data. All three are inert: left literal, with
+a warning, even when the text matches an expression the author wrote.
 
 | Source                                   | Expressions     |
 | ---------------------------------------- | --------------- |
 | Model definitions, workflow YAML         | evaluated       |
 | `swamp model method run --input`         | evaluated       |
+| `... method run --literal-inputs`        | inert (literal) |
 | `swamp workflow run/resume --input`      | inert (literal) |
 | Data content (`data.latest(...)` etc.)   | inert (literal) |
 | `forEach` items, webhook/trigger payload | inert (literal) |

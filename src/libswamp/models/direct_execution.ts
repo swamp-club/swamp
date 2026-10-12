@@ -38,8 +38,15 @@ import {
 import type { ExpressionLocation } from "../../domain/expressions/expression.ts";
 import {
   extractExpressions,
+  readSetMap,
   stripExpressionFields,
 } from "../../domain/expressions/expression_parser.ts";
+import {
+  type DirectInputsProvenance,
+  keySegment,
+  ProvenanceMap,
+  routedGlobalProvenance,
+} from "../../domain/expressions/provenance_map.ts";
 import { isDeferredExpression } from "../../domain/expressions/deferred_expression.ts";
 import {
   type AuthoredExpressions,
@@ -232,12 +239,47 @@ function findUnvouchedGlobalArgExpressions(
   return extractExpressions(globalArgs).filter((e) => !authored.has(e.raw));
 }
 
+/**
+ * Expressions in global arguments about to be persisted that sit in data.
+ * Decided by position, whatever the authored set says: once stored, the
+ * definition is read back as authored source, so data must never reach it
+ * holding expression text, even text an author also wrote.
+ */
+function findDataRangeGlobalArgExpressions(
+  persistedGlobal: Record<string, unknown>,
+  routedGlobal: Record<string, unknown>,
+  routedMap: ProvenanceMap,
+  writtenReferenceTexts: ReadonlySet<string>,
+): ExpressionLocation[] {
+  if (routedMap.isAuthored) return [];
+  // Values toPersistedForm rewrote hold swamp's own vault references; those
+  // are authored where they now sit, the rest of a rewritten value is data.
+  let map = routedMap;
+  for (const [key, value] of Object.entries(persistedGlobal)) {
+    if (
+      JSON.stringify(value) === JSON.stringify(routedGlobal[key]) ||
+      !map.hasDataAtOrBelow(keySegment(key))
+    ) continue;
+    map = map.graft(keySegment(key), readSetMap(value, writtenReferenceTexts));
+  }
+  return extractExpressions(persistedGlobal).filter((e) =>
+    e.start === undefined || e.end === undefined
+      ? map.hasDataAtOrBelow(e.path)
+      : map.overlapsData(e.path, e.start, e.end)
+  );
+}
+
 function unvouchedGlobalArgsMessage(
   definitionName: string,
   unvouched: ExpressionLocation[],
 ): string {
-  const list = unvouched.map((e) => `  ${e.path}: ${e.raw}`).join("\n");
-  return `Refusing to persist definition '${definitionName}': the following global arguments hold expression text that was not written in the workflow or definition source, so it arrived as data content:\n${list}`;
+  // The raw-text and data-range checks can name the same occurrence.
+  const lines = [
+    ...new Set(unvouched.map((e) => `  ${e.path}: ${e.raw}`)),
+  ];
+  return `Refusing to persist definition '${definitionName}': the following global arguments hold expression text that was not written in the workflow or definition source, so it arrived as data content:\n${
+    lines.join("\n")
+  }\nWrite the expression into the definition itself, or pass the value as a method argument instead of a global argument.`;
 }
 
 /**
@@ -257,6 +299,7 @@ async function adoptExistingDefinition(
   routed: RoutedInputs,
   authoredExpressions: AuthoredExpressions,
   persistedGlobal: Record<string, unknown> = routed.globalArguments,
+  dataRangeCheck: () => ExpressionLocation[] = () => [],
 ): Promise<DirectExecutionResult> {
   // Verify type matches
   if (existing.type.normalized !== resolvedType.normalized) {
@@ -285,10 +328,10 @@ async function adoptExistingDefinition(
     );
 
   if (globalArgsDiffer) {
-    const unvouched = findUnvouchedGlobalArgExpressions(
-      routedGlobal,
-      authoredExpressions,
-    );
+    const unvouched = [
+      ...findUnvouchedGlobalArgExpressions(routedGlobal, authoredExpressions),
+      ...dataRangeCheck(),
+    ];
     if (unvouched.length > 0) {
       return {
         ok: false,
@@ -363,6 +406,8 @@ export async function resolveOrCreateDefinition(
   lockDir?: string,
   authoredExpressions: AuthoredExpressions = "unrestricted",
   sensitiveValues?: RunSensitiveValues,
+  /** Where data sits in `inputs` and `explicitGlobalArgs`. */
+  provenance?: DirectInputsProvenance,
 ): Promise<DirectExecutionResult> {
   // When explicit globalArgs are provided, skip routing — treat inputs as
   // method args only and use the explicit values as global args.
@@ -432,6 +477,24 @@ export async function resolveOrCreateDefinition(
       ...persisted.writtenReferences.map((ref) => vaultReferenceText(ref)),
     ]);
 
+  const routedMap = provenance
+    ? routedGlobalProvenance(
+      routed.globalArguments,
+      explicitGlobalArgs ?? inputs,
+      explicitGlobalArgs ? provenance.globalArgs : provenance.inputs,
+    )
+    : ProvenanceMap.authored();
+  const writtenReferenceTexts = new Set(
+    persisted.writtenReferences.map((ref) => vaultReferenceText(ref)),
+  );
+  const dataRangeCheck = () =>
+    findDataRangeGlobalArgExpressions(
+      persistedGlobal,
+      routed.globalArguments,
+      routedMap,
+      writtenReferenceTexts,
+    );
+
   // Look up existing definition
   const existing = await deps.lookupDefinition(definitionName);
 
@@ -446,6 +509,7 @@ export async function resolveOrCreateDefinition(
       routed,
       vouched,
       persistedGlobal,
+      dataRangeCheck,
     );
   }
 
@@ -512,10 +576,10 @@ export async function resolveOrCreateDefinition(
       error: validationFailed(literalSensitiveGlobalArgsMessage(leakedArgs)),
     };
   }
-  const unvouched = findUnvouchedGlobalArgExpressions(
-    persistedGlobal,
-    vouched,
-  );
+  const unvouched = [
+    ...findUnvouchedGlobalArgExpressions(persistedGlobal, vouched),
+    ...dataRangeCheck(),
+  ];
   if (unvouched.length > 0) {
     return {
       ok: false,
@@ -566,6 +630,10 @@ export async function resolveOrCreateDefinition(
             modelDef,
             routed,
             authoredExpressions,
+            // The winner's definition is compared against the routed values;
+            // dataRangeCheck still examines this call's own persisted form.
+            routed.globalArguments,
+            dataRangeCheck,
           );
         }
         return await createResult();
