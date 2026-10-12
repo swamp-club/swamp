@@ -20,6 +20,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { socketProtocols } from "./connection.ts";
 import { useSwamp } from "./SwampProvider";
+import { requestErrorInfo } from "./stream.ts";
+import {
+  type AuditProblem,
+  type AuditStatus,
+  auditStatus,
+  classifyAuditError,
+} from "./audit_state.ts";
 
 export interface AuditEvent {
   id: string;
@@ -45,25 +52,46 @@ export interface AuditEvent {
 
 const DEFAULT_MAX_EVENTS = 1000;
 
-export function useAuditStream(): {
+export interface AuditStream {
   events: AuditEvent[];
   streaming: boolean;
   liveEnabled: boolean;
   error: string | null;
+  /** Where the feed stands; see `AuditStatus`. */
+  status: AuditStatus;
+  /** True once the first `audit.query` answered (or failed). */
+  historyLoaded: boolean;
   clearEvents: () => void;
   setLiveEnabled: (enabled: boolean) => void;
+  /** Subscribes again after the live feed failed. */
+  reconnect: () => void;
   maxEvents: number;
   setMaxEvents: (n: number) => void;
-} {
+}
+
+export function useAuditStream(): AuditStream {
   const { connected, request, token, authMode } = useSwamp();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [liveEnabled, setLiveEnabled] = useState(true);
   const [maxEvents, setMaxEvents] = useState(DEFAULT_MAX_EVENTS);
   const [error, setError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<AuditProblem | null>(null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
 
   const clearEvents = useCallback(() => setEvents([]), []);
+  const reconnect = useCallback(() => {
+    setProblem(null);
+    setError(null);
+    setAttempt((n) => n + 1);
+  }, []);
+  const setLive = useCallback((enabled: boolean) => {
+    // Resuming retries a feed that failed; disabled and denied stay put.
+    if (enabled) setProblem((p) => (p === "error" ? null : p));
+    setLiveEnabled(enabled);
+  }, []);
 
   useEffect(() => {
     if (!connected) return;
@@ -80,8 +108,16 @@ export function useAuditStream(): {
             (result.events ?? []).slice(-maxEvents) as AuditEvent[],
           );
         }
-      } catch {
-        // audit may not be configured
+      } catch (err) {
+        // The live subscription reports a missing audit log; a refusal
+        // here is the only sign the history is off limits.
+        const kind = classifyAuditError(requestErrorInfo(err)?.code);
+        if (!cancelled && kind === "denied") {
+          setProblem("denied");
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!cancelled) setHistoryLoaded(true);
       }
     })();
 
@@ -109,6 +145,9 @@ export function useAuditStream(): {
     }
 
     let cancelled = false;
+    // Set once serve answered the subscription with an error, so the close
+    // that follows is not reported as a dropped feed.
+    let failed = false;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${proto}//${location.host}/`;
     const ws = new WebSocket(wsUrl, socketProtocols(token, authMode));
@@ -141,15 +180,18 @@ export function useAuditStream(): {
         if (!cancelled) {
           setStreaming(true);
           setError(null);
+          setProblem(null);
         }
         return;
       }
 
       if (msg.type === "error") {
         const errPayload = msg as unknown as {
-          error?: { message: string };
+          error?: { code?: string; message?: string };
         };
+        failed = true;
         if (!cancelled) {
+          setProblem(classifyAuditError(errPayload.error?.code));
           setError(errPayload.error?.message ?? "Subscription failed");
           setStreaming(false);
         }
@@ -168,12 +210,20 @@ export function useAuditStream(): {
     };
 
     ws.onclose = () => {
-      if (!cancelled) setStreaming(false);
+      if (!cancelled) {
+        setStreaming(false);
+        if (!failed) {
+          setProblem((p) => p ?? "error");
+          setError((e) => e ?? "The live feed disconnected");
+        }
+      }
       wsRef.current = null;
     };
 
     ws.onerror = () => {
+      failed = true;
       if (!cancelled) {
+        setProblem((p) => p ?? "error");
         setError("WebSocket connection failed");
         setStreaming(false);
       }
@@ -190,15 +240,18 @@ export function useAuditStream(): {
       }
       wsRef.current = null;
     };
-  }, [connected, token, authMode, liveEnabled, maxEvents]);
+  }, [connected, token, authMode, liveEnabled, maxEvents, attempt]);
 
   return {
     events,
     streaming,
     liveEnabled,
     error,
+    status: auditStatus({ liveEnabled, streaming, problem }),
+    historyLoaded,
     clearEvents,
-    setLiveEnabled,
+    setLiveEnabled: setLive,
+    reconnect,
     maxEvents,
     setMaxEvents,
   };

@@ -69,7 +69,7 @@ export function resolveTimeRange(
 }
 
 /** Short label for the picker button: "Last 7 days", "Oct 3 – Oct 9". */
-export function describeTimeRange(range: TimeRange): string {
+export function describeTimeRange(range: TimeRange, locale?: string): string {
   if (range.kind === "preset") {
     switch (range.preset) {
       case "1h":
@@ -86,14 +86,24 @@ export function describeTimeRange(range: TimeRange): string {
         return "All time";
     }
   }
-  const fmt = (iso: string) =>
-    new Date(iso).toLocaleString(undefined, {
+  const from = new Date(range.from);
+  const to = new Date(range.to);
+  // A range of whole local days (00:00 to 23:59) reads as just its days.
+  const wholeDays = from.getHours() === 0 && from.getMinutes() === 0 &&
+    to.getHours() === 23 && to.getMinutes() === 59;
+  const fmt = (d: Date) =>
+    d.toLocaleString(locale, {
       month: "short",
       day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
+      ...(!wholeDays && { hour: "2-digit", minute: "2-digit" }),
     });
-  return `${fmt(range.from)} – ${fmt(range.to)}`;
+  if (
+    wholeDays && from.getFullYear() === to.getFullYear() &&
+    from.getMonth() === to.getMonth() && from.getDate() === to.getDate()
+  ) {
+    return fmt(from);
+  }
+  return `${fmt(from)} – ${fmt(to)}`;
 }
 
 const STORAGE_KEY = "swamp.dashboard.timeRange";

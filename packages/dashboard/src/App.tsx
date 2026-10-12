@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
+import { auditEnabled } from "./client/audit_state.ts";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { pendingApprovals } from "./client/approvals";
@@ -34,6 +35,7 @@ import {
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
 import { TimeRangeProvider } from "./client/time_range.ts";
+import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Workflows } from "./views/Workflows";
@@ -52,6 +54,20 @@ import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
 import { buildPath } from "./routes.ts";
+import "./styles/shell.css";
+
+// Views whose content is runs over time, which the dashboard-wide time
+// range scopes; the shell shows the picker above them.
+const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
+  "overview",
+  "workflows",
+  "executions",
+  "schedules",
+  "webhooks",
+  "approvals",
+  "models",
+]);
+const TIMED_DETAILS = new Set(["run", "workflow", "model"]);
 
 export function App() {
   return (
@@ -152,6 +168,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     return () => document.removeEventListener("keydown", handler);
   }, [drawerOpen, detail, goUp]);
 
+  const showTimeRange = detail
+    ? TIMED_DETAILS.has(detail.kind)
+    : TIMED_VIEWS.has(view);
+
   const appClass = `app${drawerOpen ? " drawer-open" : ""}${
     collapsed ? " sidebar-collapsed" : ""
   }`;
@@ -163,6 +183,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         onNavigate={navigateAndClose}
         health={health}
         approvalCount={approvalCount}
+        auditEnabled={auditEnabled(auditStream.status)}
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
@@ -195,6 +216,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </button>
           <Logo size="sm" />
         </div>
+        {showTimeRange && (
+          <div className="shell-topbar">
+            <TimeRangePicker />
+          </div>
+        )}
         {detail?.kind === "data" || detail?.kind === "report" ||
             detail?.kind === "runReport"
           ? (
