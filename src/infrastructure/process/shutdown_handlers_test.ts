@@ -134,6 +134,94 @@ Deno.test({
   },
 });
 
+/** A stop-request listener that records what registerShutdownHandler does. */
+function fakeStopRequests() {
+  const handlers: (() => void)[] = [];
+  let stopped = 0;
+  return {
+    handlers,
+    stopped: () => stopped,
+    listenForStopRequests: (handler: () => void) => {
+      handlers.push(handler);
+      return () => {
+        stopped++;
+      };
+    },
+  };
+}
+
+Deno.test("registerShutdownHandler: listens for stop requests on Windows, and stops once on dispose", () => {
+  const stopRequests = fakeStopRequests();
+  let calls = 0;
+  const handle = registerShutdownHandler({
+    handler: () => {
+      calls++;
+    },
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+  });
+
+  assertEquals(stopRequests.handlers.length, 1);
+  stopRequests.handlers[0]();
+  assertEquals(calls, 1, "a stop request invokes the handler");
+
+  handle.dispose();
+  handle.dispose();
+  assertEquals(stopRequests.stopped(), 1);
+});
+
+Deno.test("registerShutdownHandler: a stop request is a first signal for forceExitOnRepeat", () => {
+  const stopRequests = fakeStopRequests();
+  let calls = 0;
+  const handle = registerShutdownHandler({
+    handler: () => {
+      calls++;
+    },
+    forceExitOnRepeat: true,
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+  });
+  try {
+    stopRequests.handlers[0]();
+    assertEquals(calls, 1);
+  } finally {
+    handle.dispose();
+  }
+});
+
+Deno.test("registerShutdownHandler: SIGINT-only mode does not listen for stop requests on Windows", () => {
+  const stopRequests = fakeStopRequests();
+  const handle = registerShutdownHandler({
+    handler: () => {},
+    includePosixSignals: false,
+  }, {
+    os: "windows",
+    listenForStopRequests: stopRequests.listenForStopRequests,
+  });
+  handle.dispose();
+
+  assertEquals(stopRequests.handlers.length, 0);
+});
+
+Deno.test({
+  name:
+    "registerShutdownHandler: does not listen for stop requests on POSIX, where SIGTERM arrives",
+  // Registers the real SIGTERM listener, which throws on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: () => {
+    const stopRequests = fakeStopRequests();
+    const handle = registerShutdownHandler({ handler: () => {} }, {
+      os: "linux",
+      listenForStopRequests: stopRequests.listenForStopRequests,
+    });
+    handle.dispose();
+
+    assertEquals(stopRequests.handlers.length, 0);
+  },
+});
+
 Deno.test("registerShutdownHandler: dispose is idempotent", () => {
   const handle = registerShutdownHandler({
     handler: () => {},

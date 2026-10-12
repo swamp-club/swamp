@@ -27,8 +27,11 @@
  *
  * On POSIX, `SIGINT`, `SIGTERM`, and `SIGHUP` are all registered (unless
  * the caller opts out of POSIX-only signals via `includePosixSignals: false`).
- * On Windows, only `SIGINT` is registered.
+ * On Windows, `SIGINT` is registered, and in place of `SIGTERM` the handler
+ * listens for the stop requests another swamp process sends (see
+ * `windows_stop_request.ts`) unless the caller opts out the same way.
  */
+import { listenForStopRequests } from "./windows_stop_request.ts";
 
 /** Options passed to {@link registerShutdownHandler}. */
 export interface ShutdownHandlerOptions {
@@ -42,7 +45,8 @@ export interface ShutdownHandlerOptions {
    * If true (default), also register `SIGTERM` and `SIGHUP` on POSIX
    * platforms. Set to false for sites that only ever cared about `SIGINT`
    * (e.g., the datastore sync coordinator's lock-release fast path).
-   * Has no effect on Windows where only `SIGINT` is registered regardless.
+   * On Windows it decides whether the handler also listens for stop
+   * requests, the `SIGTERM` swamp sends there.
    */
   includePosixSignals?: boolean;
   /**
@@ -63,6 +67,12 @@ export interface ShutdownHandlerHandle {
   dispose: () => void;
 }
 
+/** What {@link registerShutdownHandler} uses, replaceable in tests. */
+export interface ShutdownHandlerDeps {
+  os?: typeof Deno.build.os;
+  listenForStopRequests?: (handler: () => void) => (() => void) | undefined;
+}
+
 /**
  * POSIX-only signals registered when `includePosixSignals` is true.
  * Kept as a const tuple so callers see the exact set at a glance.
@@ -75,12 +85,20 @@ const POSIX_ONLY_SIGNALS: readonly Deno.Signal[] = ["SIGTERM", "SIGHUP"];
  * - Always registers `SIGINT` (cross-platform).
  * - On non-Windows, also registers `SIGTERM` and `SIGHUP` unless
  *   `includePosixSignals` is explicitly false.
+ * - On Windows, also listens for stop requests unless `includePosixSignals`
+ *   is explicitly false. A stop request counts as a signal for
+ *   `forceExitOnRepeat`.
  *
  * Returns a disposer that calls `Deno.removeSignalListener` for every
- * signal that was actually registered.
+ * signal that was actually registered, and stops listening for stop
+ * requests.
  */
 export function registerShutdownHandler(
   options: ShutdownHandlerOptions,
+  {
+    os = Deno.build.os,
+    listenForStopRequests: listen = listenForStopRequests,
+  }: ShutdownHandlerDeps = {},
 ): ShutdownHandlerHandle {
   const { handler, includePosixSignals = true, forceExitOnRepeat = false } =
     options;
@@ -101,7 +119,10 @@ export function registerShutdownHandler(
   Deno.addSignalListener("SIGINT", wrappedHandler);
   registered.push("SIGINT");
 
-  if (includePosixSignals && Deno.build.os !== "windows") {
+  let stopListening: (() => void) | undefined;
+  if (includePosixSignals && os === "windows") {
+    stopListening = listen(wrappedHandler);
+  } else if (includePosixSignals) {
     for (const signal of POSIX_ONLY_SIGNALS) {
       Deno.addSignalListener(signal, wrappedHandler);
       registered.push(signal);
@@ -113,6 +134,7 @@ export function registerShutdownHandler(
   function removeAll(): void {
     if (disposed) return;
     disposed = true;
+    stopListening?.();
     for (const signal of registered) {
       try {
         Deno.removeSignalListener(signal, wrappedHandler);

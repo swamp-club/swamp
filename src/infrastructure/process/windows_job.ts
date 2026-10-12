@@ -25,8 +25,9 @@ const logger = getLogger(["process", "job"]);
  * A Windows Job Object holding a spawned command and every process it
  * starts. The job ends them all when its last handle closes, so a swamp
  * process that is killed outright — and Windows has no signal another
- * process can catch, so every stop from outside is outright — takes the
- * commands it was running with it (swamp-club#3241).
+ * process can catch, so every stop from outside other than a swamp stop
+ * request (`windows_stop_request.ts`) is outright — takes the commands it
+ * was running with it (swamp-club#3241).
  */
 export interface ProcessJob {
   /** Ends every process in the job, then closes it. */
