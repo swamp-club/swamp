@@ -23,7 +23,11 @@ import {
   isExpressionsOnly,
   scanExpressions,
 } from "../expressions/expression_scanner.ts";
-import { extractFieldsWithMetadata } from "./zod_field_metadata.ts";
+import {
+  extractFieldsWithMetadata,
+  type FieldMetadata,
+  findValuesWithMetadata,
+} from "./zod_field_metadata.ts";
 
 /**
  * Information about a sensitive field extracted from a Zod schema.
@@ -61,18 +65,25 @@ export function extractSensitiveFields(
   schema: z.ZodTypeAny,
   prefix = "",
 ): SensitiveFieldInfo[] {
-  return extractFieldsWithMetadata(
-    schema,
-    (meta) => Boolean((meta as SensitiveMetadata).sensitive),
-    prefix,
-  ).map(({ path, meta }) => {
-    const sensitive = meta as SensitiveMetadata;
-    return {
-      path,
-      vaultName: sensitive.vaultName,
-      vaultKey: sensitive.vaultKey,
-    };
-  });
+  return extractFieldsWithMetadata(schema, isSensitive, prefix).map(
+    ({ path, meta }) => toSensitiveFieldInfo(path, meta),
+  );
+}
+
+function isSensitive(meta: FieldMetadata): boolean {
+  return Boolean((meta as SensitiveMetadata).sensitive);
+}
+
+function toSensitiveFieldInfo(
+  path: string,
+  meta: FieldMetadata,
+): SensitiveFieldInfo {
+  const sensitive = meta as SensitiveMetadata;
+  return {
+    path,
+    vaultName: sensitive.vaultName,
+    vaultKey: sensitive.vaultKey,
+  };
 }
 
 /**
@@ -140,7 +151,7 @@ function isLiteralSecret(value: unknown): boolean {
 }
 
 /**
- * Returns the dot-paths of global-argument fields marked `{ sensitive: true }`
+ * Returns the paths of global-argument fields marked `{ sensitive: true }`
  * in `schema` whose value in `args` is a literal secret (see
  * {@link isLiteralSecret}). An empty result means every sensitive global
  * argument is either absent or a runtime expression and is safe to persist.
@@ -152,14 +163,15 @@ function isLiteralSecret(value: unknown): boolean {
  * for a sensitive global argument would otherwise be written in cleartext into
  * the definition YAML.
  *
- * Sensitive fields nested inside non-object schemas (e.g. records/unions) are
- * not detected — `extractSensitiveFields` only walks object shapes — so callers
- * should treat this as a best-effort guard, consistent with the redaction
- * primitives in this module.
+ * The schema and the supplied values are walked together, so a sensitive
+ * field is found wherever it is nested: inside objects (`credentials.apiKey`),
+ * array elements and tuple items (`users[0].password`), record values
+ * (`accounts.prod.token`) and union members. The redaction primitives in this
+ * module read the schema alone and still see object-nested fields only.
  *
  * @param schema - The global-arguments Zod schema for the model type
  * @param args - The supplied global-argument values
- * @returns Dot-paths of sensitive fields holding a literal secret
+ * @returns Paths of sensitive fields holding a literal secret
  */
 export function findLiteralSensitiveGlobalArgs(
   schema: z.ZodTypeAny | undefined,
@@ -168,18 +180,9 @@ export function findLiteralSensitiveGlobalArgs(
   if (!schema || !args) {
     return [];
   }
-  const fields = extractSensitiveFields(schema);
-  if (fields.length === 0) {
-    return [];
-  }
-
-  const offending: string[] = [];
-  for (const field of fields) {
-    if (isLiteralSecret(getNestedValue(args, field.path))) {
-      offending.push(field.path);
-    }
-  }
-  return offending;
+  return findValuesWithMetadata(schema, args, isSensitive)
+    .filter(({ value }) => isLiteralSecret(value))
+    .map(({ path }) => path);
 }
 
 /**
@@ -227,6 +230,15 @@ export interface SensitiveArgRemediation {
 const DEFAULT_REMEDIATION_VAULT = "my-vault";
 
 /**
+ * Turns an element path into a vault key: every run of characters outside
+ * letters, digits, `_` and `-` becomes one `-`.
+ */
+function vaultKeyForElementPath(path: string): string {
+  const key = path.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return key || "secret";
+}
+
+/**
  * Builds value-free remediation guidance for sensitive global arguments that
  * were found holding a literal secret (see {@link findLiteralSensitiveGlobalArgs}).
  *
@@ -240,24 +252,49 @@ const DEFAULT_REMEDIATION_VAULT = "my-vault";
  * metadata, those are used; otherwise the vault name falls back to
  * `"my-vault"` and the key to the field's leaf path segment.
  *
- * @param leakedPaths - Dot-paths returned by `findLiteralSensitiveGlobalArgs`
+ * A field inside an array element or a record value occurs once per element,
+ * so its key is built from the whole path (`users[0].password` gives
+ * `users-0-password`) rather than from a declared `vaultKey` or the leaf
+ * segment, either of which would point every element at the same secret.
+ * These paths are only recognised when `args` is given.
+ *
+ * @param leakedPaths - Paths returned by `findLiteralSensitiveGlobalArgs`
  * @param schema - The global-arguments schema, read for vault metadata overrides
+ * @param args - The global-argument values the paths were found in
  * @returns One remediation per leaked path, in input order
  */
 export function buildSensitiveArgRemediations(
   leakedPaths: string[],
   schema?: z.ZodTypeAny,
+  args?: Record<string, unknown>,
 ): SensitiveArgRemediation[] {
   const fieldsByPath = new Map<string, SensitiveFieldInfo>();
+  const elementFieldsByPath = new Map<string, SensitiveFieldInfo>();
   if (schema) {
     for (const field of extractSensitiveFields(schema)) {
       fieldsByPath.set(field.path, field);
     }
+    if (args) {
+      for (
+        const { path, meta } of findValuesWithMetadata(
+          schema,
+          args,
+          isSensitive,
+        )
+      ) {
+        if (!fieldsByPath.has(path)) {
+          elementFieldsByPath.set(path, toSensitiveFieldInfo(path, meta));
+        }
+      }
+    }
   }
   return leakedPaths.map((path) => {
-    const meta = fieldsByPath.get(path);
+    const elementMeta = elementFieldsByPath.get(path);
+    const meta = elementMeta ?? fieldsByPath.get(path);
     const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
-    const vaultKey = meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    const vaultKey = elementMeta
+      ? vaultKeyForElementPath(path)
+      : meta?.vaultKey ?? path.split(".").at(-1) ?? path;
     return {
       path,
       vaultName,

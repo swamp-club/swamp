@@ -175,6 +175,7 @@ export async function* doctorSecrets(
             remediations: buildSensitiveArgRemediations(
               leakedPaths,
               modelDef.globalArguments,
+              definition.globalArguments,
             ),
           });
         }

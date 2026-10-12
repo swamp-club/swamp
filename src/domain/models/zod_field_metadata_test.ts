@@ -23,6 +23,7 @@ import {
   extractFieldsWithMetadata,
   type FieldMetadata,
   findFieldMetadata,
+  findValuesWithMetadata,
 } from "./zod_field_metadata.ts";
 
 const isMarked = (meta: FieldMetadata) => meta.marked === true;
@@ -142,4 +143,216 @@ Deno.test("extractFieldsWithMetadata: does not visit fields inside arrays", () =
     items: z.array(z.object({ leaf: z.string().meta({ marked: true }) })),
   });
   assertEquals(extractFieldsWithMetadata(schema, isMarked), []);
+});
+
+const markedPaths = (schema: z.ZodTypeAny, value: unknown) =>
+  findValuesWithMetadata(schema, value, isMarked).map((f) => f.path);
+
+Deno.test("findValuesWithMetadata: returns top-level and object-nested values with dot paths", () => {
+  const schema = z.object({
+    a: z.string().meta({ marked: true, note: "x" }),
+    b: z.string(),
+    outer: z.object({ inner: z.string().meta({ marked: true }) }),
+  });
+  assertEquals(
+    findValuesWithMetadata(schema, {
+      a: "1",
+      b: "2",
+      outer: { inner: "3" },
+    }, isMarked),
+    [
+      { path: "a", value: "1", meta: { marked: true, note: "x" } },
+      { path: "outer.inner", value: "3", meta: { marked: true } },
+    ],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reaches a field inside each array element", () => {
+  const schema = z.object({
+    users: z.array(z.object({
+      id: z.string(),
+      password: z.string().meta({ marked: true }),
+    })).default([]),
+  });
+  assertEquals(
+    markedPaths(schema, {
+      users: [{ id: "a", password: "p0" }, { id: "b", password: "p1" }],
+    }),
+    ["users[0].password", "users[1].password"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reaches marked array elements and nested arrays", () => {
+  const schema = z.object({
+    tokens: z.array(z.string().meta({ marked: true })),
+    grid: z.array(z.array(z.object({ k: z.string().meta({ marked: true }) }))),
+  });
+  assertEquals(
+    markedPaths(schema, { tokens: ["a", "b"], grid: [[{ k: "x" }]] }),
+    ["tokens[0]", "tokens[1]", "grid[0][0].k"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reaches tuple items and the tuple rest", () => {
+  const schema = z.object({
+    pair: z.tuple([z.string(), z.string().meta({ marked: true })]).rest(
+      z.object({ k: z.string().meta({ marked: true }) }),
+    ),
+  });
+  assertEquals(
+    markedPaths(schema, { pair: ["user", "pass", { k: "x" }] }),
+    ["pair[1]", "pair[2].k"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reaches record values, writing the key as is", () => {
+  const schema = z.object({
+    accounts: z.record(
+      z.string(),
+      z.object({ token: z.string().meta({ marked: true }) }),
+    ),
+  });
+  assertEquals(
+    markedPaths(schema, {
+      accounts: { prod: { token: "a" }, "eu.west": { token: "b" } },
+    }),
+    ["accounts.prod.token", "accounts.eu.west.token"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: visits every member of a plain union", () => {
+  const schema = z.object({
+    auth: z.union([
+      z.object({ password: z.string().meta({ marked: true }) }),
+      z.object({ password: z.string(), note: z.string() }),
+      z.string().meta({ marked: true }),
+    ]),
+  });
+  assertEquals(markedPaths(schema, { auth: { password: "p", note: "n" } }), [
+    "auth.password",
+  ]);
+  assertEquals(markedPaths(schema, { auth: "bare" }), ["auth"]);
+});
+
+Deno.test("findValuesWithMetadata: narrows a discriminated union by its discriminator", () => {
+  const schema = z.object({
+    auth: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("token"),
+        value: z.string().meta({ marked: true }),
+      }),
+      z.object({ kind: z.literal("plain"), value: z.string() }),
+    ]),
+  });
+  assertEquals(markedPaths(schema, { auth: { kind: "token", value: "v" } }), [
+    "auth.value",
+  ]);
+  assertEquals(
+    markedPaths(schema, { auth: { kind: "plain", value: "v" } }),
+    [],
+  );
+});
+
+Deno.test("findValuesWithMetadata: visits every discriminated member when the discriminator names none", () => {
+  const schema = z.object({
+    auth: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("token"),
+        value: z.string().meta({ marked: true }),
+      }),
+      z.object({ kind: z.literal("plain"), value: z.string() }),
+    ]),
+  });
+  for (const kind of ["${{ inputs.kind }}", undefined, 7]) {
+    assertEquals(markedPaths(schema, { auth: { kind, value: "v" } }), [
+      "auth.value",
+    ]);
+  }
+});
+
+Deno.test("findValuesWithMetadata: visits both sides of an intersection", () => {
+  const schema = z.object({
+    both: z.intersection(
+      z.object({ a: z.string().meta({ marked: true }) }),
+      z.object({ b: z.string().meta({ marked: true }) }),
+    ),
+  });
+  assertEquals(markedPaths(schema, { both: { a: "1", b: "2" } }), [
+    "both.a",
+    "both.b",
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: sees through readonly, transform, preprocess and lazy", () => {
+  const item = z.object({ k: z.string().meta({ marked: true }) });
+  const schema = z.object({
+    ro: z.array(item).readonly(),
+    tr: z.array(item).transform((v) => v),
+    pre: z.preprocess((v) => v, z.array(item)),
+    lazy: z.lazy(() => z.array(item)),
+    opt: z.array(item).optional().nullable(),
+  });
+  const value = [{ k: "x" }];
+  assertEquals(
+    markedPaths(schema, {
+      ro: value,
+      tr: value,
+      pre: value,
+      lazy: value,
+      opt: value,
+    }),
+    ["ro[0].k", "tr[0].k", "pre[0].k", "lazy[0].k", "opt[0].k"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: ends on a recursive schema", () => {
+  type Node = { secret: string; children?: Node[] };
+  const node: z.ZodType<Node> = z.lazy(() =>
+    z.object({
+      secret: z.string().meta({ marked: true }),
+      children: z.array(node).optional(),
+    })
+  );
+  const schema = z.object({ root: node });
+  assertEquals(
+    markedPaths(schema, {
+      root: { secret: "a", children: [{ secret: "b", children: [] }] },
+    }),
+    ["root.secret", "root.children[0].secret"],
+  );
+});
+
+Deno.test("findValuesWithMetadata: reports a marked container once and still visits its children", () => {
+  const schema = z.object({
+    block: z.array(z.object({ leaf: z.string().meta({ marked: true }) })).meta({
+      marked: true,
+    }),
+  });
+  assertEquals(markedPaths(schema, { block: [{ leaf: "x" }] }), [
+    "block",
+    "block[0].leaf",
+  ]);
+});
+
+Deno.test("findValuesWithMetadata: skips absent values and values of the wrong shape", () => {
+  const schema = z.object({
+    a: z.string().meta({ marked: true }).optional(),
+    users: z.array(z.object({ password: z.string().meta({ marked: true }) })),
+    rec: z.record(z.string(), z.string().meta({ marked: true })),
+  });
+  assertEquals(markedPaths(schema, {}), []);
+  assertEquals(
+    markedPaths(schema, { a: null, users: null, rec: undefined }),
+    [],
+  );
+  assertEquals(
+    markedPaths(schema, { users: "not-an-array", rec: ["not", "a", "record"] }),
+    [],
+  );
+  assertEquals(markedPaths(schema, { users: [null, "x", {}] }), []);
+});
+
+Deno.test("findValuesWithMetadata: does not report metadata on the root schema", () => {
+  const schema = z.object({ a: z.string() }).meta({ marked: true });
+  assertEquals(markedPaths(schema, { a: "x" }), []);
 });

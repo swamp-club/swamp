@@ -60,8 +60,30 @@ print as concrete commands.
 The scan resolves each definition's type schema through the model registry to
 find sensitive global args. If a type cannot be resolved (e.g. an extension not
 installed locally), the definition is reported as **unresolved**: an advisory
-warning, not a silent skip. The redaction primitives in the same module have the
-same object-shape-only limit.
+warning, not a silent skip.
+
+## Nested fields
+
+The rule walks the schema and the stored values together
+(`findValuesWithMetadata` in `src/domain/models/zod_field_metadata.ts`), so a
+sensitive field is found wherever it is nested: in objects, array elements,
+tuple items, record values, union members and intersections. A finding names the
+element: `users[1].password`, `accounts.prod.token`.
+
+- **Unions.** No member's validation runs. Every member the value could belong
+  to is checked: members of the wrong container kind are dropped, and a
+  discriminated union is narrowed by its discriminator when the value carries a
+  literal one. A value is refused if any remaining member marks it sensitive.
+- **Vault keys.** A field inside an array element or record value occurs once
+  per element, so its suggested vault key is built from the whole path
+  (`users-1-password`). A declared `vaultKey` is not used there, because every
+  element would share it. A declared `vaultName` still applies.
+- **Paths are for display.** A record key is written as is, so a key holding a
+  dot or bracket makes the path ambiguous.
+
+The redaction and vaulting primitives in the same module
+(`redactSensitiveValues`, `extractSensitiveFieldValues`, resource-data vaulting)
+read the schema alone and still see object-nested fields only (swamp-club#3038).
 
 ## Out of scope
 

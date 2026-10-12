@@ -43,6 +43,18 @@ interface ZodDef {
   innerType?: z.ZodTypeAny;
   schema?: z.ZodTypeAny;
   shape?: Record<string, z.ZodTypeAny>;
+  element?: z.ZodTypeAny;
+  valueType?: z.ZodTypeAny;
+  options?: z.ZodTypeAny[];
+  discriminator?: string;
+  items?: z.ZodTypeAny[];
+  rest?: z.ZodTypeAny | null;
+  left?: z.ZodTypeAny;
+  right?: z.ZodTypeAny;
+  getter?: () => z.ZodTypeAny;
+  in?: z.ZodTypeAny;
+  out?: z.ZodTypeAny;
+  values?: unknown[];
 }
 
 /**
@@ -173,4 +185,228 @@ export function extractFieldsWithMetadata(
   }
 
   return results;
+}
+
+/**
+ * A value found under a schema node whose metadata matched, with its path.
+ */
+export interface ValueWithMetadata {
+  /** Path to the value (e.g., "credentials.apiKey", "users[0].password") */
+  path: string;
+  /** The value found at that path */
+  value: unknown;
+  /** The metadata that matched */
+  meta: FieldMetadata;
+}
+
+/**
+ * Returns the schema one wrapper level down, or undefined when `schema` is
+ * not a wrapper. A pipe yields the side that describes the input value: the
+ * source of a `.transform()`, the target of a `z.preprocess()`.
+ */
+function innerSchema(schema: z.ZodTypeAny): z.ZodTypeAny | undefined {
+  const schemaType = getSchemaType(schema);
+  const def = getSchemaDef(schema);
+
+  const wrapperTypes = [
+    "optional",
+    "nullable",
+    "default",
+    "readonly",
+    "catch",
+    "prefault",
+    "nonoptional",
+  ];
+  if (wrapperTypes.includes(schemaType)) {
+    return def.innerType;
+  }
+  if (schemaType === "effects") {
+    return def.schema;
+  }
+  if (schemaType === "lazy") {
+    return def.getter?.();
+  }
+  if (schemaType === "pipe") {
+    return def.in && getSchemaType(def.in) === "transform" ? def.out : def.in;
+  }
+  return undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null);
+}
+
+/** Follows wrappers down to the schema that describes the value itself. */
+function coreSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let current = schema;
+  for (let inner = innerSchema(current); inner; inner = innerSchema(current)) {
+    current = inner;
+  }
+  return current;
+}
+
+const SCALAR_TYPES = [
+  "string",
+  "number",
+  "boolean",
+  "bigint",
+  "literal",
+  "enum",
+  "template_literal",
+];
+
+/**
+ * Reports whether a value has the container kind a union member describes: an
+ * object for an object or record, an array for an array or tuple, neither for
+ * a scalar. A member of any other type is taken to fit every value.
+ */
+function fitsShape(member: z.ZodTypeAny, value: unknown): boolean {
+  const memberType = getSchemaType(coreSchema(member));
+  if (memberType === "object" || memberType === "record") {
+    return isPlainObject(value);
+  }
+  if (memberType === "array" || memberType === "tuple") {
+    return Array.isArray(value);
+  }
+  if (SCALAR_TYPES.includes(memberType)) {
+    return typeof value !== "object";
+  }
+  return true;
+}
+
+/**
+ * Picks the members of a union a value can belong to, without running any
+ * member's validation. Members whose container kind the value does not have
+ * are dropped, and a discriminated union is narrowed by the value's
+ * discriminator when that names members exactly. Every other case keeps the
+ * member, so a field one member marks is never missed because another member
+ * also accepts the value.
+ */
+function unionMembers(def: ZodDef, value: unknown): z.ZodTypeAny[] {
+  const all = def.options ?? [];
+  const fitting = all.filter((option) => fitsShape(option, value));
+  const options = fitting.length > 0 ? fitting : all;
+  if (!def.discriminator || !isPlainObject(value)) {
+    return options;
+  }
+  const tag = value[def.discriminator];
+  const tagged: z.ZodTypeAny[] = [];
+  for (const option of options) {
+    const optionDef = getSchemaDef(unwrapSchema(option));
+    const tagSchema = optionDef?.shape?.[def.discriminator];
+    const tagDef = tagSchema
+      ? getSchemaDef(unwrapSchema(tagSchema))
+      : undefined;
+    if (tagDef?.type !== "literal" || !tagDef.values) {
+      return options;
+    }
+    if (tagDef.values.includes(tag)) {
+      tagged.push(option);
+    }
+  }
+  return tagged.length > 0 ? tagged : options;
+}
+
+function visitValue(
+  schema: z.ZodTypeAny,
+  value: unknown,
+  matches: (meta: FieldMetadata) => boolean,
+  path: string,
+  found: Map<string, ValueWithMetadata>,
+  atRoot = false,
+): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  let current = schema;
+  let reported = atRoot;
+  while (true) {
+    const meta = z.globalRegistry.get(current) as FieldMetadata | undefined;
+    if (!reported && meta && matches(meta)) {
+      if (!found.has(path)) {
+        found.set(path, { path, value, meta });
+      }
+      reported = true;
+    }
+    const inner = innerSchema(current);
+    if (!inner) {
+      break;
+    }
+    current = inner;
+  }
+
+  const schemaType = getSchemaType(current);
+  const def = getSchemaDef(current);
+  const child = (key: string) => path ? `${path}.${key}` : key;
+
+  if (schemaType === "object" && isPlainObject(value)) {
+    for (const [key, fieldSchema] of Object.entries(def.shape ?? {})) {
+      visitValue(fieldSchema, value[key], matches, child(key), found);
+    }
+  } else if (schemaType === "record" && isPlainObject(value)) {
+    const valueSchema = def.valueType;
+    if (valueSchema) {
+      for (const [key, entry] of Object.entries(value)) {
+        visitValue(valueSchema, entry, matches, child(key), found);
+      }
+    }
+  } else if (schemaType === "array" && Array.isArray(value)) {
+    const elementSchema = def.element;
+    if (elementSchema) {
+      value.forEach((element, index) =>
+        visitValue(elementSchema, element, matches, `${path}[${index}]`, found)
+      );
+    }
+  } else if (schemaType === "tuple" && Array.isArray(value)) {
+    value.forEach((element, index) => {
+      const itemSchema = def.items?.[index] ?? def.rest;
+      if (itemSchema) {
+        visitValue(itemSchema, element, matches, `${path}[${index}]`, found);
+      }
+    });
+  } else if (schemaType === "union") {
+    for (const option of unionMembers(def, value)) {
+      visitValue(option, value, matches, path, found, atRoot);
+    }
+  } else if (schemaType === "intersection") {
+    for (const side of [def.left, def.right]) {
+      if (side) {
+        visitValue(side, value, matches, path, found, atRoot);
+      }
+    }
+  }
+}
+
+/**
+ * Finds every value in `value` that sits under a schema node whose metadata
+ * satisfies `matches`.
+ *
+ * Unlike {@link extractFieldsWithMetadata}, which reads the schema alone and
+ * stops at anything that is not an object, this walks the schema and a
+ * concrete value together, so it also reaches fields inside array elements
+ * and tuple items (`users[0].password`), record values (`labels.team`),
+ * union members and intersections, and through `.transform()`, `.readonly()`
+ * and `z.lazy()` wrappers. A matching node is reported once, and its children
+ * are still visited. Metadata on the root schema itself is not reported.
+ *
+ * The walk follows the value, so it visits at most what the value holds and
+ * ends on a recursive schema. Paths are for display: a record key containing
+ * a dot or bracket is written as is.
+ *
+ * @param schema - A Zod schema (typically an object schema)
+ * @param value - The value the schema describes
+ * @param matches - Decides whether a node's metadata marks it
+ * @returns The matching values with their paths and metadata, in visit order
+ */
+export function findValuesWithMetadata(
+  schema: z.ZodTypeAny,
+  value: unknown,
+  matches: (meta: FieldMetadata) => boolean,
+): ValueWithMetadata[] {
+  const found = new Map<string, ValueWithMetadata>();
+  visitValue(schema, value, matches, "", found, true);
+  return [...found.values()];
 }
