@@ -24,8 +24,10 @@ import { type FormEvent, useId, useMemo, useState } from "react";
 import {
   CRON_PRESETS,
   describeCron,
+  fireTimeLabels,
   nextFireTimes,
   parseCron,
+  viewerTimeZone,
 } from "../lib/cron.ts";
 import { formatInputsJson, parseInputsJson } from "../lib/triggers.ts";
 import { formatAbsoluteTime, formatRelativeTime } from "../lib/format.ts";
@@ -43,8 +45,13 @@ interface ScheduleEditorFormProps {
   onCancel: () => void;
   /** Clock for the preview; defaults to now. */
   now?: number;
-  /** The browser's time zone, shown with the preview. */
+  /**
+   * The time zone serve's scheduler reads cron expressions in; the preview
+   * is computed and labelled in it. Omitted (an older serve): the viewer's.
+   */
   timeZone?: string;
+  /** The viewer's time zone; defaults to the browser's. */
+  viewerZone?: string;
 }
 
 /**
@@ -58,24 +65,6 @@ function valueOf(e: { target: unknown }): string {
 
 const PREVIEW_COUNT = 5;
 const INPUTS_PLACEHOLDER = '{\n  "region": "eu-west-1"\n}';
-
-function browserTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return undefined;
-  }
-}
-
-function fireLabel(d: Date): string {
-  return d.toLocaleString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 /**
  * Edits a schedule's cron expression and inputs. The expression is checked
@@ -95,6 +84,7 @@ export function ScheduleEditorForm(
     onCancel,
     now,
     timeZone,
+    viewerZone = viewerTimeZone(),
   }: ScheduleEditorFormProps,
 ) {
   const id = useId();
@@ -109,10 +99,11 @@ export function ScheduleEditorForm(
   const parsed = parseCron(cron);
   const description = parsed.ok ? describeCron(cron) : null;
   const fires = parsed.ok
-    ? nextFireTimes(parsed.schedule, new Date(clock), PREVIEW_COUNT)
+    ? nextFireTimes(parsed.schedule, new Date(clock), PREVIEW_COUNT, {
+      timeZone,
+    })
     : [];
   const inputs = parseInputsJson(inputsText);
-  const zone = timeZone ?? browserTimeZone();
 
   const cronUsable = parsed.ok || parsed.unsupported === true;
   const changed = cron.trim() !== initialSchedule.trim() ||
@@ -189,20 +180,32 @@ export function ScheduleEditorForm(
           <div className="sched-fires">
             <div className="sched-fires-head">
               Next {fires.length} runs
-              {zone && <span>in your time zone ({zone})</span>}
+              {timeZone
+                ? <span>in serve's time zone ({timeZone})</span>
+                : viewerZone && <span>in your time zone ({viewerZone})</span>}
             </div>
             <ol>
-              {fires.map((d) => (
-                <li key={d.getTime()}>
-                  <time
-                    dateTime={d.toISOString()}
-                    title={formatAbsoluteTime(d)}
-                  >
-                    {fireLabel(d)}
-                  </time>
-                  <span>{formatRelativeTime(d, clock)}</span>
-                </li>
-              ))}
+              {fires.map((d) => {
+                const label = fireTimeLabels(d, timeZone, viewerZone);
+                return (
+                  <li key={d.getTime()}>
+                    <div>
+                      <time
+                        dateTime={d.toISOString()}
+                        title={formatAbsoluteTime(d)}
+                      >
+                        {label.primary}
+                      </time>
+                      {label.local && (
+                        <small className="fire-local">
+                          {label.local} your time
+                        </small>
+                      )}
+                    </div>
+                    <span>{formatRelativeTime(d, clock)}</span>
+                  </li>
+                );
+              })}
             </ol>
           </div>
         )}

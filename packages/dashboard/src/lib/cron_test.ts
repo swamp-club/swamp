@@ -21,6 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import {
   CRON_PRESETS,
   describeCron,
+  fireTimeLabels,
+  formatFireTime,
   nextFireTimes,
   parseCron,
 } from "./cron.ts";
@@ -211,4 +213,72 @@ Deno.test("nextFireTimes: leap day", () => {
   assertEquals(fires("0 0 29 2 *", "2026-01-01T00:00:00.000Z", 1), [
     "2028-02-29T00:00:00.000Z",
   ]);
+});
+
+function firesIn(
+  timeZone: string,
+  expr: string,
+  from: string,
+  count: number,
+): string[] {
+  const parsed = parseCron(expr);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return nextFireTimes(parsed.schedule, new Date(from), count, { timeZone })
+    .map((d) => d.toISOString());
+}
+
+Deno.test("nextFireTimes: reads the expression in an IANA time zone", () => {
+  // 09:00 in New York (EDT, UTC-4) is 13:00 UTC.
+  assertEquals(
+    firesIn("America/New_York", "0 9 * * *", "2026-10-12T12:00:00.000Z", 2),
+    ["2026-10-12T13:00:00.000Z", "2026-10-13T13:00:00.000Z"],
+  );
+  // Half-hour offsets: 09:00 in Kolkata (UTC+5:30) is 03:30 UTC.
+  assertEquals(
+    firesIn("Asia/Kolkata", "0 9 * * 1", "2026-10-12T00:00:00.000Z", 1),
+    ["2026-10-12T03:30:00.000Z"],
+  );
+  // Hourly steps stay on the zone's hour boundaries.
+  assertEquals(
+    firesIn("Asia/Kolkata", "0 * * * *", "2026-10-12T03:31:00.000Z", 1),
+    ["2026-10-12T04:30:00.000Z"],
+  );
+});
+
+Deno.test("nextFireTimes: crosses a DST change in the zone", () => {
+  // London leaves BST on 2026-10-25: 09:00 is 08:00 UTC before, 09:00 after.
+  assertEquals(
+    firesIn("Europe/London", "0 9 * * *", "2026-10-24T09:00:00.000Z", 2),
+    ["2026-10-25T09:00:00.000Z", "2026-10-26T09:00:00.000Z"],
+  );
+  assertEquals(
+    firesIn("Europe/London", "0 0 1 * *", "2026-03-15T00:00:00.000Z", 2),
+    ["2026-03-31T23:00:00.000Z", "2026-04-30T23:00:00.000Z"],
+  );
+});
+
+Deno.test("nextFireTimes: an unknown zone falls back to the browser's", () => {
+  const parsed = parseCron("*/5 * * * *");
+  if (!parsed.ok) throw new Error(parsed.error);
+  const from = new Date("2026-10-12T20:30:00.000Z");
+  assertEquals(
+    nextFireTimes(parsed.schedule, from, 2, { timeZone: "Not/A_Zone" }),
+    nextFireTimes(parsed.schedule, from, 2),
+  );
+});
+
+Deno.test("fireTimeLabels: adds the viewer's time only when it reads differently", () => {
+  const d = new Date("2026-10-12T13:00:00.000Z");
+  const ny = fireTimeLabels(d, "America/New_York", "UTC");
+  assertEquals(ny.primary, formatFireTime(d, "America/New_York"));
+  assertEquals(ny.local, formatFireTime(d, "UTC"));
+  assert(ny.primary !== ny.local);
+  assertEquals(fireTimeLabels(d, "UTC", "UTC").local, null);
+  // Different names, same wall time.
+  assertEquals(fireTimeLabels(d, "Etc/UTC", "UTC").local, null);
+  // Serve's zone unknown: the viewer's time alone.
+  assertEquals(fireTimeLabels(d, undefined, "UTC"), {
+    primary: formatFireTime(d),
+    local: null,
+  });
 });

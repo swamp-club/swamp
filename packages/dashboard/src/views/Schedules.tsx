@@ -300,6 +300,7 @@ export function Schedules(
         <ScheduleEditDialog
           workflowName={editing}
           mutations={mutations}
+          timeZone={health?.scheduling?.timeZone}
           onClose={() => setEditing(null)}
         />
       )}

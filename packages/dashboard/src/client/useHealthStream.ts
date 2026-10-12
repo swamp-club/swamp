@@ -94,6 +94,8 @@ export interface HealthSnapshot {
   scheduling: {
     enabled: boolean;
     schedules: ScheduleEntry[];
+    /** The IANA zone serve's scheduler reads cron in; absent on older serves. */
+    timeZone?: string;
   };
   webhooks: WebhookEntry[];
   components: ComponentHealth[];

@@ -131,6 +131,7 @@ function renderForm(
       onCancel={noop}
       now={NOW}
       timeZone="UTC"
+      viewerZone="UTC"
       {...over}
     />,
   );
@@ -140,7 +141,8 @@ Deno.test("ScheduleEditorForm: describes the schedule and previews five runs", (
   const html = renderForm();
   assertStringIncludes(html, "Every 5 minutes");
   assertStringIncludes(html, "Next 5 runs");
-  assertStringIncludes(html, "(UTC)");
+  assertStringIncludes(html, "serve&#x27;s time zone (UTC)");
+  assertEquals(html.includes("your time"), false);
   assertEquals(html.match(/<li>/g)?.length, 5);
   assertStringIncludes(html, "in 5m");
   assertStringIncludes(html, "&quot;region&quot;: &quot;eu&quot;");
@@ -185,4 +187,16 @@ Deno.test("resetConfirmText: says a paused schedule stays paused", () => {
   assertStringIncludes(resetConfirmText(true), "It stays paused.");
   assertEquals(resetConfirmText(false).includes("paused"), false);
   assertEquals(resetConfirmText(undefined).includes("paused"), false);
+});
+
+Deno.test("ScheduleEditorForm: previews in serve's zone and adds the viewer's time", () => {
+  const html = renderForm({
+    initialSchedule: "0 9 * * *",
+    timeZone: "America/New_York",
+    viewerZone: "UTC",
+  });
+  assertStringIncludes(html, "serve&#x27;s time zone (America/New_York)");
+  // 09:00 in New York is 13:00 UTC on 2026-10-13.
+  assertStringIncludes(html, 'dateTime="2026-10-13T13:00:00.000Z"');
+  assertStringIncludes(html, "your time");
 });

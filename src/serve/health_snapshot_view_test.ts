@@ -70,6 +70,7 @@ function snapshot(): HealthSnapshot {
     ] as unknown as HealthSnapshot["workers"],
     scheduling: {
       enabled: true,
+      timeZone: "Europe/London",
       schedules: [
         {
           workflowId: "1",
@@ -221,7 +222,12 @@ Deno.test("healthSnapshotFor: queue data goes with its schedule, and nothing ser
   assertEquals(view.scheduling.schedules[0].workflowName, "nightly");
   assertEquals(view.scheduling.schedules[0].queued, 2);
   assertEquals(view.scheduling.schedules[0].lastQueueDelayMs, 1_500);
-  assertEquals(Object.keys(view.scheduling).sort(), ["enabled", "schedules"]);
+  assertEquals(Object.keys(view.scheduling).sort(), [
+    "enabled",
+    "schedules",
+    "timeZone",
+  ]);
+  assertEquals(view.scheduling.timeZone, "Europe/London");
 });
 
 Deno.test("healthSnapshotFor: decides on resolved fields, so model-type and tag grants apply", async () => {

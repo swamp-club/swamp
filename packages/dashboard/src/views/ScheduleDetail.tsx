@@ -47,7 +47,12 @@ import { flowJobsOf, type WorkflowJobDef } from "../components/trigger_flow.ts";
 import { useRefetchOnChange, useTriggerRuns } from "../client/trigger_runs.ts";
 import { useScheduleMutations } from "../client/schedule_mutations.ts";
 import { describeTimeRange, useTimeRange } from "../client/time_range.ts";
-import { describeCron, nextFireTimes, parseCron } from "../lib/cron.ts";
+import {
+  describeCron,
+  fireTimeLabels,
+  nextFireTimes,
+  parseCron,
+} from "../lib/cron.ts";
 import {
   averageDuration,
   inputRows,
@@ -121,13 +126,17 @@ export function ScheduleDetail(
   const now = Date.now();
   // Recomputed when the schedule fires (its next run moves), not per render.
   const firedAt = entry?.nextRun;
+  // Serve's scheduler reads the expression in its own time zone.
+  const serveZone = health?.scheduling?.timeZone;
   const upcoming = useMemo(() => {
     if (!cron || paused) return [];
     const parsed = parseCron(cron);
     return parsed.ok
-      ? nextFireTimes(parsed.schedule, new Date(), UPCOMING, {})
+      ? nextFireTimes(parsed.schedule, new Date(), UPCOMING, {
+        timeZone: serveZone,
+      })
       : [];
-  }, [cron, paused, firedAt]);
+  }, [cron, paused, firedAt, serveZone]);
 
   const counts = useMemo(() => sumCounts(summarizeRuns(runs.runs)), [
     runs.runs,
@@ -303,26 +312,32 @@ export function ScheduleDetail(
                     {upcoming.length > 0 && (
                       <>
                         <div className="trig-fire-head">
-                          Upcoming · your time zone
+                          Upcoming · {serveZone
+                            ? `serve's time zone (${serveZone})`
+                            : "your time zone"}
                         </div>
                         <ol className="trig-fire-list">
-                          {upcoming.map((d) => (
-                            <li key={d.getTime()}>
-                              <time
-                                dateTime={d.toISOString()}
-                                title={formatAbsoluteTime(d)}
-                              >
-                                {d.toLocaleString(undefined, {
-                                  weekday: "short",
-                                  month: "short",
-                                  day: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </time>
-                              <span>{formatRelativeTime(d, now)}</span>
-                            </li>
-                          ))}
+                          {upcoming.map((d) => {
+                            const label = fireTimeLabels(d, serveZone);
+                            return (
+                              <li key={d.getTime()}>
+                                <div>
+                                  <time
+                                    dateTime={d.toISOString()}
+                                    title={formatAbsoluteTime(d)}
+                                  >
+                                    {label.primary}
+                                  </time>
+                                  {label.local && (
+                                    <small className="fire-local">
+                                      {label.local} your time
+                                    </small>
+                                  )}
+                                </div>
+                                <span>{formatRelativeTime(d, now)}</span>
+                              </li>
+                            );
+                          })}
                         </ol>
                       </>
                     )}
@@ -506,6 +521,7 @@ export function ScheduleDetail(
           workflowName={workflowName}
           mutations={mutations}
           onClose={() => setEditing(false)}
+          timeZone={serveZone}
         />
       )}
     </>

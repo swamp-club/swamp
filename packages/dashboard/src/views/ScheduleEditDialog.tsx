@@ -47,9 +47,11 @@ export interface TriggerInfo {
  * the change landed; a refusal stays in the dialog.
  */
 export function ScheduleEditDialog(
-  { workflowName, mutations, onClose, onSaved }: {
+  { workflowName, mutations, onClose, onSaved, timeZone }: {
     workflowName: string;
     mutations: ScheduleMutations;
+    /** Serve's scheduler time zone, for the preview. */
+    timeZone?: string;
     onClose: () => void;
     onSaved?: () => void;
   },
@@ -148,6 +150,7 @@ export function ScheduleEditDialog(
               error={saveError}
               onSave={(schedule, inputs) => void save(schedule, inputs)}
               onCancel={close}
+              timeZone={timeZone}
             />
           )}
       </div>

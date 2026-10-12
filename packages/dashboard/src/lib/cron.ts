@@ -485,18 +485,136 @@ const UTC: Calendar = {
     new Date(Math.floor(d.getTime() / 60_000) * 60_000 + 60_000),
 };
 
+const WEEKDAY_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+/**
+ * A calendar in an IANA time zone, or null when the runtime doesn't know
+ * the zone. Wall times are read with `Intl`; the start of the next day or
+ * month is found from the zone's UTC offset there, so DST days work.
+ */
+function zonedCalendar(timeZone: string): Calendar | null {
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      weekday: "short",
+    });
+  } catch {
+    return null;
+  }
+  const wall = (ms: number) => {
+    const parts: Record<string, string> = {};
+    for (const p of format.formatToParts(new Date(ms))) parts[p.type] = p.value;
+    return {
+      year: Number(parts.year),
+      month: Number(parts.month),
+      day: Number(parts.day),
+      hour: Number(parts.hour),
+      minute: Number(parts.minute),
+      second: Number(parts.second),
+      weekday: WEEKDAY_INDEX[parts.weekday] ?? 0,
+    };
+  };
+  /** Milliseconds the zone is ahead of UTC at `ms`. */
+  const offsetAt = (ms: number) => {
+    const w = wall(ms);
+    const asUtc = Date.UTC(
+      w.year,
+      w.month - 1,
+      w.day,
+      w.hour,
+      w.minute,
+      w.second,
+    );
+    return asUtc - Math.floor(ms / 1000) * 1000;
+  };
+  /** The instant of a wall-clock midnight in the zone (the later side of a gap). */
+  const midnight = (year: number, month: number, day: number) => {
+    const guess = Date.UTC(year, month - 1, day);
+    const first = guess - offsetAt(guess);
+    const second = guess - offsetAt(first);
+    return new Date(Math.max(first, second));
+  };
+  const nextHour = (d: Date) => {
+    const w = wall(d.getTime());
+    const minuteStart = Math.floor(d.getTime() / 60_000) * 60_000;
+    return new Date(minuteStart + (60 - w.minute) * 60_000);
+  };
+  // Never step backwards (a repeated hour can map midnight behind `d`).
+  const ahead = (d: Date, next: Date) => next > d ? next : nextHour(d);
+  return {
+    get: (d) => {
+      const w = wall(d.getTime());
+      return {
+        second: w.second,
+        minute: w.minute,
+        hour: w.hour,
+        day: w.day,
+        month: w.month,
+        weekday: w.weekday,
+      };
+    },
+    nextMonth: (d) => {
+      const w = wall(d.getTime());
+      return ahead(
+        d,
+        w.month === 12
+          ? midnight(w.year + 1, 1, 1)
+          : midnight(w.year, w.month + 1, 1),
+      );
+    },
+    nextDay: (d) => {
+      const w = wall(d.getTime());
+      const next = new Date(Date.UTC(w.year, w.month - 1, w.day + 1));
+      return ahead(
+        d,
+        midnight(
+          next.getUTCFullYear(),
+          next.getUTCMonth() + 1,
+          next.getUTCDate(),
+        ),
+      );
+    },
+    nextHour,
+    nextMinute: (d) =>
+      new Date(Math.floor(d.getTime() / 60_000) * 60_000 + 60_000),
+  };
+}
+
+/** How far ahead a preview looks before giving up on a rare schedule. */
+const HORIZON_MS = 30 * 366 * 24 * 3_600_000;
+
 /**
  * The next `count` times a schedule fires strictly after `from`, in the
- * browser's time zone (or UTC). Fewer when it fires rarely or never
- * (e.g. February 30th).
+ * browser's time zone, UTC, or an IANA `timeZone` (serve's, so a preview
+ * matches when serve's scheduler fires; an unknown zone falls back to the
+ * browser's). Fewer when it fires rarely or never (e.g. February 30th).
  */
 export function nextFireTimes(
   schedule: CronSchedule,
   from: Date,
   count: number,
-  options: { utc?: boolean } = {},
+  options: { utc?: boolean; timeZone?: string } = {},
 ): Date[] {
-  const cal = options.utc ? UTC : LOCAL;
+  const cal = options.utc
+    ? UTC
+    : (options.timeZone ? zonedCalendar(options.timeZone) : null) ?? LOCAL;
+  const horizon = from.getTime() + HORIZON_MS;
   const sec = new Set(schedule.seconds);
   const min = new Set(schedule.minutes);
   const hr = new Set(schedule.hours);
@@ -514,7 +632,11 @@ export function nextFireTimes(
   const out: Date[] = [];
   const stepMs = schedule.hasSeconds ? 1000 : 60_000;
   let t = new Date(Math.floor(from.getTime() / stepMs) * stepMs + stepMs);
-  for (let guard = 0; out.length < count && guard < 200_000; guard++) {
+  for (
+    let guard = 0;
+    out.length < count && guard < 200_000 && t.getTime() <= horizon;
+    guard++
+  ) {
     const c = cal.get(t);
     if (!mon.has(c.month)) t = cal.nextMonth(t);
     else if (!dayMatches(c.day, c.weekday)) t = cal.nextDay(t);
@@ -528,6 +650,47 @@ export function nextFireTimes(
     }
   }
   return out;
+}
+
+/** The viewer's IANA time zone, when the runtime reports one. */
+export function viewerTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return undefined;
+  }
+}
+
+/** "Mon, Oct 12, 09:00" in `timeZone` (the viewer's when omitted or unknown). */
+export function formatFireTime(d: Date, timeZone?: string): string {
+  const options: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  };
+  try {
+    return d.toLocaleString(undefined, { ...options, timeZone });
+  } catch {
+    return d.toLocaleString(undefined, options);
+  }
+}
+
+/**
+ * A fire time as serve's scheduler sees it (`timeZone`), plus the viewer's
+ * own wall time when that reads differently. `local` is null when the
+ * zones agree or serve's zone is unknown.
+ */
+export function fireTimeLabels(
+  d: Date,
+  timeZone: string | undefined,
+  viewerZone: string | undefined = viewerTimeZone(),
+): { primary: string; local: string | null } {
+  const primary = formatFireTime(d, timeZone);
+  if (!timeZone || timeZone === viewerZone) return { primary, local: null };
+  const local = formatFireTime(d, viewerZone);
+  return { primary, local: local === primary ? null : local };
 }
 
 /** Common schedules offered as one-click starting points in the editor. */

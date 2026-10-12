@@ -553,6 +553,11 @@
 .trig-fire-list li span {
   color: var(--text-3);
 }
+.fire-local {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
 .trig-fire-head {
   padding: 0 18px 4px;
   font-family: "JetBrains Mono", monospace;
