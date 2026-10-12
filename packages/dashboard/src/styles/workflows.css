@@ -262,34 +262,3 @@
 .wf-detail-runs .run-row > :last-child {
   justify-self: end;
 }
-
-/* "View failure": one click from a failed run to its log */
-.failure-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  white-space: nowrap;
-  color: var(--danger);
-  text-decoration: none;
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  transition: background 0.15s;
-}
-.failure-link::after {
-  content: "\2192" / "";
-}
-.failure-link:hover {
-  background: var(--danger-bg);
-}
-.failure-link:focus-visible {
-  outline: 2px solid var(--danger);
-  outline-offset: 2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .failure-link {
-    transition: none;
-  }
-}

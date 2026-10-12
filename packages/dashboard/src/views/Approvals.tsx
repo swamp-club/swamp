@@ -17,10 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useState } from "react";
+import {
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { useRequest } from "../client/useRequest";
-import { extractArray } from "../client/extract";
+import { extractObject } from "../client/extract";
 import {
   activeRunIds,
   type ResumableRun,
@@ -28,17 +35,42 @@ import {
 } from "../client/resume_state";
 import { useActiveRunsRefetch } from "../client/useActiveRunsRefetch";
 import type { HealthSnapshot } from "../client/useHealthStream";
-import { StatusPill } from "../components/StatusPill";
+import { useRequestAllPages } from "../client/useRequestAllPages";
+import { useWorkflowCatalog } from "../client/useWorkflowCatalog";
+import { summariesByName, useRunSummary } from "../client/run_summary";
 import { ResumeAction } from "../components/ResumeAction";
 import { CancelRunAction } from "../components/CancelRunAction";
 import type { CancelOutcome } from "../components/cancel_confirm";
 import {
   type ApprovalInfo,
   expiredApprovals,
+  type ExpiredGate,
   pendingApprovals,
 } from "../client/approvals";
 import { SignalWaitsPanel } from "../components/SignalWaitsPanel";
 import { signalWaitRows } from "../client/signal_wait_state";
+import { RouteLink } from "../components/RouteLink";
+import { RunHistoryBar } from "../components/RunHistoryBar";
+import { type Stat, StatPills } from "../components/StatPills";
+import { EmptyState } from "../components/EmptyState";
+import { FilterBar, useWorkflowFilter } from "../components/FilterBar";
+import { GateDetails } from "../components/GateDetails";
+import {
+  SkeletonList,
+  SkeletonPills,
+  SkeletonRunHistory,
+} from "../components/Skeleton";
+import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
+import { filterRowsByWorkflow } from "../lib/run_filters";
+import { formatWait, oldestFirst } from "../lib/wait_order";
+import type { WorkflowJobDef } from "../lib/gate_dag";
+import {
+  formatAbsoluteTime,
+  formatCount,
+  formatRelativeTime,
+} from "../lib/format";
+import "../styles/approvals.css";
+import "../styles/mini-dag.css";
 
 interface ApprovalsProps {
   /** Serve's live health snapshot; its active runs are runs serve drives. */
@@ -47,13 +79,36 @@ interface ApprovalsProps {
   onApprovalsChanged?: () => void;
 }
 
+/** A suspended run as the run search lists it. */
+interface SuspendedRun extends ResumableRun {
+  startedAt?: string;
+}
+
+const HISTORY_SLOTS = 12;
+/** A wait longer than this reads as overdue. */
+const LONG_WAIT_MS = 60 * 60 * 1000;
+
+type Decision = "approve" | "reject";
+
+const gateKey = (g: { runId: string; stepName: string }) =>
+  `${g.runId}\u0000${g.stepName}`;
+
 export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const { request } = useSwamp();
-  const { data, refetch } = useRequest("workflow.approvals");
-  const { data: suspendedData, refetch: refetchSuspended } = useRequest(
-    "workflow.run.search",
-    { status: "suspended", limit: 200 },
-  );
+  const catalog = useWorkflowCatalog(health ?? null);
+  const [filter, setFilter] = useWorkflowFilter();
+
+  const approvalsRequest = useRequest("workflow.approvals");
+  const { data, refetch } = approvalsRequest;
+  // Every suspended run, page by page: a single capped page would drop
+  // runs awaiting resume once there are more than the cap.
+  const {
+    data: suspendedData,
+    error: suspendedError,
+    refetch: refetchSuspended,
+  } = useRequestAllPages<SuspendedRun>("workflow.run.search", {
+    status: "suspended",
+  });
   // Refused to a caller who may read no workflow: nothing is listed then.
   // Refetched only with the gates, never on a timer: the listing settles
   // expired waits as it reads.
@@ -62,12 +117,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     { includeSignalled: true },
   );
   const signalWaits = signalWaitRows(waitsData);
-  const approvals = pendingApprovals(data);
-  const expired = expiredApprovals(data);
-  const suspendedRuns = extractArray<ResumableRun>(suspendedData);
-  const awaitingResume = suspendedRuns.filter(
-    (run) => resumeStateFor(run) !== null,
-  );
+  const suspendedRuns = useMemo(() => suspendedData ?? [], [suspendedData]);
   // Runs serve drives now, whoever approved them (swamp-club#3005).
   const servedRuns = activeRunIds(health?.activeRuns);
   const refetchGatesAndRuns = useCallback(() => {
@@ -91,6 +141,20 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
   const [error, setError] = useState<string | null>(null);
   // Held here, not by the row: the refetch removes the cancelled run's row.
   const [cancelled, setCancelled] = useState<CancelOutcome | null>(null);
+  // Decisions in flight, by gate: both buttons wait until it lands.
+  const [deciding, setDeciding] = useState<ReadonlyMap<string, Decision>>(
+    () => new Map(),
+  );
+  const markDeciding = useCallback(
+    (a: ApprovalInfo, decision: Decision | null) =>
+      setDeciding((prev) => {
+        const next = new Map(prev);
+        if (decision) next.set(gateKey(a), decision);
+        else next.delete(gateKey(a));
+        return next;
+      }),
+    [],
+  );
 
   const handleCancelled = useCallback(
     (outcome: CancelOutcome) => {
@@ -104,6 +168,7 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
     async (a: ApprovalInfo) => {
       setError(null);
       setNotice(null);
+      markDeciding(a, "approve");
       try {
         const result = await request<{ data?: { autoResumed?: boolean } }>(
           "workflow.approve",
@@ -122,15 +187,17 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
           `Approve failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      markDeciding(a, null);
       refresh();
     },
-    [request, refresh],
+    [request, refresh, markDeciding],
   );
 
   const handleReject = useCallback(
     async (a: ApprovalInfo) => {
       setError(null);
       setNotice(null);
+      markDeciding(a, "reject");
       try {
         await request("workflow.reject", {
           workflowIdOrName: a.workflowName,
@@ -142,36 +209,149 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
           `Reject failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      markDeciding(a, null);
       refresh();
     },
-    [request, refresh],
+    [request, refresh, markDeciding],
   );
 
-  const totalGates = approvals.length;
+  // Longest wait first in every list: the oldest gate is the most urgent.
+  const filterRows = <T,>(rows: readonly T[], nameOf: (row: T) => string) =>
+    filterRowsByWorkflow(
+      rows,
+      filter,
+      nameOf,
+      catalog.byName,
+      catalog.facetsOf,
+    );
+  const allPending = oldestFirst(pendingApprovals(data), (a) => a.suspendedAt);
+  const allExpired = oldestFirst(expiredApprovals(data), (g) => g.suspendedAt);
+  const allAwaiting = oldestFirst(
+    suspendedRuns.filter((run) => resumeStateFor(run) !== null),
+    (run) => run.startedAt,
+  );
+  const pending = filterRows(allPending, (a) => a.workflowName);
+  const expired = filterRows(allExpired, (g) => g.workflowName);
+  const awaitingResume = filterRows(allAwaiting, (r) => r.workflowName);
+  const waits = filterRows(signalWaits, (w) => w.workflowName);
+
+  const gatesLoaded = data !== null;
+  const gatesError = approvalsRequest.error && !gatesLoaded
+    ? approvalsRequest.error
+    : null;
+  const filtering = isFilterActive(filter);
+  const allCount = allPending.length + allExpired.length + allAwaiting.length +
+    signalWaits.length;
+  const shownCount = pending.length + expired.length + awaitingResume.length +
+    waits.length;
+
+  // One summary for every workflow on the page, for the history strips.
+  // Keyed by the names, so a refetch listing the same workflows keeps the
+  // summary request as it is.
+  const namesKey = [
+    ...new Set(
+      [...allPending, ...allExpired, ...allAwaiting].map((r) => r.workflowName),
+    ),
+  ].sort().join("\u0000");
+  const workflowNames = useMemo(
+    () => (namesKey ? namesKey.split("\u0000") : []),
+    [namesKey],
+  );
+  const historyRequest = useRunSummary(
+    { workflows: workflowNames, recentLimit: HISTORY_SLOTS },
+    { enabled: workflowNames.length > 0 },
+  );
+  const history = summariesByName(historyRequest.summary);
+  const historyFor = (workflowName: string): ReactNode => {
+    const recent = history.get(workflowName)?.recent;
+    if (recent) {
+      return (
+        <RunHistoryBar
+          runs={recent}
+          workflowName={workflowName}
+          slots={HISTORY_SLOTS}
+          height={12}
+          noun={`runs of ${workflowName}`}
+        />
+      );
+    }
+    return historyRequest.loading
+      ? <SkeletonRunHistory slots={HISTORY_SLOTS} height={12} />
+      : null;
+  };
+
+  const awaitingCount = awaitingResume.length +
+    waits.filter((w) => w.awaitingResume).length;
+  const stats: Stat[] = [
+    {
+      label: "pending",
+      value: formatCount(pending.length),
+      tone: pending.length > 0 ? "warning" : "neutral",
+      title: "Gates waiting for a decision",
+    },
+    {
+      label: "expired",
+      value: formatCount(expired.length),
+      tone: expired.length > 0 ? "danger" : "neutral",
+      title: "Gates past their timeout: they can only be cancelled",
+    },
+    {
+      label: "awaiting resume",
+      value: formatCount(awaitingCount),
+      tone: awaitingCount > 0 ? "running" : "neutral",
+      title: "Approved or signalled runs waiting to be resumed",
+    },
+  ];
+  if (signalWaits.length > 0) {
+    stats.push({
+      label: "signal waits",
+      value: formatCount(waits.length),
+      title: "Runs waiting for a signal",
+    });
+  }
+
+  const clearFilters = (
+    <button
+      type="button"
+      className="btn-sm"
+      onClick={() => setFilter(EMPTY_FILTER)}
+    >
+      Clear filters
+    </button>
+  );
 
   return (
-    <>
+    <div className="approvals-page">
       <div className="page-header">
         <h1>Approvals</h1>
         <div className="header-right">
-          {totalGates > 0 && (
-            <div
-              className="health-pill"
-              style={{
-                background: "var(--warning-bg)",
-                color: "var(--warning)",
-              }}
-            >
-              {totalGates} pending
-            </div>
-          )}
+          {gatesLoaded && suspendedData !== null
+            ? <StatPills stats={stats} label="Approvals summary" />
+            : !gatesError && <SkeletonPills count={3} />}
         </div>
       </div>
 
-      {notice && <div className="resume-label">{notice}</div>}
-      {error && <div className="resume-error">{error}</div>}
+      <FilterBar
+        filter={filter}
+        onChange={setFilter}
+        prefixes={catalog.prefixes}
+        webhooks={catalog.webhookRoutes}
+        placeholder="Search workflows"
+        shown={shownCount}
+        total={allCount}
+        noun="items"
+      />
+
+      <div aria-live="polite" className="approvals-notices">
+        {notice && <div className="approvals-notice">{notice}</div>}
+        {error && (
+          <div className="approvals-notice is-error" role="alert">
+            {error}
+          </div>
+        )}
+      </div>
       {cancelled && (
-        <div className="resume-action">
+        <div className="resume-action approvals-cancelled">
           <span className="resume-label">{cancelled.message}</span>
           {cancelled.nestedRunsLeft.map((run) => (
             <div key={run.runId}>
@@ -186,158 +366,119 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
         </div>
       )}
 
-      <div className="panel">
-        {approvals.length === 0
-          ? <div className="loading">No pending approvals</div>
-          : (
-            approvals.map((a) => (
-              <div
-                className="approval-row"
-                key={`${a.runId}-${a.stepName}`}
-              >
-                <div>
-                  <div
-                    style={{
-                      fontWeight: 500,
-                      fontSize: "0.85rem",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    {a.workflowName}
-                    <StatusPill status="suspended" />
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "0.82rem",
-                      color: "var(--text-2)",
-                      marginTop: 2,
-                    }}
-                  >
-                    Step: <strong>{a.stepName}</strong>
-                  </div>
-                  {a.prompt && (
-                    <div
-                      style={{
-                        fontSize: "0.78rem",
-                        color: "var(--text-3)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {a.prompt}
-                    </div>
-                  )}
-                  {a.parentRun && (
-                    <div
-                      style={{
-                        fontSize: "0.78rem",
-                        color: "var(--text-3)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {a.parentWaiting
-                        ? `Nested run of ${a.parentRun.workflowName}: resume the parent after this run finishes`
-                        : `Nested run of ${a.parentRun.workflowName}: the parent no longer waits on it`}
-                    </div>
-                  )}
-                </div>
-                <div className="approval-actions">
-                  <button
-                    type="button"
-                    className="btn-sm btn-approve"
-                    onClick={() => handleApprove(a)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-sm btn-reject"
-                    onClick={() => handleReject(a)}
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))
+      <section className="panel" aria-labelledby="approvals-pending">
+        <div className="panel-header">
+          <h2 className="panel-title" id="approvals-pending">
+            Pending{" "}
+            {gatesLoaded && (
+              <span className="panel-count">{pending.length}</span>
+            )}
+          </h2>
+          {gatesLoaded && pending.length > 1 && (
+            <span className="approvals-order">Longest waiting first</span>
           )}
-      </div>
+        </div>
+        {gatesError
+          ? (
+            <EmptyState
+              title="Couldn't load approvals"
+              action={
+                <button type="button" className="btn-sm" onClick={refresh}>
+                  Try again
+                </button>
+              }
+            >
+              {gatesError}
+            </EmptyState>
+          )
+          : !gatesLoaded
+          ? <SkeletonList rows={3} label="Loading approvals" />
+          : pending.length === 0
+          ? (
+            filtering && allPending.length > 0
+              ? (
+                <EmptyState
+                  title="No pending approvals match these filters"
+                  action={clearFilters}
+                >
+                  {allPending.length} pending{" "}
+                  {allPending.length === 1 ? "gate is" : "gates are"}{" "}
+                  hidden by the filters.
+                </EmptyState>
+              )
+              : (
+                <EmptyState title="No pending approvals">
+                  Gates appear here when a run reaches an approval step.
+                </EmptyState>
+              )
+          )
+          : (
+            <ul className="approval-list">
+              {pending.map((a) => (
+                <GateRow
+                  key={gateKey(a)}
+                  gate={a}
+                  waitingSince={a.suspendedAt}
+                  waitingLabel="Waiting"
+                  history={historyFor(a.workflowName)}
+                  note={a.parentRun &&
+                    (a.parentWaiting
+                      ? `Nested run of ${a.parentRun.workflowName}: resume the parent after this run finishes`
+                      : `Nested run of ${a.parentRun.workflowName}: the parent no longer waits on it`)}
+                  actions={
+                    <DecisionButtons
+                      gate={a}
+                      deciding={deciding.get(gateKey(a)) ?? null}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                    />
+                  }
+                />
+              ))}
+            </ul>
+          )}
+      </section>
 
       {expired.length > 0 && (
-        <div className="panel" style={{ marginTop: 14 }}>
+        <section className="panel approvals-panel" aria-labelledby="ap-exp">
           <div className="panel-header">
-            <div className="panel-title">
+            <h2 className="panel-title" id="ap-exp">
               Expired <span className="panel-count">{expired.length}</span>
-            </div>
+            </h2>
+            <span className="approvals-order">
+              Can no longer be approved or rejected
+            </span>
           </div>
-          {expired.map((gate) => (
-            <div
-              className="approval-row"
-              key={`${gate.runId}-${gate.stepName}`}
-            >
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 500,
-                    fontSize: "0.85rem",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  {gate.workflowName}
-                  <span className="mono" style={{ color: "var(--text-3)" }}>
-                    {gate.runId.slice(0, 8)}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    fontSize: "0.82rem",
-                    color: "var(--text-2)",
-                    marginTop: 2,
-                  }}
-                >
-                  Step: <strong>{gate.stepName}</strong>
-                </div>
-                <div
-                  style={{
-                    fontSize: "0.78rem",
-                    color: "var(--text-3)",
-                    marginTop: 2,
-                  }}
-                >
-                  Expired {new Date(gate.expiredAt).toLocaleString()}{" "}
-                  ({gate.timeoutSeconds}s timeout) — it can no longer be
-                  approved or rejected
-                </div>
-                {gate.parentRun && (
-                  <div
-                    style={{
-                      fontSize: "0.78rem",
-                      color: "var(--text-3)",
-                      marginTop: 2,
-                    }}
-                  >
-                    {gate.parentWaiting
-                      ? `Nested run of ${gate.parentRun.workflowName}: the parent stays suspended after this cancel; cancel or resume it separately`
-                      : `Nested run of ${gate.parentRun.workflowName}: the parent no longer waits on it`}
-                  </div>
-                )}
-              </div>
-              <CancelRunAction
-                runId={gate.runId}
-                workflowName={gate.workflowName}
-                workflowIdOrName={gate.workflowId}
-                onCancelled={handleCancelled}
-                onRefused={refresh}
+          <ul className="approval-list">
+            {expired.map((gate) => (
+              <GateRow
+                key={gateKey(gate)}
+                gate={gate}
+                waitingSince={gate.suspendedAt}
+                waitingLabel="Waited"
+                expired={gate}
+                history={historyFor(gate.workflowName)}
+                note={gate.parentRun &&
+                  (gate.parentWaiting
+                    ? `Nested run of ${gate.parentRun.workflowName}: the parent stays suspended after this cancel; cancel or resume it separately`
+                    : `Nested run of ${gate.parentRun.workflowName}: the parent no longer waits on it`)}
+                actions={
+                  <CancelRunAction
+                    runId={gate.runId}
+                    workflowName={gate.workflowName}
+                    workflowIdOrName={gate.workflowId}
+                    onCancelled={handleCancelled}
+                    onRefused={refresh}
+                  />
+                }
               />
-            </div>
-          ))}
-        </div>
+            ))}
+          </ul>
+        </section>
       )}
 
       <SignalWaitsPanel
-        rows={signalWaits}
+        rows={waits}
         renderResume={(row) => (
           <ResumeAction
             run={{
@@ -353,51 +494,287 @@ export function Approvals({ health, onApprovalsChanged }: ApprovalsProps) {
         )}
       />
 
-      {awaitingResume.length > 0 && (
-        <div className="panel" style={{ marginTop: 14 }}>
-          <div className="panel-header">
-            <div className="panel-title">
-              Awaiting resume{" "}
-              <span className="panel-count">{awaitingResume.length}</span>
-            </div>
-          </div>
-          {awaitingResume.map((run) => (
-            <div className="approval-row" key={run.runId}>
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontWeight: 500,
-                    fontSize: "0.85rem",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                  }}
-                >
-                  {run.workflowName}
-                  <span className="mono" style={{ color: "var(--text-3)" }}>
-                    {run.runId.slice(0, 8)}
-                  </span>
-                </div>
-                <ResumeAction
-                  run={run}
-                  onResumed={refresh}
-                  resuming={resumingRuns.has(run.runId) ||
-                    servedRuns.has(run.runId)}
-                />
-              </div>
-              {/* Serve is already driving a run it resumes. */}
-              {!resumingRuns.has(run.runId) && !servedRuns.has(run.runId) && (
-                <CancelRunAction
-                  runId={run.runId}
-                  workflowName={run.workflowName}
-                  onCancelled={handleCancelled}
-                  onRefused={refresh}
-                />
-              )}
-            </div>
-          ))}
+      {suspendedError && suspendedData === null && (
+        <div className="approvals-notice is-error" role="alert">
+          Couldn't load runs awaiting resume: {suspendedError}
         </div>
       )}
-    </>
+
+      {awaitingResume.length > 0 && (
+        <section className="panel approvals-panel" aria-labelledby="ap-res">
+          <div className="panel-header">
+            <h2 className="panel-title" id="ap-res">
+              Awaiting resume{" "}
+              <span className="panel-count">{awaitingResume.length}</span>
+            </h2>
+            <span className="approvals-order">Oldest run first</span>
+          </div>
+          <ul className="approval-list">
+            {awaitingResume.map((run) => {
+              const driven = resumingRuns.has(run.runId) ||
+                servedRuns.has(run.runId);
+              return (
+                <li className="approval-item" key={run.runId}>
+                  <div className="approval-main">
+                    <span className="approval-toggle-spacer" />
+                    <div className="approval-body">
+                      <div className="approval-title">
+                        <WorkflowLink name={run.workflowName} />
+                        <RunLink
+                          workflowName={run.workflowName}
+                          runId={run.runId}
+                        />
+                      </div>
+                      {run.startedAt && (
+                        <div className="approval-meta">
+                          <time
+                            dateTime={run.startedAt}
+                            title={formatAbsoluteTime(run.startedAt)}
+                          >
+                            Started {formatRelativeTime(run.startedAt)}
+                          </time>
+                        </div>
+                      )}
+                      <ResumeAction
+                        run={run}
+                        onResumed={refresh}
+                        resuming={driven}
+                      />
+                    </div>
+                    <div className="approval-history">
+                      {historyFor(run.workflowName)}
+                    </div>
+                    {/* Serve is already driving a run it resumes. */}
+                    <div className="approval-side">
+                      {!driven && (
+                        <CancelRunAction
+                          runId={run.runId}
+                          workflowName={run.workflowName}
+                          onCancelled={handleCancelled}
+                          onRefused={refresh}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function WorkflowLink({ name }: { name: string }) {
+  return (
+    <RouteLink
+      className="approval-workflow"
+      title={`Open workflow ${name}`}
+      to={{
+        view: "workflows",
+        detail: { kind: "workflow", workflowName: name },
+      }}
+    >
+      {name}
+    </RouteLink>
+  );
+}
+
+function RunLink(
+  { workflowName, runId }: { workflowName: string; runId: string },
+) {
+  return (
+    <RouteLink
+      className="mono approval-run"
+      title={`Open run ${runId}`}
+      to={{ view: "workflows", detail: { kind: "run", workflowName, runId } }}
+    >
+      {runId.slice(0, 8)}
+    </RouteLink>
+  );
+}
+
+/** "Waiting 2h 13m", with the exact start on hover. */
+function WaitTime({ label, since }: { label: string; since: string }) {
+  const t = Date.parse(since);
+  if (Number.isNaN(t)) return null;
+  const elapsed = Date.now() - t;
+  return (
+    <time
+      dateTime={since}
+      title={`Since ${formatAbsoluteTime(since)}`}
+      className={`approval-wait${elapsed > LONG_WAIT_MS ? " is-long" : ""}`}
+    >
+      {label} {formatWait(elapsed)}
+    </time>
+  );
+}
+
+function DecisionButtons(
+  { gate, deciding, onApprove, onReject }: {
+    gate: ApprovalInfo;
+    deciding: Decision | null;
+    onApprove: (gate: ApprovalInfo) => Promise<void>;
+    onReject: (gate: ApprovalInfo) => Promise<void>;
+  },
+) {
+  const busy = deciding !== null;
+  const what = `${gate.stepName} on ${gate.workflowName}`;
+  return (
+    <div className="approval-actions" aria-busy={busy}>
+      <button
+        type="button"
+        className="btn-sm btn-approve"
+        disabled={busy}
+        aria-label={`Approve ${what}`}
+        onClick={() => onApprove(gate)}
+      >
+        {deciding === "approve" ? "Approving…" : "Approve"}
+      </button>
+      <button
+        type="button"
+        className="btn-sm btn-reject"
+        disabled={busy}
+        aria-label={`Reject ${what}`}
+        onClick={() => onReject(gate)}
+      >
+        {deciding === "reject" ? "Rejecting…" : "Reject"}
+      </button>
+    </div>
+  );
+}
+
+interface GateRowProps {
+  gate: {
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    prompt?: string;
+  };
+  waitingSince?: string;
+  waitingLabel: string;
+  expired?: ExpiredGate;
+  history: ReactNode;
+  note?: string | false;
+  actions: ReactNode;
+}
+
+/**
+ * One gate: what it is and how long it has waited, its workflow's recent
+ * runs and its actions. Expanding it shows the run, the gated step, the
+ * prompt and the workflow's jobs around the gate, without leaving the
+ * page.
+ */
+function GateRow(
+  {
+    gate,
+    waitingSince,
+    waitingLabel,
+    expired,
+    history,
+    note,
+    actions,
+  }: GateRowProps,
+) {
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const toggleFromRow = (e: MouseEvent<HTMLDivElement>) => {
+    if ((e.target as Element).closest("a, button, code, input, textarea")) {
+      return;
+    }
+    if (globalThis.getSelection?.()?.toString()) return;
+    setOpen((v) => !v);
+  };
+  return (
+    <li className={`approval-item${open ? " is-open" : ""}`}>
+      <div className="approval-main" onClick={toggleFromRow}>
+        <button
+          type="button"
+          className="approval-toggle"
+          aria-expanded={open}
+          aria-controls={detailsId}
+          aria-label={`${
+            open ? "Hide" : "Show"
+          } details for ${gate.stepName} on ${gate.workflowName}`}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6 3.5L10.5 8 6 12.5" />
+          </svg>
+        </button>
+        <div className="approval-body">
+          <div className="approval-title">
+            <WorkflowLink name={gate.workflowName} />
+            <span className="approval-sep" aria-hidden="true">/</span>
+            <span className="mono approval-step">{gate.stepName}</span>
+          </div>
+          <div className="approval-meta">
+            <RunLink workflowName={gate.workflowName} runId={gate.runId} />
+            {waitingSince && (
+              <WaitTime label={waitingLabel} since={waitingSince} />
+            )}
+            {expired && (
+              <span title={`Expired ${formatAbsoluteTime(expired.expiredAt)}`}>
+                timed out after {formatWait(expired.timeoutSeconds * 1000)}
+              </span>
+            )}
+          </div>
+          {gate.prompt && !open && (
+            <div className="approval-prompt" title={gate.prompt}>
+              {gate.prompt}
+            </div>
+          )}
+          {note && <div className="approval-note">{note}</div>}
+        </div>
+        <div className="approval-history">{history}</div>
+        <div className="approval-side">{actions}</div>
+      </div>
+      <div id={detailsId} className="approval-details" hidden={!open}>
+        {open && (
+          <GateContextLoader
+            workflowName={gate.workflowName}
+            runId={gate.runId}
+            stepName={gate.stepName}
+            prompt={gate.prompt}
+          />
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** Reads the gated workflow's jobs only once a row is expanded. */
+function GateContextLoader(
+  { workflowName, runId, stepName, prompt }: {
+    workflowName: string;
+    runId: string;
+    stepName: string;
+    prompt?: string;
+  },
+) {
+  const { data, error } = useRequest("workflow.get", {
+    workflowIdOrName: workflowName,
+  });
+  const workflow = extractObject<{ jobs?: WorkflowJobDef[] }>(data);
+  return (
+    <GateDetails
+      workflowName={workflowName}
+      stepName={stepName}
+      prompt={prompt}
+      runLink={<RunLink workflowName={workflowName} runId={runId} />}
+      jobs={workflow ? workflow.jobs ?? [] : null}
+      error={error}
+    />
   );
 }

@@ -28,7 +28,13 @@ import {
   viewForDetail,
 } from "../routes.ts";
 
-let currentState: RouteState = parseRoute(location.pathname);
+// `location` is absent outside a browser (deno test renders components that
+// import this module); start at the overview there.
+function currentPathname(): string {
+  return globalThis.location?.pathname ?? "/";
+}
+
+let currentState: RouteState = parseRoute(currentPathname());
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -54,11 +60,11 @@ function pushState(next: RouteState) {
 }
 
 function onPopState() {
-  currentState = parseRoute(location.pathname);
+  currentState = parseRoute(currentPathname());
   notify();
 }
 
-addEventListener("popstate", onPopState);
+globalThis.addEventListener?.("popstate", onPopState);
 
 /**
  * Navigates in-app to a route. Links use this directly so a view deep in the
