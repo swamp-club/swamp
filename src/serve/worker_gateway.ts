@@ -455,6 +455,7 @@ export class WorkerGateway {
     options?: {
       signal?: AbortSignal;
       onEvent?: (event: RpcStreamEvent) => void;
+      onRegistered?: () => void;
     },
   ): Promise<DispatchResult> {
     const entry = this.#workers.get(name);
@@ -487,6 +488,10 @@ export class WorkerGateway {
     const dispatchStart = performance.now();
     entry.activeDispatchIds.push(params.dispatchId);
     entry.status = "busy";
+    // Kept in the same synchronous turn as the push: the dispatcher drops
+    // its reservation here, and an await in between would count the
+    // dispatch twice.
+    options?.onRegistered?.();
     await this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,

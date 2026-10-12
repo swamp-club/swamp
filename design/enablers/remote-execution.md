@@ -985,6 +985,12 @@ picks the worker with the most free slots, then by name for determinism
 (`scheduleStep` in `src/domain/remote/scheduler.ts`). The `DispatchRegistry`
 tracks N active dispatches per worker, keyed by `(workerName, dispatchId)`.
 
+A slot is counted once. When the scheduler places a step, the `DispatchService`
+holds a reservation on that worker's slot until the gateway lists the dispatch
+in the worker's `activeDispatchIds`; from then on the dispatch itself occupies
+the slot and the reservation is gone. A worker with a free slot therefore
+takes a step that arrives while its other dispatches are running.
+
 **Per-dispatch credentials**: each runner has its own credential from
 `SessionCredentialService.issueForDispatch(workerId, dispatchId)`, separate
 from the control-channel credential (above). The service refreshes it
