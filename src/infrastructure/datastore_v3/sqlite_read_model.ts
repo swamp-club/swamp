@@ -49,12 +49,19 @@ import {
 } from "../../domain/datastore_v3/catalog_projection.ts";
 import type { ChunkStore } from "../../domain/datastore_v3/chunk_store.ts";
 import type { Commit } from "../../domain/datastore_v3/commit.ts";
-import type {
-  CommitChange,
-  CommitStore,
+import {
+  type CommitChange,
+  CommitsCompactedError,
+  type CommitStore,
 } from "../../domain/datastore_v3/commit_store.ts";
 import type { PutOp } from "../../domain/datastore_v3/op.ts";
-import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
+import {
+  decideFile,
+  finalKeyStates,
+  type KeyChange,
+} from "../../domain/datastore_v3/materialisation.ts";
+import type { BlobRef } from "../../domain/datastore_v3/blob_ref.ts";
+import { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 import {
   type CatchUpResult,
   type LiveRecord,
@@ -62,7 +69,7 @@ import {
   ReadModelApplyError,
   ReadModelIncompleteError,
 } from "../../domain/datastore_v3/read_model.ts";
-import type { RecordKey } from "../../domain/datastore_v3/record_key.ts";
+import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import {
   type Namespace,
   restoreNamespace,
@@ -116,12 +123,6 @@ export interface SqliteReadModelOptions {
   readonly catalog?: ReadModelCatalog;
 }
 
-/** A key's final state in one commit: the put that leaves it, or null. */
-interface KeyChange {
-  readonly key: RecordKey;
-  readonly put: PutOp | null;
-}
-
 /** The {@link ReadModel} over SQLite state and the local filesystem. */
 export class SqliteReadModel implements ReadModel {
   readonly #commitStore: CommitStore;
@@ -173,10 +174,17 @@ export class SqliteReadModel implements ReadModel {
       let applied = 0;
       for (;;) {
         signal.throwIfAborted();
-        const page = await this.#commitStore.changesSince(
-          this.#state.cursor(),
-          this.#pageSize,
-        );
+        let page;
+        try {
+          page = await this.#commitStore.changesSince(
+            this.#state.cursor(),
+            this.#pageSize,
+          );
+        } catch (error) {
+          if (!(error instanceof CommitsCompactedError)) throw error;
+          await this.#loadBase(signal);
+          continue;
+        }
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, true, signal)) applied++;
@@ -202,12 +210,19 @@ export class SqliteReadModel implements ReadModel {
         signal.throwIfAborted();
         const from = this.#state.appliedSeq(namespace, partition.toString()) +
           1;
-        const page = await this.#commitStore.readPartition(
-          namespace,
-          partition,
-          from,
-          this.#pageSize,
-        );
+        let page;
+        try {
+          page = await this.#commitStore.readPartition(
+            namespace,
+            partition,
+            from,
+            this.#pageSize,
+          );
+        } catch (error) {
+          if (!(error instanceof CommitsCompactedError)) throw error;
+          await this.#loadBase(signal);
+          continue;
+        }
         for (const change of page) {
           signal.throwIfAborted();
           if (await this.#apply(change, false, signal)) applied++;
@@ -374,14 +389,67 @@ export class SqliteReadModel implements ReadModel {
     change: KeyChange,
     signal: AbortSignal,
   ): Promise<FileOwnership | undefined> {
-    const root = this.#cacheRoot(commit.namespace);
     const key = change.key.toString();
+    const path = await this.#target(
+      commit.namespace,
+      change.key,
+      change.put !== null,
+      `commit ${commit.seq} of ${commit.partition.toString()}`,
+    );
+    if (path === undefined) return undefined;
+
+    const owner = commit.partition.toString();
+    const decision = decideFile(
+      this.#state.fileOwnership(commit.namespace, key),
+      owner,
+      position,
+      change.put !== null,
+    );
+    if (decision.kind === "keep") return undefined;
+    if (decision.kind === "remove" || change.put === null) {
+      await removeRecordFile(path);
+      await cleanupEmptyParentDirs(path, this.#cacheRoot(commit.namespace));
+      return decision.kind === "remove" ? decision.next : undefined;
+    }
+    const blob = "blob" in change.put.content
+      ? change.put.content.blob
+      : undefined;
+    if (blob?.legacyKey !== undefined) {
+      throw new ReadModelApplyError(
+        commit.namespace,
+        commit.partition.toString(),
+        commit.seq,
+        legacyBlobDetail(key, blob.legacyKey.toString()),
+      );
+    }
+    await this.#writeContent(
+      commit.namespace,
+      path,
+      change.put.content,
+      signal,
+    );
+    return decision.next;
+  }
+
+  /**
+   * The path to write (`isPut`) or remove a key at, or undefined when the
+   * key must be left alone: a refused key, a file and a directory claiming
+   * one path, or a path resolving into the state directory. `source` names
+   * where the change came from, for the log.
+   */
+  async #target(
+    namespace: string,
+    recordKey: RecordKey,
+    isPut: boolean,
+    source: string,
+  ): Promise<string | undefined> {
+    const root = this.#cacheRoot(namespace);
+    const key = recordKey.toString();
     const skip = (reason: string): undefined => {
-      logger
-        .warn`Not materialising ${key} from commit ${commit.seq} of ${commit.partition.toString()}: ${reason}`;
+      logger.warn`Not materialising ${key} from ${source}: ${reason}`;
       return undefined;
     };
-    const refused = refusedKeyReason(change.key, root, this.#stateDir);
+    const refused = refusedKeyReason(recordKey, root, this.#stateDir);
     if (refused !== undefined) return skip(refused);
     assertContainedPath(key, root);
     const segments = key.split("/");
@@ -391,9 +459,9 @@ export class SqliteReadModel implements ReadModel {
     // indexed. Under a file, a tombstone has nothing to remove.
     const conflict = await pathConflict(root, segments);
     if (conflict?.kind === "under-file") {
-      return change.put === null ? undefined : skip(conflict.reason);
+      return isPut ? skip(conflict.reason) : undefined;
     }
-    if (conflict?.kind === "directory" && change.put !== null) {
+    if (conflict?.kind === "directory" && isPut) {
       return skip(conflict.reason);
     }
     await assertSafePath(path, root);
@@ -402,67 +470,135 @@ export class SqliteReadModel implements ReadModel {
     if (await resolvesInside(path, this.#stateDir)) {
       return skip("it resolves into the read model's state directory");
     }
+    return path;
+  }
 
-    const owner = commit.partition.toString();
-    const before = this.#state.fileOwnership(commit.namespace, key);
-    if (change.put === null) {
-      if (before !== undefined && !(before.present && before.owner === owner)) {
-        return undefined;
-      }
-      await removeRecordFile(path);
-      await cleanupEmptyParentDirs(path, root);
-      return before === undefined ? undefined : { ...before, present: false };
+  /**
+   * Loads the compacted base (swamp-club#3258), for a checkout whose cursor
+   * is below the compaction point, or a partition catch-up from at or below
+   * its compacted seq. The commits it needs are gone, so it reconciles with
+   * the base instead and leaves the cursor at the point:
+   *
+   * 1. Stage the base in the state database, page by page. A page read at
+   *    another compaction point means the base changed mid-read: start
+   *    again.
+   * 2. Files: record which keys it is about to touch, then remove the files
+   *    the base does not show, and write those whose put differs from the
+   *    state's, through the same guards as a commit.
+   * 3. Catalog: record which names it is about to touch, then replace each
+   *    name's rows and forward with the base's.
+   * 4. One state transaction swaps the base in and moves the cursor.
+   *
+   * Each step can run again, and the state moves last, so a crash anywhere
+   * repeats the load. The touched keys and names make a retry against a
+   * newer base reconcile what an earlier attempt wrote.
+   */
+  async #loadBase(signal: AbortSignal): Promise<void> {
+    let point: number | undefined;
+    for (let staged = false; !staged;) {
+      this.#state.beginLoad();
+      point = undefined;
+      let after: string | undefined;
+      staged = true;
+      do {
+        signal.throwIfAborted();
+        const page = await this.#commitStore.readCompactedBase(
+          after,
+          this.#pageSize,
+        );
+        if (point !== undefined && page.point !== point) {
+          staged = false;
+          break;
+        }
+        point = page.point;
+        this.#state.stageBase(page.entries);
+        after = page.next;
+      } while (after !== undefined);
     }
-    if (before !== undefined && position <= before.mark) return undefined;
-    const content = change.put.content;
-    if ("inline" in content) {
-      await writeFileDurably(path, decodeBase64(content.inline), signal);
-    } else {
-      if (content.blob.legacyKey !== undefined) {
-        throw new ReadModelApplyError(
-          commit.namespace,
-          commit.partition.toString(),
-          commit.seq,
-          `the put of ${key} names a blob still in a pre-v3 layout (${content.blob.legacyKey.toString()}), which the read model cannot read`,
+    if (point === undefined) return;
+
+    const removals = this.#state.loadRemovals();
+    const writes = this.#state.loadWrites();
+    this.#state.touchKeys([...removals, ...writes]);
+    for (const { namespace, record_key } of removals) {
+      signal.throwIfAborted();
+      const path = await this.#target(
+        namespace,
+        RecordKey.create(record_key),
+        false,
+        "the compacted base",
+      );
+      if (path === undefined) continue;
+      await removeRecordFile(path);
+      await cleanupEmptyParentDirs(path, this.#cacheRoot(namespace));
+    }
+    for (const { namespace, record_key } of writes) {
+      signal.throwIfAborted();
+      const content = this.#state.loadContent(namespace, record_key);
+      if (content === undefined) {
+        throw new Error(
+          `The compacted base shows ${record_key} present but holds no record for it`,
         );
       }
-      await writeFileDurably(
-        path,
-        this.#chunkStore.read(
-          namespaceOf(commit.namespace),
-          content.blob,
-          signal,
-        ),
-        signal,
+      if ("blob" in content && content.blob.legacyKey !== undefined) {
+        throw new Error(
+          legacyBlobDetail(record_key, content.blob.legacyKey.toString()),
+        );
+      }
+      const path = await this.#target(
+        namespace,
+        RecordKey.create(record_key),
+        true,
+        "the compacted base",
       );
+      if (path === undefined) {
+        // A replay never records ownership of a key the guards skip; the
+        // fold judged it from the key string alone, so forget it here.
+        this.#state.dropLoadFile(namespace, record_key);
+        continue;
+      }
+      await this.#writeContent(namespace, path, content, signal);
     }
-    return { owner, mark: position, present: true };
-  }
-}
 
-/**
- * Each key a commit touches, with the op that leaves it: ops in one commit
- * see each other's effects, so only the last put or tombstone of a key
- * matters. Removals come first, in first-touched order, then writes: each
- * key's final state is settled, so the order only decides the filesystem
- * path a write meets, and a removal can only clear the way for a write
- * (a put of `data/x` needs a removed `data/x/y`'s directory gone).
- */
-function finalKeyStates(commit: Commit): KeyChange[] {
-  const changes = new Map<string, KeyChange>();
-  for (const op of commit.ops) {
-    if (op.kind === "put" || op.kind === "tombstone") {
-      // A Map keeps each key at its first insertion, whatever is set later.
-      const key = op.key.toString();
-      const put = op.kind === "put" ? op : null;
-      changes.set(key, { key: op.key, put });
+    const names = this.#state.loadCatalogNames();
+    this.#state.touchNames(names);
+    for (const name of names) {
+      signal.throwIfAborted();
+      const partition = PartitionKey.parse(name.partition);
+      if (partition.identity.kind !== "model") continue;
+      const state = this.#state.loadCatalogName(name);
+      this.#catalog.apply(name.namespace, partition, [
+        { kind: "remove-name", name: name.name },
+        { kind: "end-forward", name: name.name },
+        ...state.rows.map((metadata) => ({
+          kind: "upsert-version" as const,
+          metadata,
+        })),
+        ...(state.forward === undefined
+          ? []
+          : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
+      ]);
     }
+    this.#state.finishLoad(point);
   }
-  const all = [...changes.values()];
-  return [
-    ...all.filter((change) => change.put === null),
-    ...all.filter((change) => change.put !== null),
-  ];
+
+  /** Writes a record's content durably at `path`: inline bytes, or its chunks. */
+  async #writeContent(
+    namespace: string,
+    path: string,
+    content: { readonly blob: BlobRef } | { readonly inline: string },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if ("inline" in content) {
+      await writeFileDurably(path, decodeBase64(content.inline), signal);
+      return;
+    }
+    await writeFileDurably(
+      path,
+      this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
+      signal,
+    );
+  }
 }
 
 function appliedRecord(put: PutOp | null): AppliedRecord | null {
@@ -535,6 +671,10 @@ async function resolvesInside(path: string, dir: string): Promise<boolean> {
     if (error instanceof PathTraversalError) return false;
     throw error;
   }
+}
+
+function legacyBlobDetail(key: string, legacyKey: string): string {
+  return `the put of ${key} names a blob still in a pre-v3 layout (${legacyKey}), which the read model cannot read`;
 }
 
 function namespaceOf(namespace: string): Namespace {

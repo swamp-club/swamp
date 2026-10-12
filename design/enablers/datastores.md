@@ -2174,6 +2174,10 @@ inside those two directories.
     seq order.
   - `head(namespace, partition)` returns the seq and highest fence.
   - `changesSince(cursor, limit)` reads the store-wide change feed.
+  - `compactionStatus`, `compactHistory` and `readCompactedBase` compact
+    history and read the compacted base (swamp-club#3258, "v3 history
+    compaction" below). `changesSince` and `readPartition` reject with
+    `CommitsCompactedError` below the compaction point.
   - `close()` lets queued appends finish, then every other call rejects.
 - `SqliteCommitStore` (`src/infrastructure/datastore_v3/sqlite_commit_store.ts`)
   implements it over `node:sqlite`, the binding `_catalog.db` uses.
@@ -3041,12 +3045,10 @@ starts at generation 1, the same as the one the state may have recorded.
   differ only in case are one file, and a tombstone of one removes the other's
   file while the index still lists it. v2 has the same collision for data
   names that differ in case.
-- A full replay needs every commit. Pruning commits (a later issue) must
-  give the read model another way to rebuild, such as a snapshot. A replay
-  after `invalidate()` also writes over the catalog's old rows rather than
-  clearing them; that converges only because every catalog action is
-  idempotent and the full history is replayed, so pruning must clear the
-  catalog before a rebuild.
+- A full replay needs every commit. History compaction (swamp-club#3258)
+  removes old commits, and a checkout below the compaction point loads the
+  compacted base instead, replacing each data name's catalog rows rather
+  than writing over them ("v3 history compaction" below).
 - A crash between creating a temp file and renaming it leaves a
   `.<uuid>.tmp` file beside the target, inside a synced directory, which
   sync could push. v2's `atomicWriteFile` writes the same temp files in the
@@ -3095,8 +3097,10 @@ Deleting such a chunk would stop a fresh catch-up at that commit with
 `ChunkMissingError`. A read model's `chunksInUse` describes one checkout's
 present records at its own cursor, so it cannot be the reference set.
 
-Reclaiming superseded content (chunks only historical commits name) needs
-history compaction first and is out of scope here.
+Reclaiming superseded content (chunks only historical commits name) is history
+compaction's job (swamp-club#3258, "v3 history compaction" below). After a
+compaction the reference set is the surviving commits plus the compacted base,
+plus chunks released within the sweep's grace period.
 
 **The chunk index.** `commits.db` schema version 2 adds
 `chunk_refs(namespace, sha256)`. Its namespace is the commit namespace (`""`
@@ -3219,6 +3223,213 @@ removing one would race a concurrent put's `mkdir`.
 **Left to the opt-in.** Wire a v3 `datastore gc` that sweeps each namespace,
 with the default grace period. Splitting large `data gc` and `prune` tombstone
 sets across commits belongs to the data and output staging issue.
+
+### v3 history compaction (datastore rework Phase 3)
+
+swamp-club#3258 lets superseded content be reclaimed. Every commit at or below
+a **compaction point** is folded into a **compacted base** in `commits.db`
+and deleted, so a checkout no longer needs the whole history, and chunk GC can
+reclaim chunks that only deleted commits named. It is dormant: nothing in
+production compacts, and `integration/datastore_v3_rules_test.ts` (rule 9)
+keeps it that way until the opt-in wires it in.
+
+**Ubiquitous language.**
+
+- **Compaction point**: a change-feed cursor. Every commit at or below it is
+  compacted. 0 before any compaction. It only moves forward.
+- **Compacted base**: what a checkout holds after applying every compacted
+  commit, without the files: each partition's present records (digest, and
+  inline content or `BlobRef`), each data name's live versions, catalog rows
+  and forward, each materialised key's ownership, and each partition's
+  compacted seq.
+- **Compacted seq**: a partition's last compacted commit.
+- **Released chunk**: a chunk whose last reference (a stored commit or a base
+  record) a compaction dropped, with the time it was released.
+
+**Decisions** (the issue's questions, in order).
+
+1. **One point for the whole store, not one per partition.** A checkout whose
+   cursor is below the point loads the base, reconciles its files,
+   `_catalog_v3.db` and state with it, then replays the commits after the
+   point. A checkout at or past the point is unaffected. The read model
+   catches up through the store-wide feed, and file ownership marks
+   (swamp-club#3256) compare feed positions across partitions. With no commit
+   at or below the point left, every later put is newer in the feed than
+   every mark in the base, so ownership after a load matches a replay.
+   Reconciling means:
+   - the files the state shows present, that the base does not, are
+     removed;
+   - files the base shows present, whose put the state does not show, are
+     written;
+   - each data name's catalog rows and forward are replaced;
+   - partitions that a partition catch-up had taken past their compacted seq
+     go back to it and replay.
+2. **Compacted commits are deleted**, not kept for audit with content no
+   longer guaranteed. Readers would otherwise need to tell kept-but-hollow
+   commits from real ones. Three things keep working without them:
+   - **Retries.** Their txnIds move to `compacted_txns`, so a retry still
+     returns `duplicate` with its original seq. The snapshot `priorTxn`
+     lookup and the duplicate lookup read both tables.
+   - **Rebuilds.** Each compacted partition gets a snapshot at its compacted
+     seq when its latest is older, so a rebuild never needs a deleted commit.
+   - **Head check.** It compares the head row with the larger of the last
+     stored seq and the compacted seq.
+
+   `compacted_txns` grows by one small row per commit, about 120 bytes in
+   the bench below against about 2.2 KB of commit. The Phase 4 outbox bounds
+   how old a retry can be, and may prune it then.
+
+   Litestream replicates the deletes as page changes. Freed pages are reused
+   and never vacuumed: `VACUUM` rewrites the whole file into the WAL.
+3. **GC reference rule.** `chunk_refs` becomes a count of the stored commits,
+   and the base records, that name each chunk (each commit or record counted
+   once).
+   - A batch adds the base's references before it drops the commits', so a
+     present chunk's count never reaches zero.
+   - A chunk whose count does reach zero is deleted from the index and
+     recorded in `released_chunks`.
+   - `referencedChunks(namespace, hashes, releasedSince)` counts a chunk
+     named by a commit or a base record, or released at or after
+     `releasedSince`. `ChunkCollector` passes its cutoff (`now - grace`).
+     Without the argument every released chunk counts, as before.
+   - Compaction forgets releases older than `releasedRetentionMs`
+     (`DEFAULT_CHUNK_GRACE_MS` by default), which must be at least the
+     longest grace period any sweep uses.
+
+   #3249's guarantees are unchanged: the sweep's re-check and restore, and
+   the writer's post-commit check. Compaction never names a new chunk.
+4. **Races.**
+   - **Compaction and appends** share the store's queue, so nothing appends
+     between a batch's reads and its transaction.
+   - **Feed and partition reads** read the point in the same read
+     transaction as their page. A read from below it rejects with
+     `CommitsCompactedError`, and the read model loads the base.
+   - **A page read before a compaction stays valid.** Its commits happened.
+     The chunks they name stay referenced for the grace period after their
+     release.
+   - **The base is read in pages,** each with the point it was read at. A
+     load that sees the point move starts again.
+   - **A load that fails part-way** has first recorded the keys and names it
+     was about to touch (`load_touched_keys`, `load_touched_names`), so the
+     next attempt, even against a newer base, reconciles what the failed one
+     wrote.
+   - **A GC sweep around a compaction:** a released chunk stays referenced
+     for the grace period, and a present chunk's count never reaches zero.
+     No checkout that finishes within the grace period can need a chunk GC
+     deleted. One that takes longer fails on the missing chunk
+     (`ReadModelApplyError`), keeps its cursor, and loads the newer base on
+     its next catch-up.
+5. **When it runs.**
+   - `CompactionPolicy` (`compaction_policy.ts`) is pure. By default it
+     folds at least 10,000 commits at a time, and keeps the newest 10,000
+     and the last 7 days.
+   - `CommitStore.compactionStatus(retention)` measures the history the
+     retention allows, by count and by commit `at`. Everything from the
+     first commit written at or after `since` is kept, so a writer's slow
+     clock never makes a newer commit compactable.
+   - `compactHistory(through)` runs on the single writer (solo, or the serve
+     leader). Wiring it into a command is the opt-in's job.
+6. **Run records.** `resolveRunArtifact` (`run_artifact_resolution.ts`)
+   resolves a run's `dataArtifacts` ref (dataId, name, version). It returns
+   the live version only when it is evidently what the ref's producer wrote,
+   and otherwise "content no longer available":
+   - the version must be live, with the ref's `dataId`;
+   - a ref carrying `sha256` decides by content;
+   - a version that records a workflow run must name the producer's run;
+   - otherwise (a method run, or report data that records no run) it must
+     have been created within the producer's start and finish. An output
+     that never finished resolves nothing.
+
+   The one case left: another writer deletes and re-saves the same top
+   version inside the producer's own window. That keeps the `dataId`
+   (`Data.withNewVersion`), and nothing in today's ref tells the two apart.
+   The opt-in closes it by recording the content's `sha256` in new refs. The
+   time window also assumes the producer and the writer share a clock, which
+   holds while one process writes both.
+
+**The fold.** `foldCommit` (`compaction.ts`) applies one commit to the base
+with the read model's own rules, extracted to the domain so there is one
+copy:
+
+- `materialisation.ts`: final key states, the #3256 ownership rule,
+  `lexicalRefusal` and `lexicalConflict`;
+- `projectCatalog`;
+- `catalog_state.ts`, the catalog store's semantics as a value. That includes
+  ending a name's forward when an upsert becomes its latest row, as
+  `CatalogStore.upsertNewVersion` does.
+
+The base has no files, so refused keys and file/directory conflicts are judged
+from key strings against the base's present files. That is what the read model
+finds on a cache holding only materialised files. Like replay, a cache holding
+other files can differ (see "Path conflicts" above). A key refused only by
+its resolved path (a state directory placed inside a synced one) passes the
+lexical check, so the load drops its ownership when the guards skip it, as a
+replay records none. Catalog rows are stored as
+versions and take their metadata from the live versions, which they always
+equal. A row that is not live fails the batch.
+
+**Schema.** `commits.db` version 3 adds:
+
+- `compaction` (the point);
+- `compacted_partitions`, `compacted_txns`;
+- `base_records`, `base_versions`, `base_catalog`, `base_forwards`,
+  `base_files`;
+- `released_chunks`.
+
+It also turns `chunk_refs` into a count, backfilled from the stored commits by
+#3249's rule. `_read_model_v3.db` version 3 adds the load's staging tables
+and its touched keys and names.
+
+**Batches and crashes.** `compactHistory` folds `COMPACTION_BATCH` (250)
+commits per transaction:
+
+1. read and parse the rows, and rebuild the snapshots the batch needs,
+   outside the transaction;
+2. in one `BEGIN IMMEDIATE`, check the point again, fold, move the txnIds,
+   drop the references, write the snapshots, delete the rows and move the
+   point.
+
+A point or a partition that changed between the two steps means another
+process is writing the store, and the batch says so rather than report
+damage.
+
+A failure or a crash leaves a batch whole or absent.
+`integration/datastore_v3_compaction_test.ts` stops one with an injected
+failure, and with a Worker terminated inside the transaction, and compares
+every table with the old state.
+
+**Measured** on an Apple M5 Max (`scripts/bench_commit_compaction.ts`). One
+model partition has 11,000 commits, each saving a new version of one of 50
+names. In the "growing" history most versions stay live; in the "churning"
+history each commit deletes the previous version.
+
+| History | Batch | Mean ms per batch | Max ms | WAL bytes per batch | WAL bytes, appending as many |
+|---|---|---|---|---|---|
+| growing | 250 | 143 | 272 | 1.0 MB | 4.1 MB |
+| growing | 1,000 | 483 | 907 | 2.9 MB | 4.2 MB |
+| churning | 250 | 19 | 36 | 0.7 MB | 4.1 MB |
+| churning | 1,000 | 71 | 105 | 1.4 MB | 4.2 MB |
+
+A batch holds the write lock and the event loop for its whole fold. The fold
+is cheaper for a churning history: a growing name's live versions are parsed
+once per batch, and there are many more of them. 250 keeps the worst case
+under about 0.3 s. A batch writes less WAL than the appends it replaces.
+
+Over cycles of 2,000 churning appends, each followed by a compaction that kept
+the newest 500 commits, `commits.db` reached 9.3 MB after 16,000 commits,
+against 35.6 MB uncompacted. It keeps growing by about 120 bytes per commit:
+`compacted_txns`, as above. Freed pages are reused: about 1,000 stay free.
+
+A fresh checkout of the 11,000 churning commits took 165 s to replay them all,
+most of it one durable write per file, and 0.6 s to load the base. A load
+costs O(live state), not O(history).
+
+**Left to the opt-in.**
+
+- Wire compaction into the writer: solo, or the serve leader, by policy.
+- Resolve run-record artifacts through `resolveRunArtifact`, and add
+  `sha256` to new `DataArtifactRef`s.
+- Prune `compacted_txns` once the Phase 4 outbox bounds retry age.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

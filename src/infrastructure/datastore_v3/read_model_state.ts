@@ -42,6 +42,9 @@ import {
   type BlobRefJSON,
 } from "../../domain/datastore_v3/blob_ref.ts";
 import type { LiveDataVersion } from "../../domain/datastore_v3/catalog_projection.ts";
+import type { CatalogNameState } from "../../domain/datastore_v3/catalog_state.ts";
+import type { CompactedBaseEntry } from "../../domain/datastore_v3/commit_store.ts";
+import type { FileOwnership } from "../../domain/datastore_v3/materialisation.ts";
 import type { LiveRecord } from "../../domain/datastore_v3/read_model.ts";
 import { RecordKey } from "../../domain/datastore_v3/record_key.ts";
 import { DataMetadataSchema } from "../../domain/data/data_metadata.ts";
@@ -96,7 +99,87 @@ const MIGRATIONS: readonly string[] = [
   ) STRICT, WITHOUT ROWID;
   DELETE FROM meta;
   `,
+  // 2 → 3: loading the compacted base (swamp-club#3258). A load stages the
+  // base here, then swaps it in with one transaction. The touched tables
+  // name the files and catalog names an unfinished load may have written;
+  // only a finished load clears them, so a retry against a newer base still
+  // reconciles them. IF NOT EXISTS: a file rolled back to an older schema
+  // by hand may still hold them.
+  `
+  CREATE TABLE IF NOT EXISTS load_records (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    inline TEXT,
+    blob TEXT,
+    PRIMARY KEY (namespace, partition, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_versions (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    metadata TEXT NOT NULL,
+    PRIMARY KEY (namespace, partition, name, version)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_catalog (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    metadata TEXT NOT NULL,
+    PRIMARY KEY (namespace, partition, name, version)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_forwards (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    name TEXT NOT NULL,
+    renamed_to TEXT NOT NULL,
+    PRIMARY KEY (namespace, partition, name)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_files (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    mark INTEGER NOT NULL,
+    present INTEGER NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_progress (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    PRIMARY KEY (namespace, partition)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_touched_keys (
+    namespace TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    PRIMARY KEY (namespace, record_key)
+  ) STRICT, WITHOUT ROWID;
+  CREATE TABLE IF NOT EXISTS load_touched_names (
+    namespace TEXT NOT NULL,
+    partition TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (namespace, partition, name)
+  ) STRICT, WITHOUT ROWID;
+  `,
 ];
+
+export type { FileOwnership };
+
+/** A materialised key a load writes or removes. */
+export interface LoadKey {
+  readonly namespace: string;
+  readonly record_key: string;
+}
+
+/** A data name whose catalog rows a load replaces. */
+export interface LoadName {
+  readonly namespace: string;
+  readonly partition: string;
+  readonly name: string;
+}
 
 /** The schema version this state store writes. */
 export const READ_MODEL_STATE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -105,21 +188,6 @@ export const READ_MODEL_STATE_SCHEMA_VERSION = MIGRATIONS.length;
 export interface AppliedRecord {
   readonly sha256: string;
   readonly blob?: BlobRef;
-}
-
-/**
- * Which put a materialised file shows (swamp-club#3256). One record key can
- * be written by two partitions (a same-key definition rename), and a
- * partition catch-up applies commits ahead of the change feed, so the file
- * follows feed positions rather than application order.
- */
-export interface FileOwnership {
-  /** The partition whose put the file shows, or showed before its removal. */
-  readonly owner: string;
-  /** The feed position of that put. */
-  readonly mark: number;
-  /** False once the owner's own tombstone removed the file. */
-  readonly present: boolean;
 }
 
 /** What one applied commit changes in the state. */
@@ -406,6 +474,231 @@ export class ReadModelState {
         "DELETE FROM partition_progress; DELETE FROM live_records; DELETE FROM data_versions; DELETE FROM materialised_keys; DELETE FROM meta;",
       );
       this.#upsertMeta.run("catalog_generation", catalogGeneration);
+    });
+  }
+
+  /**
+   * Starts loading the compacted base (swamp-club#3258): clears what an
+   * earlier attempt staged. The touched files and names stay.
+   */
+  beginLoad(): void {
+    this.#transaction(() =>
+      this.#db.exec(
+        "DELETE FROM load_records; DELETE FROM load_versions; DELETE FROM load_catalog; " +
+          "DELETE FROM load_forwards; DELETE FROM load_files; DELETE FROM load_progress;",
+      )
+    );
+  }
+
+  /** Stages one page of the compacted base. */
+  stageBase(entries: readonly CompactedBaseEntry[]): void {
+    this.#transaction(() => {
+      for (const entry of entries) {
+        switch (entry.kind) {
+          case "partition":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_progress (namespace, partition, seq) VALUES (?, ?, ?)",
+            ).run(entry.namespace, entry.partition, entry.seq);
+            break;
+          case "record": {
+            const content = entry.record.content;
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_records (namespace, partition, record_key, sha256, inline, blob) VALUES (?, ?, ?, ?, ?, ?)",
+            ).run(
+              entry.namespace,
+              entry.partition,
+              entry.key,
+              entry.record.sha256,
+              "inline" in content ? content.inline : null,
+              "blob" in content ? JSON.stringify(content.blob.toJSON()) : null,
+            );
+            break;
+          }
+          case "version":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_versions (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+            ).run(
+              entry.namespace,
+              entry.partition,
+              entry.version.metadata.name,
+              entry.version.version,
+              JSON.stringify(entry.version.metadata),
+            );
+            break;
+          case "catalog-row":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_catalog (namespace, partition, name, version, metadata) VALUES (?, ?, ?, ?, ?)",
+            ).run(
+              entry.namespace,
+              entry.partition,
+              entry.metadata.name,
+              entry.metadata.version,
+              JSON.stringify(entry.metadata),
+            );
+            break;
+          case "forward":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_forwards (namespace, partition, name, renamed_to) VALUES (?, ?, ?, ?)",
+            ).run(entry.namespace, entry.partition, entry.name, entry.to);
+            break;
+          case "file":
+            this.#db.prepare(
+              "INSERT OR REPLACE INTO load_files (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?)",
+            ).run(
+              entry.namespace,
+              entry.key,
+              entry.ownership.owner,
+              entry.ownership.mark,
+              entry.ownership.present ? 1 : 0,
+            );
+            break;
+        }
+      }
+    });
+  }
+
+  /**
+   * The files a load removes: those the state shows present, or an earlier
+   * attempt touched, that the staged base does not show present.
+   */
+  loadRemovals(): LoadKey[] {
+    this.#requireOpen();
+    return this.#db.prepare(
+      "SELECT namespace, record_key FROM materialised_keys WHERE present = 1 " +
+        "UNION SELECT namespace, record_key FROM load_touched_keys " +
+        "EXCEPT SELECT namespace, record_key FROM load_files WHERE present = 1 " +
+        "ORDER BY 1, 2",
+    ).all() as unknown as LoadKey[];
+  }
+
+  /**
+   * The files a load writes: those the staged base shows present, unless
+   * the state already shows the same put there and no earlier attempt
+   * touched them.
+   */
+  loadWrites(): LoadKey[] {
+    this.#requireOpen();
+    return this.#db.prepare(
+      "SELECT f.namespace, f.record_key FROM load_files AS f WHERE f.present = 1 AND (" +
+        "NOT EXISTS (SELECT 1 FROM materialised_keys AS m WHERE m.namespace = f.namespace " +
+        "AND m.record_key = f.record_key AND m.present = 1 AND m.owner = f.owner AND m.mark = f.mark) " +
+        "OR EXISTS (SELECT 1 FROM load_touched_keys AS t WHERE t.namespace = f.namespace " +
+        "AND t.record_key = f.record_key)) ORDER BY 1, 2",
+    ).all() as unknown as LoadKey[];
+  }
+
+  /** The staged content of the record a staged file shows. */
+  loadContent(
+    namespace: string,
+    recordKey: string,
+  ): { readonly blob: BlobRef } | { readonly inline: string } | undefined {
+    this.#requireOpen();
+    const row = this.#db.prepare(
+      "SELECT r.inline, r.blob FROM load_files AS f JOIN load_records AS r " +
+        "ON r.namespace = f.namespace AND r.partition = f.owner AND r.record_key = f.record_key " +
+        "WHERE f.namespace = ? AND f.record_key = ?",
+    ).get(namespace, recordKey) as
+      | { inline: string | null; blob: string | null }
+      | undefined;
+    if (row === undefined) return undefined;
+    if (row.blob !== null) {
+      return { blob: BlobRef.fromJSON(JSON.parse(row.blob)) };
+    }
+    return row.inline === null ? undefined : { inline: row.inline };
+  }
+
+  /**
+   * Forgets the staged ownership of a file the load left alone because its
+   * path is refused, as a replay records none for it.
+   */
+  dropLoadFile(namespace: string, recordKey: string): void {
+    this.#transaction(() => {
+      this.#db.prepare(
+        "DELETE FROM load_files WHERE namespace = ? AND record_key = ?",
+      ).run(namespace, recordKey);
+    });
+  }
+
+  /** Records files a load is about to write or remove, durably, first. */
+  touchKeys(keys: readonly LoadKey[]): void {
+    this.#transaction(() => {
+      const insert = this.#db.prepare(
+        "INSERT OR IGNORE INTO load_touched_keys (namespace, record_key) VALUES (?, ?)",
+      );
+      for (const key of keys) insert.run(key.namespace, key.record_key);
+    });
+  }
+
+  /**
+   * The data names whose catalog rows a load replaces: every name the state
+   * or the staged base knows, and every name an earlier attempt touched.
+   */
+  loadCatalogNames(): LoadName[] {
+    this.#requireOpen();
+    return this.#db.prepare(
+      "SELECT namespace, partition, name FROM data_versions " +
+        "UNION SELECT namespace, partition, name FROM load_versions " +
+        "UNION SELECT namespace, partition, name FROM load_catalog " +
+        "UNION SELECT namespace, partition, name FROM load_forwards " +
+        "UNION SELECT namespace, partition, name FROM load_touched_names " +
+        "ORDER BY 1, 2, 3",
+    ).all() as unknown as LoadName[];
+  }
+
+  /** Records catalog names a load is about to replace, durably, first. */
+  touchNames(names: readonly LoadName[]): void {
+    this.#transaction(() => {
+      const insert = this.#db.prepare(
+        "INSERT OR IGNORE INTO load_touched_names (namespace, partition, name) VALUES (?, ?, ?)",
+      );
+      for (const n of names) insert.run(n.namespace, n.partition, n.name);
+    });
+  }
+
+  /** A data name's staged catalog rows and forward. */
+  loadCatalogName(name: LoadName): CatalogNameState {
+    this.#requireOpen();
+    const rows = (this.#db.prepare(
+      "SELECT metadata FROM load_catalog WHERE namespace = ? AND partition = ? AND name = ? ORDER BY version",
+    ).all(name.namespace, name.partition, name.name) as {
+      metadata: string;
+    }[]).map((row) => DataMetadataSchema.parse(JSON.parse(row.metadata)));
+    const forward = this.#db.prepare(
+      "SELECT renamed_to FROM load_forwards WHERE namespace = ? AND partition = ? AND name = ?",
+    ).get(name.namespace, name.partition, name.name) as
+      | { renamed_to: string }
+      | undefined;
+    return { rows, forward: forward?.renamed_to };
+  }
+
+  /**
+   * Swaps the staged base in, in one transaction: the index, live versions,
+   * file ownership and partition progress become the base's, the cursor
+   * moves to the compaction point, the index is marked incomplete until a
+   * catch-up reaches the end of the feed, and the staging and touched
+   * tables are cleared.
+   */
+  finishLoad(point: number): void {
+    this.#transaction(() => {
+      this.#db.exec(`
+        DELETE FROM live_records;
+        INSERT INTO live_records (namespace, partition, record_key, sha256, blob)
+          SELECT namespace, partition, record_key, sha256, blob FROM load_records;
+        DELETE FROM data_versions;
+        INSERT INTO data_versions (namespace, partition, name, version, metadata)
+          SELECT namespace, partition, name, version, metadata FROM load_versions;
+        DELETE FROM materialised_keys;
+        INSERT INTO materialised_keys (namespace, record_key, owner, mark, present)
+          SELECT namespace, record_key, owner, mark, present FROM load_files;
+        DELETE FROM partition_progress;
+        INSERT INTO partition_progress (namespace, partition, applied_seq)
+          SELECT namespace, partition, seq FROM load_progress;
+        DELETE FROM meta WHERE key = 'complete';
+        DELETE FROM load_records; DELETE FROM load_versions; DELETE FROM load_catalog;
+        DELETE FROM load_forwards; DELETE FROM load_files; DELETE FROM load_progress;
+        DELETE FROM load_touched_keys; DELETE FROM load_touched_names;
+      `);
+      this.#upsertMeta.run("cursor", point);
     });
   }
 

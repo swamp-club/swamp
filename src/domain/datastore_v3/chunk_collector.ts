@@ -29,6 +29,10 @@
  *   so a chunk is kept for as long as any stored commit names it
  *   (`CommitStore.referencedChunks`). A read model's `chunksInUse` is one
  *   checkout's present records at its own cursor, and would miss them.
+ *   After history compaction (swamp-club#3258) the compacted base's
+ *   records count too, and a chunk whose last reference was compacted away
+ *   still counts while it was released after the cutoff: a checkout may
+ *   still be applying a page of commits it read before the compaction.
  * - **The grace period.** A chunk is stored, or refreshed, before the
  *   commit that names it lands, so a chunk no commit names yet may be one a
  *   unit of work is about to commit. Only a chunk whose `lastModified` is
@@ -194,7 +198,7 @@ export class ChunkCollector {
     // A pass of its own, so reading and hashing chunks never stretches the
     // time between the sweep seeing a chunk's age and deleting it.
     const { verified, damaged } = verifyBytes > 0
-      ? await this.#verify(namespace, ns, verifyBytes, signal)
+      ? await this.#verify(namespace, ns, verifyBytes, cutoff, signal)
       : { verified: 0, damaged: [] };
 
     let readBudget = options.sweepReadBytes ?? DEFAULT_SWEEP_READ_BYTES;
@@ -225,16 +229,26 @@ export class ChunkCollector {
           await this.#storage.delete(ns, chunk.sha256, signal);
         }
       } finally {
-        await this.#restoreReferenced(namespace, ns, started, (restoredNow) => {
-          deleted += started.length - restoredNow;
-          restored += restoredNow;
-        });
+        await this.#restoreReferenced(
+          namespace,
+          ns,
+          started,
+          cutoff,
+          (restoredNow) => {
+            deleted += started.length - restoredNow;
+            restored += restoredNow;
+          },
+        );
       }
     };
 
     const flush = async () => {
       if (batch.length === 0) return;
-      const names = await this.#commitStore.referencedChunks(namespace, batch);
+      const names = await this.#commitStore.referencedChunks(
+        namespace,
+        batch,
+        cutoff,
+      );
       let held: { sha256: string; bytes: Uint8Array }[] = [];
       let heldBytes = 0;
       for (const sha256 of batch) {
@@ -283,7 +297,11 @@ export class ChunkCollector {
 
     const sweptDamage = damagedInSweep.length === 0
       ? new Set<string>()
-      : await this.#commitStore.referencedChunks(namespace, damagedInSweep);
+      : await this.#commitStore.referencedChunks(
+        namespace,
+        damagedInSweep,
+        cutoff,
+      );
     const damagedAll: DamagedChunk[] = [
       ...damaged,
       ...damagedInSweep.map((sha256) => ({
@@ -318,6 +336,7 @@ export class ChunkCollector {
     namespace: Namespace,
     ns: string,
     deleted: readonly { sha256: string; bytes: Uint8Array }[],
+    cutoff: Date,
     count: (restored: number) => void,
   ): Promise<void> {
     if (deleted.length === 0) return;
@@ -325,6 +344,7 @@ export class ChunkCollector {
     const names = await this.#commitStore.referencedChunks(
       namespace,
       deleted.map((chunk) => chunk.sha256),
+      cutoff,
     );
     let restored = 0;
     try {
@@ -347,6 +367,7 @@ export class ChunkCollector {
     namespace: Namespace,
     ns: string,
     budget: number,
+    cutoff: Date,
     signal: AbortSignal,
   ): Promise<{ verified: number; damaged: DamagedChunk[] }> {
     let verified = 0;
@@ -365,7 +386,7 @@ export class ChunkCollector {
     }
     const names = rotten.length === 0
       ? new Set<string>()
-      : await this.#commitStore.referencedChunks(namespace, rotten);
+      : await this.#commitStore.referencedChunks(namespace, rotten, cutoff);
     return {
       verified,
       damaged: rotten.map((sha256) => ({

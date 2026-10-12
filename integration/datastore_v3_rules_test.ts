@@ -68,6 +68,13 @@
  *    filesystem storage itself mentions `removeStaleTempFiles`, so nothing
  *    deletes a chunk or a temp file before a v3 `datastore gc` is wired in
  *    at the opt-in. Both pinned lists are empty.
+ * 9. **History compaction is dormant** (swamp-club#3258). Compaction
+ *    (`compaction.ts`, `compaction_policy.ts`) and the run-artifact resolver
+ *    (`run_artifact_resolution.ts`) have no importers outside the v3
+ *    directories, and no production code outside them mentions
+ *    `compactHistory`, so no commit is folded away before the opt-in wires
+ *    compaction in. Rule 6 covers the compacted base's tables: only the
+ *    commit store writes them. Both pinned lists are empty.
  *
  * Rule 1 covers the read model too: it lives in the two v3 directories.
  */
@@ -293,7 +300,7 @@ const COMMIT_STORE = "src/infrastructure/datastore_v3/sqlite_commit_store.ts";
 
 /** A statement that changes one of `commits.db`'s tables. */
 const COMMIT_TABLE_WRITE =
-  /\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(?:commits|partition_heads|partition_snapshots|chunk_refs)\b/i;
+  /\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|ALTER\s+TABLE|CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+(?:commits|partition_heads|partition_snapshots|chunk_refs|chunk_ref_counts|compaction|compacted_partitions|compacted_txns|base_records|base_versions|base_catalog|base_forwards|base_files|released_chunks)\b/i;
 
 /** v3 files other than the commit store that write its tables, as `file:line`. */
 const PINNED_COMMIT_TABLE_WRITERS: readonly string[] = [];
@@ -405,5 +412,54 @@ Deno.test("datastore v3: no production code sweeps storage temp files", async ()
     "Production calls of removeStaleTempFiles",
     "Removing a storage's temp files is part of chunk garbage collection,\n" +
       "which is dormant until the v3 opt-in wires it in.",
+  );
+});
+
+/** The compaction modules, under `src/`. */
+const COMPACTION_MODULES = [
+  "domain/datastore_v3/compaction.ts",
+  "domain/datastore_v3/compaction_policy.ts",
+  "domain/datastore_v3/run_artifact_resolution.ts",
+];
+
+/** Production imports of the compaction modules from outside v3. */
+const PINNED_COMPACTION_IMPORTERS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code outside v3 imports history compaction", async () => {
+  const edges = await collectImportEdges(
+    SRC_DIR,
+    (filePath, importPath) =>
+      COMPACTION_MODULES.some((module) =>
+        importsLayer(filePath, importPath, module)
+      ) && !isV3File(repoRelative(filePath)),
+  );
+  assertPinnedSet(
+    edges,
+    PINNED_COMPACTION_IMPORTERS,
+    "Production imports of the dormant history compaction",
+    "History compaction is dormant until the v3 opt-in wires it in. Do not\n" +
+      "import it from production code before then.",
+  );
+});
+
+/** Production mentions of `compactHistory` outside v3. */
+const PINNED_COMPACT_HISTORY_CALLS: readonly string[] = [];
+
+Deno.test("datastore v3: no production code outside v3 compacts history", async () => {
+  const found: string[] = [];
+  for await (const filePath of productionSourceFiles(SRC_DIR)) {
+    const rel = repoRelative(filePath);
+    if (isV3File(rel)) continue;
+    const lines = (await Deno.readTextFile(filePath)).split("\n");
+    lines.forEach((line, index) => {
+      if (line.includes("compactHistory")) found.push(`${rel}:${index + 1}`);
+    });
+  }
+  assertPinnedSet(
+    found.sort(),
+    PINNED_COMPACT_HISTORY_CALLS,
+    "Production calls of compactHistory",
+    "Compacting history deletes commits. It is dormant until the v3 opt-in\n" +
+      "wires it in.",
   );
 });

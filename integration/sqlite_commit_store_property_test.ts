@@ -336,3 +336,158 @@ function chunkRefRows(path: string): unknown[] {
     db.close();
   }
 }
+
+/** The ops of one generated append, as the index test builds them. */
+async function chunkAppendOps(
+  append: typeof arbChunkAppend extends fc.Arbitrary<infer T> ? T : never,
+): Promise<Op[]> {
+  const ops: Op[] = [];
+  for (const [i, put] of append.puts.entries()) {
+    const content = put.content;
+    ops.push(
+      content.kind === "inline"
+        ? await savePut(put.name, i + 1)
+        : await blobPut(
+          put.name,
+          i + 1,
+          content.kind === "one"
+            ? BlobRef.create({ sha256: POOL[content.chunk], size: 1 })
+            : BlobRef.create({
+              sha256: POOL[content.whole],
+              size: content.chunks.length,
+              parts: content.chunks.map((c) => ({
+                sha256: POOL[c],
+                size: 1,
+              })),
+            }),
+        ),
+    );
+  }
+  return ops;
+}
+
+Deno.test("SqliteCommitStore: after compactions the chunk counts equal the stored commits and base records naming each chunk (swamp-club#3258)", async () => {
+  const dir = await Deno.makeTempDir({
+    prefix: "swamp-chunk-counts-property-",
+  });
+  const arbStep = fc.oneof(
+    { weight: 3, arbitrary: arbChunkAppend.map((a) => ({ append: a })) },
+    {
+      weight: 1,
+      arbitrary: fc.record({
+        compact: fc.double({ min: 0, max: 1, noNaN: true }),
+        batchSize: fc.integer({ min: 1, max: 3 }),
+      }),
+    },
+  );
+  try {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(arbStep, { minLength: 1, maxLength: 30 }),
+        async (steps) => {
+          const path = join(dir, `${crypto.randomUUID()}.db`);
+          const store = SqliteCommitStore.open(path);
+          const seqs = new Map<string, number>();
+          try {
+            for (const step of steps) {
+              if ("compact" in step) {
+                const last = (await store.compactionStatus({
+                  commits: 0,
+                  since: "9999-12-31T00:00:00.000Z",
+                })).through ?? 0;
+                await store.compactHistory(
+                  Math.ceil(step.compact * last),
+                  { batchSize: step.batchSize },
+                );
+                continue;
+              }
+              const { append } = step;
+              const next = (seqs.get(append.namespace) ?? 0) + 1;
+              try {
+                await store.append(
+                  modelCommit(next, await chunkAppendOps(append), {
+                    namespace: append.namespace,
+                    txnId: crypto.randomUUID(),
+                  }),
+                );
+                seqs.set(append.namespace, next);
+              } catch (error) {
+                if (!(error instanceof CommitRejectedError)) throw error;
+              }
+            }
+
+            // The oracle: each surviving commit, and each base record, that
+            // names a chunk counts once.
+            const counts = new Map<string, number>();
+            const add = (namespace: string, hashes: Iterable<string>) => {
+              for (const sha256 of new Set(hashes)) {
+                const key = JSON.stringify([namespace, sha256]);
+                counts.set(key, (counts.get(key) ?? 0) + 1);
+              }
+            };
+            const point = (await store.readCompactedBase(undefined, 1)).point;
+            for (const change of await store.changesSince(point, 10_000)) {
+              add(change.commit.namespace, change.commit.chunkRefs());
+            }
+            let after: string | undefined;
+            do {
+              const page = await store.readCompactedBase(after, 50);
+              for (const entry of page.entries) {
+                if (entry.kind === "record" && "blob" in entry.record.content) {
+                  add(entry.namespace, entry.record.content.blob.chunkHashes());
+                }
+              }
+              after = page.next;
+            } while (after !== undefined);
+
+            const db = new DatabaseSync(path);
+            try {
+              const rows = db.prepare(
+                "SELECT namespace, sha256, refs FROM chunk_refs",
+              ).all() as { namespace: string; sha256: string; refs: number }[];
+              assertEquals(
+                new Map(
+                  rows.map((
+                    r,
+                  ) => [JSON.stringify([r.namespace, r.sha256]), r.refs]),
+                ),
+                counts,
+              );
+            } finally {
+              db.close();
+            }
+            // Referenced now: exactly the counted chunks, once releases are
+            // past; every released chunk still counts without a bound.
+            for (const namespace of ["", "acme", "beta"]) {
+              const named = new Set(
+                [...counts.keys()].map((k) => JSON.parse(k) as string[])
+                  .filter(([ns]) => ns === namespace).map(([, sha]) => sha),
+              );
+              assertEquals(
+                await store.referencedChunks(
+                  namespace,
+                  POOL,
+                  new Date(Date.now() + 60_000),
+                ),
+                named,
+              );
+              const all = await store.referencedChunks(namespace, POOL);
+              for (const sha256 of named) assertEquals(all.has(sha256), true);
+            }
+          } finally {
+            await store.close();
+          }
+        },
+      ),
+      { numRuns: 150 },
+    );
+  } finally {
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
