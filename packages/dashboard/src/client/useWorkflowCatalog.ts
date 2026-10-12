@@ -19,7 +19,7 @@
 
 import { useMemo } from "react";
 import { useRequest } from "./useRequest.ts";
-import { extractArray } from "./extract.ts";
+import { extractSortedByName } from "./sorted_by_name.ts";
 import type { HealthSnapshot } from "./useHealthStream.ts";
 import {
   facetIndex,
@@ -58,13 +58,9 @@ export function useWorkflowCatalog(
   health: HealthSnapshot | null,
 ): WorkflowCatalog {
   const { data, loading, error } = useRequest("workflow.search", {});
-  const workflows = useMemo(
-    () =>
-      extractArray<CatalogWorkflow>(data).sort((a, b) =>
-        a.name.localeCompare(b.name)
-      ),
-    [data],
-  );
+  const workflows = useMemo(() => extractSortedByName<CatalogWorkflow>(data), [
+    data,
+  ]);
   const schedules = health?.scheduling?.schedules;
   const webhooks = health?.webhooks;
   const facetsOf = useMemo(
