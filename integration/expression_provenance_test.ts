@@ -22,15 +22,17 @@
 // that expression text arriving as data never evaluates, even when it matches
 // an expression the author wrote.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { z } from "zod";
+import { literalOccurrence } from "../src/domain/expressions/cel_grammar.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Step } from "../src/domain/workflows/step.ts";
 import { StepTask } from "../src/domain/workflows/step_task.ts";
+import { TriggerCondition } from "../src/domain/workflows/trigger_condition.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
 import { createWorkflowRunDeps } from "../src/serve/deps.ts";
 import { collect } from "../src/libswamp/testing.ts";
@@ -318,6 +320,371 @@ Deno.test("provenance: direct execution never persists data matching an authored
     assertEquals(stored.includes("${{ env.SECRET }}"), false);
   });
 });
+
+Deno.test("provenance: literal() output of another system's text reaches a direct step global argument", async () => {
+  await withRepo(async (h) => {
+    await runWorkflow(
+      h,
+      oneStepWorkflow(
+        StepTask.directExecution(
+          h.type.normalized,
+          "literal-model",
+          "run",
+          { value: "v" },
+          { label: "sha ${{ literal('${{ github.sha }}') }}" },
+        ),
+      ),
+    );
+    assertEquals(h.globals, [{ label: "sha ${{ github.sha }}" }]);
+    // Stored as a literal() call of its own, which no later load sees inside.
+    const stored = parseYaml(
+      await readTree(join(h.dir, ".swamp", "auto-definitions")),
+    ) as { globalArguments: Record<string, unknown> };
+    assertEquals(stored.globalArguments, {
+      label: `sha ${literalOccurrence("${{ github.sha }}")}`,
+    });
+
+    // A later run reads the stored text back as authored and resolves nothing.
+    await runWorkflow(
+      h,
+      oneStepWorkflow(StepTask.modelMethod("literal-model", "run", {
+        value: "again",
+      })),
+    );
+    assertEquals(h.globals[1], { label: "sha ${{ github.sha }}" });
+  });
+});
+
+// literal() is the way to pass text on a root swamp does not list, so its
+// output must reach a direct step whichever argument holds it.
+for (
+  const [name, written, received] of [
+    ["whole", "${{ literal('${{ parameters.x }}') }}", "${{ parameters.x }}"],
+    [
+      "mixed",
+      "echo ${{ literal('${{ nonexistent.x }}') }} done",
+      "echo ${{ nonexistent.x }} done",
+    ],
+  ] as const
+) {
+  Deno.test(`provenance: literal() output on an unlisted root reaches a direct step (${name})`, async () => {
+    await withRepo(async (h) => {
+      await runWorkflow(
+        h,
+        oneStepWorkflow(
+          StepTask.directExecution(
+            h.type.normalized,
+            "unlisted-model",
+            "run",
+            { value: written },
+            { label: written },
+          ),
+        ),
+      );
+      assertEquals(h.executions, [{ value: received }]);
+      assertEquals(h.globals, [{ label: received }]);
+
+      // The stored text survives a later load as authored source.
+      await runWorkflow(
+        h,
+        oneStepWorkflow(StepTask.modelMethod("unlisted-model", "run", {
+          value: "again",
+        })),
+      );
+      assertEquals(h.globals[1], { label: received });
+    });
+  });
+}
+
+// The text a direct step stores must not vouch for the same literal() output
+// in a step input on a later run.
+const UNLISTED = "${{ literal('${{ parameters.x }}') }}";
+for (
+  const [name, inputs, globalArgs, value] of [
+    [
+      "both whole",
+      { value: UNLISTED },
+      { label: UNLISTED },
+      "${{ parameters.x }}",
+    ],
+    [
+      "input mixed",
+      { value: `say ${UNLISTED}` },
+      { label: UNLISTED },
+      "say ${{ parameters.x }}",
+    ],
+    [
+      "routed from inputs",
+      { label: UNLISTED, value: UNLISTED },
+      undefined,
+      "${{ parameters.x }}",
+    ],
+  ] as const
+) {
+  Deno.test(`provenance: a direct step holding the same literal() output twice runs repeatedly (${name})`, async () => {
+    await withRepo(async (h) => {
+      const workflow = oneStepWorkflow(
+        StepTask.directExecution(
+          h.type.normalized,
+          "repeat-model",
+          "run",
+          inputs,
+          globalArgs,
+        ),
+      );
+      for (let run = 0; run < 3; run++) await runWorkflow(h, workflow);
+      assertEquals(h.executions, Array(3).fill({ value }));
+      assertEquals(
+        h.globals,
+        Array(3).fill({ label: "${{ parameters.x }}" }),
+      );
+
+      // Another step on the stored definition, by name, with the same text.
+      await runWorkflow(
+        h,
+        oneStepWorkflow(StepTask.modelMethod("repeat-model", "run", {
+          value: UNLISTED,
+        })),
+      );
+      assertEquals(h.executions[3], { value: "${{ parameters.x }}" });
+    });
+  });
+}
+
+Deno.test("provenance: text a definition holds that can never evaluate does not vouch for a step input", async () => {
+  await withRepo(async (h) => {
+    // Hand-authored, not stored by a run.
+    await h.repo.definitionRepo.save(
+      h.type,
+      Definition.create({
+        name: "authored-foreign",
+        type: h.type.normalized,
+        globalArguments: { label: "${{ parameters.x }}" },
+      }),
+    );
+    await runWorkflow(
+      h,
+      oneStepWorkflow(StepTask.modelMethod("authored-foreign", "run", {
+        value: UNLISTED,
+      })),
+    );
+    assertEquals(h.executions, [{ value: "${{ parameters.x }}" }]);
+
+    // The step author's own unlisted root still fails the run, before the
+    // step starts: the run reports an error event, which runWorkflow rejects.
+    await assertRejects(() =>
+      runWorkflow(
+        h,
+        oneStepWorkflow(StepTask.modelMethod("authored-foreign", "run", {
+          value: "${{ parameters.x }}",
+        })),
+      )
+    );
+    assertEquals(h.executions.length, 1);
+  });
+});
+
+Deno.test("provenance: literal() output on an unlisted root reaches a direct step after a deferred prefix", async () => {
+  await withRepo(async (h) => {
+    await runWorkflow(
+      h,
+      workflowOf("deferred-literal", [
+        Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          task: StepTask.directExecution(
+            h.type.normalized,
+            "deferred-model",
+            "run",
+            { value: "${{ self.h + literal('${{ parameters.x }}') }}" },
+          ),
+        }),
+      ]),
+    );
+    assertEquals(h.executions, [{ value: "a${{ parameters.x }}" }]);
+  });
+});
+
+Deno.test("provenance: caller data that can never evaluate reaches a direct step global argument", async () => {
+  await withRepo(async (h) => {
+    await runWorkflow(
+      h,
+      oneStepWorkflow(
+        StepTask.directExecution(
+          h.type.normalized,
+          "foreign-model",
+          "run",
+          { value: "v" },
+          { label: "${{ inputs.text }}" },
+        ),
+        TEXT_INPUT,
+      ),
+      { text: "${{ github.ref == 'refs/heads/main' }}" },
+    );
+    assertEquals(h.globals, [{
+      label: "${{ github.ref == 'refs/heads/main' }}",
+    }]);
+  });
+});
+
+// Text that would evaluate if stored bare, and hyphenated names whose later
+// segment is a swamp namespace, reach the method as text on every run.
+for (
+  const text of [
+    "${{ true || github.sha }}",
+    "${{ deferredExpressions == [] ? 1 : github.sha }}",
+    "${{ toJSON(matrix) }}",
+    "${{ needs.build-env.outputs.url }}",
+    "${{ matrix.target-file }}",
+  ]
+) {
+  Deno.test(`provenance: a direct step stores literal() output ${text} as text`, async () => {
+    await withRepo(async (h) => {
+      await runWorkflow(
+        h,
+        oneStepWorkflow(
+          StepTask.directExecution(
+            h.type.normalized,
+            "stored-model",
+            "run",
+            { value: "v" },
+            { label: `\${{ literal('${text}') }}` },
+          ),
+        ),
+      );
+      await runWorkflow(
+        h,
+        oneStepWorkflow(StepTask.modelMethod("stored-model", "run", {
+          value: "again",
+        })),
+      );
+      assertEquals(h.executions.length, 2);
+      assertEquals(h.globals, [{ label: text }, { label: text }]);
+    });
+  });
+}
+
+for (
+  const text of [
+    "${{ inputs.version }}",
+    "${{ github.sha || env.SECRET }}",
+    // A run reads the hyphen as subtraction, which reads `vault`.
+    "${{ needs.build-vault.outputs.url }}",
+  ]
+) {
+  Deno.test(`provenance: direct execution never persists literal() output ${text}`, async () => {
+    await withRepo(async (h) => {
+      await runWorkflow(
+        h,
+        oneStepWorkflow(
+          StepTask.directExecution(
+            h.type.normalized,
+            "refused-model",
+            "run",
+            { value: "v" },
+            { label: `\${{ literal('${text}') }}` },
+          ),
+        ),
+        {},
+        "failed",
+      );
+      assertEquals(h.executions, []);
+      const stored =
+        await readTree(join(h.dir, ".swamp", "auto-definitions")).catch(() =>
+          ""
+        ) + await readTree(join(h.dir, "models")).catch(() => "");
+      assertEquals(stored.includes(text), false);
+    });
+  });
+}
+
+// literal() output is told apart by where it sits, not by its text: the same
+// expression written as an expression elsewhere in the workflow vouches for
+// nothing it produced.
+for (
+  const [name, written, workflowInputs, value] of [
+    ["env", "${{ env.SECRET }}", undefined, "runtime-secret"],
+    ["inputs", "${{ inputs.text }}", TEXT_INPUT, "1"],
+  ] as const
+) {
+  Deno.test(`provenance: literal() output matching an expression written elsewhere stays literal (${name})`, async () => {
+    await withRepo(async (h) => {
+      const quoted = `\${{ literal('${written}') }}`;
+      await runWorkflow(
+        h,
+        workflowOf("both-places", [
+          Step.create({
+            name: "written",
+            task: StepTask.directExecution(
+              h.type.normalized,
+              "written-model",
+              "run",
+              { value: written },
+            ),
+          }),
+          Step.create({
+            name: "quoted",
+            dependsOn: [{
+              step: "written",
+              condition: TriggerCondition.succeeded(),
+            }],
+            task: StepTask.directExecution(
+              h.type.normalized,
+              "quoted-model",
+              "run",
+              { authored: quoted },
+              { label: quoted },
+            ),
+          }),
+        ], workflowInputs),
+        workflowInputs ? { text: value } : {},
+        "failed",
+      );
+      // The written step resolves its own expression; the quoted step is
+      // refused before its method runs.
+      assertEquals(h.executions, [{ value }]);
+      const stored =
+        await readTree(join(h.dir, ".swamp", "auto-definitions")).catch(() =>
+          ""
+        ) + await readTree(join(h.dir, "models")).catch(() => "");
+      assertEquals(stored.includes(written), false);
+    });
+  });
+
+  Deno.test(`provenance: literal() output matching an expression written elsewhere reaches a method argument as text (${name})`, async () => {
+    await withRepo(async (h) => {
+      await runWorkflow(
+        h,
+        workflowOf("both-places-input", [
+          Step.create({
+            name: "written",
+            task: StepTask.directExecution(
+              h.type.normalized,
+              "written-model",
+              "run",
+              { value: written },
+            ),
+          }),
+          Step.create({
+            name: "quoted",
+            dependsOn: [{
+              step: "written",
+              condition: TriggerCondition.succeeded(),
+            }],
+            task: StepTask.directExecution(
+              h.type.normalized,
+              "quoted-model",
+              "run",
+              { authored: `\${{ literal('${written}') }}` },
+            ),
+          }),
+        ], workflowInputs),
+        workflowInputs ? { text: value } : {},
+      );
+      assertEquals(h.executions, [{ value }, { authored: written }]);
+    });
+  });
+}
 
 Deno.test("provenance: a guard holding data matching an authored reference is refused", async () => {
   await withRepo(async (h) => {

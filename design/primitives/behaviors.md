@@ -543,6 +543,16 @@ check fails closed and reaches values nested inside object-typed arguments:
 (`${{ 1 }}`), are refused too. Another templating system's text, such as
 `${{ github.sha }}`, passes through.
 
+A call by type and name that creates the definition saves its global-arg
+values, and a saved definition is read back as authored source. Each
+occurrence is saved inside a `literal()` call of its own, so every later load
+hands the method the same text and evaluates nothing inside it (see
+[Position and Value Provenance](../enablers/expressions.md#position-and-value-provenance)).
+`${{ true || github.sha }}` reaches the method as that text, on the call that
+creates the definition and on every run after it. Expression text in a
+sensitive global argument is refused there, with the value withheld, since
+saving it would write any constant inside it in cleartext.
+
 **Data ownership:** When behavior X calls behavior Y, Y's writes belong to Y's
 definition, not X's. This holds whether Y runs standalone, from a workflow or
 inside X.

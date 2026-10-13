@@ -20,6 +20,7 @@
 import { type ASTNode, parse as parseCel } from "cel-js";
 import {
   collectReferences,
+  freeRoots,
   type References,
   transformHyphenatedModelRefs,
 } from "./cel_grammar.ts";
@@ -437,6 +438,87 @@ export function readsSwampBinding(celExpression: string): boolean {
     if (SWAMP_ROOT_NAMESPACES.has(root)) return true;
   }
   return false;
+}
+
+/**
+ * Why `${{ ... }}` text from data cannot be saved in a definition, in words
+ * that complete "the text ...", or undefined when it can: when it is another
+ * templating system's text (see {@link isForeignExpression}) and reads no
+ * swamp binding (see {@link readsSwampBinding}). Text that can be saved is
+ * stored wrapped in `literal()` (see `literalOccurrence`), so no later load
+ * evaluates it; this decides only whose text it is.
+ *
+ * A hyphenated name on a known foreign root is one name when deciding what
+ * the text reads, so `needs.build-env.outputs.url` reads no `env`. Whether it
+ * is another system's text is judged on the text as written, as a run judges
+ * it when the method reads the argument: CEL reads `needs.build-vault.x` as
+ * `needs.build - vault.x`, which reads `vault`, and `matrix.node-18x` does
+ * not parse, so a run would refuse both.
+ */
+export function storedTextRefusal(celExpression: string): string | undefined {
+  const joined = joinHyphenatedForeignRefs(celExpression);
+  try {
+    if (freeRoots(joined) === undefined) {
+      return "does not parse as an expression";
+    }
+    if (readsSwampBinding(joined)) return "reads a swamp namespace";
+    if (!isForeignExpression(celExpression)) {
+      const hyphenated = isForeignExpression(joined)
+        ? hyphenatedForeignRef(celExpression)
+        : undefined;
+      return hyphenated === undefined
+        ? "cannot be attributed to another templating system"
+        : `holds a hyphenated name CEL reads as subtraction (${
+          hyphenated.replaceAll("-", " - ")
+        }), so a run would refuse it`;
+    }
+  } catch (error) {
+    // Walking a deeply nested expression can exhaust the stack.
+    if (error instanceof RangeError) return "nests too deeply to analyse";
+    throw error;
+  }
+  return undefined;
+}
+
+/**
+ * A hyphenated name on a known foreign root, outside strings: the first that
+ * is not another system's text on its own as written, else the first.
+ */
+function hyphenatedForeignRef(celExpression: string): string | undefined {
+  const refs: string[] = [];
+  for (const seg of lexSegments(celExpression)) {
+    if (seg.kind !== "code") continue;
+    const text = celExpression.slice(seg.start, seg.end);
+    for (const [ref] of text.matchAll(HYPHENATED_FOREIGN_REF)) {
+      if (ref.includes("-")) refs.push(ref);
+    }
+  }
+  return refs.find((ref) => !isForeignExpression(ref)) ?? refs[0];
+}
+
+/** The most of a refused expression's text a message repeats. */
+const MAX_REFUSED_TEXT_LENGTH = 120;
+
+/**
+ * One line of a refusal message: where the text sits, the text (cut short
+ * when long, since it can be data), and why it was refused.
+ */
+export function refusedOccurrenceLine(
+  path: string,
+  raw: string,
+  reason: string,
+): string {
+  if (raw.length <= MAX_REFUSED_TEXT_LENGTH) {
+    return `  ${path}: ${raw} (${reason})`;
+  }
+  // Never cut between the two halves of a surrogate pair.
+  const last = raw.charCodeAt(MAX_REFUSED_TEXT_LENGTH - 1);
+  const end = last >= 0xd800 && last <= 0xdbff
+    ? MAX_REFUSED_TEXT_LENGTH - 1
+    : MAX_REFUSED_TEXT_LENGTH;
+  return `  ${path}: ${
+    raw.slice(0, end)
+  }… (${raw.length} characters) (${reason})`;
 }
 
 /**

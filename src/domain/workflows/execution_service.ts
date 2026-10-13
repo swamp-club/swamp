@@ -328,6 +328,7 @@ import {
 import { errorPaths, UserError } from "../errors.ts";
 import {
   isForeignExpression,
+  storedTextRefusal,
   unlistedForeignRootError,
 } from "../expressions/swamp_namespaces.ts";
 import {
@@ -703,20 +704,24 @@ function warnForeignTaskArguments(
  * covers text it deferred to step time (one that also reads `self.*`). A
  * direct step's global arguments, and the inputs routed to them, are
  * evaluated with its definition, under the looser rule for definitions, and
- * would pass through. Expression text that arrived as data, such as the
- * result of `literal()`, is not the author's expression and is left to the
- * checks on persisting the definition.
+ * would pass through. Expression text the author did not write as an
+ * expression is left to the checks on persisting the definition: text that
+ * arrived as data, and the result of `literal()`, which is a constant the
+ * author wrote, so no data range marks it, but whose produced text is not in
+ * the authored set.
  */
 function assertNoUnlistedForeignArguments(
   field: "inputs" | "globalArgs",
   args: unknown,
+  authored: ReadonlySet<string>,
   provenance: ProvenanceMap,
 ): void {
   for (const expr of extractExpressions(args)) {
     const inData = expr.start === undefined || expr.end === undefined
       ? provenance.hasDataAtOrBelow(expr.path)
       : provenance.overlapsData(expr.path, expr.start, expr.end);
-    if (inData || !isForeignExpression(expr.celExpression)) continue;
+    if (inData || !authored.has(expr.raw)) continue;
+    if (!isForeignExpression(expr.celExpression)) continue;
     const unlisted = unlistedForeignRootError(
       expr.celExpression,
       `${field}.${expr.path}`,
@@ -2024,8 +2029,9 @@ export class DefaultStepExecutor implements StepExecutor {
      * injected text this gate exists to refuse. When direct execution reuses
      * a stored definition, the resolver reports that definition's expressions
      * as collected before caller-supplied global arguments were applied —
-     * sound because direct execution refuses to persist any expression text
-     * the caller cannot vouch for, so nothing stored is substituted content.
+     * sound because direct execution stores expression text the caller
+     * cannot vouch for only inside a literal() call, or refuses it, so
+     * nothing stored is substituted content that resolves.
      */
     let authoredFromDefinition: ReadonlySet<string> = new Set();
 
@@ -2082,6 +2088,7 @@ export class DefaultStepExecutor implements StepExecutor {
         assertNoUnlistedForeignArguments(
           field,
           task[field],
+          authoredForDirect,
           taskArgs.rawProvenance.subtree(field),
         );
       }
@@ -2333,6 +2340,27 @@ export class DefaultStepExecutor implements StepExecutor {
       ...authoredForDirect,
       ...authoredFromDefinition,
     ]);
+    // What vouches for the step's own inputs. Another templating system's
+    // text in a definition vouches for nothing: matched by raw text against
+    // the same `literal()` output in a step input, it would be evaluated
+    // there as the author's expression and fail on its root
+    // (swamp-club#3389). A run stores such text wrapped in `literal()`, but
+    // a hand-written definition can hold it bare.
+    const stepInputAuthored = (): ReadonlySet<string> => {
+      const fromDefinition = [...authoredExpressions].filter((raw) =>
+        !authoredForDirect.has(raw)
+      );
+      if (fromDefinition.length === 0) return authoredExpressions;
+      const vouching = new Set(authoredForDirect);
+      for (const raw of fromDefinition) {
+        const [expr] = extractExpressions(raw);
+        if (
+          expr === undefined ||
+          storedTextRefusal(expr.celExpression) !== undefined
+        ) vouching.add(raw);
+      }
+      return vouching;
+    };
 
     if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
@@ -2374,7 +2402,7 @@ export class DefaultStepExecutor implements StepExecutor {
         stepInputs = await expressionEvaluator.evaluateDataPair(
           stepInputPair(taskArgs),
           ctx.expressionContext,
-          authoredExpressions,
+          stepInputAuthored(),
           stepSecretBag,
           "passThrough",
         );

@@ -45,18 +45,29 @@ import {
 } from "../expressions/expression_evaluation_service.ts";
 import { UnresolvedExpressionError } from "../expressions/errors.ts";
 import { assertMethodArgumentsEvaluated } from "../expressions/unresolved_expression_guard.ts";
-import { extractExpressions } from "../expressions/expression_parser.ts";
-import type { ExpressionLocation } from "../expressions/expression.ts";
 import {
-  isForeignExpression,
-  readsSwampBinding,
+  extractExpressions,
+  rewriteExpressions,
+} from "../expressions/expression_parser.ts";
+import { literalOccurrence } from "../expressions/cel_grammar.ts";
+import {
+  refusedOccurrenceLine,
+  storedTextRefusal,
 } from "../expressions/swamp_namespaces.ts";
 import { RunSensitiveValues } from "../secrets/run_sensitive_values.ts";
 import type { SecretBagRegistry } from "../vaults/secret_bag_registry.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { InputValidationService } from "../inputs/input_validation_service.ts";
-import { extractSensitiveFieldValues } from "./sensitive_field_extractor.ts";
-import { keyPath, ProvenanceMap } from "../expressions/provenance_map.ts";
+import {
+  extractSensitiveFieldValues,
+  sensitiveGlobalArgPaths,
+  withheldSensitiveTextLine,
+} from "./sensitive_field_extractor.ts";
+import {
+  isAtOrUnder,
+  keyPath,
+  ProvenanceMap,
+} from "../expressions/provenance_map.ts";
 import { attachBindingProvenance } from "../expressions/splice_origin.ts";
 import {
   type BehaviorWords,
@@ -193,27 +204,42 @@ function isRoutedArgs(
 /**
  * runModel arguments come from extension code at run time, never from the
  * definition's author, so they are applied as literal values and never
- * evaluated. Global arguments holding `${{ ... }}` text that swamp could
- * evaluate are refused: they would reach the method unresolved, or — saved by
- * type-mode auto-creation — be evaluated as authored on a later run. Only
- * another templating system's text, such as `${{ github.sha }}`, passes.
+ * evaluated. Global arguments holding `${{ ... }}` text that swamp would own
+ * are refused: they would reach the method unresolved. Only another
+ * templating system's text passes, such as `${{ github.sha }}` or
+ * `${{ toJSON(matrix) }}` (see {@link storedTextRefusal}).
+ *
+ * A call that saves the definition passes the paths of its sensitive fields
+ * (`sensitivePaths`): expression text in one is refused, since saving it
+ * would write any constant inside it in cleartext.
  */
 function refuseEvaluableGlobalArgs(
   definitionName: string,
   globalArgs: Record<string, unknown>,
+  sensitivePaths: readonly string[] = [],
 ): RunModelResult | null {
-  const refused: ExpressionLocation[] = extractExpressions(globalArgs)
-    .filter((e) =>
-      readsSwampBinding(e.celExpression) ||
-      !isForeignExpression(e.celExpression)
-    );
-  if (refused.length === 0) return null;
-  const list = refused.map((e) => `  ${e.path}: ${e.raw}`).join("\n");
+  const refused = new Set<string>();
+  for (const e of extractExpressions(globalArgs)) {
+    if (sensitivePaths.some((path) => isAtOrUnder(e.path, path))) {
+      refused.add(withheldSensitiveTextLine(e.path));
+      continue;
+    }
+    const reason = storedTextRefusal(e.celExpression);
+    if (reason !== undefined) {
+      refused.add(refusedOccurrenceLine(e.path, e.raw, reason));
+    }
+  }
+  if (refused.size === 0) return null;
+  const allowed = sensitivePaths.length > 0
+    ? "Only another system's expression text may be passed, and the definition this call creates stores none in a sensitive field."
+    : "Only another system's expression text may be passed.";
   return {
     ok: false,
     error: {
       message:
-        `Refusing to run '${definitionName}': the following global arguments passed to runModel hold expression text, and runModel arguments are applied as literal values, never evaluated:\n${list}\nResolve the value in the calling method and pass the result instead.`,
+        `Refusing to run '${definitionName}': the following global arguments passed to runModel hold expression text, and runModel arguments are applied as literal values, never evaluated:\n${
+          [...refused].join("\n")
+        }\n${allowed} Resolve the value in the calling method and pass the result instead.`,
     },
   };
 }
@@ -642,9 +668,16 @@ export class ModelInvocationService {
         const refused = refuseEvaluableGlobalArgs(
           options.name,
           routed.globalArgs,
+          sensitiveGlobalArgPaths(modelDef.globalArguments, routed.globalArgs),
         );
         if (refused) return refused;
-        globalArgs = routed.globalArgs;
+        // The definition is read back as authored source on every later
+        // load, so each occurrence is stored as a literal() call that
+        // evaluates to the text and nothing inside it.
+        globalArgs = rewriteExpressions(
+          routed.globalArgs,
+          (e) => literalOccurrence(e.raw),
+        ) as Record<string, unknown>;
       }
       definition = Definition.create({
         name: options.name,

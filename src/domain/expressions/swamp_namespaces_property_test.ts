@@ -20,10 +20,12 @@
 import { assert } from "@std/assert";
 import fc from "fast-check";
 import {
+  containsSwampExpression,
   isForeignExpression,
   isSwampExpression,
   KNOWN_FOREIGN_ROOTS,
   misspeltSwampNamespace,
+  storedTextRefusal,
   type SwampScope,
   unlistedForeignRoots,
   WIDEST_SWAMP_SCOPE,
@@ -236,4 +238,65 @@ Deno.test("known foreign roots: none is a swamp namespace or nearly spells one",
     assert(misspeltSwampNamespace(`${root}.x + input.y`)?.root === "input");
     assert(misspeltSwampNamespace(`${root}.x`) === undefined, root);
   }
+});
+
+/**
+ * A member chain on a known foreign root whose names may hold hyphens, with
+ * the parts around each hyphen drawn from swamp roots, digit-led words and
+ * plain words: `needs.build-vault.result`, `matrix.node-18x`.
+ */
+const arbHyphenatedChain = fc.tuple(
+  fc.constantFrom(...KNOWN_FOREIGN_ROOTS),
+  fc.array(
+    fc.array(
+      fc.constantFrom(
+        "vault",
+        "env",
+        "data",
+        "inputs",
+        "self",
+        "18x",
+        "1a",
+        "2",
+        "build",
+        "os",
+        "tests",
+      ),
+      { minLength: 1, maxLength: 3 },
+    ).map((parts) => parts.join("-")),
+    { minLength: 1, maxLength: 3 },
+  ),
+).map(([root, names]) => [root, ...names].join("."));
+
+const arbStoredCandidate = fc.oneof(
+  arbHyphenatedChain,
+  fc.tuple(arbHyphenatedChain, arbHyphenatedChain).map(([a, b]) =>
+    `${a} == ${b}`
+  ),
+  arbHyphenatedChain.map((chain) => `true || ${chain}`),
+);
+
+Deno.test("storedTextRefusal: text it accepts is another system's text as a run reads it", () => {
+  fc.assert(
+    fc.property(arbStoredCandidate, (cel) => {
+      if (storedTextRefusal(cel) !== undefined) return;
+      assert(isForeignExpression(cel), cel);
+      assert(!containsSwampExpression(`\${{ ${cel} }}`), cel);
+    }),
+    { numRuns: 1000 },
+  );
+});
+
+Deno.test("storedTextRefusal: accepts some hyphenated chains and refuses others", () => {
+  // Guards the property above against a generator that only ever refuses.
+  let accepted = 0;
+  let refused = 0;
+  fc.assert(
+    fc.property(arbHyphenatedChain, (cel) => {
+      if (storedTextRefusal(cel) === undefined) accepted++;
+      else refused++;
+    }),
+    { numRuns: 500 },
+  );
+  assert(accepted > 0 && refused > 0, `${accepted} accepted, ${refused}`);
 });

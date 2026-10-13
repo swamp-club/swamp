@@ -23,6 +23,8 @@ import {
   freeRoots,
   inputNamesRead,
   isBlankConstant,
+  literalCallTexts,
+  literalOccurrence,
   parsesAsCel,
   transformHyphenatedModelRefs,
   typeChecksAsConstant,
@@ -171,4 +173,32 @@ Deno.test("typeChecksAsConstant: rejects calls the evaluator does not have", () 
   ) {
     assertEquals(typeChecksAsConstant(cel), false, cel);
   }
+});
+
+Deno.test("literalOccurrence: quotes text in a single-quoted literal() call", () => {
+  assertEquals(
+    literalOccurrence("${{ github.sha }}"),
+    "${{ literal('${{ github.sha }}') }}",
+  );
+  assertEquals(
+    literalOccurrence('it\'s a \\ "q"\nnext\r}}'),
+    "${{ literal('it\\'s a \\\\ \"q\"\\nnext\\r}}') }}",
+  );
+  assertEquals(literalOccurrence(""), "${{ literal('') }}");
+});
+
+Deno.test("literalCallTexts: the text of every literal() call with a string argument", () => {
+  assertEquals(
+    literalCallTexts("'a' + literal('${{ x.y }}') + (b ? literal(\"c\") : '')"),
+    ["${{ x.y }}", "c"],
+  );
+  assertEquals(literalCallTexts("literal(inputs.x) + github.literal('a')"), []);
+  assertEquals(literalCallTexts("'a'"), []);
+  assertEquals(literalCallTexts("not valid cel !!!"), undefined);
+});
+
+Deno.test("literalCallTexts: undefined for text nested too deeply to walk", () => {
+  const deep = "-".repeat(20000) + "literal('x')";
+  const texts = literalCallTexts(deep);
+  assertEquals(texts === undefined || texts.length === 1, true);
 });

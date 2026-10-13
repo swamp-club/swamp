@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsSwampExpression,
@@ -28,6 +28,8 @@ import {
   misspeltSwampNamespace,
   parsesAsCel,
   readsSwampBinding,
+  refusedOccurrenceLine,
+  storedTextRefusal,
   type SwampScope,
   unlistedForeignRoots,
   unresolvableVaultArguments,
@@ -532,4 +534,112 @@ Deno.test("failedOnForeignRoot: true only for an unknown variable that is a know
   );
   assertEquals(failedOnForeignRoot(new Error("datastore unreachable")), false);
   assertEquals(failedOnForeignRoot("Unknown variable: github"), false);
+});
+
+Deno.test("storedTextRefusal: nothing for another system's text, however it could evaluate", () => {
+  for (
+    const cel of [
+      "github.sha",
+      "secrets.TOKEN",
+      "github.ref == 'refs/heads/main'",
+      "github.event_name == 'push' && 'a' || 'b'",
+      // Text that evaluates without reading its root: stored wrapped, it
+      // never evaluates.
+      "true || github.sha",
+      "false ? github.sha : 'x'",
+      // Calls, whether or not swamp registers the function.
+      "toJSON(matrix)",
+      "fromJSON(needs.a.outputs.b)",
+      "startsWith(github.ref, 'refs/tags')",
+      "matrix.os || size('ab') == 2",
+      "[1].all(x, github.sha == 'a')",
+      // A hyphenated name on a foreign root is one name, when a run also
+      // reads it as another system's text.
+      "needs.build-env.outputs.url",
+      "needs.build-2.result",
+      "needs.e2e-tests.result",
+      "matrix.os-2022",
+      "matrix.target-file",
+      "needs.a-self.x",
+      // A swamp reference inside a string is text, not a read.
+      'github.title == \'${{ vault.get("v", "k") }}\'',
+      "github." + "a".repeat(5000),
+    ]
+  ) {
+    assertEquals(storedTextRefusal(cel), undefined, cel.slice(0, 60));
+  }
+});
+
+Deno.test("storedTextRefusal: says why text swamp would own cannot be stored", () => {
+  const cases: [string, string][] = [
+    ["inputs.version", "reads a swamp namespace"],
+    ["inputs.?version", "reads a swamp namespace"],
+    ["env.HOME", "reads a swamp namespace"],
+    ["steps.build-data.outputs.x", "reads a swamp namespace"],
+    ['vault.get("v", "k")', "reads a swamp namespace"],
+    ['github.sha || data.latest("m", "d")', "reads a swamp namespace"],
+    ["github.sha || env.SECRET", "reads a swamp namespace"],
+    ["1 + 1", "cannot be attributed to another templating system"],
+    [
+      "hashFiles('**/lock')",
+      "cannot be attributed to another templating system",
+    ],
+    ["success()", "cannot be attributed to another templating system"],
+    ["literal('x')", "cannot be attributed to another templating system"],
+    ["a | b", "does not parse as an expression"],
+    ["github.sha == 'unclosed", "does not parse as an expression"],
+  ];
+  for (const [cel, reason] of cases) {
+    assertEquals(storedTextRefusal(cel), reason, cel);
+  }
+});
+
+Deno.test("storedTextRefusal: refuses a hyphenated name a run would read as subtraction", () => {
+  const cases: [string, string][] = [
+    ["needs.build-vault.outputs.url", "needs.build - vault.outputs.url"],
+    ["jobs.build-vault.result", "jobs.build - vault.result"],
+    ["matrix.node-18x", "matrix.node - 18x"],
+    ["needs.deploy-1a.result", "needs.deploy - 1a.result"],
+    // The name that fails is the one named.
+    ["needs.build-env.x == needs.build-vault.y", "needs.build - vault.y"],
+  ];
+  for (const [cel, read] of cases) {
+    assertEquals(
+      storedTextRefusal(cel),
+      `holds a hyphenated name CEL reads as subtraction (${read}), so a run would refuse it`,
+      cel,
+    );
+  }
+});
+
+Deno.test("storedTextRefusal: refuses text nested too deeply to walk instead of throwing", () => {
+  const deep = "-".repeat(20000) + "github.sha";
+  const reason = storedTextRefusal(deep);
+  assertEquals(reason === undefined, false);
+});
+
+Deno.test("refusedOccurrenceLine: repeats short text whole and cuts long text short", () => {
+  assertEquals(
+    refusedOccurrenceLine(
+      "env.V",
+      "${{ inputs.x }}",
+      "reads a swamp namespace",
+    ),
+    "  env.V: ${{ inputs.x }} (reads a swamp namespace)",
+  );
+  const long = "${{ github." + "a".repeat(5000) + " }}";
+  const line = refusedOccurrenceLine("env.V", long, "reason");
+  assertEquals(
+    line,
+    `  env.V: ${long.slice(0, 120)}… (${long.length} characters) (reason)`,
+  );
+});
+
+Deno.test("refusedOccurrenceLine: never cuts a surrogate pair in half", () => {
+  // The emoji's two code units sit at 119 and 120: the cut falls before it.
+  const raw = "${{ github." + "a".repeat(108) + "\u{1F600}" + "b".repeat(50) +
+    " }}";
+  const line = refusedOccurrenceLine("env.V", raw, "reason");
+  assertEquals(line.includes("\ud83d"), false);
+  assertStringIncludes(line, "a".repeat(108) + "…");
 });

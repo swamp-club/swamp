@@ -455,7 +455,12 @@ for (const r of [result, created]) {
   apply to this call only and are passed literally, never evaluated: a global
   argument holding `${{ ... }}` swamp could evaluate (`vault.get`, `self.*`,
   `data.*`, ...), at any depth, returns `{ ok: false }`; so does `${{ }}` text
-  that does not parse. Resolve values in your own method instead.
+  that does not parse. Resolve values in your own method instead. Another
+  system's text (`${{ github.sha }}`) passes.
+- A `modelType` + `name` call that creates the definition saves its global
+  arguments with each `${{ ... }}` wrapped in `literal()`, so later runs of that
+  definition receive the same text, never an evaluated value. Any `${{ ... }}`
+  in a `sensitive` global argument returns `{ ok: false }` there instead.
 - The target definition's own `${{ ... }}` expressions (`vault.get`, `self.*`,
   CEL) resolve as in a standalone run, within the caller's vault scope (a
   workflow's `vaults` list still applies); if that run would fail, the call

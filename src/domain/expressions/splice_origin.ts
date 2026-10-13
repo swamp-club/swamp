@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { freeRoots, staticAccessPath } from "./cel_grammar.ts";
+import {
+  freeRoots,
+  literalCallTexts,
+  staticAccessPath,
+} from "./cel_grammar.ts";
 import {
   AUTHORED_ORIGIN,
   extractExpressions,
@@ -207,11 +211,27 @@ function authoredRawsIn(
 }
 
 /**
+ * Raw text of every expression the `literal()` calls in `celExpression`
+ * produce. The author wrote that text as text, so it is data wherever it
+ * lands, even where the same expression is also written as one.
+ */
+function literalOutputRaws(celExpression: string): Set<string> {
+  const raws = new Set<string>();
+  if (!celExpression.includes("literal")) return raws;
+  for (const text of literalCallTexts(celExpression) ?? []) {
+    for (const expr of extractExpressions(text)) raws.add(expr.raw);
+  }
+  return raws;
+}
+
+/**
  * Where an evaluated value came from, decided by the expression that produced
  * it. A direct read of a binding carries that binding's map. Anything else is
  * a computation: its result is data except expression occurrences whose raw
  * text appears in the authored parts of the bindings it read (over-
- * approximated to whole roots), or in the expression's own text.
+ * approximated to whole roots), or in the expression's own text. Expression
+ * text a `literal()` call produces is always data, so a computation that
+ * calls one is never wholly authored.
  */
 export function spliceOrigin(
   celExpression: string,
@@ -246,7 +266,8 @@ export function spliceOrigin(
     rootMaps.set(root, map);
     if (!map.isAuthored) readsData = true;
   }
-  if (!readsData) return AUTHORED_ORIGIN;
+  const produced = literalOutputRaws(celExpression);
+  if (!readsData && produced.size === 0) return AUTHORED_ORIGIN;
   const authoredRaws = new Set<string>(
     extractExpressions(celExpression).map((e) => e.raw),
   );
@@ -254,5 +275,6 @@ export function spliceOrigin(
   for (const [root, map] of rootMaps) {
     authoredRawsIn(ctx?.[root], map, authoredRaws);
   }
+  for (const raw of produced) authoredRaws.delete(raw);
   return { map: readSetMap(value, authoredRaws), authoredRaws };
 }
