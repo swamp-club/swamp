@@ -73,12 +73,12 @@ export interface Proxy {
   stop(): Promise<void>;
 }
 
-export async function startProxy(p: Profile): Promise<Proxy> {
+export async function startProxy(p: Profile, idleDropMs = 0): Promise<Proxy> {
   const port = await freePort();
   const child = new Deno.Command(Deno.execPath(), {
     args: [
       "run", "-A", here("./bucket_proxy.ts"), String(port), EMULATOR[p.backend],
-      String(p.rtt), String(p.handshakeRtts), String(p.mbps),
+      String(p.rtt), String(p.handshakeRtts), String(p.mbps), String(idleDropMs),
     ],
     stdout: "null",
     stderr: "inherit",

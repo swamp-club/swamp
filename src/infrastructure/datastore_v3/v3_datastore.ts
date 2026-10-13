@@ -89,6 +89,7 @@ import { reconcileRefusedRuns } from "./refused_run_records.ts";
 import { SqliteCommitStore } from "./sqlite_commit_store.ts";
 import { SqliteReadModel } from "./sqlite_read_model.ts";
 import { V3Catalog } from "./v3_catalog.ts";
+import { spikeWalTrace } from "./spike_litestream.ts";
 
 /**
  * Thrown when a read-only command stages a change on a v3 datastore
@@ -452,7 +453,11 @@ export function listV3Namespaces(datastorePath: string): string[] {
     if (error instanceof Deno.errors.NotFound) return [];
     throw error;
   }
-  return queryNamespaces(new DatabaseSync(path, { readOnly: true }));
+  // SPIKE (swamp-club#3357): a second connection that opens and closes.
+  spikeWalTrace("namespaces:before-open", path);
+  const names = queryNamespaces(new DatabaseSync(path, { readOnly: true }));
+  spikeWalTrace("namespaces:after-close", path);
+  return names;
 }
 
 /** The non-empty namespaces of the partition heads in `db`, which it closes. */

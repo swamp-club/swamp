@@ -86,6 +86,7 @@ import {
 } from "../../domain/datastore_v3/partition.ts";
 import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
 import { UserError } from "../../domain/errors.ts";
+import { spikeWalTrace } from "./spike_litestream.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 
 /**
@@ -1126,7 +1127,12 @@ export function openCommitsDatabase(path: string): DatabaseSync {
       | undefined;
     if (mode?.journal_mode !== "wal") db.exec("PRAGMA journal_mode=WAL");
     db.exec("PRAGMA synchronous=FULL");
+    // SPIKE (swamp-club#3357): bisect the per-command re-snapshot.
+    if (Deno.env.get("SWAMP_SPIKE_NO_AUTOCKPT")) {
+      db.exec("PRAGMA wal_autocheckpoint=0");
+    }
     migrate(db);
+    spikeWalTrace("store:opened", path);
     return db;
   } catch (error) {
     db.close();

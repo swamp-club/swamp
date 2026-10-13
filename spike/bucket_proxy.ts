@@ -10,10 +10,15 @@
 // keyed here on the client port, so a client's connection pool shows up as
 // the number of distinct ports.
 //
-// Usage: bucket_proxy.ts <listenPort> <targetBase> <rttMs> <K> <mbps|0>
+// Usage: bucket_proxy.ts <listenPort> <targetBase> <rttMs> <K> <mbps|0> [idleDropMs]
+// idleDropMs > 0 models a server that closes idle keep-alive connections: a
+// request on a connection idle for longer pays the handshakes again and counts
+// as a new connection, as the client's redial would.
 // Control: GET /__proxy/stats, POST /__proxy/reset
-const [listen, target, rttStr, kStr, mbpsStr] = Deno.args;
+const [listen, target, rttStr, kStr, mbpsStr, idleDropStr] = Deno.args;
 const rtt = Number(rttStr), K = Number(kStr), mbps = Number(mbpsStr ?? 0);
+const idleDropMs = Number(idleDropStr ?? 0);
+const lastUse = new Map<string, number>();
 const sleep = (ms: number) =>
   ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 
@@ -81,11 +86,13 @@ Deno.serve({ port: Number(listen), onListen() {} }, async (req, info) => {
   }
   const key = `${info.remoteAddr.hostname}:${info.remoteAddr.port}`;
   let delay = rtt;
-  if (!seen.has(key)) {
+  const idle = performance.now() - (lastUse.get(key) ?? 0);
+  if (!seen.has(key) || (idleDropMs > 0 && idle > idleDropMs)) {
     seen.add(key);
     stats.connections++;
     delay += K * rtt;
   }
+  lastUse.set(key, performance.now());
   stats.requests++;
   const o = op(req, u);
   stats.ops[o] = (stats.ops[o] ?? 0) + 1;
@@ -115,8 +122,17 @@ Deno.serve({ port: Number(listen), onListen() {} }, async (req, info) => {
     body,
     redirect: "manual",
   });
+  // fake-gcs answers a resumable upload with a Location on its own public
+  // host; point it back through the proxy so the upload is modelled too.
+  const outHeaders = new Headers(res.headers);
+  const loc = outHeaders.get("location");
+  if (loc) {
+    const t = new URL(target);
+    outHeaders.set("location", loc.replace(t.host, `localhost:${listen}`));
+  }
+  lastUse.set(key, performance.now());
   return new Response(paced(res.body, "down", (n) => (stats.bytesDown += n)), {
     status: res.status,
-    headers: res.headers,
+    headers: outHeaders,
   });
 });

@@ -16,7 +16,8 @@ Prototype and measurement scripts behind
 
 ## swamp-club#3357: Phase 4A bucket-latency model (throwaway)
 
-Branch `spike/3357-litestream-buckets`, cut from main at `34b275cb` with this
+Branch `spike/3357-litestream-buckets`, cut from main at `34b275cb` and rebased onto main with the fenced writer lease
+(swamp-club#3359) with this
 directory brought over from `spike/3234-litestream`. Never merged. The
 record is the "Phase 4A" section of `design/enablers/datastore-litestream.md`.
 
@@ -43,6 +44,13 @@ MinIO could not be pulled (Docker Hub denies `minio/minio`, quay.io returns
 - `exp_idle.ts` — Q5, idle-gap connection reuse and the idle-sidecar faults.
 - `exp_idle_restart.ts` — Q5, whether a fresh sidecar after an idle timeout
   re-snapshots.
+- `exp_wal_trace.ts` — traces the `commits.db-wal` header through every step
+  of a write command (`SWAMP_SPIKE_WAL_LOG`); found the re-snapshot trigger.
+  Variant `sync-close-stop` is the fix.
+- `exp_restore_objects.ts` — restore time of an uncompacted per-command
+  replica, and after a long-lived sidecar compacts it.
+- `exp_lineage.ts` — replica path per fence against per lineage, under the
+  fenced writer lease, with another writer and a killed command.
 - `probe_percommand_snapshot.ts` — reproduces the per-command re-snapshot
   around real CLI commands (Litestream debug log).
 - `probe_wal_salt.ts` — the synthetic writer that does *not* reproduce the

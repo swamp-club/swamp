@@ -55,6 +55,22 @@ interface Active {
 }
 
 const active = new Map<string, Active>();
+let stdoutDone: Promise<void> = Promise.resolve();
+// SWAMP_SPIKE_LITESTREAM_ORDER=sync-close-stop: the sync leaves the
+// per-command sidecar running, the stores close while it still holds
+// commits.db open, and spikeLitestreamStopAll stops it afterwards.
+const pendingStops: Deno.ChildProcess[] = [];
+const deferStop = () =>
+  Deno.env.get("SWAMP_SPIKE_LITESTREAM_ORDER") === "sync-close-stop";
+
+/** Stops the per-command sidecars a deferred-stop sync left running. */
+export async function spikeLitestreamStopAll(): Promise<void> {
+  for (const child of pendingStops.splice(0)) {
+    child.kill("SIGTERM");
+    await child.status;
+  }
+  await stdoutDone;
+}
 const t0 = performance.now();
 
 function mode(): "percommand" | "idle" | undefined {
@@ -168,8 +184,45 @@ async function waitReady(socket: string, timeoutMs = 30_000) {
 }
 
 /** Called when this process takes the v3 writer lock on `datastorePath`. */
+/**
+ * The replica path for this command (SWAMP_SPIKE_LITESTREAM_PATHMODE):
+ * - `fixed` (default): the configured path, as before;
+ * - `fence`: `<path>/<this command's fence>`, one path per lease acquisition;
+ * - `lineage`: `<path>/<fence where this copy's lineage began>`. The lineage
+ *   continues when the fence just before this one was this copy's own (no
+ *   other writer took the lease in between), and restarts at this fence
+ *   otherwise. The last fence is recorded when the lease is taken, so a
+ *   copy that crashed continues its own lineage.
+ */
+async function replicaPathFor(
+  datastorePath: string,
+  base: string,
+  fence: number | undefined,
+): Promise<{ path: string; decision: string }> {
+  const pm = Deno.env.get("SWAMP_SPIKE_LITESTREAM_PATHMODE") ?? "fixed";
+  if (pm === "fixed" || fence === undefined) return { path: base, decision: "fixed" };
+  const pad = (n: number) => String(n).padStart(12, "0");
+  if (pm === "fence") return { path: `${base}/${pad(fence)}`, decision: "fence" };
+  const file = join(datastorePath, ".spike-lineage.json");
+  let lineage: { lineageFence: number; lastFence: number } | undefined;
+  try {
+    lineage = JSON.parse(await Deno.readTextFile(file));
+  } catch { /* none yet */ }
+  let decision: string;
+  if (lineage !== undefined && fence === lineage.lastFence + 1) {
+    decision = "continue";
+  } else {
+    decision = lineage === undefined ? "new" : `restart (last ${lineage.lastFence}, now ${fence})`;
+    lineage = { lineageFence: fence, lastFence: fence };
+  }
+  lineage.lastFence = fence;
+  await Deno.writeTextFile(file, JSON.stringify(lineage));
+  return { path: `${base}/${pad(lineage.lineageFence)}`, decision };
+}
+
 export async function spikeLitestreamStart(
   datastorePath: string,
+  fence?: number,
 ): Promise<void> {
   const m = mode();
   if (m === undefined || active.has(datastorePath)) return;
@@ -184,14 +237,33 @@ export async function spikeLitestreamStart(
   const dir = join(Deno.env.get("HOME") ?? "/tmp", ".swamp", "spike-litestream");
   await Deno.mkdir(dir, { recursive: true });
   const cfg = join(dir, `${h}.yml`);
-  await Deno.writeTextFile(cfg, config(dbPath, socket, replica));
+  const chosen = await replicaPathFor(datastorePath, replica.path, fence);
+  const cfgText = config(dbPath, socket, { ...replica, path: chosen.path });
+  let previousCfg = "";
+  try {
+    previousCfg = await Deno.readTextFile(cfg);
+  } catch { /* first start */ }
+  await Deno.writeTextFile(cfg, cfgText);
+  const pathLog = Deno.env.get("SWAMP_SPIKE_LITESTREAM_PATHLOG");
+  if (pathLog) {
+    await Deno.writeTextFile(
+      pathLog,
+      JSON.stringify({ fence, path: chosen.path, decision: chosen.decision }) + "\n",
+      { append: true },
+    );
+  }
   if (m === "percommand") {
+    const lsLog = Deno.env.get("SWAMP_SPIKE_LITESTREAM_STDOUT");
     const child = new Deno.Command(bin, {
       args: ["replicate", "-config", cfg],
       stdin: "null",
-      stdout: "null",
+      stdout: lsLog ? "piped" : "null",
       stderr: "inherit",
     }).spawn();
+    if (lsLog && child.stdout) {
+      const file = await Deno.open(lsLog, { create: true, append: true });
+      stdoutDone = child.stdout.pipeTo(file.writable);
+    }
     active.set(datastorePath, {
       dbPath,
       socket,
@@ -206,6 +278,17 @@ export async function spikeLitestreamStart(
   const pidfile = join(dir, `${h}.pid`);
   const now = new Date();
   let reused = false;
+  // Litestream takes its replica path from its config at start: a running
+  // sidecar on another path (a new lineage) is stopped and replaced.
+  if (previousCfg !== cfgText && await answers(socket)) {
+    try {
+      const pid = Number((await Deno.readTextFile(pidfile)).trim());
+      if (pid > 0) Deno.kill(pid, "SIGTERM");
+    } catch { /* gone */ }
+    for (let i = 0; i < 200 && await answers(socket); i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
   if (await answers(socket)) {
     reused = true;
     await Deno.utime(pidfile, now, now).catch(() => {});
@@ -265,9 +348,12 @@ async function syncOne(a: Active): Promise<void> {
     throw new Error(`litestream sync failed: ${JSON.stringify(s)}`);
   }
   let stopMs = 0;
-  if (a.child) {
+  if (a.child && deferStop()) {
+    pendingStops.push(a.child);
+  } else if (a.child) {
     a.child.kill("SIGTERM");
     await a.child.status;
+    await stdoutDone;
     stopMs = performance.now() - w2;
   } else if (a.pidfile) {
     const now = new Date();
@@ -290,4 +376,42 @@ async function syncOne(a: Active): Promise<void> {
       { append: true },
     );
   }
+}
+
+/**
+ * SPIKE (swamp-club#3357): appends the `commits.db-wal` header at `label` to
+ * SWAMP_SPIKE_WAL_LOG, so a run shows which step of a command rewinds the
+ * WAL. Off unless the variable is set. Header fields: checkpoint sequence
+ * (offset 12) and the two salts (16, 20), big-endian.
+ */
+export function spikeWalTrace(label: string, dbPath: string): void {
+  const log = Deno.env.get("SWAMP_SPIKE_WAL_LOG");
+  if (!log) return;
+  const wal = dbPath + "-wal";
+  let row: Record<string, unknown> = { walExists: false };
+  try {
+    const size = Deno.statSync(wal).size;
+    const f = Deno.openSync(wal, { read: true });
+    try {
+      const h = new Uint8Array(32);
+      const n = f.readSync(h) ?? 0;
+      const v = new DataView(h.buffer);
+      row = n >= 24
+        ? {
+          walExists: true,
+          size,
+          ckptSeq: v.getUint32(12),
+          salt1: v.getUint32(16),
+          salt2: v.getUint32(20),
+        }
+        : { walExists: true, size };
+    } finally {
+      f.close();
+    }
+  } catch { /* no WAL */ }
+  Deno.writeTextFileSync(
+    log,
+    JSON.stringify({ label, pid: Deno.pid, at: Date.now(), ...row }) + "\n",
+    { append: true },
+  );
 }

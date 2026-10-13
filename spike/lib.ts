@@ -273,3 +273,14 @@ export function stats(xs: number[]) {
     max: +s[s.length - 1].toFixed(1),
   };
 }
+
+/** PRAGMA integrity_check of a restored database of any schema (swamp-club#3357). */
+export function verifyIntegrity(path: string): string {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const ic = db.prepare("PRAGMA integrity_check").get() as Record<string, string>;
+    return Object.values(ic)[0];
+  } finally {
+    db.close();
+  }
+}

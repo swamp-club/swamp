@@ -65,7 +65,9 @@ import type { RepositoryFactoryConfig } from "../persistence/repository_factory.
 import { getSwampLogger } from "../logging/logger.ts";
 import {
   spikeLitestreamStart,
+  spikeLitestreamStopAll,
   spikeLitestreamSyncAll,
+  spikeWalTrace,
 } from "./spike_litestream.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
@@ -148,6 +150,7 @@ export async function holdV3Writer(
   // Before the handle opens: opening migrates commits.db, which a swamp from
   // before the lease, still writing, could not open again.
   await refuseLiveV3LegacyWriter(config.path);
+  spikeWalTrace("hold:before-lease", join(config.path, "commits.db"));
   const release = await acquireV3WriterLock(config.path, {
     maxWaitMs: resolveLockTimeoutMs(),
     // Records the lease's fence in commits.db, so a writer that loses the
@@ -197,7 +200,9 @@ export async function holdV3Writer(
     throw error;
   }
   // SPIKE (swamp-club#3357): the writer starts replication with the lock.
-  await spikeLitestreamStart(config.path);
+  spikeWalTrace("hold:after-lease", join(config.path, "commits.db"));
+  await spikeLitestreamStart(config.path, v3WriterFence(config.path));
+  spikeWalTrace("hold:after-sidecar-start", join(config.path, "commits.db"));
   releases.push(async () => {
     // The marker goes once every unit has ended, before the lock does. A
     // marker that cannot be removed costs one needless recovery, never the
@@ -402,9 +407,17 @@ export async function closeV3Datastores(): Promise<void> {
   opened.clear();
   // A writer folds history the policy no longer retains before it lets go
   // of the lock: compaction is the single writer's (swamp-club#3258).
+  const trace = (label: string) => {
+    for (const h of handles) spikeWalTrace(label, join(h.datastorePath, "commits.db"));
+  };
+  trace("close:start");
   for (const handle of handles) {
-    if (holdsV3WriterLock(handle.datastorePath)) await compactQuietly(handle);
+    if (
+      holdsV3WriterLock(handle.datastorePath) &&
+      !Deno.env.get("SWAMP_SPIKE_NO_COMPACT")
+    ) await compactQuietly(handle);
   }
+  trace("close:after-compaction");
   // SPIKE (swamp-club#3357): one forced sync covers every commit this
   // command made, compaction included, before the lock is released.
   // SWAMP_SPIKE_LITESTREAM_ORDER=after-close moves it after the stores
@@ -412,15 +425,20 @@ export async function closeV3Datastores(): Promise<void> {
   const syncAfterClose =
     Deno.env.get("SWAMP_SPIKE_LITESTREAM_ORDER") === "after-close";
   if (!syncAfterClose) await spikeLitestreamSyncAll();
+  trace("close:after-sync");
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await Promise.allSettled(
     handles.map((handle) => handle.close()),
   );
+  trace("close:after-stores-closed");
+  await spikeLitestreamStopAll();
+  trace("close:after-sidecar-stopped");
   if (syncAfterClose) await spikeLitestreamSyncAll();
   const released = await Promise.allSettled(
     pending.map((release) => release()),
   );
+  trace("close:after-release");
   keepMarkers = false;
   const failed = [...closed, ...released].find((result) =>
     result.status === "rejected"

@@ -24,7 +24,10 @@ if (!profile) throw new Error(`unknown profile ${profileName}`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function gaps(gapsS: number[], samples: number) {
-  const proxy = await M.startProxy(profile);
+  // IDLE_DROP_MS: the modelled server closes keep-alive connections idle
+  // for longer than this (bucket_proxy.ts).
+  const idleDropMs = Number(Deno.env.get("IDLE_DROP_MS") ?? 0);
+  const proxy = await M.startProxy(profile, idleDropMs);
   const env = M.cleanEnv(profile.backend, proxy.port);
   const d = L.tmpdir("3357-gaps");
   const dbPath = join(d, "commits.db");
@@ -271,6 +274,7 @@ if (what === "gaps") {
   row = {
     exp: "idle-gaps",
     profile,
+    idleDropMs: Number(Deno.env.get("IDLE_DROP_MS") ?? 0),
     at: new Date().toISOString(),
     rows: await gaps(a3.split(",").map(Number), Number(a4 ?? 3)),
   };
