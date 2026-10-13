@@ -23,7 +23,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { dirname, join, relative, resolve } from "@std/path";
+import { dirname, join, parse, relative, resolve } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import {
@@ -41,9 +41,27 @@ import {
   assertPathEquals,
   withMockedEnv,
 } from "../infrastructure/persistence/path_test_helpers.ts";
-import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
+import type { ModuleGraphReader } from "../domain/extensions/extension_source_graph.ts";
+import { resolveLocalImports } from "../domain/models/local_import_resolver.ts";
 
-const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
+/**
+ * An in-process stand-in for the `deno info` reader: the files an entry
+ * point reaches through relative imports, without edges. Real graphs are
+ * covered by deno_info_module_graph_reader_test.ts and the integration tests.
+ */
+const graphReader: ModuleGraphReader = {
+  async read(entryPoint) {
+    const { resolvedFiles } = await resolveLocalImports(
+      [entryPoint],
+      parse(entryPoint).root,
+    );
+    return {
+      modules: resolvedFiles.map((path) => ({ path, kind: "code" as const })),
+      edges: [],
+      missing: [],
+    };
+  },
+};
 
 const logger = getLogger(["test"]);
 

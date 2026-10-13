@@ -1418,6 +1418,18 @@ function withoutFiles(
     includeFilePaths: input.includeFilePaths.filter(keep),
     additionalFilePaths: additional.map((e) => e.path),
     binaryFilePaths: binaries.map((e) => e.path),
+    ...(input.dataFilesByKind
+      ? {
+        dataFilesByKind: Object.fromEntries(
+          Object.entries(input.dataFilesByKind).map((
+            [kind, files],
+          ) => [kind, files.filter(keep)]),
+        ),
+      }
+      : {}),
+    sourcePlan: {
+      entries: input.sourcePlan.entries.filter((e) => keep(e.sourcePath)),
+    },
   };
 }
 
@@ -2461,9 +2473,16 @@ async function createArchive(
       }
     }
 
-    // Copy include files (alongside model sources, not bundled)
+    // Copy include files (alongside model sources, not bundled). A file the
+    // source plan already wrote keeps the plan's copy, which may carry
+    // rewritten imports.
+    const planned = new Set(
+      input.sourcePlan.entries.map((e) => `${e.sourcePath}\0${e.archivePath}`),
+    );
     for (const incFile of input.includeFilePaths) {
       const relPath = relative(input.modelsDir, incFile);
+      const archivePath = `models/${relPath.replaceAll("\\", "/")}`;
+      if (planned.has(`${incFile}\0${archivePath}`)) continue;
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(incFile, destPath);

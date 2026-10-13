@@ -76,6 +76,14 @@ export interface ResolveExtensionFilesContext {
    * (swamp-club#3376).
    */
   moduleGraphReader: ModuleGraphReader;
+  /**
+   * For commands that only read the extension's files (`extension fmt`): a
+   * missing local module, a module outside the repository, a package.json
+   * project without node_modules, or a graph that cannot be read does not
+   * fail resolution, and no archive is planned (`sourcePlan` is empty).
+   * Push and quality leave this unset, so they fail as a push would.
+   */
+  lenientSources?: boolean;
 }
 
 export interface ResolvedExtensionFiles {
@@ -1242,7 +1250,7 @@ export async function resolveExtensionFiles(
       if (hasBare) {
         packageJsonDir = candidateDir;
         logger.debug`Found package.json project at ${packageJsonDir}`;
-        await requireNodeModules(packageJsonDir);
+        if (!ctx.lenientSources) await requireNodeModules(packageJsonDir);
       } else {
         logger
           .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
@@ -1255,6 +1263,8 @@ export async function resolveExtensionFiles(
   // bundle was built from, wherever it lives (swamp-club#3376).
   const sources = await resolveSourceModules({
     reader: ctx.moduleGraphReader,
+    lenient: ctx.lenientSources ?? false,
+    logger,
     project: { denoConfigPath, packageJsonDir },
     repoDir,
     extensionsRoot,
@@ -1365,6 +1375,8 @@ async function resolveSourceModules(options: {
   repoDir: string;
   extensionsRoot: string;
   kinds: SourceModuleKindRoots[];
+  lenient: boolean;
+  logger: Logger;
 }): Promise<ResolvedSourceModules> {
   const graphOf = new Map<string, SourceModuleGraph>();
   const kindGraphs: Array<
@@ -1375,7 +1387,18 @@ async function resolveSourceModules(options: {
     for (const root of k.roots) {
       let graph = graphOf.get(root);
       if (!graph) {
-        graph = await options.reader.read(root, options.project);
+        try {
+          graph = await options.reader.read(root, options.project);
+        } catch (error) {
+          if (!options.lenient) throw error;
+          options.logger
+            .debug`Module graph of ${root} unavailable, using the entry point alone: ${error}`;
+          graph = {
+            modules: [{ path: root, kind: "code" }],
+            edges: [],
+            missing: [],
+          };
+        }
         graphOf.set(root, graph);
       }
       graphs.push(graph);
@@ -1384,7 +1407,7 @@ async function resolveSourceModules(options: {
   }
   const graph = mergeSourceGraphs(kindGraphs.map((g) => g.graph));
 
-  if (graph.missing.length > 0) {
+  if (graph.missing.length > 0 && !options.lenient) {
     const lines = graph.missing.map((m) =>
       `  ${m.path}${m.importer ? ` (imported from ${m.importer})` : ""}`
     );
@@ -1407,9 +1430,14 @@ async function resolveSourceModules(options: {
     await realPathOr(resolve(options.extensionsRoot)),
   ];
   const importerOf = new Map(graph.edges.map((e) => [e.target, e.importer]));
+  const outside = new Set<string>();
   for (const m of graph.modules) {
     const real = await realPathOr(m.path);
     if (!realRoots.some((root) => isSameOrUnder(real, root) && real !== root)) {
+      if (options.lenient) {
+        outside.add(m.path);
+        continue;
+      }
       const importer = importerOf.get(m.path);
       throw markErrorPaths(
         new UserError(
@@ -1441,13 +1469,17 @@ async function resolveSourceModules(options: {
       isSameOrUnder(resolve(path), resolve(o.k.dir))
     );
   for (const { k, graph: g } of kindGraphs) {
-    const paths = g.modules.map((m) => m.path).sort();
+    const paths = g.modules.map((m) => m.path).filter((p) => !outside.has(p))
+      .sort();
     const listed = paths.filter((p) => !ownedElsewhere(k, p));
     codeFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "code");
     dataFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "data");
     planKinds.push({ kind: k.kind, dir: k.dir, modules: paths });
   }
 
+  if (options.lenient) {
+    return { codeFilesByKind, dataFilesByKind, plan: { entries: [] } };
+  }
   const plan = planSourceArchive({
     kinds: planKinds,
     graph,

@@ -28,6 +28,10 @@ import {
 const ROOT = Deno.build.os === "windows" ? "C:\\ext" : "/ext";
 const url = (...parts: string[]) => toFileUrl(join(ROOT, ...parts)).href;
 const path = (...parts: string[]) => join(ROOT, ...parts);
+const allFiles = {
+  exists: () => Promise.resolve(true),
+  readText: () => Promise.resolve(undefined),
+};
 const span = (line: number, start: number, end: number) => ({
   start: { line, character: start },
   end: { line, character: end },
@@ -68,7 +72,7 @@ Deno.test("parseDenoInfoGraph: keeps local code and data modules and their edges
         { kind: "npm", specifier: "npm:/zod@4" },
       ],
     },
-    () => Promise.resolve(true),
+    allFiles,
   );
   assertEquals(graph.modules, [
     { path: path("models", "m.ts"), kind: "code" },
@@ -98,7 +102,7 @@ Deno.test("parseDenoInfoGraph: a module deno cannot load is missing, naming its 
         { specifier: url("models", "gone.ts"), error: "Module not found" },
       ],
     },
-    () => Promise.resolve(true),
+    allFiles,
   );
   assertEquals(graph.missing, [{
     path: path("models", "gone.ts"),
@@ -115,7 +119,10 @@ Deno.test("parseDenoInfoGraph: a text import deno reports as external is data wh
         { kind: "external", mediaType: null, specifier: url("gone.txt") },
       ],
     },
-    (p) => Promise.resolve(p === path("t.txt")),
+    {
+      exists: (p) => Promise.resolve(p === path("t.txt")),
+      readText: () => Promise.resolve(undefined),
+    },
   );
   assertEquals(graph.modules, [{ path: path("t.txt"), kind: "data" }]);
   assertEquals(graph.missing.map((m) => m.path), [path("gone.txt")]);
@@ -137,7 +144,7 @@ Deno.test("parseDenoInfoGraph: a type import is an edge like a code import", asy
         { kind: "esm", mediaType: "TypeScript", specifier: url("types.ts") },
       ],
     },
-    () => Promise.resolve(true),
+    allFiles,
   );
   assertEquals(graph.edges.map((e) => e.target), [path("types.ts")]);
 });
@@ -171,7 +178,9 @@ Deno.test("DenoInfoModuleGraphReader: reads side-effect, JSON and dynamic import
     );
     assertEquals(graph.missing, []);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });
 
@@ -189,6 +198,71 @@ Deno.test("DenoInfoModuleGraphReader: a failing deno info is a UserError naming 
       `Could not read the module graph of ${entry}`,
     );
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+Deno.test("DenoInfoModuleGraphReader: a @ts-types edge carries the pragma's specifier, not the import's", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-" });
+  try {
+    await Deno.writeTextFile(join(dir, "foo.js"), "export const f = 1;\n");
+    await Deno.writeTextFile(
+      join(dir, "foo.d.ts"),
+      "export declare const f: number;\n",
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      '// @ts-types="./foo.d.ts"\nimport { f } from "./foo.js";\nexport { f };\n',
+    );
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "m.ts"),
+      {},
+    );
+    assertEquals(
+      graph.edges.map((e) => [relative(dir, e.target), e.specifier]).sort(),
+      [["foo.d.ts", "./foo.d.ts"], ["foo.js", "./foo.js"]],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
+  }
+});
+
+Deno.test("DenoInfoModuleGraphReader: an npm package in a manual node_modules directory is not a local module", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "graph-reader-" });
+  try {
+    const pkg = join(dir, "node_modules", "foo");
+    await Deno.mkdir(pkg, { recursive: true });
+    await Deno.writeTextFile(
+      join(pkg, "package.json"),
+      '{"name":"foo","version":"1.0.0","main":"index.js","type":"module"}\n',
+    );
+    await Deno.writeTextFile(join(pkg, "index.js"), "export const g = 2;\n");
+    await Deno.writeTextFile(
+      join(dir, "deno.json"),
+      '{"nodeModulesDir":"manual"}\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "package.json"),
+      '{"dependencies":{"foo":"1.0.0"}}\n',
+    );
+    await Deno.writeTextFile(
+      join(dir, "m.ts"),
+      'import { g } from "foo";\nexport { g };\n',
+    );
+    const graph = await new DenoInfoModuleGraphReader(Deno.execPath()).read(
+      join(dir, "m.ts"),
+      { denoConfigPath: join(dir, "deno.json") },
+    );
+    assertEquals(graph.modules.map((m) => relative(dir, m.path)), ["m.ts"]);
+    assertEquals(graph.edges, []);
+    assertEquals(graph.missing, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch((error) => {
+      if (Deno.build.os !== "windows") throw error;
+    });
   }
 });

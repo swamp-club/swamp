@@ -2702,6 +2702,38 @@ Deno.test("extensionPushPrepare: collect mode rebuilds instead of reusing a cach
   );
 });
 
+Deno.test("extensionPushPrepare: collect mode leaves a rejected data module out of the archive's source copy", async () => {
+  await withCollectFixture({}, async (dir, input) => {
+    const blob = join(dir, "models", "blob.bin");
+    await Deno.writeFile(blob, new Uint8Array([0, 1, 2]));
+    const deps = makePrepareDeps({
+      analyzeExtensionSafety: () =>
+        Promise.resolve({
+          errors: [{
+            ruleId: "file-type",
+            file: blob,
+            message: "Binary files are not allowed in extensions.",
+          }],
+          warnings: [],
+        }),
+    });
+    const result = await extensionPushPrepare(ctx, deps, {
+      ...input,
+      dataFilesByKind: { models: [blob] },
+      sourcePlan: {
+        entries: [
+          ...input.sourcePlan.entries,
+          { sourcePath: blob, archivePath: "models/blob.bin", rewrites: [] },
+        ],
+      },
+    });
+    const entries = await archiveEntries(result.archiveBytes);
+    assertEquals(entries.includes("extension/models/blob.bin"), false);
+    assertEquals(entries.includes("extension/models/echo.ts"), true);
+    assertEquals(result.excludedFromArchive, [blob]);
+  });
+});
+
 Deno.test("extensionPush: carries the registry's warnings on the completed event", async () => {
   const warnings = {
     messages: ["contentMetadata was rejected (too many methods)"],

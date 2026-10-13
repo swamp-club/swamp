@@ -67,18 +67,51 @@ interface DenoInfoModule {
   dependencies?: DenoInfoDependency[];
 }
 
+/**
+ * A `file:` module that is not an npm package installed in a node_modules
+ * directory (a bare specifier under a manual node_modules dir resolves to
+ * one); those are dependencies the bundler inlines, not the author's source.
+ */
 function isLocal(specifier: string | undefined): specifier is string {
-  return typeof specifier === "string" && specifier.startsWith("file:");
+  return typeof specifier === "string" && specifier.startsWith("file:") &&
+    !fromFileUrl(specifier).split(/[\\/]/).includes("node_modules");
+}
+
+/** Reads what the importer has at `span`, quotes stripped, or undefined. */
+function textAt(
+  lines: string[] | undefined,
+  span: SpecifierSpan,
+): string | undefined {
+  if (!lines || span.start.line !== span.end.line) return undefined;
+  const line = lines[span.start.line];
+  if (line === undefined) return undefined;
+  const quoted = Array.from(line).slice(
+    span.start.character,
+    span.end.character,
+  )
+    .join("");
+  const quote = quoted[0];
+  if (quoted.length < 2 || !["'", '"', "`"].includes(quote)) return undefined;
+  if (quoted[quoted.length - 1] !== quote) return undefined;
+  return quoted.slice(1, -1);
+}
+
+/** File access the parser needs: whether a module exists, and its text. */
+export interface DenoInfoGraphFiles {
+  exists: (path: string) => Promise<boolean>;
+  readText: (path: string) => Promise<string | undefined>;
 }
 
 /**
- * Reads the local part of `deno info --json` output. `exists` decides
+ * Reads the local part of `deno info --json` output. `files.exists` decides
  * whether a module deno did not load itself (a text or bytes import, which
- * deno reports as external) is on disk.
+ * deno reports as external) is on disk. Each edge's specifier is the text
+ * the importer holds at the edge's span — for a type edge that may be a
+ * `@ts-types` pragma or a `/// <reference>` rather than the import itself.
  */
 export async function parseDenoInfoGraph(
   json: unknown,
-  exists: (path: string) => Promise<boolean>,
+  files: DenoInfoGraphFiles,
 ): Promise<SourceModuleGraph> {
   const raw = (json as { modules?: DenoInfoModule[] })?.modules;
   if (!Array.isArray(raw)) {
@@ -97,20 +130,27 @@ export async function parseDenoInfoGraph(
     }
     if (m.kind === "esm" && CODE_MEDIA_TYPES.has(m.mediaType ?? "")) {
       modules.push({ path, kind: "code" });
-    } else if (m.kind === "external" && !await exists(path)) {
+    } else if (m.kind === "external" && !await files.exists(path)) {
       missingReasons.set(path, `Module not found "${m.specifier}".`);
       continue;
     } else {
       modules.push({ path, kind: "data" });
     }
+    let lines: string[] | undefined;
+    let linesRead = false;
     for (const dep of m.dependencies ?? []) {
       for (const target of [dep.code, dep.type]) {
         if (!target || !isLocal(target.specifier) || !target.span) continue;
-        if (typeof dep.specifier !== "string") continue;
+        if (!linesRead) {
+          lines = (await files.readText(path))?.split("\n");
+          linesRead = true;
+        }
+        const specifier = textAt(lines, target.span) ?? dep.specifier;
+        if (typeof specifier !== "string") continue;
         edges.push({
           importer: path,
           target: fromFileUrl(target.specifier),
-          specifier: dep.specifier,
+          specifier,
           span: target.span,
         });
       }
@@ -185,6 +225,9 @@ export class DenoInfoModuleGraphReader implements ModuleGraphReader {
         `deno info returned invalid JSON for ${entryPoint}: ${error}`,
       );
     }
-    return await parseDenoInfoGraph(json, fileExists);
+    return await parseDenoInfoGraph(json, {
+      exists: fileExists,
+      readText: (path) => Deno.readTextFile(path).catch(() => undefined),
+    });
   }
 }

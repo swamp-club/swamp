@@ -109,6 +109,7 @@ export const extensionFmtCommand = new Command()
       logger: cliCtx.logger,
       extensionsDir,
       moduleGraphReader: await createModuleGraphReader(),
+      lenientSources: true,
     });
 
     // 3. Combine all files and filter to .ts

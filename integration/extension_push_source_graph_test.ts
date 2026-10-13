@@ -373,3 +373,71 @@ Deno.test({
     });
   },
 });
+
+Deno.test("extension push: a rewritten source listed in include keeps its rewritten imports, after non-ASCII text", async () => {
+  await withRepo(async (repo) => {
+    await write(join(repo, "shared", "util.ts"), "export const u = 1;\n");
+    await write(
+      join(repo, "extensions", "models", "m.ts"),
+      'const label = "é😀"; import { u } from "../../shared/util.ts";\n' +
+        "export const m = { label, u };\n",
+    );
+    const manifestPath = join(repo, "manifest.yaml");
+    await write(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/include-rewrite",
+        version: "2026.10.13.1",
+        models: ["m.ts"],
+        include: ["m.ts"],
+      }),
+    );
+
+    const files = await pushDryRun(repo, manifestPath);
+
+    assertEquals(
+      files.get("models/m.ts"),
+      'const label = "é😀"; import { u } from "../_shared/shared/util.ts";\n' +
+        "export const m = { label, u };\n",
+    );
+  });
+});
+
+Deno.test("extension fmt: lenient resolution tolerates a missing local module and plans no archive", async () => {
+  await withRepo(async (repo) => {
+    const model = join(repo, "extensions", "models", "m.ts");
+    await write(join(repo, "extensions", "lib", "here.ts"), "export {};\n");
+    await write(
+      model,
+      'import "../lib/here.ts";\nimport "../lib/gone.ts";\nexport const m = 1;\n',
+    );
+    const manifestPath = join(repo, "manifest.yaml");
+    await write(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/lenient",
+        version: "2026.10.13.1",
+        models: ["m.ts"],
+      }),
+    );
+    const { repoContext } = await requireInitializedRepoReadOnly({
+      repoDir: repo,
+      outputMode: "log",
+    });
+    const resolved = await resolveExtensionFiles({
+      repoDir: repo,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: graphReader,
+      lenientSources: true,
+    });
+    assertEquals(resolved.allModelFiles, [
+      join(repo, "extensions", "lib", "here.ts"),
+      model,
+    ]);
+    assertEquals(resolved.sourcePlan.entries, []);
+  });
+});
