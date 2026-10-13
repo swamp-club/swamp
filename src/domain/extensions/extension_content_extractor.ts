@@ -473,13 +473,9 @@ export function extractVaultFromSource(
   const typeMatch = vaultBody.match(/type:\s*["']([^"']+)["']/);
   if (!typeMatch) return null;
 
-  // Extract name
-  const nameMatch = vaultBody.match(/(?<![.\w])name:\s*["']([^"']+)["']/);
-
-  // Extract description
-  const descMatch = vaultBody.match(
-    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
-  );
+  // Name and description are read at the top level of the definition only,
+  // so a nested `name:` is never mistaken for the vault's own.
+  const topLevel = topLevelStringValues(vaultBody);
 
   // Check for configSchema presence
   const hasConfigSchema = /configSchema\s*[:,}]/.test(vaultBody);
@@ -520,11 +516,25 @@ export function extractVaultFromSource(
   return {
     fileName: relative(vaultsDir, filePath),
     type: typeMatch[1],
-    name: nameMatch ? nameMatch[1] : "",
-    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    name: topLevel.get("name") ?? "",
+    description: topLevel.get("description") ?? "",
     hasConfigSchema,
     configFields,
   };
+}
+
+/**
+ * The top-level entries of an object literal body whose value starts with a
+ * string literal, by key.
+ */
+function topLevelStringValues(body: string): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const entry of extractTopLevelEntries(body)) {
+    if (entry.value !== undefined && !values.has(entry.key)) {
+      values.set(entry.key, entry.value);
+    }
+  }
+  return values;
 }
 
 /**
@@ -1114,12 +1124,7 @@ export function extractDatastoreFromSource(
   const typeMatch = datastoreBody.match(/type:\s*["']([^"']+)["']/);
   if (!typeMatch) return null;
 
-  const nameMatch = datastoreBody.match(
-    /(?<![.\w])name:\s*["']([^"']+)["']/,
-  );
-  const descMatch = datastoreBody.match(
-    /(?<![.\w])description:\s*(?:"([^"]*?)"|'([^']*?)')/,
-  );
+  const topLevel = topLevelStringValues(datastoreBody);
   const hasConfigSchema = /configSchema\s*[:,}]/.test(datastoreBody);
 
   let configFields: ExtractedArgument[] = [];
@@ -1159,8 +1164,8 @@ export function extractDatastoreFromSource(
   return {
     fileName: relative(datastoresDir, filePath),
     type: typeMatch[1],
-    name: nameMatch ? nameMatch[1] : "",
-    description: descMatch ? (descMatch[1] ?? descMatch[2] ?? "") : "",
+    name: topLevel.get("name") ?? "",
+    description: topLevel.get("description") ?? "",
     hasConfigSchema,
     configFields,
   };

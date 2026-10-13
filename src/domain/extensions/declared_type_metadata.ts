@@ -29,8 +29,9 @@ export interface DeclaredTypeMetadata {
  * Reads the name and description a lazily indexed type declares, from its
  * source text. Nothing is imported or run.
  *
- * Returns undefined when the source cannot be read, holds no definition the
- * extractor recognises, or defines a different type than the entry claims.
+ * Returns undefined when the source cannot be read, the extractor throws or
+ * recognises no definition in it, or it defines a different type than the
+ * entry claims.
  * A field the source computes comes back as an empty string.
  */
 export async function readDeclaredTypeMetadata(
@@ -43,17 +44,13 @@ export async function readDeclaredTypeMetadata(
   readSource: (path: string) => Promise<string> = (path) =>
     Deno.readTextFile(path),
 ): Promise<DeclaredTypeMetadata | undefined> {
-  let source: string;
+  let extracted: ReturnType<typeof extract>;
   try {
-    source = await readSource(entry.sourcePath);
+    const source = await readSource(entry.sourcePath);
+    extracted = extract(source, entry.sourcePath, dirname(entry.sourcePath));
   } catch {
     return undefined;
   }
-  const extracted = extract(
-    source,
-    entry.sourcePath,
-    dirname(entry.sourcePath),
-  );
   if (!extracted) return undefined;
   if (extracted.type.toLowerCase() !== entry.type.toLowerCase()) {
     return undefined;

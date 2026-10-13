@@ -128,3 +128,69 @@ Deno.test("readDeclaredTypeMetadata: undefined when the source defines a differe
     undefined,
   );
 });
+
+Deno.test("readDeclaredTypeMetadata: undefined when the extractor throws", async () => {
+  assertEquals(
+    await readDeclaredTypeMetadata(
+      entry,
+      () => {
+        throw new Error("extractor failed");
+      },
+      reads(VAULT_SOURCE),
+    ),
+    undefined,
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: keeps an apostrophe inside a double-quoted name", async () => {
+  const source = `
+export const vault = {
+  type: "@test/mock-vault",
+  name: "Bob's Vault",
+  description: 'Says "hello"',
+  createProvider: () => ({}),
+};
+`;
+  assertEquals(
+    await readDeclaredTypeMetadata(
+      entry,
+      extractVaultFromSource,
+      reads(source),
+    ),
+    { name: "Bob's Vault", description: 'Says "hello"' },
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: a computed top-level name does not pick up a nested one", async () => {
+  const vaultSource = `
+const label = "Computed";
+export const vault = {
+  type: "@test/mock-vault",
+  name: label,
+  defaults: { name: "nested", description: "nested description" },
+  createProvider: () => ({ name: "provider" }),
+};
+`;
+  assertEquals(
+    await readDeclaredTypeMetadata(
+      entry,
+      extractVaultFromSource,
+      reads(vaultSource),
+    ),
+    { name: "", description: "" },
+  );
+  assertEquals(
+    await readDeclaredTypeMetadata(
+      { type: "@test/store", sourcePath: "/repo/ds/store.ts" },
+      extractDatastoreFromSource,
+      reads(`
+export const datastore = {
+  type: "@test/store",
+  name: label,
+  createProvider: () => ({ name: "provider", description: "nested" }),
+};
+`),
+    ),
+    { name: "", description: "" },
+  );
+});
