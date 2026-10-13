@@ -24,11 +24,12 @@
  * checkouts syncing the same datastore neither see nor move its records.
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { createInMemoryRemote } from "@swamp-club/swamp-testing";
 import { datastoreTypeRegistry } from "../src/domain/datastore/datastore_type_registry.ts";
 import type { DatastoreSyncService } from "../src/domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../src/domain/errors.ts";
 import { WriterLeaseBusyError } from "../src/domain/datastore_v3/writer_lease.ts";
 import { datastoreWriterLeaseStore } from "../src/infrastructure/datastore_v3/datastore_writer_lease_store.ts";
 import { v3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
@@ -67,7 +68,9 @@ async function pushFile(
 Deno.test("v3 writer lease: binds at the datastore root through the provider while namespaced checkouts sync", async () => {
   await withTempDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });
-    const type = registerTestDatastoreType(remote);
+    const type = registerTestDatastoreType(remote, {
+      datastoreWideLease: true,
+    });
     try {
       const provider = datastoreTypeRegistry.get(type.typeName)!
         .createProvider!({});
@@ -128,4 +131,25 @@ Deno.test("v3 writer lease: binds at the datastore root through the provider whi
       type.dispose();
     }
   });
+});
+
+Deno.test("v3 writer lease: a registered provider with a writable datastore-wide store but no datastoreWideLease declaration is refused", () => {
+  // The same remote that holds the lease above, but the extension does not
+  // declare that a namespaced push keeps _control/writer/ at the root
+  // (swamp-club#3414).
+  const remote = createInMemoryRemote({ controlPlane: true });
+  const type = registerTestDatastoreType(remote);
+  try {
+    const provider = datastoreTypeRegistry.get(type.typeName)!
+      .createProvider!({});
+    assert(provider.datastoreControlPlaneStore !== undefined);
+    assertThrows(
+      () => datastoreWriterLeaseStore(provider, type.typeName),
+      UserError,
+      "does not declare datastoreWideLease",
+    );
+    assertEquals([...remote.controlPlaneRecords().keys()], []);
+  } finally {
+    type.dispose();
+  }
 });

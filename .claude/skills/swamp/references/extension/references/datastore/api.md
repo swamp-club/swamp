@@ -23,6 +23,7 @@ interface DatastoreProvider {
   resolveDatastorePath(repoDir: string): string;
   resolveCachePath?(repoDir: string): string | undefined;
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  readonly datastoreWideLease?: boolean;
   storage?(): DatastoreStorage;
 
   registerNamespace?(
@@ -106,6 +107,20 @@ that opens the datastore, so keep it cheap:
 Without it, swamp reads the marker through a fresh sync service's
 `controlPlaneStore()`. Check an implementation with
 `assertDatastoreControlPlaneStoreConformance` (see testing.md).
+
+A v3-capable datastore returns a writable store (`put`, create-only
+`putIfAbsent`, `delete`, `list`, all at the root `_control/`, binding no
+namespace): the v3 writer lease keeps its records under `_control/writer/`.
+
+### `datastoreWideLease?`
+
+Set it to `true` only when no namespaced pull or push moves or copies
+`_control/writer/`, so the writer lease stays at the datastore root, and
+`datastoreControlPlaneStore()` returns a writable store. Swamp refuses to bind
+the v3 writer lease without it, whatever the store offers. Only the literal
+`true` counts. Prove it with
+`assertWritableDatastoreControlPlaneStoreConformance` with the namespaced-push
+case running (see testing.md).
 
 ### `storage()?`
 

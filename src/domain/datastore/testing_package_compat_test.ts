@@ -149,6 +149,12 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
     "datastoreControlPlaneStore"
   ] = provider.datastoreControlPlaneStore;
   const _storage: CanonicalDatastoreProvider["storage"] = provider.storage;
+  // The v3 writer lease declaration, in both directions.
+  const _datastoreWideLease: CanonicalDatastoreProvider["datastoreWideLease"] =
+    provider.datastoreWideLease;
+  const _testingDatastoreWideLease: TestingDatastoreProvider[
+    "datastoreWideLease"
+  ] = ({} as CanonicalDatastoreProvider).datastoreWideLease;
 
   void [
     _lock,
@@ -158,6 +164,8 @@ function _checkDatastoreProviderFields(provider: TestingDatastoreProvider) {
     _resolveCachePath,
     _datastoreControlPlane,
     _storage,
+    _datastoreWideLease,
+    _testingDatastoreWideLease,
   ];
 }
 

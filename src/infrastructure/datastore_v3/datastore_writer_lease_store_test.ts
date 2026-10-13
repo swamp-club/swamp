@@ -25,6 +25,7 @@ import { datastoreWriterLeaseStore } from "./datastore_writer_lease_store.ts";
 Deno.test("datastoreWriterLeaseStore: returns the provider's writable datastore-wide store", async () => {
   const remote = createInMemoryRemote({ controlPlane: true });
   const store = datastoreWriterLeaseStore({
+    datastoreWideLease: true,
     datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!(),
   }, "@test/remote");
 
@@ -37,9 +38,43 @@ Deno.test("datastoreWriterLeaseStore: returns the provider's writable datastore-
   ]);
 });
 
+Deno.test("datastoreWriterLeaseStore: refuses a writable datastore-wide store without the datastoreWideLease declaration", () => {
+  // The store has every method the lease uses, but nothing says a
+  // namespaced push leaves _control/writer/ at the root (swamp-club#3414).
+  const remote = createInMemoryRemote({ controlPlane: true });
+  assertThrows(
+    () =>
+      datastoreWriterLeaseStore({
+        datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!(),
+      }, "@swamp/s3-datastore"),
+    UserError,
+    "The @swamp/s3-datastore datastore does not declare datastoreWideLease",
+  );
+});
+
+Deno.test("datastoreWriterLeaseStore: only a literal true declares datastoreWideLease", () => {
+  const remote = createInMemoryRemote({ controlPlane: true });
+  for (const declared of [false, undefined, "true", 1]) {
+    assertThrows(
+      () =>
+        datastoreWriterLeaseStore({
+          datastoreWideLease: declared as boolean | undefined,
+          datastoreControlPlaneStore: () =>
+            remote.datastoreControlPlaneStore!(),
+        }, "@test/remote"),
+      UserError,
+      "does not declare datastoreWideLease",
+    );
+  }
+});
+
 Deno.test("datastoreWriterLeaseStore: refuses a provider without a datastore-wide store", () => {
   assertThrows(
-    () => datastoreWriterLeaseStore({}, "@swamp/s3-datastore"),
+    () =>
+      datastoreWriterLeaseStore(
+        { datastoreWideLease: true },
+        "@swamp/s3-datastore",
+      ),
     UserError,
     "The @swamp/s3-datastore datastore cannot hold a v3 writer lease",
   );
@@ -49,6 +84,7 @@ Deno.test("datastoreWriterLeaseStore: refuses a read-only datastore-wide store",
   assertThrows(
     () =>
       datastoreWriterLeaseStore({
+        datastoreWideLease: true,
         datastoreControlPlaneStore: () => ({
           get: () => Promise.resolve(null),
         }),

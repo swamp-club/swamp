@@ -277,9 +277,20 @@ export interface DatastoreProvider {
    * until `get`, and a `get` should be one request with no credentials
    * preflight. Optional; without it swamp reads the format marker through a
    * fresh sync service's `controlPlaneStore()`. A v3-capable datastore
-   * returns a {@link WritableDatastoreControlPlaneStore}.
+   * returns a {@link WritableDatastoreControlPlaneStore} and declares
+   * {@link datastoreWideLease}.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  /**
+   * `true` declares that no namespaced pull or push moves or copies
+   * `_control/writer/`, so the v3 writer lease's records stay at the
+   * datastore root, and that `datastoreControlPlaneStore()` returns a
+   * {@link WritableDatastoreControlPlaneStore}. Only the literal `true`
+   * counts; without it swamp refuses to bind the lease. Check it with
+   * `assertWritableDatastoreControlPlaneStoreConformance`, namespaced-push
+   * case included.
+   */
+  readonly datastoreWideLease?: boolean;
   /**
    * Return the `storage/1` chunk storage for a v3 datastore, scoped to the
    * datastore root. Optional; swamp does not call it yet. Check an

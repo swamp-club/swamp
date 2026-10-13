@@ -146,6 +146,13 @@ It checks that `get` reads the datastore-wide record, returns `null` for a
 missing key, never sees a namespace-only record, rejects on an aborted signal,
 and leaves a sync service free to bind its namespace afterwards.
 
+For a writable store, run `assertWritableDatastoreControlPlaneStoreConformance`
+instead (options and example in the `@swamp-club/swamp-testing` README). A
+provider that declares `datastoreWideLease: true` must run its namespaced-push
+case: pass `openNamespacedSyncFixture` and `markNamespaceUpgradedFromSolo`, use
+an empty bucket or prefix, and assert `result.namespacedPushSkipped` is
+`undefined`.
+
 ## Storage Conformance
 
 For a provider that implements `storage()`:

@@ -635,6 +635,18 @@ never move into a namespace: serve's own boot copy takes only the prefixes in
 `datastore-format`, and the S3 and GCS extensions must skip `_control/writer/`
 in their move before a bucket can be v3.
 
+**Declared, not inferred** (swamp-club#3414). A writable store shows only that
+the lease's records can be written at the root, not that a namespaced push
+leaves them there: an extension could return its existing store before its
+move skips `writer/`. So `datastoreWriterLeaseStore` binds the lease only for a
+provider that declares `datastoreWideLease: true`, and refuses any other with
+a message naming the declaration. The declaration promises only that
+`_control/writer/` is never moved or copied. The S3 and GCS extensions declare
+it in the release that carries the skip (swamp-club#3395), whose writable
+conformance test must run the namespaced-push case. The Phase 4 bucket opt-in
+binds the lease only through `datastoreWriterLeaseStore`, so it cannot be
+enabled against an extension version that does not declare it.
+
 ### Serve Runtime Data Refresh
 
 In a multi-instance `swamp serve` deployment on a shared remote datastore, an
@@ -4078,7 +4090,9 @@ over) lands nothing.
 **Records.** The lease lives in the datastore's control plane under
 `writer/`: on a filesystem datastore, files under `<datastore>/_control/writer/`,
 created exclusively through `FileSystemControlPlaneStore` (hard link, with a
-`createNew` fallback). Fences are zero-padded to 12 digits, so the keys sort
+`createNew` fallback); on any other datastore, records at the root `_control/writer/`
+of the provider's writable datastore-wide store, which only a provider declaring
+`datastoreWideLease` may supply (**Declared, not inferred**). Fences are zero-padded to 12 digits, so the keys sort
 by fence. Only a key of exactly 12 digits whose fence is from 1 to 10^12 - 1
 is a lease record; any other key under `writer/`, such as an unpadded or
 out-of-range one, is ignored, so a stray key cannot alias a record or wedge
