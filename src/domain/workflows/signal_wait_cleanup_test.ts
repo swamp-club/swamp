@@ -954,6 +954,44 @@ Deno.test("settleExpiredWaits: an expired wait with an applicable pending signal
   assertEquals(outcome.kind === "found" && outcome.record.kind, "accepted");
 });
 
+Deno.test("findUnsettledWait: a wait whose key holds an applicable pending signal is not waiting, and nothing is settled for it (swamp-club#3309)", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run, waitId } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  assertEquals(
+    (await findUnsettledWait(store, run, IN_TIME))?.stepName,
+    "identify",
+  );
+  const pending = pendingFor(workflow);
+  await store.createPendingRecord(pending);
+
+  assertEquals(await findUnsettledWait(store, run, IN_TIME), undefined);
+  assertEquals((await store.findOutcome(waitId)).kind, "absent");
+
+  // The resume that follows takes the signal and succeeds the step.
+  assertEquals(await applyAcceptedSignals(store, run, IN_TIME), undefined);
+  const step = run.getJob("main")!.getStep("identify")!;
+  assertEquals(step.status, "succeeded");
+  assertEquals(
+    (step.output as { signal: { id: string } }).signal.id,
+    pending.receiptId,
+  );
+});
+
+Deno.test("findUnsettledWait: a pending signal that does not apply leaves the wait waiting", async () => {
+  const store = new InMemorySignalWaitStore();
+  const workflow = earlyWorkflow();
+  const { run } = await suspendedAtEarlyWait(store, workflow, OPENED);
+  // Received before the wait's limit allows.
+  await store.createPendingRecord(
+    pendingFor(workflow, { receivedAt: "2025-12-31T23:00:00.000Z" }),
+  );
+
+  const open = await findUnsettledWait(store, run, IN_TIME);
+  assertEquals(open?.stepName, "identify");
+  assertEquals(store.outcomes.size, 0);
+});
+
 Deno.test("takePendingSignalsOfRun: gives each open wait of the run its pending signal and counts them", async () => {
   const store = new InMemorySignalWaitStore();
   const workflow = earlyWorkflow();

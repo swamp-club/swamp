@@ -38,6 +38,7 @@ import {
 import { settledBy, type SignalWaitStore } from "./signal_wait_store.ts";
 import { claimsReadingSlot, releaseKeyClaims } from "./wait_key_claim.ts";
 import {
+  applicablePendingOutcome,
   earlyWaitRef,
   heldUntil,
   PENDING_SIGNAL_LAPSE_GRACE_MS,
@@ -168,6 +169,11 @@ export interface OpenWaitRef {
 /**
  * The first wait of `run` that nothing has settled and whose deadline has
  * not passed. Reads only: for telling a caller what a run still waits on.
+ *
+ * A wait whose key holds an applicable pending signal is not waiting
+ * (swamp-club#3309): a signaller that stopped after storing one left the
+ * wait with its signal, and the resume that follows takes it under the
+ * run's claim.
  */
 export async function findUnsettledWait(
   store: SignalWaitStore,
@@ -179,13 +185,14 @@ export async function findUnsettledWait(
       if (!step.isSignalWait) continue;
       const ref = waitRefOf(run, step);
       if (!ref || isWaitExpired(ref, now)) continue;
-      if ((await store.findOutcome(ref.waitId)).kind === "absent") {
-        return {
-          jobName: job.jobName,
-          stepName: step.stepName,
-          wait: { id: ref.waitId, deadline: ref.deadline },
-        };
-      }
+      if ((await store.findOutcome(ref.waitId)).kind !== "absent") continue;
+      const early = earlyWaitRef(ref);
+      if (early && await applicablePendingOutcome(store, early)) continue;
+      return {
+        jobName: job.jobName,
+        stepName: step.stepName,
+        wait: { id: ref.waitId, deadline: ref.deadline },
+      };
     }
   }
   return undefined;

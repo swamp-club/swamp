@@ -380,19 +380,16 @@ export function pendingOutcome(
 }
 
 /**
- * Gives a wait the pending signal of its key, if one applies, by creating
- * the wait's outcome, and returns the outcome that is stored: `absent` when
- * no pending signal applies and nothing settled the wait. The wait's own
+ * The outcome the pending signal of a wait's key would give it, or undefined
+ * when none applies. Reads only (swamp-club#3309): for a caller that asks
+ * whether a wait already has its signal without settling it. The wait's own
  * slot is read first. A slot whose highest record cannot be read gives
- * nothing. A store with a `pendingTaken` listener is told of the take.
+ * nothing.
  */
-export async function takePendingSignal(
-  store: Pick<PendingSignalRecords, "highestPendingRecord"> & {
-    settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
-    pendingTaken?: PendingSignalTakenListener;
-  },
+export async function applicablePendingOutcome(
+  store: Pick<PendingSignalRecords, "highestPendingRecord">,
   ref: EarlyWaitRef,
-): Promise<StoredWaitRecord<WaitOutcome>> {
+): Promise<AcceptedWaitOutcome | undefined> {
   for (const slot of earlySlots(ref.early)) {
     const highest = await store.highestPendingRecord({
       workflowId: ref.workflowId,
@@ -403,27 +400,45 @@ export async function takePendingSignal(
       continue;
     }
     const outcome = pendingOutcome(highest.record, ref);
-    if (!outcome) continue;
-    const stored = await store.settle(outcome);
-    if (
-      store.pendingTaken && stored.kind === "found" &&
-      stored.record.kind === "accepted" &&
-      stored.record.receipt.id === outcome.receipt.id
-    ) {
-      // The signal is taken whatever the listener does with the news.
-      try {
-        store.pendingTaken({
-          waitId: ref.waitId,
-          workflowId: ref.workflowId,
-          runId: ref.runId,
-          key: ref.key,
-          receiptId: outcome.receipt.id,
-        });
-      } catch {
-        // Nothing to undo: the outcome is stored.
-      }
-    }
-    return stored;
+    if (outcome) return outcome;
   }
-  return { kind: "absent" };
+  return undefined;
+}
+
+/**
+ * Gives a wait the pending signal of its key, if one applies, by creating
+ * the wait's outcome, and returns the outcome that is stored: `absent` when
+ * no pending signal applies and nothing settled the wait. Which signal
+ * applies is decided by {@link applicablePendingOutcome}. A store with a
+ * `pendingTaken` listener is told of the take.
+ */
+export async function takePendingSignal(
+  store: Pick<PendingSignalRecords, "highestPendingRecord"> & {
+    settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
+    pendingTaken?: PendingSignalTakenListener;
+  },
+  ref: EarlyWaitRef,
+): Promise<StoredWaitRecord<WaitOutcome>> {
+  const outcome = await applicablePendingOutcome(store, ref);
+  if (!outcome) return { kind: "absent" };
+  const stored = await store.settle(outcome);
+  if (
+    store.pendingTaken && stored.kind === "found" &&
+    stored.record.kind === "accepted" &&
+    stored.record.receipt.id === outcome.receipt.id
+  ) {
+    // The signal is taken whatever the listener does with the news.
+    try {
+      store.pendingTaken({
+        waitId: ref.waitId,
+        workflowId: ref.workflowId,
+        runId: ref.runId,
+        key: ref.key,
+        receiptId: outcome.receipt.id,
+      });
+    } catch {
+      // Nothing to undo: the outcome is stored.
+    }
+  }
+  return stored;
 }

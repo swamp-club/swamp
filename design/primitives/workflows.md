@@ -1254,6 +1254,13 @@ audited as `workflow.signal.taken` (see the Signal paragraphs of
 [serve](serve.md)): `takePendingSignal` tells the `pendingTaken` listener of
 the store it took through, with identifiers and never the payload.
 
+Two readers recognise an applicable pending signal without taking it
+(`applicablePendingOutcome`, which only reads): the check `workflow resume`
+runs before it resumes, and the description of what a nested child still waits
+on (`findUnsettledWait`). Neither holds the run's claim, and the resume they
+lead to takes the signal under it, so a wait with its signal is never reported
+as still waiting for one.
+
 _The interleavings._ `S` is the signaller, `P` the step, `g` the highest
 generation of the key before either starts, so the slot is `g+1`.
 
