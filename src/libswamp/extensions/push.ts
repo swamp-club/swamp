@@ -2299,15 +2299,25 @@ export async function readQualitySidecar(
   manifestDir: string,
 ): Promise<{ path: string; value: QualitySidecar } | undefined> {
   const path = qualitySidecarPath(manifestDir);
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = await Deno.readTextFile(path);
+    // A symlinked sidecar is never read: its parse errors would quote the
+    // target (swamp-club#3420).
+    if (!(await Deno.lstat(path)).isSymlink) {
+      raw = await Deno.readTextFile(path);
+    }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return undefined;
     throw validationFailed(
       `Could not read ${QUALITY_SIDECAR_FILENAME}: ${
         error instanceof Error ? error.message : String(error)
       }`,
+    );
+  }
+  if (raw === undefined) {
+    throw validationFailed(
+      `${QUALITY_SIDECAR_FILENAME} beside the manifest is a symlink. ` +
+        `Symlinks are not allowed in extensions.`,
     );
   }
   const parsed = parseQualitySidecar(raw);

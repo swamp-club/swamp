@@ -44,6 +44,7 @@ import {
   type ExtensionPushPrepareDeps,
 } from "../src/libswamp/extensions/push.ts";
 import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
+import { extractContentMetadata } from "../src/domain/extensions/extension_content_extractor.ts";
 
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
@@ -508,6 +509,7 @@ async function symlinkRefusal(
     await pushDryRun(repo, manifestPath, {
       ...stubDeps,
       analyzeExtensionSafety,
+      extractContentMetadata,
     });
   } catch (error) {
     failure = error;
@@ -618,9 +620,11 @@ Deno.test({
   fn: async () => {
     await withRepo(async (repo) => {
       await withOutside(async (outside) => {
+        // A type in another collective would fail the content-collective
+        // check, which runs before safety, quoting it.
         await write(
           join(outside, "real.ts"),
-          `export const secret = "${SECRET}";\n`,
+          `export const model = { type: "@other/${SECRET}", version: "2026.10.13.1" };\n`,
         );
         const model = join(repo, "extensions", "models", "m.ts");
         await Deno.mkdir(dirname(model), { recursive: true });

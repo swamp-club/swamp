@@ -38,6 +38,18 @@ import type {
 } from "./extension_content.ts";
 
 /**
+ * Reads a source file for its metadata, refusing a symlink: the safety gate
+ * refuses it later, and what its target declares must not reach the
+ * content-collective check, which quotes it (swamp-club#3420).
+ */
+async function readSourceText(path: string): Promise<string> {
+  if ((await Deno.lstat(path)).isSymlink) {
+    throw new Error(`${path} is a symlink`);
+  }
+  return await Deno.readTextFile(path);
+}
+
+/**
  * Extracts content metadata from model source files and workflow YAML files.
  *
  * This metadata is sent to the registry during `extension push` so the server
@@ -69,7 +81,7 @@ export async function extractContentMetadata(
 
   for (const filePath of modelFiles) {
     try {
-      const content = await Deno.readTextFile(filePath);
+      const content = await readSourceText(filePath);
       const model = extractModelFromSource(content, filePath, modelsDir);
       if (model) {
         models.push(model);
@@ -86,7 +98,7 @@ export async function extractContentMetadata(
 
   for (const wf of workflowFiles) {
     try {
-      const content = await Deno.readTextFile(wf.sourcePath);
+      const content = await readSourceText(wf.sourcePath);
       const workflow = extractWorkflowFromYaml(content, wf.archiveName);
       if (workflow) {
         workflows.push(workflow);
@@ -98,7 +110,7 @@ export async function extractContentMetadata(
 
   for (const filePath of vaultFiles) {
     try {
-      const content = await Deno.readTextFile(filePath);
+      const content = await readSourceText(filePath);
       const vault = extractVaultFromSource(content, filePath, vaultsDir);
       if (vault) {
         vaults.push(vault);
@@ -110,7 +122,7 @@ export async function extractContentMetadata(
 
   for (const filePath of datastoreFiles) {
     try {
-      const content = await Deno.readTextFile(filePath);
+      const content = await readSourceText(filePath);
       const ds = extractDatastoreFromSource(
         content,
         filePath,
@@ -126,7 +138,7 @@ export async function extractContentMetadata(
 
   for (const filePath of reportFiles) {
     try {
-      const content = await Deno.readTextFile(filePath);
+      const content = await readSourceText(filePath);
       const report = extractReportFromSource(content, filePath, reportsDir);
       if (report) {
         reports.push(report);
@@ -138,7 +150,7 @@ export async function extractContentMetadata(
 
   for (const filePath of webhookFiles) {
     try {
-      const content = await Deno.readTextFile(filePath);
+      const content = await readSourceText(filePath);
       const webhook = extractWebhookFromSource(content, filePath, webhooksDir);
       if (webhook) {
         webhooks.push(webhook);

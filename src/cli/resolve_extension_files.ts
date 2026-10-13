@@ -1505,7 +1505,7 @@ async function resolveSourceModules(options: {
         graphOf.set(root, free);
       }
       graphs.push(free.graph);
-      symlinked.push(...free.symlinked);
+      for (const m of free.symlinked) symlinked.push(m);
     }
     kindGraphs.push({ k, graph: mergeSourceGraphs(graphs), symlinked });
   }

@@ -983,7 +983,10 @@ entry point that is a symlink is never read: not by the bare-specifier scan,
 every module it alone leads to and any error recorded for it, since that error
 quotes the target's source. Each symlink is then listed for the safety gate,
 which refuses it by the symlink rule before anything is bundled; `fmt` leaves
-symlinks out, so it never writes through one.
+symlinks out, so it never writes through one. The checks that run before the
+safety gate never read a symlink either: content metadata skips one, so what a
+target declares cannot reach the content-collective check, and a symlinked
+`quality.yaml` is refused unread.
 
 Push fails when a local module is missing, when its real path leaves the
 repository and the extensions root (through a symlinked directory), or when two

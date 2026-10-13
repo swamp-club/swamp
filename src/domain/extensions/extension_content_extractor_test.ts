@@ -2446,3 +2446,38 @@ Deno.test("extractDatastoreFromSource: reads a constant name and description at 
     { name: "Custom Store", description: "" },
   );
 });
+
+Deno.test("extractContentMetadata: never reads a symlinked source, so its target's type cannot reach the collective check (swamp-club#3420)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+    const target = join(tmpDir, "target.ts");
+    await Deno.writeTextFile(
+      target,
+      'export const model = { type: "@other/secret-name", version: "2026.03.01.1" };\n',
+    );
+    const link = join(modelsDir, "linked.ts");
+    await Deno.symlink(target, link, { type: "file" });
+
+    const result = await extractContentMetadata(
+      [link],
+      modelsDir,
+      [],
+      [link],
+      modelsDir,
+      [link],
+      modelsDir,
+      [link],
+      modelsDir,
+      [link],
+      modelsDir,
+    );
+
+    assertEquals(JSON.stringify(result).includes("secret-name"), false);
+    assertEquals(result.models, []);
+    assertEquals(result.extensions, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

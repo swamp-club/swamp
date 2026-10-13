@@ -1928,6 +1928,32 @@ Deno.test("extensionPushPrepare: an invalid quality.yaml blocks before any gate,
   }
 });
 
+Deno.test("extensionPushPrepare: a symlinked quality.yaml is refused unread, quoting none of its target (swamp-club#3420)", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const target = join(tmp, "target.yaml");
+    await Deno.writeTextFile(target, "SECRET-3420: [deno-command]\n");
+    const dir = join(tmp, "ext");
+    await Deno.mkdir(dir);
+    await Deno.symlink(target, join(dir, "quality.yaml"), { type: "file" });
+    const error = await assertRejects(() =>
+      extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        makePrepareInput({ manifestDir: dir }),
+      )
+    ) as SwampError;
+    assertEquals(error.code, "validation_failed");
+    assertStringIncludes(error.message, "Symlinks are not allowed");
+    assertEquals(
+      `${error.message}${JSON.stringify(error.details)}`.includes("SECRET"),
+      false,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
 // ── Declared acceptances ──────────────────────────────────────────────
 
 const SECRET_FINDING = (file: string, line: number) => ({
