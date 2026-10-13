@@ -1,6 +1,6 @@
 ## Quick Starts
 
-### Model
+### Behavior
 
 ```typescript
 /**
@@ -8,7 +8,7 @@
  *
  * @module
  */
-// extensions/models/my_model.ts
+// extensions/behaviors/my_behavior.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -23,14 +23,14 @@ const OutputSchema = z.object({
   timestamp: z.iso.datetime(),
 });
 
-/** Model definition for processing input messages. */
-export const model = {
-  type: "@myorg/my-model",
+/** Behavior definition for processing input messages. */
+export const behavior = {
+  type: "@myorg/my-behavior",
   version: "2026.02.09.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "result": {
-      description: "Model output data",
+      description: "Behavior output data",
       schema: OutputSchema,
       lifetime: "infinite",
       garbageCollection: 10,
@@ -154,11 +154,11 @@ All extension types follow the same lifecycle:
 1. **Confirm nothing covers it** — search built-in and community first.
 2. **Author the extension file** — use the Quick Start above;
    `~/.swamp/deno/deno check`.
-3. **Verify registration** — `swamp behavior type search --json` (models) or
+3. **Verify registration** — `swamp behavior type search --json` (behaviors) or
    `swamp vault status --json` / `swamp datastore status --json`.
 4. **Adversarial review** — see
    [Adversarial Review Gate](#adversarial-review-gate) below.
-5. **Smoke test** (models) — see
+5. **Smoke test** (behaviors) — see
    [references/model/smoke_testing.md](references/model/smoke_testing.md).
 6. **Unit tests** — colocate `*_test.ts`; `~/.swamp/deno/deno test` passes.
 7. **Version + manifest** — `swamp extension version`,
@@ -215,15 +215,17 @@ All extension types follow the same lifecycle:
 
 | Type      | Location                        | Export name              | Bundle cache                |
 | --------- | ------------------------------- | ------------------------ | --------------------------- |
-| Model     | `extensions/models/**/*.ts`     | `export const model`     | (bundled inline)            |
+| Behavior  | `extensions/behaviors/**/*.ts`  | `export const behavior`  | (bundled inline)            |
 | Vault     | `extensions/vaults/**/*.ts`     | `export const vault`     | `.swamp/vault-bundles/`     |
 | Datastore | `extensions/datastores/**/*.ts` | `export const datastore` | `.swamp/datastore-bundles/` |
 | Report    | `extensions/reports/*.ts`       | `export const report`    | (bundled inline)            |
 | Webhook   | `extensions/webhooks/**/*.ts`   | `export const webhook`   | `.swamp/webhook-bundles/`   |
 
-Files ending in `_test.ts` are excluded. Files without the correct export are
-silently skipped. When a file fails to load, swamp emits `swamp-warning:` on
-stderr.
+Behaviors also load from `extensions/models/**/*.ts`, and either directory
+accepts `export const model` as well as `export const behavior` (see
+[Behavior and model spellings](guide.md#behavior-and-model-spellings)). Files
+ending in `_test.ts` are excluded. Files without the correct export are silently
+skipped. When a file fails to load, swamp emits `swamp-warning:` on stderr.
 
 If an extension doesn't appear after creation, delete stale bundles
 (`rm -rf .swamp/<type>-bundles/`) and retry.
@@ -246,24 +248,24 @@ See [references/quality/rubric.md](references/quality/rubric.md) for the full
 rubric and [references/quality/templates.md](references/quality/templates.md)
 for manifest/README skeletons.
 
-## Model-Specific
+## Behavior-Specific
 
-Models have the richest API surface. For model-specific guidance:
+Behaviors have the richest API surface. For behavior-specific guidance:
 
-- **Model structure** (fields, resources, files, methods, checks, upgrades):
+- **Behavior structure** (fields, resources, files, methods, checks, upgrades):
   detailed in [references/model/api.md](references/model/api.md)
 - **Pre-flight checks**:
   [references/model/checks.md](references/model/checks.md)
 - **Execute function** (`context.writeResource`, `readResource`,
   `createFileWriter`, `dataRepository`, `extensionFile`):
   [references/model/api.md](references/model/api.md)
-- **Cross-model reads and calls** (`readModelData`, `queryData`, `runModel`) —
-  never shell out to `swamp` from a method:
-  [references/model/api.md](references/model/api.md#cross-model-access)
-- **Factory models**: multiple outputs from one spec —
-  [references/model/scenarios.md](references/model/scenarios.md#scenario-3-factory-model-for-discovery)
+- **Cross-behavior reads and calls** (`readModelData`, `queryData`, `runModel`)
+  — never shell out to `swamp` from a method:
+  [references/model/api.md](references/model/api.md#cross-behavior-access)
+- **Factory behaviors**: multiple outputs from one spec —
+  [references/model/scenarios.md](references/model/scenarios.md#scenario-3-factory-behavior-for-discovery)
 - **CRUD lifecycle**: create/update/delete/sync patterns —
-  [references/model/examples.md](references/model/examples.md#crud-lifecycle-model-vpc)
+  [references/model/examples.md](references/model/examples.md#crud-lifecycle-behavior-vpc)
 - **Extending existing types**: `export const extension` —
   [references/model/api.md](references/model/api.md)
 - **Version upgrades**:
@@ -311,8 +313,8 @@ For creating report extensions, see
 
 ## Manifest Path Resolution
 
-All extension types support the optional `paths.base` manifest field. Default
-behavior is unchanged — omit it and paths resolve relative to the configured
+All extension types support the optional `paths.base` manifest field. The
+default is unchanged — omit it and paths resolve relative to the configured
 `extensions/<type>/` directory. Set `paths.base: manifest` for
 per-extension-subdir layouts. See
 [extension-publish references/publishing.md](../extension-publish/references/publishing.md#path-resolution--pathsbase).
@@ -353,10 +355,10 @@ next version. See
 
 | Need                       | Use Skill                 |
 | -------------------------- | ------------------------- |
-| Use existing models        | `swamp-model`             |
+| Use existing behaviors     | `swamp-model`             |
 | Use existing vaults        | `swamp-vault`             |
 | Create/run workflows       | `swamp-workflow`          |
-| Manage model data          | `swamp-data`              |
+| Manage behavior data       | `swamp-data`              |
 | Repository setup           | `swamp-repo`              |
 | Run/configure reports      | `swamp-report`            |
 | Publish extensions         | `swamp-extension-publish` |

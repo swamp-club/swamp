@@ -106,9 +106,9 @@ interface WorkflowReportContext extends BaseReportContext {
 
 ## Report Registry
 
-**Extension models define reports inline** on the model's `reports` field (just
-like `checks` and `methods`). The model loader auto-registers them — do not call
-`register()` directly from extension code.
+**Extension behaviors define reports inline** on the behavior's `reports` field
+(just like `checks` and `methods`). The behavior loader auto-registers them — do
+not call `register()` directly from extension code.
 
 The global `reportRegistry` singleton manages report registration internally:
 
@@ -155,7 +155,7 @@ execution data:
 | ----------------- | ------------------------------------- | -------------------- | ----------------------------------------------- |
 | `getContent`      | `(type, modelId, dataName, version?)` | `Uint8Array \| null` | Get raw content bytes                           |
 | `findByName`      | `(type, modelId, dataName, version?)` | `Data \| null`       | Get data metadata (tags, version, content type) |
-| `findAllForModel` | `(type, modelId)`                     | `Data[]`             | List all data for a model instance              |
+| `findAllForModel` | `(type, modelId)`                     | `Data[]`             | List all data for a behavior instance           |
 
 **Parameter mapping from report context:**
 
@@ -177,7 +177,7 @@ actual data bytes, then parse as needed (e.g.
 
 The `dataHandles` array contains handles returned by `writeResource` /
 `createFileWriter` during method execution. See the
-[extension model API reference](../model/api.md#datahandle-structure) for the
+[extension behavior API reference](../model/api.md#datahandle-structure) for the
 full structure.
 
 **`metadata` sub-fields:**
@@ -195,7 +195,7 @@ full structure.
 
 ## OutputSpecInfo
 
-Lightweight description of a data output spec, available on method and model
+Lightweight description of a data output spec, available on `method` and `model`
 scope contexts via `outputSpecs`:
 
 ```typescript

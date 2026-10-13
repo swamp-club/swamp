@@ -134,3 +134,10 @@ Deno.test("isAcceptableRule: uncatalogued-model is a known file-scoped warning t
   assertEquals(entry?.scope, "file");
   assertEquals(isAcceptableRule("uncatalogued-model"), false);
 });
+
+Deno.test("isAcceptableRule: behavior-spelling is a known extension-scoped warning an author may accept", () => {
+  const entry = findRule("behavior-spelling");
+  assertEquals(entry?.severity, "warning");
+  assertEquals(entry?.scope, "extension");
+  assertEquals(isAcceptableRule("behavior-spelling"), true);
+});

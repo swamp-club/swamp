@@ -1,6 +1,6 @@
-# Smoke-Test Protocol for Extension Models
+# Smoke-Test Protocol for Extension Behaviors
 
-Systematically verify extension models against live APIs before pushing. Unit
+Systematically verify extension behaviors against live APIs before pushing. Unit
 tests with mocked responses can't catch Content-Type mismatches, bundle caching
 bugs, or API validation quirks that only surface with real HTTP calls.
 
@@ -8,44 +8,45 @@ bugs, or API validation quirks that only surface with real HTTP calls.
 
 ### Phase 0: Pre-flight
 
-1. Read the extension model source to understand the API surface
+1. Read the extension behavior source to understand the API surface
 2. `swamp behavior get <name> --json` to see configured methods and resource
    specs
-3. Clear the **specific** bundle cache for the model under test:
+3. Clear the **specific** bundle cache for the behavior under test:
    ```bash
-   rm .swamp/bundles/<model-filename>.js
+   rm .swamp/bundles/<behavior-filename>.js
    ```
-   For example, for `extensions/models/honeycomb.ts`, remove
+   For example, for `extensions/behaviors/honeycomb.ts`, remove
    `.swamp/bundles/honeycomb.ts.js`. Do **not** wipe the entire
-   `.swamp/bundles/` directory — other models have legitimate cached bundles.
+   `.swamp/bundles/` directory — other behaviors have legitimate cached bundles.
 4. Verify vault credentials are configured:
    `swamp vault get <vault-name> --json`
 
 ### Phase 0.5: API Contract Verification
 
-Before running any methods, verify the model's API calls against the provider's
-official REST API reference documentation. Mocked unit tests validate internal
-logic but cannot catch contract mismatches that only surface with real HTTP
-calls.
+Before running any methods, verify the behavior's API calls against the
+provider's official REST API reference documentation. Mocked unit tests validate
+internal logic but cannot catch contract mismatches that only surface with real
+HTTP calls.
 
-For each endpoint the model calls, verify:
+For each endpoint the behavior calls, verify:
 
 1. **Endpoint URL pattern** — does the URL match the provider's documented path?
-2. **HTTP method** — does the model use the correct verb (GET vs POST vs PUT vs
-   PATCH vs DELETE)?
+2. **HTTP method** — does the behavior use the correct verb (GET vs POST vs PUT
+   vs PATCH vs DELETE)?
 3. **Request body** — does the body schema match what the API expects? Some
    endpoints require an empty body, others require specific wrapper fields
-4. **Response schema** — does the model parse the fields the API actually
+4. **Response schema** — does the behavior parse the fields the API actually
    returns?
-5. **Field naming conventions** — does the model match the provider's convention
-   (camelCase vs snake_case vs PascalCase)?
+5. **Field naming conventions** — does the behavior match the provider's
+   convention (camelCase vs snake_case vs PascalCase)?
 
-If any mismatch is found, fix the model source **before** proceeding to Phase 1.
+If any mismatch is found, fix the behavior source **before** proceeding to
+Phase 1.
 
 ### Phase 1: List methods (safe reads)
 
 - Run all `list`-kind methods — read-only, no side effects
-- Try each `resource_type` the model supports
+- Try each `resource_type` the behavior supports
 - **401/403 = expected signal** (endpoint works, token is scoped), not failure
 - Connection errors or 500s = **stop**, API config is broken
 
@@ -68,8 +69,8 @@ swamp behavior run <name> get --arg id=<id-from-list>
 For each resource type supporting create:
 
 1. Use unique names: `smoke-test-{resource_type}-{timestamp}`
-2. Read model source to determine required fields beyond `name` (this is where
-   Claude's API understanding matters)
+2. Read behavior source to determine required fields beyond `name` (this is
+   where Claude's API understanding matters)
 3. Run create, verify with read/get
 4. **Track every created resource for cleanup**
 
@@ -133,8 +134,9 @@ Produce a summary table:
 
 1. **Never touch pre-existing resources** — only `smoke-test-*` named resources
 2. **Always clean up**, even on failure
-3. **Clear the specific model's bundle cache** (`.swamp/bundles/{filename}.js`)
-   before every smoke test run — don't wipe the entire bundles directory
+3. **Clear the specific behavior's bundle cache**
+   (`.swamp/bundles/{filename}.js`) before every smoke test run — don't wipe the
+   entire bundles directory
 4. **Permission errors are signal, not failure** — 401/403 means the endpoint
    works but the token is scoped
 5. **If unsure about required arguments, ask the user** rather than guessing
@@ -142,14 +144,14 @@ Produce a summary table:
 ## Common Failure Patterns
 
 These are the most frequent bugs caught by smoke testing (from real extension
-model development):
+behavior development):
 
 ### API contract mismatches
 
 **Symptom:** API returns unexpected errors (400, 404, 405) or silently ignores
 fields. Mocked unit tests pass but real API calls fail.
 
-**Cause:** The model's HTTP calls don't match the provider's actual REST API
+**Cause:** The behavior's HTTP calls don't match the provider's actual REST API
 contract. Common examples:
 
 - Using POST when the API expects GET (or vice versa)
@@ -159,15 +161,15 @@ contract. Common examples:
 - Parsing response fields that don't exist or have different names
 
 **Fix:** Open the provider's official REST API reference documentation and
-cross-reference each endpoint the model calls. Verify the HTTP method, request
-body schema, and response schema match exactly. See Phase 0.5 in the protocol
-above for the full checklist.
+cross-reference each endpoint the behavior calls. Verify the HTTP method,
+request body schema, and response schema match exactly. See Phase 0.5 in the
+protocol above for the full checklist.
 
 ### Content-Type mismatches (HTTP 415)
 
 **Symptom:** API returns 415 Unsupported Media Type.
 
-**Cause:** The model sends the wrong `Content-Type` header (or none at all).
+**Cause:** The behavior sends the wrong `Content-Type` header (or none at all).
 Many APIs require `application/json` explicitly.
 
 **Fix:** Check the API docs for the required Content-Type and set it in the
@@ -175,16 +177,16 @@ fetch headers.
 
 ### Stale bundle cache
 
-**Symptom:** A source fix isn't reflected at runtime — the model behaves as if
+**Symptom:** A source fix isn't reflected at runtime — the behavior acts as if
 the old code is still running.
 
-**Cause:** Swamp caches bundled model code in `.swamp/bundles/`. After editing
-the source, the stale cached bundle is still used.
+**Cause:** Swamp caches bundled behavior code in `.swamp/bundles/`. After
+editing the source, the stale cached bundle is still used.
 
 **Fix:** Remove the specific bundle:
 
 ```bash
-rm .swamp/bundles/<model-filename>.js
+rm .swamp/bundles/<behavior-filename>.js
 ```
 
 ### API validation quirks (HTTP 422)
@@ -195,7 +197,7 @@ rm .swamp/bundles/<model-filename>.js
 (e.g., a `type` field, a specific enum value, or a nested object structure).
 
 **Fix:** Read the API's error response carefully — it usually lists the missing
-or invalid fields. Update the model's create/update method to include them.
+or invalid fields. Update the behavior's create/update method to include them.
 
 ### Delete-protected defaults (HTTP 403/409)
 
@@ -218,5 +220,5 @@ swamp behavior run <name> delete --arg id=<id>
 **Cause:** The resource type is read-only (e.g., AWS managed policies, system
 resources).
 
-**Fix:** Mark the resource as read-only in the model — remove create/update/
+**Fix:** Mark the resource as read-only in the behavior — remove create/update/
 delete methods for that resource type and only expose list/get.

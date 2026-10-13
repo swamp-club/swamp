@@ -34,6 +34,11 @@ import { dirname, join, toFileUrl } from "@std/path";
 import { modelRegistry } from "../domain/models/model.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { DataPlaneClient } from "./data_plane_client.ts";
+import { primaryExport } from "../domain/extensions/kind_adapter.ts";
+import {
+  BEHAVIOR_EXPORT_NAME,
+  MODEL_EXPORT_NAME,
+} from "../domain/terminology/behavior_aliases.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "bundle-cache"]);
@@ -104,11 +109,16 @@ export class WorkerBundleCache {
 
     const filesDir = await this.#prefetchAssets(fingerprint, bundleDir, signal);
 
-    const module = await import(toFileUrl(bundlePath).href) as {
-      model?: ModelDefinition;
-      default?: ModelDefinition;
-    };
-    const modelDef = module.model ?? module.default;
+    const module = await import(toFileUrl(bundlePath).href) as Record<
+      string,
+      unknown
+    >;
+    // `behavior` is the other spelling of `model` (swamp-club#3338); a bundle
+    // exporting both as definitions is refused rather than one winning.
+    const modelDef = (primaryExport(module, {
+      primaryExportKey: MODEL_EXPORT_NAME,
+      primaryExportAliases: [BEHAVIOR_EXPORT_NAME],
+    }) ?? module.default) as ModelDefinition | undefined;
     if (!modelDef || typeof modelDef !== "object" || !("methods" in modelDef)) {
       throw new Error(
         `Bundle '${fingerprint}' does not export a model definition`,

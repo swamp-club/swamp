@@ -71,6 +71,10 @@ import {
 import { evictRemovedBundles } from "./bundle_eviction.ts";
 import { realCanonicalPath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { markErrorPaths } from "../errors.ts";
+import {
+  BEHAVIOR_EXPORT_NAME,
+  MODEL_EXPORT_NAME,
+} from "../terminology/behavior_aliases.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
@@ -784,7 +788,8 @@ export const modelKindAdapter: KindAdapter = {
   kind: "model",
   bundleSubdir: SWAMP_SUBDIRS.bundles,
   catalogKinds: ["model", "extension"],
-  primaryExportKey: "model",
+  primaryExportKey: MODEL_EXPORT_NAME,
+  primaryExportAliases: [BEHAVIOR_EXPORT_NAME],
   secondaryExportKey: "extension",
   exportRegex: EXPORT_DECLARATION_PATTERNS.model,
   useResolver: true,
@@ -812,25 +817,37 @@ export const modelKindAdapter: KindAdapter = {
   },
 
   extractTypeFromSource(source: string) {
-    const declaration = sourceFromExportDeclaration(
+    // The model spelling first, as before the alias; `export const behavior`
+    // (swamp-club#3338) is read only from a file with neither `model` nor
+    // `extension`, so a model file that also exports an unrelated
+    // `behavior` reads as it always has.
+    const spelledModel = sourceFromExportDeclaration(
       source,
-      EXPORT_DECLARATION_PATTERNS.model,
+      /export\s+const\s+(model|extension)\s*[=:]/,
     );
+    const declaration = spelledModel ??
+      sourceFromExportDeclaration(source, /export\s+const\s+behavior\s*[=:]/);
     if (declaration === null) return null;
-    const modelMatch = declaresExport(source, /export\s+const\s+model\s*[=:]/);
-    const extensionMatch = declaresExport(
+    const modelMatch = spelledModel === null ||
+      declaresExport(source, /export\s+const\s+model\s*[=:]/);
+    const extensionMatch = spelledModel !== null && declaresExport(
       source,
       /export\s+const\s+extension\s*[=:]/,
     );
+    const name = spelledModel === null ? "behavior" : "(?:model|extension)";
 
     const typeMatch = declaration.match(
-      /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
+      new RegExp(
+        `export\\s+const\\s+${name}\\b[\\s\\S]*?=\\s*\\{[\\s\\S]*?type\\s*:\\s*["']([^"']+)["']`,
+      ),
     );
     if (!typeMatch) return null;
 
     const typeNormalized = ModelType.create(typeMatch[1]).normalized;
     const versionMatch = declaration.match(
-      /export\s+const\s+(?:model|extension)\b[\s\S]*?=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
+      new RegExp(
+        `export\\s+const\\s+${name}\\b[\\s\\S]*?=\\s*\\{[\\s\\S]*?version\\s*:\\s*["']([^"']+)["']`,
+      ),
     );
 
     return {
@@ -1216,7 +1233,7 @@ export const modelKindAdapter: KindAdapter = {
     });
 
     if (!module.extension) {
-      if (module.model) {
+      if (module.model || module.behavior) {
         logger
           .warn`Skipping standalone model bundle cataloged as extension: ${entry.bundle_path}`;
         // Mark it so every later attach pass does not re-import and re-warn.

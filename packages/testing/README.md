@@ -484,6 +484,11 @@ the
 guide in the swamp-extension-model skill for the full rationale, worked example,
 and the `defineModel` function-form alternative.
 
+`defineBehavior` is the same function under the behavior spelling, for an
+extension that writes `export const behavior = defineBehavior({ ... })`. swamp
+loads `export const behavior` exactly as `export const model`, on this release
+and later.
+
 ## License
 
 AGPL-3.0-only — see

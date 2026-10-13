@@ -195,6 +195,13 @@ export interface ExtensionPushPrepareInput {
    */
   manifestDir: string;
   modelsDir: string;
+  /**
+   * The behaviors directory the model entry points resolved from when the
+   * manifest lists them under `behaviors:` (swamp-club#3338). Files under
+   * it are packed at `models/<path from it>`, exactly as files under
+   * `modelsDir` are packed at `models/<path from modelsDir>`.
+   */
+  behaviorsDir?: string;
   allModelFiles: string[];
   modelEntryPoints: string[];
   vaultsDir: string;
@@ -547,6 +554,7 @@ import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extension
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
   type ModelCatalogGap,
   modelCatalogGap,
@@ -987,8 +995,16 @@ export async function extensionPushPrepare(
   // 3. Extract content metadata
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
+    // Entry points under the behaviors directory are read from it, so
+    // each `fileName` is the entry point's path inside the archive's
+    // models/ (swamp-club#3338).
+    const behaviorEntryPoints = input.modelEntryPoints.filter((f) =>
+      modelsArchiveBase(input, f) !== input.modelsDir
+    );
     contentMetadata = await deps.extractContentMetadata(
-      input.modelEntryPoints,
+      behaviorEntryPoints.length > 0
+        ? input.modelEntryPoints.filter((f) => !behaviorEntryPoints.includes(f))
+        : input.modelEntryPoints,
       input.modelsDir,
       input.workflowFiles,
       input.allVaultFiles,
@@ -1000,6 +1016,29 @@ export async function extensionPushPrepare(
       input.allWebhookFiles,
       input.webhooksDir,
     );
+    if (behaviorEntryPoints.length > 0) {
+      const fromBehaviors = await deps.extractContentMetadata(
+        behaviorEntryPoints,
+        input.behaviorsDir!,
+        [],
+        [],
+        "",
+        [],
+        "",
+        [],
+        "",
+        [],
+        "",
+      );
+      contentMetadata = {
+        ...contentMetadata,
+        models: [...contentMetadata.models, ...fromBehaviors.models],
+        extensions: [
+          ...contentMetadata.extensions,
+          ...fromBehaviors.extensions,
+        ],
+      };
+    }
     ctx.logger
       .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports, ${contentMetadata.webhooks.length} webhooks`;
   } catch {
@@ -1523,21 +1562,75 @@ export function bareSpecifiersMessage(
  * the model export, and that the registry will not list the model although
  * it still installs and runs.
  */
-function uncataloguedModelMessage(gap: ModelCatalogGap): string {
+function uncataloguedModelMessage(
+  gap: ModelCatalogGap,
+  exportName: "model" | "behavior" = "model",
+): string {
   const cause = gap.kind === "not-plain-object"
     ? gap.annotated
       ? "Model export has a type annotation, so it is not read as a plain " +
-        "export const model = { ... } object"
-      : "Model export is not a plain export const model = { ... } object " +
-        "literal"
+        `export const ${exportName} = { ... } object`
+      : `Model export is not a plain export const ${exportName} = { ... } ` +
+        "object literal"
     : gap.missing.length === 2
     ? "Model export has neither a string-literal type nor a string-literal " +
-      "version in its export const model object"
+      `version in its export const ${exportName} object`
     : `Model export has no string-literal ${
       gap.missing[0]
-    } in its export const model object`;
+    } in its export const ${exportName} object`;
   return `${cause}, so the registry catalog will not list this model type. ` +
     "The extension still installs and the model still runs.";
+}
+
+/**
+ * The name a model entry point's export is spelled with: `behavior` when
+ * the source declares `export const behavior` and no `export const model`
+ * (swamp-club#3338), else `model`.
+ */
+function exportNameOf(source: string): "model" | "behavior" {
+  return !declaresExport(source, /export\s+const\s+model\s*[=:]/) &&
+      declaresExport(source, /export\s+const\s+behavior\s*[=:]/)
+    ? "behavior"
+    : "model";
+}
+
+/**
+ * Where the extension uses the behavior spelling (swamp-club#3338): the
+ * `behaviors:` manifest key, the behaviors directory, and entry points
+ * exporting `behavior`. Empty for a model-spelled extension.
+ */
+async function behaviorSpellingUses(
+  input: ExtensionPushPrepareInput,
+): Promise<string[]> {
+  const uses: string[] = [];
+  if (input.manifest.modelsKey === "behaviors") {
+    uses.push("the behaviors: manifest key");
+  }
+  if (
+    input.allModelFiles.some((f) =>
+      modelsArchiveBase(input, f) !== input.modelsDir
+    )
+  ) {
+    uses.push("the extensions/behaviors/ directory");
+  }
+  let behaviorExports = 0;
+  for (const file of input.modelEntryPoints) {
+    try {
+      if (exportNameOf(await Deno.readTextFile(file)) === "behavior") {
+        behaviorExports++;
+      }
+    } catch {
+      // Unreadable — the other gates report it.
+    }
+  }
+  if (behaviorExports > 0) {
+    uses.push(
+      `export const behavior in ${behaviorExports} entry point${
+        behaviorExports === 1 ? "" : "s"
+      }`,
+    );
+  }
+  return uses;
 }
 
 /**
@@ -1625,10 +1718,30 @@ export async function runQualityFindings(
         dimension: "Registry catalog",
         severity: "medium",
         file,
-        message: uncataloguedModelMessage(gap),
+        message: uncataloguedModelMessage(gap, exportNameOf(src)),
         remediation: remediationFor("uncatalogued-model"),
       });
     }
+  }
+
+  // Behavior spelling: an extension written with the behavior export,
+  // directory or manifest key loads only on this release and later, so say
+  // so once (swamp-club#3338).
+  const behaviorSpelling = await behaviorSpellingUses(input);
+  if (behaviorSpelling.length > 0) {
+    reviewRulesResult.warnings.push({
+      ruleId: "behavior-spelling",
+      dimension: "Compatibility",
+      severity: "medium",
+      file: "(extension)",
+      message:
+        `Extension uses the behavior spelling (${
+          behaviorSpelling.join(", ")
+        }). swamp clients and workers older than this release cannot load ` +
+        "it: they read only export const model, extensions/models/ and the " +
+        "models: manifest key.",
+      remediation: remediationFor("behavior-spelling"),
+    });
   }
 
   // Declared acceptances: inline directives from every packaged file with a
@@ -1774,6 +1887,62 @@ function collapseTestingCompleteness(
   ];
 }
 
+/** True when `file` is `dir` itself or lies under it. */
+function isWithin(dir: string, file: string): boolean {
+  const rel = relative(dir, file);
+  return !(rel === ".." || rel.startsWith(".." + SEPARATOR) ||
+    isAbsolute(rel));
+}
+
+/**
+ * The directory a model source or include file is packed from: the
+ * behaviors directory for a file under it, else the models directory
+ * (swamp-club#3338). The file lands at `models/<path from that directory>`,
+ * so a behavior-spelled extension's archive matches its model-spelled
+ * twin's and never holds a `models/../behaviors/` path.
+ */
+function modelsArchiveBase(
+  input: Pick<ExtensionPushPrepareInput, "modelsDir" | "behaviorsDir">,
+  file: string,
+): string {
+  return input.behaviorsDir !== undefined &&
+      input.behaviorsDir !== input.modelsDir &&
+      isWithin(input.behaviorsDir, file)
+    ? input.behaviorsDir
+    : input.modelsDir;
+}
+
+/**
+ * Refuses two model sources or include files that would be packed at the
+ * same `models/` path, one from the models directory and one from the
+ * behaviors directory (swamp-club#3338): the archive can hold only one.
+ */
+function assertDistinctModelArchivePaths(
+  input: ExtensionPushPrepareInput,
+): void {
+  if (
+    input.behaviorsDir === undefined || input.behaviorsDir === input.modelsDir
+  ) {
+    return;
+  }
+  const packed = new Map<string, string>();
+  for (const file of [...input.allModelFiles, ...input.includeFilePaths]) {
+    const archivePath = `models/${
+      relative(modelsArchiveBase(input, file), file).replaceAll("\\", "/")
+    }`;
+    const other = packed.get(archivePath);
+    if (other !== undefined && other !== file) {
+      throw validationFailed(
+        `${other} and ${file} would both be packed as ${archivePath}. ` +
+          "Files under the behaviors directory are packed under models/, " +
+          "like files under the models directory; rename or move one of them.",
+        { archivePath, files: [other, file] },
+      );
+    }
+    packed.set(archivePath, file);
+  }
+}
+
 /**
  * The path a packaged file has inside the archive, mirroring
  * {@link createArchive} exactly: additional files and binaries land at
@@ -1802,11 +1971,11 @@ function archivePathFor(
       : fwd(rel);
   };
   if (input.includeFilePaths.includes(file)) {
-    const rel = under(input.modelsDir);
+    const rel = under(modelsArchiveBase(input, file));
     return rel !== undefined ? `models/${rel}` : undefined;
   }
   const typed: Array<[string, string[], string]> = [
-    ["models", input.allModelFiles, input.modelsDir],
+    ["models", input.allModelFiles, modelsArchiveBase(input, file)],
     ["vaults", input.allVaultFiles, input.vaultsDir],
     ["datastores", input.allDatastoreFiles, input.datastoresDir],
     ["reports", input.allReportFiles, input.reportsDir],
@@ -2099,7 +2268,7 @@ function buildResolvedData(
   const resolvedModels = input.modelEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedModelsByFile.get(
-      relative(input.modelsDir, f),
+      relative(modelsArchiveBase(input, f), f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -2207,12 +2376,14 @@ async function bundleAndArchive(
     ? { packageJsonDir: input.packageJsonDir }
     : undefined;
 
+  assertDistinctModelArchivePaths(input);
+
   const bundles = new Map<string, string>();
   const compilationErrors: CompilationError[] = [];
 
   await bundleEntryPoints(
     input.modelEntryPoints,
-    input.modelsDir,
+    (entryPoint) => modelsArchiveBase(input, entryPoint),
     bundles,
     compilationErrors,
     deps,
@@ -2299,7 +2470,7 @@ async function bundleAndArchive(
 
 async function bundleEntryPoints(
   entryPoints: string[],
-  baseDir: string,
+  baseDir: string | ((entryPoint: string) => string),
   bundles: Map<string, string>,
   compilationErrors: CompilationError[],
   deps: ExtensionPushPrepareDeps,
@@ -2311,7 +2482,8 @@ async function bundleEntryPoints(
   label: string,
 ): Promise<void> {
   for (const entryPoint of entryPoints) {
-    const entryName = relative(baseDir, entryPoint).replace(/\.ts$/, "");
+    const base = typeof baseDir === "string" ? baseDir : baseDir(entryPoint);
+    const entryName = relative(base, entryPoint).replace(/\.ts$/, "");
     try {
       const js = await deps.bundleEntryPoint(
         entryPoint,
@@ -2416,7 +2588,7 @@ async function createArchive(
 
     // Copy model source files
     for (const modelFile of input.allModelFiles) {
-      const relPath = relative(input.modelsDir, modelFile);
+      const relPath = relative(modelsArchiveBase(input, modelFile), modelFile);
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(modelFile, destPath);
@@ -2424,7 +2596,7 @@ async function createArchive(
 
     // Copy include files (alongside model sources, not bundled)
     for (const incFile of input.includeFilePaths) {
-      const relPath = relative(input.modelsDir, incFile);
+      const relPath = relative(modelsArchiveBase(input, incFile), incFile);
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(incFile, destPath);

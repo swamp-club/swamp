@@ -62,13 +62,16 @@ import {
 } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { evictRemovedBundles } from "./bundle_eviction.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
-import type {
-  BundleIndexResult,
-  ExtensionLoadResult,
-  KindAdapter,
-  RegistrationContext,
+import {
+  type BundleIndexResult,
+  type ExtensionLoadResult,
+  type KindAdapter,
+  primaryExport,
+  primaryExportNames,
+  type RegistrationContext,
 } from "./kind_adapter.ts";
 import { ValidationError } from "./validation_error.ts";
+import { DuplicateTypeUserError } from "./duplicate_type_user_error.ts";
 import { makeLocalExtension } from "./extension.ts";
 import {
   extensionKindToKindDir,
@@ -200,6 +203,19 @@ const LOCAL_OVERRIDE_FAILURE_STATES: ReadonlySet<string> = new Set([
   "EntryPointUnreadable",
 ]);
 
+/**
+ * The directories whose test files the loader discovers: every additional
+ * directory (mounted sources, pulled extensions) except the local ones,
+ * which are scanned like the primary directory, without test files.
+ */
+function testFileDirsOf(
+  additionalDirs: readonly string[] | undefined,
+  localDirs: readonly string[],
+): ReadonlySet<string> {
+  const local = new Set(localDirs);
+  return new Set((additionalDirs ?? []).filter((d) => !local.has(d)));
+}
+
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
@@ -281,11 +297,88 @@ export class ExtensionLoader {
     return true;
   }
 
+  /**
+   * Refuses a type that `dir` and one of `localDirs` both declare, such as
+   * one model defined in `extensions/models/` and again in
+   * `extensions/behaviors/` (swamp-club#3338). Both are local, so neither
+   * outranks the other: the catalog would keep the one with the smaller
+   * path and drop the other silently. Types are read from source text, as
+   * the catalog's own type extraction does; a local directory that is
+   * missing or empty costs one directory read.
+   */
+  private async assertNoLocalTypeCollisions(
+    dir: string,
+    localDirs: readonly string[],
+  ): Promise<void> {
+    if (localDirs.length === 0) return;
+    const primaryKind = this.adapter.catalogKinds[0];
+    const typesIn = async (d: string): Promise<Map<string, string>> => {
+      const types = new Map<string, string>();
+      let files: string[];
+      try {
+        files = await this.discoverFiles(d);
+      } catch {
+        return types;
+      }
+      for (const file of files) {
+        const absolutePath = resolve(d, file);
+        let source: string;
+        try {
+          source = await Deno.readTextFile(absolutePath);
+        } catch {
+          continue;
+        }
+        if (!this.adapter.exportRegex.test(source)) continue;
+        const extracted = this.adapter.extractTypeFromSource(source);
+        if (!extracted || extracted.kind !== primaryKind) continue;
+        if (!types.has(extracted.typeNormalized)) {
+          types.set(extracted.typeNormalized, canonicalizePath(absolutePath));
+        }
+      }
+      return types;
+    };
+    const localTypes = [];
+    for (const d of localDirs) {
+      const types = await typesIn(d);
+      if (types.size > 0) localTypes.push(types);
+    }
+    if (localTypes.length === 0) return;
+    const primaryTypes = await typesIn(dir);
+    for (const types of localTypes) {
+      for (const [type, path] of types) {
+        const existing = primaryTypes.get(type);
+        if (existing === undefined) continue;
+        throw new DuplicateTypeUserError({
+          kind: this.adapter.kind,
+          typeNormalized: type,
+          existing: {
+            extensionName: "",
+            extensionVersion: "",
+            canonicalPath: existing,
+          },
+          conflicting: {
+            extensionName: "",
+            extensionVersion: "",
+            canonicalPath: path,
+          },
+          origin: "local-directories",
+        });
+      }
+    }
+  }
+
   async load(
     dir: string,
     options?: {
       skipAlreadyRegistered?: boolean;
       additionalDirs?: string[];
+      /**
+       * Further local directories of the same tier as `dir`, scanned right
+       * after it and, like it, without test files: the behaviors directory
+       * beside the models directory (swamp-club#3338). A type both `dir`
+       * and one of these declare is refused.
+       */
+      localDirs?: string[];
       indexOnly?: boolean;
       /**
        * Canonical absolute source paths to skip without reading, bundling
@@ -304,9 +397,13 @@ export class ExtensionLoader {
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
+    const localDirs = options?.localDirs ?? [];
+    await this.assertNoLocalTypeCollisions(dir, localDirs);
+
     const allFiles: Array<{ file: string; baseDir: string }> = [];
     const additionalSet = new Set(options?.additionalDirs ?? []);
-    for (const d of [dir, ...additionalSet]) {
+    const testFileDirs = testFileDirsOf(options?.additionalDirs, localDirs);
+    for (const d of [dir, ...localDirs, ...additionalSet]) {
       try {
         await Deno.stat(d);
       } catch {
@@ -315,7 +412,7 @@ export class ExtensionLoader {
       const files = await this.discoverFiles(
         d,
         "",
-        additionalSet.has(d),
+        testFileDirs.has(d),
       );
       for (const file of files) {
         allFiles.push({ file, baseDir: d });
@@ -390,7 +487,7 @@ export class ExtensionLoader {
         this.logTrustedPulledBundle(bundled, file);
         const module = await this.importBundle(bundled.js, file, baseDir);
 
-        if (module[this.adapter.primaryExportKey]) {
+        if (primaryExport(module, this.adapter)) {
           primaryFiles.push({ file, module, absolutePath, baseDir });
         } else if (
           this.adapter.secondaryExportKey &&
@@ -417,7 +514,7 @@ export class ExtensionLoader {
 
     for (const { file, module, absolutePath, baseDir } of primaryFiles) {
       try {
-        const exported = module[this.adapter.primaryExportKey];
+        const exported = primaryExport(module, this.adapter);
         const parsed = this.adapter.validatePrimaryExport(exported);
         if (!parsed.success) {
           const bundlePath = this.getBundlePath(file, dir);
@@ -537,7 +634,12 @@ export class ExtensionLoader {
 
   async buildIndex(
     dir: string,
-    options?: { additionalDirs?: string[]; indexOnly?: boolean },
+    options?: {
+      additionalDirs?: string[];
+      /** As for {@link load}: further local directories of `dir`'s tier. */
+      localDirs?: string[];
+      indexOnly?: boolean;
+    },
   ): Promise<ExtensionLoadResult> {
     const repository = this.requireRepository("buildIndex");
     const catalog = repository.getCatalogStore();
@@ -547,13 +649,22 @@ export class ExtensionLoader {
       failed: [],
     };
 
+    const localDirs = options?.localDirs ?? [];
+    await this.assertNoLocalTypeCollisions(dir, localDirs);
+    // Every directory past `dir`, local ones first; only the non-local ones
+    // contribute test files, as before local directories existed.
+    const extraDirs = localDirs.length > 0
+      ? [...localDirs, ...(options?.additionalDirs ?? [])]
+      : options?.additionalDirs;
+    const testFileDirs = testFileDirsOf(options?.additionalDirs, localDirs);
+
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
     const currentBasePath = this.resolveBundlePath();
     const currentSourceFingerprint = sourceDirsFingerprint(
       dir,
-      options?.additionalDirs,
+      extraDirs,
     );
     const guard = repository.invalidationGuards({
       kind: this.adapter.kind,
@@ -575,7 +686,8 @@ export class ExtensionLoader {
       const scan = await this.scanFreshness(
         dir,
         catalog,
-        options?.additionalDirs,
+        extraDirs,
+        testFileDirs,
       );
       const staleFiles = scan.stale;
       evictRemovedBundles(scan.removed, catalog);
@@ -695,6 +807,7 @@ export class ExtensionLoader {
 
     const fullResult = await this.load(dir, {
       additionalDirs: options?.additionalDirs,
+      ...(localDirs.length > 0 ? { localDirs } : {}),
       skipAlreadyRegistered: true,
       indexOnly: options?.indexOnly,
     });
@@ -778,15 +891,15 @@ export class ExtensionLoader {
     await this.populateCatalogFromRegistry(
       catalog,
       dir,
-      options?.additionalDirs,
+      extraDirs,
+      testFileDirs,
     );
     // The same unseen-row removal the warm path applies, so rows the
     // scan no longer reaches (an old pulled root, an extension that is
     // no longer installed) do not outlive a cold pass (swamp-club#2490).
-    const additionalSet = new Set(options?.additionalDirs ?? []);
     const seen = await collectSeenSources(
-      [dir, ...(options?.additionalDirs ?? [])],
-      (d) => this.discoverFiles(d, "", additionalSet.has(d)),
+      [dir, ...(extraDirs ?? [])],
+      (d) => this.discoverFiles(d, "", testFileDirs.has(d)),
     );
     const removedUnseen = removeUnseenCatalogRows(
       catalog,
@@ -1011,10 +1124,9 @@ export class ExtensionLoader {
       fingerprint,
     );
 
-    if (module[this.adapter.primaryExportKey]) {
-      const parsed = this.adapter.validatePrimaryExport(
-        module[this.adapter.primaryExportKey],
-      );
+    const exported = primaryExport(module, this.adapter);
+    if (exported) {
+      const parsed = this.adapter.validatePrimaryExport(exported);
       if (!parsed.success) {
         throw new ValidationError(
           this.adapter.formatValidationError(parsed.error),
@@ -1076,14 +1188,15 @@ export class ExtensionLoader {
       sourceFingerprint: entry.source_fingerprint || undefined,
     });
 
-    const exportKey = this.adapter.primaryExportKey;
-    if (!module[exportKey]) {
+    const exported = primaryExport(module, this.adapter);
+    if (!exported) {
+      const exportNames = primaryExportNames(this.adapter).join(" or ");
       this.logger
-        .warn`Skipping bundle with no ${exportKey} export: ${entry.bundle_path}`;
+        .warn`Skipping bundle with no ${exportNames} export: ${entry.bundle_path}`;
       return;
     }
 
-    const parsed = this.adapter.validatePrimaryExport(module[exportKey]);
+    const parsed = this.adapter.validatePrimaryExport(exported);
     if (!parsed.success) {
       throw new Error(this.adapter.formatValidationError(parsed.error));
     }
@@ -1244,7 +1357,7 @@ export class ExtensionLoader {
           sourcePath: absolutePath,
           sourceFingerprint: row.source_fingerprint || undefined,
         });
-        const exported = module[this.adapter.primaryExportKey];
+        const exported = primaryExport(module, this.adapter);
         if (!exported) continue;
         const parsed = this.adapter.validatePrimaryExport(exported);
         if (!parsed.success) continue;
@@ -1354,6 +1467,7 @@ export class ExtensionLoader {
     catalog: ExtensionCatalogStore,
     dir: string,
     additionalDirs?: string[],
+    testFileDirs: ReadonlySet<string> = new Set(additionalDirs ?? []),
   ): Promise<void> {
     if (!this.repoDir) return;
 
@@ -1371,7 +1485,7 @@ export class ExtensionLoader {
           catalog,
           cache,
           otherSpellings,
-          additionalSet.has(d),
+          testFileDirs.has(d),
         );
       } catch {
         // Directory doesn't exist — skip
@@ -1608,11 +1722,11 @@ export class ExtensionLoader {
       effectiveFingerprint,
     );
 
-    const exportKey = this.adapter.primaryExportKey;
+    const exported = primaryExport(module, this.adapter);
 
-    if (module[exportKey]) {
+    if (exported) {
       const bundlePath = this.getBundlePath(relativePath, baseDir);
-      const parsed = this.adapter.validatePrimaryExport(module[exportKey]);
+      const parsed = this.adapter.validatePrimaryExport(exported);
       if (!parsed.success) {
         throw new ValidationError(
           this.adapter.formatValidationError(parsed.error),
@@ -1964,13 +2078,13 @@ export class ExtensionLoader {
     dir: string,
     catalog: ExtensionCatalogStore,
     additionalDirs?: string[],
+    testFileDirs: ReadonlySet<string> = new Set(additionalDirs ?? []),
   ): Promise<FreshnessScan> {
-    const additionalSet = new Set(additionalDirs ?? []);
     return await scanCatalogFreshness({
       modelsDir: dir,
       additionalDirs,
       catalog,
-      discoverFiles: (d) => this.discoverFiles(d, "", additionalSet.has(d)),
+      discoverFiles: (d) => this.discoverFiles(d, "", testFileDirs.has(d)),
       kinds: [...this.adapter.catalogKinds],
     });
   }

@@ -1,13 +1,13 @@
 # Execute function typing
 
-Extension model `execute` callbacks receive `args` and `context` from the swamp
-runtime. Under Deno's strict TypeScript mode, unannotated parameters produce
-TS7006 when a sibling `_test.ts` file imports the model source. This page
-documents the recommended typing patterns.
+Extension behavior `execute` callbacks receive `args` and `context` from the
+swamp runtime. Under Deno's strict TypeScript mode, unannotated parameters
+produce TS7006 when a sibling `_test.ts` file imports the behavior source. This
+page documents the recommended typing patterns.
 
 ## The problem
 
-The default extension-model shape uses unannotated execute parameters:
+The default extension-behavior shape uses unannotated execute parameters:
 
 ```typescript
 execute: (async (args, context) => {/* ... */});
@@ -35,13 +35,13 @@ type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
 const RunArgsSchema = z.object({ bucket: z.string() });
 
-export const model = {
-  type: "@myorg/my-model",
+export const behavior = {
+  type: "@myorg/my-behavior",
   version: "2026.04.21.1",
   globalArguments: GlobalArgsSchema,
   methods: {
     run: {
-      description: "Run the model",
+      description: "Run the behavior",
       arguments: RunArgsSchema,
       execute: async (
         args: z.infer<typeof RunArgsSchema>,
@@ -102,20 +102,20 @@ use:
 
 ## Alternative: `satisfies ModelDefinition`
 
-If you prefer not to annotate each method individually, you can wrap the model
-literal with `satisfies ModelDefinition<typeof GlobalArgsSchema>` from
+If you prefer not to annotate each method individually, you can wrap the
+behavior literal with `satisfies ModelDefinition<typeof GlobalArgsSchema>` from
 `@swamp-club/swamp-testing`:
 
 ```typescript
 import type { ModelDefinition } from "jsr:@swamp-club/swamp-testing";
 
-export const model = {
-  type: "@myorg/my-model",
+export const behavior = {
+  type: "@myorg/my-behavior",
   version: "2026.04.21.1",
   globalArguments: GlobalArgsSchema,
   methods: {
     run: {
-      description: "Run the model",
+      description: "Run the behavior",
       arguments: RunArgsSchema,
       execute: async (args, context) => {
         // context.globalArgs narrows to { region: string }
@@ -135,24 +135,28 @@ gives full type safety on both `args` and `context` without additional imports.
 
 ### `defineModel` function form
 
-The testing package also exports `defineModel` — identical behaviour to
-`satisfies`, different call-site syntax:
+The testing package also exports `defineModel`, equivalent to `satisfies` with a
+different call-site syntax:
 
 ```typescript
 import { defineModel } from "jsr:@swamp-club/swamp-testing";
 
-export const model = defineModel({
-  type: "@myorg/my-model",
+export const behavior = defineModel({
+  type: "@myorg/my-behavior",
   // ...
 });
 ```
+
+Releases of `@swamp-club/swamp-testing` that ship with the behavior spelling
+also export `defineBehavior`, the same function under the new name. Use
+`defineModel` until the version you depend on has it.
 
 Same trade-off: `context.globalArgs` narrows, `args` remains `any`.
 
 ## When not to use any of this
 
-- **Your tests do not import the model source.** The unannotated form works fine
-  — don't add annotations you don't need.
+- **Your tests do not import the behavior source.** The unannotated form works
+  fine — don't add annotations you don't need.
 - **You are comfortable with `: any`.** The workaround
   `execute: async (args: any, context: any) =>` continues to work and push. It
   sacrifices type safety but is not a blocker.

@@ -26,6 +26,7 @@ import type {
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { FreshnessKind } from "./bundle_freshness.ts";
 import type { ExtensionContributor } from "./extension_precedence.ts";
+import { UserError } from "../errors.ts";
 
 export type LoaderKind =
   | "model"
@@ -71,6 +72,12 @@ export interface KindAdapter {
   readonly bundleSubdir: string;
   readonly catalogKinds: readonly FreshnessKind[];
   readonly primaryExportKey: string;
+  /**
+   * Other export names that declare the primary kind, e.g. `behavior` for
+   * the model kind (swamp-club#3338). A module exports the key or one
+   * alias, never two of them: read it through {@link primaryExport}.
+   */
+  readonly primaryExportAliases?: readonly string[];
   readonly secondaryExportKey?: string;
   readonly exportRegex: RegExp;
   readonly useResolver: boolean;
@@ -178,4 +185,59 @@ export interface KindAdapter {
     absolutePath: string,
     repoDir: string | null,
   ): string | undefined;
+}
+
+/**
+ * The names of every export that declares `adapter`'s primary kind: its
+ * key first, then its aliases.
+ */
+export function primaryExportNames(
+  adapter: Pick<KindAdapter, "primaryExportKey" | "primaryExportAliases">,
+): readonly string[] {
+  return [adapter.primaryExportKey, ...(adapter.primaryExportAliases ?? [])];
+}
+
+/**
+ * True when an alias export reads as a definition: an object with a
+ * `type`, and, beside the key's own export, `methods` too. A module that
+ * predates the alias may export an unrelated binding of the same name
+ * (`export const behavior = "strict"`, or a config object with a `type`);
+ * such a binding neither makes a helper module an entry point nor collides
+ * with the module's real export.
+ */
+function isDefinitionLike(value: unknown, besideKey: boolean): boolean {
+  return typeof value === "object" && value !== null && "type" in value &&
+    (!besideKey || "methods" in value);
+}
+
+/**
+ * The module's primary export, under the adapter's key or one of its
+ * aliases (`model` or `behavior` for models), or undefined when it has
+ * none. An alias counts only when it reads as a definition (see
+ * {@link isDefinitionLike}). Throws when the module exports the key and an
+ * alias, or two aliases, as definitions: which one it means cannot be
+ * told, so the module is refused rather than one of them winning silently.
+ */
+export function primaryExport(
+  module: Record<string, unknown>,
+  adapter: Pick<KindAdapter, "primaryExportKey" | "primaryExportAliases">,
+): unknown {
+  const key = adapter.primaryExportKey;
+  const hasKey = Boolean(module[key]);
+  const names = [
+    ...(hasKey ? [key] : []),
+    ...(adapter.primaryExportAliases ?? []).filter((alias) =>
+      isDefinitionLike(module[alias], hasKey)
+    ),
+  ];
+  if (names.length > 1) {
+    throw new UserError(
+      `Module exports both ${
+        names.map((n) => `'${n}'`).join(" and ")
+      }; export only one of them. '${names[1]}' is another spelling of '${
+        names[0]
+      }'.`,
+    );
+  }
+  return names.length === 1 ? module[names[0]] : undefined;
 }

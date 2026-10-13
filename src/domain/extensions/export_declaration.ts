@@ -28,7 +28,12 @@ export type DeclarationKind =
   | "report"
   | "webhook";
 
-const MODEL_EXPORT = /export\s+const\s+(model|extension)\s*[=:]/;
+/**
+ * A model entry point (`export const model`, or its behavior spelling
+ * `export const behavior`, swamp-club#3338) or a model add-on
+ * (`export const extension`).
+ */
+const MODEL_EXPORT = /export\s+const\s+(model|behavior|extension)\s*[=:]/;
 
 /**
  * The `export const` declaration each catalog kind is defined by. The kind

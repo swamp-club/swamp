@@ -139,6 +139,13 @@ export class DuplicateTypeUserError extends UserError {
     conflicting: DuplicateTypeOccupant;
     isGhostRow?: boolean;
     rollback?: InstallRollbackOutcome;
+    /**
+     * `local-directories` when the two claimants are local sources in
+     * `extensions/models/` and its behavior-spelled sibling
+     * `extensions/behaviors/` (swamp-club#3338): nothing was installed,
+     * so the message names the two files instead of an install.
+     */
+    origin?: "install" | "local-directories";
   }) {
     const ghostRow = args.isGhostRow ?? false;
     const rollback = args.rollback ?? { status: "rolled-back" };
@@ -157,7 +164,14 @@ export class DuplicateTypeUserError extends UserError {
     const conflicting = `${describeTypeClaimant(args.conflicting)} ` +
       `at ${args.conflicting.canonicalPath}`;
     super(
-      rollback.status === "kept"
+      args.origin === "local-directories"
+        ? `Type "${args.typeNormalized}" (kind=${args.kind}) is defined in ` +
+          `both ${args.existing.canonicalPath} and ` +
+          `${args.conflicting.canonicalPath}. extensions/behaviors/ is ` +
+          `another spelling of extensions/models/, so a type may be defined ` +
+          `in only one of them. Change or remove the type declaration in ` +
+          `one of the two sources.`
+        : rollback.status === "kept"
         ? `${claimed} ${conflicting} claims it too, and was installed ` +
           `anyway: the lockfile could not be restored, so the install was ` +
           `kept. ${

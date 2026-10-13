@@ -86,7 +86,7 @@ swamp run doctor --fix                         # auto-reap stale runs
 # Vaults, Reports, Extensions
 swamp vault create <type> <name>               # create a vault for secrets
 swamp report run <name>                        # run a report
-swamp extension init <name>                    # scaffold a new extension
+swamp extension push manifest.yaml             # publish an extension
 ```
 
 ## Workflow

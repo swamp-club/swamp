@@ -228,7 +228,7 @@ interface LockInfo {
 
 ## LockOptions
 
-Configuration for lock behavior.
+Options that configure a lock.
 
 ```typescript
 interface LockOptions {
@@ -347,8 +347,8 @@ supports:
 - `namespacedSync` — when `true`, the extension correctly handles the
   `namespace` field on `DatastoreSyncOptions`, scoping its index walk and upload
   to `{namespace}/` in the remote datastore. Extensions that don't advertise
-  this still receive the namespace field but are expected to ignore it
-  (solo-mode behavior).
+  this still receive the namespace field but are expected to ignore it (as in
+  solo mode).
 - `scopedSync` — supports domain-level sync context.
 - `lazyHydration` — supports metadata-only pulls with on-demand content fetch.
 

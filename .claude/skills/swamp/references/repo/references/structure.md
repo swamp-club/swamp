@@ -71,8 +71,8 @@ my-swamp-repo/
 │       └── {vault-id}.yaml
 │
 ├── extensions/                  # Custom user extensions
-│   ├── models/                  # TypeScript model definitions
-│   │   ├── my_model.ts
+│   ├── models/                  # TypeScript behavior types (behaviors/ also loads)
+│   │   ├── my_behavior.ts
 │   │   └── aws/
 │   │       └── s3_bucket.ts     # Nested organization supported
 │   ├── vaults/                  # TypeScript vault implementations
@@ -103,7 +103,7 @@ Repository marker and metadata:
 swampVersion: "0.1.0"
 initializedAt: "2025-01-15T10:30:00Z"
 upgradedAt: "2025-01-20T14:00:00Z"
-modelsDir: "extensions/models" # optional, default shown
+modelsDir: "extensions/models" # optional, default shown; extensions/behaviors also loads while this is the default
 workflowsDir: "extensions/workflows" # optional, default shown
 vaultsDir: "extensions/vaults" # optional, default shown
 datastoresDir: "extensions/datastores" # optional, default shown

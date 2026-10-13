@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { basename } from "@std/path";
+import { BEHAVIORS_DIR_NAME } from "../../domain/terminology/behavior_aliases.ts";
 
 /**
  * Logical identity of an extension as the catalog records it.
@@ -155,7 +156,11 @@ const PULLED_ROOTS = [
 function containsKnownExtensionsKindSegment(path: string): boolean {
   const parts = path.split("/");
   for (let i = 0; i < parts.length - 1; i++) {
-    if (parts[i] === "extensions" && KIND_SEGMENTS.has(parts[i + 1])) {
+    if (
+      parts[i] === "extensions" &&
+      (KIND_SEGMENTS.has(parts[i + 1]) ||
+        LOCAL_ONLY_KIND_SEGMENTS.has(parts[i + 1]))
+    ) {
       return true;
     }
   }
@@ -176,6 +181,16 @@ const KIND_SEGMENTS = new Set([
   "workflows",
   "skills",
 ]);
+
+/**
+ * Kind directory names that exist only in local and source-mounted trees:
+ * `extensions/behaviors/`, the behavior-spelled sibling of
+ * `extensions/models/` (swamp-club#3338). A pulled tree never has one —
+ * pushed archives carry those sources under `models/` — so these are kept
+ * out of {@link KIND_SEGMENTS}, which also splits pulled names: a pulled
+ * extension named `@org/behaviors/...` keeps its whole name.
+ */
+const LOCAL_ONLY_KIND_SEGMENTS = new Set([BEHAVIORS_DIR_NAME]);
 
 /**
  * Walks segment by segment through the trailing portion of a pulled

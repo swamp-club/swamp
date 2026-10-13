@@ -275,6 +275,20 @@ function extractBalancedBrackets(
 }
 
 /**
+ * The opening of a model entry point's plain object literal:
+ * `export const model = {`, or else its behavior spelling
+ * `export const behavior = {` (swamp-club#3338). Both read the same, so a
+ * behavior-spelled extension reaches the registry catalog exactly as its
+ * model-spelled twin does. The model spelling is looked for first, so a
+ * model file that also exports an unrelated `behavior` object reads as it
+ * always has.
+ */
+function matchModelExportObject(content: string): RegExpMatchArray | null {
+  return content.match(/export\s+const\s+model\s*=\s*\{/) ??
+    content.match(/export\s+const\s+behavior\s*=\s*\{/);
+}
+
+/**
  * Extracts the model type string.
  * Matches `ModelType.create("...")` or `type: "..."` patterns.
  *
@@ -307,7 +321,7 @@ export function extractModelType(content: string): string | null {
  * balance. Every field the catalog reads from a model comes from this body.
  */
 export function extractModelExportBody(content: string): string | null {
-  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  const modelExportMatch = matchModelExportObject(content);
   if (!modelExportMatch || modelExportMatch.index === undefined) return null;
 
   const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
@@ -332,7 +346,7 @@ export function extractModelVersion(content: string): string | null {
 export function extractLastUpgradeToVersion(
   content: string,
 ): string | null {
-  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  const modelExportMatch = matchModelExportObject(content);
   if (!modelExportMatch || modelExportMatch.index === undefined) return null;
 
   const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
@@ -533,6 +547,8 @@ function resolveMethodsReference(content: string): string | null {
   // as a shorthand property in the model object literal.
   const shorthandMatch = content.match(
     /(?:export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
+  ) ?? content.match(
+    /(?:export\s+const\s+behavior\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
   );
   if (shorthandMatch) {
     // Verify it's not `methods: {` (inline) or `methods: someRef` (reference)
