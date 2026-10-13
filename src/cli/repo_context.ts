@@ -210,7 +210,10 @@ export function createLockProgressWriter(
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
-import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
+import {
+  datastoreEngineOf,
+  ensureSupportedDatastoreFormat,
+} from "../infrastructure/persistence/datastore_format_guard.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import {
   holdV3Writer,
@@ -427,6 +430,13 @@ function escapesRoot(rel: string): boolean {
 export interface RequireRepoOptions {
   repoDir: string;
   outputMode: OutputMode;
+  /**
+   * On a v3 datastore, take the writer lease again once another writer has
+   * taken it over and finished, rather than refusing every later commit.
+   * Serve's lifetime hold sets it; a one-shot command fails as a whole
+   * instead (swamp-club#3359).
+   */
+  retakeLostV3Lease?: boolean;
   /**
    * Skip the coordinator's implicit pull-at-startup and push-at-flush.
    * The lock is still acquired (so concurrent writers are blocked), but
@@ -817,6 +827,27 @@ export async function resolveDatastoreForRepo(
   );
 
   return { repoDir: repoPath.value, datastoreConfig, marker, engine };
+}
+
+/**
+ * The engine of the repo's datastore, decided without checking its format
+ * and without reading anything remote: v3 only for a filesystem datastore
+ * whose marker on disk says so. For a command that must choose how to open
+ * the repo before it opens it (swamp-club#3359). Anything it cannot read
+ * answers v2, so the open that follows reports it as it always has.
+ */
+export async function peekRepoDatastoreEngine(
+  repoDir: string,
+): Promise<DatastoreEngine> {
+  try {
+    const repoPath = RepoPath.create(repoDir);
+    const marker = await new RepoMarkerRepository().read(repoPath);
+    return datastoreEngineOf(
+      await resolveDatastoreConfig(marker, undefined, repoPath.value),
+    );
+  } catch {
+    return "v2";
+  }
 }
 
 /**
@@ -1503,7 +1534,9 @@ export async function requireInitializedRepoUnlocked(
   // A v3 datastore takes one writing process at a time; join this process's
   // hold before any model lock (swamp-club#3279).
   if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
-    await holdV3Writer(datastoreConfig, repoDir);
+    await holdV3Writer(datastoreConfig, repoDir, {
+      ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
+    });
   }
 
   const repoPath = RepoPath.create(repoDir);

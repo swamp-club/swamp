@@ -126,7 +126,9 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
   "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
-  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer",
+  // swamp-club#3359: holdV3Writer also opens the handle, to record its
+  // writer lease's fence in commits.db.
+  "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x2)",
   // swamp-club#3299: interrupted-writer recovery opens the handle and
   // inspects the writer lock of the datastore v3RepositoryFactoryConfig or
   // holdV3Writer passes it, after the same check.

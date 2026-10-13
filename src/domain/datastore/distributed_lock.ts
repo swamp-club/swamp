@@ -58,6 +58,11 @@ export interface LockInfo {
    * another process; read it through {@link lockSkipping}.
    */
   skipping?: string[];
+  /**
+   * On a v3 datastore's writer lease (swamp-club#3359): the fence its holder
+   * took. Every commit the holder makes names it.
+   */
+  fence?: number;
 }
 
 /** The most nonces a lock's {@link LockInfo.skipping} lists. */

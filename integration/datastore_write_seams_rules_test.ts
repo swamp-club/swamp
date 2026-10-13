@@ -1568,6 +1568,10 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   // namespace manifests, so its commits.db names the namespaces
   // (swamp-club#3301).
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
+  // Commands v3 refuses choose a read-only open before they open, so the
+  // refusal takes no writer lease and changes nothing (swamp-club#3359):
+  // `datastore sync` and `datastore migrate-index`.
+  "src/cli/repo_context.ts: peekRepoDatastoreEngine",
   // Run-record artifacts resolve through resolveRunArtifact on v3.
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",

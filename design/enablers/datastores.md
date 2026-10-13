@@ -1949,8 +1949,9 @@ It is synchronous, and a refused commit leaves the partition unchanged:
   partition's highest is refused (`stale-fence`). Once a partition has seen a
   fence, a commit without one is refused too (`unfenced`), so a writer cannot
   slip past fencing by leaving it out. Every v3 writer holds a fence: the
-  solo writer lock at `_control/writer` carries it in solo mode, and the
-  leader lease in team mode (swamp-club#3234,
+  writer lease under `_control/writer/` carries it in solo mode
+  (swamp-club#3359, **v3 writer lease**), and the leader lease in team mode
+  (swamp-club#3234,
   `design/enablers/datastore-litestream.md`). Only a partition that has never
   seen a fence accepts an unfenced commit.
 - **`expect` must hold.**
@@ -2365,7 +2366,7 @@ inside one.
   example by re-restoring a partition from its newest snapshot.
 - **Head check.** A cached partition whose seq differs from the head row was
   overtaken by another connection. The store drops it, rebuilds and retries
-  once. A second writer is a bug the Phase 4 writer lock prevents, but the
+  once. A second writer is a bug the writer lease prevents, but the
   store stays correct. If the partition is stale again straight after the
   rebuild, the store compares the head row with the last stored commit while
   it holds the write lock. A mismatch means damage, and the store raises
@@ -2392,7 +2393,7 @@ that.
 `namespace` column, rather than one database each.
 
 - The Litestream record puts the replica beside `_control/` at
-  `_litestream/<fence>/`, and the solo writer lock at `_control/writer`
+  `_litestream/<fence>/`, and the writer lease under `_control/writer/`
   carries one fence per datastore. One database matches one fence and one
   sidecar.
 - Serve handles several namespaces with one connection and one sidecar, not
@@ -3765,30 +3766,27 @@ direct `createCatalogStore` caller reads it, the query service never backfills
 it from disk, and repositories still write through to it, so an operation
 reads what it saved before its root commits.
 
-**One writer per datastore.** `V3WriterLock` (`v3_writer_lock.ts`) is a
-`FileLock` at `<datastore>/_control/writer.lock`, taken once per process and
-reference-counted across that process's roots. A writing CLI command
-(`requireInitializedRepo`, `requireInitializedRepoUnlocked`) joins the hold
-before it takes any other lock and keeps it until teardown; serve holds it
-from start-up to shutdown. Another process that cannot take it within
+**One writer per datastore.** The writer lease (`v3_writer_lock.ts`, over
+`writer_lease.ts`; see **v3 writer lease**) is taken once per process and
+reference-counted across that process's roots. It replaced Phase 3's
+`FileLock` at `<datastore>/_control/writer.lock` (swamp-club#3359). A writing
+CLI command (`requireInitializedRepo`, `requireInitializedRepoUnlocked`) joins
+the hold before it takes any other lock and keeps it until teardown; serve
+holds it from start-up to shutdown. Another process that cannot take it within
 `SWAMP_LOCK_TIMEOUT_MS` is refused with `V3WriterBusyError`, which names the
 holder and, when that is serve, says to run the command through serve. So a
 CLI write against a repository whose serve is running is refused on v3, unlike
 v2. Read-only commands take it only to recover a checkout whose writer
 ended without tearing down, without waiting, and release it before they read
 (see **Interrupted runs**); a root that stages nothing (a dry-run `data gc`)
-commits nothing and needs no lock. The writer also records
+commits nothing and needs no lease. The writer also records
 which checkout it writes (`_control/writer.checkout.json`); a reader in that
 same checkout does not catch up while the writer runs, because the writer's
 files there are newer than its last commit and replaying older commits over
 them would undo its work; a recorded writer on this host whose pid is gone
 writes nothing, whatever its TTL says. `swamp datastore lock
-status|release --force` act on the writer lock on v3. A holder on another
-host is treated as alive until its TTL expires, never judged by its pid,
-which means nothing on this host (`FileLock`'s `sameHostPidCheck`). A holder
-paused past its TTL is not fenced: its later writes are not refused. The
-Phase 4 writer lease at `_control/writer`, which carries the fence every
-commit names, replaces it. A read-only context stages nothing: any change
+status|release --force` act on the writer lease on v3, and on Phase 3's lock
+while a swamp from before the lease still holds it. A read-only context stages nothing: any change
 staged through it is refused (`ReadOnlyV3WriteError`), so a read-only command
 that writes fails in tests rather than committing without the lock.
 
@@ -4030,6 +4028,132 @@ second writer, an older binary, every v2 sync path, failed runs and roots
 that throw, read-your-writes, dry-run GC and run-artifact digests. Every v2 suite passes
 unchanged, apart from tests that used format 3 to stand for "a newer format",
 which now use 4.
+
+### v3 writer lease (datastore rework Phase 4)
+
+swamp-club#3359 replaced Phase 3's writer lock with a fenced writer lease.
+One process writes a v3 datastore at a time, as before, and every commit it
+makes names the **fence** its lease holds. A writer that lost the lease (a
+**zombie**: paused past its expiry, then woken after another writer took
+over) lands nothing.
+
+**Records.** The lease lives in the datastore's control plane under
+`writer/`: on a filesystem datastore, files under `<datastore>/_control/writer/`,
+created exclusively through `FileSystemControlPlaneStore` (hard link, with a
+`createNew` fallback). Fences are zero-padded to 12 digits, so the keys sort
+by fence.
+
+| Key | Written | Means |
+|---|---|---|
+| `writer/fence-<n>` | `putIfAbsent`, once | Fence `n` was taken, by the holder it names (holder, host, pid, nonce, TTL, `acquiredAt`). |
+| `writer/heartbeat-<n>` | `put`, by fence `n`'s holder only | Its last renewal (`renewedAt`). |
+| `writer/released-<n>` | `putIfAbsent`, once | Fence `n` was given up, by its holder or by `lock release --force`. |
+
+**No compare-and-swap.** `ControlPlaneStore` offers no conditional update,
+and the lease needs none. Taking over is creating the *next* fence, never
+rewriting the current one: of any number of writers that see an expired
+holder and race for fence `n + 1`, exactly one `putIfAbsent` wins. After it
+wins, the writer lists `writer/` once more; a higher fence means a writer that
+read the lease earlier got there first, and it backs off. The highest fence
+key is never deleted, so a fence is never reused. A takeover prunes the
+records of fences below the previous one; the previous fence's stay, so a
+writer that read the lease before the takeover cannot create the fence it
+replaced. The next fence is also above the store-wide fence in `commits.db`,
+so a fence is not reused even if `_control/writer/` is lost.
+
+**Expiry.** The highest fence keeps other writers out until:
+
+- it is released; or
+- its holder is on this host and its process is gone (taken over at once,
+  as Phase 3 did); or
+- its last renewal (or its `acquiredAt`) is older than its TTL plus
+  `WRITER_LEASE_CLOCK_SKEW_MS` (10 s), judged on the taker's clock. With the
+  default 30 s TTL, a crashed holder on another host is taken over after
+  40 s.
+
+A fence record that cannot be read is held by an unknown holder only while a
+heartbeat for that fence was written within the taker's TTL plus the
+allowance. A live holder writes its first heartbeat as soon as it has taken
+the fence, so a record a crashed holder left half-written (possible only where
+the filesystem has no hard links) is taken over at once rather than keeping
+every writer out; taking over too early only fences the slow holder.
+
+**Clocks never decide safety.** Expiry only decides when another writer may
+take over. A holder whose clock or pause made it look expired too early is
+fenced, never corrupted, because:
+
+- **Renewal** (every third of the TTL, for every hold, a read-only
+  command's recovery hold included) lists `writer/` first and only then
+  writes its heartbeat. A higher fence, or a released marker for its own,
+  means it has lost the lease: it writes nothing, logs the loss once at error
+  level, and its process refuses its own later commits at once
+  (`assertV3WriterCurrent`, before each append).
+- **The store-wide writer fence.** `commits.db` (schema 4) keeps the highest
+  fence any writer of the datastore has taken. Taking the lease raises it
+  (`raiseWriterFence`), as one step with the acquisition: when the raise
+  fails, the lease is released and nothing in the process holds it. Inside
+  every append's own SQLite transaction, after the partition's rules, a
+  commit naming a lower fence, or none, is refused with `WriterFencedError`
+  (`datastore_v3_writer_fenced`), whatever partition it is for. The
+  per-partition fence rule alone would let a zombie land a commit on a
+  partition the new holder has not written yet. Compaction makes the same
+  check. Only a raise moves the store's fence; a commit never does.
+
+**Zombie behaviour.** A zombie's next commit is refused, on every partition,
+and the command fails with `datastore_v3_writer_fenced`; what it committed
+before the takeover stands. Chunks it stored before the refusal are swept by
+chunk GC like any unreferenced chunk.
+
+**Force release.** `swamp datastore lock release --force` writes the current
+fence's released marker, when its nonce still matches. Unlike Phase 3's lock,
+this is safe against a live holder: its next renewal finds the marker and
+stops committing, and the next writer's fence refuses anything it still
+tries. A long-lived holder takes the lease back once it is free, so
+a force release against a running serve frees the datastore only until
+serve's next renewal (within a third of the TTL); to hand a datastore to
+another writer for longer, stop serve.
+
+**Serve.** Serve holds the lease from start-up to shutdown and renews it.
+Once it loses the lease, the roots in flight on the old fence fail with
+`datastore_v3_writer_fenced`, and its reads keep working. Each renewal then
+tries once, without waiting, to take a fresh lease: when the other writer is
+done, serve takes the next fence and its later writes land under it. Serve's
+next `acquireV3WriterLock` does the same, waiting up to the lock timeout. Both
+run where no other lock is held, so taking the lease again never waits behind
+a model lock. Only serve's lifetime hold does this (`retakeLostV3Lease`): a
+one-shot CLI command that loses the lease keeps refusing its later commits, so
+it fails as a whole, as its error says, rather than landing part of itself.
+
+**Refusals change nothing.** A command v3 refuses must leave the datastore
+byte-identical. `datastore sync` and `datastore migrate-index` open a v3
+datastore read-only before libswamp refuses them, so they take no lease;
+`integration/datastore_v3_writer_lease_test.ts` checks every refusal.
+
+**Upgrading.** A Phase 3 `commits.db` migrates to schema 4 in place, the
+first time any swamp with the lease opens it. Its unfenced history stays; the
+first lease raises the store's fence, and from then on unfenced commits are
+refused. The schema bump is a downgrade barrier: a Phase 3 swamp refuses a
+schema 4 `commits.db` (swamps from this change on refuse a newer one with
+`datastore_v3_schema_newer`), which keeps an unfenced writer that still takes
+the old `writer.lock` out of a fenced datastore. While such a swamp holds a
+live `_control/writer.lock`, the lease is refused as busy; the check runs
+before `commits.db` is opened, so a refused write does not migrate it. One
+window stays open during the first upgrade: a Phase 3 swamp that takes
+`writer.lock` between that check and the migration keeps writing unfenced
+for as long as its connection stays open. It is milliseconds wide and exists
+only while both versions write one datastore.
+
+**Litestream (Phase 4 D).** `v3WriterFence` gives the hold's fence, which D
+replicates under (`_litestream/<fence>/`), and `checkV3WriterLease` is the
+check a writer runs before it acknowledges a replicated commit. A fence is one
+acquisition: every CLI write command takes a new one, and so would replicate
+to a new path with a full snapshot, while serve keeps one fence for its
+lifetime. D plans for that cost and garbage-collects old fence paths.
+
+**Buckets.** The lease runs over any `ControlPlaneStore` with `putIfAbsent`,
+and its tests run against the in-memory remote's control plane too. Binding
+it at the datastore root of an S3 or GCS bucket, outside every namespace, is
+swamp-club#3364.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 
@@ -5382,6 +5506,7 @@ exclude patterns.
 | `src/domain/datastore/datastore_types.ts` | Datastore type name parsing/validation |
 | `src/domain/datastore/datastore_format.ts` | Format marker parsing and the supported-format check |
 | `src/domain/datastore_v3/partition_key.ts` | v3 `PartitionKey` and `partitionOf()`, the only way to build a key |
+| `src/domain/datastore_v3/writer_lease.ts` | The fenced writer lease over create-only control-plane records (swamp-club#3359) |
 | `src/domain/datastore_v3/record_key.ts` | v3 `RecordKey`: the cache-layout path an op projects to |
 | `src/domain/datastore_v3/blob_ref.ts` | v3 `BlobRef`: content stored as a chunk |
 | `src/domain/datastore_v3/intent.ts` | v3 typed intents and `intentPartition()` |
@@ -5411,6 +5536,7 @@ exclude patterns.
 | `src/infrastructure/persistence/unit_of_work_binding.ts` | The unit-of-work binding registry `signalChange` routes by |
 | `src/infrastructure/datastore_v3/commit_log_unit_of_work.ts` | v3 commit-log unit of work and its `CommitSink` outbox seam (dormant) |
 | `src/infrastructure/datastore_v3/commit_log_root.ts` | `runInCommitLogRoot` and the run-outcome disposition (dormant) |
+| `src/infrastructure/datastore_v3/v3_writer_lock.ts` | The process's hold on a v3 datastore's fenced writer lease: refcount, renewal, busy and fenced errors (swamp-club#3359) |
 
 ### Application Layer (libswamp)
 

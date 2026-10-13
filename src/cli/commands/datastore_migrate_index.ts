@@ -30,7 +30,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  peekRepoDatastoreEngine,
+  requireInitializedRepo,
+  requireInitializedRepoReadOnly,
+} from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -59,11 +63,21 @@ export const datastoreMigrateIndexCommand = new Command()
     ]);
     cliCtx.logger.debug("Executing datastore migrate-index command");
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-      skipImplicitSync: true,
-    });
+    // A v3 datastore has no v2 index, and is refused below: open it
+    // read-only, so the refusal takes no writer lease and leaves the
+    // datastore as it was (swamp-club#3359).
+    const repoDirOption = resolveRepoDir(options.repoDir);
+    const engine = await peekRepoDatastoreEngine(repoDirOption);
+    const { repoDir, datastoreResolver } = engine === "v3"
+      ? await requireInitializedRepoReadOnly({
+        repoDir: repoDirOption,
+        outputMode: cliCtx.outputMode,
+      })
+      : await requireInitializedRepo({
+        repoDir: repoDirOption,
+        outputMode: cliCtx.outputMode,
+        skipImplicitSync: true,
+      });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createMigrateIndexDeps(repoDir, datastoreResolver);

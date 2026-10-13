@@ -2837,6 +2837,8 @@ export const serveCommand = new Command()
     } = await requireInitializedRepoUnlocked({
       repoDir,
       outputMode: ctx.outputMode,
+      // Serve outlives any other writer: once it is done, serve writes again.
+      retakeLostV3Lease: true,
     });
 
     // One gate per serve process, shared by the pollers, the WebSocket
