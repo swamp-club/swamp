@@ -22,11 +22,18 @@
  * v3 catalog and the live-record index up to date with the commit store.
  * Dormant: nothing in production opens it yet.
  *
- * - **Order of effects.** For each commit: files first (written durably),
- *   then the catalog, then one state transaction holding the index, the
- *   partition's applied seq and the cursor. Every effect is idempotent, so a
- *   crash anywhere is repaired by catching up again from the unchanged
+ * - **Order of effects.** For each commit: files first, then the catalog,
+ *   then one state transaction holding the index, the partition's applied
+ *   seq and the cursor. Commits are applied a page at a time
+ *   (swamp-club#3337), the page's state transactions held in one batch that
+ *   commits after the page's files are written. Every effect is idempotent,
+ *   so a crash anywhere is repaired by catching up again from the unchanged
  *   cursor, and the index and cursor are never ahead of the files.
+ * - **Files are not synced.** Only an OS crash or a power loss can lose a
+ *   written file, and either ends the boot. The state lists every file a
+ *   catch-up wrote or removed, with the boot; the first open in a later boot
+ *   checks each against the state, and a file that does not match resets
+ *   the state so every commit is applied again.
  * - **Repositories write the same files.** In Phase 3 repositories still
  *   write local files themselves; applying a commit this process just made
  *   rewrites the same bytes.
@@ -42,7 +49,7 @@
  */
 
 import { getLogger } from "@logtape/logtape";
-import { dirname, join } from "@std/path";
+import { basename, dirname, join, SEPARATOR } from "@std/path";
 import {
   type CatalogProjection,
   projectCatalog,
@@ -78,14 +85,18 @@ import {
 import { cleanupEmptyParentDirs } from "../persistence/directory_cleanup.ts";
 import {
   assertContainedPath,
-  assertSafePath,
   PathTraversalError,
+  resolveRealPath,
 } from "../persistence/safe_path.ts";
-import { syncDirectory, writeFileDurably } from "./atomic_stream_write.ts";
+import { DurableWriteBatch } from "./atomic_stream_write.ts";
+import { currentBootIdentity, sameBoot } from "./boot_identity.ts";
+import { createHash } from "node:crypto";
 import {
   type AppliedRecord,
   type FileOwnership,
+  type LoadKey,
   ReadModelState,
+  type UnsyncedFile,
 } from "./read_model_state.ts";
 import {
   CATALOG_V3_FILE,
@@ -125,6 +136,13 @@ export interface SqliteReadModelOptions {
   readonly pageSize?: number;
   /** The catalog to write; `_catalog_v3.db` in the state directory by default. */
   readonly catalog?: ReadModelCatalog;
+  /**
+   * Makes the batch each page writes through; by default one that does not
+   * sync, since the files are checked after a reboot instead.
+   */
+  readonly writeBatch?: () => DurableWriteBatch;
+  /** The current boot; {@link currentBootIdentity} by default. */
+  readonly bootIdentity?: () => string;
 }
 
 /** The {@link ReadModel} over SQLite state and the local filesystem. */
@@ -136,6 +154,11 @@ export class SqliteReadModel implements ReadModel {
   readonly #pageSize: number;
   readonly #catalog: ReadModelCatalog;
   readonly #state: ReadModelState;
+  readonly #writeBatch: () => DurableWriteBatch;
+  readonly #bootIdentity: () => string;
+  /** The boot of the current exclusive section. */
+  #boot = "";
+  readonly #paths = new PathCache();
   #queue: Promise<unknown> = Promise.resolve();
   #closed = false;
 
@@ -152,6 +175,9 @@ export class SqliteReadModel implements ReadModel {
     this.#pageSize = pageSize;
     this.#catalog = catalog;
     this.#state = state;
+    this.#writeBatch = options.writeBatch ??
+      (() => new DurableWriteBatch({ sync: false }));
+    this.#bootIdentity = options.bootIdentity ?? currentBootIdentity;
   }
 
   /** Opens the read model, creating its state directory and files when absent. */
@@ -227,10 +253,7 @@ export class SqliteReadModel implements ReadModel {
         await this.#loadBase(signal);
         continue;
       }
-      for (const change of page) {
-        signal.throwIfAborted();
-        if (await this.#apply(change, true, signal)) applied++;
-      }
+      applied += await this.#applyPage(page, true, signal);
       if (page.length < this.#pageSize) break;
     }
     // The whole feed is applied: the index holds every live record. This is
@@ -250,6 +273,7 @@ export class SqliteReadModel implements ReadModel {
   ): Promise<string[]> {
     const root = this.#cacheRoot(namespace);
     const removed: string[] = [];
+    const batch = new DurableWriteBatch();
     const visit = async (dir: string, segments: string[]): Promise<void> => {
       let entries: Deno.DirEntry[];
       try {
@@ -277,13 +301,19 @@ export class SqliteReadModel implements ReadModel {
         }
         const modified = (await Deno.lstat(path)).mtime?.getTime();
         if (modified === undefined || modified < options.since) continue;
-        await removeRecordFile(path);
+        await removeRecordFile(path, batch);
         await cleanupEmptyParentDirs(path, root);
+        this.#paths.clear();
         removed.push(key);
       }
     };
-    for (const subdir of MATERIALISED_SUBDIRS) {
-      await visit(join(root, subdir), [subdir]);
+    try {
+      for (const subdir of MATERIALISED_SUBDIRS) {
+        await visit(join(root, subdir), [subdir]);
+      }
+      await batch.barrier();
+    } finally {
+      batch.discard();
     }
     return removed;
   }
@@ -312,10 +342,7 @@ export class SqliteReadModel implements ReadModel {
           await this.#loadBase(signal);
           continue;
         }
-        for (const change of page) {
-          signal.throwIfAborted();
-          if (await this.#apply(change, false, signal)) applied++;
-        }
+        applied += await this.#applyPage(page, false, signal);
         if (page.length < this.#pageSize) break;
       }
       return { applied, cursor: this.#state.cursor() };
@@ -367,6 +394,8 @@ export class SqliteReadModel implements ReadModel {
       });
       try {
         await lock.lock(true);
+        // Another process may have changed the tree since the last section.
+        this.#paths.clear();
         // A catalog rebuilt, invalidated or created afresh holds none of the
         // commits the state says are applied: start over.
         const generation = this.#catalog.generation();
@@ -377,6 +406,8 @@ export class SqliteReadModel implements ReadModel {
           this.#state.reset(generation);
           this.#catalog.markPopulated(generation);
         }
+        this.#boot = this.#bootIdentity();
+        await this.#checkUnsyncedAfterReboot(generation);
         return await body();
       } finally {
         lock.close();
@@ -384,6 +415,73 @@ export class SqliteReadModel implements ReadModel {
     });
     this.#queue = run.catch(() => {});
     return run;
+  }
+
+  /**
+   * On the first open in a boot after the one that wrote unsynced files
+   * (swamp-club#3337), checks each of them against the state: present with
+   * its bytes, or absent. Files that survived a reboot are on disk, so the
+   * list is cleared. A file a crash lost or tore resets the state, and the
+   * catch-up that follows applies every commit again.
+   */
+  async #checkUnsyncedAfterReboot(generation: number): Promise<void> {
+    const written = this.#state.unsyncedBoot();
+    if (written === undefined || sameBoot(written, this.#boot)) return;
+    for (const file of this.#state.unsyncedFiles()) {
+      const path = join(
+        this.#cacheRoot(file.namespace),
+        ...file.record_key.split("/"),
+      );
+      if (!await holdsExpected(path, file)) {
+        logger
+          .warn`${file.record_key} does not hold what the read model applied, after a restart since it was written; applying every commit again`;
+        this.#state.reset(generation);
+        return;
+      }
+    }
+    this.#state.clearUnsynced();
+  }
+
+  /**
+   * Applies a page of commits; resolves with how many were applied. Their
+   * state transactions are held in one batch that commits after the page's
+   * barrier: a no-op for the default batch, whose files the reboot check
+   * covers, and the sync of every file and directory for a syncing one. On
+   * a failure the commits before it are kept: the barrier runs, the batch
+   * commits, and the failure is rethrown; if that barrier fails too, the
+   * whole page is rolled back and the apply failure is still the one thrown.
+   */
+  async #applyPage(
+    page: readonly CommitChange[],
+    advance: boolean,
+    signal: AbortSignal,
+  ): Promise<number> {
+    if (page.length === 0) return 0;
+    const batch = this.#writeBatch();
+    this.#state.beginBatch();
+    try {
+      let applied = 0;
+      try {
+        for (const change of page) {
+          signal.throwIfAborted();
+          if (await this.#apply(change, advance, signal, batch)) applied++;
+        }
+      } catch (error) {
+        try {
+          await batch.barrier();
+          this.#state.commitBatch();
+        } catch {
+          // The page rolls back below; the apply failure is the one to report.
+        }
+        throw error;
+      }
+      await batch.barrier();
+      this.#state.commitBatch();
+      return applied;
+    } finally {
+      batch.discard();
+      this.#state.rollbackBatch();
+    }
   }
 
   /**
@@ -395,6 +493,7 @@ export class SqliteReadModel implements ReadModel {
     change: CommitChange,
     advance: boolean,
     signal: AbortSignal,
+    batch: DurableWriteBatch,
   ): Promise<boolean> {
     const commit = change.commit;
     const cursor = advance ? change.cursor : undefined;
@@ -419,6 +518,7 @@ export class SqliteReadModel implements ReadModel {
     try {
       const records = new Map<string, AppliedRecord | null>();
       const files = new Map<string, FileOwnership>();
+      const touched = new Set<string>();
       for (const keyChange of finalKeyStates(commit)) {
         signal.throwIfAborted();
         const key = keyChange.key.toString();
@@ -428,6 +528,8 @@ export class SqliteReadModel implements ReadModel {
           change.cursor,
           keyChange,
           signal,
+          batch,
+          touched,
         );
         if (file !== undefined) files.set(key, file);
       }
@@ -445,6 +547,9 @@ export class SqliteReadModel implements ReadModel {
         live: projection.live,
         files,
       });
+      if (touched.size > 0) {
+        this.#state.markUnsynced(namespace, touched, this.#boot);
+      }
       return true;
     } catch (error) {
       if (signal.aborted) throw signal.reason;
@@ -477,6 +582,8 @@ export class SqliteReadModel implements ReadModel {
     position: number,
     change: KeyChange,
     signal: AbortSignal,
+    batch: DurableWriteBatch,
+    touched: Set<string>,
   ): Promise<FileOwnership | undefined> {
     const key = change.key.toString();
     const path = await this.#target(
@@ -495,9 +602,11 @@ export class SqliteReadModel implements ReadModel {
       change.put !== null,
     );
     if (decision.kind === "keep") return undefined;
+    touched.add(key);
     if (decision.kind === "remove" || change.put === null) {
-      await removeRecordFile(path);
+      await removeRecordFile(path, batch);
       await cleanupEmptyParentDirs(path, this.#cacheRoot(commit.namespace));
+      this.#paths.clear();
       return decision.kind === "remove" ? decision.next : undefined;
     }
     const blob = "blob" in change.put.content
@@ -516,6 +625,7 @@ export class SqliteReadModel implements ReadModel {
       path,
       change.put.content,
       signal,
+      batch,
     );
     return decision.next;
   }
@@ -546,17 +656,43 @@ export class SqliteReadModel implements ReadModel {
     // A file and a directory claiming one path is permanent: retrying would
     // block every later commit. A put is skipped like a refused key, and stays
     // indexed. Under a file, a tombstone has nothing to remove.
-    const conflict = await pathConflict(root, segments);
+    const { conflict, missingFrom } = await pathConflict(
+      root,
+      segments,
+      this.#paths,
+    );
     if (conflict?.kind === "under-file") {
       return isPut ? skip(conflict.reason) : undefined;
     }
     if (conflict?.kind === "directory" && isPut) {
       return skip(conflict.reason);
     }
-    await assertSafePath(path, root);
+    // A path whose prefix of `missingFrom` segments does not exist resolves,
+    // as `resolveRealPath` resolves it, under its longest existing prefix,
+    // and a write must create the directories from that prefix down.
+    let resolved: string;
+    if (missingFrom === undefined) {
+      resolved = await this.#paths.resolve(path);
+      this.#paths.noteAbsent(path, []);
+    } else {
+      resolved = join(
+        await this.#paths.resolveDirectory(
+          join(root, ...segments.slice(0, missingFrom - 1)),
+        ),
+        ...segments.slice(missingFrom - 1),
+      );
+      const absent: string[] = [];
+      for (let i = segments.length - 1; i >= missingFrom; i--) {
+        absent.push(join(root, ...segments.slice(0, i)));
+      }
+      this.#paths.noteAbsent(path, absent);
+    }
+    if (!within(resolved, await this.#paths.resolveDirectory(root))) {
+      throw new PathTraversalError(path, root, resolved);
+    }
     // The lexical guard cannot see a symlink already in the cache that leads
     // into the state directory; the resolved path can.
-    if (await resolvesInside(path, this.#stateDir)) {
+    if (within(resolved, await this.#paths.resolveDirectory(this.#stateDir))) {
       return skip("it resolves into the read model's state directory");
     }
     return path;
@@ -609,6 +745,43 @@ export class SqliteReadModel implements ReadModel {
     const removals = this.#state.loadRemovals();
     const writes = this.#state.loadWrites();
     this.#state.touchKeys([...removals, ...writes]);
+    const batch = new DurableWriteBatch();
+    try {
+      await this.#loadFiles(removals, writes, batch, signal);
+      await batch.barrier();
+    } finally {
+      batch.discard();
+    }
+
+    const names = this.#state.loadCatalogNames();
+    this.#state.touchNames(names);
+    for (const name of names) {
+      signal.throwIfAborted();
+      const partition = PartitionKey.parse(name.partition);
+      if (partition.identity.kind !== "model") continue;
+      const state = this.#state.loadCatalogName(name);
+      this.#catalog.apply(name.namespace, partition, [
+        { kind: "remove-name", name: name.name },
+        { kind: "end-forward", name: name.name },
+        ...state.rows.map((metadata) => ({
+          kind: "upsert-version" as const,
+          metadata,
+        })),
+        ...(state.forward === undefined
+          ? []
+          : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
+      ]);
+    }
+    this.#state.finishLoad(point);
+  }
+
+  /** The compacted base's file removals and writes, through `batch`. */
+  async #loadFiles(
+    removals: readonly LoadKey[],
+    writes: readonly LoadKey[],
+    batch: DurableWriteBatch,
+    signal: AbortSignal,
+  ): Promise<void> {
     for (const { namespace, record_key } of removals) {
       signal.throwIfAborted();
       const path = await this.#target(
@@ -618,8 +791,9 @@ export class SqliteReadModel implements ReadModel {
         "the compacted base",
       );
       if (path === undefined) continue;
-      await removeRecordFile(path);
+      await removeRecordFile(path, batch);
       await cleanupEmptyParentDirs(path, this.#cacheRoot(namespace));
+      this.#paths.clear();
     }
     for (const { namespace, record_key } of writes) {
       signal.throwIfAborted();
@@ -646,47 +820,40 @@ export class SqliteReadModel implements ReadModel {
         this.#state.dropLoadFile(namespace, record_key);
         continue;
       }
-      await this.#writeContent(namespace, path, content, signal);
+      await this.#writeContent(namespace, path, content, signal, batch);
     }
-
-    const names = this.#state.loadCatalogNames();
-    this.#state.touchNames(names);
-    for (const name of names) {
-      signal.throwIfAborted();
-      const partition = PartitionKey.parse(name.partition);
-      if (partition.identity.kind !== "model") continue;
-      const state = this.#state.loadCatalogName(name);
-      this.#catalog.apply(name.namespace, partition, [
-        { kind: "remove-name", name: name.name },
-        { kind: "end-forward", name: name.name },
-        ...state.rows.map((metadata) => ({
-          kind: "upsert-version" as const,
-          metadata,
-        })),
-        ...(state.forward === undefined
-          ? []
-          : [{ kind: "forward" as const, name: name.name, to: state.forward }]),
-      ]);
-    }
-    this.#state.finishLoad(point);
   }
 
-  /** Writes a record's content durably at `path`: inline bytes, or its chunks. */
+  /** Writes a record's content at `path` through `batch`: inline bytes, or its chunks. */
   async #writeContent(
     namespace: string,
     path: string,
     content: { readonly blob: BlobRef } | { readonly inline: string },
     signal: AbortSignal,
+    batch: DurableWriteBatch,
   ): Promise<void> {
-    if ("inline" in content) {
-      await writeFileDurably(path, decodeBase64(content.inline), signal);
-      return;
-    }
-    await writeFileDurably(
+    const root = this.#cacheRoot(namespace);
+    const absentDirectories = this.#paths.takeAbsent(path);
+    await batch.write(
       path,
-      this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
+      "inline" in content
+        ? decodeBase64(content.inline)
+        : this.#chunkStore.read(namespaceOf(namespace), content.blob, signal),
       signal,
+      { absentDirectories },
     );
+    // The write made every directory above the file, up to the root, and
+    // the ones it created are real directories under their parents.
+    for (const dir of [...absentDirectories ?? []].reverse()) {
+      this.#paths.markCreated(dir);
+    }
+    for (
+      let dir = dirname(path);
+      dir !== root && dir.startsWith(root + SEPARATOR);
+      dir = dirname(dir)
+    ) {
+      this.#paths.markDirectory(dir);
+    }
   }
 }
 
@@ -698,11 +865,15 @@ function appliedRecord(put: PutOp | null): AppliedRecord | null {
 }
 
 /**
- * Removes a record's file. A missing file is fine. A directory at the key (a
- * tombstone of a name directory) is removed only when empty: its files are
- * other records.
+ * Removes a record's file, its directory synced at `batch`'s barrier. A
+ * missing file is fine. A directory at the key (a tombstone of a name
+ * directory) is removed only when empty: its files are other records.
  */
-async function removeRecordFile(path: string): Promise<void> {
+async function removeRecordFile(
+  path: string,
+  batch: DurableWriteBatch,
+): Promise<void> {
+  await batch.release(path);
   let info: Deno.FileInfo;
   try {
     info = await Deno.lstat(path);
@@ -714,7 +885,7 @@ async function removeRecordFile(path: string): Promise<void> {
     for await (const _ of Deno.readDir(path)) return;
   }
   await Deno.remove(path);
-  await syncDirectory(dirname(path));
+  batch.touch(dirname(path));
 }
 
 /** A file and a directory claiming one path: which one, and why. */
@@ -724,41 +895,160 @@ interface PathConflict {
   readonly reason: string;
 }
 
-/** The conflict at `segments` under `root`, or undefined when there is none. */
+/**
+ * The conflict at `segments` under `root`, if any, and the length of the
+ * shortest prefix that does not exist, if any: the path itself is absent, and
+ * so is everything under that prefix.
+ */
 async function pathConflict(
   root: string,
   segments: readonly string[],
-): Promise<PathConflict | undefined> {
+  paths: PathCache,
+): Promise<{ conflict?: PathConflict; missingFrom?: number }> {
   for (let i = 1; i <= segments.length; i++) {
+    const prefix = join(root, ...segments.slice(0, i));
+    if (i < segments.length && paths.isDirectory(prefix)) continue;
     let info: Deno.FileInfo;
     try {
-      info = await Deno.stat(join(root, ...segments.slice(0, i)));
+      info = await Deno.stat(prefix);
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return undefined;
+      if (error instanceof Deno.errors.NotFound) return { missingFrom: i };
       throw error;
     }
+    if (info.isDirectory) paths.markDirectory(prefix);
     const at = segments.slice(0, i).join("/");
     if (i < segments.length && !info.isDirectory) {
       return {
-        kind: "under-file",
-        reason: `${at} is a file, so it cannot hold a record`,
+        conflict: {
+          kind: "under-file",
+          reason: `${at} is a file, so it cannot hold a record`,
+        },
       };
     }
     if (i === segments.length && info.isDirectory) {
-      return { kind: "directory", reason: `${at} is a directory` };
+      return {
+        conflict: { kind: "directory", reason: `${at} is a directory` },
+      };
     }
   }
-  return undefined;
+  return {};
 }
 
-/** True when `path`, symlinks followed, lies in or at `dir`. */
-async function resolvesInside(path: string, dir: string): Promise<boolean> {
+/**
+ * True when the file at `path` is what the state says: a regular file with
+ * the expected SHA-256, or absent (a directory left at a removed key holds
+ * other records). A file the state cannot describe never matches.
+ */
+async function holdsExpected(
+  path: string,
+  file: UnsyncedFile,
+): Promise<boolean> {
+  if (file.expect === "unknown") return false;
+  let info: Deno.FileInfo;
   try {
-    await assertSafePath(path, dir);
-    return true;
+    info = await Deno.lstat(path);
   } catch (error) {
-    if (error instanceof PathTraversalError) return false;
+    if (error instanceof Deno.errors.NotFound) return file.expect === "absent";
     throw error;
+  }
+  if (file.expect !== "present") return info.isDirectory;
+  if (!info.isFile) return false;
+  const hash = createHash("sha256");
+  // The readable closes the file when it ends or fails.
+  const handle = await Deno.open(path, { read: true });
+  for await (const piece of handle.readable) hash.update(piece);
+  return hash.digest("hex") === file.sha256;
+}
+
+/** True when the resolved `path` lies in or at the resolved `dir`. */
+function within(path: string, dir: string): boolean {
+  return path === dir || path.startsWith(dir + SEPARATOR);
+}
+
+/**
+ * What the key guards learned about directories in one exclusive section,
+ * so a page of a thousand files under one directory resolves and stats it
+ * once (swamp-club#3337) instead of once per file. Only directories are
+ * remembered: a file's own path is always looked at. The read model clears
+ * it whenever it removes anything, and at the start of every section, since
+ * another process may have changed the tree in between.
+ */
+class PathCache {
+  /** Paths `stat` found to be directories. */
+  readonly #directories = new Set<string>();
+  /** Directories' real paths, as `resolveRealPath` gives them. */
+  readonly #resolved = new Map<string, string>();
+  /** Absent directories above a path just checked, for its write. */
+  readonly #absent = new Map<string, readonly string[]>();
+
+  isDirectory(path: string): boolean {
+    return this.#directories.has(path);
+  }
+
+  markDirectory(path: string): void {
+    this.#directories.add(path);
+  }
+
+  /**
+   * Records `dir`, just created by `mkdir`, as a directory whose real path
+   * is its parent's and its own name, when its parent's is known.
+   */
+  markCreated(dir: string): void {
+    this.#directories.add(dir);
+    const parent = this.#resolved.get(dirname(dir));
+    if (parent !== undefined) {
+      this.#resolved.set(dir, join(parent, basename(dir)));
+    }
+  }
+
+  /**
+   * Records which directories above `path` the guard found absent, deepest
+   * first, for the write that follows; an empty list says they all exist.
+   */
+  noteAbsent(path: string, dirs: readonly string[]): void {
+    this.#absent.set(path, dirs);
+  }
+
+  /** What {@link noteAbsent} recorded for `path`, once. */
+  takeAbsent(path: string): readonly string[] | undefined {
+    const dirs = this.#absent.get(path);
+    this.#absent.delete(path);
+    return dirs;
+  }
+
+  /**
+   * `resolveRealPath(path)`. A path that does not exist resolves to its
+   * directory's real path and its own name, which is what
+   * `resolveRealPath` gives too, so only its directory is remembered. A path
+   * that exists is resolved in full: it may be a symlink, and on a
+   * case-insensitive filesystem its real name may differ from the key's.
+   */
+  async resolve(path: string): Promise<string> {
+    try {
+      await Deno.lstat(path);
+      return await resolveRealPath(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    const dir = dirname(path);
+    if (dir === path) return await resolveRealPath(path);
+    return join(await this.resolveDirectory(dir), basename(path));
+  }
+
+  /** `resolveRealPath(dir)` for a directory, such as a boundary. */
+  async resolveDirectory(dir: string): Promise<string> {
+    let real = this.#resolved.get(dir);
+    if (real === undefined) {
+      real = await resolveRealPath(dir);
+      this.#resolved.set(dir, real);
+    }
+    return real;
+  }
+
+  clear(): void {
+    this.#directories.clear();
+    this.#resolved.clear();
+    this.#absent.clear();
   }
 }
 

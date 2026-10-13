@@ -108,8 +108,11 @@ export class ReadModelIncompleteError extends Error {
 export interface ReadModel {
   /**
    * Applies every commit that landed after the stored cursor, in landing
-   * order, advancing the cursor after each one's effects are durable. When
-   * it reaches the end of the change feed, the index is complete.
+   * order, a page of commits at a time, advancing the cursor after each
+   * page's effects. A file a crash or power loss could still lose is
+   * repaired, never trusted: the first open after a reboot checks the files
+   * written since, and applies every commit again if one was lost. When it
+   * reaches the end of the change feed, the index is complete.
    */
   catchUp(signal: AbortSignal): Promise<CatchUpResult>;
 

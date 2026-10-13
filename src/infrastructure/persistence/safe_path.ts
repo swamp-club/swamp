@@ -49,7 +49,7 @@ export class PathTraversalError extends Error {
  * to the nearest existing ancestor, resolves that, and appends the remaining
  * non-existent segments.
  */
-async function resolveRealPath(path: string): Promise<string> {
+export async function resolveRealPath(path: string): Promise<string> {
   const normalized = resolve(path);
 
   try {
