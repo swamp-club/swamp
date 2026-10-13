@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -47,65 +48,80 @@ export {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const typeDescribeCommand = withRemoteOptions(
-  new Command()
-    .description("Describe a model type with schema details")
-    .example("Describe a model type", "swamp type describe aws-ec2")
-    .example(
-      "Compact digest for agents",
-      "swamp type describe aws-ec2 --compact --json",
-    )
-    .alias("get")
-    .option(
-      "--compact",
-      "Output a compact digest (method names, descriptions, argument types, output spec names)",
-    )
-    .arguments("<type:model_type>"),
-).action(
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  async function (options: AnyOptions, typeArg: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "type",
-      "describe",
-    ]);
-    cliCtx.logger.debug`Describing type: ${typeArg}`;
+/**
+ * The legacy text of the `swamp model type describe` help examples, which have
+ * always read `swamp type describe`. Kept verbatim so the legacy surface does not
+ * change; a factory built from another syntax renders that syntax instead.
+ */
+export const MODEL_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
+  invocation: "swamp type describe",
+};
 
-    const server = resolveServeUrl(options.server as string | undefined);
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
+export function createTypeDescribeCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .description("Describe a model type with schema details")
+      .example("Describe a model type", `${syntax.invocation} aws-ec2`)
+      .example(
+        "Compact digest for agents",
+        `${syntax.invocation} aws-ec2 --compact --json`,
+      )
+      .alias("get")
+      .option(
+        "--compact",
+        "Output a compact digest (method names, descriptions, argument types, output spec names)",
+      )
+      .arguments("<type:model_type>"),
+  ).action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
+    async function (options: AnyOptions, typeArg: string) {
+      const cliCtx = createContext(options as GlobalOptions, [
+        "type",
+        "describe",
+      ]);
+      cliCtx.logger.debug`Describing type: ${typeArg}`;
+
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        const token = await resolveServerTokenFromOptions(
+          server,
+          options,
+        );
+        const response = await requestServerResponse<ModelTypeDescribeResponse>(
+          { server, token },
+          { type: "model.type.describe", payload: { typeArg } },
+        );
+        const compact = options.compact as boolean | undefined;
+        const renderer = createTypeDescribeRenderer(
+          cliCtx.outputMode,
+          compact ?? false,
+        );
+        renderer.handlers().completed({
+          kind: "completed",
+          data: response.data as unknown as TypeDescribeData,
+        });
+        return;
+      }
+
+      const modelType = ModelType.create(typeArg);
+
+      await modelRegistry.ensureLoaded();
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createTypeDescribeDeps();
+
+      const compact = !!(options as Record<string, unknown>).compact;
+      const renderer = createTypeDescribeRenderer(cliCtx.outputMode, compact);
+      await consumeStream(
+        typeDescribe(ctx, deps, modelType),
+        renderer.handlers(),
       );
-      const response = await requestServerResponse<ModelTypeDescribeResponse>(
-        { server, token },
-        { type: "model.type.describe", payload: { typeArg } },
-      );
-      const compact = options.compact as boolean | undefined;
-      const renderer = createTypeDescribeRenderer(
-        cliCtx.outputMode,
-        compact ?? false,
-      );
-      renderer.handlers().completed({
-        kind: "completed",
-        data: response.data as unknown as TypeDescribeData,
-      });
-      return;
-    }
 
-    const modelType = ModelType.create(typeArg);
+      cliCtx.logger.debug("Type describe command completed");
+    },
+  );
+}
 
-    await modelRegistry.ensureLoaded();
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createTypeDescribeDeps();
-
-    const compact = !!(options as Record<string, unknown>).compact;
-    const renderer = createTypeDescribeRenderer(cliCtx.outputMode, compact);
-    await consumeStream(
-      typeDescribe(ctx, deps, modelType),
-      renderer.handlers(),
-    );
-
-    cliCtx.logger.debug("Type describe command completed");
-  },
+export const typeDescribeCommand = createTypeDescribeCommand(
+  MODEL_TYPE_DESCRIBE_SYNTAX,
 );

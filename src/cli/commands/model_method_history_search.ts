@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -134,16 +135,26 @@ export async function modelMethodHistorySearchAction(
   ctx.logger.debug("Model method history search command completed");
 }
 
-export const modelMethodHistorySearchCommand = withRemoteOptions(
-  new Command()
-    .name("search")
-    .alias("list")
-    .description("Search model method run history")
-    .example("Browse all history", "swamp model method history search")
-    .example("Search by keyword", "swamp model method history search deploy")
-    .arguments("[query:string]")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
-).action(modelMethodHistorySearchAction);
+/** The legacy spelling: `swamp model method history search`. */
+export const MODEL_METHOD_HISTORY_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp model method history search",
+};
+
+export function createModelMethodHistorySearchCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("search")
+      .alias("list")
+      .description("Search model method run history")
+      .example("Browse all history", syntax.invocation)
+      .example("Search by keyword", `${syntax.invocation} deploy`)
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      ),
+  ).action(modelMethodHistorySearchAction);
+}
+
+export const modelMethodHistorySearchCommand =
+  createModelMethodHistorySearchCommand(MODEL_METHOD_HISTORY_SEARCH_SYNTAX);

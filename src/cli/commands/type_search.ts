@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -145,16 +146,31 @@ export async function typeSearchAction(
   ctx.logger.debug("Type search command completed");
 }
 
-export const typeSearchCommand = withRemoteOptions(
-  new Command()
-    .name("search")
-    .alias("list")
-    .description("Search for model types")
-    .example("Browse all types", "swamp type search")
-    .example("Search by keyword", "swamp type search aws")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
-    )
-    .arguments("[query:string]"),
-).action(typeSearchAction);
+/**
+ * The legacy text of the `swamp model type search` help examples, which have
+ * always read `swamp type search`. Kept verbatim so the legacy surface does not
+ * change; a factory built from another syntax renders that syntax instead.
+ */
+export const MODEL_TYPE_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp type search",
+};
+
+export function createTypeSearchCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("search")
+      .alias("list")
+      .description("Search for model types")
+      .example("Browse all types", syntax.invocation)
+      .example("Search by keyword", `${syntax.invocation} aws`)
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
+      )
+      .arguments("[query:string]"),
+  ).action(typeSearchAction);
+}
+
+export const typeSearchCommand = createTypeSearchCommand(
+  MODEL_TYPE_SEARCH_SYNTAX,
+);

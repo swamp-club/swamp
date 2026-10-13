@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -43,93 +44,107 @@ import type { ModelOutputDataResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelOutputDataCommand = withRemoteOptions(
-  new Command()
-    .name("data")
-    .description("Show data artifact content for a model output")
-    .example("Show output data", "swamp model output data abc123")
-    .example(
-      "Show specific field",
-      "swamp model output data abc123 --field status",
-    )
-    .example(
-      "Show specific version",
-      "swamp model output data abc123 --version 2",
-    )
-    .arguments("<output_id:string>")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option("--field <name:string>", "Show only a specific field from the data")
-    .option(
-      "--version <version:number>",
-      "Specific data version (defaults to artifact version)",
-    )
-    .option(
-      "--name <name:string>",
-      "Data name to retrieve (if output has multiple artifacts)",
-    ),
-).action(async function (options: AnyOptions, outputIdArg: string) {
-  const cliCtx = createContext(options as GlobalOptions, [
-    "model",
-    "output",
-    "data",
-  ]);
+/** The legacy spelling: `swamp model output data`. */
+export const MODEL_OUTPUT_DATA_SYNTAX: CommandSyntax = {
+  invocation: "swamp model output data",
+};
 
-  const server = resolveServeUrl(options.server as string | undefined);
-  if (server) {
-    const token = await resolveServerTokenFromOptions(
-      server,
-      options,
-    );
-    const response = await requestServerResponse<ModelOutputDataResponse>(
-      { server, token },
-      {
-        type: "model.output.data",
-        payload: {
-          outputIdArg,
-          name: options.name as string | undefined,
-          field: options.field as string | undefined,
-          version: options.version as number | undefined,
+export function createModelOutputDataCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("data")
+      .description("Show data artifact content for a model output")
+      .example("Show output data", `${syntax.invocation} abc123`)
+      .example(
+        "Show specific field",
+        `${syntax.invocation} abc123 --field status`,
+      )
+      .example(
+        "Show specific version",
+        `${syntax.invocation} abc123 --version 2`,
+      )
+      .arguments("<output_id:string>")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option(
+        "--field <name:string>",
+        "Show only a specific field from the data",
+      )
+      .option(
+        "--version <version:number>",
+        "Specific data version (defaults to artifact version)",
+      )
+      .option(
+        "--name <name:string>",
+        "Data name to retrieve (if output has multiple artifacts)",
+      ),
+  ).action(async function (options: AnyOptions, outputIdArg: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "model",
+      "output",
+      "data",
+    ]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerTokenFromOptions(
+        server,
+        options,
+      );
+      const response = await requestServerResponse<ModelOutputDataResponse>(
+        { server, token },
+        {
+          type: "model.output.data",
+          payload: {
+            outputIdArg,
+            name: options.name as string | undefined,
+            field: options.field as string | undefined,
+            version: options.version as number | undefined,
+          },
         },
+      );
+      const renderer = createModelOutputDataRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as ModelOutputDataData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
+
+    cliCtx.logger.debug`Getting data for output: ${outputIdArg}`;
+
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
       },
     );
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createModelOutputDataDeps(repoDir, datastoreResolver);
+
     const renderer = createModelOutputDataRenderer(cliCtx.outputMode);
     await consumeStream(
-      (async function* () {
-        yield {
-          kind: "completed" as const,
-          data: response.data as unknown as ModelOutputDataData,
-        };
-      })(),
+      modelOutputData(ctx, deps, {
+        outputIdArg,
+        name: options.name as string | undefined,
+        field: options.field as string | undefined,
+        version: options.version as number | undefined,
+      }),
       renderer.handlers(),
     );
-    return;
-  }
 
-  cliCtx.logger.debug`Getting data for output: ${outputIdArg}`;
+    cliCtx.logger.debug("Model output data command completed");
+  });
+}
 
-  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-    {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    },
-  );
-
-  const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = createModelOutputDataDeps(repoDir, datastoreResolver);
-
-  const renderer = createModelOutputDataRenderer(cliCtx.outputMode);
-  await consumeStream(
-    modelOutputData(ctx, deps, {
-      outputIdArg,
-      name: options.name as string | undefined,
-      field: options.field as string | undefined,
-      version: options.version as number | undefined,
-    }),
-    renderer.handlers(),
-  );
-
-  cliCtx.logger.debug("Model output data command completed");
-});
+export const modelOutputDataCommand = createModelOutputDataCommand(
+  MODEL_OUTPUT_DATA_SYNTAX,
+);

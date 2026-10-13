@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -44,71 +45,82 @@ import type { ModelMethodDescribeResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelMethodDescribeCommand = withRemoteOptions(
-  new Command()
-    .name("describe")
-    .description("Describe a method on a model with argument details")
-    .example(
-      "Describe a method",
-      "swamp model method describe my-server getSystemInfo",
-    )
-    .arguments("<model_id_or_name:model_name> <method_name:string>")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
-).action(
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  async function (
-    options: AnyOptions,
-    modelIdOrName: string,
-    methodName: string,
-  ) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "model",
-      "method",
-      "describe",
-    ]);
+/** The legacy spelling: `swamp model method describe`. */
+export const MODEL_METHOD_DESCRIBE_SYNTAX: CommandSyntax = {
+  invocation: "swamp model method describe",
+};
 
-    const server = resolveServeUrl(options.server as string | undefined);
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-      const response = await requestServerResponse<
-        ModelMethodDescribeResponse
-      >(
-        { server, token },
-        {
-          type: "model.method.describe",
-          payload: { modelIdOrName, methodName },
-        },
-      );
-      const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
-      renderer.handlers().completed({
-        kind: "completed",
-        data: response.data as unknown as ModelMethodDescribeData,
+export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("describe")
+      .description("Describe a method on a model with argument details")
+      .example(
+        "Describe a method",
+        `${syntax.invocation} my-server getSystemInfo`,
+      )
+      .arguments("<model_id_or_name:model_name> <method_name:string>")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      ),
+  ).action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
+    async function (
+      options: AnyOptions,
+      modelIdOrName: string,
+      methodName: string,
+    ) {
+      const cliCtx = createContext(options as GlobalOptions, [
+        "model",
+        "method",
+        "describe",
+      ]);
+
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        const token = await resolveServerTokenFromOptions(
+          server,
+          options,
+        );
+        const response = await requestServerResponse<
+          ModelMethodDescribeResponse
+        >(
+          { server, token },
+          {
+            type: "model.method.describe",
+            payload: { modelIdOrName, methodName },
+          },
+        );
+        const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+        renderer.handlers().completed({
+          kind: "completed",
+          data: response.data as unknown as ModelMethodDescribeData,
+        });
+        return;
+      }
+
+      const { repoDir } = await requireInitializedRepoReadOnly({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
       });
-      return;
-    }
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+      await modelRegistry.ensureLoaded();
 
-    await modelRegistry.ensureLoaded();
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createModelMethodDescribeDeps(repoDir);
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelMethodDescribeDeps(repoDir);
+      const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+      await consumeStream(
+        modelMethodDescribe(ctx, deps, modelIdOrName, methodName),
+        renderer.handlers(),
+      );
 
-    const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelMethodDescribe(ctx, deps, modelIdOrName, methodName),
-      renderer.handlers(),
-    );
+      cliCtx.logger.debug("Method describe command completed");
+    },
+  );
+}
 
-    cliCtx.logger.debug("Method describe command completed");
-  },
+export const modelMethodDescribeCommand = createModelMethodDescribeCommand(
+  MODEL_METHOD_DESCRIBE_SYNTAX,
 );

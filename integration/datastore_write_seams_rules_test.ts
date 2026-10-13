@@ -870,12 +870,12 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/data_rename.ts: dataRenameCommand",
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
-  "src/cli/commands/model_create.ts: modelCreateCommand",
-  "src/cli/commands/model_delete.ts: modelDeleteCommand",
-  "src/cli/commands/model_edit.ts: modelEditCommand",
-  "src/cli/commands/model_evaluate.ts: modelEvaluateCommand (x2)",
+  "src/cli/commands/model_create.ts: createModelCreateCommand",
+  "src/cli/commands/model_delete.ts: createModelDeleteCommand",
+  "src/cli/commands/model_edit.ts: createModelEditCommand",
+  "src/cli/commands/model_evaluate.ts: createModelEvaluateCommand (x2)",
   "src/cli/commands/model_method_run.ts: createModelMethodRunCommand",
-  "src/cli/commands/model_validate.ts: modelValidateCommand",
+  "src/cli/commands/model_validate.ts: createModelValidateCommand",
   "src/cli/commands/run_gc.ts: runGcCommand",
   "src/cli/commands/vault_create.ts: vaultCreateCommand",
   "src/cli/commands/vault_edit.ts: vaultEditCommand",
@@ -892,7 +892,7 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   // Commands that push nothing, in a root with no push, so their saves
   // stage into it rather than through signalChange's hook fallback
   // (swamp-club#3056).
-  "src/cli/commands/model_cancel.ts: modelCancelCommand (x2)",
+  "src/cli/commands/model_cancel.ts: createModelCancelCommand (x2)",
   "src/cli/commands/run.ts: runDoctorCommand",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
   "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",

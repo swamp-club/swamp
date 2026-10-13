@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelEditDeps,
@@ -56,126 +57,143 @@ import type { ModelEditResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelEditCommand = withRemoteOptions(
-  new Command()
-    .name("edit")
-    .description("Edit a model definition file")
-    .example("Edit a model", "swamp model edit my-server")
-    .example("Interactive search", "swamp model edit")
-    .example(
-      "Update from stdin (required with --server)",
-      "cat my-server.yaml | swamp model edit my-server",
-    )
-    .arguments("[model_id_or_name:model_name]")
-    .example(
-      "Rename from stdin",
-      "cat renamed.yaml | swamp model edit my-server --allow-rename",
-    )
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option(
-      "--allow-rename",
-      "Allow a stdin update to change the model's name; refused otherwise",
-    ),
-).action(
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  async function (options: AnyOptions, modelIdOrName?: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
-    cliCtx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
+/**
+ * Returns the YAML piped to `model edit --server`, or refuses naming the
+ * command as the user typed it on this surface.
+ */
+export function requireModelEditContent(
+  content: string | null,
+  syntax: CommandSyntax,
+): string {
+  return requireRemoteEditContent(content, syntax.invocation);
+}
 
-    const server = resolveServeUrl(options.server as string | undefined);
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-      const content = requireRemoteEditContent(
-        await readStdin(),
-        "swamp model edit",
-      );
-      const response = await requestServerResponse<ModelEditResponse>(
-        { server, token },
-        {
-          type: "model.edit",
-          payload: {
-            modelIdOrName,
-            content,
-            allowRename: options.allowRename === true,
-          },
-        },
-      );
-      const renderer = createModelEditRenderer(cliCtx.outputMode);
-      renderer.handlers().completed({
-        kind: "completed",
-        data: response.data as unknown as ModelEditData,
-      });
-      return;
-    }
+/** The legacy spelling: `swamp model edit`. */
+export const MODEL_EDIT_SYNTAX: CommandSyntax = {
+  invocation: "swamp model edit",
+};
 
-    const { repoContext, repoDir, syncService, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+export function createModelEditCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("edit")
+      .description("Edit a model definition file")
+      .example("Edit a model", `${syntax.invocation} my-server`)
+      .example("Interactive search", syntax.invocation)
+      .example(
+        "Update from stdin (required with --server)",
+        `cat my-server.yaml | ${syntax.invocation} my-server`,
+      )
+      .arguments("[model_id_or_name:model_name]")
+      .example(
+        "Rename from stdin",
+        `cat renamed.yaml | ${syntax.invocation} my-server --allow-rename`,
+      )
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option(
+        "--allow-rename",
+        "Allow a stdin update to change the model's name; refused otherwise",
+      ),
+  ).action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
+    async function (options: AnyOptions, modelIdOrName?: string) {
+      const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
+      cliCtx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(RepoPath.create(repoDir));
-
-    const libCtx = libSwampContextForRepo(repoContext, {
-      logger: cliCtx.logger,
-    });
-
-    // Interactive search mode when no argument provided
-    if (!modelIdOrName) {
-      if (cliCtx.outputMode === "json") {
-        throw new UserError(
-          "Model ID or name is required in non-interactive mode",
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        const token = await resolveServerTokenFromOptions(
+          server,
+          options,
         );
-      }
-
-      const searchDeps: ModelSearchDeps = {
-        findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
-      };
-
-      const searchRenderer = createModelSearchRenderer(cliCtx.outputMode);
-      await consumeStream(
-        modelSearch(libCtx, searchDeps, { query: undefined }),
-        searchRenderer.handlers(),
-      );
-
-      const selected = searchRenderer.selectedItem();
-      if (!selected) {
-        cliCtx.logger.debug`Search cancelled`;
+        const content = requireModelEditContent(await readStdin(), syntax);
+        const response = await requestServerResponse<ModelEditResponse>(
+          { server, token },
+          {
+            type: "model.edit",
+            payload: {
+              modelIdOrName,
+              content,
+              allowRename: options.allowRename === true,
+            },
+          },
+        );
+        const renderer = createModelEditRenderer(cliCtx.outputMode);
+        renderer.handlers().completed({
+          kind: "completed",
+          data: response.data as unknown as ModelEditData,
+        });
         return;
       }
 
-      cliCtx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
-      modelIdOrName = selected.id;
-    }
+      const { repoContext, repoDir, syncService, datastoreConfig } =
+        await requireInitializedRepoUnlocked({
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        });
 
-    const stdinContent = await readStdin();
-    const deps = createModelEditDeps(repoDir);
+      const markerRepo = new RepoMarkerRepository();
+      const marker = await markerRepo.read(RepoPath.create(repoDir));
 
-    const renderer = createModelEditRenderer(cliCtx.outputMode);
-    await runManagedConfigMutation(
-      repoContext,
-      syncService,
-      datastoreConfig,
-      marker,
-      "model edit",
-      () =>
-        consumeStream(
-          modelEdit(libCtx, deps, {
-            modelIdOrName,
-            stdinContent,
-            allowRename: options.allowRename === true,
-          }),
-          renderer.handlers(),
-        ),
-    );
+      const libCtx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
 
-    cliCtx.logger.debug("Model edit command completed");
-  },
-);
+      // Interactive search mode when no argument provided
+      if (!modelIdOrName) {
+        if (cliCtx.outputMode === "json") {
+          throw new UserError(
+            "Model ID or name is required in non-interactive mode",
+          );
+        }
+
+        const searchDeps: ModelSearchDeps = {
+          findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
+        };
+
+        const searchRenderer = createModelSearchRenderer(cliCtx.outputMode);
+        await consumeStream(
+          modelSearch(libCtx, searchDeps, { query: undefined }),
+          searchRenderer.handlers(),
+        );
+
+        const selected = searchRenderer.selectedItem();
+        if (!selected) {
+          cliCtx.logger.debug`Search cancelled`;
+          return;
+        }
+
+        cliCtx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
+        modelIdOrName = selected.id;
+      }
+
+      const stdinContent = await readStdin();
+      const deps = createModelEditDeps(repoDir);
+
+      const renderer = createModelEditRenderer(cliCtx.outputMode);
+      await runManagedConfigMutation(
+        repoContext,
+        syncService,
+        datastoreConfig,
+        marker,
+        "model edit",
+        () =>
+          consumeStream(
+            modelEdit(libCtx, deps, {
+              modelIdOrName,
+              stdinContent,
+              allowRename: options.allowRename === true,
+            }),
+            renderer.handlers(),
+          ),
+      );
+
+      cliCtx.logger.debug("Model edit command completed");
+    },
+  );
+}
+
+export const modelEditCommand = createModelEditCommand(MODEL_EDIT_SYNTAX);

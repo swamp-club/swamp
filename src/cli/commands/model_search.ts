@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -140,18 +141,27 @@ export async function modelSearchAction(
   ctx.logger.debug("Model search command completed");
 }
 
-export const modelSearchCommand = withRemoteOptions(
-  new Command()
-    .name("search")
-    .alias("list")
-    .description("Search for model definitions")
-    .example("Browse all models", "swamp model search")
-    .example("Search by keyword", "swamp model search aws")
-    .example("Include internal types", "swamp model search --all")
-    .arguments("[query:string]")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option("--all", "Include internal model types"),
-).action(modelSearchAction);
+/** The legacy spelling: `swamp model search`. */
+export const MODEL_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp model search",
+};
+
+export function createModelSearchCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("search")
+      .alias("list")
+      .description("Search for model definitions")
+      .example("Browse all models", syntax.invocation)
+      .example("Search by keyword", `${syntax.invocation} aws`)
+      .example("Include internal types", `${syntax.invocation} --all`)
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option("--all", "Include internal model types"),
+  ).action(modelSearchAction);
+}
+
+export const modelSearchCommand = createModelSearchCommand(MODEL_SEARCH_SYNTAX);
