@@ -625,7 +625,14 @@ Serve runs three background pollers to fix this:
   "Extension auto-reload via config poller" below. It runs whenever
   managedConfig is active, and without a sync service it checks only the hash.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
-  access-control grants and groups, then reloads the policy snapshot.
+  access-control grants and groups, then reloads the policy snapshot. It is
+  the one poller that also runs without a sync service: on a v2 filesystem
+  datastore the files are shared but each instance's policy snapshot is not,
+  so it fingerprints those directories and reloads on a change another
+  process made (swamp-club#3371). The other two have nothing to do there: a
+  peer's data and auto-definitions are read straight from the shared files,
+  and the shared-datastore write tracker (swamp-club#2858) keeps each
+  checkout's query catalog current.
 - **RuntimeDataPoller** (`subdirs: ["data", "auto-definitions"]`) refreshes the
   `data/` subtree (runtime behavior output), then invalidates the query catalog
   so the next `data.query` rebuilds from the new local files. It pulls

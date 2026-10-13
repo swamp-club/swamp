@@ -18,7 +18,16 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertGreater } from "@std/assert";
-import { AccessDataPoller } from "./access_data_poller.ts";
+import { join } from "@std/path";
+import {
+  ACCESS_DATA_SUBDIRS,
+  AccessDataPoller,
+  createAccessDataPoller,
+} from "./access_data_poller.ts";
+import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
+import { EventBus } from "../domain/events/event_bus.ts";
+import { createModelCreated } from "../domain/events/types.ts";
+import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
   DatastoreSyncOptions,
@@ -464,4 +473,253 @@ Deno.test("AccessDataPoller: each poll cycle is the root of its own trace", asyn
       assert(cycles.some((cycle) => isChildOf(syncSpan, cycle)));
     }
   });
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    await fn(tempDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+}
+
+async function writeGrantVersion(
+  grantDir: string,
+  modelId: string,
+  n: number,
+): Promise<void> {
+  const versionDir = join(grantDir, modelId, "grant-main", String(n));
+  await Deno.mkdir(versionDir, { recursive: true });
+  await Deno.writeTextFile(join(versionDir, "raw"), `version ${n}`);
+}
+
+Deno.test("AccessDataPoller: a change source's peer change reloads policy and invalidates the catalog", async () => {
+  await withTempDir(async (dir) => {
+    const changeSource = new FilesystemAccessDataChangeSource({
+      dirs: [dir],
+      eventBus: new EventBus(),
+    });
+    await changeSource.prime();
+    const loader = createMockPolicySnapshotLoader();
+    const { state, catalogInvalidate } = createCallbackTrackers();
+    const poller = new AccessDataPoller({
+      changeSource,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    try {
+      await writeGrantVersion(dir, "g1", 1);
+      await waitFor(() => loader.loadCalls >= 1, "reload after peer change");
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(loader.loadCalls, 1);
+    assertEquals(state.catalogInvalidateCalls, 1);
+  });
+});
+
+Deno.test("AccessDataPoller: a change source reporting nothing never reloads", async () => {
+  await withTempDir(async (dir) => {
+    let detects = 0;
+    const changeSource = new FilesystemAccessDataChangeSource({
+      dirs: [dir],
+      eventBus: new EventBus(),
+    });
+    await changeSource.prime();
+    const detect = changeSource.detect.bind(changeSource);
+    changeSource.detect = async () => {
+      const count = await detect();
+      detects++;
+      return count;
+    };
+    const loader = createMockPolicySnapshotLoader();
+    const { state, catalogInvalidate } = createCallbackTrackers();
+    const poller = new AccessDataPoller({
+      changeSource,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    await waitFor(() => detects >= 3, "three cycles");
+    await poller.stop();
+    assertEquals(loader.loadCalls, 0);
+    assertEquals(state.catalogInvalidateCalls, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a change source's own write stays staged", async () => {
+  await withTempDir(async (dir) => {
+    const bus = new EventBus();
+    const changeSource = new FilesystemAccessDataChangeSource({
+      dirs: [dir],
+      eventBus: bus,
+    });
+    await changeSource.prime();
+    let detects = 0;
+    const detect = changeSource.detect.bind(changeSource);
+    changeSource.detect = async () => {
+      const count = await detect();
+      detects++;
+      return count;
+    };
+    const loader = createMockPolicySnapshotLoader();
+    const { catalogInvalidate } = createCallbackTrackers();
+    const poller = new AccessDataPoller({
+      changeSource,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+    });
+    // Written before the poller starts, so no cycle sees it before its event.
+    await writeGrantVersion(dir, "g1", 1);
+    await bus.publish(createModelCreated("swamp/grant", "g1", "g1"));
+    poller.start();
+    await waitFor(() => detects >= 2, "two cycles");
+    await poller.stop();
+    assertEquals(loader.loadCalls, 0);
+  });
+});
+
+Deno.test("AccessDataPoller: a change source change is reloaded again after a failed load", async () => {
+  await withTempDir(async (dir) => {
+    const changeSource = new FilesystemAccessDataChangeSource({
+      dirs: [dir],
+      eventBus: new EventBus(),
+    });
+    await changeSource.prime();
+    let attempts = 0;
+    const loader = {
+      loadCalls: 0,
+      load(): Promise<void> {
+        attempts++;
+        if (attempts === 1) return Promise.reject(new Error("transient"));
+        loader.loadCalls++;
+        return Promise.resolve();
+      },
+    };
+    const { catalogInvalidate } = createCallbackTrackers();
+    const poller = new AccessDataPoller({
+      changeSource,
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+    });
+    poller.start();
+    try {
+      await writeGrantVersion(dir, "g1", 1);
+      await waitFor(() => loader.loadCalls >= 1, "reload after retry");
+    } finally {
+      await poller.stop();
+    }
+    assertEquals(attempts, 2);
+  });
+});
+
+function fakeResolver(
+  engine: "v2" | "v3",
+  base: string,
+): DatastorePathResolver {
+  return {
+    localPath: (...segments: string[]) => join(base, ...segments),
+    datastorePath: (...segments: string[]) => join(base, ...segments),
+    isDatastoreSubdir: () => true,
+    resolvePath: (subdir: string, ...rest: string[]) =>
+      join(base, subdir, ...rest),
+    getDatastoreConfig: () => ({ type: "filesystem", path: base }),
+    engine: () => engine,
+  } as unknown as DatastorePathResolver;
+}
+
+Deno.test("createAccessDataPoller: a sync service gets the pull poller", async () => {
+  const sync = createMockSyncService();
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = await createAccessDataPoller({
+    syncService: sync,
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    pollIntervalMs: 10,
+    datastoreConfig: {
+      type: "@swamp/s3-datastore",
+      config: {},
+      datastorePath: "bucket",
+    },
+    datastoreEngine: "v2",
+    datastoreResolver: fakeResolver("v2", "/unused"),
+    eventBus: new EventBus(),
+  });
+  assert(poller);
+  poller.start();
+  await waitFor(() => sync.pullCalls.length >= 1, "a pull");
+  await poller.stop();
+});
+
+Deno.test("createAccessDataPoller: a v2 filesystem datastore watches the resolved access data directories", async () => {
+  await withTempDir(async (dir) => {
+    const loader = createMockPolicySnapshotLoader();
+    const { catalogInvalidate } = createCallbackTrackers();
+    const poller = await createAccessDataPoller({
+      policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+      catalogInvalidate,
+      pollIntervalMs: 10,
+      datastoreConfig: { type: "filesystem", path: dir },
+      datastoreEngine: "v2",
+      datastoreResolver: fakeResolver("v2", dir),
+      eventBus: new EventBus(),
+    });
+    assert(poller);
+    poller.start();
+    try {
+      for (const subdir of ACCESS_DATA_SUBDIRS) {
+        const before = loader.loadCalls;
+        await writeGrantVersion(join(dir, subdir), crypto.randomUUID(), 1);
+        await waitFor(
+          () => loader.loadCalls > before,
+          `reload after a change in ${subdir}`,
+        );
+      }
+    } finally {
+      await poller.stop();
+    }
+  });
+});
+
+Deno.test("createAccessDataPoller: a v3 datastore gets no poller", async () => {
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = await createAccessDataPoller({
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    datastoreConfig: { type: "filesystem", path: "/unused", format: 3 },
+    datastoreEngine: "v3",
+    datastoreResolver: fakeResolver("v3", "/unused"),
+    eventBus: new EventBus(),
+  });
+  assertEquals(poller, null);
+});
+
+Deno.test("createAccessDataPoller: a custom datastore without a sync service gets no poller", async () => {
+  const loader = createMockPolicySnapshotLoader();
+  const { catalogInvalidate } = createCallbackTrackers();
+  const poller = await createAccessDataPoller({
+    policySnapshotLoader: loader as unknown as PolicySnapshotLoader,
+    catalogInvalidate,
+    datastoreConfig: {
+      type: "@swamp/s3-datastore",
+      config: {},
+      datastorePath: "bucket",
+    },
+    datastoreEngine: "v2",
+    datastoreResolver: fakeResolver("v2", "/unused"),
+    eventBus: new EventBus(),
+  });
+  assertEquals(poller, null);
 });

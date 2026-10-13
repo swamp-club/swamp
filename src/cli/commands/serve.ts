@@ -449,7 +449,10 @@ import {
   sweepStaleRecords,
   sweepTokenConsistency,
 } from "../../serve/boot_reconciliation.ts";
-import { AccessDataPoller } from "../../serve/access_data_poller.ts";
+import {
+  type AccessDataPoller,
+  createAccessDataPoller,
+} from "../../serve/access_data_poller.ts";
 import { ConfigPoller } from "../../serve/config_poller.ts";
 import { computeFileContentHashIfExists } from "../../domain/extensions/extension_package_cache.ts";
 import { RuntimeDataPoller } from "../../serve/runtime_data_poller.ts";
@@ -2845,10 +2848,12 @@ export const serveCommand = new Command()
     // meaningful with a sync service — without one nothing syncs.
     const syncGate = syncService ? createSyncGate() : undefined;
 
+    const datastoreEngine = resolverEngine(repoDatastoreResolver);
+
     // A v3 datastore is maintained by its writer: serve compacts history and
     // sweeps chunks while it runs (swamp-club#3279).
     const v3Maintenance = !isCustomDatastoreConfig(datastoreConfig) &&
-        resolverEngine(repoDatastoreResolver) === "v3"
+        datastoreEngine === "v3"
       ? new V3MaintenanceTimer(v3DatastoreFor(resolvedRepoDir, datastoreConfig))
       : undefined;
     v3Maintenance?.start();
@@ -4062,6 +4067,21 @@ export const serveCommand = new Command()
       },
       readConditionTypeLiterals,
     );
+    // Created before the boot load: on a filesystem datastore it fingerprints
+    // the access data first, so a peer write landing after the load still
+    // reads as a change on the first cycle (swamp-club#3371).
+    accessDataPoller = await createAccessDataPoller({
+      syncService,
+      syncGate,
+      pollIntervalMs: datastorePollIntervalMs,
+      policySnapshotLoader,
+      catalogInvalidate: () => repoContext.catalogStore.invalidate(),
+      namespace: serveNamespace,
+      datastoreConfig,
+      datastoreEngine,
+      datastoreResolver: repoDatastoreResolver,
+      eventBus: repoContext.eventBus,
+    });
     await policySnapshotLoader.load();
     logger.info("Policy snapshot loaded (reload mode: {mode})", {
       mode: grantReloadMode,
@@ -4091,17 +4111,9 @@ export const serveCommand = new Command()
       await grantsDirectoryPoller.start();
     }
 
-    if (syncService) {
-      accessDataPoller = new AccessDataPoller({
-        syncService,
-        syncGate,
-        pollIntervalMs: datastorePollIntervalMs,
-        policySnapshotLoader,
-        catalogInvalidate: () => repoContext.catalogStore.invalidate(),
-        namespace: serveNamespace,
-      });
-      accessDataPoller.start();
+    accessDataPoller?.start();
 
+    if (syncService) {
       runtimeDataPoller = new RuntimeDataPoller({
         syncService,
         syncGate,
