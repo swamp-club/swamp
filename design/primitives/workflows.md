@@ -113,6 +113,16 @@ has a `guard`. It then sees records that earlier steps in the same run wrote.
 See "Task-target deferral" in
 [../enablers/expressions.md](../enablers/expressions.md).
 
+Another templating system's `${{ ... }}` text, such as GitHub Actions
+`${{ github.sha }}`, passes through to the method unchanged when it is nested
+in a step's `inputs` or `globalArgs`. `swamp workflow validate` warns about it,
+and a run logs a warning, because a misspelt swamp namespace reads the same way.
+Validate fails a root that nearly spells one, such as `${{ input.region }}`.
+In a task target, a whole-field `inputs` or `globalArgs` expression, or step
+placement it fails.
+See "Definition Evaluation" in
+[../enablers/expressions.md](../enablers/expressions.md).
+
 ### Manual Approval (`manual_approval`)
 
 Pauses the workflow at a step boundary and saves the run to disk. The operator

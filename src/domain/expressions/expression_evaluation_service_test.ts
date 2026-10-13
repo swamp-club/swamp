@@ -22,6 +22,7 @@ import { attachSensitiveValues } from "./sensitive_context.ts";
 import { SplicePair } from "./splice_pair.ts";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { ProvenanceMap } from "./provenance_map.ts";
 import { Definition } from "../definitions/definition.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -1360,6 +1361,49 @@ Deno.test("evaluateData: resolves an authored expression and refuses an injected
 
     assertEquals(result.authored, "fine");
     assertEquals(result.injected, "${{ inputs.bad }}");
+  });
+});
+
+Deno.test("evaluateDataTracked: passes another templating system's text through only when asked (swamp-club#2528)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = { sha: "${{ github.sha }}", region: "${{ inputs.region }}" };
+    const context = { model: {}, env: {}, inputs: { region: "eu" } };
+
+    const result = await service.evaluateDataTracked(
+      data,
+      ProvenanceMap.authored(),
+      context,
+      "unrestricted",
+      "passThrough",
+    );
+    assertEquals(result.data, { sha: "${{ github.sha }}", region: "eu" });
+
+    // The default is strict, as for placement and every other caller.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          data,
+          ProvenanceMap.authored(),
+          context,
+          "unrestricted",
+        ),
+      Error,
+      "Unknown variable: github",
+    );
+    // A failed swamp expression throws either way.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          { region: "${{ inputs.region }}" },
+          ProvenanceMap.authored(),
+          { model: {}, env: {}, inputs: {} },
+          "unrestricted",
+          "passThrough",
+        ),
+      Error,
+    );
   });
 });
 

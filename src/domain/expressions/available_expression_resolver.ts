@@ -62,7 +62,9 @@ export type SyncCelEvaluator = (
  * during forEach expansion and additionally `run.*` and available step outputs
  * at execution time, with no per-call configuration. It is the inverse of the
  * skip-list in `WorkflowExpressionEvaluator.evaluate()` (which defers the same
- * runtime/execution-stage kinds), and the two should stay in sync.
+ * runtime/execution-stage kinds), and the two should stay in sync. Another
+ * templating system's text that evaluator left raw in a step argument fails
+ * here too, and stays raw the same way.
  *
  * This replaces the per-field allowlists that previously lived in
  * `resolveForEachTaskExpressions` (libswamp/workflows/evaluate.ts) and

@@ -22,6 +22,7 @@ import fc from "fast-check";
 import {
   isForeignExpression,
   isSwampExpression,
+  misspeltSwampNamespace,
   type SwampScope,
   WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
@@ -122,6 +123,50 @@ Deno.test("isForeignExpression: never true for text cut short inside a string", 
         // An expression whose string literal never closes keeps its first-}}
         // boundary, so it arrives as an unterminated string.
         assert(!isForeignExpression(`${cel} + "${head}`));
+      },
+    ),
+  );
+});
+
+Deno.test("misspeltSwampNamespace: only ever names a root isForeignExpression calls foreign", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...SWAMP_ROOTS),
+      fc.nat(),
+      fc.constantFrom("drop", "double", "swap"),
+      (root, at, edit) => {
+        const i = at % root.length;
+        const typo = edit === "drop"
+          ? root.slice(0, i) + root.slice(i + 1)
+          : edit === "double"
+          ? root.slice(0, i) + root[i] + root.slice(i)
+          : root.slice(0, i) + (root[i + 1] ?? "") + root[i] +
+            root.slice(i + 2);
+        const found = misspeltSwampNamespace(`${typo}.x`);
+        if (found === undefined) return;
+        assert(found.root === typo);
+        assert(SWAMP_ROOTS.includes(found.namespace));
+        assert(!SWAMP_ROOTS.includes(typo));
+        assert(isForeignExpression(`${typo}.x`));
+      },
+    ),
+  );
+});
+
+Deno.test("misspeltSwampNamespace: catches a dropped or doubled letter in every namespace", () => {
+  fc.assert(
+    fc.property(
+      fc.constantFrom(...SWAMP_ROOTS),
+      fc.nat(),
+      fc.boolean(),
+      (root, at, drop) => {
+        const i = at % root.length;
+        const typo = drop
+          ? root.slice(0, i) + root.slice(i + 1)
+          : root.slice(0, i) + root[i] + root.slice(i);
+        // A typo that spells another namespace (none today) is swamp's own.
+        fc.pre(!SWAMP_ROOTS.includes(typo) && typo.length > 0);
+        assert(misspeltSwampNamespace(`${typo}.x`) !== undefined, typo);
       },
     ),
   );

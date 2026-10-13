@@ -36,6 +36,8 @@ import {
 } from "../expressions/expression_parser.ts";
 import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
+import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
+import { findForeignTaskText } from "./expression_evaluators.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -221,7 +223,52 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    // 16. Another templating system's ${{ }} text in step tasks
+    for (const result of this.validateForeignTaskText(workflow)) {
+      results.push(result);
+    }
+
     return results;
+  }
+
+  /**
+   * Another templating system's `${{ ... }}` text, such as GitHub Actions
+   * `${{ github.sha }}`. Nested in a step's task inputs or global arguments
+   * it reaches the method as literal text, so it only warns. Where a task
+   * names what it runs, or as a whole-field record expression, a run fails
+   * on it.
+   *
+   * A root that nearly spells a swamp namespace (`input.region`) fails here
+   * even in step arguments. A run passes it through with a warning, since
+   * the judgement is a guess; this is the one check that fails a workflow a
+   * run accepts.
+   */
+  private validateForeignTaskText(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const { arguments: passed, unresolvable } = findForeignTaskText(workflow);
+    return [
+      ...passed.map(({ jobName, stepName, path, text, misspelt }) =>
+        misspelt
+          ? WorkflowValidationResult.fail(
+            `Task expressions in job '${jobName}' step '${stepName}'`,
+            `${path} holds ${text}: '${misspelt.root}' is not a swamp namespace. Did you mean '${misspelt.namespace}'? ` +
+              `A run would pass this text to the method unchanged. If it is another templating system's text, write it with literal()`,
+          )
+          : WorkflowValidationResult.warning(
+            `${FOREIGN_TEMPLATE_WARNING_NAME} in job '${jobName}' step '${stepName}'`,
+            `${path} holds ${text}, which is not a swamp expression and is passed to the method unchanged. ` +
+              `If you meant a swamp expression, reference one of swamp's namespaces (model, self, inputs, env, vault, data)`,
+          )
+      ),
+      ...unresolvable.map(({ jobName, stepName, path, text }) =>
+        WorkflowValidationResult.fail(
+          `Task expressions in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}, which is not a swamp expression. ` +
+            `Another templating system's text is only passed through inside a step's inputs or globalArgs`,
+        )
+      ),
+    ];
   }
 
   /**

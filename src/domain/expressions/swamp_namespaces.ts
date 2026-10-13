@@ -24,6 +24,7 @@ import {
   transformHyphenatedModelRefs,
 } from "./cel_grammar.ts";
 import { extractExpressions } from "./expression_parser.ts";
+import { levenshteinDistance } from "../string_distance.ts";
 
 export { BINDING_MACROS, parsesAsCel } from "./cel_grammar.ts";
 
@@ -98,6 +99,56 @@ export function containsSwampExpression(value: unknown): boolean {
   return extractExpressions(value).some((expr) =>
     !isForeignExpression(expr.celExpression)
   );
+}
+
+/** A root identifier that nearly spells a swamp namespace. */
+export interface MisspeltNamespace {
+  /** The root as written, such as `input`. */
+  root: string;
+  /** The swamp namespace it resembles, such as `inputs`. */
+  namespace: string;
+}
+
+/**
+ * The first free root identifier of a CEL expression that is not a swamp
+ * namespace but nearly spells one: `input` for `inputs`, `modle` for
+ * `model`. Such text is foreign by {@link isForeignExpression}, yet is far
+ * more likely a typo than another templating system's text.
+ *
+ * A root is near a namespace one edit away, or two edits away when the
+ * namespace has five or more letters (a transposition counts as two). Short
+ * namespaces (`env`, `run`, `self`, `data`, `file`) get one edit only, since
+ * two would reach unrelated words. The roots GitHub Actions binds that swamp
+ * does not (`github`, `matrix`, `secrets`, `vars`, `needs`, `runner`, `job`,
+ * `strategy`) are near none.
+ *
+ * Returns undefined for text that does not parse.
+ */
+export function misspeltSwampNamespace(
+  celExpression: string,
+): MisspeltNamespace | undefined {
+  let ast: ASTNode;
+  try {
+    ast = parseCel(transformHyphenatedModelRefs(celExpression)).ast;
+  } catch {
+    return undefined;
+  }
+  const refs: References = {
+    roots: new Set(),
+    inputs: new Set(),
+    opaqueInputs: false,
+  };
+  collectReferences(ast, new Set(), refs);
+  for (const root of refs.roots) {
+    if (SWAMP_ROOT_NAMESPACES.has(root)) continue;
+    for (const namespace of SWAMP_ROOT_NAMESPACES) {
+      const distance = levenshteinDistance(root, namespace);
+      if (distance <= (namespace.length >= 5 ? 2 : 1)) {
+        return { root, namespace };
+      }
+    }
+  }
+  return undefined;
 }
 
 /**

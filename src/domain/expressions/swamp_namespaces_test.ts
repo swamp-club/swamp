@@ -23,6 +23,7 @@ import {
   containsSwampExpression,
   isForeignExpression,
   isSwampExpression,
+  misspeltSwampNamespace,
   parsesAsCel,
   readsSwampBinding,
   type SwampScope,
@@ -268,5 +269,42 @@ Deno.test("parsesAsCel: false for text that is not CEL", () => {
     ]
   ) {
     assertEquals(parsesAsCel(cel), false, cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: names the namespace a root nearly spells", () => {
+  const cases: [string, string, string][] = [
+    ["input.region", "input", "inputs"],
+    ["modle.vpc.resource", "modle", "model"],
+    ["vualt.get('v', 'k')", "vualt", "vault"],
+    ["step.build.outputs.sha", "step", "steps"],
+    ["envs.HOME", "envs", "env"],
+    ["self.h + input.region", "input", "inputs"],
+  ];
+  for (const [cel, root, namespace] of cases) {
+    assertEquals(misspeltSwampNamespace(cel), { root, namespace }, cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other systems' roots and text that does not parse", () => {
+  const cases = [
+    "inputs.region",
+    "self.h + steps.build.outputs.sha",
+    // What GitHub Actions binds and swamp does not.
+    "github.sha",
+    "matrix.os",
+    "secrets.TOKEN",
+    "vars.REGION",
+    "needs.build.outputs.sha",
+    "runner.os",
+    "job.status",
+    "strategy.fail-fast",
+    // Two edits from a short namespace is an unrelated word.
+    "event.name",
+    "ref.name",
+    '"unclosed',
+  ];
+  for (const cel of cases) {
+    assertEquals(misspeltSwampNamespace(cel), undefined, cel);
   }
 });
