@@ -4924,3 +4924,34 @@ Deno.test({
     });
   },
 });
+
+Deno.test({
+  name:
+    "RepoService.init with claude never creates the target of a dangling rules-file symlink",
+  // Creating symlinks on Windows needs a privilege CI runners lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const repoDir = join(tempDir, "repo");
+      const outsideDir = join(tempDir, "outside");
+      await ensureDir(join(repoDir, ".claude", "rules"));
+      await ensureDir(outsideDir);
+      const outsideTarget = join(outsideDir, "planted.md");
+      const linkPath = join(repoDir, CLAUDE_RULES_PATH);
+      await Deno.symlink(outsideTarget, linkPath, { type: "file" });
+      await Deno.writeTextFile(join(repoDir, "AGENTS.md"), USER_AGENTS_MD);
+      const repoPath = RepoPath.create(repoDir);
+
+      await testService("0.1.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+      });
+
+      assertEquals(await readIfExists(outsideTarget), null);
+      assertEquals((await Deno.lstat(linkPath)).isSymlink, false);
+      assertStringIncludes(
+        await Deno.readTextFile(linkPath),
+        "This repository is managed with [swamp]",
+      );
+    });
+  },
+});

@@ -1298,7 +1298,9 @@ export class RepoService {
       return this.ensureInstructionsSection(filePath, config);
     }
 
-    // For tool-specific files, only create if missing
+    // For tool-specific files, only create if missing. The atomic write
+    // replaces a dangling symlink instead of creating its target, which may
+    // sit outside the repo.
     try {
       await Deno.stat(filePath);
       return false;
@@ -1306,7 +1308,7 @@ export class RepoService {
       if (error instanceof Deno.errors.NotFound) {
         const parentDir = join(filePath, "..");
         await ensureDir(parentDir);
-        await Deno.writeTextFile(
+        await atomicWriteTextFile(
           filePath,
           this.generateInstructionsContent(config),
         );
