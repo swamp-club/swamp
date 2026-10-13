@@ -1076,6 +1076,7 @@ Deno.test("SqliteCommitStore: a compaction by a writer whose fence is below the 
       () => store.compactHistory(2, { fence: 2 }),
       WriterFencedError,
     );
+    await assertRejects(() => store.compactHistory(2), WriterFencedError);
     const report = await store.compactHistory(2, { fence: 3 });
     assertEquals(report.compacted, 2);
   });

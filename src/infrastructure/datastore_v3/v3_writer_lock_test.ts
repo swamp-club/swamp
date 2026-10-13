@@ -247,6 +247,26 @@ Deno.test("acquireV3WriterLock: a live Phase 3 writer lock refuses the lease", a
   });
 });
 
+Deno.test("acquireV3WriterLock: a Phase 3 lock past its TTL does not refuse the lease, even naming a live pid here", async () => {
+  await withTempDir(async (dir) => {
+    // A crashed Phase 3 swamp's lock whose pid was reused by a live process.
+    await Deno.mkdir(join(dir, "_control"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, V3_LEGACY_WRITER_LOCK_KEY),
+      JSON.stringify({
+        holder: "old",
+        hostname: hostname(),
+        pid: Deno.pid,
+        acquiredAt: new Date(Date.now() - 600_000).toISOString(),
+        ttlMs: 30_000,
+        nonce: crypto.randomUUID(),
+      }),
+    );
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+    await release();
+  });
+});
+
 Deno.test("v3WriterLockHandle: force release marks the lease released, and its holder finds itself fenced", async () => {
   await withTempDir(async (dir) => {
     const release = await acquireV3WriterLock(dir);

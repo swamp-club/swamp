@@ -1021,8 +1021,9 @@ export class SqliteCommitStore implements CommitStore {
             "The compaction point moved during compaction: another process is writing the store",
           );
         }
-        // Compaction is the writer's: one that lost its lease stops here.
-        if (options.fence !== undefined) this.#checkWriterFence(options.fence);
+        // Compaction is the writer's: one that lost its lease, or holds none
+        // once the store has a fence, stops here.
+        this.#checkWriterFence(options.fence);
         this.#base.begin(now);
         rows.forEach((row, i) => {
           foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);

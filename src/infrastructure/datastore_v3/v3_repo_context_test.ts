@@ -41,7 +41,14 @@ import {
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
 } from "./v3_repo_context.ts";
-import { holdsV3WriterLock, v3WriterFence } from "./v3_writer_lock.ts";
+import {
+  holdsV3WriterLock,
+  V3_LEGACY_WRITER_LOCK_KEY,
+  V3WriterBusyError,
+  v3WriterFence,
+} from "./v3_writer_lock.ts";
+import { FileLock } from "../persistence/file_lock.ts";
+import { DatabaseSync } from "node:sqlite";
 import { plantV3WriterLease } from "./v3_writer_lock_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -351,6 +358,46 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
         .then(() => true, () => false),
       false,
     );
+  });
+});
+
+Deno.test("holdV3Writer: a live Phase 3 writer refuses the lease before commits.db is migrated", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const db = new DatabaseSync(join(datastorePath, "commits.db"));
+    db.exec("DROP TABLE writer_fence");
+    db.exec("PRAGMA user_version=3");
+    db.close();
+    const legacy = new FileLock(datastorePath, {
+      lockKey: V3_LEGACY_WRITER_LOCK_KEY,
+    });
+    await legacy.acquire();
+    try {
+      await assertRejects(
+        () =>
+          holdV3Writer(
+            { type: "filesystem", path: datastorePath },
+            join(dir, "repo"),
+          ),
+        V3WriterBusyError,
+      );
+    } finally {
+      await legacy.release();
+      await closeV3Datastores();
+    }
+    // The Phase 3 writer can still open its commits.db.
+    const check = new DatabaseSync(join(datastorePath, "commits.db"));
+    try {
+      assertEquals(
+        (check.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }).user_version,
+        3,
+      );
+    } finally {
+      check.close();
+    }
   });
 });
 

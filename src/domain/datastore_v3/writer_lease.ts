@@ -363,7 +363,9 @@ export class WriterLease {
 
   /**
    * Releases the highest fence for whoever holds it, when its nonce is
-   * still `nonce`. Its holder's next renewal or commit finds it released.
+   * still `nonce`. Its holder finds it released at its next renewal (within
+   * a third of its TTL), and refuses its own commits from then on; until a
+   * new writer raises the store's fence, the store itself still takes them.
    * Resolves false when the lease changed hands since it was inspected.
    */
   async forceRelease(nonce: string): Promise<boolean> {

@@ -46,6 +46,7 @@ import {
   acquireV3WriterLock,
   assertV3WriterCurrent,
   holdsV3WriterLock,
+  refuseLiveV3LegacyWriter,
   v3WriterFence,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
@@ -136,6 +137,9 @@ export async function holdV3Writer(
   config: FilesystemDatastoreConfig,
   repoDir: string,
 ): Promise<void> {
+  // Before the handle opens: opening migrates commits.db, which a swamp from
+  // before the lease, still writing, could not open again.
+  await refuseLiveV3LegacyWriter(config.path);
   const release = await acquireV3WriterLock(config.path, {
     maxWaitMs: resolveLockTimeoutMs(),
     // Records the lease's fence in commits.db, so a writer that loses the

@@ -298,7 +298,7 @@ async function takeLease(
     readonly fenceStore?: V3WriterFenceStore;
   },
 ): Promise<WriterLeaseHold> {
-  await refuseLiveLegacyHolder(datastorePath);
+  await refuseLiveV3LegacyWriter(datastorePath);
   let hold: WriterLeaseHold;
   try {
     const floor = options.fenceStore?.writerFence();
@@ -401,15 +401,21 @@ function legacyLock(datastorePath: string): FileLock {
 
 /**
  * Refuses the lease while a swamp from before it holds the Phase 3 writer
- * lock, so the two never write one datastore at once during an upgrade.
+ * lock, so the two never write one datastore at once during an upgrade. A
+ * holder is alive by Phase 3's own rule: within its TTL, and on this host
+ * only while its process runs.
+ *
+ * @throws V3WriterBusyError
  */
-async function refuseLiveLegacyHolder(datastorePath: string): Promise<void> {
+export async function refuseLiveV3LegacyWriter(
+  datastorePath: string,
+): Promise<void> {
   const holder = await legacyLock(datastorePath).inspect();
   if (holder === null) return;
+  const fresh = Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now();
   const alive = holder.holderUnknown === true ||
-    (holder.hostname === Deno.hostname()
-      ? !isProcessDead(holder.pid)
-      : Date.parse(holder.acquiredAt) + holder.ttlMs >= Date.now());
+    (fresh &&
+      (holder.hostname !== Deno.hostname() || !isProcessDead(holder.pid)));
   if (alive) {
     throw new V3WriterBusyError(
       datastorePath,
