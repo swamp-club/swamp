@@ -14034,9 +14034,11 @@ Deno.test("resume: queued forEach iterations run after serve shutdown and recove
     assertEquals(executor.count("main/build-b"), 1);
     assertEquals(executor.count("main/build-c"), 1);
     assertEquals(executor.count("main/rollback"), 1);
-    // build-a was cancelled while it ran, so the run fails and can be retried.
-    assertEquals(resumed.status, "failed");
-    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["build-a"]);
+    // build-a was stopped while it ran, so the interrupt left it unknown and
+    // the recovery ran it again (swamp-club#3369).
+    assertEquals(main.getStep("build-a")!.status, "succeeded");
+    assertEquals(executor.count("main/build-a"), 2);
+    assertEquals(resumed.status, "succeeded");
   });
 });
 
@@ -14202,8 +14204,11 @@ Deno.test("resume: a step queued when a crash hit cleanup runs after server_cras
     assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
     assertEquals(executor.count("main/b"), 1);
     assertEquals(executor.count("main/notify"), 2);
-    assertEquals(resumed.status, "failed");
-    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+    // `a` was stopped while it ran, so the interrupt left it unknown and the
+    // recovery ran it again (swamp-club#3369).
+    assertEquals(resumed.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(executor.count("main/a"), 2);
+    assertEquals(resumed.status, "succeeded");
   });
 });
 

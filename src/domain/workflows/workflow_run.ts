@@ -194,6 +194,7 @@ export const StepRunSchema = z.object({
   resetByResume: z.boolean().optional(),
   failureKind: StepFailureKindSchema.optional(),
   settledByAbort: z.boolean().optional(),
+  stoppedByAbort: z.boolean().optional(),
   // The child run a nested workflow step waits on (swamp-club#2736). Kept as
   // read and validated in the domain (see parseNestedRunLink), so a malformed
   // value never makes the run unloadable and is written back unchanged.
@@ -403,6 +404,7 @@ export class StepRun {
     private _detachedNestedRun: boolean = false,
     private _wait: StoredWait | undefined = undefined,
     private _approvalTimeout: number | undefined = undefined,
+    private _stoppedByAbort: boolean = false,
   ) {}
 
   /**
@@ -454,6 +456,7 @@ export class StepRun {
       validated.detachedNestedRun ?? false,
       parseStoredWait(validated.wait),
       validated.approvalTimeout,
+      validated.stoppedByAbort ?? false,
     );
   }
 
@@ -547,6 +550,16 @@ export class StepRun {
   }
 
   /**
+   * True when the step failed while it was in flight with the run's abort
+   * fired: the abort stopped its work, so its outcome is ambiguous. Persisted:
+   * interrupting the run marks such a step unknown, as it does a step still
+   * running, so a recovery reopens it (see {@link WorkflowRun.interrupt}).
+   */
+  get stoppedByAbort(): boolean {
+    return this._stoppedByAbort;
+  }
+
+  /**
    * The child run this nested workflow step waits on, or waited on before it
    * settled. A malformed link reads as `broken` and is never followed.
    */
@@ -626,6 +639,7 @@ export class StepRun {
     this._resetByResume = false;
     this._failureKind = undefined;
     this._settledByAbort = false;
+    this._stoppedByAbort = false;
     this._nestedRun = undefined;
     this._detachedNestedRun = false;
     this._wait = undefined;
@@ -654,6 +668,15 @@ export class StepRun {
     this.fail(STRANDED_STEP_ERROR);
     this._allowedFailure = false;
     this._failureKind = "workflow_changed";
+  }
+
+  /**
+   * Fails a step the run's abort stopped while it was in flight, marked
+   * {@link stoppedByAbort}.
+   */
+  failStoppedByAbort(error: string): void {
+    this.fail(error);
+    this._stoppedByAbort = true;
   }
 
   /**
@@ -923,6 +946,9 @@ export class StepRun {
     }
     if (this._settledByAbort) {
       data.settledByAbort = true;
+    }
+    if (this._stoppedByAbort) {
+      data.stoppedByAbort = true;
     }
     if (this._nestedRun !== undefined) {
       data.nestedRun = persistedLink(this._nestedRun);
@@ -1783,6 +1809,14 @@ export class WorkflowRun implements TriggerEvaluationContext {
     this._tags["cancel_reason"] = reason;
   }
 
+  /**
+   * Ends the run as interrupted. A step still `running` is marked unknown,
+   * and so is a step the run's abort stopped in flight
+   * ({@link StepRun.stoppedByAbort}): a run serve's shutdown aborted has
+   * already failed it, but its outcome is as ambiguous as a running step's
+   * (swamp-club#3369). A job still `running`, or one that ended holding such
+   * a step, is marked unknown, so a recovery reopens both.
+   */
   interrupt(reason: string): void {
     if (
       this._status === "succeeded" || this._status === "failed" ||
@@ -1791,12 +1825,19 @@ export class WorkflowRun implements TriggerEvaluationContext {
       return;
     }
     for (const job of this._jobs) {
+      let stopped = false;
       for (const step of job.steps) {
         if (step.status === "running") {
           step.markUnknown(`interrupted: ${reason}`);
+        } else if (step.status === "failed" && step.stoppedByAbort) {
+          step.markUnknown(`interrupted: ${reason}`);
+          stopped = true;
         }
       }
-      if (job.status === "running") {
+      if (
+        job.status === "running" ||
+        (stopped && (job.status === "failed" || job.status === "succeeded"))
+      ) {
         job.markUnknown();
       }
     }

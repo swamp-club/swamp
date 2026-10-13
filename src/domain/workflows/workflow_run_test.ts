@@ -1457,6 +1457,95 @@ Deno.test("WorkflowRun.interrupt: converts cancelled run to interrupted", () => 
   assertEquals(run.tags["interrupt_reason"], "server_shutdown");
 });
 
+Deno.test("WorkflowRun.interrupt: marks a step the abort stopped in flight unknown, and its job (swamp-club#3369)", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].failStoppedByAbort("Command exited with code -1");
+  job.steps[1].skipUnstarted({ kind: "dependency" });
+  job.fail();
+  run.endAsCancelled("server shutdown");
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(job.steps[0].status, "unknown");
+  assertEquals(job.steps[0].error, "interrupted: server_shutdown");
+  assertEquals(job.status, "unknown");
+  assertEquals(job.steps[1].status, "skipped");
+  assertEquals(run.unknownSteps(), ["step1"]);
+
+  // A recovery reopens the step, and the resume the step the abort skipped.
+  run.resetUnknownStepsForRecovery();
+  run.reopenAbortedWork();
+  assertEquals(job.status, "pending");
+  assertEquals(job.steps.map((s) => s.status), ["pending", "pending"]);
+  assertEquals(job.steps[0].stoppedByAbort, false);
+});
+
+Deno.test("WorkflowRun.interrupt: marks the job of a stopped step whose failure was allowed unknown", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].failStoppedByAbort("cancelled");
+  job.steps[0].markAllowedFailure();
+  job.steps[1].start();
+  job.steps[1].succeed();
+  job.succeed();
+  run.endAsCancelled("server shutdown");
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(job.steps[0].status, "unknown");
+  assertEquals(job.status, "unknown");
+});
+
+Deno.test("WorkflowRun.interrupt: leaves a step that failed on its own failed", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const job = run.jobs[0];
+  job.start();
+  job.steps[0].start();
+  job.steps[0].fail("boom");
+  job.fail();
+  run.endAsCancelled("server shutdown");
+
+  run.interrupt("server_shutdown");
+
+  assertEquals(job.steps[0].status, "failed");
+  assertEquals(job.steps[0].error, "boom");
+  assertEquals(job.status, "failed");
+  assertEquals(run.unknownSteps(), []);
+});
+
+Deno.test("StepRun.failStoppedByAbort: fails the step with a marker that persists and a reset clears", () => {
+  const step = StepRun.pending("step1");
+  step.start();
+  step.failStoppedByAbort("cancelled");
+  assertEquals(step.status, "failed");
+  assertEquals(step.error, "cancelled");
+  assertEquals(step.stoppedByAbort, true);
+  assertEquals(step.settledByAbort, false);
+
+  const restored = StepRun.fromData(step.toData());
+  assertEquals(restored.stoppedByAbort, true);
+
+  restored.resetToPending();
+  assertEquals(restored.stoppedByAbort, false);
+  assertEquals(restored.toData().stoppedByAbort, undefined);
+});
+
+Deno.test("StepRun.fail: leaves the step unmarked", () => {
+  const step = StepRun.pending("step1");
+  step.start();
+  step.fail("boom");
+  assertEquals(step.stoppedByAbort, false);
+  assertEquals(step.toData().stoppedByAbort, undefined);
+});
+
 Deno.test("WorkflowRun.interruptOrphaned: marks pending steps unknown in a running job with no step recorded running", () => {
   // A record saved by a swamp that did not save step starts: step1 finished,
   // step2 was in flight but still reads pending.

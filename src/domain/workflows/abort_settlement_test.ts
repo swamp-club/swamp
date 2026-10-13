@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import {
   cancelAndSettle,
   completeAndSettle,
+  failAbandonedSteps,
   resolveSettlementWorkflow,
   settleCancelledRun,
 } from "./abort_settlement.ts";
@@ -688,4 +689,28 @@ Deno.test("settleCancelledRun: settling a run with a wait twice changes nothing"
   settleCancelledRun(run, workflow);
 
   assertEquals(run.toData().jobs, once.jobs);
+});
+
+Deno.test("failAbandonedSteps: marks the running steps it fails as stopped by the abort (swamp-club#3369)", () => {
+  const workflow = Workflow.create({
+    name: "abandoned-wf",
+    jobs: [job("main", [modelStep("a"), modelStep("b"), modelStep("c")])],
+  });
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const jobRun = run.getJob("main")!;
+  jobRun.start();
+  jobRun.getStep("a")!.start();
+  jobRun.getStep("b")!.start();
+  jobRun.getStep("b")!.fail("boom");
+
+  assertEquals(failAbandonedSteps(jobRun), true);
+
+  const a = jobRun.getStep("a")!;
+  assertEquals(a.status, "failed");
+  assertEquals(a.error, CANCELLED_STEP_ERROR);
+  assertEquals(a.stoppedByAbort, true);
+  // A step that already failed on its own, and one never started, are left.
+  assertEquals(jobRun.getStep("b")!.stoppedByAbort, false);
+  assertEquals(jobRun.getStep("c")!.status, "pending");
 });

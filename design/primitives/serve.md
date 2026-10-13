@@ -1234,7 +1234,9 @@ runs end `cancelled`) and, on a remote datastore, pushes those records under the
 shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
 swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
-the run's last pushed status. It then deletes its heartbeat and exits. Set the pod's
+the run's last pushed status. A step the abort stopped in flight is recorded
+`unknown` on the interrupted run, so `swamp workflow recover` reopens it
+(swamp-club#3369). It then deletes its heartbeat and exits. Set the pod's
 `terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
 abort grace and the 5 s interrupt push), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
