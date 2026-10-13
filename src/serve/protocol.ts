@@ -444,6 +444,14 @@ export type WorkflowSignalPayload =
      * `no_open_wait`, as it was before, and nothing is stored.
      */
     acceptsPending?: boolean;
+    /**
+     * True from a client that reads an `accepted` reply (swamp-club#3213). A
+     * caller who may signal the workflow and not read it gets that reply for
+     * a key whose step sets `acceptEarly`; one whose client does not say
+     * this is refused `upgrade_required`, and nothing is delivered or
+     * stored.
+     */
+    acceptsReceipt?: boolean;
     /** Names this signal across retries; see `isIdempotencyKey`. */
     idempotencyKey?: string;
   };
@@ -1398,10 +1406,48 @@ export interface WorkflowSignalPendingResponseData {
   };
 }
 
-/** `data` for a delivered signal; `pending` for one that is held. */
+/**
+ * A signal by key that was received, for a caller who may signal the
+ * workflow and not read it, on a key whose step sets `acceptEarly`
+ * (swamp-club#3213). It is the receipt and nothing else: the same reply
+ * whether a wait took the signal or it is held as the key's pending signal,
+ * so it does not say whether a run is waiting.
+ */
+export interface WorkflowSignalAcceptedResponseData {
+  /** What swamp recorded about the signal. */
+  signal: {
+    id: string;
+    receivedAt: string;
+    submittedBy: string;
+    idempotencyKey?: string;
+  };
+  /**
+   * True when the request carried the idempotency key of a signal already
+   * received: `signal` is that one's receipt, and nothing more was done.
+   */
+  duplicate?: true;
+}
+
+/**
+ * `data` for a delivered signal; `pending` for one that is held; `accepted`
+ * for one whose sender is not told which of the two it was.
+ */
 export type WorkflowSignalResponse =
-  | { data: WorkflowSignalResponseData; pending?: undefined }
-  | { data?: undefined; pending: WorkflowSignalPendingResponseData };
+  | {
+    data: WorkflowSignalResponseData;
+    pending?: undefined;
+    accepted?: undefined;
+  }
+  | {
+    data?: undefined;
+    pending: WorkflowSignalPendingResponseData;
+    accepted?: undefined;
+  }
+  | {
+    data?: undefined;
+    pending?: undefined;
+    accepted: WorkflowSignalAcceptedResponseData;
+  };
 
 export interface WorkflowWaitsResponse {
   data: Record<string, unknown>;

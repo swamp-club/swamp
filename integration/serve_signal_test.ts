@@ -52,6 +52,7 @@ import {
   type SignalHttpDeps,
 } from "../src/serve/signal_http.ts";
 import { resetRateLimitState } from "../src/serve/rate_limiter.ts";
+import { auditTakenSignals } from "../src/serve/signal_delivery.ts";
 import {
   createServeCtx,
   errorFrame,
@@ -1133,6 +1134,8 @@ function signalByKey(
   payload: unknown,
   // False for a client from before the pending reply (swamp-club#3212).
   acceptsPending = true,
+  // False for a client from before the accepted reply (swamp-club#3213).
+  acceptsReceipt = true,
 ): Promise<Frame[]> {
   return sendRequest(ctx, {
     type: "workflow.signal",
@@ -1142,6 +1145,7 @@ function signalByKey(
       key,
       payload,
       ...(acceptsPending ? { acceptsPending: true } : {}),
+      ...(acceptsReceipt ? { acceptsReceipt: true } : {}),
     },
   });
 }
@@ -1745,7 +1749,9 @@ Deno.test({
       const overHttp = early(`signal-${crypto.randomUUID().slice(0, 8)}`);
       await repo.repoContext.workflowRepo.save(overSocket);
       await repo.repoContext.workflowRepo.save(overHttp);
-      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      // A caller who may read the workflow: one with `signal` alone is told
+      // less (swamp-club#3213, below).
+      const ctx = ctxWith(repo, [workflowGrant(["signal", "read"])]);
       const payload = { verdict: "ship" };
 
       // A client from before the pending reply reads `data` of every reply,
@@ -1755,6 +1761,13 @@ Deno.test({
       );
       assertEquals(old.code, "workflow_signal_refused");
       assertEquals(old.details, { refusal: "no_open_wait" });
+      const READER_KEYS = [
+        "heldUntil",
+        "key",
+        "signal",
+        "workflowId",
+        "workflowName",
+      ];
 
       // Over the WebSocket the reply carries `pending` in place of `data`.
       const frames = await signalByKey(ctx, overSocket.name, KEY, payload);
@@ -1764,8 +1777,7 @@ Deno.test({
       const held = reply.payload!.pending as Record<string, unknown>;
       assert(held, JSON.stringify(reply));
       assertEquals("data" in reply.payload!, false);
-      // A caller with `signal` alone is told the receipt and until when.
-      assertEquals(Object.keys(held).sort(), ["heldUntil", "signal"]);
+      assertEquals(Object.keys(held).sort(), READER_KEYS);
 
       const again = refusalOf(
         await signalByKey(ctx, overSocket.name, KEY, payload),
@@ -1773,7 +1785,7 @@ Deno.test({
       assertEquals(again.code, "workflow_signal_refused");
       assertEquals(again.details, {
         refusal: "already_pending",
-        pending: { heldUntil: held.heldUntil },
+        pending: { heldUntil: held.heldUntil, receipt: held.signal },
       });
 
       // Over HTTP: accepted and not yet acted on.
@@ -1785,7 +1797,7 @@ Deno.test({
       assertEquals(Object.keys(body).sort(), ["data", "status"]);
       assertEquals(
         Object.keys(body.data as Record<string, unknown>).sort(),
-        ["heldUntil", "signal"],
+        READER_KEYS,
       );
       const second = await postByKey(ctx, { ...address, payload });
       assertEquals(second.status, 409);
@@ -1843,6 +1855,287 @@ Deno.test({
         payload: { verdict: "maybe" },
       });
       assertEquals(refused.status, 422);
+    });
+  },
+});
+
+// A signal-only caller on a key that takes early signals (swamp-club#3213).
+
+/** Saves a workflow whose one keyed wait takes an early signal. */
+async function saveEarly(repo: ServeRepo): Promise<Workflow> {
+  const workflow = Workflow.create({
+    name: `signal-${crypto.randomUUID().slice(0, 8)}`,
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "review",
+            task: StepTask.waitForSignal(3600, SCHEMA, KEY, 600),
+          }),
+        ],
+      }),
+    ],
+  });
+  await repo.repoContext.workflowRepo.save(workflow);
+  return workflow;
+}
+
+/** Runs `workflow` through serve with authorization off. */
+function runThroughServe(repo: ServeRepo, workflow: Workflow) {
+  return sendRequest(createServeCtx(repo), {
+    type: "workflow.run",
+    id: `run-${crypto.randomUUID()}`,
+    payload: { workflowIdOrName: workflow.name },
+  }, null);
+}
+
+/** Whether a run's stream told the client the run suspended. */
+function sawSuspended(frames: Frame[]): boolean {
+  return frames.some((frame) =>
+    (frame.event as { kind?: string } | undefined)?.kind === "suspended"
+  );
+}
+
+/** The `accepted` member of a `workflow.signal` reply. */
+function acceptedOf(frames: Frame[]): Record<string, unknown> {
+  assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+  const frame = frames.find((f) => f.type === "workflow.signal");
+  assert(frame, JSON.stringify(frames));
+  assertEquals(Object.keys(frame.payload!), ["accepted"]);
+  return frame.payload!.accepted as Record<string, unknown>;
+}
+
+for (const transport of ["WebSocket", "HTTP"] as const) {
+  Deno.test({
+    name:
+      `serve early signal over ${transport}: a signal-only caller gets the same receipt before the run reaches its wait and while it waits, and the run takes a held signal without suspending`,
+    ...opts,
+    fn: async () => {
+      await withServeRepo(async (repo) => {
+        resetRateLimitState();
+        const audit: AuditEvent[] = [];
+        const ctx = ctxWith(repo, [workflowGrant(["signal"])], { audit });
+        auditTakenSignals(ctx);
+        // Sends as the signal-only caller and returns the reply's receipt.
+        const send = async (workflow: Workflow, payload: unknown) => {
+          if (transport === "WebSocket") {
+            return acceptedOf(
+              await signalByKey(ctx, workflow.name, KEY, payload),
+            );
+          }
+          const reply = await postByKey(ctx, {
+            workflow: workflow.name,
+            key: KEY,
+            payload,
+          });
+          assertEquals(reply.status, 202, JSON.stringify(reply));
+          const body = reply.body as Record<string, unknown>;
+          assertEquals(Object.keys(body).sort(), ["data", "status"]);
+          assertEquals(body.status, "accepted");
+          return body.data as Record<string, unknown>;
+        };
+        const RECEIPT_KEYS = ["id", "receivedAt", "submittedBy"];
+        // Told apart from every identifier, so its absence is checked.
+        const note = `note-${crypto.randomUUID()}`;
+        const payload = { verdict: "ship", note };
+
+        // Before the run reaches its wait: held.
+        const early = await saveEarly(repo);
+        const held = await send(early, payload);
+        assertEquals(Object.keys(held), ["signal"]);
+        const heldReceipt = held.signal as Record<string, unknown>;
+        assertEquals(Object.keys(heldReceipt).sort(), RECEIPT_KEYS);
+
+        // The run reaches the wait, takes the signal and goes on: the client
+        // on its stream is never told it suspended.
+        const frames = await runThroughServe(repo, early);
+        assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+        assertEquals(sawSuspended(frames), false, JSON.stringify(frames));
+        const runs = await repo.repoContext.workflowRunRepo
+          .findSummariesByStatus(early.id, "succeeded");
+        assertEquals(runs.length, 1, JSON.stringify(frames));
+        const run = await repo.repoContext.workflowRunRepo.findById(
+          early.id,
+          createWorkflowRunId(runs[0].id),
+        );
+        const output = run!.getJob("main")!.getStep("review")!.output as {
+          payload: unknown;
+          signal: { id: string };
+        };
+        assertEquals(output.payload, payload);
+        assertEquals(output.signal.id, heldReceipt.id);
+
+        // While a run waits: the same reply, key for key.
+        const waiting = await saveEarly(repo);
+        const suspendedFrames = await runThroughServe(repo, waiting);
+        assertEquals(sawSuspended(suspendedFrames), true);
+        const delivered = await send(waiting, payload);
+        assertEquals(Object.keys(delivered), Object.keys(held));
+        assertEquals(
+          Object.keys(delivered.signal as Record<string, unknown>).sort(),
+          RECEIPT_KEYS,
+        );
+        const [suspended] = await repo.repoContext.workflowRunRepo
+          .findSummariesByStatus(waiting.id, "suspended");
+        const w = { workflow: waiting, runId: suspended.id, waitId: "" };
+        await resume(repo, w);
+        assertEquals(
+          ((await stepOf(repo, w)).step.output as { payload: unknown }).payload,
+          payload,
+        );
+
+        // A held signal and a wait taking one are audited, with the receipt
+        // and the key and never the payload.
+        const pending = audit.filter((e) =>
+          e.action === "workflow.signal.pending"
+        );
+        assertEquals(pending.length, 1);
+        assertStringIncludes(pending[0].detail!, `receipt=${heldReceipt.id}`);
+        assertStringIncludes(pending[0].detail!, `key=${KEY}`);
+        const taken = audit.filter((e) => e.action === "workflow.signal.taken");
+        assertEquals(taken.length, 1, JSON.stringify(taken));
+        assertStringIncludes(taken[0].detail!, `receipt=${heldReceipt.id}`);
+        assertStringIncludes(taken[0].detail!, `key=${KEY}`);
+        assertStringIncludes(taken[0].detail!, `run=${runs[0].id}`);
+        assertEquals(JSON.stringify(audit).includes(note), false);
+      });
+    },
+  });
+
+  Deno.test({
+    name:
+      `serve early signal over ${transport}: a second early signal is refused without saying until when, a reader is told, and a key without acceptEarly answers as before`,
+    ...opts,
+    fn: async () => {
+      await withServeRepo(async (repo) => {
+        resetRateLimitState();
+        const signalOnly = ctxWith(repo, [workflowGrant(["signal"])]);
+        const reader = ctxWith(repo, [workflowGrant(["signal", "read"])]);
+        const payload = { verdict: "ship" };
+        // The status and the body of a reply, alike for both transports.
+        const send = async (
+          ctx: ConnectionContext,
+          workflow: Workflow,
+          body: unknown = payload,
+        ): Promise<{ status: string; body: Record<string, unknown> }> => {
+          if (transport === "HTTP") {
+            const reply = await postByKey(ctx, {
+              workflow: workflow.name,
+              key: KEY,
+              payload: body,
+            });
+            const { status, ...rest } = reply.body as Record<string, unknown>;
+            return { status: String(status), body: rest };
+          }
+          const frames = await signalByKey(ctx, workflow.name, KEY, body);
+          const refused = errorFrame(frames)?.error as
+            | { message: string; details?: Record<string, unknown> }
+            | undefined;
+          if (refused) {
+            const { refusal, ...rest } = refused.details ?? {};
+            return {
+              status: String(refusal),
+              body: { message: refused.message, ...rest },
+            };
+          }
+          const reply = frames.find((f) => f.type === "workflow.signal")!
+            .payload as Record<string, unknown>;
+          const [status] = Object.keys(reply);
+          return {
+            status: status === "data" ? "delivered" : status,
+            body: { data: reply[status] },
+          };
+        };
+
+        const early = await saveEarly(repo);
+        assertEquals((await send(signalOnly, early)).status, "accepted");
+        const second = await send(signalOnly, early);
+        assertEquals(second.status, "already_pending");
+        assertEquals(Object.keys(second.body), ["message"]);
+
+        // A reader is told that the signal is pending and until when.
+        const toldMore = await send(reader, early);
+        assertEquals(toldMore.status, "already_pending");
+        const told = toldMore.body.pending as Record<string, unknown>;
+        assertEquals(Object.keys(told).sort(), ["heldUntil", "receipt"]);
+        const other = await saveEarly(repo);
+        const held = await send(reader, other);
+        assertEquals(held.status, "pending");
+        assert("heldUntil" in (held.body.data as Record<string, unknown>));
+
+        // A payload the schema refuses reads the same to a signal-only
+        // caller with no wait open and with one.
+        const idle = await saveEarly(repo);
+        const waiting = await saveEarly(repo);
+        await runThroughServe(repo, waiting);
+        const bad = { verdict: "maybe" };
+        const refusedIdle = await send(signalOnly, idle, bad);
+        const refusedWaiting = await send(signalOnly, waiting, bad);
+        assertEquals(refusedIdle.status, "invalid_payload");
+        assertEquals(refusedWaiting, refusedIdle);
+
+        // A keyed wait without acceptEarly answers as in swamp-club#3211.
+        const plain = await keyed(repo);
+        const first = await send(signalOnly, plain.workflow);
+        assertEquals(first.status, "delivered");
+        assertEquals(
+          Object.keys(first.body.data as Record<string, unknown>).sort(),
+          ["signal", "waitId"],
+        );
+        const again = await send(signalOnly, plain.workflow);
+        assertEquals(again.status, "no_open_wait");
+        assert("lastWait" in again.body);
+      });
+    },
+  });
+}
+
+Deno.test({
+  name:
+    "serve early signal: a WebSocket client that cannot read the receipt is refused alike with and without a run waiting, and nothing is stored",
+  ...opts,
+  fn: async () => {
+    await withServeRepo(async (repo) => {
+      const ctx = ctxWith(repo, [workflowGrant(["signal"])]);
+      const payload = { verdict: "ship" };
+      const idle = await saveEarly(repo);
+      const waiting = await saveEarly(repo);
+      await runThroughServe(repo, waiting);
+
+      const refusals = [];
+      for (const workflow of [idle, waiting]) {
+        for (const acceptsPending of [true, false]) {
+          refusals.push(
+            refusalOf(
+              await signalByKey(
+                ctx,
+                workflow.name,
+                KEY,
+                payload,
+                acceptsPending,
+                false,
+              ),
+            ),
+          );
+        }
+      }
+      for (const refusal of refusals) {
+        assertEquals(refusal, refusals[0]);
+        assertEquals(refusal.code, "workflow_signal_refused");
+        assertEquals(refusal.details, { refusal: "upgrade_required" });
+      }
+      // Nothing was held and the wait is still open: each takes a signal.
+      acceptedOf(await signalByKey(ctx, idle.name, KEY, payload));
+      acceptedOf(await signalByKey(ctx, waiting.name, KEY, payload));
+      const [suspended] = await repo.repoContext.workflowRunRepo
+        .findSummariesByStatus(waiting.id, "suspended");
+      const w = { workflow: waiting, runId: suspended.id, waitId: "" };
+      await resume(repo, w);
+      assertEquals(
+        ((await stepOf(repo, w)).step.output as { payload: unknown }).payload,
+        payload,
+      );
     });
   },
 });

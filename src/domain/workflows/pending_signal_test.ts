@@ -279,6 +279,54 @@ Deno.test("takePendingSignal: settles the wait with the highest pending signal o
   assertEquals(await store.findOutcome(WAIT_ID), stored);
 });
 
+Deno.test("takePendingSignal: a store's listener is told of the take by its receipt and key, and never the payload", async () => {
+  const store = new InMemorySignalWaitStore();
+  const heard: unknown[] = [];
+  store.pendingTaken = (taken) => heard.push(taken);
+  // Nothing applies: nothing is heard.
+  assertEquals(await takePendingSignal(store, ref()), { kind: "absent" });
+  assertEquals(heard, []);
+
+  const held = pending();
+  await store.createPendingRecord(held);
+  await takePendingSignal(store, ref());
+  assertEquals(heard, [{
+    waitId: WAIT_ID,
+    workflowId: WORKFLOW,
+    runId: ref().runId,
+    key: KEY,
+    receiptId: held.receiptId,
+  }]);
+});
+
+Deno.test("takePendingSignal: a listener that throws does not undo or fail the take", async () => {
+  const store = new InMemorySignalWaitStore();
+  store.pendingTaken = () => {
+    throw new Error("audit log is full");
+  };
+  await store.createPendingRecord(pending());
+  const stored = await takePendingSignal(store, ref());
+  assertEquals(stored.kind === "found" && stored.record.kind, "accepted");
+});
+
+Deno.test("takePendingSignal: a wait another outcome settled first is not heard as a take", async () => {
+  const store = new InMemorySignalWaitStore();
+  const heard: unknown[] = [];
+  store.pendingTaken = (taken) => heard.push(taken);
+  await store.createPendingRecord(pending());
+  await store.settle({
+    kind: "timed_out",
+    waitId: WAIT_ID,
+    workflowId: WORKFLOW,
+    runId: ref().runId,
+    deadline: ref().deadline,
+    settledAt: ref().deadline,
+  });
+  const stored = await takePendingSignal(store, ref());
+  assertEquals(stored.kind === "found" && stored.record.kind, "timed_out");
+  assertEquals(heard, []);
+});
+
 Deno.test("takePendingSignal: nothing applies, nothing is settled", async () => {
   const store = new InMemorySignalWaitStore();
   assertEquals(await takePendingSignal(store, ref()), { kind: "absent" });

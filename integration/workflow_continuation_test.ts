@@ -103,7 +103,13 @@ interface Fixture {
    * fails instead.
    */
   saveWaiting(
-    options?: { autoResume?: boolean; onFailure?: boolean; key?: string },
+    options?: {
+      autoResume?: boolean;
+      onFailure?: boolean;
+      key?: string;
+      /** With `key`: the seconds an early signal is held for the wait. */
+      acceptEarly?: number;
+    },
   ): Promise<Workflow>;
 }
 
@@ -149,7 +155,12 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
                 steps: [
                   Step.create({
                     name: "review",
-                    task: StepTask.waitForSignal(3600, SCHEMA, options.key),
+                    task: StepTask.waitForSignal(
+                      3600,
+                      SCHEMA,
+                      options.key,
+                      options.acceptEarly,
+                    ),
                   }),
                   Step.create({
                     name: "ship",
@@ -1276,6 +1287,146 @@ Deno.test({
       await waitFor(
         async () => (await loadRun(f, open, run.id)).status === "succeeded",
         "the open wait was signalled and its run finished",
+      );
+    });
+  },
+});
+
+// An early signal that lands as its wait opens on another instance
+// (swamp-club#3213). The signaller reads the key, finds no wait and stores
+// its signal; between the two, the other instance's step claims the key,
+// reads the slot while it is still empty and suspends. Each test orders
+// those writes with a gate on the signaller's create.
+
+/**
+ * `instance` with a wait store that stops at the create of a pending signal
+ * until `release` is called, and, with `stopAfterStoring`, fails every call
+ * after that create, as a signaller that stopped there makes none.
+ */
+function gatedAtPendingCreate(
+  f: Fixture,
+  signaller: Instance,
+  options: { stopAfterStoring?: boolean } = {},
+): { reached: Promise<void>; release: () => void } {
+  const support = f.repo.repoContext.signalWaits;
+  assert(support?.supported, "the datastore holds wait records");
+  const reached = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  let stored = false;
+  const store = new Proxy(support.store, {
+    get(target, property) {
+      const member = Reflect.get(target, property, target);
+      if (typeof member !== "function") return member;
+      return async (...args: unknown[]) => {
+        if (stored && options.stopAfterStoring) {
+          throw new Error("the signaller stopped after storing its signal");
+        }
+        if (property !== "createPendingRecord") {
+          return await member.apply(target, args);
+        }
+        reached.resolve();
+        await released.promise;
+        const result = await member.apply(target, args);
+        stored = true;
+        return result;
+      };
+    },
+  });
+  signaller.ctx.repoContext.signalWaits = { ...support, store };
+  return { reached: reached.promise, release: () => released.resolve() };
+}
+
+function signalEarly(signaller: Instance, workflow: Workflow) {
+  return sendRequest(signaller.ctx, {
+    type: "workflow.signal",
+    id: `signal-${crypto.randomUUID()}`,
+    payload: {
+      workflow: workflow.name,
+      key: "verdict",
+      payload: { verdict: "ship" },
+      acceptsPending: true,
+    },
+  }, null);
+}
+
+Deno.test({
+  name:
+    "continuation: an instance that stores an early signal and finds the key claimed just afterwards continues that run",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({
+        key: "verdict",
+        acceptEarly: 600,
+      });
+      const a = instance(f, "a");
+      const gate = gatedAtPendingCreate(f, a);
+
+      const signalling = signalEarly(a, workflow);
+      await gate.reached;
+      // The other instance's step opens its wait over an empty slot.
+      const { run } = await suspend(f, workflow);
+      gate.release();
+      const frames = await signalling;
+      assertEquals(errorFrame(frames), undefined, JSON.stringify(frames));
+
+      await waitFor(
+        async () => (await loadRun(f, workflow, run.id)).status === "succeeded",
+        "the run continued and finished",
+      );
+      assertEquals(f.executions(), 1);
+      assert(actions(a).includes("workflow.auto_resume"));
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "continuation: an early signal stored as its wait opens on another instance is taken by the sweep, and the run resumes exactly once",
+  ...opts,
+  fn: async () => {
+    await withFixture(async (f) => {
+      const workflow = await f.saveWaiting({
+        key: "verdict",
+        acceptEarly: 600,
+      });
+      const a = instance(f, "a");
+      const gate = gatedAtPendingCreate(f, a, { stopAfterStoring: true });
+
+      const signalling = signalEarly(a, workflow);
+      await gate.reached;
+      const { run } = await suspend(f, workflow);
+      gate.release();
+      // The signaller stored its signal and never read the key again.
+      assert(errorFrame(await signalling), "the signaller's request failed");
+      assertEquals((await loadRun(f, workflow, run.id)).status, "suspended");
+      assertEquals(f.executions(), 0);
+
+      // No client acts. Two instances sweep; the signal is taken once.
+      const b = instance(f, "b");
+      const c = instance(f, "c");
+      const taken: string[] = [];
+      waitStore(f).pendingTaken = (event) => taken.push(event.receiptId);
+      const [swept, alsoSwept] = await Promise.all([
+        sweepContinuations(b.ctx, { takeover: true }),
+        sweepContinuations(c.ctx, { takeover: true }),
+      ]);
+      await idle(b, c);
+
+      const finished = await loadRun(f, workflow, run.id);
+      assertEquals(finished.status, "succeeded");
+      assertEquals(stepStatuses(finished), {
+        review: "succeeded",
+        ship: "succeeded",
+      });
+      assertEquals(f.executions(), 1);
+      assert(swept.launched + alsoSwept.launched >= 1);
+      // Both sweeps may read the slot at once; they took one signal.
+      assert(taken.length >= 1);
+      assertEquals(new Set(taken).size, 1);
+      assertEquals(
+        await sweepContinuations(b.ctx, { takeover: true }),
+        { examined: 0, launched: 0 },
       );
     });
   },

@@ -54,6 +54,7 @@ import {
   pendingAddressFromKey,
   type PendingRecord,
   pendingRecordKey,
+  type PendingSignalTakenListener,
   type PendingSlot,
   pendingSlotPrefix,
   pendingWorkflowPrefix,
@@ -85,6 +86,7 @@ const HIGHEST_KEY_RECORD_READS = 4;
  */
 export class ControlPlaneSignalWaitStore implements SignalWaitStore {
   readonly #store: AtomicControlPlaneStore;
+  pendingTaken?: PendingSignalTakenListener;
 
   constructor(store: AtomicControlPlaneStore) {
     this.#store = store;

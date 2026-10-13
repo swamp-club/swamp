@@ -868,6 +868,7 @@ const WorkflowSignalRequestSchema = z.object({
       key: z.string().min(1).max(SIGNAL_KEY_MAX_LENGTH),
       payload: z.unknown(),
       acceptsPending: z.boolean().optional(),
+      acceptsReceipt: z.boolean().optional(),
       idempotencyKey: SignalIdempotencyKeySchema,
     }),
   ], {

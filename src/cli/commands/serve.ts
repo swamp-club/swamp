@@ -486,6 +486,7 @@ import {
   sweepContinuations,
   sweepHeldSignals,
 } from "../../serve/continuation_sweep_service.ts";
+import { auditTakenSignals } from "../../serve/signal_delivery.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import {
@@ -4503,6 +4504,9 @@ export const serveCommand = new Command()
           ? join(datastoreResolver.resolvePath("config"), "models")
           : undefined,
       };
+    // Every pending signal a wait takes on this server is audited, whether
+    // the step, a signaller or the sweep took it (swamp-club#3213).
+    auditTakenSignals(connectionCtx);
 
     const ac = new AbortController();
 

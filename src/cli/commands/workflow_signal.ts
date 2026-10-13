@@ -53,6 +53,7 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import type {
+  WorkflowSignalAcceptedResponseData,
   WorkflowSignalPayload,
   WorkflowSignalPendingResponseData,
   WorkflowSignalResponse,
@@ -279,6 +280,8 @@ export function remoteSignalPayload(
     // This command reads a pending reply; a server holds no signal for a
     // client that does not say so.
     acceptsPending: true,
+    // Nor does it answer one with the receipt alone.
+    acceptsReceipt: true,
     ...keyed,
   };
 }
@@ -335,6 +338,33 @@ export function renderRemoteSignalResult(
   // The server does not say which run this was; it still has to be resumed.
   writeOutput(
     "The signal takes effect when the run is next resumed, by someone who may resume it.",
+  );
+}
+
+/**
+ * Renders a signal a server received and says no more about, in log or JSON
+ * mode (swamp-club#3213): what a caller who may signal a workflow and not
+ * read it gets for a key whose step sets `acceptEarly`. The server does not
+ * say whether a wait took the signal or it is held, so neither does this.
+ */
+export function renderAcceptedSignalResult(
+  cliCtx: CommandContext,
+  data: WorkflowSignalAcceptedResponseData,
+): void {
+  if (cliCtx.outputMode === "json") {
+    console.log(JSON.stringify({ ...data, accepted: true }));
+    return;
+  }
+  cliCtx.logger.info`Signal ${data.signal.id} accepted`;
+  if (cliCtx.verbosity === "quiet") return;
+  if (data.duplicate) {
+    writeOutput(
+      `A signal with this idempotency key was already received at ${data.signal.receivedAt}. Nothing more was done with this one.`,
+    );
+    return;
+  }
+  writeOutput(
+    "The server does not tell this token whether a step was waiting. A step that waits on the key takes the signal; otherwise it is held for a step that opens its wait in time.",
   );
 }
 
@@ -464,7 +494,11 @@ export const workflowSignalCommand = withRemoteOptions(
         renderPendingSignalResult(cliCtx, response.pending);
         return;
       }
-      // A reply of a kind added since this build has neither.
+      if (response.accepted !== undefined) {
+        renderAcceptedSignalResult(cliCtx, response.accepted);
+        return;
+      }
+      // A reply of a kind added since this build has none of them.
       if (response.data === undefined) {
         throw new UserError(
           "The server answered the signal in a form this swamp cannot read; upgrade swamp here, then check what the signal did before sending it again.",

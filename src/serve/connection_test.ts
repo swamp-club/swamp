@@ -261,7 +261,8 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
     });
     assertEquals(typeof sent, "object");
   }
-  // A key address may say the client reads a pending reply.
+  // A key address may say the client reads a pending reply, and an accepted
+  // one.
   const flagged = validateServerRequest({
     type: "workflow.signal",
     id: "req-1",
@@ -270,12 +271,19 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
       key: "release-verdict",
       payload: {},
       acceptsPending: true,
+      acceptsReceipt: true,
     },
   });
   assertEquals(
     typeof flagged === "object" &&
       (flagged as { payload: { acceptsPending?: boolean } }).payload
         .acceptsPending,
+    true,
+  );
+  assertEquals(
+    typeof flagged === "object" &&
+      (flagged as { payload: { acceptsReceipt?: boolean } }).payload
+        .acceptsReceipt,
     true,
   );
   // Either address may carry an idempotency key, in the form of one.

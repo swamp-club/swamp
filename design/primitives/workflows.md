@@ -1234,7 +1234,12 @@ the captured schema and takes nothing without one); and serve's sweep, which
 gives the open waits of a run held back only by its waits their pending
 signals (`takePendingSignalsOfRun`) before it times any out
 (`settleExpiredWaits`), and so continues a run whose signaller stopped between
-its create and its second read.
+its create and its second read. The sweep takes the signal and then asks
+`decideContinuation` again; `decideContinuation` itself reads outcomes only,
+so it stays a pure reading of what is stored. Under serve each take is
+audited as `workflow.signal.taken` (see the Signal paragraphs of
+[serve](serve.md)): `takePendingSignal` tells the `pendingTaken` listener of
+the store it took through, with identifiers and never the payload.
 
 _The interleavings._ `S` is the signaller, `P` the step, `g` the highest
 generation of the key before either starts, so the slot is `g+1`.

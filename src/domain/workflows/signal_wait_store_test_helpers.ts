@@ -48,6 +48,7 @@ import {
   pendingAddressFromKey,
   type PendingRecord,
   pendingRecordKey,
+  type PendingSignalTakenListener,
   type PendingSlot,
   pendingSlotPrefix,
   pendingWorkflowPrefix,
@@ -66,6 +67,7 @@ export class InMemorySignalWaitStore implements SignalWaitStore {
   readonly keyRecords = new Map<string, Uint8Array>();
   /** Pending records by their store key. */
   readonly pendingRecords = new Map<string, Uint8Array>();
+  pendingTaken?: PendingSignalTakenListener;
 
   register(registration: WaitRegistration): Promise<void> {
     if (!this.registrations.has(registration.waitId)) {
