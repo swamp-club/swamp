@@ -1800,6 +1800,7 @@ Include files are shipped alongside behaviors but never bundled.
 manifestVersion: 1
 name: "@myorg/homekit"
 version: "2026.03.24.1"
+license: MIT
 behaviors:
   - homekit.ts
 include:

@@ -1,0 +1,167 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * Regenerates src/domain/licensing/spdx_lists.generated.ts from the SPDX
+ * License List data at a pinned release. Run with `deno run refresh-spdx`,
+ * optionally passing a release tag (e.g. `v3.30.0`) to move the pin.
+ *
+ * The lists are vendored so the CLI never fetches them at run time. The
+ * replacements for deprecated ids are curated here: SPDX marks an id
+ * deprecated but does not name its successor in machine-readable form.
+ */
+
+import { fromFileUrl } from "@std/path";
+
+const DEFAULT_TAG = "v3.29.0";
+const OUTPUT = fromFileUrl(
+  new URL("../src/domain/licensing/spdx_lists.generated.ts", import.meta.url),
+);
+
+/** Suggested expression for each deprecated license id that has one. */
+const DEPRECATED_REPLACEMENTS: Record<string, string> = {
+  "AGPL-1.0": "AGPL-1.0-only",
+  "AGPL-3.0": "AGPL-3.0-only",
+  "BSD-2-Clause-FreeBSD": "BSD-2-Clause",
+  "BSD-2-Clause-NetBSD": "BSD-2-Clause",
+  "bzip2-1.0.5": "bzip2-1.0.6",
+  "eCos-2.0": "GPL-2.0-or-later WITH eCos-exception-2.0",
+  "GFDL-1.1": "GFDL-1.1-only",
+  "GFDL-1.2": "GFDL-1.2-only",
+  "GFDL-1.3": "GFDL-1.3-only",
+  "GPL-1.0": "GPL-1.0-only",
+  "GPL-1.0+": "GPL-1.0-or-later",
+  "GPL-2.0": "GPL-2.0-only",
+  "GPL-2.0+": "GPL-2.0-or-later",
+  "GPL-2.0-with-autoconf-exception": "GPL-2.0-only WITH Autoconf-exception-2.0",
+  "GPL-2.0-with-bison-exception": "GPL-2.0-or-later WITH Bison-exception-2.2",
+  "GPL-2.0-with-classpath-exception":
+    "GPL-2.0-only WITH Classpath-exception-2.0",
+  "GPL-2.0-with-font-exception": "GPL-2.0-only WITH Font-exception-2.0",
+  "GPL-2.0-with-GCC-exception": "GPL-2.0-only WITH GCC-exception-2.0",
+  "GPL-3.0": "GPL-3.0-only",
+  "GPL-3.0+": "GPL-3.0-or-later",
+  "GPL-3.0-with-autoconf-exception": "GPL-3.0-only WITH Autoconf-exception-3.0",
+  "GPL-3.0-with-GCC-exception": "GPL-3.0-only WITH GCC-exception-3.1",
+  "LGPL-2.0": "LGPL-2.0-only",
+  "LGPL-2.0+": "LGPL-2.0-or-later",
+  "LGPL-2.1": "LGPL-2.1-only",
+  "LGPL-2.1+": "LGPL-2.1-or-later",
+  "LGPL-3.0": "LGPL-3.0-only",
+  "LGPL-3.0+": "LGPL-3.0-or-later",
+  "Nunit": "zlib-acknowledgement",
+  "StandardML-NJ": "SMLNJ",
+  "wxWindows": "LGPL-2.0-or-later WITH WxWindows-exception-3.1",
+};
+
+interface SpdxEntry {
+  id: string;
+  deprecated: boolean;
+}
+
+async function fetchList(
+  tag: string,
+  file: string,
+  key: "licenses" | "exceptions",
+  idField: "licenseId" | "licenseExceptionId",
+): Promise<{ version: string; entries: SpdxEntry[] }> {
+  const url =
+    `https://raw.githubusercontent.com/spdx/license-list-data/${tag}/json/${file}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) {
+    throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}`);
+  }
+  const body = await res.json() as Record<string, unknown>;
+  const rows = body[key] as Array<Record<string, unknown>>;
+  return {
+    version: String(body.licenseListVersion),
+    entries: rows.map((row) => ({
+      id: String(row[idField]),
+      deprecated: row.isDeprecatedLicenseId === true,
+    })),
+  };
+}
+
+function idArray(name: string, ids: string[]): string {
+  const sorted = [...ids].sort((a, b) => a.localeCompare(b, "en"));
+  return `export const ${name}: readonly string[] = [\n${
+    sorted.map((id) => `  ${JSON.stringify(id)},`).join("\n")
+  }\n];\n`;
+}
+
+async function main(): Promise<void> {
+  const tag = Deno.args[0] ?? DEFAULT_TAG;
+  const licenses = await fetchList(
+    tag,
+    "licenses.json",
+    "licenses",
+    "licenseId",
+  );
+  const exceptions = await fetchList(
+    tag,
+    "exceptions.json",
+    "exceptions",
+    "licenseExceptionId",
+  );
+
+  const deprecatedIds = licenses.entries.filter((e) => e.deprecated).map((e) =>
+    e.id
+  );
+  const replacements = Object.fromEntries(
+    deprecatedIds
+      .filter((id) => DEPRECATED_REPLACEMENTS[id] !== undefined)
+      .sort((a, b) => a.localeCompare(b, "en"))
+      .map((id) => [id, DEPRECATED_REPLACEMENTS[id]]),
+  );
+
+  const header = (await Deno.readTextFile(fromFileUrl(import.meta.url)))
+    .split("\n")
+    .slice(0, 18)
+    .join("\n");
+
+  const content = `${header}
+
+// Generated by scripts/refresh_spdx_lists.ts from spdx/license-list-data
+// ${tag}. Do not edit by hand; run \`deno run refresh-spdx\` instead.
+
+/** The SPDX License List release these lists were taken from. */
+export const SPDX_LIST_VERSION = ${JSON.stringify(licenses.version)};
+
+/** Current (not deprecated) SPDX license ids. */
+${idArray("SPDX_LICENSE_IDS", licenses.entries.filter((e) => !e.deprecated).map((e) => e.id))}
+/** Deprecated SPDX license ids. */
+${idArray("SPDX_DEPRECATED_LICENSE_IDS", deprecatedIds)}
+/** Current (not deprecated) SPDX license exception ids. */
+${idArray("SPDX_EXCEPTION_IDS", exceptions.entries.filter((e) => !e.deprecated).map((e) => e.id))}
+/** Deprecated SPDX license exception ids. */
+${idArray("SPDX_DEPRECATED_EXCEPTION_IDS", exceptions.entries.filter((e) => e.deprecated).map((e) => e.id))}
+/** The expression to use instead of a deprecated license id. */
+export const SPDX_DEPRECATED_REPLACEMENTS: Readonly<Record<string, string>> = ${
+    JSON.stringify(replacements, null, 2)
+  };
+`;
+  await Deno.writeTextFile(OUTPUT, content);
+  console.log(
+    `Wrote ${OUTPUT} (SPDX ${licenses.version}: ${licenses.entries.length} licenses, ${exceptions.entries.length} exceptions)`,
+  );
+}
+
+if (import.meta.main) {
+  await main();
+}

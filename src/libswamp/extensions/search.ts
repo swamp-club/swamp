@@ -66,6 +66,8 @@ export interface ExtensionSearchInput {
   sort?: string;
   perPage?: number;
   page?: number;
+  /** Ask the registry for licensed extensions only. */
+  licensed?: boolean;
 }
 
 /** Dependencies for the extension search operation. */
@@ -80,6 +82,7 @@ export interface ExtensionSearchDeps {
     sort?: string;
     perPage?: number;
     page?: number;
+    licensed?: boolean;
   }): Promise<{
     extensions: Array<{
       name: string;
@@ -127,6 +130,7 @@ export async function* extensionSearch(
         sort: input.sort,
         perPage: input.perPage,
         page: input.page,
+        ...(input.licensed ? { licensed: true } : {}),
       });
 
       yield {

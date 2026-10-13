@@ -171,6 +171,37 @@ function makeExecuteInput(
 
 const ctx = createLibSwampContext();
 
+Deno.test("extensionPush: sends the declared license at initiate and confirm, and omits it when undeclared", async () => {
+  for (const license of ["MIT", undefined]) {
+    const requests: ExtensionPushMetadata[] = [];
+    const deps = makeExecuteDeps({
+      initiatePush: (_url, metadata) => {
+        requests.push(metadata);
+        return Promise.resolve({ uploadUrl: "https://example.com/upload" });
+      },
+      confirmPush: (_url, metadata) => {
+        requests.push(metadata);
+        return Promise.resolve({
+          name: metadata.name,
+          version: metadata.version,
+          extensionId: "ext-licensed",
+          visibility: "public",
+        });
+      },
+    });
+    await collect(extensionPush(
+      ctx,
+      deps,
+      makeExecuteInput({ manifest: makeManifest({ license }) }),
+    ));
+    assertEquals(requests.length, 2);
+    for (const request of requests) {
+      assertEquals(request.license, license);
+      assertEquals("license" in request, license !== undefined);
+    }
+  }
+});
+
 Deno.test("extensionPush: sends private intent to both phases and uses applied visibility", async () => {
   const requests: ExtensionPushMetadata[] = [];
   const deps = makeExecuteDeps({
@@ -2840,4 +2871,52 @@ Deno.test("extensionPushPrepare: dry run reports a yanked version as taken and n
     (check?.message ?? "").includes("swamp extension promote"),
     false,
   );
+});
+
+// ── Declared license (optional) ─────────────────────────────────────
+
+Deno.test("extensionPushPrepare: a license is optional — no license and no LICENSE file prepares with no warning", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
+    assertEquals(result.gateFailures, []);
+    assertEquals(result.licenseWarning, undefined);
+    assertEquals(result.resolvedData.license, null);
+  });
+});
+
+Deno.test("extensionPushPrepare: a valid SPDX license prepares with no warning and is resolved", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+      ...input,
+      manifest: { ...input.manifest, license: "MIT OR Apache-2.0" },
+    });
+    assertEquals(result.licenseWarning, undefined);
+    assertEquals(result.resolvedData.license, "MIT OR Apache-2.0");
+  });
+});
+
+Deno.test("extensionPushPrepare: an invalid or non-SPDX license warns and never blocks, even when a push enforces its gates", async () => {
+  for (
+    const [license, reason] of [
+      ["MIT Apache-2.0", "invalid-syntax"],
+      ["Swampy-1.0", "unknown-license"],
+      ["GPL-2.0+", "deprecated-license"],
+      ["LicenseRef-Mine", "custom-ref"],
+      [
+        "AGPL-3.0-only WITH AdditionRef-Swamp-Extension-Exception",
+        "custom-ref",
+      ],
+    ] as const
+  ) {
+    await withCollectFixture({}, async (_dir, input) => {
+      const result = await extensionPushPrepare(ctx, makePrepareDeps(), {
+        ...input,
+        manifest: { ...input.manifest, license },
+        localGates: "enforce",
+      });
+      assertEquals(result.licenseWarning?.reason, reason, license);
+      assertEquals(result.licenseWarning?.license, license);
+      assertEquals(result.resolvedData.license, license);
+    });
+  }
 });

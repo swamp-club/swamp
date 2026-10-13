@@ -203,6 +203,14 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
         const passStatus = score.allPassed
           ? "all factors earned"
           : "some factors missing";
+        if (e.data.license !== null) {
+          logger.info`License: ${e.data.license}`;
+        } else {
+          logger.info("License: none declared");
+        }
+        if (e.data.licenseWarning) {
+          logger.warn`${e.data.licenseWarning.message}`;
+        }
         logger.info(
           `Rubric v${score.rubricVersion} — ${score.earnedPoints}/${score.maxClientEarnablePoints} points (${score.percentage}%${provisional}, ${passStatus})`,
         );
@@ -384,6 +392,10 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             archiveSize,
             cacheHit,
             registryScorable,
+            license: e.data.license,
+            licenseWarnings: e.data.licenseWarning
+              ? [e.data.licenseWarning]
+              : [],
             gateFailures,
             excludedFromArchive,
             warnings: withAcceptance(

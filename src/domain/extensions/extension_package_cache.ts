@@ -165,6 +165,9 @@ function serializeManifestForHash(manifest: ExtensionManifest): string {
   lines.push(`manifestVersion=${manifest.manifestVersion}`);
   lines.push(`description=${manifest.description ?? ""}`);
   lines.push(`repository=${manifest.repository ?? ""}`);
+  if (manifest.license !== undefined) {
+    lines.push(`license=${manifest.license}`);
+  }
   if (manifest.visibility !== undefined) {
     lines.push(`visibility=${manifest.visibility}`);
   }

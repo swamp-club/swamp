@@ -10,6 +10,7 @@ what earns the score.
 manifestVersion: 1
 name: "@mycollective/my-extension"
 version: "2026.04.22.1"
+license: MIT
 description: "One clear sentence about what this extension does and who would use it."
 
 repository: https://github.com/mycollective/my-extension
@@ -41,6 +42,7 @@ Fields to double-check before publishing:
 - `description` is not `"TODO"`, `"tbd"`, or an empty string
 - `repository` is HTTPS and on github.com, gitlab.com, codeberg.org, or
   bitbucket.org
+- `license:` is a valid SPDX expression (e.g. `MIT`) — optional, earns a point
 - Both `README.md` and a LICENSE file are listed in `additionalFiles:`
 - `platforms:` is either empty or has ≥2 entries (a single explicit platform
   fails `platforms-two`)
@@ -66,6 +68,7 @@ for the canonical reference.
 manifestVersion: 1
 name: "@mycollective/my-extension"
 version: "2026.04.22.1"
+license: MIT
 description: "One clear sentence about what this extension does."
 repository: https://github.com/mycollective/my-extension
 
@@ -214,7 +217,8 @@ before pushing.
 | Mistake                                                          | Consequence                                                        | Fix                                                                                                                                                                                                              |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | README in repo root but not in `additionalFiles:`                | `has-readme` 0/2, `readme-example` 0/1, `rich-readme` 0/1 = -4 pts | Add `README.md` to `additionalFiles:` in the manifest. For per-extension-subdir layouts, set `paths.base: manifest` so the README beside the manifest resolves with a bare basename (default mode is unchanged). |
-| LICENSE file in repo but not in `additionalFiles:`               | `has-license` 0/1 = -1 pt                                          | Add the LICENSE file to `additionalFiles:`. Same `paths.base: manifest` opt-in available if your LICENSE sits alongside a per-directory manifest.                                                                |
+| LICENSE file in repo but not in `additionalFiles:`               | `license-file` 0/1 = -1 pt                                         | Add the LICENSE file to `additionalFiles:`. Same `paths.base: manifest` opt-in available if your LICENSE sits alongside a per-directory manifest.                                                                |
+| No `license:`, or a `LicenseRef-` / non-SPDX value               | `has-license` 0/1 = -1 pt                                          | Declare an SPDX expression, e.g. `license: MIT`. Optional — nothing is refused.                                                                                                                                  |
 | Missing return type on one exported function                     | `fast-check` 0/1 = -1 pt                                           | Add explicit `: ReturnType` annotation                                                                                                                                                                           |
 | Description set to `"TODO"`                                      | technically passes, wastes the signal                              | Write a real one-sentence description                                                                                                                                                                            |
 | `repository:` URL is HTTP not HTTPS                              | `repository-verified` 0/2 = -2 pts                                 | Switch to `https://`                                                                                                                                                                                             |

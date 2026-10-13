@@ -138,6 +138,8 @@ export interface ExtensionPushResolvedData {
   version: string;
   /** Requested intent, not a prediction of registry authorization or defaults. */
   visibility: PublishVisibility | "default";
+  /** The declared SPDX license expression, or null when none is declared. */
+  license: string | null;
   description: string | undefined;
   repository: string | undefined;
   releaseNotes: string | undefined;
@@ -324,6 +326,11 @@ export interface ExtensionPushPrepared {
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
   reviewRulesResult: ReviewRulesResult;
+  /**
+   * Set when the manifest declares a license that is not a valid SPDX
+   * expression. A license is optional, so this never blocks a push.
+   */
+  licenseWarning: ManifestLicenseWarning | undefined;
   /** The `quality.yaml` sidecar beside the manifest, when one exists. */
   sidecar: { path: string; value: QualitySidecar } | undefined;
   /**
@@ -506,6 +513,8 @@ export interface ExtensionPushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
+  /** The declared SPDX license expression; omitted when none is declared. */
+  license?: string;
   /** Public/default selection is represented by omission on the wire. */
   visibility?: "private";
   contentMetadata?: ExtensionContentMetadata;
@@ -607,6 +616,10 @@ import type {
   ExtensionAcceptances,
 } from "../../domain/extensions/extension_content.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import {
+  type ManifestLicenseWarning,
+  manifestLicenseWarning,
+} from "../../domain/licensing/manifest_license_policy.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
   type ApiCallRecorder,
@@ -1416,6 +1429,7 @@ export async function extensionPushPrepare(
     safetyWarnings: findings.safetyWarnings,
     dependencyTrustResult,
     reviewRulesResult,
+    licenseWarning: manifestLicenseWarning(input.manifest.license),
     sidecar,
     acceptances: findings.acceptances,
     commentSites: findings.commentSites,
@@ -2139,6 +2153,7 @@ export async function* extensionPush(
           ? { binaries: input.manifest.binaries }
           : {}),
         ...(input.channel ? { channel: input.channel } : {}),
+        ...(input.manifest.license ? { license: input.manifest.license } : {}),
         ...(requestedVisibility === "private"
           ? { visibility: requestedVisibility }
           : {}),
@@ -2392,6 +2407,7 @@ function buildResolvedData(
     name: input.manifest.name,
     version: input.manifest.version,
     visibility: input.manifest.visibility ?? "default",
+    license: input.manifest.license ?? null,
     description: input.manifest.description,
     repository: input.manifest.repository,
     releaseNotes: resolvedReleaseNotes,
@@ -2595,6 +2611,7 @@ async function createArchive(
         name: input.manifest.name,
         version: input.manifest.version,
         description: input.manifest.description ?? "",
+        ...(input.manifest.license ? { license: input.manifest.license } : {}),
         ...(input.manifest.visibility
           ? { visibility: input.manifest.visibility }
           : {}),

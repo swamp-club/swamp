@@ -27,6 +27,7 @@ Create a `manifest.yaml` in your repository root (or any directory):
 manifestVersion: 1
 name: "@myorg/my-extension"
 version: "2026.02.26.1"
+license: MIT
 description: "Optional description of the extension"
 repository: "https://github.com/myorg/my-extension"
 behaviors:
@@ -54,6 +55,7 @@ dependencies:
 | `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                         |
 | `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                        |
 | `description`     | No       | Human-readable description                                                                                                                               |
+| `license`         | No       | SPDX license expression (e.g. `MIT`, `MIT OR Apache-2.0`). Optional; a valid one earns a quality point. See "License".                                   |
 | `visibility`      | No       | `public` (registry default) or `private`. Optional `--visibility` overrides this field; omitting both preserves registry defaults.                       |
 | `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.        |
 | `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                      |
@@ -78,6 +80,24 @@ Push packs the behavior files under the archive's `models/` and writes `models:`
 into the pushed manifest. See
 [Behavior and model spellings](../../extension/guide.md#behavior-and-model-spellings)
 for the compatibility rules.
+
+### License
+
+The license is optional, for public and private extensions alike. Nothing is
+refused without one. Each of these earns one quality point:
+
+- `license:` in the manifest, a valid SPDX expression: SPDX ids in their
+  canonical case, joined with `AND`/`OR`, `WITH` an SPDX exception, and
+  parentheses (`has-license`, "License declared").
+- A non-empty `LICENSE`, `LICENSE.md` or `LICENSE.txt` listed in
+  `additionalFiles:` as a bare file name (`license-file`, "LICENSE file
+  included").
+
+Only SPDX identifiers count. A malformed expression, an id not on the SPDX
+License List, a deprecated id (`GPL-2.0`, a trailing `+`), or any `LicenseRef-`
+or `AdditionRef-` earns no point and prints a warning; it never blocks. The
+warning is `licenseWarnings` in `swamp extension quality --json` and
+`warnings.license` in `swamp extension push --json`.
 
 ### Private publication
 
@@ -212,6 +232,7 @@ extensions/behaviors/utils/helper.ts     #        my-ext/extensions/behaviors/ut
 manifestVersion: 1
 name: "@me/my-ext"
 version: "2026.04.29.1"
+license: MIT
 behaviors:
   - echo.ts
   - utils/helper.ts
@@ -234,6 +255,7 @@ extensions/behaviors/my-ext/README.md
 manifestVersion: 1
 name: "@me/my-ext"
 version: "2026.04.29.1"
+license: MIT
 paths:
   base: manifest
 behaviors:
@@ -377,6 +399,7 @@ examples and helper script details.
 manifestVersion: 1
 name: "@myorg/s3-tools"
 version: "2026.02.26.1"
+license: MIT
 behaviors:
   - s3_bucket.ts
 ```
@@ -387,6 +410,7 @@ behaviors:
 manifestVersion: 1
 name: "@myorg/deploy-suite"
 version: "2026.02.26.1"
+license: MIT
 description: "Deployment automation behaviors and workflows"
 behaviors:
   - ec2_instance.ts
@@ -403,6 +427,7 @@ additionalFiles:
 manifestVersion: 1
 name: "@myorg/monitoring"
 version: "2026.02.26.1"
+license: MIT
 behaviors:
   - cloudwatch_alarm.ts
   - sns_topic.ts
@@ -417,6 +442,7 @@ dependencies:
 manifestVersion: 1
 name: "@myorg/ports"
 version: "2026.03.01.1"
+license: MIT
 behaviors:
   - ports.ts
 reports:

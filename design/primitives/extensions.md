@@ -79,6 +79,27 @@ reports the actual `public`/`private` visibility from the confirmation response.
 Explicit private requests require a private confirmation and never fall back to
 a best-effort lookup.
 
+## Declared License
+
+A manifest may set `license:` to an SPDX license expression. It is optional for
+public and private extensions alike: nothing is refused without it. Parsing a
+manifest only checks that `license` is a non-empty string, so reading an
+installed extension never depends on the SPDX lists.
+
+Push preparation checks a declared value with the syntax-only parser in
+`src/domain/licensing/` against the SPDX License List vendored there (`deno run
+refresh-spdx` updates it, pinned to a release). Only SPDX identifiers in
+canonical case count; a malformed expression, an unknown or deprecated id, or
+any `LicenseRef-`/`AdditionRef-` produces a warning (`licenseWarnings` in
+quality, `warnings.license` in push) and never blocks.
+
+The rubric has two license factors, one point each: `has-license` ("License
+declared") for a valid SPDX `license:`, and `license-file` ("LICENSE file
+included") for a non-empty license file in the archive. The expression is sent
+on initiation and confirmation; `extension info` shows the latest version's
+license when the registry reports one, else the extension-level setting.
+`extension search --licensed` asks for licensed extensions only.
+
 A private publication the registry refuses on entitlement (its 403) is reported
 as the registry's own sentence followed by what the registry had reported for
 the collective at sign-in: its plan, as the registry labels it, and its trial
@@ -597,6 +618,7 @@ check rejects, since it refuses any tar entry containing `..` or starting with
 manifestVersion: 1
 name: "@keeb/ssh"
 version: "2026.02.26.1"
+license: MIT
 description: "SSH connection management for swamp"
 models:
   - ssh/connection.ts

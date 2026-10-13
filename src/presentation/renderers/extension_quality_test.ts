@@ -83,6 +83,8 @@ function completedEvent(
     kind: "completed",
     data: {
       score,
+      license: "MIT",
+      licenseWarning: undefined,
       cacheHash: "abc123",
       archiveSize: 1024,
       cacheHit: false,
@@ -481,4 +483,66 @@ Deno.test("createExtensionQualityRenderer: json status is failed when the rubric
   const doc = JSON.parse(logs[0]);
   assertEquals(doc.allPassed, true);
   assertEquals(doc.status, "failed");
+});
+
+for (const license of ["MIT", null]) {
+  Deno.test(`createExtensionQualityRenderer: the declared license (${license}) is in log and JSON`, () => {
+    const manifestDir = resolve("/ext");
+    const json = capture(() =>
+      createExtensionQualityRenderer("json").handlers({ manifestDir })
+        .completed(completedEvent(makeScore(), { license }))
+    );
+    assertEquals(JSON.parse(json[0]).license, license);
+    const log = capture(() =>
+      createExtensionQualityRenderer("log").handlers({
+        manifestDir,
+        cwd: manifestDir,
+      }).completed(completedEvent(makeScore(), { license }))
+    ).join("\n");
+    assertStringIncludes(
+      log,
+      license === null ? "License: none declared" : `License: "${license}"`,
+    );
+  });
+}
+
+Deno.test("createExtensionQualityRenderer: a non-SPDX license warns in log and JSON and does not fail the run", () => {
+  const manifestDir = resolve("/ext");
+  const licenseWarning = {
+    license: "LicenseRef-Mine",
+    reason: "custom-ref" as const,
+    term: "LicenseRef-Mine",
+    message:
+      'License "LicenseRef-Mine" in manifest.yaml is not a valid SPDX expression, so it earns no quality points: "LicenseRef-Mine" is a custom reference, not an SPDX identifier; only SPDX ids count.',
+    violations: [],
+  };
+  const score = makeScore({ allPassed: true });
+  const json = capture(() =>
+    createExtensionQualityRenderer("json").handlers({ manifestDir })
+      .completed(
+        completedEvent(score, { license: "LicenseRef-Mine", licenseWarning }),
+      )
+  );
+  const doc = JSON.parse(json[0]);
+  assertEquals(doc.status, "passed");
+  assertEquals(doc.licenseWarnings, [licenseWarning]);
+  assertEquals(doc.gateFailures, []);
+  const log = capture(() =>
+    createExtensionQualityRenderer("log").handlers({
+      manifestDir,
+      cwd: manifestDir,
+    }).completed(
+      completedEvent(score, { license: "LicenseRef-Mine", licenseWarning }),
+    )
+  ).join("\n");
+  assertStringIncludes(log, "is not a valid SPDX expression");
+});
+
+Deno.test("createExtensionQualityRenderer: JSON carries an empty licenseWarnings when the license is fine", () => {
+  const json = capture(() =>
+    createExtensionQualityRenderer("json").handlers({
+      manifestDir: resolve("/ext"),
+    }).completed(completedEvent(makeScore()))
+  );
+  assertEquals(JSON.parse(json[0]).licenseWarnings, []);
 });

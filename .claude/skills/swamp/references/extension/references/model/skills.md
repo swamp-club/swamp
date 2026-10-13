@@ -91,6 +91,7 @@ Declare skills in `manifest.yaml` as a flat list of directory names:
 manifestVersion: 1
 name: "@myorg/redmine-workflow"
 version: "2026.04.14.1"
+license: MIT
 description: "Workflow skills for @webframp/redmine"
 skills:
   - create-story
@@ -206,6 +207,7 @@ manifest.yaml
 manifestVersion: 1
 name: "@myorg/redmine-workflow"
 version: "2026.04.14.1"
+license: MIT
 description: "Story and hypothesis workflow skills for Redmine"
 skills:
   - create-story
