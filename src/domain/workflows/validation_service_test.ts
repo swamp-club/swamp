@@ -2765,6 +2765,22 @@ Deno.test("validate: reports a static vault.get outside the workflow's vaults li
   assertEquals(failed[0].error?.includes("'roomcontrol'"), false);
 });
 
+Deno.test("validate: reports a bare-token vault.get outside the workflow's vaults list (swamp-club#3360)", async () => {
+  const results = await service.validate(vaultsListWorkflow(["roomcontrol"], {
+    a: "${{ vault.get(roomcontrol, k) }}",
+    b: "${{ vault.get(erp, k) }}",
+    c: "${{ vault.get(inputs.vault, k) }}",
+  }));
+  const failed = results.filter((r) => !r.passed);
+  assertEquals(failed.length, 1);
+  assertEquals(
+    failed[0].name,
+    "Vaults the workflow reads are in its vaults list",
+  );
+  assertEquals(failed[0].error?.includes("'erp'"), true);
+  assertEquals(failed[0].error?.includes("'roomcontrol'"), false);
+});
+
 Deno.test("validate: no vaults list reports nothing about vaults", async () => {
   const results = await service.validate(vaultsListWorkflow(undefined, {
     b: "${{ vault.get('erp', 'k') }}",

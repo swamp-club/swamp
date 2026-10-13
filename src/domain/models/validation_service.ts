@@ -32,8 +32,13 @@ import {
 } from "../expressions/expression_parser.ts";
 import {
   containsSwampExpression,
+  foreignRootsBesideVault,
   isForeignExpression,
+  isSwampExpression,
+  unresolvableVaultArguments,
+  WIDEST_SWAMP_SCOPE,
 } from "../expressions/swamp_namespaces.ts";
+import { findVaultGetCalls } from "../expressions/vault_reference_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
 import { foreignTemplatePathPredicate } from "./foreign_template_fields.ts";
 import {
@@ -906,6 +911,39 @@ export class DefaultModelValidationService implements ModelValidationService {
         continue;
       }
 
+      // An unquoted vault.get argument holding a "." is evaluated as CEL, so
+      // one that reads nothing swamp provides fails when the run resolves it.
+      for (const arg of unresolvableVaultArguments(celExpression)) {
+        errors.push({
+          expression: raw,
+          error:
+            `vault.get argument "${arg}" at "${path}" is evaluated as an expression because it contains ".", and it reads nothing swamp provides`,
+          suggestion:
+            `Quote it to use it as a literal name: '${arg}'. To compute the name instead, reference a swamp namespace, e.g. inputs.secretKey.`,
+        });
+      }
+
+      // An expression that reads vault is always evaluated, so a root swamp
+      // does not provide fails the run instead of passing through. A root
+      // that names one of this repo's models still gets the missing "model."
+      // prefix error below.
+      const beside = foreignRootsBesideVault(celExpression);
+      if (
+        beside.length > 0 &&
+        !await this.namesModel(celExpression, definitionRepo)
+      ) {
+        errors.push({
+          expression: raw,
+          error:
+            `Expression "${celExpression}" at "${path}" reads vault, so swamp evaluates all of it, but it also reads ${
+              beside.map((root) => `"${root}"`).join(", ")
+            }, which swamp does not provide`,
+          suggestion:
+            "Reference only swamp's namespaces (model, self, inputs, env, vault, data) in an expression that reads vault. Put another templating system's text in its own ${{ ... }}, or pass it through with literal().",
+        });
+        continue;
+      }
+
       // Validate model references
       const pathRefs = extractPathReferences(celExpression);
       const modelErrors = await Promise.all(
@@ -994,10 +1032,17 @@ export class DefaultModelValidationService implements ModelValidationService {
       return null;
     }
 
-    // Check if it's a valid vault expression (vault.get(...))
+    // Check if it's a valid vault expression: one that is a vault.get(...)
+    // call from end to end, or that holds one written as code anywhere and
+    // reads only swamp's namespaces (vault.get(t, KEY) + "-x",
+    // int(vault.get(t, PORT))).
     const vaultPattern = /^vault\.get\(.*\)$/;
-    if (vaultPattern.test(celExpression)) {
-      return null; // Valid vault expression
+    if (
+      vaultPattern.test(celExpression) ||
+      (findVaultGetCalls(celExpression).length > 0 &&
+        isSwampExpression(celExpression, WIDEST_SWAMP_SCOPE))
+    ) {
+      return null;
     }
 
     // Check if it's a valid file.contents expression
