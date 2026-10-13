@@ -202,7 +202,8 @@ export interface IneffectiveRestriction {
   /**
    * `no-type`: the entry names no model type at all (`@`, `::`); serve
    * refuses to start. `unknown-type`: a bare entry naming no registered
-   * type, likely misspelled or missing its `@`. `unknown-command`: not a
+   * type (or, where only built-in types are known, no built-in type),
+   * likely misspelled or missing its `@`. `unknown-command`: not a
    * server request type; commands match exactly.
    */
   readonly reason: "no-type" | "unknown-type" | "unknown-command";
@@ -217,9 +218,17 @@ export interface IneffectiveRestrictionInput {
   readonly requestTypes: ReadonlySet<string>;
   /**
    * Whether a model type is registered. Omitted where the registry is not
-   * loaded (`serve check-config`), which skips the `unknown-type` check.
+   * loaded (`serve check-config`).
    */
   readonly isKnownModelType?: (type: string) => boolean;
+  /**
+   * Whether a model type is built in, used when `isKnownModelType` is
+   * omitted. Built-in types need no registry load, so `serve check-config`
+   * can check bare entries against them; a bare extension type is reported
+   * too, since it cannot be seen without loading extensions
+   * (swamp-club#3132). With neither lookup, bare entries are not checked.
+   */
+  readonly isBuiltInModelType?: (type: string) => boolean;
 }
 
 /**
@@ -244,17 +253,26 @@ export function findIneffectiveRestrictions(
       });
       continue;
     }
+    if (entry.startsWith("@")) continue;
     const isKnown = input.isKnownModelType;
-    if (
-      isKnown !== undefined && !entry.startsWith("@") &&
-      !isKnown(key) && !isKnown(`@${key}`)
-    ) {
+    const isBuiltIn = input.isBuiltInModelType;
+    if (isKnown !== undefined) {
+      if (!isKnown(key) && !isKnown(`@${key}`)) {
+        found.push({
+          option: "restricted-model-types",
+          entry,
+          reason: "unknown-type",
+          message:
+            `restricted-model-types entry "${entry}" names no registered model type — check the spelling, or write an extension type as @${key}`,
+        });
+      }
+    } else if (isBuiltIn !== undefined && !isBuiltIn(key)) {
       found.push({
         option: "restricted-model-types",
         entry,
         reason: "unknown-type",
         message:
-          `restricted-model-types entry "${entry}" names no registered model type — check the spelling, or write an extension type as @${key}`,
+          `restricted-model-types entry "${entry}" is not a built-in model type — check the spelling; if it names an extension type, write it as @${key}`,
       });
     }
   }

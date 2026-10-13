@@ -417,6 +417,44 @@ Deno.test("findIneffectiveRestrictions: skips the registry check without a type 
   );
 });
 
+Deno.test("findIneffectiveRestrictions: reports a bare entry that is not a built-in type when only built-ins are known", () => {
+  const builtIn = new Set(["command/shell"]);
+  const found = findIneffectiveRestrictions({
+    restrictedModelTypes:
+      "command/shell, Command::Shell, comand/shell, exp/probe, @exp/probe",
+    requestTypes: REQUEST_TYPES,
+    isBuiltInModelType: (type) => builtIn.has(type),
+  });
+  assertEquals(found.map((f) => [f.entry, f.reason, f.message]), [
+    [
+      "comand/shell",
+      "unknown-type",
+      'restricted-model-types entry "comand/shell" is not a built-in model type — check the spelling; if it names an extension type, write it as @comand/shell',
+    ],
+    [
+      "exp/probe",
+      "unknown-type",
+      'restricted-model-types entry "exp/probe" is not a built-in model type — check the spelling; if it names an extension type, write it as @exp/probe',
+    ],
+  ]);
+});
+
+Deno.test("findIneffectiveRestrictions: prefers the registry lookup over the built-in lookup", () => {
+  const registered = new Set(["command/shell", "@exp/probe"]);
+  const found = findIneffectiveRestrictions({
+    restrictedModelTypes: "exp/probe, comand/shell",
+    requestTypes: REQUEST_TYPES,
+    isKnownModelType: (type) => registered.has(type),
+    isBuiltInModelType: () => false,
+  });
+  assertEquals(found.map((f) => [f.entry, f.message]), [
+    [
+      "comand/shell",
+      'restricted-model-types entry "comand/shell" names no registered model type — check the spelling, or write an extension type as @comand/shell',
+    ],
+  ]);
+});
+
 Deno.test("findIneffectiveRestrictions: reports a restricted command that is not a request type", () => {
   const found = findIneffectiveRestrictions({
     restrictedCommands: "vault.put, vault.putt, Extension.Install",
