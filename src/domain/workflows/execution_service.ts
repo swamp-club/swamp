@@ -254,6 +254,7 @@ import {
 import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
+  type ForeignTaskArgument,
   type SanitizedTaskOverlay,
   StepProvenanceOverlay,
   type WorkflowEvaluationResult,
@@ -620,6 +621,33 @@ async function resolveScalarExpression(
     );
   }
   return String(resolved);
+}
+
+/**
+ * Warns about each step argument that reaches its method holding another
+ * templating system's `${{ ... }}` text. Evaluation no longer fails on such
+ * text, so a misspelt namespace (`input.region`) would otherwise pass
+ * unnoticed (swamp-club#2528). It covers text deferred past run start too
+ * (one reading `self.*` or `steps.*`), which the step-time passes leave raw
+ * without a report of their own.
+ */
+function warnForeignTaskArguments(
+  workflowName: string,
+  foreign: readonly ForeignTaskArgument[],
+): void {
+  const logger = getSwampLogger(["swamp", "expressions"]);
+  for (const { jobName, stepName, path, text, deferred, misspelt } of foreign) {
+    if (misspelt) {
+      logger
+        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, and ${misspelt.root} is not a swamp namespace. Did you mean ${misspelt.namespace}? As written, the step receives it as literal text`;
+    } else if (deferred) {
+      logger
+        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text`;
+    } else {
+      logger
+        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which is not a swamp expression, so the step receives it as literal text`;
+    }
+  }
 }
 
 /** True when a step of `workflow` waits for a signal. */
@@ -2195,6 +2223,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ctx.expressionContext,
           authoredExpressions,
           stepSecretBag,
+          "passThrough",
         );
       } else if (task.inputs) {
         stepInputs = stepInputPair(taskArgs);
@@ -2241,6 +2270,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ctx.expressionContext,
           authoredExpressions,
           stepSecretBag,
+          "passThrough",
         );
       }
 
@@ -4703,6 +4733,7 @@ export class WorkflowExecutionService {
         expressionContext,
         authoredExpressions,
       );
+      warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
       const sanitizedTasks = evaluated.sanitizedTasks;
       const stepProvenance = evaluated.stepProvenance;
@@ -6908,6 +6939,7 @@ export class WorkflowExecutionService {
         inputsProvenance,
         expressionContext,
         options.authoredExpressions,
+        "passThrough",
       );
       evaluatedInputs = tracked.data as Record<string, unknown>;
       inputsProvenance = tracked.provenance;
@@ -8083,6 +8115,7 @@ export class WorkflowExecutionService {
         result.expressionsEvaluated,
       );
       evalSpan.setStatus({ code: SpanStatusCode.OK });
+      warnForeignTaskArguments(workflow.name, result.foreignTaskArguments);
       return result;
     } catch (error) {
       evalSpan.setStatus({

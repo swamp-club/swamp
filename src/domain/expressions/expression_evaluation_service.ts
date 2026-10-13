@@ -59,6 +59,10 @@ import {
 } from "./definition_expression_pass.ts";
 import { ProvenanceMap } from "./provenance_map.ts";
 import {
+  failedOnForeignRoot,
+  isForeignExpression,
+} from "./swamp_namespaces.ts";
+import {
   attachBindingProvenance,
   bindingProvenanceOf,
   spliceOrigin,
@@ -382,6 +386,16 @@ export interface EvaluatedDefinition {
 /**
  * Domain service for evaluating CEL expressions in model definitions.
  */
+/**
+ * What a pass over data does with another templating system's `${{ ... }}`
+ * text (see {@link isForeignExpression}) that fails to evaluate: `"fail"`
+ * rethrows, as for any failed expression; `"passThrough"` leaves it raw when
+ * it failed on its foreign root (see {@link failedOnForeignRoot}).
+ * Only a step's task inputs pass it through. Everything else a step-time
+ * pass covers (placement, say) must be resolved by swamp.
+ */
+export type ForeignTextRule = "fail" | "passThrough";
+
 export class ExpressionEvaluationService {
   private readonly celEvaluator: CelEvaluator;
   private readonly sortService: TopologicalSortService;
@@ -425,6 +439,7 @@ export class ExpressionEvaluationService {
     context: ExpressionContext,
     authored: AuthoredExpressions,
     secretBag: VaultSecretBag,
+    foreignText: ForeignTextRule = "fail",
   ): Promise<SplicePair<T>> {
     const sensitiveValues = sensitiveValuesOf(context);
     const origins = new Map<string, SpliceOrigin>();
@@ -434,6 +449,7 @@ export class ExpressionEvaluationService {
       authored,
       pair.rawProvenance,
       origins,
+      foreignText,
     );
     if (values.size === 0) return pair;
     return pair.splice(
@@ -479,6 +495,7 @@ export class ExpressionEvaluationService {
     provenance: ProvenanceMap,
     context: ExpressionContext,
     authored: AuthoredExpressions,
+    foreignText: ForeignTextRule = "fail",
   ): Promise<TrackedSplice> {
     const origins = new Map<string, SpliceOrigin>();
     const values = await this.evaluateDataValues(
@@ -487,6 +504,7 @@ export class ExpressionEvaluationService {
       authored,
       provenance,
       origins,
+      foreignText,
     );
     if (values.size === 0) return { data, provenance };
     return replaceExpressionsTracked(
@@ -503,6 +521,7 @@ export class ExpressionEvaluationService {
     authored: AuthoredExpressions,
     provenance: ProvenanceMap = ProvenanceMap.authored(),
     origins?: Map<string, SpliceOrigin>,
+    foreignText: ForeignTextRule = "fail",
   ): Promise<Map<string, unknown>> {
     const expressions = partitionAuthoredAt(
       extractExpressions(data),
@@ -527,10 +546,24 @@ export class ExpressionEvaluationService {
         continue;
       }
 
-      const value = await this.celEvaluator.evaluateAsync(
-        expr.celExpression,
-        context,
-      );
+      let value: unknown;
+      try {
+        value = await this.celEvaluator.evaluateAsync(
+          expr.celExpression,
+          context,
+        );
+      } catch (error) {
+        // In a step's task inputs, another templating system's text
+        // (${{ github.sha }}) stays raw and reaches the method as literal
+        // text (swamp-club#2528). Classified only after it fails, so a
+        // mistake here can never stop an expression that evaluates.
+        if (
+          foreignText === "passThrough" &&
+          isForeignExpression(expr.celExpression) &&
+          failedOnForeignRoot(error)
+        ) continue;
+        throw error;
+      }
       evaluatedValues.set(expr.raw, value);
       origins?.set(expr.raw, spliceOrigin(expr.celExpression, context, value));
     }

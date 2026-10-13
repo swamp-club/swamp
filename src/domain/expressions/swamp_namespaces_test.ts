@@ -21,9 +21,11 @@ import { assertEquals } from "@std/assert";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsSwampExpression,
+  failedOnForeignRoot,
   foreignRootsBesideVault,
   isForeignExpression,
   isSwampExpression,
+  misspeltSwampNamespace,
   parsesAsCel,
   readsSwampBinding,
   type SwampScope,
@@ -390,4 +392,68 @@ Deno.test("foreignRootsBesideVault: names the roots swamp does not provide in an
   ) {
     assertEquals(foreignRootsBesideVault(cel), [], cel);
   }
+});
+
+Deno.test("misspeltSwampNamespace: names the namespace a root nearly spells", () => {
+  const cases: [string, string, string][] = [
+    ["input.region", "input", "inputs"],
+    ["modle.vpc.resource", "modle", "model"],
+    ["vualt.get('v', 'k')", "vualt", "vault"],
+    ["step.build.outputs.sha", "step", "steps"],
+    ["envs.HOME", "envs", "env"],
+    ["self.h + input.region", "input", "inputs"],
+  ];
+  for (const [cel, root, namespace] of cases) {
+    assertEquals(misspeltSwampNamespace(cel), { root, namespace }, cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other systems' roots and text that does not parse", () => {
+  const cases = [
+    "inputs.region",
+    "self.h + steps.build.outputs.sha",
+    // What GitHub Actions binds and swamp does not.
+    "github.sha",
+    "matrix.os",
+    "secrets.TOKEN",
+    "vars.REGION",
+    "needs.build.outputs.sha",
+    "runner.os",
+    "job.status",
+    "strategy.fail-fast",
+    // Ordinary words near a namespace.
+    "event.name",
+    "ref.name",
+    "node.name",
+    "stats.count",
+    "date.year",
+    "mode.name",
+    "files.changed",
+    '"unclosed',
+  ];
+  for (const cel of cases) {
+    assertEquals(misspeltSwampNamespace(cel), undefined, cel);
+  }
+});
+
+Deno.test("failedOnForeignRoot: true only for an unknown variable that is not a swamp namespace", () => {
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: github")),
+    true,
+  );
+  // Found through the cause chain of a wrapping error.
+  assertEquals(
+    failedOnForeignRoot(
+      new Error("Invalid expression", {
+        cause: new Error("Unknown variable: matrix"),
+      }),
+    ),
+    true,
+  );
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: inputs")),
+    false,
+  );
+  assertEquals(failedOnForeignRoot(new Error("datastore unreachable")), false);
+  assertEquals(failedOnForeignRoot("Unknown variable: github"), false);
 });
