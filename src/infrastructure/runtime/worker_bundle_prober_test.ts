@@ -257,3 +257,27 @@ Deno.test("WorkerBundleProber: console output at import is logged at debug, not 
     await reset();
   }
 });
+
+Deno.test("WorkerBundleProber: an error whose cause points back at itself is a failed import, not a hang", async () => {
+  await withProber({}, async ({ prober, bundle }) => {
+    const result = await prober.probe(
+      await bundle(
+        "cyclic",
+        'const e = new Error("cyclic"); e.cause = e; throw e;\n',
+      ),
+    );
+    assertEquals(result, { tag: "import-failed", message: "cyclic" });
+  });
+});
+
+Deno.test("WorkerBundleProber: Deno.exit rethrown as another error's cause is still exited", async () => {
+  await withProber({}, async ({ prober, bundle }) => {
+    const result = await prober.probe(
+      await bundle(
+        "wrapped",
+        'try { Deno.exit(7); } catch (e) { throw new Error("wrapped", { cause: e }); }\n',
+      ),
+    );
+    assertEquals(result, { tag: "exited", code: 7 });
+  });
+});

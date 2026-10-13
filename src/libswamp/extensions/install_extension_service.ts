@@ -197,11 +197,18 @@ export class InstallExtensionService {
       const installedResults = flattenInstallResults(result);
       let newExtensions: Extension[];
       try {
-        newExtensions = await Promise.all(
+        // Settled, not raced: a branch still indexing after another failed
+        // would probe again after the release below and leave a worker
+        // running (swamp-club#3374).
+        const settled = await Promise.allSettled(
           installedResults.map((r) =>
             this.buildExtensionFromDisk(r, ctx.repoDir)
           ),
         );
+        newExtensions = settled.map((outcome) => {
+          if (outcome.status === "rejected") throw outcome.reason;
+          return outcome.value;
+        });
       } catch (error) {
         throw new UserError(
           `Install partially applied for ${ref.name} — files extracted but ` +

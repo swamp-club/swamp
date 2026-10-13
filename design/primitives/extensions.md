@@ -2927,7 +2927,9 @@ use it:
 
 An exit or a hang is recorded as `ValidationFailed` because that state is not
 retried until the source fingerprint changes: one command pays the timeout,
-not every command. The user is warned once, with the source's path, the
+not every command. The exception is a reconcile, which probes every source
+that is not `Indexed`: `swamp doctor extensions` reconciles on each run, so it
+pays the timeout again for a source that still hangs. The user is warned once, with the source's path, the
 reason and how to retry: edit a local source, upgrade or re-pull a pulled
 one. Anything that is not the bundle's doing is reported as a failed import,
 which is retried, and never pinned to the source: a worker that does not

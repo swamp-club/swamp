@@ -111,8 +111,11 @@ async function adapterFor(kind: LoaderKind): Promise<KindAdapter> {
 }
 
 function findExit(error: unknown): ExitAtImport | undefined {
-  for (let e = error; e instanceof Error; e = e.cause) {
+  // Bounded: a cause chain can point back at itself.
+  let e = error;
+  for (let depth = 0; depth < 16 && e instanceof Error; depth++) {
     if (e instanceof ExitAtImport) return e;
+    e = e.cause;
   }
   return undefined;
 }
