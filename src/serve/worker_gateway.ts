@@ -481,6 +481,10 @@ export class WorkerGateway {
    * worker is unknown, busy, disconnected, unverified or draining, or when
    * the control socket drops mid-dispatch (the caller owns grace-window
    * failure semantics — see DispatchService).
+   *
+   * A dispatch moves a worker between idle and busy only. An unverified
+   * worker takes a probe without leaving `unverified`: the enrollment
+   * verification alone promotes it (swamp-club#3388).
    */
   async dispatch(
     name: string,
@@ -520,7 +524,13 @@ export class WorkerGateway {
     );
     const dispatchStart = performance.now();
     entry.activeDispatchIds.push(params.dispatchId);
-    entry.status = "busy";
+    // An unverified worker is only ever sent a probe, and the probe's result
+    // has not been judged yet: it holds a slot but stays unverified, so the
+    // scheduler never sees it idle in between (swamp-club#3388).
+    const unverified = entry.status === "unverified";
+    if (!unverified) {
+      entry.status = "busy";
+    }
     // The slot is taken from here on, so everything below runs under the
     // finally that gives it back: a dispatch that fails before it reaches
     // the worker must not keep the slot (swamp-club#3294).
@@ -529,17 +539,19 @@ export class WorkerGateway {
       // its reservation here, and an await in between would count the
       // dispatch twice.
       options?.onRegistered?.();
-      await this.#recordTransition(() =>
-        this.#runModelMethod({
-          typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(name),
-          methodName: "set_status",
-          inputs: {
-            status: "busy",
-            activeDispatchIds: [...entry.activeDispatchIds],
-          },
-        })
-      );
+      if (!unverified) {
+        await this.#recordTransition(() =>
+          this.#runModelMethod({
+            typeArg: WORKER_MODEL_TYPE.normalized,
+            definitionName: workerDefinitionName(name),
+            methodName: "set_status",
+            inputs: {
+              status: "busy",
+              activeDispatchIds: [...entry.activeDispatchIds],
+            },
+          })
+        );
+      }
 
       const dispatchCredential = this.#sessions.issueForDispatch(
         name,
@@ -585,13 +597,15 @@ export class WorkerGateway {
       );
       this.#sessions.revokeDispatch(name, params.dispatchId);
       const currentStatus = entry.status as string;
+      // Neither status is left by a dispatch ending: a draining worker is on
+      // its way out, and an unverified one waits on its enrollment probe.
+      const settled = currentStatus === "draining" ||
+        currentStatus === "unverified";
       if (entry.channel === null || entry.channel.closed) {
-        if (
-          currentStatus !== "draining" && entry.activeDispatchIds.length === 0
-        ) {
+        if (!settled && entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
         }
-      } else if (currentStatus !== "draining") {
+      } else if (!settled) {
         if (entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
           await this.#recordTransition(() =>
