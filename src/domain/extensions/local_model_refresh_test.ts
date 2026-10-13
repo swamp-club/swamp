@@ -507,7 +507,7 @@ Deno.test("createLocalModelRefresher: a same-size edit, a helper edit and a new 
 });
 
 Deno.test("createLocalModelRefresher: a pass that throws is tried again on the next call", async () => {
-  await withRepo(async ({ loader, modelsDir, type }) => {
+  await withRepo(async ({ loader, modelsDir }) => {
     let passes = 0;
     const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
       passes++;
@@ -525,6 +525,28 @@ Deno.test("createLocalModelRefresher: a pass that throws is tried again on the n
     await Deno.writeTextFile(
       join(modelsDir, "a.ts"),
       modelCode(type("a"), "v1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: a deleted local add-on detaches its members", async () => {
+  await withRepo(async ({ modelsDir, refresh, type }) => {
+    assertEquals((await loaded(type("b")))?.methods.extra?.description, "a1");
+
+    await Deno.remove(join(modelsDir, "b_extra.ts"));
+    await refresh();
+
+    const after = await loaded(type("b"));
+    assertEquals(after?.methods.run.description, "base");
+    assertEquals(after?.methods.extra, undefined);
+  }, async ({ modelsDir, type }) => {
+    await Deno.writeTextFile(
+      join(modelsDir, "b.ts"),
+      modelCode(type("b"), "base"),
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "b_extra.ts"),
+      addOnCode(type("b"), "a1"),
     );
   });
 });

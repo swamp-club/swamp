@@ -163,9 +163,9 @@ async function applyLocalModelChanges(
     if (change.extendsType) affected.add(change.extendsType);
   }
   for (const row of changes.removed) {
-    if (isLocal(row.sourcePath) && row.kind !== "extension" && row.type) {
-      affected.add(row.type);
-    }
+    // A deleted model's type goes; a deleted add-on's row names the type it
+    // extended, which reloads without the add-on's members.
+    if (isLocal(row.sourcePath) && row.type) affected.add(row.type);
   }
 
   for (const type of affected) {
@@ -189,7 +189,9 @@ async function applyLocalModelChanges(
       await modelRegistry.ensureTypeLoaded(type);
       logger.info`Reloaded edited model ${type}`;
     } catch (error) {
-      logger.warn`Edited model ${type} failed to load: ${error}`;
+      logger.warn`Edited model ${type} failed to load: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
     }
   }
 }

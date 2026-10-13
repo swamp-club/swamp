@@ -1749,8 +1749,10 @@ previous bundle with a warning. A source that bundles but no longer imports or
 validates has no loadable row, so its type stays unregistered and runs fail as
 `swamp model method run` would, until the edit is fixed. Serve warns once, when
 the pass meets the broken edit; the broken-bundle warning startup gives is not
-repeated on every pass. A deleted source's type goes; a new source's type
-appears. Pulled sources that changed are rebundled by the same pass but not
+repeated on every pass. A deleted source's type goes, and a deleted add-on's
+members leave the type it extended; a new source's type appears. An edited or
+deleted local add-on of a built-in type is the exception: built-ins are never
+swapped, so members it no longer declares stay until serve restarts. Pulled sources that changed are rebundled by the same pass but not
 swapped: they still reload through `swamp serve reload`.
 
 Unlike a CLI command, serve does not retry a failed source on every run: the
