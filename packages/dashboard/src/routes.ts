@@ -44,6 +44,8 @@ export type DetailView =
     runId: string;
     reportName: string;
   }
+  | { kind: "schedule"; workflowName: string }
+  | { kind: "webhook"; route: string }
   | null;
 
 export interface RouteState {
@@ -178,6 +180,18 @@ export function parseRoute(pathname: string): RouteState {
     };
   }
 
+  if (first === "schedules" && name !== undefined) {
+    return {
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: name },
+    };
+  }
+
+  // A webhook's route is one segment: its slashes are encoded as `%2F`.
+  if (first === "webhooks" && name !== undefined) {
+    return { view: "webhooks", detail: { kind: "webhook", route: name } };
+  }
+
   if (VIEWS.has(first)) {
     return { view: first as View, detail: null };
   }
@@ -217,6 +231,10 @@ function detailPath(detail: NonNullable<DetailView>): string {
       return `${BASE}/workflows/${encodeSegment(detail.workflowName)}/runs/${
         encodeSegment(detail.runId)
       }/reports/${encodeSegment(detail.reportName)}`;
+    case "schedule":
+      return `${BASE}/schedules/${encodeSegment(detail.workflowName)}`;
+    case "webhook":
+      return `${BASE}/webhooks/${encodeSegment(detail.route)}`;
   }
 }
 
@@ -237,6 +255,10 @@ export function viewForDetail(detail: NonNullable<DetailView>): View {
     case "run":
     case "runReport":
       return "workflows";
+    case "schedule":
+      return "schedules";
+    case "webhook":
+      return "webhooks";
   }
 }
 

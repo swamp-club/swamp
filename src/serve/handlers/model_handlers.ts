@@ -75,9 +75,15 @@ import { isSwampError } from "../../libswamp/errors.ts";
 import { modelMethodRun } from "../../libswamp/models/run.ts";
 import {
   modelOutputSearch,
+  type ModelOutputSearchData,
   type ModelOutputSearchDeps,
   type ModelOutputSearchItem,
+  type ModelOutputSearchModel,
 } from "../../libswamp/models/output_search.ts";
+import {
+  type NamedWorkflow,
+  nestedRunReadDecider,
+} from "./nested_run_redaction.ts";
 import {
   modelSearch,
   type ModelSearchDeps,
@@ -117,10 +123,14 @@ import type {
 import {
   type DefinitionLookupResult,
   findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
 } from "../../domain/models/model_lookup.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { Action } from "../../domain/access/action.ts";
-import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  createDefinitionId,
+  type Definition,
+} from "../../domain/definitions/definition.ts";
 import {
   acquireModelLocks,
   type ModelLockResult,
@@ -1900,26 +1910,68 @@ export async function handleModelOutputSearch(
     const libCtx = handlerLibSwampContext(ctx);
     const outputRepo = ctx.repoContext.outputRepo;
     const definitionRepo = ctx.repoContext.definitionRepo;
+    const workflowRepo = ctx.repoContext.workflowRepo;
 
     const deps: ModelOutputSearchDeps = {
       findAllOutputsGlobal: () => outputRepo.findAllGlobal(),
+      findAllOutputsGlobalSince: (cutoff) =>
+        outputRepo.findAllGlobalSince(cutoff),
       findDefinitionById: (type, definitionId) =>
         definitionRepo.findById(
           ModelType.create(type.normalized),
           createDefinitionId(definitionId),
         ),
+      resolveModel: async (idOrName) => {
+        const found = new Map<string, ModelOutputSearchModel>();
+        const add = (definition: Definition, type: ModelType) => {
+          const key = JSON.stringify([type.normalized, definition.id]);
+          if (!found.has(key)) {
+            found.set(key, {
+              definitionId: definition.id,
+              name: definition.name,
+              type: { normalized: type.normalized },
+            });
+          }
+        };
+        const byName = await definitionRepo.findByNameGlobal(idOrName);
+        if (byName) add(byName.definition, byName.type);
+        // Returns [] for a non-UUID name without scanning every
+        // definition — a plain `model` filter never pays for the id scan.
+        const byId = await findDefinitionsByIdGlobal(definitionRepo, idOrName);
+        for (const { definition, type } of byId) add(definition, type);
+        return [...found.values()];
+      },
+      findOutputsByDefinition: (type, definitionId) =>
+        outputRepo.findByDefinition(
+          ModelType.create(type.normalized),
+          createDefinitionId(definitionId),
+        ),
+      resolveWorkflowNames: async (ids) => {
+        const names = new Map<string, string>();
+        for (const workflow of await workflowRepo.findAll()) {
+          if (ids.has(workflow.id) && !names.has(workflow.id)) {
+            names.set(workflow.id, workflow.name);
+          }
+        }
+        return names;
+      },
     };
 
-    let result: Record<string, unknown> | undefined;
+    let result: ModelOutputSearchData | undefined;
     await consumeStream(
-      modelOutputSearch(libCtx, deps, { query: payload?.query }),
+      // Limit only after model authorization, then redact unreadable run links.
+      modelOutputSearch(libCtx, deps, {
+        ...payload,
+        limit: undefined,
+        includeProvenance: true,
+      }),
       {
         resolving: () => {},
         completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
+          result = e.data;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -1939,6 +1991,14 @@ export async function handleModelOutputSearch(
         principal,
         ctx,
       );
+      if (payload?.limit !== undefined) {
+        data.results = data.results.slice(0, payload.limit);
+      }
+      await redactWorkflowLinks(
+        data.results,
+        ctx.authConfig.mode === "none",
+        nestedRunReadDecider(ctx, socket, principal),
+      );
     }
 
     send(socket, {
@@ -1948,7 +2008,13 @@ export async function handleModelOutputSearch(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_output_search_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "model_output_search_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 
@@ -2734,6 +2800,37 @@ export async function handleModelTypeSearch(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_type_search_failed", message);
+  }
+}
+
+/**
+ * Drops the workflow linkage from each output whose workflow the principal
+ * may not read. A linkage whose workflow no longer resolves cannot be
+ * authorized, so it is dropped too unless the server has no authorization.
+ */
+export async function redactWorkflowLinks(
+  items: ModelOutputSearchItem[],
+  unrestricted: boolean,
+  canRead: (workflow: NamedWorkflow) => Promise<boolean>,
+): Promise<void> {
+  for (const item of items) {
+    if (
+      item.workflowId === undefined && item.workflowRunId === undefined &&
+      item.stepName === undefined
+    ) continue;
+    let readable = unrestricted;
+    if (!readable && item.workflowId !== undefined && item.workflowName) {
+      readable = await canRead({
+        workflowId: item.workflowId,
+        workflowName: item.workflowName,
+      });
+    }
+    if (!readable) {
+      delete item.workflowId;
+      delete item.workflowName;
+      delete item.workflowRunId;
+      delete item.stepName;
+    }
   }
 }
 

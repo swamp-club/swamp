@@ -1,0 +1,32 @@
+/* Vaults: each vault's header is a real button that expands its details. */
+.vault-toggle {
+  width: 100%;
+  margin: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.vault-toggle:hover {
+  background: var(--surface-hover);
+}
+
+.vault-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.vault-toggle[aria-expanded="false"] {
+  border-bottom-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vault-toggle {
+    transition: none;
+  }
+}

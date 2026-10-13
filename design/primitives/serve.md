@@ -234,7 +234,21 @@ single-request client (`requestServerResponse`) opt in.
 filter, so
 `total` counts only what the principal may read. `workflow.run.search` defaults
 to limit 500; `workflow.search` has none, because the CLI's interactive picker
-needs the full list.
+needs the full list. `workflow.run.search` also filters, before paging, by
+`until` (exclusive), `workflows` (exact names) and `triggerSource`; `since` and
+`until` take a duration back from now or an ISO time. `statuses` and
+`triggerSources` take several values and keep runs matching any of them
+(ignoring case; an empty list filters nothing); beside `status` or
+`triggerSource`, both filters must hold.
+
+`workflow.run.summary` counts runs instead of listing them: totals, per-workflow
+counts with each workflow's newest runs (`recentLimit`, default 20, clamped to
+0..100) and, with `timeline`, hourly UTC buckets. It takes the same `since`,
+`until`, `workflows`, `triggerSource` and `triggerSources` filters. The counts
+are taken after the per-workflow read filter
+(`src/libswamp/workflows/run_summary.ts` gets it as `keepReadable`), so an
+unreadable workflow never reaches totals or the timeline. `failed` includes interrupted runs and `running` pending ones; a
+status in no bucket counts in `runs` only.
 
 ## Identity and access
 
@@ -961,7 +975,9 @@ queue state (`queueStatus`): `queued` (fires waiting to start),
 visible) and `lastQueueDelayMs` (fire-to-start delay of the last run that
 started). `schedule_started` carries the same delay as `queueDelayMs`. Queue
 state is per schedule, so the per-token health view filters it with its
-schedule.
+schedule. `scheduling.timeZone` names the IANA zone the scheduler evaluates
+crons in; the per-token view includes it only for a reader who sees at least
+one schedule.
 
 If the control-plane store supports `putIfAbsent`, each fire first races to
 create `fire-records/<workflowId>/<fireTime>` (ISO time truncated to the

@@ -27,8 +27,15 @@ import {
   type RouteState,
   viewForDetail,
 } from "../routes.ts";
+import { browserHistory } from "../components/dom_types.ts";
 
-let currentState: RouteState = parseRoute(location.pathname);
+// `location` is absent outside a browser (deno test renders components that
+// import this module); start at the overview there.
+function currentPathname(): string {
+  return globalThis.location?.pathname ?? "/";
+}
+
+let currentState: RouteState = parseRoute(currentPathname());
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -47,18 +54,18 @@ function getSnapshot(): RouteState {
 function pushState(next: RouteState) {
   const path = buildPath(next);
   if (path !== buildPath(currentState)) {
-    history.pushState(null, "", path);
+    browserHistory()?.pushState(null, "", path);
   }
   currentState = next;
   notify();
 }
 
 function onPopState() {
-  currentState = parseRoute(location.pathname);
+  currentState = parseRoute(currentPathname());
   notify();
 }
 
-addEventListener("popstate", onPopState);
+globalThis.addEventListener?.("popstate", onPopState);
 
 /**
  * Navigates in-app to a route. Links use this directly so a view deep in the

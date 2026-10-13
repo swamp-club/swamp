@@ -1,0 +1,168 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ScheduleControls } from "./ScheduleControls.tsx";
+import { ScheduleEditorForm } from "./ScheduleEditorForm.tsx";
+
+const noop = () => {};
+const handlers = { onEdit: noop, onReset: noop };
+
+Deno.test("ScheduleControls: a workflow-file schedule offers Edit only", () => {
+  const html = renderToStaticMarkup(
+    <ScheduleControls workflowName="deploy" canReset={false} {...handlers} />,
+  );
+  assertStringIncludes(html, ">Edit</button>");
+  assertEquals(html.includes(">Reset</button>"), false);
+  assertEquals(html.includes("disabled"), false);
+});
+
+Deno.test("ScheduleControls: an override offers Edit and Reset", () => {
+  const html = renderToStaticMarkup(
+    <ScheduleControls workflowName="deploy" canReset {...handlers} />,
+  );
+  assertStringIncludes(html, ">Edit</button>");
+  assertStringIncludes(html, ">Reset</button>");
+});
+
+Deno.test("ScheduleControls: a change in flight disables every control", () => {
+  const html = renderToStaticMarkup(
+    <ScheduleControls
+      workflowName="deploy"
+      canReset
+      pending="save"
+      {...handlers}
+    />,
+  );
+  assertStringIncludes(html, "Saving…");
+  assertEquals(html.match(/disabled=""/g)?.length, 2);
+});
+
+Deno.test("ScheduleControls: announces success and alerts on refusal", () => {
+  const ok = renderToStaticMarkup(
+    <ScheduleControls
+      workflowName="deploy"
+      canReset={false}
+      feedback={{ tone: "success", text: "Schedule saved." }}
+      {...handlers}
+    />,
+  );
+  assertStringIncludes(ok, 'aria-live="polite"');
+  assertStringIncludes(ok, "Schedule saved.");
+  assertEquals(ok.includes('role="alert"'), false);
+
+  const refused = renderToStaticMarkup(
+    <ScheduleControls
+      workflowName="deploy"
+      canReset={false}
+      feedback={{
+        tone: "danger",
+        text: "You don't have permission to change the schedule of deploy.",
+      }}
+      {...handlers}
+    />,
+  );
+  assertStringIncludes(refused, 'role="alert"');
+  assertStringIncludes(refused, "You don&#x27;t have permission");
+});
+
+// ── ScheduleEditorForm ──────────────────────────────────────────────────
+
+const NOW = Date.parse("2026-10-12T20:30:00.000Z");
+
+function renderForm(
+  over: Partial<Parameters<typeof ScheduleEditorForm>[0]> = {},
+): string {
+  return renderToStaticMarkup(
+    <ScheduleEditorForm
+      workflowName="deploy"
+      initialSchedule="*/5 * * * *"
+      initialInputs={{ region: "eu" }}
+      builtInSchedule="0 9 * * 1"
+      saving={false}
+      onSave={noop}
+      onCancel={noop}
+      now={NOW}
+      timeZone="UTC"
+      viewerZone="UTC"
+      {...over}
+    />,
+  );
+}
+
+Deno.test("ScheduleEditorForm: describes the schedule and previews five runs", () => {
+  const html = renderForm();
+  assertStringIncludes(html, "Every 5 minutes");
+  assertStringIncludes(html, "Next 5 runs");
+  assertStringIncludes(html, "serve&#x27;s time zone (UTC)");
+  assertEquals(html.includes("your time"), false);
+  assertEquals(html.match(/<li>/g)?.length, 5);
+  assertStringIncludes(html, "in 5m");
+  assertStringIncludes(html, "&quot;region&quot;: &quot;eu&quot;");
+});
+
+Deno.test("ScheduleEditorForm: Save is off until something changes", () => {
+  const html = renderForm();
+  assertStringIncludes(
+    html,
+    'type="submit" class="trig-btn primary" disabled=""',
+  );
+});
+
+Deno.test("ScheduleEditorForm: an invalid expression explains itself and blocks Save", () => {
+  const html = renderForm({ initialSchedule: "61 * * * *" });
+  assertStringIncludes(html, 'aria-invalid="true"');
+  assertStringIncludes(html, "minute 61 is out of range (0–59)");
+  assertEquals(html.includes("Next 5 runs"), false);
+});
+
+Deno.test("ScheduleEditorForm: offers presets and the workflow file's schedule", () => {
+  const html = renderForm();
+  assertStringIncludes(html, "Every 5 min");
+  assertStringIncludes(
+    html,
+    'Workflow file: <span class="mono">0 9 * * 1</span>',
+  );
+  assertStringIncludes(html, 'aria-pressed="true"');
+});
+
+Deno.test("ScheduleEditorForm: shows a save error and the saving state", () => {
+  const html = renderForm({
+    saving: true,
+    error: "Couldn't change the schedule: boom",
+  });
+  assertStringIncludes(html, 'role="alert"');
+  assertStringIncludes(html, "Couldn&#x27;t change the schedule: boom");
+  assertStringIncludes(html, "Saving…");
+});
+
+Deno.test("ScheduleEditorForm: previews in serve's zone and adds the viewer's time", () => {
+  const html = renderForm({
+    initialSchedule: "0 9 * * *",
+    timeZone: "America/New_York",
+    viewerZone: "UTC",
+  });
+  assertStringIncludes(html, "serve&#x27;s time zone (America/New_York)");
+  // 09:00 in New York is 13:00 UTC on 2026-10-13.
+  assertStringIncludes(html, 'dateTime="2026-10-13T13:00:00.000Z"');
+  assertStringIncludes(html, "your time");
+});

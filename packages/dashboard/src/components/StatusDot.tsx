@@ -28,8 +28,13 @@ const DOT_COLORS: Record<string, string> = {
   pending: "var(--info)",
 };
 
+/** The theme color for a status; unknown statuses are muted. */
+export function statusColor(status: string): string {
+  return DOT_COLORS[status] ?? "var(--text-3)";
+}
+
 export function StatusDot({ status }: { status: string }) {
-  const color = DOT_COLORS[status] ?? "var(--text-3)";
+  const color = statusColor(status);
   const isAnimated = status === "running";
   return (
     <span

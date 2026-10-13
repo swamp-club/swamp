@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
 export function Logo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   const fontSize = size === "lg" ? "2rem" : size === "md" ? "1.4rem" : "1rem";
 

@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { Logo } from "../components/Logo";
+import { LoginStartingSkeleton } from "./PageSkeletons.tsx";
 
 function providerHost(verificationBaseUri: string | null): string {
   if (!verificationBaseUri) return "swamp-club.com";
@@ -73,7 +74,11 @@ function TokenLogin({ onToken }: { onToken: (t: string) => Promise<void> }) {
     <div className="login-page">
       <div className="login-container">
         <LoginBrand />
-        <form className="login-card" onSubmit={handleSubmit}>
+        <form
+          className="login-card"
+          onSubmit={handleSubmit}
+          aria-busy={checking || undefined}
+        >
           <h2>Sign in to your dashboard</h2>
           <p>Enter your serve token to connect to this instance.</p>
           {error && <div className="login-error">{error}</div>}
@@ -86,7 +91,7 @@ function TokenLogin({ onToken }: { onToken: (t: string) => Promise<void> }) {
             autoFocus
           />
           <button type="submit" disabled={checking}>
-            {checking ? "Connecting..." : "Sign in"}
+            {checking ? "Connecting…" : "Sign in"}
           </button>
           <p className="login-hint">
             Generate a token with <code>swamp access token mint</code>
@@ -244,10 +249,7 @@ function OAuthLogin(
           {state === "starting" && (
             <>
               <h2>Sign in to your dashboard</h2>
-              <div className="login-waiting">
-                <div className="login-spinner" />
-                Starting login...
-              </div>
+              <LoginStartingSkeleton />
             </>
           )}
 
@@ -262,9 +264,9 @@ function OAuthLogin(
                 <div className="login-code-label">Confirmation code</div>
                 <div className="login-code">{grant.userCode}</div>
               </div>
-              <div className="login-waiting">
-                <div className="login-spinner" />
-                Waiting for you to approve...
+              <div className="login-waiting" role="status">
+                <div className="login-spinner" aria-hidden="true" />
+                Waiting for you to approve…
               </div>
               <p className="login-hint">
                 Tab didn't open?{" "}
