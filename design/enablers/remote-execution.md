@@ -1719,7 +1719,8 @@ bookkeeping runs use `createWorkerModelRunDeps` and skip the check.
 The check calls `modelRegistry.refreshSources()`. Its refresher is wired where
 the model loader is (`loadUserModels` in `src/cli/mod.ts`) by
 `createLocalModelRefresher()` (`src/domain/extensions/local_model_refresh.ts`).
-It first walks the models dir and the mounted dirs and stats every file,
+It first walks the models dir, the behaviors dir (`extensions/behaviors`,
+watched even before it exists) and the mounted dirs, and stats every file,
 `_`-prefixed helper dirs included: path, size, mtime, ctime and inode. When
 that snapshot matches the one taken before its last pass, nothing was edited and
 the check ends there, at about 1 ms for 200 models. Otherwise it runs
@@ -1729,10 +1730,10 @@ the check ends there, at about 1 ms for 200 models. Otherwise it runs
    `buildIndex()`, the same pass a CLI command runs at startup: the freshness
    scan, a rebundle of each stale source, the type-conflict settle, the
    typeless-row heal and the add-on attach. It walks the same dirs a fresh
-   index would: the models dir, the mounted dirs and the pulled dirs, read
-   again from the lockfile on every pass. The scan drops the rows of every
-   source it does not see, so a narrower walk would delete the rows of pulled
-   extensions. It never invalidates the catalog or runs the cold index, which
+   index would: the models dir, the behaviors dir when it exists, the mounted
+   dirs and the pulled dirs, all resolved again on every pass. The scan drops
+   the rows of every source it does not see, so a narrower walk would delete
+   the rows of pulled extensions and behaviors. It never invalidates the catalog or runs the cold index, which
    the [Catalog Safety Constraint](#catalog-safety-constraint) rules out for
    a running serve; its catalog writes are the ones every CLI command's warm
    start makes. It returns the sources it rebundled, the ones that failed, and
@@ -1752,8 +1753,9 @@ the pass meets the broken edit; the broken-bundle warning startup gives is not
 repeated on every pass. A deleted source's type goes, and a deleted add-on's
 members leave the type it extended; a new source's type appears. An edited or
 deleted local add-on of a built-in type is the exception: built-ins are never
-swapped, so members it no longer declares stay until serve restarts. Pulled sources that changed are rebundled by the same pass but not
-swapped: they still reload through `swamp serve reload`.
+swapped, so members it no longer declares stay until serve restarts. Pulled
+sources that changed are rebundled by the same pass but not swapped: they still
+reload through `swamp serve reload`.
 
 Unlike a CLI command, serve does not retry a failed source on every run: the
 snapshot is recorded once the pass ends, so the next pass waits for another

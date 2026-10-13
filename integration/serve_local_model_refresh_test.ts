@@ -136,7 +136,7 @@ Deno.test("serve run deps resolve an edited local model to its new code and a ne
           loader,
           modelsDir,
           [],
-          () => Promise.resolve([]),
+          () => Promise.resolve({ localDirs: [], additionalDirs: [] }),
         ),
       );
 

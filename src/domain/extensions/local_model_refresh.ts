@@ -50,26 +50,33 @@ const logger = getLogger(["swamp", "model", "refresh"]);
  * leaves the snapshot alone, so the next call tries again; a source that
  * fails to bundle or load is not retried until it changes again.
  *
- * @param localDirs the mounted source dirs, walked with `dir`
- * @param pulledDirs the pulled extension dirs, read again for every pass
+ * @param watchDirs every local dir to snapshot besides `dir`, whether or not
+ * it exists yet (the behaviors dir, the mounted source dirs)
+ * @param passDirs the dirs a fresh index would walk now, read again for
+ * every pass: local dirs of `dir`'s tier and the source and pulled dirs
  */
 export function createLocalModelRefresher(
   loader: ExtensionLoader,
   dir: string,
-  localDirs: string[],
-  pulledDirs: () => Promise<string[]>,
+  watchDirs: string[],
+  passDirs: () => Promise<LocalModelDirs>,
 ): () => Promise<void> {
   let lastSnapshot: string | undefined;
   return async () => {
     // Taken before the pass, so an edit made while it runs is seen next time.
-    const snapshot = await snapshotSourceFiles([dir, ...localDirs]);
+    const snapshot = await snapshotSourceFiles([dir, ...watchDirs]);
     if (snapshot === lastSnapshot) return;
-    await refreshLocalModels(loader, dir, [
-      ...localDirs,
-      ...await pulledDirs(),
-    ]);
+    await refreshLocalModels(loader, dir, await passDirs());
     lastSnapshot = snapshot;
   };
+}
+
+/** The dirs a refresh pass walks besides the models dir. */
+export interface LocalModelDirs {
+  /** Further local dirs of the models dir's tier, such as the behaviors dir. */
+  localDirs: string[];
+  /** The mounted source dirs, then the pulled extension dirs. */
+  additionalDirs: string[];
 }
 
 /**
@@ -130,9 +137,9 @@ async function snapshotSourceFiles(dirs: string[]): Promise<string> {
 export async function refreshLocalModels(
   loader: ExtensionLoader,
   dir: string,
-  additionalDirs: string[],
+  dirs: LocalModelDirs,
 ): Promise<void> {
-  const changes = await loader.refreshStaleSources(dir, { additionalDirs });
+  const changes = await loader.refreshStaleSources(dir, dirs);
   if (changes === null) return;
   await applyLocalModelChanges(loader, changes);
 }

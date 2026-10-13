@@ -42,6 +42,8 @@ import {
   refreshLocalModels,
 } from "./local_model_refresh.ts";
 
+const NO_DIRS = { localDirs: [], additionalDirs: [] };
+
 const stubDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve("/nonexistent/swamp-test/deno"),
   getDenoEnv: () => Deno.env.toObject(),
@@ -100,6 +102,8 @@ const copyingBundler = async (_cmd: string, args: string[]) => {
 interface Fixture {
   repoDir: string;
   modelsDir: string;
+  /** `extensions/behaviors`, indexed as a local dir beside `modelsDir`. */
+  behaviorsDir: string;
   pulledModelsDir: string;
   loader: ExtensionLoader;
   /** Runs one refresh pass over the dirs the fixture indexed. */
@@ -120,6 +124,7 @@ async function withRepo(
   const id = crypto.randomUUID().slice(0, 8);
   const extName = `@test/pulled-${id}`;
   const modelsDir = join(repoDir, "extensions", "models");
+  const behaviorsDir = join(repoDir, "extensions", "behaviors");
   const pulledModelsDir = join(
     repoDir,
     ".swamp",
@@ -129,13 +134,14 @@ async function withRepo(
   );
   const lockfilePath = join(modelsDir, "upstream_extensions.json");
   await Deno.mkdir(modelsDir, { recursive: true });
+  await Deno.mkdir(behaviorsDir, { recursive: true });
   await Deno.mkdir(pulledModelsDir, { recursive: true });
   await Deno.writeTextFile(
     lockfilePath,
     JSON.stringify({ [extName]: { version: "1.0.0", files: [] } }),
   );
   const type = (suffix: string) => `@test/edit-${id}-${suffix}`;
-  const base = { repoDir, modelsDir, pulledModelsDir, type };
+  const base = { repoDir, modelsDir, behaviorsDir, pulledModelsDir, type };
   await setup(base);
   const catalog = new ExtensionCatalogStore(
     join(repoDir, ".swamp", "catalog.db"),
@@ -152,6 +158,7 @@ async function withRepo(
     }),
   );
   const additionalDirs = [pulledModelsDir];
+  const localDirs = [behaviorsDir];
   try {
     await withMockedCommand(copyingBundler, async () => {
       modelRegistry.setTypeLoader((t, entry) =>
@@ -159,17 +166,23 @@ async function withRepo(
       );
       // Cold pass populates the catalog, a warm pass registers it lazily,
       // as two CLI commands in a row would.
-      await loader.buildIndex(modelsDir, { additionalDirs, indexOnly: true });
-      await loader.buildIndex(modelsDir, { additionalDirs, indexOnly: true });
+      for (let i = 0; i < 2; i++) {
+        await loader.buildIndex(modelsDir, {
+          additionalDirs,
+          localDirs,
+          indexOnly: true,
+        });
+      }
       await fn({
         ...base,
         loader,
-        refresh: () => refreshLocalModels(loader, modelsDir, additionalDirs),
+        refresh: () =>
+          refreshLocalModels(loader, modelsDir, { localDirs, additionalDirs }),
       });
     });
   } finally {
     bundleFails = false;
-    for (const suffix of ["a", "b", "new", "pulled"]) {
+    for (const suffix of ["a", "b", "new", "pulled", "beh"]) {
       modelRegistry.invalidateType(type(suffix));
     }
     clearAttachedExtensions();
@@ -440,7 +453,7 @@ Deno.test("createLocalModelRefresher: runs no pass while nothing under the local
     let passes = 0;
     const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
       passes++;
-      return Promise.resolve([]);
+      return Promise.resolve(NO_DIRS);
     });
     await loaded(type("a"));
     const calls = bundleCalls;
@@ -464,7 +477,7 @@ Deno.test("createLocalModelRefresher: a same-size edit, a helper edit and a new 
     let passes = 0;
     const refresh = createLocalModelRefresher(loader, modelsDir, [], () => {
       passes++;
-      return Promise.resolve([]);
+      return Promise.resolve(NO_DIRS);
     });
     await refresh();
     const source = join(modelsDir, "a.ts");
@@ -513,7 +526,7 @@ Deno.test("createLocalModelRefresher: a pass that throws is tried again on the n
       passes++;
       return passes === 1
         ? Promise.reject(new Error("lockfile mid-write"))
-        : Promise.resolve([]);
+        : Promise.resolve(NO_DIRS);
     });
 
     await assertRejects(() => refresh(), Error, "lockfile mid-write");
@@ -547,6 +560,25 @@ Deno.test("refreshLocalModels: a deleted local add-on detaches its members", asy
     await Deno.writeTextFile(
       join(modelsDir, "b_extra.ts"),
       addOnCode(type("b"), "a1"),
+    );
+  });
+});
+
+Deno.test("refreshLocalModels: a model under extensions/behaviors is refreshed like one under extensions/models", async () => {
+  await withRepo(async ({ behaviorsDir, refresh, type }) => {
+    assertEquals((await loaded(type("beh")))?.methods.run.description, "v1");
+
+    await Deno.writeTextFile(
+      join(behaviorsDir, "beh.ts"),
+      modelCode(type("beh"), "v2"),
+    );
+    await refresh();
+
+    assertEquals((await loaded(type("beh")))?.methods.run.description, "v2");
+  }, async ({ behaviorsDir, type }) => {
+    await Deno.writeTextFile(
+      join(behaviorsDir, "beh.ts"),
+      modelCode(type("beh"), "v1"),
     );
   });
 });

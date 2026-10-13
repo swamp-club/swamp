@@ -1265,22 +1265,36 @@ async function loadUserModels(
       loader.attachPendingExtensionsForType(type)
     );
     // For long-lived processes (swamp serve) to pick up edited local
-    // models (swamp-club#3284). The pulled dirs are enumerated again on
-    // each pass: the scan drops catalog rows of every source it does not
-    // see, so it must walk the same dirs a fresh index would.
+    // models (swamp-club#3284). The behaviors dir and the pulled dirs are
+    // resolved again on each pass: the scan drops catalog rows of every
+    // source it does not see, so it must walk the same dirs a fresh index
+    // would. The behaviors dir is watched even before it exists, so
+    // creating it counts as an edit.
+    const behaviorsCandidate = resolveBehaviorsDir(marker);
     modelRegistry.setSourceRefresher(
       createLocalModelRefresher(
         loader,
         absoluteModelsDir,
-        sourceDirs,
-        () =>
-          enumeratePulledExtensionDirs(
-            lockfilePath,
-            repoDir,
-            "models",
-            undefined,
-            localLockfilePath,
-          ),
+        [
+          ...(behaviorsCandidate ? [resolve(extBase, behaviorsCandidate)] : []),
+          ...sourceDirs,
+        ],
+        async () => {
+          const behaviors = await existingBehaviorsDir(extBase, marker);
+          return {
+            localDirs: behaviors ? [behaviors] : [],
+            additionalDirs: [
+              ...sourceDirs,
+              ...await enumeratePulledExtensionDirs(
+                lockfilePath,
+                repoDir,
+                "models",
+                undefined,
+                localLockfilePath,
+              ),
+            ],
+          };
+        },
       ),
     );
 
