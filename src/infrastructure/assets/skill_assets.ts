@@ -66,47 +66,48 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // architecture
   { relativePath: "swamp/references/architecture/guide.md", name: "swamp" },
-  // model
-  { relativePath: "swamp/references/model/guide.md", name: "swamp" },
-  { relativePath: "swamp/references/model/reference.md", name: "swamp" },
+  // behavior
+  { relativePath: "swamp/references/behavior/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/behavior/reference.md", name: "swamp" },
   {
-    relativePath: "swamp/references/model/references/concurrency.md",
+    relativePath: "swamp/references/behavior/references/concurrency.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/data-chaining.md",
+    relativePath: "swamp/references/behavior/references/data-chaining.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/data-ownership.md",
+    relativePath: "swamp/references/behavior/references/data-ownership.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/direct-execution.md",
+    relativePath: "swamp/references/behavior/references/direct-execution.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/examples.md",
+    relativePath: "swamp/references/behavior/references/examples.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/expressions.md",
+    relativePath: "swamp/references/behavior/references/expressions.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/outputs.md",
+    relativePath: "swamp/references/behavior/references/outputs.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/disposable-instances.md",
+    relativePath:
+      "swamp/references/behavior/references/disposable-instances.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/scenarios.md",
+    relativePath: "swamp/references/behavior/references/scenarios.md",
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/troubleshooting.md",
+    relativePath: "swamp/references/behavior/references/troubleshooting.md",
     name: "swamp",
   },
   // workflow

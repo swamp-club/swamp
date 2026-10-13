@@ -1,6 +1,6 @@
 # Workflow Execution Semantics
 
-## Blocking Behavior
+## Blocking
 
 `swamp workflow run` blocks the calling process until the run reaches a terminal
 or suspended state:
@@ -28,8 +28,8 @@ swamp workflow history get <run-id> --server ws://localhost:9090
   runs`) exits non-zero.
 - `--detach` requires `--server` and cannot be combined with `--timeout` or
   `--junit`.
-- A detached run started from inside a step does not share that step's model
-  lock. If it needs the same model, it waits until the step ends.
+- A detached run started from inside a step does not share that step's behavior
+  lock. If it needs the same behavior, it waits until the step ends.
 - Runs started through a server never supersede one another, even with the same
   inputs. Each detached run that reaches a gate stays suspended until it is
   approved, rejected or cancelled, so resolve or cancel the ones no longer
@@ -163,8 +163,8 @@ follows this sequence:
    expression context, including `self.*` for forEach steps, `inputs.*`,
    `data.*`, and `run.*`. The `data` namespace is shared across all steps —
    `data.latest()` results are cached per-coordinate, and the cache is
-   invalidated when a model method step writes data, so subsequent steps (and
-   their guards) see fresh values.
+   invalidated when a method step writes data, so subsequent steps (and their
+   guards) see fresh values.
 3. **Guard evaluation** — if the step declares a `guard` expression, it is
    evaluated. A truthy result skips the step with reason `"guarded"` (already
    done). A falsy result proceeds to execution. A CEL error fails the step.
@@ -172,8 +172,8 @@ follows this sequence:
 4. **Placement resolution** — effective placement is computed by merging
    workflow → job → step placement fields (child wins). If placement is active,
    the step dispatches to a matching worker; otherwise it runs locally.
-5. **Task execution** — the step's task runs (model method, nested workflow,
-   manual approval, or assert).
+5. **Task execution** — the step's task runs (method, nested workflow, manual
+   approval, or assert).
 
 Guard evaluation happens after dependency checks but before task execution. This
 means a guarded step still respects its dependency graph — it won't evaluate the

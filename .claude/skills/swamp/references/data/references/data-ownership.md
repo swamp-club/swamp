@@ -1,6 +1,6 @@
 # Data Ownership
 
-Data artifacts are owned by the model (definition) that created them. This
+Data artifacts are owned by the behavior (definition) that created them. This
 ensures data integrity and prevents accidental overwrites.
 
 ## Owner Definition
@@ -29,14 +29,14 @@ workflowRunId == "run-uuid" && stepName == "dedup"
 
 ## Ownership Validation
 
-When a model method writes data:
+When a method writes data:
 
-1. **New data**: Created with current model as owner
+1. **New data**: Created with current behavior as owner
 2. **Existing data**: The writer's `ownerType` and `ownerRef` must match the
    existing item's
 3. **Owner mismatch**: Write fails with an ownership error
 
-This prevents scenarios where multiple models accidentally share data names.
+This prevents scenarios where multiple behaviors accidentally share data names.
 `definitionHash` plays no part: it survives only on data written by older
 versions and is not compared.
 

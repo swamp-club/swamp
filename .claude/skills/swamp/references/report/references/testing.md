@@ -2,7 +2,7 @@
 
 The `@swamp-club/swamp-testing` package provides `createReportTestContext()` and
 mock primitives for unit testing report `execute` functions without running real
-model methods or accessing real data repositories.
+methods or accessing real data repositories.
 
 Install: `deno add jsr:@swamp-club/swamp-testing`
 
@@ -39,7 +39,7 @@ All scopes share these base options:
 | `definitions`   | `[]`                | Pre-seed definitions                   |
 | `repoDir`       | `"/tmp/swamp-test"` | Repository directory path              |
 
-Method/model scope adds: `modelType`, `modelId`, `definition`, `globalArgs`,
+`method`/`model` scope adds: `modelType`, `modelId`, `definition`, `globalArgs`,
 `methodArgs`, `methodName`, `executionStatus`, `errorMessage`, `dataHandles`.
 
 Workflow scope adds: `workflowId`, `workflowRunId`, `workflowName`,
@@ -57,7 +57,7 @@ const {
 
 ## Pre-Seeding Data for Reports
 
-Reports that read model data use `context.dataRepository`. Pre-seed it:
+Reports that read behavior data use `context.dataRepository`. Pre-seed it:
 
 ```typescript
 Deno.test("report reads model data", async () => {

@@ -1,12 +1,12 @@
-# Data Chaining with command/shell Model
+# Data Chaining with command/shell Behavior
 
-The `command/shell` model enables data chaining by running shell commands and
-capturing output for use in other models. For JSON output, use `jq` in the
+The `command/shell` behavior enables data chaining by running shell commands and
+capturing output for use in other behaviors. For JSON output, use `jq` in the
 command to extract specific fields, then access the result via
 `data.latest("model-name", "result").attributes.stdout`.
 
-> **Note:** The `data.*` namespace is the current accessor for cross-model data.
-> `data.query()` is the underlying primitive; the shortcut helpers
+> **Note:** The `data.*` namespace is the current accessor for cross-behavior
+> data. `data.query()` is the underlying primitive; the shortcut helpers
 > (`data.latest`, `data.version`, `data.findByTag`, `data.findBySpec`,
 > `data.listVersions`) read more clearly when your intent matches, so prefer a
 > shortcut if it fits and reach for `data.query()` when you need a multi-field
@@ -26,11 +26,11 @@ command to extract specific fields, then access the result via
 
 ## Example: Dynamic AMI Lookup
 
-**Step 1: Create a command/shell model to look up an AMI:**
+**Step 1: Create a command/shell behavior to look up an AMI:**
 
 ```bash
-# Create the model
-swamp model create command/shell latest-ami --json
+# Create the behavior
+swamp behavior create command/shell latest-ami --json
 ```
 
 Edit `models/latest-ami/input.yaml`:
@@ -49,11 +49,11 @@ methods:
         --output text
 ```
 
-**Step 2: Create another model that references the shell output:**
+**Step 2: Create another behavior that references the shell output:**
 
 ```bash
-# Create the EC2 instance model
-swamp model create @user/ec2-instance my-instance --json
+# Create the EC2 instance behavior
+swamp behavior create @user/ec2-instance my-instance --json
 ```
 
 Edit `models/my-instance/input.yaml`:
@@ -63,7 +63,7 @@ name: my-instance
 version: 1
 tags: {}
 globalArguments:
-  # Reference stdout from the command/shell model
+  # Reference stdout from the command/shell behavior
   imageId: ${{ model.latest-ami.resource.result.result.attributes.stdout }}
   instanceType: t3.micro
   tags:
@@ -73,8 +73,8 @@ globalArguments:
 ## Example: Security Group Lookup
 
 ```bash
-# Create and configure the security group lookup model
-swamp model create command/shell default-sg --json
+# Create and configure the security group lookup behavior
+swamp behavior create command/shell default-sg --json
 ```
 
 Edit `models/default-sg/input.yaml`:
@@ -95,7 +95,7 @@ methods:
 
 ```bash
 # Create an EC2 instance that references the security group
-swamp model create @user/ec2 my-server --json
+swamp behavior create @user/ec2 my-server --json
 ```
 
 Edit `models/my-server/input.yaml`:
@@ -112,8 +112,8 @@ globalArguments:
 ## Example: Chaining Multiple Lookups
 
 ```bash
-# Step 1: Create VPC lookup model
-swamp model create command/shell vpc-lookup --json
+# Step 1: Create VPC lookup behavior
+swamp behavior create command/shell vpc-lookup --json
 ```
 
 Edit `models/vpc-lookup/input.yaml`:
@@ -132,7 +132,7 @@ methods:
 
 ```bash
 # Step 2: Create subnet lookup that references the VPC
-swamp model create command/shell subnet-lookup --json
+swamp behavior create command/shell subnet-lookup --json
 ```
 
 Edit `models/subnet-lookup/input.yaml`:
@@ -151,8 +151,8 @@ methods:
 ```
 
 ```bash
-# Step 3: Create instance model that uses both lookups
-swamp model create @user/ec2-instance my-instance --json
+# Step 3: Create instance behavior that uses both lookups
+swamp behavior create @user/ec2-instance my-instance --json
 ```
 
 Edit `models/my-instance/input.yaml`:

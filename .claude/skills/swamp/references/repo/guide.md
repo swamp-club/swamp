@@ -32,7 +32,7 @@ before executing — the output is structured JSON.
 
 ```
 my-swamp-repo/
-├── models/                  # Model definitions (YAML)
+├── models/                  # Behavior definitions (YAML)
 ├── workflows/               # Workflow definitions (YAML)
 ├── vaults/                  # Vault configurations (YAML)
 ├── extensions/              # Custom extensions (TypeScript)

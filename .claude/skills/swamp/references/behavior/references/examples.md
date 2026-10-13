@@ -1,43 +1,43 @@
-# Model Examples and CEL Reference
+# Behavior Examples and CEL Reference
 
 ## Table of Contents
 
 - [CEL Expression Quick Reference](#cel-expression-quick-reference)
 - [Decision Tree: What to Build](#decision-tree-what-to-build)
-- [Simple Shell Command Model](#simple-shell-command-model)
-- [Chained Lookup Models](#chained-lookup-models)
-- [Model with Runtime Inputs](#model-with-runtime-inputs)
-- [Cross-Model Data References](#cross-model-data-references)
+- [Simple Shell Command Behavior](#simple-shell-command-behavior)
+- [Chained Lookup Behaviors](#chained-lookup-behaviors)
+- [Behavior with Runtime Inputs](#behavior-with-runtime-inputs)
+- [Cross-Behavior Data References](#cross-behavior-data-references)
 
 ## CEL Expression Quick Reference
 
-| Expression Pattern                                           | Description                               | Example Value                 |
-| ------------------------------------------------------------ | ----------------------------------------- | ----------------------------- |
-| `data.latest("<model>", "<name>").attributes.<field>`        | Latest data (sees current-run writes)     | VPC ID, subnet CIDR, etc.     |
-| `data.latest("<model>", "<name>").?attributes.?<field>`      | Null-safe — returns null if missing       | Prior cycle findings          |
-| `data.version("<model>", "<name>", N).attributes.<field>`    | Specific version of data                  | Rollback to version 1         |
-| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec            | All subnets from scanner      |
-| `data.findByTag("<key>", "<value>")`                         | Find data by tag                          | All resources tagged env=prod |
-| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource (DEPRECATED)         | VPC ID, subnet CIDR, etc.     |
-| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)         | AMI ID from aws cli command   |
-| `data.latest("<model>", "<name>").path`                      | Local path of another model's stored file | `/path/to/file.txt`           |
-| `model.<name>.file.<spec>.<instance>.path`                   | File path from another model (DEPRECATED) | `/path/to/file.txt`           |
-| `self.name`                                                  | Current model's name                      | `my-vpc`                      |
-| `self.version`                                               | Current model's version                   | `1`                           |
-| `self.globalArguments.<field>`                               | This model's own global argument          | CIDR block, region, etc.      |
-| `inputs.<name>`                                              | Runtime input value                       | `production`, `true`, etc.    |
-| `env.<VAR_NAME>`                                             | Environment variable                      | AWS region, credentials       |
-| `vault.get("<vault>", "<key>")`                              | Vault secret (literal args)               | API key, password             |
-| `vault.get(inputs.vault, inputs.key)`                        | Vault secret (dynamic CEL args)           | Per-target secret             |
+| Expression Pattern                                           | Description                                  | Example Value                 |
+| ------------------------------------------------------------ | -------------------------------------------- | ----------------------------- |
+| `data.latest("<model>", "<name>").attributes.<field>`        | Latest data (sees current-run writes)        | VPC ID, subnet CIDR, etc.     |
+| `data.latest("<model>", "<name>").?attributes.?<field>`      | Null-safe — returns null if missing          | Prior cycle findings          |
+| `data.version("<model>", "<name>", N).attributes.<field>`    | Specific version of data                     | Rollback to version 1         |
+| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec               | All subnets from scanner      |
+| `data.findByTag("<key>", "<value>")`                         | Find data by tag                             | All resources tagged env=prod |
+| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-behavior resource (DEPRECATED)         | VPC ID, subnet CIDR, etc.     |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)            | AMI ID from aws cli command   |
+| `data.latest("<model>", "<name>").path`                      | Local path of another behavior's stored file | `/path/to/file.txt`           |
+| `model.<name>.file.<spec>.<instance>.path`                   | File path from another behavior (DEPRECATED) | `/path/to/file.txt`           |
+| `self.name`                                                  | Current behavior's name                      | `my-vpc`                      |
+| `self.version`                                               | Current behavior's version                   | `1`                           |
+| `self.globalArguments.<field>`                               | This behavior's own global argument          | CIDR block, region, etc.      |
+| `inputs.<name>`                                              | Runtime input value                          | `production`, `true`, etc.    |
+| `env.<VAR_NAME>`                                             | Environment variable                         | AWS region, credentials       |
+| `vault.get("<vault>", "<key>")`                              | Vault secret (literal args)                  | API key, password             |
+| `vault.get(inputs.vault, inputs.key)`                        | Vault secret (dynamic CEL args)              | Per-target secret             |
 
-### CEL Path Patterns by Model Type
+### CEL Path Patterns by Behavior Type
 
-| Model Type      | Resource Spec | Instance    | CEL Path Example                                              |
-| --------------- | ------------- | ----------- | ------------------------------------------------------------- |
-| `command/shell` | `result`      | `result`    | `model.my-shell.resource.result.result.attributes.stdout`     |
-| `@user/vpc`     | `vpc`         | `main`      | `model.my-vpc.resource.vpc.main.attributes.VpcId`             |
-| `@user/subnet`  | `subnet`      | `primary`   | `model.my-subnet.resource.subnet.primary.attributes.SubnetId` |
-| Factory model   | `<spec>`      | `<dynamic>` | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`    |
+| Behavior Type    | Resource Spec | Instance    | CEL Path Example                                              |
+| ---------------- | ------------- | ----------- | ------------------------------------------------------------- |
+| `command/shell`  | `result`      | `result`    | `model.my-shell.resource.result.result.attributes.stdout`     |
+| `@user/vpc`      | `vpc`         | `main`      | `model.my-vpc.resource.vpc.main.attributes.VpcId`             |
+| `@user/subnet`   | `subnet`      | `primary`   | `model.my-subnet.resource.subnet.primary.attributes.SubnetId` |
+| Factory behavior | `<spec>`      | `<dynamic>` | `model.scanner.resource.subnet.subnet-aaa.attributes.cidr`    |
 
 ## Decision Tree: What to Build
 
@@ -45,7 +45,7 @@
 What does the user want to accomplish?
 │
 ├── Run a single command or API call
-│   └── Create a swamp model (command/shell or @user/custom)
+│   └── Create a behavior (command/shell or @user/custom)
 │
 ├── Orchestrate multiple steps in order
 │   └── Create a swamp workflow with jobs and steps
@@ -54,18 +54,18 @@ What does the user want to accomplish?
 │   └── Create an extension model (@user/my-type) in extensions/models/
 │
 └── Combine all of the above
-    └── Create extension models + workflows that use them
+    └── Create extension behaviors + workflows that use them
 ```
 
-## Simple Shell Command Model
+## Simple Shell Command Behavior
 
-**Step 1: Create the model**
+**Step 1: Create the behavior**
 
 ```bash
-swamp model create command/shell my-shell --json
+swamp behavior create command/shell my-shell --json
 ```
 
-**Step 2: Configure the model input**
+**Step 2: Configure the behavior input**
 
 ```yaml
 # models/my-shell/input.yaml
@@ -86,14 +86,14 @@ swamp behavior run my-shell execute
 
 **Output data path**: `model.my-shell.resource.result.result.attributes.stdout`
 
-## Chained Lookup Models
+## Chained Lookup Behaviors
 
 ### Pattern: VPC → Subnet → Instance
 
 **Step 1: VPC Lookup**
 
 ```bash
-swamp model create command/shell vpc-lookup --json
+swamp behavior create command/shell vpc-lookup --json
 ```
 
 ```yaml
@@ -116,7 +116,7 @@ swamp behavior run vpc-lookup execute
 **Step 2: Subnet Lookup (references VPC)**
 
 ```bash
-swamp model create command/shell subnet-lookup --json
+swamp behavior create command/shell subnet-lookup --json
 ```
 
 ```yaml
@@ -136,7 +136,7 @@ methods:
 **Step 3: Instance (references both)**
 
 ```bash
-swamp model create @user/ec2-instance my-instance --json
+swamp behavior create @user/ec2-instance my-instance --json
 ```
 
 ```yaml
@@ -154,17 +154,17 @@ globalArguments:
 
 ### Key CEL Paths Used
 
-| Model         | Expression                                                     | Value             |
+| Behavior      | Expression                                                     | Value             |
 | ------------- | -------------------------------------------------------------- | ----------------- |
 | vpc-lookup    | `model.vpc-lookup.resource.result.result.attributes.stdout`    | `vpc-12345678`    |
 | subnet-lookup | `model.subnet-lookup.resource.result.result.attributes.stdout` | `subnet-abcd1234` |
 | my-instance   | `self.name`                                                    | `my-instance`     |
 
-## Model with Runtime Inputs
+## Behavior with Runtime Inputs
 
-Models can accept runtime inputs via `--input` or `--input-file`:
+Behaviors can accept runtime inputs via `--input` or `--input-file`:
 
-**Step 1: Define model with inputs schema**
+**Step 1: Define behavior with inputs schema**
 
 ```yaml
 # models/my-deploy/input.yaml
@@ -229,17 +229,17 @@ environment: production
 dryRun: true
 ```
 
-## Cross-Model Data References
+## Cross-Behavior Data References
 
 ### Use the `data.*` namespace
 
-Use `data.*` expressions to reference other models' data. `data.query()` is the
-underlying primitive; the shortcut helpers read more clearly when your intent
-matches, so prefer a shortcut if it fits and reach for `data.query()` when you
-need a multi-field predicate or a projection.
+Use `data.*` expressions to reference other behaviors' data. `data.query()` is
+the underlying primitive; the shortcut helpers read more clearly when your
+intent matches, so prefer a shortcut if it fits and reach for `data.query()`
+when you need a multi-field predicate or a projection.
 
 ```yaml
-# Shortcut — reads most clearly for a single-model-and-name lookup
+# Shortcut — reads most clearly for a single-behavior-and-name lookup
 globalArguments:
   vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 
@@ -263,7 +263,7 @@ globalArguments:
 # Specific version (rollback scenario)
 previousConfig: ${{ data.version("app-config", "config", 1).attributes.setting }}
 
-# Dynamic model name
+# Dynamic behavior name
 dynamicValue: ${{ data.latest(inputs.modelName, "state").attributes.value }}
 
 # Find all instances of a spec
@@ -281,7 +281,7 @@ mapping table.
 
 ### Self-References
 
-Use `self.*` to reference the current model's properties:
+Use `self.*` to reference the current behavior's properties:
 
 ```yaml
 globalArguments:

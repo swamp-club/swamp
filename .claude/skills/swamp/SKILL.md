@@ -1,12 +1,12 @@
 ---
 name: swamp
 description: >
-  Swamp CLI — create and run models, build and validate workflows, query and
-  manage data, store and retrieve vault secrets, develop and publish extensions,
-  initialize repos, run reports, file issues, and troubleshoot errors. Triggers
-  on swamp commands (swamp model, swamp behavior run, swamp workflow, swamp
-  vault, swamp data), extension development, repo setup, or diagnostic
-  questions. Do NOT use for
+  Swamp CLI — create and run behaviors (formerly models), build and validate
+  workflows, query and manage data, store and retrieve vault secrets, develop
+  and publish extensions, initialize repos, run reports, file issues, and
+  troubleshoot errors. Triggers on swamp commands (swamp behavior, swamp
+  behavior run, swamp model, swamp workflow, swamp vault, swamp data),
+  extension development, repo setup, or diagnostic questions. Do NOT use for
   getting started / onboarding (use swamp-getting-started), pull requests, git
   operations, worktree management, cron/agent scheduling, or general coding
   tasks unrelated to swamp.
@@ -16,14 +16,16 @@ description: >
 
 ## Core Concepts
 
-- **Models** — typed resource definitions exposing methods (create, stop,
-  destroy, sync).
+- **Behaviors** (formerly models) — typed resource definitions exposing methods
+  (create, stop, destroy, sync). `swamp behavior` is the preferred spelling;
+  every `swamp model` spelling still works (see
+  [references/behavior/reference.md#compatibility](references/behavior/reference.md#compatibility)).
 - **Data** — versioned state snapshots produced by method runs; referenced via
   CEL expressions.
-- **Workflows** — declarative DAGs chaining model methods with guard expressions
-  for idempotent execution and assert steps for validation.
-- **Vaults** — secret storage referenced by models at runtime.
-- **Extensions** — TypeScript packages adding model types, vault backends,
+- **Workflows** — declarative DAGs chaining behavior methods with guard
+  expressions for idempotent execution and assert steps for validation.
+- **Vaults** — secret storage referenced by behaviors at runtime.
+- **Extensions** — TypeScript packages adding behavior types, vault backends,
   datastores, reports, and webhook handlers.
 - **Grants** — authorization rules for swamp serve access control.
 - **Serve** — exposes the repo over the network with TLS and authentication.
@@ -32,35 +34,35 @@ description: >
 
 Route to the right guide based on what the user needs.
 
-| User intent                                                   | Guide                                                                          |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Models — create, run, edit, delete, search types              | [references/model/guide.md](references/model/guide.md)                         |
-| Workflows — create, run, validate, DAG, history               | [references/workflow/guide.md](references/workflow/guide.md)                   |
-| Data — list, query, versions, GC, delete                      | [references/data/guide.md](references/data/guide.md)                           |
-| Vaults — create, store/read secrets, expressions              | [references/vault/guide.md](references/vault/guide.md)                         |
-| Reports — run, configure, view, filter                        | [references/report/guide.md](references/report/guide.md)                       |
-| Repository — init, upgrade, datastores, sources               | [references/repo/guide.md](references/repo/guide.md)                           |
-| Extensions — create models/vaults/datastores/reports/webhooks | [references/extension/guide.md](references/extension/guide.md)                 |
-| Publishing — push extensions to registry, deprecate           | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
-| Issues — file bugs, features, security reports                | [references/issue/guide.md](references/issue/guide.md)                         |
-| Run tracking — active runs, stale detection, diagnostics      | [references/model/guide.md](references/model/guide.md)                         |
-| Architecture — which primitive to use, design trade-offs      | [references/architecture/guide.md](references/architecture/guide.md)           |
-| Sharing — promote solo repo to team, datastore + vault setup  | [references/share/guide.md](references/share/guide.md)                         |
-| Serve — auth, grants, access control, tokens, OAuth           | [references/serve/guide.md](references/serve/guide.md)                         |
-| Troubleshooting — errors, health checks, diagnostics          | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
+| User intent                                                      | Guide                                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Behaviors — create, run, edit, delete, search types              | [references/behavior/guide.md](references/behavior/guide.md)                   |
+| Workflows — create, run, validate, DAG, history                  | [references/workflow/guide.md](references/workflow/guide.md)                   |
+| Data — list, query, versions, GC, delete                         | [references/data/guide.md](references/data/guide.md)                           |
+| Vaults — create, store/read secrets, expressions                 | [references/vault/guide.md](references/vault/guide.md)                         |
+| Reports — run, configure, view, filter                           | [references/report/guide.md](references/report/guide.md)                       |
+| Repository — init, upgrade, datastores, sources                  | [references/repo/guide.md](references/repo/guide.md)                           |
+| Extensions — create behaviors/vaults/datastores/reports/webhooks | [references/extension/guide.md](references/extension/guide.md)                 |
+| Publishing — push extensions to registry, deprecate              | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
+| Issues — file bugs, features, security reports                   | [references/issue/guide.md](references/issue/guide.md)                         |
+| Run tracking — active runs, stale detection, diagnostics         | [references/behavior/guide.md](references/behavior/guide.md)                   |
+| Architecture — which primitive to use, design trade-offs         | [references/architecture/guide.md](references/architecture/guide.md)           |
+| Sharing — promote solo repo to team, datastore + vault setup     | [references/share/guide.md](references/share/guide.md)                         |
+| Serve — auth, grants, access control, tokens, OAuth              | [references/serve/guide.md](references/serve/guide.md)                         |
+| Troubleshooting — errors, health checks, diagnostics             | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands
 
 ```bash
-# Models
-swamp model create <type> <name>               # create a model definition
-swamp behavior run @<type> <method> <name>     # run a method on a model
-swamp model get <name> --json                  # inspect current model state
-swamp model type search [query]                # find available model types
-swamp model list                               # list all models in the repo
+# Behaviors
+swamp behavior create <type> <name>            # create a behavior definition
+swamp behavior run @<type> <method> <name>     # run a method on a behavior
+swamp behavior get <name> --json               # inspect current behavior state
+swamp behavior type search [query]             # find available behavior types
+swamp behavior list                            # list all behaviors in the repo
 
 # Data
-swamp data list <name>                         # list data versions for a model
+swamp data list <name>                         # list data versions for a behavior
 swamp data query '<CEL predicate>'             # query data with CEL expressions
 # read one item's latest content (`swamp data get` is deprecated)
 swamp data query 'model("<model>") && name == "<data>"' --select content
@@ -94,7 +96,7 @@ swamp extension init <name>                    # scaffold a new extension
    `references/` only when the guide says to.
 3. **Validate** — before running any workflow: `swamp workflow validate <name>`.
    Before destructive methods (delete, stop, destroy):
-   `swamp model get <name> --json` to confirm the target exists and is in the
+   `swamp behavior get <name> --json` to confirm the target exists and is in the
    expected state. Proceed only when validation passes.
 4. **Verify args** — run `swamp help <subcommand>` (e.g.
    `swamp help behavior run`) to confirm exact flags and arguments before
@@ -109,16 +111,16 @@ swamp extension init <name>                    # scaffold a new extension
 1. **Use the routing table, not memory.** Don't answer from cached knowledge
    about swamp commands — always load the current guide.
 2. **Consult the architecture guide for design decisions.** Before choosing
-   between primitives (model vs. workflow vs. extension vs. report) or
+   between primitives (behavior vs. workflow vs. extension vs. report) or
    explaining a design trade-off, load
    [references/architecture/guide.md](references/architecture/guide.md) and cite
    the design doc you relied on.
 3. **Use swamp commands, don't go around them.** Query data with
    `swamp data query`, not by grepping `.swamp/` files. Interact with resources
-   through model methods, not raw CLI tools when a model type already wraps the
-   API — check with `swamp model type search`. Composing with `--json` output
-   (e.g. piping through `jq`) is fine — the anti-pattern is bypassing swamp
-   entirely.
+   through behavior methods, not raw CLI tools when a behavior type already
+   wraps the API — check with `swamp behavior type search`. Composing with
+   `--json` output (e.g. piping through `jq`) is fine — the anti-pattern is
+   bypassing swamp entirely.
 4. **Verify flags with `swamp help` before executing.** `swamp help <command>`
    outputs the full CLI schema as structured JSON — every subcommand, argument,
    and option. Always run it to confirm exact flags before executing a swamp

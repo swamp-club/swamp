@@ -1,17 +1,18 @@
-# Model Type Resolution
+# Behavior Type Resolution
 
-How to find the right model type based on the user's goal. Follow the resolution
-steps in order — installed types, then official `@swamp/*` extensions, then the
-rest of the registry — and stop as soon as a match is found.
+How to find the right behavior type based on the user's goal. Follow the
+resolution steps in order — installed types, then official `@swamp/*`
+extensions, then the rest of the registry — and stop as soon as a match is
+found.
 
 ## Step 1: Search Installed Types
 
 ```bash
-swamp model type search <keywords from user goal> --json
+swamp behavior type search <keywords from user goal> --json
 ```
 
 If a matching type is found, use it. Run
-`swamp model type describe <type> --json` to understand required arguments.
+`swamp behavior type describe <type> --json` to understand required arguments.
 
 ## Step 2: Search Extensions
 
@@ -27,33 +28,33 @@ Present the results and let the user pick one:
 
 ```bash
 swamp extension pull @collective/extension-name
-swamp model type search <extension-keywords> --json
+swamp behavior type search <extension-keywords> --json
 ```
 
-After pulling, use `swamp model type describe <type> --json` to inspect the
+After pulling, use `swamp behavior type describe <type> --json` to inspect the
 schema and available methods.
 
 ## Step 3: Build a Custom Extension
 
 If nothing matches locally or in the registry, offer to build a custom extension
-model using the `swamp` skill (extension guide). This creates a typed model with
+using the `swamp` skill (extension guide). This creates a typed behavior with
 proper Zod schemas for the service the user wants to automate.
 
 Only use `command/shell` if the user's goal is genuinely a one-off ad-hoc
 command (e.g., "check my disk space right now") — never for wrapping CLI tools
 or building integrations. This aligns with the CLAUDE.md rule: _"The
-`command/shell` model is ONLY for ad-hoc one-off shell commands, NEVER for
+`command/shell` behavior is ONLY for ad-hoc one-off shell commands, NEVER for
 wrapping CLI tools or building integrations."_
 
 ## Credential Setup
 
-If the chosen model type requires credentials (cloud services, APIs, etc.),
-store them in a vault before configuring the model. `swamp repo init` already
+If the chosen behavior type requires credentials (cloud services, APIs, etc.),
+store them in a vault before configuring the behavior. `swamp repo init` already
 created a `local_encryption` vault named `default`; confirm it with
 `swamp vault search --json`. Use the `swamp` skill (vault guide):
 
 1. Store credentials: `swamp vault put default API_KEY` (prompts securely)
-2. Reference in model YAML: `${{ vault.get("default", "API_KEY") }}`
+2. Reference in the definition YAML: `${{ vault.get("default", "API_KEY") }}`
 
 If `default` is missing (the repo was created with `--no-vault`), create one
 first: `swamp vault create local_encryption default --json`.
@@ -62,17 +63,17 @@ first: `swamp vault create local_encryption default --json`.
 
 For a first run, prefer read-only methods that don't create or modify resources:
 
-- `execute` — for shell models
-- `get`, `list`, or `describe` — for typed models (reads existing resources)
+- `execute` — for shell behaviors
+- `get`, `list`, or `describe` — for typed behaviors (reads existing resources)
 
-Avoid `sync` for the first run — on a new model it fails with "No existing state
-found". Avoid `create`, `update`, or `delete` too.
+Avoid `sync` for the first run — on a new behavior it fails with "No existing
+state found". Avoid `create`, `update`, or `delete` too.
 
 ## CEL Reference Path
 
 After a successful run, show the user how to reference the output. CEL
-expressions wire data from one model into another — anywhere a model YAML
-accepts a value, you can interpolate from prior runs:
+expressions wire data from one behavior into another — anywhere a definition
+YAML accepts a value, you can interpolate from prior runs:
 
 ```
 ${{ data.latest("<name>", "<dataName>").attributes.<field> }}
@@ -86,16 +87,16 @@ Use `data.latest(...)` over the deprecated
 Per-state recovery actions when a Verify step fails. After fixing, re-run the
 state's action and re-verify before advancing.
 
-### State 2 (model_created) — validation failed
+### State 2 (behavior_created) — validation failed
 
 Read the validation errors. Common fixes:
 
-- Missing required arguments → edit the model YAML to add them
+- Missing required arguments → edit the definition YAML to add them
 - Invalid argument values → check the type schema with
-  `swamp model type describe <type> --json`
-- File not found → verify path from `swamp model get <name> --json`
+  `swamp behavior type describe <type> --json`
+- File not found → verify path from `swamp behavior get <name> --json`
 
-For detailed model guidance, see the `swamp` skill (model guide).
+For detailed guidance, see the `swamp` skill (behavior guide).
 
 ### State 3 (method_run) — method failed
 
@@ -109,7 +110,7 @@ For detailed model guidance, see the `swamp` skill (model guide).
 Check the method run logs for failed runs and report the error:
 
 ```bash
-swamp model output search <name> --json
+swamp behavior output search <name> --json
 ```
 
 ## Delegation Map
@@ -119,13 +120,13 @@ scope), delegate to the appropriate skill with context about what they built.
 Always pass along the user's original goal and what they built so the next skill
 doesn't start from zero.
 
-| User intent                              | Delegate to                 |
-| ---------------------------------------- | --------------------------- |
-| Another model or edit the one they made  | `swamp` (model guide)       |
-| Chain models together                    | `swamp` (workflow guide)    |
-| Secure credentials                       | `swamp` (vault guide)       |
-| Inspect or query their data              | `swamp` (data guide)        |
-| Build a typed model from scratch         | `swamp` (extension guide)   |
-| Share their work                         | `swamp` (extension-publish) |
-| Which primitive to use, design trade-off | `swamp` (architecture)      |
-| Something is broken                      | `swamp` (troubleshooting)   |
+| User intent                                | Delegate to                 |
+| ------------------------------------------ | --------------------------- |
+| Another behavior or edit the one they made | `swamp` (behavior guide)    |
+| Chain behaviors together                   | `swamp` (workflow guide)    |
+| Secure credentials                         | `swamp` (vault guide)       |
+| Inspect or query their data                | `swamp` (data guide)        |
+| Build a typed behavior from scratch        | `swamp` (extension guide)   |
+| Share their work                           | `swamp` (extension-publish) |
+| Which primitive to use, design trade-off   | `swamp` (architecture)      |
+| Something is broken                        | `swamp` (troubleshooting)   |

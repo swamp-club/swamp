@@ -22,7 +22,7 @@ Reach for a doctor command when the symptom maps to a known integration:
 | ---------------------------------------------------------- | ------------------------- |
 | Audit log empty after init/upgrade or after AI-tool change | `swamp doctor audit`      |
 | Hooks aren't firing for the configured AI tool             | `swamp doctor audit`      |
-| Extension model/vault/datastore/report missing from CLI    | `swamp doctor extensions` |
+| Extension behavior/vault/datastore/report missing from CLI | `swamp doctor extensions` |
 | `swamp-warning:` line on stderr mentioning a load failure  | `swamp doctor extensions` |
 | Workflow YAML fails to parse or construct                  | `swamp doctor workflows`  |
 | `swamp workflow get` errors on a file that search finds    | `swamp doctor workflows`  |
@@ -149,15 +149,15 @@ swamp doctor extensions --repair
 
 Four user-facing registries, in fixed order:
 
-| Registry    | Covers                                               |
-| ----------- | ---------------------------------------------------- |
-| `model`     | `extensions/models/` and registered model extensions |
-| `vault`     | `extensions/vaults/`                                 |
-| `datastore` | `extensions/datastores/`                             |
-| `report`    | `extensions/reports/`                                |
+| Registry    | Covers                                                  |
+| ----------- | ------------------------------------------------------- |
+| `model`     | `extensions/models/` and registered behavior extensions |
+| `vault`     | `extensions/vaults/`                                    |
+| `datastore` | `extensions/datastores/`                                |
+| `report`    | `extensions/reports/`                                   |
 
 The `model` row absorbs both `model` and `extension` load warnings — extensions
-that augment an existing model type fold into the model registry's row.
+that augment an existing behavior type fold into the model registry's row.
 
 ### Output — log mode
 
@@ -250,8 +250,8 @@ line names it. A file reachable through more than one directory is reported
 once.
 
 Scope is **load-ability only** — whether the file can be parsed and constructed.
-Schema validity (DAG integrity, model references, expression validation) is the
-job of `swamp workflow validate`.
+Schema validity (DAG integrity, behavior references, expression validation) is
+the job of `swamp workflow validate`.
 
 ### Output — log mode
 
@@ -313,7 +313,7 @@ These two commands are complementary:
   fields, invalid types). These files are silently dropped by the workflow
   loader, so `workflow validate` never sees them.
 - `workflow validate` checks **loaded** workflows for semantic validity (DAG
-  cycles, undefined model references, expression errors).
+  cycles, undefined behavior references, expression errors).
 
 Run both in CI for complete coverage.
 

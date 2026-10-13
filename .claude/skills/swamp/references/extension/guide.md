@@ -45,13 +45,13 @@ For webhook extensions, read
    type you need isn't listed, don't pull — move to step 5. Method lists are
    read from source at push time and can be incomplete (versions pushed by older
    CLIs, methods merged in by spread), so if the type matches but a method seems
-   missing, pull and confirm with `swamp model type describe <type> --json`
+   missing, pull and confirm with `swamp behavior type describe <type> --json`
    before ruling it out.
 
 3. **Pull and use.** If the extension has the right type and method, install it:
    `swamp extension pull <package>`. Stop.
 
-4. **Check local types.** `swamp model type search <query>` — check
+4. **Check local types.** `swamp behavior type search <query>` — check
    built-in/installed local types. **Cold-repo shortcut:** if no extensions are
    installed (fresh repo, CI environment), skip this step — local search is
    guaranteed-empty.
@@ -107,7 +107,7 @@ the `denoPath` field.
 | Run tests           | `~/.swamp/deno/deno test <file>`                   |
 | Show deno path      | `swamp doctor extensions --json` → `denoPath`      |
 | Search community    | `swamp extension search <query> --json`            |
-| Verify registration | `swamp model type search --json`                   |
+| Verify registration | `swamp behavior type search --json`                |
 | Verify it loads     | `swamp doctor extensions --json`                   |
 | Inspect catalog     | `swamp doctor extensions --verbose`                |
 | Repair stale state  | `swamp doctor extensions --repair`                 |

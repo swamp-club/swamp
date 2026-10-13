@@ -1,15 +1,15 @@
 [
   {
     "query": "Search for model types that handle payments",
-    "expected_guide": "model"
+    "expected_guide": "behavior"
   },
   {
     "query": "Run the validate method on the payment-processor model",
-    "expected_guide": "model"
+    "expected_guide": "behavior"
   },
   {
     "query": "How do I delete a model definition?",
-    "expected_guide": "model"
+    "expected_guide": "behavior"
   },
   {
     "query": "How do I define a workflow in YAML that orchestrates multiple models?",
@@ -141,6 +141,22 @@
   },
   {
     "query": "Run swamp behavior run my-server deploy with env=prod",
-    "expected_guide": "model"
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "swamp behavior create command/shell disk-check --json",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "How do I see method history with swamp behavior history?",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "Run swamp model method run my-server deploy with env=prod",
+    "expected_guide": "behavior"
+  },
+  {
+    "query": "Search behavior types with swamp model type search",
+    "expected_guide": "behavior"
   }
 ]

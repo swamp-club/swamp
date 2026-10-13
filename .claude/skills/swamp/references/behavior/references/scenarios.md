@@ -1,14 +1,14 @@
-# Model Scenarios
+# Behavior Scenarios
 
-End-to-end scenarios showing how to build models for common use cases.
+End-to-end scenarios showing how to build behaviors for common use cases.
 
 ## Table of Contents
 
 - [Scenario 1: Simple Shell Command](#scenario-1-simple-shell-command)
 - [Scenario 2: Chained AWS Lookups](#scenario-2-chained-aws-lookups)
-- [Scenario 3: Model with Runtime Inputs](#scenario-3-model-with-runtime-inputs)
+- [Scenario 3: Behavior with Runtime Inputs](#scenario-3-behavior-with-runtime-inputs)
 - [Scenario 4: Multi-Environment Configuration](#scenario-4-multi-environment-configuration)
-- [Scenario 5: Factory Pattern for Model Reuse](#scenario-5-factory-pattern-for-model-reuse)
+- [Scenario 5: Factory Pattern for Behavior Reuse](#scenario-5-factory-pattern-for-behavior-reuse)
 
 ---
 
@@ -17,30 +17,30 @@ End-to-end scenarios showing how to build models for common use cases.
 ### User Request
 
 > "I want to run a shell command and capture its output for use in other
-> models."
+> behaviors."
 
 ### What You'll Build
 
-- 1 model: `command/shell` type
+- 1 behavior: `command/shell` type
 
 ### Decision Tree
 
 ```
-User wants to run a command → Use command/shell model
+User wants to run a command → Use command/shell behavior
 ```
 
 ### Step-by-Step
 
-**1. Create the model**
+**1. Create the behavior**
 
 ```bash
-swamp model create command/shell my-shell --json
+swamp behavior create command/shell my-shell --json
 ```
 
-**2. Configure the model input**
+**2. Configure the behavior input**
 
 ```bash
-swamp model get my-shell --json
+swamp behavior get my-shell --json
 # Note the path, then edit the file
 ```
 
@@ -59,7 +59,7 @@ methods:
 **3. Validate**
 
 ```bash
-swamp model validate my-shell --json
+swamp behavior validate my-shell --json
 ```
 
 **4. Run**
@@ -71,7 +71,7 @@ swamp behavior run my-shell execute
 **5. View output**
 
 ```bash
-swamp model output get my-shell --json
+swamp behavior output get my-shell --json
 swamp data query 'modelName == "my-shell" && name == "result"' --select content --json
 ```
 
@@ -94,7 +94,7 @@ swamp data query 'modelName == "my-shell" && name == "result"' --select content 
 
 ### What You'll Build
 
-- 3 models:
+- 3 behaviors:
   - `vpc-lookup` (command/shell) — find the default VPC
   - `subnet-lookup` (command/shell) — find a subnet in that VPC
   - `my-instance` (@user/ec2-instance or similar) — uses both
@@ -102,17 +102,17 @@ swamp data query 'modelName == "my-shell" && name == "result"' --select content 
 ### Decision Tree
 
 ```
-User wants to chain multiple lookups → Multiple models with CEL references
-Each lookup is a command → command/shell model
-Final resource needs custom logic → Extension model (or use existing type)
+User wants to chain multiple lookups → Multiple behaviors with CEL references
+Each lookup is a command → command/shell behavior
+Final resource needs custom logic → Extension behavior (or use existing type)
 ```
 
 ### Step-by-Step
 
-**1. Create VPC lookup model**
+**1. Create VPC lookup behavior**
 
 ```bash
-swamp model create command/shell vpc-lookup --json
+swamp behavior create command/shell vpc-lookup --json
 ```
 
 Edit `models/vpc-lookup/input.yaml`:
@@ -136,10 +136,10 @@ Run it:
 swamp behavior run vpc-lookup execute
 ```
 
-**2. Create subnet lookup model (references VPC)**
+**2. Create subnet lookup behavior (references VPC)**
 
 ```bash
-swamp model create command/shell subnet-lookup --json
+swamp behavior create command/shell subnet-lookup --json
 ```
 
 Edit `models/subnet-lookup/input.yaml`:
@@ -160,14 +160,14 @@ methods:
 Validate and run:
 
 ```bash
-swamp model validate subnet-lookup --json
+swamp behavior validate subnet-lookup --json
 swamp behavior run subnet-lookup execute
 ```
 
-**3. Create instance model (references both)**
+**3. Create instance behavior (references both)**
 
 ```bash
-swamp model create @user/ec2-instance my-instance --json
+swamp behavior create @user/ec2-instance my-instance --json
 ```
 
 Edit `models/my-instance/input.yaml`:
@@ -188,29 +188,29 @@ globalArguments:
 Validate:
 
 ```bash
-swamp model validate my-instance --json
+swamp behavior validate my-instance --json
 ```
 
 ### CEL Paths Used
 
-| Model         | Expression                                                     | Description |
-| ------------- | -------------------------------------------------------------- | ----------- |
-| vpc-lookup    | `model.vpc-lookup.resource.result.result.attributes.stdout`    | VPC ID      |
-| subnet-lookup | `model.subnet-lookup.resource.result.result.attributes.stdout` | Subnet ID   |
-| my-instance   | `self.name`                                                    | Model name  |
+| Behavior      | Expression                                                     | Description   |
+| ------------- | -------------------------------------------------------------- | ------------- |
+| vpc-lookup    | `model.vpc-lookup.resource.result.result.attributes.stdout`    | VPC ID        |
+| subnet-lookup | `model.subnet-lookup.resource.result.result.attributes.stdout` | Subnet ID     |
+| my-instance   | `self.name`                                                    | Behavior name |
 
 ---
 
-## Scenario 3: Model with Runtime Inputs
+## Scenario 3: Behavior with Runtime Inputs
 
 ### User Request
 
-> "I want a deployment model where I can specify the environment (dev, staging,
-> prod) at runtime instead of hardcoding it."
+> "I want a deployment behavior where I can specify the environment (dev,
+> staging, prod) at runtime instead of hardcoding it."
 
 ### What You'll Build
 
-- 1 model with `inputs` schema
+- 1 behavior with `inputs` schema
 
 ### Decision Tree
 
@@ -218,15 +218,15 @@ swamp model validate my-instance --json
 User wants runtime parameterization → Use inputs schema
 Values change per invocation → --input or --input-file
 Values come from another command → Pipe with --stdin
-Batch run over query results → data query --json | jq | method run --stdin
+Batch run over query results → data query --json | jq | behavior run --stdin
 ```
 
 ### Step-by-Step
 
-**1. Create the model**
+**1. Create the behavior**
 
 ```bash
-swamp model create @user/deployment my-deploy --json
+swamp behavior create @user/deployment my-deploy --json
 ```
 
 **2. Configure with inputs schema**
@@ -264,7 +264,7 @@ methods:
 **3. Validate**
 
 ```bash
-swamp model validate my-deploy --json
+swamp behavior validate my-deploy --json
 ```
 
 **4. Run with different inputs**
@@ -332,13 +332,13 @@ swamp data query 'modelName == "infra" && attributes.status == "pending"' --json
 ### What You'll Build
 
 - 3 vaults: `dev-secrets`, `staging-secrets`, `prod-secrets`
-- 1 model with environment-aware vault expressions
+- 1 behavior with environment-aware vault expressions
 
 ### Decision Tree
 
 ```
 Different secrets per environment → Multiple vaults
-Single model definition → CEL expressions select vault dynamically
+Single behavior definition → CEL expressions select vault dynamically
 ```
 
 ### Step-by-Step
@@ -359,9 +359,9 @@ swamp vault put staging-secrets API_KEY=staging-key-67890 --json
 swamp vault put prod-secrets API_KEY=prod-key-secure --json
 ```
 
-**3. Create model with conditional vault access**
+**3. Create behavior with conditional vault access**
 
-Since CEL doesn't support dynamic vault names directly, create separate model
+Since CEL doesn't support dynamic vault names directly, create separate behavior
 instances per environment:
 
 ```yaml
@@ -397,7 +397,7 @@ globalArguments:
   endpoint: https://api.example.com
 ```
 
-**4. Create a workflow that selects the right model**
+**4. Create a workflow that selects the right behavior**
 
 ```yaml
 # workflows/deploy-api/workflow.yaml
@@ -444,51 +444,51 @@ swamp workflow run deploy-api --input environment=production
 
 ### CEL Paths Used
 
-| Model              | Expression                                | Value               |
+| Behavior           | Expression                                | Value               |
 | ------------------ | ----------------------------------------- | ------------------- |
 | api-client-dev     | `vault.get("dev-secrets", "API_KEY")`     | `dev-key-12345`     |
 | api-client-staging | `vault.get("staging-secrets", "API_KEY")` | `staging-key-67890` |
 | api-client-prod    | `vault.get("prod-secrets", "API_KEY")`    | `prod-key-secure`   |
-| All models         | `self.name`                               | Model name          |
+| All behaviors      | `self.name`                               | Behavior name       |
 
 ---
 
-## Scenario 5: Factory Pattern for Model Reuse
+## Scenario 5: Factory Pattern for Behavior Reuse
 
 ### User Request
 
 > "I need to create 4 subnets (public-a, public-b, private-a, private-b) but
-> they all have the same schema. I don't want to maintain 4 separate model
+> they all have the same schema. I don't want to maintain 4 separate behavior
 > definitions."
 
 ### What You'll Build
 
-- 1 model definition (`prod-subnet`) called 4 times with different inputs
+- 1 behavior definition (`prod-subnet`) called 4 times with different inputs
 - 4 distinct data instances keyed by `instanceName`
 
 ### Decision Tree
 
 ```
 Multiple instances of the same resource type? → Factory pattern
-  Same schema, different parameters? → Yes → One model + inputs
-  Different schemas or behaviors? → No → Separate models
+  Same schema, different parameters? → Yes → One behavior + inputs
+  Different schemas or methods? → No → Separate behaviors
 ```
 
-### When to Use Factory vs Separate Models
+### When to Use Factory vs Separate Behaviors
 
-| Situation                                     | Approach          |
-| --------------------------------------------- | ----------------- |
-| 4 subnets with different CIDRs/AZs            | Factory (1 model) |
-| 2 EIPs with different tags                    | Factory (1 model) |
-| A VPC and a subnet (different resource types) | Separate models   |
-| Resources with different method signatures    | Separate models   |
+| Situation                                     | Approach             |
+| --------------------------------------------- | -------------------- |
+| 4 subnets with different CIDRs/AZs            | Factory (1 behavior) |
+| 2 EIPs with different tags                    | Factory (1 behavior) |
+| A VPC and a subnet (different resource types) | Separate behaviors   |
+| Resources with different method signatures    | Separate behaviors   |
 
 ### Step-by-Step
 
-**1. Create the model**
+**1. Create the behavior**
 
 ```bash
-swamp model create @user/aws-subnet prod-subnet --json
+swamp behavior create @user/aws-subnet prod-subnet --json
 ```
 
 **2. Configure with inputs schema**
@@ -529,18 +529,18 @@ methods:
 **3. The `name` and data name connection**
 
 The `name: ${{ inputs.instanceName }}` in globalArguments is critical. It sets
-the **data instance name**, so when you call the model with
+the **data instance name**, so when you call the behavior with
 `instanceName: "public-a"`, the output data is stored as `public-a`. This means
-downstream models can access it with:
+downstream behaviors can access it with:
 
 ```yaml
 subnetId: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
 ```
 
 Each call with a different `instanceName` creates a separate data instance under
-the same model definition.
+the same behavior definition.
 
-**4. Create workflow — call the model multiple times**
+**4. Create workflow — call the behavior multiple times**
 
 ```yaml
 name: create-subnets

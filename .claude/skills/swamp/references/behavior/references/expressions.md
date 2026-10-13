@@ -1,24 +1,24 @@
 # Expression Language Reference
 
-Model inputs support CEL expressions using `${{ <expression> }}` syntax.
+Behavior inputs support CEL expressions using `${{ <expression> }}` syntax.
 
 ## Reference Types
 
-| Reference                                                               | Description                                             |
-| ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| `inputs.<name>`                                                         | Runtime input value                                     |
-| `model.<name>.input.globalArguments.<field>`                            | Another model's global argument                         |
-| `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`    | A model's resource data field (spec → instance → field) |
-| `model.<name>.file.<specName>.<instanceName>.{path\|size\|contentType}` | A model's file metadata (spec → instance → field)       |
-| `file.contents("<modelName>", "<specName>")`                            | Lazy-load file contents from disk                       |
-| `self.name`                                                             | This model's name                                       |
-| `self.version`                                                          | This model's version                                    |
-| `self.globalArguments.<field>`                                          | This model's own global argument                        |
+| Reference                                                               | Description                                                |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `inputs.<name>`                                                         | Runtime input value                                        |
+| `model.<name>.input.globalArguments.<field>`                            | Another behavior's global argument                         |
+| `model.<name>.resource.<specName>.<instanceName>.attributes.<field>`    | A behavior's resource data field (spec → instance → field) |
+| `model.<name>.file.<specName>.<instanceName>.{path\|size\|contentType}` | A behavior's file metadata (spec → instance → field)       |
+| `file.contents("<modelName>", "<specName>")`                            | Lazy-load file contents from disk                          |
+| `self.name`                                                             | This behavior's name                                       |
+| `self.version`                                                          | This behavior's version                                    |
+| `self.globalArguments.<field>`                                          | This behavior's own global argument                        |
 
-> **Instance name convention:** For single-instance resources (most models),
-> `instanceName` equals `specName`. For example, a model `my-shell` with
+> **Instance name convention:** For single-instance resources (most behaviors),
+> `instanceName` equals `specName`. For example, a behavior `my-shell` with
 > resource spec `result` is accessed as
-> `model.my-shell.resource.result.result.attributes.exitCode`. Factory models
+> `model.my-shell.resource.result.result.attributes.exitCode`. Factory behaviors
 > use distinct instance names — see the `swamp-extension` skill for details.
 
 ## CEL Operations
@@ -41,7 +41,7 @@ argument instead, where `literal()` passes it through unchanged.
 
 ## Data Versioning Functions
 
-Access specific versions of model data using the `data` namespace:
+Access specific versions of behavior data using the `data` namespace:
 
 | Function                                     | Description                               |
 | -------------------------------------------- | ----------------------------------------- |
@@ -79,7 +79,7 @@ hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
 # Find by tag
 allResources: ${{ data.findByTag("type", "resource") }}
 
-# Find all instances from a factory model's output spec
+# Find all instances from a factory behavior's output spec
 subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 # Null-safe access — use .? when data might not exist yet
