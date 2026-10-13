@@ -105,6 +105,7 @@ import {
   withSharedSyncGate,
 } from "./sync_gate.ts";
 import { pushNamespace } from "../infrastructure/persistence/push_paths.ts";
+import { refreshLocalModelsForRun } from "./local_model_refresh.ts";
 import { runWithVaultAccess } from "../domain/vaults/run_vault_access.ts";
 import type { ServeRunVaultScope } from "./run_vault_access_policy.ts";
 
@@ -130,6 +131,7 @@ export async function createWorkflowRunDeps(
     vaultTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
+  await refreshLocalModelsForRun();
   return {
     workflowRepo: repoContext.workflowRepo,
     runRepo: repoContext.workflowRunRepo,
@@ -287,6 +289,7 @@ export async function createModelMethodRunDeps(
     vaultTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
+  await refreshLocalModelsForRun();
 
   const isDirectExecution = options?.directExecution ?? false;
 

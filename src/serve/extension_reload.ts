@@ -118,6 +118,19 @@ export function isReloading(): boolean {
   return reloading;
 }
 
+let extensionMutationTail: Promise<void> = Promise.resolve();
+
+/**
+ * Runs `fn` after every earlier caller's `fn` settled. A hot-reload and
+ * the per-run refresh of local models both rebundle sources and swap
+ * registry types, so they take turns rather than interleave.
+ */
+export function withExtensionMutation<T>(fn: () => Promise<T>): Promise<T> {
+  const result = extensionMutationTail.then(fn, fn);
+  extensionMutationTail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 /**
  * The last pulled-type snapshot per pulled root, taken at serve boot and
  * after every reload. It is how a reload finds the types of an extension
@@ -860,15 +873,18 @@ export async function performServeReload(
   let webhooksReloaded = 0;
 
   try {
-    reloadedCount = await reloadPulledExtensions(
-      repoDir,
-      lockfilePath,
-      pulledExtensionsRoot,
+    reloadedCount = await withExtensionMutation(() =>
+      reloadPulledExtensions(
+        repoDir,
+        lockfilePath,
+        pulledExtensionsRoot,
+      )
     );
 
     if (options?.extensionDiscoverer) {
+      const discover = options.extensionDiscoverer;
       try {
-        const discovered = await options.extensionDiscoverer();
+        const discovered = await withExtensionMutation(discover);
         reloadedCount += discovered;
       } catch (err) {
         errors.push(

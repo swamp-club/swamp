@@ -104,6 +104,7 @@ import { ExtensionRepository } from "../infrastructure/persistence/extension_rep
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { refreshLocalModels } from "../domain/extensions/local_model_refresh.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -1262,6 +1263,22 @@ async function loadUserModels(
     // catalog.
     modelRegistry.setExtensionAttacher((type) =>
       loader.attachPendingExtensionsForType(type)
+    );
+    // For long-lived processes (swamp serve) to pick up edited local
+    // models (swamp-club#3284). The pulled dirs are enumerated again on
+    // each pass: the scan drops catalog rows of every source it does not
+    // see, so it must walk the same dirs a fresh index would.
+    modelRegistry.setSourceRefresher(async () =>
+      refreshLocalModels(loader, absoluteModelsDir, [
+        ...sourceDirs,
+        ...await enumeratePulledExtensionDirs(
+          lockfilePath,
+          repoDir,
+          "models",
+          undefined,
+          localLockfilePath,
+        ),
+      ])
     );
 
     for (const failure of result.failed) {

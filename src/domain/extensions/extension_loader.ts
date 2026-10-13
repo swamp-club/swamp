@@ -216,6 +216,40 @@ function testFileDirsOf(
   return new Set((additionalDirs ?? []).filter((d) => !local.has(d)));
 }
 
+/** One source a {@link ExtensionLoader.refreshStaleSources} pass rebundled. */
+export interface RefreshedSource {
+  sourcePath: string;
+  /** The type the source's row claimed before the pass. */
+  previousType?: string;
+  /** The type the source registers now. */
+  type?: string;
+  /** The type the source's add-on extends, before or after the pass. */
+  extendsType?: string;
+}
+
+/** One source whose rebundle, import or validation failed in the pass. */
+export interface FailedRefreshSource {
+  sourcePath: string;
+  previousType?: string;
+  /** The type the source's add-on extended before the pass. */
+  extendsType?: string;
+  error: string;
+}
+
+/** A catalog row the pass dropped because its source is gone. */
+export interface RemovedRefreshSource {
+  sourcePath: string;
+  kind?: string;
+  type?: string;
+}
+
+/** What one {@link ExtensionLoader.refreshStaleSources} pass changed. */
+export interface SourceRefreshChanges {
+  rebundled: RefreshedSource[];
+  failed: FailedRefreshSource[];
+  removed: RemovedRefreshSource[];
+}
+
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
@@ -651,11 +685,6 @@ export class ExtensionLoader {
   ): Promise<ExtensionLoadResult> {
     const repository = this.requireRepository("buildIndex");
     const catalog = repository.getCatalogStore();
-    const result: ExtensionLoadResult = {
-      loaded: [],
-      extended: [],
-      failed: [],
-    };
 
     const localDirs = options?.localDirs ?? [];
     await this.assertNoLocalTypeCollisions(dir, localDirs);
@@ -691,126 +720,13 @@ export class ExtensionLoader {
     }
 
     if (catalog.isPopulated(this.adapter.kind)) {
-      const scan = await this.scanFreshness(
+      return await this.refreshWarm(
         dir,
-        catalog,
+        repository,
+        denoPath,
         extraDirs,
         testFileDirs,
       );
-      const staleFiles = scan.stale;
-      evictRemovedBundles(scan.removed, catalog);
-      // Read after the scan: its own removals may have reset the marker.
-      const healPending = !catalog.isTypelessHealDone(
-        this.adapter.catalogKinds[0],
-      );
-      const heal = healPending && !this.hasLiveLocalFailure(catalog);
-
-      if (staleFiles.length === 0 && (!heal || scan.typeless.length === 0)) {
-        if (this.repoDir) this.settleTypeConflicts(catalog);
-        if (heal) catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
-        this.registerLazyFromCatalog(catalog);
-        return result;
-      }
-
-      const extensions = repository.loadAll();
-      const sourcePathIndex = new Map<string, number>();
-      for (let i = 0; i < extensions.length; i++) {
-        for (const [loc] of extensions[i].sources) {
-          sourcePathIndex.set(loc.canonicalPath, i);
-        }
-      }
-
-      const kindDir = extensionKindToKindDir(this.adapter.kind);
-      const typesNeedingExtensionAttach = new Set<string>();
-      // Rows written typeless in this pass: the row that outranked one may
-      // give its type up later in the same pass, and they are not in
-      // `scan.typeless`, which holds only rows that were already fresh.
-      const outrankedRows: TypelessRow[] = [];
-      for (const { absolutePath, relativePath, baseDir } of staleFiles) {
-        try {
-          const { registeredType, extensionTarget, outranked } = await this
-            .rebundleAndUpdateCatalog(
-              absolutePath,
-              relativePath,
-              denoPath,
-              baseDir,
-              catalog,
-            );
-          if (registeredType) {
-            typesNeedingExtensionAttach.add(registeredType);
-          }
-          if (extensionTarget) {
-            typesNeedingExtensionAttach.add(extensionTarget);
-          }
-          if (outranked) outrankedRows.push(outranked);
-          result.loaded.push(relativePath);
-        } catch (error) {
-          result.failed.push({ file: relativePath, error: String(error) });
-
-          if (this.repoDir) {
-            const loc = makeSourceLocation(absolutePath, this.repoDir);
-            const extIdx = sourcePathIndex.get(loc.canonicalPath);
-            if (extIdx !== undefined) {
-              const ext = extensions[extIdx];
-              const existingSource = findSourceByPath(
-                ext,
-                loc.canonicalPath,
-              );
-              let failFp: string;
-              try {
-                failFp = await computeSourceFingerprint(absolutePath, baseDir);
-              } catch {
-                failFp = "";
-              }
-              const stat = await Deno.stat(absolutePath).catch(() => null);
-              const sourceMtime = stat?.mtime?.toISOString() ?? "";
-              const failResult = recordSourceFailure({
-                extension: ext,
-                location: existingSource?.id ?? loc,
-                kindDir,
-                error,
-                existingSource,
-                fingerprint: failFp,
-                sourceMtime,
-              });
-              extensions[extIdx] = failResult.extension;
-              repository.saveAll([failResult.extension]);
-            }
-          }
-        }
-      }
-
-      if (this.repoDir) {
-        this.settleTypeConflicts(catalog);
-      }
-
-      // Checked again: a rebundle in this pass may have just recorded a
-      // local failure, fixed the one that blocked the heal above, or
-      // re-armed the heal by changing the type a row claims.
-      if (
-        !catalog.isTypelessHealDone(this.adapter.catalogKinds[0]) &&
-        !this.hasLiveLocalFailure(catalog)
-      ) {
-        await this.healTypelessRows(catalog, [
-          ...scan.typeless,
-          ...outrankedRows,
-        ]);
-        catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
-      }
-
-      if (this.adapter.attachPendingExtensionsForType) {
-        for (const type of typesNeedingExtensionAttach) {
-          await this.adapter.attachPendingExtensionsForType(
-            type,
-            catalog,
-            (paths) => this.importBundleByPath(paths),
-            (sourcePath) => this.contributorFor(sourcePath),
-          );
-        }
-      }
-
-      this.registerLazyFromCatalog(catalog);
-      return result;
     }
 
     const fullResult = await this.load(dir, {
@@ -934,6 +850,237 @@ export class ExtensionLoader {
     }
 
     return fullResult;
+  }
+
+  /**
+   * Re-runs {@link buildIndex}'s warm pass over the same source dirs, for a
+   * long-lived process whose sources may have changed since it loaded them
+   * (swamp-club#3284). It never invalidates the catalog: with no populated
+   * catalog it does nothing and returns null.
+   *
+   * Unlike startup it does not warn about broken rows: a long-lived
+   * process refreshes before every run, and would repeat the warning each
+   * time.
+   *
+   * It does not replace a definition that is already registered: a stale
+   * source of a registered type only gets its catalog row and bundle
+   * updated. The returned changes say which sources moved, so the caller
+   * can swap their types.
+   */
+  async refreshStaleSources(
+    dir: string,
+    options?: {
+      additionalDirs?: string[];
+      /** As for {@link buildIndex}: further local directories of `dir`'s tier. */
+      localDirs?: string[];
+    },
+  ): Promise<SourceRefreshChanges | null> {
+    const repository = this.requireRepository("refreshStaleSources");
+    if (!repository.getCatalogStore().isPopulated(this.adapter.kind)) {
+      return null;
+    }
+    const localDirs = options?.localDirs ?? [];
+    await this.assertNoLocalTypeCollisions(dir, localDirs);
+    const extraDirs = localDirs.length > 0
+      ? [...localDirs, ...(options?.additionalDirs ?? [])]
+      : options?.additionalDirs;
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const changes: SourceRefreshChanges = {
+      rebundled: [],
+      failed: [],
+      removed: [],
+    };
+    await this.refreshWarm(
+      dir,
+      repository,
+      denoPath,
+      extraDirs,
+      testFileDirsOf(options?.additionalDirs, localDirs),
+      changes,
+    );
+    return changes;
+  }
+
+  /** True when the source lives under one of the repo's pulled roots. */
+  isPulledSourcePath(sourcePath: string): boolean {
+    return this.contributorFor(sourcePath).pulled;
+  }
+
+  /**
+   * Registers, as lazy, every catalog type not yet registered, as the end
+   * of an index pass does. For a caller that invalidated types after
+   * {@link refreshStaleSources} and wants them back from their new rows.
+   * Broken rows are skipped without the startup warning, which a refresh
+   * on every run would repeat.
+   */
+  registerFromCatalog(): void {
+    this.registerLazyFromCatalog(
+      this.requireRepository("registerFromCatalog").getCatalogStore(),
+      false,
+    );
+  }
+
+  private async refreshWarm(
+    dir: string,
+    repository: ExtensionRepository,
+    denoPath: string,
+    extraDirs: string[] | undefined,
+    testFileDirs: ReadonlySet<string>,
+    changes?: SourceRefreshChanges,
+  ): Promise<ExtensionLoadResult> {
+    const catalog = repository.getCatalogStore();
+    const result: ExtensionLoadResult = {
+      loaded: [],
+      extended: [],
+      failed: [],
+    };
+    const scan = await this.scanFreshness(
+      dir,
+      catalog,
+      extraDirs,
+      testFileDirs,
+    );
+    const staleFiles = scan.stale;
+    evictRemovedBundles(scan.removed, catalog);
+    for (const row of scan.removed) {
+      changes?.removed.push({
+        sourcePath: row.source_path,
+        kind: row.kind,
+        type: row.type_normalized || undefined,
+      });
+    }
+    // Read after the scan: its own removals may have reset the marker.
+    const healPending = !catalog.isTypelessHealDone(
+      this.adapter.catalogKinds[0],
+    );
+    const heal = healPending && !this.hasLiveLocalFailure(catalog);
+
+    if (staleFiles.length === 0 && (!heal || scan.typeless.length === 0)) {
+      if (this.repoDir) this.settleTypeConflicts(catalog);
+      if (heal) catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
+      this.registerLazyFromCatalog(catalog, changes === undefined);
+      return result;
+    }
+
+    const extensions = repository.loadAll();
+    const sourcePathIndex = new Map<string, number>();
+    for (let i = 0; i < extensions.length; i++) {
+      for (const [loc] of extensions[i].sources) {
+        sourcePathIndex.set(loc.canonicalPath, i);
+      }
+    }
+
+    const kindDir = extensionKindToKindDir(this.adapter.kind);
+    const typesNeedingExtensionAttach = new Set<string>();
+    // Rows written typeless in this pass: the row that outranked one may
+    // give its type up later in the same pass, and they are not in
+    // `scan.typeless`, which holds only rows that were already fresh.
+    const outrankedRows: TypelessRow[] = [];
+    for (const { absolutePath, relativePath, baseDir } of staleFiles) {
+      const prior = changes ? catalog.findBySourcePath(absolutePath) : null;
+      // Only a primary row provides its type: an add-on row names the type
+      // it extends, which a failed add-on must not take down.
+      const previousType = prior?.kind === this.adapter.catalogKinds[0]
+        ? prior.type_normalized || undefined
+        : undefined;
+      const previousExtendsType = prior?.extends_type || undefined;
+      try {
+        const { registeredType, extensionTarget, outranked } = await this
+          .rebundleAndUpdateCatalog(
+            absolutePath,
+            relativePath,
+            denoPath,
+            baseDir,
+            catalog,
+          );
+        if (registeredType) {
+          typesNeedingExtensionAttach.add(registeredType);
+        }
+        if (extensionTarget) {
+          typesNeedingExtensionAttach.add(extensionTarget);
+        }
+        if (outranked) outrankedRows.push(outranked);
+        result.loaded.push(relativePath);
+        changes?.rebundled.push({
+          sourcePath: absolutePath,
+          previousType,
+          type: registeredType,
+          extendsType: extensionTarget ?? previousExtendsType,
+        });
+      } catch (error) {
+        result.failed.push({ file: relativePath, error: String(error) });
+        changes?.failed.push({
+          sourcePath: absolutePath,
+          previousType,
+          extendsType: previousExtendsType,
+          error: String(error),
+        });
+
+        if (this.repoDir) {
+          const loc = makeSourceLocation(absolutePath, this.repoDir);
+          const extIdx = sourcePathIndex.get(loc.canonicalPath);
+          if (extIdx !== undefined) {
+            const ext = extensions[extIdx];
+            const existingSource = findSourceByPath(
+              ext,
+              loc.canonicalPath,
+            );
+            let failFp: string;
+            try {
+              failFp = await computeSourceFingerprint(absolutePath, baseDir);
+            } catch {
+              failFp = "";
+            }
+            const stat = await Deno.stat(absolutePath).catch(() => null);
+            const sourceMtime = stat?.mtime?.toISOString() ?? "";
+            const failResult = recordSourceFailure({
+              extension: ext,
+              location: existingSource?.id ?? loc,
+              kindDir,
+              error,
+              existingSource,
+              fingerprint: failFp,
+              sourceMtime,
+            });
+            extensions[extIdx] = failResult.extension;
+            repository.saveAll([failResult.extension]);
+          }
+        }
+      }
+    }
+
+    if (this.repoDir) {
+      this.settleTypeConflicts(catalog);
+    }
+
+    // Checked again: a rebundle in this pass may have just recorded a
+    // local failure, fixed the one that blocked the heal above, or
+    // re-armed the heal by changing the type a row claims.
+    if (
+      !catalog.isTypelessHealDone(this.adapter.catalogKinds[0]) &&
+      !this.hasLiveLocalFailure(catalog)
+    ) {
+      await this.healTypelessRows(catalog, [
+        ...scan.typeless,
+        ...outrankedRows,
+      ]);
+      catalog.markTypelessHealDone(this.adapter.catalogKinds[0]);
+    }
+
+    if (this.adapter.attachPendingExtensionsForType) {
+      for (const type of typesNeedingExtensionAttach) {
+        await this.adapter.attachPendingExtensionsForType(
+          type,
+          catalog,
+          (paths) => this.importBundleByPath(paths),
+          (sourcePath) => this.contributorFor(sourcePath),
+        );
+      }
+    }
+
+    this.registerLazyFromCatalog(catalog, changes === undefined);
+    return result;
   }
 
   async loadSingleType(
@@ -1434,7 +1581,10 @@ export class ExtensionLoader {
     return failed !== undefined;
   }
 
-  private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
+  private registerLazyFromCatalog(
+    catalog: ExtensionCatalogStore,
+    warnBroken = true,
+  ): void {
     const skippedExtensions = new Set<string>();
     for (const kind of this.adapter.catalogKinds) {
       if (kind !== this.adapter.catalogKinds[0]) continue;
@@ -1455,6 +1605,7 @@ export class ExtensionLoader {
         this.adapter.registerLazy(entry);
       }
     }
+    if (!warnBroken) return;
     for (const name of skippedExtensions) {
       this.logger
         .warn`Extension ${name} has broken bundles and is not available. Run 'swamp doctor extensions --repair' or 'swamp extension pull ${name} --force' to fix.`;
