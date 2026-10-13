@@ -1120,6 +1120,16 @@ fails to unregister (for example, the pulled-extensions lock times out), the
 next reload retries it. `sweepRemovedPulledExtensions` in
 `src/serve/extension_reload.ts` implements this.
 
+Built-in types are never touched by either step (swamp-club#2746). A pulled row
+whose type has the name of a built-in behavior, vault, datastore or report type
+is skipped when the reload re-registers pulled types, with a warning, so the
+built-in and the add-ons attached to it stay in place. The sweep never
+unregisters a built-in type, since built-ins have no catalog rows to show that
+something still provides them. Control-plane types are built in, so a pulled
+extension can never replace them either. The loader likewise never stamps a
+pulled source's fingerprint onto a built-in behavior type, so provenance always
+names the code that ran.
+
 Installed add-ons go the other way. After re-registering pulled types, the
 reload attaches every pulled add-on whose target behavior type is registered
 (`attachPulledAddOns`). A built-in or local type the reload never re-registers

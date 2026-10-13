@@ -59,6 +59,11 @@ import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
+import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
+import { reportRegistry } from "../domain/reports/report_registry.ts";
+import "../domain/vaults/vault_types.ts";
+import "../domain/datastore/datastore_types.ts";
+import "../domain/reports/builtin/mod.ts";
 import { pulledExtensionsLock } from "../infrastructure/persistence/pulled_extensions_lock.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
@@ -1575,6 +1580,11 @@ async function withAttachedAddOns(
     repoDir: string;
     lockfilePath: string;
     catalog: ExtensionCatalogStore;
+    stage: (
+      extName: string,
+      fileBase: string,
+      code: string,
+    ) => Promise<string>;
     sourceOf: (ext: string) => string;
     pulledDir: (ext: string) => string;
   }) => Promise<void>,
@@ -1863,4 +1873,155 @@ Deno.test("reloadPulledExtensions: detaches a removed add-on's method from a loc
   } finally {
     modelRegistry.invalidateType(localType);
   }
+});
+
+// -- Pulled types named like a built-in (swamp-club#2746) ------------------
+
+/**
+ * Runs `fn`, then puts back any built-in entry it replaced or removed. The
+ * registries are process-global, so a red run on unfixed code must not
+ * leave later tests without the built-ins. A built-in is never cleaned up
+ * with invalidateType alone.
+ */
+async function restoringBuiltIns(fn: () => Promise<void>): Promise<void> {
+  const models = ["command/shell", "swamp/grant"].map((type) => ({
+    type,
+    def: modelRegistry.get(type)!,
+  }));
+  const vault = vaultTypeRegistry.get("local_encryption")!;
+  const datastore = datastoreTypeRegistry.get("filesystem")!;
+  const report = reportRegistry.get("@swamp/method-summary")!;
+  try {
+    await fn();
+  } finally {
+    for (const { type, def } of models) {
+      if (modelRegistry.get(type) !== def) {
+        modelRegistry.invalidateType(type);
+        modelRegistry.register(def);
+      }
+    }
+    if (vaultTypeRegistry.get("local_encryption") !== vault) {
+      vaultTypeRegistry.invalidateType("local_encryption");
+      vaultTypeRegistry.register(vault);
+    }
+    if (datastoreTypeRegistry.get("filesystem") !== datastore) {
+      datastoreTypeRegistry.invalidateType("filesystem");
+      datastoreTypeRegistry.register(datastore);
+    }
+    if (reportRegistry.get("@swamp/method-summary") !== report) {
+      reportRegistry.invalidateType("@swamp/method-summary");
+      reportRegistry.register("@swamp/method-summary", report);
+    }
+  }
+}
+
+const writeLockfile = (lockfilePath: string, names: readonly string[]) =>
+  Deno.writeTextFile(
+    lockfilePath,
+    JSON.stringify(
+      Object.fromEntries(
+        names.map((n) => [n, { version: "1.0.0", files: [] }]),
+      ),
+    ),
+  );
+
+for (const removal of ["a peer", "the instance that ran rm"] as const) {
+  Deno.test(`reloadPulledExtensions: a pulled command/shell never replaces the built-in or its add-on, and ${removal} keeps the built-in after removal (swamp-club#2746)`, async () => {
+    const id = crypto.randomUUID().slice(0, 8);
+    const addOn = `@test/shell-addon-${id}`;
+    const shadow = `@test/shell-shadow-${id}`;
+    const method = `pulled_${id.replaceAll("-", "_")}`;
+    await restoringBuiltIns(() =>
+      withAttachedAddOns(
+        "command/shell",
+        [{ ext: addOn, method, description: "pulled add-on" }],
+        async ({ repoDir, lockfilePath, catalog, stage, pulledDir }) => {
+          // Attaching an add-on rebuilds the definition object, so the
+          // built-in is recognised by its own execute method.
+          const builtInExecute = modelRegistry.get("command/shell")!.methods
+            .execute;
+          const isBuiltIn = () =>
+            modelRegistry.get("command/shell")?.methods.execute ===
+              builtInExecute;
+          assertEquals(methodOn("command/shell", method), "pulled add-on");
+
+          await writeLockfile(lockfilePath, [addOn, shadow]);
+          const shadowSource = await stage(
+            shadow,
+            "shell",
+            pulledModelCode("command/shell", "shadow"),
+          );
+          await withMockedCommand(
+            copyingBundler,
+            () => reload(repoDir, lockfilePath),
+          );
+
+          assertEquals(isBuiltIn(), true, "built-in kept after reload");
+          assertEquals(methodOn("command/shell", "noop"), undefined);
+          assertEquals(methodOn("command/shell", method), "pulled add-on");
+
+          if (removal === "the instance that ran rm") {
+            catalog.removeBySourcePrefix(pulledDir(shadow));
+            await Deno.remove(shadowSource);
+          }
+          await writeLockfile(lockfilePath, [addOn]);
+          await reload(repoDir, lockfilePath);
+
+          assertEquals(isBuiltIn(), true, "built-in kept after removal");
+          assertEquals(methodOn("command/shell", method), "pulled add-on");
+        },
+      )
+    );
+  });
+}
+
+Deno.test("reloadPulledExtensions: pulled rows named like a built-in vault, datastore, report or control-plane type never replace or remove it (swamp-club#2746)", async () => {
+  const ext = `@test/builtin-shadow-${crypto.randomUUID().slice(0, 8)}`;
+  const current = () => ({
+    grant: modelRegistry.get("swamp/grant"),
+    vault: vaultTypeRegistry.get("local_encryption"),
+    datastore: datastoreTypeRegistry.get("filesystem"),
+    report: reportRegistry.get("@swamp/method-summary"),
+  });
+  await restoringBuiltIns(() =>
+    withPulledRepo([ext], async ({ repoDir, lockfilePath, catalog }) => {
+      const before = current();
+      const rows: ReadonlyArray<[ExtensionKind, string, string]> = [
+        ["model", "models", "swamp/grant"],
+        ["vault", "vaults", "local_encryption"],
+        ["datastore", "datastores", "filesystem"],
+        ["report", "reports", "@swamp/method-summary"],
+      ];
+      for (const [kind, kindDir, type] of rows) {
+        const dir = join(swampPath(repoDir, "pulled-extensions"), ext, kindDir);
+        await ensureDir(dir);
+        const sourcePath = join(dir, `${kind}.ts`);
+        await Deno.writeTextFile(sourcePath, "export const x = 1;\n");
+        const bundlePath = join(swampPath(repoDir, "bundles"), `${kind}.js`);
+        await ensureDir(join(bundlePath, ".."));
+        await Deno.writeTextFile(bundlePath, "export const x = 1;\n");
+        catalog.upsert({
+          type_normalized: type,
+          kind,
+          bundle_path: bundlePath,
+          source_path: canonicalizePath(sourcePath),
+          version: "",
+          description: "",
+          extends_type: "",
+          source_mtime: "",
+          source_fingerprint: "",
+        });
+      }
+
+      await withMockedCommand(
+        copyingBundler,
+        () => reload(repoDir, lockfilePath),
+      );
+      assertEquals(current(), before, "kept after reload");
+
+      await removeLockfileEntries(lockfilePath);
+      await reload(repoDir, lockfilePath);
+      assertEquals(current(), before, "kept after removal");
+    })
+  );
 });

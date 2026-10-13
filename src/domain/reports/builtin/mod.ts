@@ -32,13 +32,16 @@ export const BUILTIN_WORKFLOW_REPORTS = [
 
 // Register built-in reports (guarded to be idempotent across re-imports)
 if (!reportRegistry.has("@swamp/method-summary")) {
-  reportRegistry.register("@swamp/method-summary", methodSummaryReport);
+  reportRegistry.registerBuiltIn("@swamp/method-summary", methodSummaryReport);
 }
 if (!reportRegistry.has("@swamp/workflow-summary")) {
-  reportRegistry.register("@swamp/workflow-summary", workflowSummaryReport);
+  reportRegistry.registerBuiltIn(
+    "@swamp/workflow-summary",
+    workflowSummaryReport,
+  );
 }
 if (!reportRegistry.has("@swamp/verification-summary")) {
-  reportRegistry.register(
+  reportRegistry.registerBuiltIn(
     "@swamp/verification-summary",
     verificationSummaryReport,
   );

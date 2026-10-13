@@ -41,6 +41,7 @@ export interface LazyReportEntry {
 export class ReportRegistry {
   private reports = new Map<string, ReportDefinition>();
   private readonly lazyTypes = new Map<string, LazyReportEntry>();
+  private readonly builtInNames = new Set<string>();
   private extensionLoader: (() => Promise<void>) | null = null;
   private extensionLoadPromise: Promise<void> | null = null;
   private extensionsLoaded = false;
@@ -175,6 +176,23 @@ export class ReportRegistry {
       throw new Error(`Report already registered: ${name}`);
     }
     this.reports.set(name, report);
+  }
+
+  /**
+   * Registers a report that ships with swamp. No pulled extension may
+   * replace or remove it (swamp-club#2746).
+   */
+  registerBuiltIn(name: string, report: ReportDefinition): void {
+    this.register(name, report);
+    this.builtInNames.add(name.toLowerCase());
+  }
+
+  /**
+   * True for a report registered with {@link registerBuiltIn}. Matches any
+   * letter case, because pulled report rows carry lowercased names.
+   */
+  isBuiltIn(name: string): boolean {
+    return this.builtInNames.has(name.toLowerCase());
   }
 
   /**
