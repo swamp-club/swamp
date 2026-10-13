@@ -965,24 +965,29 @@ swamp workflow resume release --run <run-id>   # not needed when serve auto-resu
   the run does not suspend there; a signal older than that is ignored and the
   wait opens as usual. A key holds one pending signal: a second while the first
   is held is refused `already_pending`, and the error's `--json` form carries
-  `pending.heldUntil`, the time after which to send again. On such a step
-  `no_open_wait` means the key changed hands while the signal arrived, or the
-  signal was too old for the wait that was opening: send it again. A result with
-  `taken: true` means a wait took the held signal; resume the run when its
-  `awaitingResume` is true. A retry by key after the step took the first signal
-  is held as a second one, for the next run, unless both carry the same
-  `--idempotency-key` (1 to 128 letters, digits, `.`, `:`, `-`, `_`): the retry
-  is then answered with the first signal's receipt and `duplicate: true`, and
-  nothing is delivered or held twice. Give every signal a sender may retry its
-  own key. Without one, the result carries `lastWait` (how and when the key's
-  last wait was settled), so read that before sending again. The payload is
-  checked on arrival against the schema as written, so the schema of such a step
-  may hold no expression, `inputs.*` included (`workflow validate` refuses one).
-  A pending signal is stored in plaintext like any payload, and `workflow waits`
-  does not list it. Upgrade every host that runs, resumes or lists the workflow
-  before adding `acceptEarly`, and every client that signals it with `--server`:
-  an older swamp never takes a held signal, and a server holds nothing for an
-  older client, which is refused `no_open_wait`. A server older than
+  `pending.heldUntil`, the time after which to send again. Through
+  `swamp serve`, a token with `signal` and not `read` on the workflow is not
+  told whether a run is waiting: its signal is answered `accepted` (HTTP 202,
+  `accepted: true` in `--json`) with the receipt alone, whether a step took it
+  or it is held, and `already_pending` carries no `heldUntil`. Such a sender
+  makes a retry safe with `--idempotency-key`. On such a step `no_open_wait`
+  means the key changed hands while the signal arrived, or the signal was too
+  old for the wait that was opening: send it again. A result with `taken: true`
+  means a wait took the held signal; resume the run when its `awaitingResume` is
+  true. A retry by key after the step took the first signal is held as a second
+  one, for the next run, unless both carry the same `--idempotency-key` (1 to
+  128 letters, digits, `.`, `:`, `-`, `_`): the retry is then answered with the
+  first signal's receipt and `duplicate: true`, and nothing is delivered or held
+  twice. Give every signal a sender may retry its own key. Without one, the
+  result carries `lastWait` (how and when the key's last wait was settled), so
+  read that before sending again. The payload is checked on arrival against the
+  schema as written, so the schema of such a step may hold no expression,
+  `inputs.*` included (`workflow validate` refuses one). A pending signal is
+  stored in plaintext like any payload, and `workflow waits` does not list it.
+  Upgrade every host that runs, resumes or lists the workflow before adding
+  `acceptEarly`, and every client that signals it with `--server`: an older
+  swamp never takes a held signal, and a server holds nothing for an older
+  client, which is refused `no_open_wait`. A server older than
   `--idempotency-key` ignores the key.
 - Outputs: `steps.<name>.outputs.payload` is the message exactly as sent (no
   schema defaults applied); `steps.<name>.outputs.signal` is swamp's receipt

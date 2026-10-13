@@ -1710,6 +1710,8 @@ export async function handleWorkflowSignal(
         payload: payload.payload,
         // A client from before the pending reply cannot read one.
         holdEarly: payload.acceptsPending === true,
+        // Nor can one from before the accepted reply read that.
+        acceptsReceipt: payload.acceptsReceipt === true,
         ...idempotencyKeyOf(payload),
       },
     {
@@ -1756,11 +1758,29 @@ export async function handleWorkflowSignal(
         payload: { pending: result.data },
       });
       return;
+    case "accepted":
+      send(socket, {
+        type: "workflow.signal",
+        id: requestId,
+        payload: { accepted: result.data },
+      });
+      // Continues the run of a wait that took the signal, after the reply.
+      await continueAfterSignal(
+        ctx,
+        result,
+        captureDecisionSubject(socket, principal),
+      );
+      return;
     case "not_found":
       sendError(socket, requestId, "not_found", result.message);
       return;
     case "failed":
       sendError(socket, requestId, "workflow_signal_failed", result.message);
+      return;
+    case "upgrade_required":
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+      });
       return;
     case "invalid_payload":
       sendError(socket, requestId, "workflow_signal_refused", result.message, {

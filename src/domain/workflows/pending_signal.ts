@@ -259,6 +259,26 @@ export interface PendingSignalRecords {
   removePendingRecordsOfWorkflow(workflowId: string): Promise<void>;
 }
 
+/**
+ * A wait took its key's pending signal (swamp-club#3213). It names the
+ * signal by its receipt and never carries the payload.
+ */
+export interface PendingSignalTaken {
+  readonly waitId: string;
+  readonly workflowId: string;
+  readonly runId: string;
+  readonly key: string;
+  readonly receiptId: string;
+}
+
+/**
+ * Told of each take made through a store. A store cannot say whose create
+ * of an outcome landed, and every reader builds the same outcome from one
+ * pending signal, so two readers that take at the same moment are both
+ * told: a listener hears of a take at least once.
+ */
+export type PendingSignalTakenListener = (taken: PendingSignalTaken) => void;
+
 /** A wait that can be given its key's pending signal. */
 export interface EarlyWaitRef extends WaitRef {
   key: string;
@@ -364,11 +384,12 @@ export function pendingOutcome(
  * the wait's outcome, and returns the outcome that is stored: `absent` when
  * no pending signal applies and nothing settled the wait. The wait's own
  * slot is read first. A slot whose highest record cannot be read gives
- * nothing.
+ * nothing. A store with a `pendingTaken` listener is told of the take.
  */
 export async function takePendingSignal(
   store: Pick<PendingSignalRecords, "highestPendingRecord"> & {
     settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
+    pendingTaken?: PendingSignalTakenListener;
   },
   ref: EarlyWaitRef,
 ): Promise<StoredWaitRecord<WaitOutcome>> {
@@ -382,7 +403,27 @@ export async function takePendingSignal(
       continue;
     }
     const outcome = pendingOutcome(highest.record, ref);
-    if (outcome) return await store.settle(outcome);
+    if (!outcome) continue;
+    const stored = await store.settle(outcome);
+    if (
+      store.pendingTaken && stored.kind === "found" &&
+      stored.record.kind === "accepted" &&
+      stored.record.receipt.id === outcome.receipt.id
+    ) {
+      // The signal is taken whatever the listener does with the news.
+      try {
+        store.pendingTaken({
+          waitId: ref.waitId,
+          workflowId: ref.workflowId,
+          runId: ref.runId,
+          key: ref.key,
+          receiptId: outcome.receipt.id,
+        });
+      } catch {
+        // Nothing to undo: the outcome is stored.
+      }
+    }
+    return stored;
   }
   return { kind: "absent" };
 }

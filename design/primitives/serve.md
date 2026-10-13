@@ -675,9 +675,11 @@ transports to that. What it does, in order:
 | --- | --- | --- |
 | delivered | — (`workflow.signal` reply) | 200 |
 | by key: held as the key's pending signal (the reply carries the receipt and `heldUntil`, and no wait or run) | — (`workflow.signal` reply, `status: pending`) | 202 |
+| by key, on a step with `acceptEarly`, for a caller with `signal` and not `read`: received, delivered or held alike (the reply carries the receipt alone) | — (`workflow.signal` reply, `accepted`) | 202, `status: accepted` |
+| by key, the same caller, from a WebSocket client that does not set `acceptsReceipt` (nothing is delivered or stored) | `workflow_signal_refused`, `refusal: upgrade_required` | — |
 | a retry under the idempotency key of a signal already received (the reply is that signal's, with `duplicate: true`; nothing is delivered or stored) | — (`workflow.signal` reply) | 200, or 202 while that signal is held |
 | unknown wait, unknown workflow or undeclared key, or not allowed | `not_found` | 404 |
-| by key: an earlier signal is pending for the key (the earlier receipt for a caller who may read the workflow) | `workflow_signal_refused`, `refusal: already_pending` | 409 |
+| by key: an earlier signal is pending for the key (the earlier receipt and `pending.heldUntil` for a caller who may read the workflow) | `workflow_signal_refused`, `refusal: already_pending` | 409 |
 | by key: the key is declared and no open wait holds it (`lastWait` says how its last wait was settled) | `workflow_signal_refused`, `refusal: no_open_wait` | 409 |
 | payload refused (errors listed) | `workflow_signal_refused`, `refusal: invalid_payload` | 422 |
 | already settled | `workflow_signal_refused`, `refusal: already_settled` | 409 |
@@ -762,6 +764,57 @@ What differs by key, in order:
   from before the pending reply reads `data` of every reply, so it is refused
   `no_open_wait` as it was before, and nothing is stored. The HTTP route
   always holds.
+- **On a key whose step sets `acceptEarly`, a caller with `signal` and not
+  `read` is not told whether a run is waiting** (swamp-club#3213). A device
+  that reports an event should not learn from the answer whether a run is
+  under way. Whether the rule applies is decided once per request, after the
+  caller is authorized and before any wait record is read, from the definition
+  of the authorized workflow (`declaredEarlyWait`) and whether the caller may
+  read the workflow they named. The use case is handed that same definition,
+  so the reply's shape and what is done with the signal never come from two
+  readings of it. For such a request:
+  - A signal a wait took and a signal that is held get one reply: `accepted`,
+    202 over HTTP with `status: accepted`, carrying the receipt (`id`,
+    `receivedAt`, `submittedBy`, and the idempotency key if one was sent) and
+    `duplicate` for a retry under an idempotency key. It names no wait, key,
+    workflow or run, and carries no `heldUntil` and no `lastWait`. When a wait
+    took the signal the server still continues its run, as after any signal.
+  - The signal is held whatever `acceptsPending` says: `no_open_wait` would say
+    that no run is waiting.
+  - `already_pending` carries no `pending`, so not until when the earlier
+    signal is held. The refusal itself says a signal is held and so that no
+    wait is open; refusing a second early signal cannot hide that. A refused
+    payload reads `Payload refused:` with the errors, in place of the
+    sentences that say whether a wait stays open or nothing was stored.
+  - Over the WebSocket the reply is the `accepted` member of the
+    `workflow.signal` reply, and is sent only to a request that sets
+    `acceptsReceipt`. A client that does not is refused `upgrade_required`
+    before any wait record is read, with one fixed message, and nothing is
+    delivered or stored: a client from before this reply reads `data` or
+    `pending`, and either would have to say which it was. The HTTP route
+    always answers `accepted`.
+  - A sender loses `lastWait`, which told a retry after a lost reply that the
+    first signal landed. An idempotency key is what makes a retry safe here.
+
+  A caller who may read the workflow is answered as before: `delivered` with
+  the wait and the run, or `pending` with `heldUntil`. So is every signal by
+  wait ID, and a key whose step sets no `acceptEarly`, where `no_open_wait`
+  already says no wait is open. What is left: over HTTP the run of a wait
+  that took the signal is launched before the reply is sent, so the time a
+  reply takes can still hint that a run was waiting; and a sender whose
+  signal races another's for one open wait can get `already_settled`.
+- **A wait that takes a pending signal is audited** as
+  `workflow.signal.taken`, with the receipt ID, the key, the wait, the run
+  and the workflow ID, and never the payload (swamp-club#3213). Every take
+  goes through `takePendingSignal`, which tells the listener serve sets on
+  its wait store (`auditTakenSignals`), so the step that opens its wait, a
+  signaller that finds the key claimed and the continuation sweep are all
+  recorded. No request made the take, so it is a system event. It is recorded
+  at least once: two instances that take one signal at the same moment both
+  record it, under one receipt ID. A take made by a local command on the same
+  datastore is not audited, as a local signal is not. A signaller's own
+  request that made the take also marks its `workflow.signal.delivered` event
+  `taken=true`.
 - A request may carry an idempotency key: `idempotencyKey` over the WebSocket,
   the `Idempotency-Key` header over HTTP (400 for one not in the form
   `isIdempotencyKey` accepts). One that matches a signal the same principal

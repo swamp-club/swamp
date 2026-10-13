@@ -35,6 +35,7 @@ import {
   parseSignalPayload,
   remoteSignalPayload,
   remoteSignalUserError,
+  renderAcceptedSignalResult,
   renderPendingSignalResult,
   renderRemoteSignalResult,
   renderSignalResult,
@@ -285,12 +286,14 @@ Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow an
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
-    // A key address says this client reads a pending reply.
+    // A key address says this client reads a pending reply and an accepted
+    // one.
     {
       workflow: "@acme/release",
       key: "verdict",
       payload: 7,
       acceptsPending: true,
+      acceptsReceipt: true,
     },
   );
 });
@@ -535,6 +538,40 @@ Deno.test("renderPendingSignalResult: json mode prints the receipt and until whe
   assertEquals(JSON.parse(remote[0]), { signal, heldUntil, pending: true });
 });
 
+Deno.test("renderAcceptedSignalResult: log mode says the signal was accepted and not whether a step was waiting", () => {
+  const { signal } = HELD;
+  const lines = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext(), { signal })
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "does not tell this token");
+  assertEquals(lines[0].includes("resume"), false);
+  const duplicate = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext(), { signal, duplicate: true })
+  );
+  assertEquals(duplicate.length, 1);
+  assertStringIncludes(duplicate[0], signal.receivedAt);
+  assertEquals(
+    captureStdout(() =>
+      renderAcceptedSignalResult(hintTestContext({ verbosity: "quiet" }), {
+        signal,
+      })
+    ),
+    [],
+  );
+});
+
+Deno.test("renderAcceptedSignalResult: json mode prints the receipt and that it was accepted", () => {
+  const { signal } = HELD;
+  const lines = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext({ outputMode: "json" }), {
+      signal,
+    })
+  );
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), { signal, accepted: true });
+});
+
 Deno.test("renderSignalResult: a signal a wait took suggests a resume only when its run can be resumed", () => {
   const resume = `swamp workflow resume release --run ${RUN_ID}`;
   const lines = (overrides: Partial<WorkflowSignalData>) =>
@@ -592,6 +629,7 @@ Deno.test("remoteSignalPayload: an idempotency key is sent with either address, 
       key: "verdict",
       payload: {},
       acceptsPending: true,
+      acceptsReceipt: true,
       idempotencyKey: "order-1",
     },
   );

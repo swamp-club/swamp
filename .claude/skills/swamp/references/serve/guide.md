@@ -104,6 +104,7 @@ Approvals page lists open, signalled and expired waits.
 | ----------- | -------------------------------------------------------------- |
 | 200         | Delivered; the body carries the receipt                        |
 | 202, by key | Held for a wait not yet open (`status: pending`, `heldUntil`)  |
+| 202, by key | `status: accepted`: receipt only, to a token without `read`    |
 | 404         | No such wait, or the token may not signal it (same answer)     |
 | 404, by key | Unknown workflow, undeclared key, or not allowed (same)        |
 | 409, by key | `no_open_wait`; compare `lastWait.settledAt` with your attempt |
