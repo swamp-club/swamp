@@ -38,6 +38,9 @@ They run in a fixed order so output is stable:
    universal-format array entry with trigger `postToolUse`.
    For Claude, Cursor and Copilot it also fails when an event runs the audit
    hook more than once, since each copy records every tool call.
+   For OpenCode it also fails when the plugin has no default export with
+   `setup`, the entry point OpenCode 2 requires; the hint says the rewritten
+   plugin needs OpenCode 1.3.4 or later, or OpenCode 2.
 4. **`default-agent-set`**: Kiro only. `.kiro/settings/cli.json` has
    `chat.defaultAgent: "swamp"`. Skipped for the other four tools.
 5. **`recording-smoke-test`**: the end-to-end check, and the one that
