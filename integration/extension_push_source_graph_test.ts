@@ -45,6 +45,7 @@ import {
 } from "../src/libswamp/extensions/push.ts";
 import { analyzeExtensionSafety } from "../src/domain/extensions/extension_safety_analyzer.ts";
 import { extractContentMetadata } from "../src/domain/extensions/extension_content_extractor.ts";
+import { bundleExtension } from "../src/domain/models/bundle.ts";
 
 const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 const logger = getLogger(["test"]);
@@ -110,12 +111,13 @@ async function withRepo(fn: (repo: string) => Promise<void>): Promise<void> {
   }
 }
 
-/** Resolves and packages the extension as push does; returns the archive's files by path. */
-async function pushDryRun(
+/** Resolves the extension as push does and runs the prepare phase. */
+async function prepare(
   repo: string,
   manifestPath: string,
-  deps: ExtensionPushPrepareDeps = stubDeps,
-): Promise<Map<string, string>> {
+  deps: ExtensionPushPrepareDeps,
+  localGates: "enforce" | "collect" = "enforce",
+) {
   const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: repo,
     outputMode: "log",
@@ -127,7 +129,7 @@ async function pushDryRun(
     logger,
     moduleGraphReader: graphReader,
   });
-  const prepared = await extensionPushPrepare(
+  return await extensionPushPrepare(
     createLibSwampContext(),
     deps,
     {
@@ -158,10 +160,21 @@ async function pushDryRun(
       dataFilesByKind: resolved.dataFilesByKind,
       sourcePlan: resolved.sourcePlan,
       missingModules: resolved.missingModules,
+      entryPointsReachingSymlinks: resolved.entryPointsReachingSymlinks,
       dryRun: true,
       registryChecks: "skip",
+      localGates,
     },
   );
+}
+
+/** Resolves and packages the extension as push does; returns the archive's files by path. */
+async function pushDryRun(
+  repo: string,
+  manifestPath: string,
+  deps: ExtensionPushPrepareDeps = stubDeps,
+): Promise<Map<string, string>> {
+  const prepared = await prepare(repo, manifestPath, deps);
   const out = await Deno.makeTempDir({ prefix: "swamp-source-graph-out-" });
   try {
     await extractTarGz(
@@ -638,6 +651,94 @@ Deno.test({
         assertEquals(errors.map((e) => [e.file, e.ruleId]), [
           [model, "symlink"],
         ]);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "extension quality: a model importing a rejected symlink is never bundled, so the bundler quotes none of the target (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (outside) => {
+        await write(
+          join(outside, "passwd"),
+          `${SECRET}:x:0:0::/root:/bin/sh\n`,
+        );
+        const link = join(repo, "extensions", "models", "lib", "link.ts");
+        await Deno.mkdir(dirname(link), { recursive: true });
+        await Deno.symlink(join(outside, "passwd"), link, { type: "file" });
+        await write(
+          join(repo, "extensions", "models", "m.ts"),
+          'import "./lib/link.ts";\nexport const m = 1;\n',
+        );
+
+        let outcome: unknown;
+        try {
+          outcome = await prepare(
+            repo,
+            await writeManifest(repo, "linked-collect"),
+            {
+              ...stubDeps,
+              analyzeExtensionSafety,
+              extractContentMetadata,
+              bundleEntryPoint: bundleExtension,
+              ensureDenoPath: () => Promise.resolve(Deno.execPath()),
+            },
+            "collect",
+          );
+        } catch (error) {
+          outcome = error;
+        }
+
+        const { archiveBytes: _bytes, ...shown } = (outcome ?? {}) as Record<
+          string,
+          unknown
+        >;
+        assertEquals(JSON.stringify(shown).includes(SECRET), false);
+        const failures = (shown.gateFailures ?? []) as { gate: string }[];
+        assertEquals(failures.map((f) => f.gate).includes("safety"), true);
+      });
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "extension push: a module that does not load behind a symlinked directory is refused by containment, quoting none of it (swamp-club#3420)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withRepo(async (repo) => {
+      await withOutside(async (outside) => {
+        await write(join(outside, "x.ts"), `${SECRET}:x:0:0::/root:/bin/sh\n`);
+        const models = join(repo, "extensions", "models");
+        await Deno.mkdir(models, { recursive: true });
+        await Deno.symlink(outside, join(models, "d"), { type: "dir" });
+        await write(
+          join(models, "m.ts"),
+          'import "./d/x.ts";\nexport const m = 1;\n',
+        );
+        const manifestPath = await writeManifest(repo, "linked-dir");
+        const { repoContext } = await requireInitializedRepoReadOnly({
+          repoDir: repo,
+          outputMode: "log",
+        });
+
+        const error = await assertRejects(
+          () =>
+            resolveExtensionFiles({
+              repoDir: repo,
+              manifestPath,
+              repoContext,
+              logger,
+              moduleGraphReader: graphReader,
+            }),
+          UserError,
+          "outside the repository",
+        );
+        assertEquals(error.message.includes(SECRET), false);
       });
     });
   },

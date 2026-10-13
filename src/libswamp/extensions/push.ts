@@ -240,6 +240,12 @@ export interface ExtensionPushPrepareInput {
    * report them.
    */
   missingModules?: MissingLocalModule[];
+  /**
+   * Entry points whose module graph reaches a symlink. The bundler would
+   * follow it and quote the target in its errors, so they are never
+   * bundled (swamp-club#3420).
+   */
+  entryPointsReachingSymlinks?: string[];
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -1347,7 +1353,7 @@ export async function extensionPushPrepare(
     archiveBytes = input.cachedArchive!;
   } else {
     const built = await bundleAndArchive(
-      gated,
+      withoutEntryPoints(gated, input.entryPointsReachingSymlinks ?? []),
       deps,
       denoPath || await deps.ensureDenoPath(),
       ctx,
@@ -1469,6 +1475,26 @@ export async function extensionPushPrepare(
  * `binaryFilePaths` are parallel arrays, so each pair is filtered in
  * lockstep. Used only in `collect` mode.
  */
+/**
+ * The input without `entryPoints` among its entry points, so they are not
+ * bundled; their sources are still packaged.
+ */
+function withoutEntryPoints(
+  input: ExtensionPushPrepareInput,
+  entryPoints: readonly string[],
+): ExtensionPushPrepareInput {
+  if (entryPoints.length === 0) return input;
+  const keep = (f: string) => !entryPoints.includes(f);
+  return {
+    ...input,
+    modelEntryPoints: input.modelEntryPoints.filter(keep),
+    vaultEntryPoints: input.vaultEntryPoints.filter(keep),
+    datastoreEntryPoints: input.datastoreEntryPoints.filter(keep),
+    reportEntryPoints: input.reportEntryPoints.filter(keep),
+    webhookEntryPoints: input.webhookEntryPoints.filter(keep),
+  };
+}
+
 function withoutFiles(
   input: ExtensionPushPrepareInput,
   rejected: ReadonlySet<string>,

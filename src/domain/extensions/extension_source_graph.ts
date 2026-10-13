@@ -173,7 +173,13 @@ export function withoutSymlinkedModules(
     graph: {
       modules: graph.modules.filter((m) => keep(m.path)),
       edges: graph.edges.filter((e) => keep(e.importer) && keep(e.target)),
-      missing: graph.missing.filter((m) => keep(m.path)),
+      // With a symlink in the graph, a missing module is kept only when the
+      // root reaches it cleanly: its error text could come from a target.
+      missing: graph.missing.filter((m) =>
+        symlinks.size > 0
+          ? clean.has(m.path) && !symlinks.has(m.path)
+          : keep(m.path)
+      ),
     },
     symlinked,
   };

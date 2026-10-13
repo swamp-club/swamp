@@ -159,6 +159,12 @@ export interface ResolvedExtensionFiles {
    * quality report them as compilation errors, as the bundler would.
    */
   missingModules: MissingLocalModule[];
+  /**
+   * Entry points whose module graph reaches a symlink. The bundler would
+   * follow it and quote the target in its errors, so they are never
+   * bundled (swamp-club#3420).
+   */
+  entryPointsReachingSymlinks: string[];
   /** The project deno.json push bundles, formats and lints under. */
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
@@ -1399,6 +1405,7 @@ export async function resolveExtensionFiles(
     dataFilesByKind: sources.dataFilesByKind,
     sourcePlan: sources.plan,
     missingModules: sources.missing,
+    entryPointsReachingSymlinks: sources.entryPointsReachingSymlinks,
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
   };
@@ -1442,6 +1449,7 @@ interface SourceModuleKindRoots {
 
 interface ResolvedSourceModules {
   missing: MissingLocalModule[];
+  entryPointsReachingSymlinks: string[];
   codeFilesByKind: Record<SourceArchiveKind, string[]>;
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   plan: SourceArchivePlan;
@@ -1488,6 +1496,7 @@ async function resolveSourceModules(options: {
   logger: Logger;
 }): Promise<ResolvedSourceModules> {
   const graphOf = new Map<string, SymlinkFreeGraph>();
+  const reachingSymlinks = new Set<string>();
   const kindGraphs: Array<
     {
       k: SourceModuleKindRoots;
@@ -1506,6 +1515,7 @@ async function resolveSourceModules(options: {
       }
       graphs.push(free.graph);
       for (const m of free.symlinked) symlinked.push(m);
+      if (free.symlinked.length > 0) reachingSymlinks.add(root);
     }
     kindGraphs.push({ k, graph: mergeSourceGraphs(graphs), symlinked });
   }
@@ -1524,15 +1534,24 @@ async function resolveSourceModules(options: {
     await realPathOr(resolve(options.extensionsRoot)),
   ];
   const importerOf = new Map(graph.edges.map((e) => [e.target, e.importer]));
+  // A missing module is checked too: behind a symlinked directory, its
+  // recorded error would quote a file outside the repository.
   const outside = new Set<string>();
-  for (const m of graph.modules) {
+  const checked = [
+    ...graph.modules.map((m) => ({
+      path: m.path,
+      importer: importerOf.get(m.path),
+    })),
+    ...graph.missing.map((m) => ({ path: m.path, importer: m.importer })),
+  ];
+  for (const m of checked) {
     const real = await realPathOr(m.path);
     if (!realRoots.some((root) => isSameOrUnder(real, root) && real !== root)) {
       if (options.lenient) {
         outside.add(m.path);
         continue;
       }
-      const importer = importerOf.get(m.path);
+      const importer = m.importer;
       throw markErrorPaths(
         new UserError(
           `Local module ${m.path}${
@@ -1607,7 +1626,8 @@ async function resolveSourceModules(options: {
 
   if (options.lenient) {
     return {
-      missing: graph.missing,
+      missing: graph.missing.filter((m) => !outside.has(m.path)),
+      entryPointsReachingSymlinks: [...reachingSymlinks].sort(),
       codeFilesByKind,
       dataFilesByKind,
       plan: { entries: [] },
@@ -1619,7 +1639,13 @@ async function resolveSourceModules(options: {
     extensionsRoot: resolve(options.extensionsRoot),
     allowedRoots: [resolve(options.repoDir), resolve(options.extensionsRoot)],
   });
-  return { missing: graph.missing, codeFilesByKind, dataFilesByKind, plan };
+  return {
+    missing: graph.missing,
+    entryPointsReachingSymlinks: [...reachingSymlinks].sort(),
+    codeFilesByKind,
+    dataFilesByKind,
+    plan,
+  };
 }
 
 /**

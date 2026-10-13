@@ -3038,6 +3038,7 @@ Deno.test("resolveExtensionFiles: a symlinked shared module outside the reposito
         result.sourcePlan.entries.map((e) => e.sourcePath),
         [model],
       );
+      assertEquals(result.entryPointsReachingSymlinks, [model]);
     });
   });
 });

@@ -166,3 +166,22 @@ Deno.test("withoutSymlinkedModules: a graph without symlinks is unchanged", () =
   assertEquals(result.graph, graph);
   assertEquals(result.symlinked, []);
 });
+
+Deno.test("withoutSymlinkedModules: with a symlink present, a missing module the root does not reach cleanly is dropped, even if the root is spelled differently", () => {
+  // The reader reports the importer under another spelling of the root.
+  const result = withoutSymlinkedModules(
+    graphOf(["/private/r/m.ts"], [
+      edge("/private/r/m.ts", "/private/r/link.ts", 0),
+      edge("/private/r/link.ts", "/private/r/gone.ts", 0),
+    ], [
+      {
+        path: "/private/r/gone.ts",
+        importer: "/private/r/link.ts",
+        reason: "SECRET",
+      },
+    ]),
+    "/r/m.ts",
+    new Set(["/private/r/link.ts"]),
+  );
+  assertEquals(result.graph.missing, []);
+});

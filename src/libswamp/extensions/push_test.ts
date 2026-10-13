@@ -2777,6 +2777,25 @@ Deno.test("extensionPushPrepare: a symlinked model the safety gate refuses is ne
   });
 });
 
+Deno.test("extensionPushPrepare: an entry point whose graph reaches a symlink is never bundled (swamp-club#3420)", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const bundled: string[] = [];
+    const deps = makePrepareDeps({
+      bundleEntryPoint: (entryPoint) => {
+        bundled.push(entryPoint);
+        return Promise.resolve("/* bundled */");
+      },
+    });
+
+    await extensionPushPrepare(ctx, deps, {
+      ...input,
+      entryPointsReachingSymlinks: [input.modelEntryPoints[0]],
+    });
+
+    assertEquals(bundled, []);
+  });
+});
+
 Deno.test("extensionPushPrepare: collect mode with no failed gate reports none", async () => {
   await withCollectFixture({ "README.md": "# hi\n" }, async (_dir, input) => {
     const result = await extensionPushPrepare(ctx, makePrepareDeps(), input);
