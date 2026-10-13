@@ -54,6 +54,7 @@ function judgement(
     now: NOW,
     hostname: "host-b",
     processGone: () => false,
+    ttlMs: TTL,
     ...overrides,
   };
 }
@@ -122,10 +123,31 @@ Deno.test("judgeWriterLease: expiry is the TTL plus the clock-skew allowance aft
   );
 });
 
-Deno.test("judgeWriterLease: an unreadable fence record is held by an unknown holder", () => {
+Deno.test("judgeWriterLease: an unreadable fence record is held only while its heartbeat is fresh", () => {
+  // A live holder that has not finished writing its record has renewed.
+  assertEquals(
+    judgeWriterLease(
+      { fence: 3, renewedAt: NOW - 1_000, released: false },
+      judgement(),
+    ),
+    { kind: "held", holderUnknown: true },
+  );
+  // A holder that crashed mid-write left no heartbeat.
   assertEquals(
     judgeWriterLease({ fence: 3, released: false }, judgement()),
-    { kind: "held", holderUnknown: true },
+    { kind: "expired", reason: "unreadable" },
+  );
+  // Or one too old, by the judging writer's TTL plus the allowance.
+  assertEquals(
+    judgeWriterLease(
+      {
+        fence: 3,
+        renewedAt: NOW - TTL - WRITER_LEASE_CLOCK_SKEW_MS - 1,
+        released: false,
+      },
+      judgement(),
+    ),
+    { kind: "expired", reason: "unreadable" },
   );
 });
 

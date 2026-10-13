@@ -238,6 +238,41 @@ const CASES: [
     },
   ],
   [
+    "a fence record left half-written by a crashed holder is taken over at once, while a live unknown holder is not",
+    async (store, clock) => {
+      const { writer } = writers(store, clock);
+      await store.putIfAbsent(
+        "writer/fence-000000000001",
+        new TextEncoder().encode('{"fence":1,"hol'),
+      );
+      const taker = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(taker.fence, 2);
+      await taker.release();
+
+      // An unreadable record whose holder has renewed keeps writers out.
+      await store.putIfAbsent(
+        "writer/fence-000000000003",
+        new TextEncoder().encode("not json"),
+      );
+      await store.put(
+        "writer/heartbeat-000000000003",
+        new TextEncoder().encode(JSON.stringify({
+          fence: 3,
+          nonce: "unknown",
+          renewedAt: new Date(clock.now).toISOString(),
+        })),
+      );
+      await assertRejects(
+        () => writer().lease.acquire({ maxWaitMs: 0 }),
+        WriterLeaseBusyError,
+      );
+      clock.advance(TTL + WRITER_LEASE_CLOCK_SKEW_MS + 1);
+      const later = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(later.fence, 4);
+      await later.release();
+    },
+  ],
+  [
     "the next fence is above a floor the commit store gives",
     async (store, clock) => {
       const { writer } = writers(store, clock);

@@ -132,7 +132,7 @@ export type WriterLeaseVerdict =
   | { readonly kind: "held"; readonly holderUnknown: boolean }
   | {
     readonly kind: "expired";
-    readonly reason: "released" | "process-gone" | "ttl";
+    readonly reason: "released" | "process-gone" | "ttl" | "unreadable";
   };
 
 /** What {@link judgeWriterLease} judges with. */
@@ -143,13 +143,24 @@ export interface WriterLeaseJudgement {
   readonly hostname: string;
   /** Whether a pid on the judging host is gone. */
   readonly processGone: (pid: number) => boolean;
+  /**
+   * The TTL to judge a fence by when its record cannot be read: the judging
+   * writer's own.
+   */
+  readonly ttlMs: number;
   readonly clockSkewMs?: number;
 }
 
 /**
- * Decides whether the highest fence still keeps other writers out. A fence
- * whose record cannot be read is held by an unknown holder: the caller
- * decides how long to wait for it.
+ * Decides whether the highest fence still keeps other writers out.
+ *
+ * A fence whose record cannot be read is held by an unknown holder only
+ * while a heartbeat for it was written within the judging TTL: a live
+ * holder writes its first heartbeat as soon as it has taken the fence, so a
+ * record left half-written by a holder that crashed has none, and does not
+ * keep every writer out for good. Taking over too early is safe: the slow
+ * holder finds the higher fence before it writes, and the commit store
+ * refuses its fence.
  */
 export function judgeWriterLease(
   records: WriterLeaseRecords,
@@ -157,8 +168,14 @@ export function judgeWriterLease(
 ): WriterLeaseVerdict {
   if (records.fence === undefined) return { kind: "free" };
   if (records.released) return { kind: "expired", reason: "released" };
+  const skew = judgement.clockSkewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
   const record = records.record;
-  if (record === undefined) return { kind: "held", holderUnknown: true };
+  if (record === undefined) {
+    return records.renewedAt !== undefined &&
+        judgement.now - records.renewedAt <= judgement.ttlMs + skew
+      ? { kind: "held", holderUnknown: true }
+      : { kind: "expired", reason: "unreadable" };
+  }
   if (
     record.hostname === judgement.hostname &&
     judgement.processGone(record.pid)
@@ -169,7 +186,6 @@ export function judgeWriterLease(
     Date.parse(record.acquiredAt),
     records.renewedAt ?? 0,
   );
-  const skew = judgement.clockSkewMs ?? WRITER_LEASE_CLOCK_SKEW_MS;
   if (judgement.now - renewedAt > record.ttlMs + skew) {
     return { kind: "expired", reason: "ttl" };
   }
@@ -314,22 +330,9 @@ export class WriterLease {
     const o = this.#options;
     const started = o.now();
     let retry = o.retryMs ?? 250;
-    // When each fence's unreadable record was first seen, by this host's
-    // clock: a record that stays unreadable for a whole TTL was abandoned
-    // mid-write.
-    const unreadableSince = new Map<number, number>();
     for (;;) {
       let records = await this.#read();
-      const verdict = this.#judge(records);
-      let takeable = verdict.kind !== "held";
-      if (verdict.kind === "held" && verdict.holderUnknown) {
-        const fence = records.fence!;
-        const since = unreadableSince.get(fence) ?? o.now();
-        unreadableSince.set(fence, since);
-        takeable = o.now() - since > o.ttlMs +
-            (o.clockSkewMs ?? WRITER_LEASE_CLOCK_SKEW_MS);
-      }
-      if (takeable) {
+      if (this.#judge(records).kind !== "held") {
         const next = Math.max(records.fence ?? 0, options.floor ?? 0) + 1;
         const hold = await this.#take(next);
         if (hold !== undefined) return hold;
@@ -436,6 +439,7 @@ export class WriterLease {
       now: o.now(),
       hostname: o.holder.hostname,
       processGone: o.processGone,
+      ttlMs: o.ttlMs,
       ...(o.clockSkewMs !== undefined ? { clockSkewMs: o.clockSkewMs } : {}),
     });
   }
@@ -631,7 +635,11 @@ function parseFenceRecord(
   };
 }
 
-/** A heartbeat's renewal time, when it is the current holder's. */
+/**
+ * A heartbeat's renewal time, when it is the current holder's. With no
+ * nonce to match (the fence's record cannot be read), any heartbeat for the
+ * fence counts.
+ */
 function parseHeartbeat(
   data: Uint8Array | null,
   fence: number,
@@ -639,7 +647,8 @@ function parseHeartbeat(
 ): number | undefined {
   const value = decode(data);
   if (
-    value === undefined || value.fence !== fence || value.nonce !== nonce ||
+    value === undefined || value.fence !== fence ||
+    (nonce !== undefined && value.nonce !== nonce) ||
     typeof value.renewedAt !== "string"
   ) {
     return undefined;

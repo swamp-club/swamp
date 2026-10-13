@@ -4071,8 +4071,12 @@ so a fence is not reused even if `_control/writer/` is lost.
   default 30 s TTL, a crashed holder on another host is taken over after
   40 s.
 
-A fence record that cannot be read is held by an unknown holder until the
-taker has seen it unreadable for a whole TTL plus the allowance.
+A fence record that cannot be read is held by an unknown holder only while a
+heartbeat for that fence was written within the taker's TTL plus the
+allowance. A live holder writes its first heartbeat as soon as it has taken
+the fence, so a record a crashed holder left half-written (possible only where
+the filesystem has no hard links) is taken over at once rather than keeping
+every writer out; taking over too early only fences the slow holder.
 
 **Clocks never decide safety.** Expiry only decides when another writer may
 take over. A holder whose clock or pause made it look expired too early is
