@@ -321,7 +321,7 @@ trees. The reasons are in `datastores.md` under "v3 commit store".
 Most CLI commands live for seconds, so the question is whether each write
 command runs its own sidecar or a longer-lived process owns replication.
 
-- **Per command** costs 17–30 ms per write command on Linux and macOS arm64, 103
+- **Per command** (Phase 3 measurement) costs 17–30 ms per write command on Linux and macOS arm64, 103
   ms on macOS Intel and 110–150 ms on Windows, measured against local emulators.
   With 30 ms RTT the cost rises to about 197 ms, because every command opens new
   connections.
@@ -350,7 +350,7 @@ confirmed before Phase 4E.
 sidecar uploads a snapshot of `commits.db` on every command, and its replica
 grows quadratically: 311 MB for a 4 MB database after a day of 250 commands. It
 never compacts, and it pays new connections and credentials on every command. An
-idle sidecar adds 37–283 ms to a write command. **Waiting for replication is
+idle sidecar adds 24–283 ms to a write command. **Waiting for replication is
 acceptable:** a v3 write command that waits is 2–11 times faster than the v2
 push it replaces.
 
@@ -442,9 +442,10 @@ not comparable and v2 was rerun here. ms, p50.
 (1) v3 10 MB rows include the measured chunk upload: about 0.93 s on near
 profiles and 1.9 s on far S3.
 
-- **The cost of waiting.** Over the floor, an idle sidecar adds 37–49 ms on near
-  S3, 77 ms on GCS and 192–283 ms on far S3. A per-command sidecar adds 156–685
-  ms near and 871–1675 ms far, mostly new connections and credentials.
+- **The cost of waiting.** Over the floor, across the small, delete and 10 MB
+  rows, an idle sidecar adds 24–52 ms on near S3, 49–77 ms on GCS and 183–283
+  ms on far S3. A per-command sidecar adds 138–830 ms near, 158–197 ms on GCS
+  and 858–1844 ms far, mostly new connections and credentials.
 - **Against v2.** v2 makes 45–53 requests on 19–23 new connections per small
   write, and its S3 client resolves credentials five times per command. That is
   why SSO costs v2 3–4 s. Every v3 variant is faster than v2 on every row. With
@@ -754,10 +755,10 @@ deno run -A exp_idle_restart.ts 100 3
 ```
 
 The Phase 3 prototype is on branch `spike/3234-litestream` and will never be
-merged.
-`spike/README.md` maps each script to a question, and `spike/results/` holds the
-raw JSON lines quoted above. CI results come from the `Spike 3234 Litestream`
-workflow on that branch (run ids below).
+merged. On that branch, the Phase 3 `spike/README.md` maps each script to a
+question, and `spike/results/` holds the raw JSON lines quoted in the Phase 3
+sections. CI results come from the `Spike 3234 Litestream` workflow on that
+branch (run ids below).
 
 ```sh
 # Litestream release used for darwin/linux figures (checksums verified):
