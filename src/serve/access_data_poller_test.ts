@@ -26,7 +26,7 @@ import {
 } from "./access_data_poller.ts";
 import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
 import { EventBus } from "../domain/events/event_bus.ts";
-import { createModelCreated } from "../domain/events/types.ts";
+import { createModelUpdated } from "../domain/events/types.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import { createSyncGate, withSyncGate } from "./sync_gate.ts";
 import type {
@@ -580,7 +580,11 @@ Deno.test("AccessDataPoller: a change source's own write stays staged", async ()
     });
     // Written before the poller starts, so no cycle sees it before its event.
     await writeGrantVersion(dir, "g1", 1);
-    await bus.publish(createModelCreated("swamp/grant", "g1", "g1"));
+    await bus.publish(
+      createModelUpdated("swamp/grant", "g1", "g1", [
+        { name: "grant-main", version: 1 },
+      ]),
+    );
     poller.start();
     await waitFor(() => detects >= 2, "two cycles");
     await poller.stop();

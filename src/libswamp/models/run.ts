@@ -1442,6 +1442,10 @@ export async function* modelMethodRun(
                   modelType.normalized,
                   definition.id,
                   definition.name,
+                  execResult.dataHandles.map((handle) => ({
+                    name: handle.name,
+                    version: handle.version,
+                  })),
                 ),
               );
             }

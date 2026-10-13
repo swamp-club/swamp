@@ -145,8 +145,13 @@ export class AccessDataPoller {
     try {
       const count = await this.#changedCount();
       if (count > 0) {
-        logger
-          .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
+        if (this.#changeSource) {
+          logger
+            .info`Access data poller: ${count} record(s) changed by another process, reloading policy snapshot`;
+        } else {
+          logger
+            .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
+        }
         this.#catalogInvalidate();
         this.#needsReload = true;
       }

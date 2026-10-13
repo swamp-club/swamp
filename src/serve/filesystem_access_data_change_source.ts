@@ -20,13 +20,21 @@
 import { join } from "@std/path";
 import { minOf } from "../domain/array_extrema.ts";
 import type { EventBus } from "../domain/events/event_bus.ts";
-import type { ModelCreated, ModelUpdated } from "../domain/events/types.ts";
+import type { ModelUpdated } from "../domain/events/types.ts";
 import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
 
 /**
- * One record directory (`<subdir>/<modelId>`): every entry beneath it by
- * relative path, and the version directories (`<dataName>/<N>`) among them.
+ * The data names the policy loader reads. Only their versions decide
+ * access, so other data a grant or group model keeps (method-summary
+ * reports) is not watched.
+ */
+const ACCESS_DATA_NAMES: readonly string[] = ["grant-main", "group-main"];
+
+/**
+ * One record directory (`<subdir>/<modelId>`): every entry of its access
+ * data by relative path, and the version directories (`<dataName>/<N>`)
+ * among them.
  */
 interface RecordFingerprint {
   readonly entries: ReadonlyMap<string, string>;
@@ -46,27 +54,27 @@ export interface FilesystemAccessDataChangeSourceOptions {
  * Detects grant and group changes on a v2 filesystem datastore, where peers
  * share the files and there is nothing to pull (swamp-club#3371).
  *
- * Each `detect()` compares a fingerprint of the record directories (entry
+ * Each `detect()` compares a fingerprint of the records' access data (entry
  * names, sizes, mtimes, inodes) with the previous one and returns how many
  * records another process changed: a peer serve, a CLI, or a remote worker.
  * A record this process changed is not counted, so a manual-mode instance
  * keeps its own writes staged, as on S3/GCS, where serve never pulls its
- * own writes. Its own writes are recognised by the `ModelCreated` and
- * `ModelUpdated` events its grant and group method runs publish.
+ * own writes. Its own writes are the exact data versions its grant and
+ * group method runs name in their `ModelUpdated` events.
  *
  * Attribution fails safe: a changed record counts as a peer change unless
- * every version added to it is matched by one of this process's events and
- * nothing but older versions went away. A tick that sees an own version
- * before its run publishes the event therefore reloads, which can apply a
- * staged own write one interval early, but a peer's change is never
- * swallowed.
+ * every version added to it is one this process's events named and nothing
+ * but older versions went away. A cycle that sees an own version before its
+ * run publishes the event therefore reloads, which can apply a staged own
+ * write one interval early, but a peer's change is never swallowed: a peer's
+ * version is never named by this process's events.
  */
 export class FilesystemAccessDataChangeSource {
   readonly #dirs: readonly string[];
   readonly #eventBus: EventBus;
   readonly #unsubscribers: (() => void)[] = [];
   #baseline: Fingerprint | null = null;
-  #ownWrites = new Map<string, number>();
+  #ownVersions = new Map<string, Set<string>>();
 
   constructor(options: FilesystemAccessDataChangeSourceOptions) {
     this.#dirs = options.dirs;
@@ -80,27 +88,27 @@ export class FilesystemAccessDataChangeSource {
    */
   listen(): void {
     if (this.#unsubscribers.length > 0) return;
-    const noteOwnWrite = (event: ModelCreated | ModelUpdated) => {
-      if (
-        event.modelType === GRANT_MODEL_TYPE.normalized ||
-        event.modelType === GROUP_MODEL_TYPE.normalized
-      ) {
-        this.#ownWrites.set(
-          event.modelInputId,
-          (this.#ownWrites.get(event.modelInputId) ?? 0) + 1,
-        );
-      }
-    };
     this.#unsubscribers.push(
-      this.#eventBus.subscribe<ModelCreated>("ModelCreated", noteOwnWrite),
-      this.#eventBus.subscribe<ModelUpdated>("ModelUpdated", noteOwnWrite),
+      this.#eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
+        if (
+          event.modelType !== GRANT_MODEL_TYPE.normalized &&
+          event.modelType !== GROUP_MODEL_TYPE.normalized
+        ) {
+          return;
+        }
+        const own = this.#ownVersions.get(event.modelInputId) ?? new Set();
+        for (const { name, version } of event.dataVersions ?? []) {
+          own.add(`${name}/${version}`);
+        }
+        this.#ownVersions.set(event.modelInputId, own);
+      }),
     );
   }
 
   /** Takes the baseline the first `detect()` compares against. */
   async prime(): Promise<void> {
     this.#baseline = await this.#fingerprint();
-    this.#ownWrites = new Map();
+    this.#ownVersions = new Map();
   }
 
   /**
@@ -110,8 +118,11 @@ export class FilesystemAccessDataChangeSource {
    */
   async detect(): Promise<number> {
     const current = await this.#fingerprint();
-    const ownWrites = this.#ownWrites;
-    this.#ownWrites = new Map();
+    // Own versions are only ever matched against the versions added since
+    // the last call. One named by an event that arrived after its version
+    // was already counted can match nothing later, so it is dropped.
+    const ownVersions = this.#ownVersions;
+    this.#ownVersions = new Map();
     const baseline = this.#baseline;
     this.#baseline = current;
     if (!baseline) return 1;
@@ -120,10 +131,8 @@ export class FilesystemAccessDataChangeSource {
     for (const key of new Set([...baseline.keys(), ...current.keys()])) {
       const before = baseline.get(key);
       const after = current.get(key);
-      if (before && after && sameEntries(before.entries, after.entries)) {
-        continue;
-      }
-      if (!isOwnChange(before, after, ownWrites.get(modelIdOf(key)) ?? 0)) {
+      if (sameEntries(before?.entries, after?.entries)) continue;
+      if (!isOwnChange(before, after, ownVersions.get(modelIdOf(key)))) {
         changed++;
       }
     }
@@ -140,7 +149,9 @@ export class FilesystemAccessDataChangeSource {
     for (const dir of this.#dirs) {
       for (const modelId of await listDirectories(dir)) {
         const entries = new Map<string, string>();
-        await walk(join(dir, modelId), "", entries);
+        for (const dataName of ACCESS_DATA_NAMES) {
+          await walk(join(dir, modelId, dataName), dataName, entries);
+        }
         const versions = new Set<string>();
         for (const [path, entry] of entries) {
           const parts = path.split("/");
@@ -158,23 +169,23 @@ export class FilesystemAccessDataChangeSource {
 }
 
 /**
- * True when the change to one record is accounted for by `ownWrites` of this
- * process: the record still exists, it gained no more versions than this
- * process wrote, and any version it lost is older than every version it
- * gained (pruned by garbage collection on an own write).
+ * True when the change to one record is accounted for by versions this
+ * process wrote: the record still exists, it gained at least one version,
+ * every version it gained is one of `ownVersions`, and any version it lost
+ * is older than every version it gained (pruned by garbage collection on an
+ * own write).
  */
 function isOwnChange(
   before: RecordFingerprint | undefined,
   after: RecordFingerprint | undefined,
-  ownWrites: number,
+  ownVersions: ReadonlySet<string> | undefined,
 ): boolean {
-  if (!after || ownWrites === 0) return false;
+  if (!after || !ownVersions) return false;
   const beforeVersions = before?.versions ?? new Set<string>();
   const added = [...after.versions].filter((v) => !beforeVersions.has(v));
   const removed = [...beforeVersions].filter((v) => !after.versions.has(v));
-  if (added.length > ownWrites) return false;
-  if (removed.length === 0) return true;
   if (added.length === 0) return false;
+  if (!added.every((v) => ownVersions.has(v))) return false;
   const oldestAdded = minOf(added.map(versionNumber))!;
   return removed.every((v) => versionNumber(v) < oldestAdded);
 }
@@ -189,9 +200,11 @@ function modelIdOf(recordKey: string): string {
 }
 
 function sameEntries(
-  a: ReadonlyMap<string, string>,
-  b: ReadonlyMap<string, string>,
+  a: ReadonlyMap<string, string> | undefined,
+  b: ReadonlyMap<string, string> | undefined,
 ): boolean {
+  // A record with no access data reads the same as no record.
+  if (!a || !b) return (a?.size ?? 0) === 0 && (b?.size ?? 0) === 0;
   if (a.size !== b.size) return false;
   for (const [path, entry] of a) {
     if (b.get(path) !== entry) return false;

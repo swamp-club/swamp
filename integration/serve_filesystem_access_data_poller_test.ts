@@ -58,6 +58,10 @@ import {
   createAccessDataPoller,
 } from "../src/serve/access_data_poller.ts";
 import { FilesystemAccessDataChangeSource } from "../src/serve/filesystem_access_data_change_source.ts";
+import { createModelMethodRunDeps } from "../src/serve/deps.ts";
+import { libSwampContextForRepo } from "../src/cli/repo_context.ts";
+import { modelMethodRun } from "../src/libswamp/models/run.ts";
+import { collect } from "../src/libswamp/testing.ts";
 
 await initializeLogging({});
 
@@ -205,9 +209,9 @@ async function save(
   type: ModelType,
   modelId: string,
   content: Grant | Group,
-): Promise<void> {
+): Promise<{ name: string; version: number }> {
   const name = type === GRANT_MODEL_TYPE ? "grant-main" : "group-main";
-  await writer.repoContext.unifiedDataRepo.save(
+  const { version } = await writer.repoContext.unifiedDataRepo.save(
     type,
     modelId,
     Data.create({
@@ -223,6 +227,7 @@ async function save(
     }),
     new TextEncoder().encode(JSON.stringify(content)),
   );
+  return { name, version };
 }
 
 /** Saves the record and publishes the run's event on the writer's bus. */
@@ -232,9 +237,9 @@ async function saveAsRun(
   modelId: string,
   content: Grant | Group,
 ): Promise<void> {
-  await save(writer, type, modelId, content);
+  const written = await save(writer, type, modelId, content);
   await writer.repoContext.eventBus.publish(
-    createModelUpdated(type.normalized, modelId, modelId),
+    createModelUpdated(type.normalized, modelId, modelId, [written]),
   );
 }
 
@@ -299,58 +304,138 @@ for (const layout of LAYOUTS) {
   });
 }
 
+/**
+ * A's serve side, with a counted change source so a test can wait for whole
+ * poll cycles on A.
+ */
+async function withCountedServeSide(
+  instance: Instance,
+  fn: (side: {
+    loader: PolicySnapshotLoader;
+    poller: AccessDataPoller;
+    cycles: () => number;
+  }) => Promise<void>,
+): Promise<void> {
+  const loader = policyLoader(instance);
+  const changeSource = new FilesystemAccessDataChangeSource({
+    dirs: ACCESS_DATA_SUBDIRS.map((subdir) => {
+      const [root, ...rest] = subdir.split("/");
+      return instance.datastoreResolver.resolvePath(root, ...rest);
+    }),
+    eventBus: instance.repoContext.eventBus,
+  });
+  await changeSource.prime();
+  let cycles = 0;
+  const detect = changeSource.detect.bind(changeSource);
+  changeSource.detect = async () => {
+    const count = await detect();
+    cycles++;
+    return count;
+  };
+  const poller = new AccessDataPoller({
+    changeSource,
+    policySnapshotLoader: loader,
+    catalogInvalidate: () => instance.repoContext.catalogStore.invalidate(),
+    pollIntervalMs: POLL_INTERVAL_MS,
+  });
+  try {
+    await loader.load();
+    await fn({ loader, poller, cycles: () => cycles });
+  } finally {
+    await poller.stop();
+    await loader.dispose();
+  }
+}
+
 Deno.test("AccessDataPoller: in manual mode the writing instance keeps its own grant staged while a peer applies it", async () => {
   await withPair(LAYOUTS[0], async ({ a, loaderB, pollerB }) => {
-    // A's serve side, with a counted change source so the test can wait for
-    // whole poll cycles on A.
-    const loaderA = policyLoader(a);
-    const changeSource = new FilesystemAccessDataChangeSource({
-      dirs: ACCESS_DATA_SUBDIRS.map((subdir) => {
-        const [root, ...rest] = subdir.split("/");
-        return a.datastoreResolver.resolvePath(root, ...rest);
-      }),
-      eventBus: a.repoContext.eventBus,
-    });
-    await changeSource.prime();
-    let cyclesA = 0;
-    const detect = changeSource.detect.bind(changeSource);
-    changeSource.detect = async () => {
-      const count = await detect();
-      cyclesA++;
-      return count;
-    };
-    const pollerA = new AccessDataPoller({
-      changeSource,
-      policySnapshotLoader: loaderA,
-      catalogInvalidate: () => a.repoContext.catalogStore.invalidate(),
-      pollIntervalMs: POLL_INTERVAL_MS,
-    });
-    try {
-      await loaderA.load();
-      const modelId = crypto.randomUUID();
-      await saveAsRun(
-        a,
-        GRANT_MODEL_TYPE,
-        modelId,
-        grant(modelId, "active", {
-          kind: "user",
-          name: GRANTEE.principal.id,
-        }),
-      );
-      pollerA.start();
-      pollerB.start();
+    await withCountedServeSide(
+      a,
+      async ({ loader: loaderA, poller, cycles }) => {
+        const modelId = crypto.randomUUID();
+        await saveAsRun(
+          a,
+          GRANT_MODEL_TYPE,
+          modelId,
+          grant(modelId, "active", {
+            kind: "user",
+            name: GRANTEE.principal.id,
+          }),
+        );
+        poller.start();
+        pollerB.start();
 
-      await untilDecision(loaderB, "allow", "B applies A's grant");
-      const after = cyclesA;
-      await waitFor(() => cyclesA >= after + 2, "two more cycles on A");
-      assertEquals(decision(loaderA), "deny", "A's own grant stays staged");
+        await untilDecision(loaderB, "allow", "B applies A's grant");
+        const after = cycles();
+        await waitFor(() => cycles() >= after + 2, "two more cycles on A");
+        assertEquals(decision(loaderA), "deny", "A's own grant stays staged");
 
-      await loaderA.load();
-      assertEquals(decision(loaderA), "allow", "access reload applies it");
-    } finally {
-      await pollerA.stop();
-      await loaderA.dispose();
-    }
+        await loaderA.load();
+        assertEquals(decision(loaderA), "allow", "access reload applies it");
+      },
+    );
+  });
+});
+
+Deno.test("AccessDataPoller: a grant created by a real method run through A stays staged on A and reaches B", async () => {
+  // The run publishes ModelUpdated with the data versions it wrote, and it
+  // also writes its method-summary report into the grant's directory after
+  // that event. Neither may read as a peer change on A.
+  await withPair(LAYOUTS[0], async ({ a, loaderB, pollerB }) => {
+    await withCountedServeSide(
+      a,
+      async ({ loader: loaderA, poller, cycles }) => {
+        poller.start();
+        pollerB.start();
+        const deps = await createModelMethodRunDeps(a.repoDir, a.repoContext, {
+          directExecution: true,
+        });
+        const events = await collect(
+          modelMethodRun(libSwampContextForRepo(a.repoContext), deps, {
+            modelIdOrName: `@${GRANT_MODEL_TYPE.normalized}`,
+            methodName: "create",
+            inputs: {
+              subject: `user:${GRANTEE.principal.id}`,
+              effect: "allow",
+              actions: ["read"],
+              resourceKind: "model",
+              resourcePattern: RESOURCE.name,
+              source: "method",
+              createdBy: "user:admin",
+            },
+            lastEvaluated: false,
+            typeArg: `@${GRANT_MODEL_TYPE.normalized}`,
+            definitionName: `fs-grant-${crypto.randomUUID()}`,
+          }),
+        );
+        assertEquals(events.filter((e) => e.kind === "error"), []);
+        // The report really landed beside grant-main, after the event.
+        const grantDir = a.datastoreResolver.resolvePath(
+          "data",
+          "swamp",
+          "grant",
+        );
+        const dataNames: string[] = [];
+        for await (const record of Deno.readDir(grantDir)) {
+          for await (const entry of Deno.readDir(join(grantDir, record.name))) {
+            dataNames.push(entry.name);
+          }
+        }
+        assert(dataNames.includes("grant-main"), dataNames.join(", "));
+        assert(
+          dataNames.some((name) => name.startsWith("report-")),
+          `expected a report beside grant-main: ${dataNames.join(", ")}`,
+        );
+
+        await untilDecision(loaderB, "allow", "B applies A's run");
+        const after = cycles();
+        await waitFor(() => cycles() >= after + 2, "two more cycles on A");
+        assertEquals(decision(loaderA), "deny", "A's own run stays staged");
+
+        await loaderA.load();
+        assertEquals(decision(loaderA), "allow", "access reload applies it");
+      },
+    );
   });
 });
 
