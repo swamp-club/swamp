@@ -117,3 +117,30 @@ Deno.test("WorkspaceRegistryFileRepository: persists trustedAt, and loads files 
     assertEquals(loaded?.get("b")?.trustedAt, undefined);
   });
 });
+
+Deno.test("WorkspaceRegistryFileRepository: persists the last agent, and drops one it can't use without refusing the file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new WorkspaceRegistryFileRepository(dir);
+    await repo.update((r) => {
+      r.register({ name: "a", path: "/w/a", createdAt: "t" });
+    });
+    assertEquals((await repo.load())?.lastAgent(), undefined);
+    await repo.update((r) => r.rememberAgent("codex"));
+    assertEquals((await repo.load())?.lastAgent(), "codex");
+    // Registry changes that aren't about the agent keep it.
+    await repo.update((r) => r.markTrusted("/w/a", "t"));
+    assertEquals((await repo.load())?.lastAgent(), "codex");
+
+    await Deno.writeTextFile(
+      join(dir, "workspaces.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        workspaces: [{ name: "a", path: "/w/a", createdAt: "t" }],
+        lastAgent: 42,
+      }),
+    );
+    const loaded = await repo.load();
+    assertEquals(loaded?.lastAgent(), undefined);
+    assertEquals(loaded?.list().map((e) => e.name), ["a"]);
+  });
+});

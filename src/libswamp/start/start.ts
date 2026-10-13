@@ -158,6 +158,11 @@ export interface StartStatus {
    */
   readonly trusted: boolean;
   /**
+   * The agent (a harness id) the user last picked for a task, in any
+   * workspace: a new task starts with it selected when it can launch.
+   */
+  readonly lastAgent?: string;
+  /**
    * True when the server can show this machine's folder chooser for an
    * import (not over SSH or without a display).
    */
@@ -623,11 +628,14 @@ async function statusOf(
     await listContents(workspacePath),
     await deps.repo.enrolledTools(workspacePath),
   );
+  const registry = await deps.registry.load();
+  const lastAgent = registry?.lastAgent();
   return {
     ...status,
     ...(await deps.isRunning(workspacePath) ? { alsoOpenElsewhere: true } : {}),
     tasks: await listTasks(deps, workspacePath),
-    trusted: (await deps.registry.load())?.isTrusted(workspacePath) ?? false,
+    trusted: registry?.isTrusted(workspacePath) ?? false,
+    ...(lastAgent !== undefined ? { lastAgent } : {}),
     canPickFolder: await canPickFolder(deps),
   };
 }
@@ -811,6 +819,12 @@ export function startChooseHarness(
       return tool.id;
     });
     s.chooseHarness(harness.id, extras);
+    // Adopt first: the first write of the registry must not skip the
+    // workspaces already under the data dir.
+    await workspaceRegistry(deps);
+    await deps.registry.update((registry) =>
+      registry.rememberAgent(harness.id)
+    );
   });
 }
 

@@ -2378,11 +2378,6 @@ a.start-primary {
   margin-bottom: 0;
 }
 
-.start-chip-quiet {
-  color: var(--text-2);
-  background: var(--surface-inset);
-}
-
 .start-steps {
   margin: 0;
   padding-left: 1.4em;
@@ -3200,32 +3195,6 @@ a.cron-badge:hover {
   }
 }
 
-/* swamp start: workspace chip with Switch */
-.start-workspace-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.start-chip-action {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.start-chip-action:hover:not(:disabled) {
-  text-decoration: underline;
-}
-
-.start-chip-action:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
 /* swamp start: workspace card */
 .start-harness.start-workspace {
   gap: 10px;
@@ -3783,6 +3752,90 @@ a.cron-badge:hover {
   min-width: 0;
 }
 
+/* Wordmark and breadcrumb: where you are, read left to right */
+.start-header-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  min-width: 0;
+}
+
+.start-brand-link {
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.start-brand-link:hover:not(:disabled) .start-brand-name {
+  color: var(--accent);
+}
+
+.start-brand-link:focus-visible,
+.start-crumb-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.start-brand-link:disabled,
+.start-crumb-link:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.start-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.start-crumbs li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.start-crumbs li + li::before {
+  content: "/";
+  color: var(--text-3);
+}
+
+.start-crumb-link {
+  padding: 4px 2px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.start-crumb-link:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.start-crumb-workspace {
+  overflow-wrap: anywhere;
+  font-family: var(--sw-mono);
+  font-size: 13px;
+}
+
+.start-crumbs span.start-crumb-workspace {
+  color: var(--text-1);
+}
+
 .start-page .start-chips {
   display: flex;
   flex-wrap: wrap;
@@ -3806,29 +3859,11 @@ a.cron-badge:hover {
   font-weight: 500;
 }
 
-.start-page .start-chip-quiet {
-  background: var(--surface);
-  font-family: var(--sw-mono);
-  font-size: 12px;
-}
-
 .start-chip-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
-}
-
-.start-page .start-workspace-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.start-page .start-chip-action {
-  padding: 4px 2px;
-  font-size: 14px;
-  font-weight: 500;
 }
 
 /* Getting-started rail beside the content */

@@ -58,3 +58,16 @@ Deno.test("WorkspaceRegistry.markTrusted: records trust once, by path, for regis
   assertEquals(r.isTrusted("/w/a"), true);
   assertEquals(r.get("a")?.trustedAt, "2026-10-11T01:00:00.000Z");
 });
+
+Deno.test("WorkspaceRegistry.rememberAgent: keeps the last agent picked, reporting only real changes", () => {
+  const r = WorkspaceRegistry.empty();
+  assertEquals(r.lastAgent(), undefined);
+  assertEquals(r.rememberAgent("codex"), true);
+  assertEquals(r.rememberAgent("codex"), false);
+  assertEquals(r.rememberAgent("opencode"), true);
+  assertEquals(r.lastAgent(), "opencode");
+  assertEquals(
+    WorkspaceRegistry.fromEntries([entry("a", "/w/a")], "codex").lastAgent(),
+    "codex",
+  );
+});
