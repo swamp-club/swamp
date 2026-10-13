@@ -110,17 +110,52 @@ export interface MisspeltNamespace {
 }
 
 /**
+ * Words one slip away from a swamp namespace that are far more likely another
+ * system's root than a typo, so {@link misspeltSwampNamespace} leaves them be.
+ */
+const NOT_A_MISSPELLING: ReadonlySet<string> = new Set([
+  "mode",
+  "modal",
+  "files",
+  "fault",
+  "stops",
+  "shelf",
+  "rune",
+]);
+
+/**
+ * Whether `root` is `namespace` with one slip of the hand: a letter dropped
+ * or added, two adjacent letters swapped, or, in a namespace of five letters
+ * or more, one letter replaced. Replacing a letter in a short namespace
+ * (`env`, `run`, `self`, `data`, `file`) reaches unrelated words such as
+ * `date`, so that does not count.
+ */
+function isSlipOf(root: string, namespace: string): boolean {
+  if (root === namespace) return false;
+  if (root.length !== namespace.length) {
+    return levenshteinDistance(root, namespace) === 1;
+  }
+  const differing: number[] = [];
+  for (let i = 0; i < root.length; i++) {
+    if (root[i] !== namespace[i]) differing.push(i);
+  }
+  if (differing.length === 1) return namespace.length >= 5;
+  if (differing.length !== 2) return false;
+  const [a, b] = differing;
+  return b === a + 1 && root[a] === namespace[b] && root[b] === namespace[a];
+}
+
+/**
  * The first free root identifier of a CEL expression that is not a swamp
- * namespace but nearly spells one: `input` for `inputs`, `modle` for
- * `model`. Such text is foreign by {@link isForeignExpression}, yet is far
- * more likely a typo than another templating system's text.
+ * namespace but nearly spells one (see {@link isSlipOf}): `input` for
+ * `inputs`, `modle` for `model`. Such text is foreign by
+ * {@link isForeignExpression}, yet is far more likely a typo than another
+ * templating system's text.
  *
- * A root is near a namespace one edit away, or two edits away when the
- * namespace has five or more letters (a transposition counts as two). Short
- * namespaces (`env`, `run`, `self`, `data`, `file`) get one edit only, since
- * two would reach unrelated words. The roots GitHub Actions binds that swamp
- * does not (`github`, `matrix`, `secrets`, `vars`, `needs`, `runner`, `job`,
- * `strategy`) are near none.
+ * The roots GitHub Actions binds that swamp does not (`github`, `matrix`,
+ * `secrets`, `vars`, `needs`, `runner`, `job`, `strategy`) are near none, and
+ * neither are ordinary words such as `node`, `stats` or `date`. A few words
+ * that are one slip away are excluded by name (`mode`, `files`).
  *
  * Returns undefined for text that does not parse.
  */
@@ -140,15 +175,36 @@ export function misspeltSwampNamespace(
   };
   collectReferences(ast, new Set(), refs);
   for (const root of refs.roots) {
-    if (SWAMP_ROOT_NAMESPACES.has(root)) continue;
+    if (SWAMP_ROOT_NAMESPACES.has(root) || NOT_A_MISSPELLING.has(root)) {
+      continue;
+    }
     for (const namespace of SWAMP_ROOT_NAMESPACES) {
-      const distance = levenshteinDistance(root, namespace);
-      if (distance <= (namespace.length >= 5 ? 2 : 1)) {
-        return { root, namespace };
-      }
+      if (isSlipOf(root, namespace)) return { root, namespace };
     }
   }
   return undefined;
+}
+
+/**
+ * Whether an evaluation failed because the expression read a root identifier
+ * that is not a swamp namespace: CEL's "Unknown variable" error, naming such
+ * a root. Any other failure of an expression that mentions a foreign root is
+ * a real error. In `has(inputs.cache) ? data.latest("m", "d") : github.sha`,
+ * a datastore error from `data.latest` must surface, not turn the whole
+ * expression into literal text.
+ */
+export function failedOnForeignRoot(error: unknown): boolean {
+  for (
+    let current: unknown = error;
+    current instanceof Error;
+    current = current.cause
+  ) {
+    const match = /Unknown variable: ([A-Za-z_][A-Za-z0-9_]*)/.exec(
+      current.message,
+    );
+    if (match) return !SWAMP_ROOT_NAMESPACES.has(match[1]);
+  }
+  return false;
 }
 
 /**

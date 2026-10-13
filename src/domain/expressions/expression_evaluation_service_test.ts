@@ -1392,6 +1392,21 @@ Deno.test("evaluateDataTracked: passes another templating system's text through 
       Error,
       "Unknown variable: github",
     );
+    // So does a foreign expression that fails on its swamp side.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          {
+            dir:
+              "${{ inputs.cache.dir != '' ? inputs.cache.dir : github.workspace }}",
+          },
+          ProvenanceMap.authored(),
+          { model: {}, env: {}, inputs: {} },
+          "unrestricted",
+          "passThrough",
+        ),
+      Error,
+    );
     // A failed swamp expression throws either way.
     await assertRejects(
       () =>

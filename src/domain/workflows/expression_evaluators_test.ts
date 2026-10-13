@@ -468,6 +468,39 @@ Deno.test("WorkflowExpressionEvaluator: reports another templating system's text
   ]);
 });
 
+Deno.test("WorkflowExpressionEvaluator: an error other than the unknown foreign root still throws", async () => {
+  // The expression mentions a foreign root, but that is not why it failed.
+  const forced = new WorkflowExpressionEvaluator(new ThrowingEvaluator());
+  await assertRejects(
+    () =>
+      forced.evaluate(
+        foreignWorkflow(
+          StepTask.model("m", "run", { sha: "${{ github.sha }}" }),
+        ),
+        emptyContext(),
+        "unrestricted",
+      ),
+    Error,
+    "forced eval failure",
+  );
+  // The swamp side of a mixed expression fails first.
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  await assertRejects(
+    () =>
+      evaluator.evaluate(
+        foreignWorkflow(
+          StepTask.model("m", "run", {
+            dir:
+              "${{ inputs.cache.dir != '' ? inputs.cache.dir : github.workspace }}",
+          }),
+        ),
+        { ...emptyContext(), inputs: {} },
+        "unrestricted",
+      ),
+    Error,
+  );
+});
+
 Deno.test("WorkflowExpressionEvaluator: a failed swamp expression in step arguments still throws", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
   for (

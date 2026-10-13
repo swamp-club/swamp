@@ -654,8 +654,13 @@ strict: an expression that throws fails the run before any step starts
 (`WorkflowExpressionEvaluator`, `src/domain/workflows/expression_evaluators.ts`).
 The one exception is another templating system's text nested in a step's task
 `inputs` or `globalArgs`, such as `env: { SHA: "${{ github.sha }}" }`
-(swamp-club#2528). When such an expression fails and `isForeignExpression`
-holds, it is left raw and reaches the method as literal text. Step inputs are
+(swamp-club#2528). When such an expression fails on its foreign root and
+`isForeignExpression` holds, it is left raw and reaches the method as literal
+text. Failing on its foreign root means CEL reported an unknown variable that
+is not a swamp namespace (`failedOnForeignRoot`). Any other error still fails:
+in `${{ has(inputs.cache) ? data.latest("m", "d") : github.sha }}`, a datastore
+error from `data.latest` surfaces instead of turning the expression into
+literal text. Step inputs are
 evaluated again when the step runs (`evaluateDataPair` and
 `evaluateDataTracked`, `src/domain/expressions/expression_evaluation_service.ts`).
 Those two calls opt in to the same rule with `"passThrough"`, so text deferred
@@ -690,10 +695,13 @@ once per `forEach` iteration.
 
 A root that nearly spells a swamp namespace is treated as a probable typo
 (`misspeltSwampNamespace`, `src/domain/expressions/swamp_namespaces.ts`):
-`input` for `inputs`, `modle` for `model`. A root is near a namespace one edit
-away, or two edits away when the namespace has five or more letters; the roots
-GitHub Actions binds that swamp does not (`github`, `matrix`, `secrets`, `vars`,
-`needs`, `runner`, `job`, `strategy`) are near none. In step arguments,
+`input` for `inputs`, `modle` for `model`. A root counts when it is a namespace
+with one slip: a letter dropped or added, two adjacent letters swapped, or, in a
+namespace of five letters or more, one letter replaced. Replacing a letter in a
+short namespace reaches unrelated words (`date` for `data`), so that does not
+count, and a few ordinary words one slip away are excluded by name (`mode`,
+`files`). The roots GitHub Actions binds that swamp does not (`github`, `matrix`,
+`secrets`, `vars`, `needs`, `runner`, `job`, `strategy`) are near none. In step arguments,
 `swamp workflow validate` fails such text under `Task expressions in job '<job>'
 step '<step>'` and names the namespace it resembles. A run still passes it
 through, and its warning asks the same question. The judgement is a guess, so

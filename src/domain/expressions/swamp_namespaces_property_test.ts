@@ -164,8 +164,11 @@ Deno.test("misspeltSwampNamespace: catches a dropped or doubled letter in every 
         const typo = drop
           ? root.slice(0, i) + root.slice(i + 1)
           : root.slice(0, i) + root[i] + root.slice(i);
-        // A typo that spells another namespace (none today) is swamp's own.
-        fc.pre(!SWAMP_ROOTS.includes(typo) && typo.length > 0);
+        // A typo that spells another namespace (none today) is swamp's own,
+        // and `mode` is excluded by name as an ordinary word.
+        fc.pre(
+          !SWAMP_ROOTS.includes(typo) && typo.length > 0 && typo !== "mode",
+        );
         assert(misspeltSwampNamespace(`${typo}.x`) !== undefined, typo);
       },
     ),

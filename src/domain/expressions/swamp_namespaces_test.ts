@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsSwampExpression,
+  failedOnForeignRoot,
   isForeignExpression,
   isSwampExpression,
   misspeltSwampNamespace,
@@ -299,12 +300,39 @@ Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other system
     "runner.os",
     "job.status",
     "strategy.fail-fast",
-    // Two edits from a short namespace is an unrelated word.
+    // Ordinary words near a namespace.
     "event.name",
     "ref.name",
+    "node.name",
+    "stats.count",
+    "date.year",
+    "mode.name",
+    "files.changed",
     '"unclosed',
   ];
   for (const cel of cases) {
     assertEquals(misspeltSwampNamespace(cel), undefined, cel);
   }
+});
+
+Deno.test("failedOnForeignRoot: true only for an unknown variable that is not a swamp namespace", () => {
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: github")),
+    true,
+  );
+  // Found through the cause chain of a wrapping error.
+  assertEquals(
+    failedOnForeignRoot(
+      new Error("Invalid expression", {
+        cause: new Error("Unknown variable: matrix"),
+      }),
+    ),
+    true,
+  );
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: inputs")),
+    false,
+  );
+  assertEquals(failedOnForeignRoot(new Error("datastore unreachable")), false);
+  assertEquals(failedOnForeignRoot("Unknown variable: github"), false);
 });

@@ -64,6 +64,7 @@ import {
 } from "../expressions/definition_expression_pass.ts";
 import type { FailedExpressions } from "../expressions/unresolved_expression_guard.ts";
 import {
+  failedOnForeignRoot,
   isForeignExpression,
   type MisspeltNamespace,
   misspeltSwampNamespace,
@@ -384,7 +385,8 @@ function foreignTaskText(
  * The one exception is another templating system's text nested in a step's
  * task inputs or global arguments, such as GitHub Actions
  * `${{ github.sha }}` (swamp-club#2528). It is classified only after it
- * fails to evaluate, left raw so it reaches the method as literal text, and
+ * fails on its foreign root (any other error still propagates), left raw so
+ * it reaches the method as literal text, and
  * returned in `foreignTaskArguments`, along with such text deferred to step
  * time.
  */
@@ -512,7 +514,10 @@ export class WorkflowExpressionEvaluator {
         );
       } catch (error) {
         const foreign = foreignTaskText(workflow, expr);
-        if (!foreign || !NESTED_TASK_ARGUMENT.test(foreign.path)) throw error;
+        if (
+          !foreign || !NESTED_TASK_ARGUMENT.test(foreign.path) ||
+          !failedOnForeignRoot(error)
+        ) throw error;
         failedForeignPaths.add(expr.path);
         continue;
       }
