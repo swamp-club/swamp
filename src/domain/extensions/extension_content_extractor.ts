@@ -19,6 +19,7 @@
 
 import { relative } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
+import { normalizeBehaviorTask } from "../workflows/step_task.ts";
 import type {
   ExtensionContentMetadata,
   ExtractedArgument,
@@ -944,6 +945,23 @@ function extractFiles(content: string): ExtractedFile[] {
 }
 
 /**
+ * A step's task in its stored form: a behavior-spelled task is rewritten to
+ * `model_method` (swamp-club#3334). Metadata extraction is best-effort, so a
+ * task the rewrite refuses is read as written.
+ */
+function readTask(raw: unknown): Record<string, unknown> | undefined {
+  let task: unknown = raw;
+  try {
+    task = normalizeBehaviorTask(raw);
+  } catch {
+    // A mixed-spelling task: leave it as written.
+  }
+  return task && typeof task === "object"
+    ? task as Record<string, unknown>
+    : undefined;
+}
+
+/**
  * Extracts workflow metadata from a YAML file content.
  * Returns null if the content doesn't contain a valid workflow structure.
  */
@@ -988,7 +1006,7 @@ function extractWorkflowFromYaml(
             ? stepData.description
             : "";
 
-          const task = stepData.task as Record<string, unknown> | undefined;
+          const task = readTask(stepData.task);
           const taskType = task && typeof task.type === "string"
             ? task.type
             : "";

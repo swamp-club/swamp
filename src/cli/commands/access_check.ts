@@ -41,6 +41,10 @@ import {
   parseResourceFlag,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
+import {
+  canonicalResourceSelectorString,
+  resourceSelectorToString,
+} from "../../domain/access/resource_selector.ts";
 import { createAccessCheckRenderer } from "../../presentation/renderers/access_check.ts";
 import {
   CA_CERT_DESCRIPTION,
@@ -159,7 +163,9 @@ export const accessCheckCommand = new Command()
           payload: {
             subject: options.subject as string,
             action: options.action as string,
-            resource: options.on as string,
+            // The canonical spelling, so a server that predates the behavior
+            // spelling of a selector (swamp-club#3334) still reads it.
+            resource: canonicalResourceSelectorString(options.on as string),
           },
         },
       );
@@ -247,7 +253,7 @@ export const accessCheckCommand = new Command()
       const result = {
         subject: options.subject as string,
         action: options.action as string,
-        resource: options.on as string,
+        resource: resourceSelectorToString(resource),
         collectives,
         decisions,
       };

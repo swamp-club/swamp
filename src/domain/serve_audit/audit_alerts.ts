@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AuditEvent } from "./audit_event.ts";
+import { canonicalAuditAction } from "./behavior_spelling.ts";
 
 export interface AlertRuleMatch {
   readonly category?: string;
@@ -72,7 +73,12 @@ function matchesRule(event: AuditEvent, match: AlertRuleMatch): boolean {
   if (match.category !== undefined && event.category !== match.category) {
     return false;
   }
-  if (match.action !== undefined && event.action !== match.action) {
+  // The rule's action in the stored spelling (swamp-club#3334); the
+  // configured rule is left as written.
+  if (
+    match.action !== undefined &&
+    event.action !== canonicalAuditAction(match.action)
+  ) {
     return false;
   }
   if (match.outcome !== undefined && event.outcome !== match.outcome) {

@@ -74,9 +74,24 @@ scripts depend on them:
   `src/domain/models/`, libswamp names and log categories like
   `["model", "get"]`.
 
-Today only the CLI accepts a behavior spelling. When swamp starts accepting one
-for any name above, it must keep writing the model form, so older swamp
-releases can still read what it wrote.
+Three of these names also accept a behavior spelling where people write them
+(swamp-club#3334):
+
+- The workflow step type `behavior`, with `behavior`, `behaviorType` and
+  `behaviorName`. See "Model spelling" in [workflows.md](./workflows.md).
+- The grant selector `behavior:<pattern>`. See "Resource selectors" in
+  [../enablers/access-control.md](../enablers/access-control.md).
+- Audit filters and rules that name a `behavior.*` action or a `behavior:`
+  resource. See "Behavior spelling" in
+  [../enablers/serve-audit.md](../enablers/serve-audit.md).
+
+Each is an exact synonym. Swamp translates it to the model form where the value
+enters, before it is used or authorized. `behaviour` and other near-misses are
+not synonyms. A step type or grant selector spelled that way is refused. Swamp
+keeps writing the model form, so older swamp releases can still read what it
+wrote. The other names above accept only the model form, and any new behavior
+spelling must follow the same rules. The synonyms are listed in
+`src/domain/terminology/behavior_aliases.ts`.
 
 ## Type
 

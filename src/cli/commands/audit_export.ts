@@ -26,6 +26,11 @@ import {
   withRemoteOptions,
 } from "../remote_run.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  canonicalAuditAction,
+  canonicalAuditResource,
+  canonicalOptional,
+} from "../../domain/serve_audit/behavior_spelling.ts";
 import { createAuditExportRenderer } from "../../presentation/output/audit_export_output.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -110,9 +115,17 @@ export const auditExportCommand = withRemoteOptions(
       format,
       principal: options.principal,
       category: options.category,
-      action: options.action,
+      // The stored spelling, so a server that predates the behavior spelling
+      // of an action or resource (swamp-club#3334) still matches it.
+      action: canonicalOptional(
+        options.action as string | undefined,
+        canonicalAuditAction,
+      ),
       outcome: options.outcome,
-      resource: options.resource,
+      resource: canonicalOptional(
+        options.resource as string | undefined,
+        canonicalAuditResource,
+      ),
     },
   };
 

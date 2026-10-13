@@ -1,0 +1,44 @@
+# Extracted from .claude/skills/swamp/references/behavior/references/scenarios.md (block 13)
+id: 00000000-0000-4000-8000-000000000001
+name: create-subnets
+version: 1
+jobs:
+  - name: create-subnets
+    description: Create all 4 subnets in parallel
+    steps:
+      - name: create-public-a
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: public-a
+            cidrBlock: "10.0.1.0/24"
+            availabilityZone: us-east-1a
+      - name: create-public-b
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: public-b
+            cidrBlock: "10.0.2.0/24"
+            availabilityZone: us-east-1b
+      - name: create-private-a
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: private-a
+            cidrBlock: "10.0.3.0/24"
+            availabilityZone: us-east-1a
+      - name: create-private-b
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: create
+          inputs:
+            instanceName: private-b
+            cidrBlock: "10.0.4.0/24"
+            availabilityZone: us-east-1b

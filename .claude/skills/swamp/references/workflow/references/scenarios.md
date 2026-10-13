@@ -83,8 +83,8 @@ jobs:
     steps:
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
 
   - name: create-subnet
@@ -96,8 +96,8 @@ jobs:
     steps:
       - name: subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: create
 
   - name: create-sg
@@ -109,8 +109,8 @@ jobs:
     steps:
       - name: security-group
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: create
 ```
 
@@ -173,20 +173,20 @@ jobs:
     steps:
       - name: ami
         task:
-          type: model_method
-          modelIdOrName: ami-lookup
+          type: behavior
+          behavior: ami-lookup
           methodName: execute
 
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: vpc-lookup
+          type: behavior
+          behavior: vpc-lookup
           methodName: execute
 
       - name: sg
         task:
-          type: model_method
-          modelIdOrName: sg-lookup
+          type: behavior
+          behavior: sg-lookup
           methodName: execute
 
   - name: use-results
@@ -198,8 +198,8 @@ jobs:
     steps:
       - name: create-instance
         task:
-          type: model_method
-          modelIdOrName: my-instance
+          type: behavior
+          behavior: my-instance
           methodName: create
 ```
 
@@ -281,8 +281,8 @@ jobs:
           item: env
           in: ${{ inputs.environments }}
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -346,8 +346,8 @@ jobs:
     steps:
       - name: sg
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: delete
 
   - name: delete-subnet
@@ -359,8 +359,8 @@ jobs:
     steps:
       - name: subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: delete
 
   - name: delete-vpc
@@ -372,8 +372,8 @@ jobs:
     steps:
       - name: vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: delete
 
   - name: cleanup
@@ -385,8 +385,8 @@ jobs:
     steps:
       - name: gc
         task:
-          type: model_method
-          modelIdOrName: gc-runner
+          type: behavior
+          behavior: gc-runner
           methodName: gc
 ```
 
@@ -477,8 +477,8 @@ jobs:
     steps:
       - name: dispatch
         task:
-          type: model_method
-          modelIdOrName: notification-sender
+          type: behavior
+          behavior: notification-sender
           methodName: send
           inputs:
             channel: ${{ inputs.channel }}
@@ -505,8 +505,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -615,8 +615,8 @@ jobs:
       - name: vpc
         guard: ${{ data.latest("networking-vpc", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
 
   - name: create-subnets
@@ -628,8 +628,8 @@ jobs:
       - name: subnet
         guard: ${{ data.latest("public-subnet", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: create
 
   - name: create-sg
@@ -641,8 +641,8 @@ jobs:
       - name: security-group
         guard: ${{ data.latest("app-sg", "resource") }}
         task:
-          type: model_method
-          modelIdOrName: app-sg
+          type: behavior
+          behavior: app-sg
           methodName: create
 ```
 
@@ -689,8 +689,8 @@ jobs:
           in: ${{ inputs.environments }}
         guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -720,8 +720,8 @@ jobs:
           ${{ model.method("api-client", "check-freshness",
               {"maxAge": 1800}).stdout }}
         task:
-          type: model_method
-          modelIdOrName: api-client
+          type: behavior
+          behavior: api-client
           methodName: fetch
 ```
 
@@ -777,13 +777,13 @@ jobs:
     steps:
       - name: compile
         task:
-          type: model_method
-          modelIdOrName: builder
+          type: behavior
+          behavior: builder
           methodName: compile
       - name: test
         task:
-          type: model_method
-          modelIdOrName: builder
+          type: behavior
+          behavior: builder
           methodName: test
 
   - name: gpu-test
@@ -791,8 +791,8 @@ jobs:
       - name: train-smoke
         target: gpu-box-1
         task:
-          type: model_method
-          modelIdOrName: ml-runner
+          type: behavior
+          behavior: ml-runner
           methodName: smoke-test
 
   - name: report
@@ -807,8 +807,8 @@ jobs:
     steps:
       - name: summarize
         task:
-          type: model_method
-          modelIdOrName: reporter
+          type: behavior
+          behavior: reporter
           methodName: summarize
 ```
 

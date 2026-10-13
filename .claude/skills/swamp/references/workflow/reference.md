@@ -41,8 +41,8 @@ jobs:
       - name: compile
         description: Compile source code
         task:
-          type: model_method
-          modelIdOrName: build-runner
+          type: behavior
+          behavior: build-runner
           methodName: build
   - name: deploy
     description: Deploy the application
@@ -54,8 +54,8 @@ jobs:
       - name: upload
         description: Upload artifacts
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -76,8 +76,8 @@ jobs:
     steps:
       - name: fetch
         task:
-          type: model_method
-          modelIdOrName: downloader
+          type: behavior
+          behavior: downloader
           methodName: execute
 ```
 
@@ -228,8 +228,8 @@ inputs match required method/workflow arguments.
 5. Valid step dependency references
 6. No cyclic job dependencies
 7. No cyclic step dependencies within jobs
-8. Step inputs match required arguments — for `model_method` tasks, checks that
-   all required method arguments are provided in the step's `inputs:` block. For
+8. Step inputs match required arguments — for `behavior` tasks, checks that all
+   required method arguments are provided in the step's `inputs:` block. For
    `workflow` tasks, checks that all required workflow inputs are provided.
    Dynamic CEL references (`${{ ... }}`) in behavior/workflow names are skipped.
 
@@ -480,8 +480,8 @@ Reference inputs with `${{ inputs.<name> }}`:
 steps:
   - name: deploy
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         environment: ${{ inputs.environment }}
@@ -547,7 +547,7 @@ swamp workflow evaluate --all --json
 **Key points:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
-- forEach steps are expanded into concrete steps with resolved `modelIdOrName`,
+- forEach steps are expanded into concrete steps with resolved behavior names,
   `methodName`, inputs, and args
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
@@ -693,8 +693,8 @@ jobs:
           in: ${{ inputs.targets }}
         concurrency: 3 # step level — caps forEach iterations
         task: {
-          type: model_method,
-          modelIdOrName: api-client,
+          type: behavior,
+          behavior: api-client,
           methodName: call,
         }
 ```
@@ -710,8 +710,8 @@ steps:
   - name: optional-check
     allowFailure: true
     task:
-      type: model_method
-      modelIdOrName: checker
+      type: behavior
+      behavior: checker
       methodName: validate
 ```
 
@@ -746,8 +746,8 @@ steps:
   - name: read-plate
     guard: ${{ data.latest("plate-reader", "scan-complete").attributes.id }}
     task:
-      type: model_method
-      modelIdOrName: plate-reader
+      type: behavior
+      behavior: plate-reader
       methodName: read-all
 
   # Value comparison — same batch means skip, different batch means re-run
@@ -756,8 +756,8 @@ steps:
       ${{ data.latest("liquid-handler", "dispense-log").attributes.batchId
           == inputs.batchId }}
     task:
-      type: model_method
-      modelIdOrName: liquid-handler
+      type: behavior
+      behavior: liquid-handler
       methodName: dispense
 
   # Method call — invoke a method to check external state
@@ -766,8 +766,8 @@ steps:
       ${{ model.method("infra", "check-exists",
           {"name": inputs.instanceName}).stdout }}
     task:
-      type: model_method
-      modelIdOrName: infra
+      type: behavior
+      behavior: infra
       methodName: create
 ```
 
@@ -790,8 +790,8 @@ expanded iteration evaluates its own guard independently:
     in: ${{ range(1, 97) }}
   guard: ${{ data.latest("plate-reader", self.well) }}
   task:
-    type: model_method
-    modelIdOrName: plate-reader
+    type: behavior
+    behavior: plate-reader
     methodName: read-single-well
 ```
 
@@ -806,17 +806,17 @@ renderer shows `skipped <step> (guarded)` to distinguish from dependency skips.
 
 Steps support four task types:
 
-**`model_method`** — prefer `modelType` + `modelName` (direct type execution)
-for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
+**`behavior`** — prefer `behaviorType` + `behaviorName` (direct type execution)
+for dynamic inputs. Use `behavior` only for persistent definitions with CEL
 expressions or shared config. See
 [references/direct-execution.md](references/direct-execution.md) for details.
 
 ```yaml
 # Direct type execution (default — dynamic inputs, no YAML to manage)
 task:
-  type: model_method
-  modelType: "@test/greeter"
-  modelName: my-greeter
+  type: behavior
+  behaviorType: "@test/greeter"
+  behaviorName: my-greeter
   methodName: greet
   inputs:
     greeting: ${{ inputs.greeting }}
@@ -824,12 +824,19 @@ task:
 
 # Existing definition (only for persistent config with CEL expressions)
 task:
-  type: model_method
-  modelIdOrName: my-model
+  type: behavior
+  behavior: my-model
   methodName: run
   inputs:
     key: ${{ inputs.value }}
 ```
+
+**Compatibility:** `type: model_method` with `modelIdOrName`, or `modelType` +
+`modelName`, is the same task and stays accepted. It is the form swamp stores:
+`swamp workflow edit` and every other save write the step back as
+`model_method`. Hand-write `model_method` when the file must load on a swamp
+release older than the behavior spelling. Do not mix the two spellings in one
+task; swamp refuses it.
 
 **`workflow`** - Invoke another workflow (waits for completion):
 
@@ -903,10 +910,10 @@ it. Use it when a step needs a value, not a yes or no:
   dependsOn: [{ step: review, condition: { type: succeeded } }]
   # A truthy guard skips the step: skip unless the verdict is ship.
   guard: ${{ steps.review.outputs.payload.verdict != "ship" }}
-  task: { type: model_method, modelIdOrName: release, methodName: deploy }
+  task: { type: behavior, behavior: release, methodName: deploy }
 - name: escalate
   dependsOn: [{ step: review, condition: { type: failed } }]
-  task: { type: model_method, modelIdOrName: release, methodName: escalate }
+  task: { type: behavior, behavior: release, methodName: escalate }
 ```
 
 ```
@@ -1212,15 +1219,15 @@ expr: >-
 
 Two moments, and which one applies decides what an expression can see.
 
-| Field                                  | Resolves                                                          | Sees                                      |
-| -------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------- |
-| Most fields                            | Run start                                                         | `inputs.*`, literals                      |
-| `guard`                                | Step time                                                         | Data written by earlier steps in this run |
-| `task.inputs`, assert `task.message`   | Step time **when** they read `data.*`                             | Same                                      |
-| `task.modelIdOrName`, `task.modelName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
-| `trigger.inputs`                       | Trigger fire time                                                 | The webhook payload                       |
-| `forEach.in`                           | Job start                                                         | Data available when the job begins        |
-| `run.*`, `self.*`                      | Step time                                                         | The run record, the forEach variable      |
+| Field                                | Resolves                                                          | Sees                                      |
+| ------------------------------------ | ----------------------------------------------------------------- | ----------------------------------------- |
+| Most fields                          | Run start                                                         | `inputs.*`, literals                      |
+| `guard`                              | Step time                                                         | Data written by earlier steps in this run |
+| `task.inputs`, assert `task.message` | Step time **when** they read `data.*`                             | Same                                      |
+| `task.behavior`, `task.behaviorName` | Step time when they read `data.*` **or** their step has a `guard` | Same                                      |
+| `trigger.inputs`                     | Trigger fire time                                                 | The webhook payload                       |
+| `forEach.in`                         | Job start                                                         | Data available when the job begins        |
+| `run.*`, `self.*`                    | Step time                                                         | The run record, the forEach variable      |
 
 The null-safe form applies to **same-run** data, not only to data from a prior
 cycle. `data.latest("m", "rec").attributes.x` fails at run start when an earlier
@@ -1232,8 +1239,8 @@ defers to step time and sees the write:
 # Step 1 writes the record; step 2 reads it in the same run.
 - name: consume
   task:
-    type: model_method
-    modelIdOrName: "${{ data.latest('writer', 'rec').?attributes.?name.orValue('') }}"
+    type: behavior
+    behavior: "${{ data.latest('writer', 'rec').?attributes.?name.orValue('') }}"
     methodName: run
 ```
 
@@ -1301,9 +1308,9 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelType: "command/shell"
-          modelName: create-vpc
+          type: behavior
+          behaviorType: "command/shell"
+          behaviorName: create-vpc
           methodName: execute
   - name: verify
     dependsOn:
@@ -1313,9 +1320,9 @@ jobs:
     steps:
       - name: describe-vpc
         task:
-          type: model_method
-          modelType: "command/shell"
-          modelName: describe-vpc
+          type: behavior
+          behaviorType: "command/shell"
+          behaviorName: describe-vpc
           methodName: execute
       - name: cidr-correct
         dependsOn:
@@ -1376,16 +1383,16 @@ jobs:
     steps:
       - name: refresh-token
         task:
-          type: model_method
-          modelIdOrName: token-refresher
+          type: behavior
+          behavior: token-refresher
           methodName: refresh
   use-token:
     depends_on: [refresh]
     steps:
       - name: call-api
         task:
-          type: model_method
-          modelIdOrName: api-client # vault.get() resolved after refresh
+          type: behavior
+          behavior: api-client # vault.get() resolved after refresh
           methodName: invoke
 ```
 

@@ -1,0 +1,23 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/nested-workflows.md (block 3)
+id: 00000000-0000-4000-8000-000000000023
+name: notify-team
+description: Send notifications to the team
+inputs:
+  properties:
+    channel:
+      type: string
+      enum: ["slack", "email"]
+    message:
+      type: string
+  required: ["channel", "message"]
+jobs:
+  - name: send
+    steps:
+      - name: dispatch
+        task:
+          type: model_method
+          modelIdOrName: notification-sender
+          methodName: send
+          inputs:
+            channel: ${{ inputs.channel }}
+            message: ${{ inputs.message }}

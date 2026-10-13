@@ -21,6 +21,11 @@ import type { ChainedAuditEvent } from "./audit_event.ts";
 import type { AuditStore } from "./audit_store.ts";
 import { CHAIN_SEED_DIGEST, verifyChain } from "./audit_chain.ts";
 import type { HmacKeyRegistry } from "./audit_hmac.ts";
+import {
+  canonicalAuditAction,
+  canonicalAuditResource,
+  canonicalOptional,
+} from "./behavior_spelling.ts";
 
 const MAX_QUERY_LIMIT = 1000;
 const MAX_DATE_RANGE_DAYS = 90;
@@ -108,6 +113,19 @@ async function loadEvents(
   return events;
 }
 
+/**
+ * The filters with the action and resource in the stored spelling, so a
+ * behavior-spelled filter selects the same events as the model spelling
+ * (swamp-club#3334).
+ */
+function canonicalFilters<F extends AuditQueryFilters>(filters: F): F {
+  return {
+    ...filters,
+    action: canonicalOptional(filters.action, canonicalAuditAction),
+    resource: canonicalOptional(filters.resource, canonicalAuditResource),
+  };
+}
+
 function matchesFilters(
   event: ChainedAuditEvent,
   filters: AuditQueryFilters,
@@ -149,7 +167,8 @@ export class AuditQueryService {
 
     allEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
-    const filtered = allEvents.filter((e) => matchesFilters(e, filters));
+    const matching = canonicalFilters(filters);
+    const filtered = allEvents.filter((e) => matchesFilters(e, matching));
 
     let cursorIndex = 0;
     if (filters.cursor) {
@@ -319,6 +338,7 @@ export class AuditQueryService {
       );
     }
 
+    const matching = canonicalFilters(filters);
     for (const date of dates) {
       const keys = await this.#store.list(`events/${date}/`);
       for (const key of keys) {
@@ -330,7 +350,7 @@ export class AuditQueryService {
           if (!line.trim()) continue;
           try {
             const event = JSON.parse(line) as ChainedAuditEvent;
-            if (matchesFilters(event, filters)) {
+            if (matchesFilters(event, matching)) {
               batch.push(event);
             }
           } catch {

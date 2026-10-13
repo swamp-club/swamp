@@ -301,6 +301,16 @@ Patterns support a trailing `*` wildcard:
 - `@acme/deploy` matches only `@acme/deploy` (exact)
 - `*` matches everything
 
+`behavior` is an exact synonym of the `model` kind (swamp-club#3334).
+`behavior:@acme/*` and `model:@acme/*` are one selector, in a grant file, in
+`swamp access grant`, `access check` and `access can-i`, and in a request.
+The selector is read as `model:` when it is parsed, before any comparison or
+authorization, so a grant is always stored as `model:`. One grant file entry
+that lists both spellings of a selector is a duplicate. Any other kind,
+including `behaviour` and plurals, is refused, so a misspelled deny fails at
+load instead of matching nothing. The parser is
+`src/domain/access/resource_selector.ts`.
+
 #### Behavior resource dual-identity matching
 
 For `model` resources, grants match **both** the instance name and the extension

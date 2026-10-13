@@ -1,0 +1,25 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/nested-workflows.md (block 2)
+id: 00000000-0000-4000-8000-000000000022
+name: corpus-22
+# child — declares episodes as an array input
+inputs:
+  properties:
+    episodes:
+      type: array
+      items: { type: object }
+  required: ["episodes"]
+
+jobs:
+  - name: download
+    steps:
+      - name: download-${{ self.ep.show }}
+        forEach:
+          item: ep
+          in: ${{ inputs.episodes }}
+        task:
+          type: model_method
+          modelIdOrName: transmission
+          methodName: add
+          inputs:
+            uri: ${{ self.ep.magnet }}
+            protocol: torrent

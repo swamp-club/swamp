@@ -250,6 +250,20 @@ Every `audit.*` request needs `admin` on `access:audit`, except
 - `swamp audit log --follow`: after the initial query, stream new events live
   until Ctrl+C.
 
+## Behavior spelling
+
+Audit events are stored in the model spelling: actions such as
+`model.method.run` and resources such as `model:my-vpc`. A filter may use the
+behavior spelling instead (swamp-club#3334). `behavior.` at the start of an
+action is read as `model.`, and the resource `behavior:<name>` or kind
+`behavior` is read as `model`. This applies to `swamp audit log --action`,
+`swamp audit export` filters, `audit.query`, `audit.subscribe`, and the
+`action` of audit policy rules and alert rules in `serve.yaml`. The filter is
+translated before it is matched, so both spellings select the same events.
+Stored events and the serve config file are never rewritten. The CLI sends the
+model spelling, so an older server still matches it. The translation is in
+`src/domain/serve_audit/behavior_spelling.ts`.
+
 ## Real-time streaming
 
 `audit.subscribe` streams audit events live on the existing WebSocket. The

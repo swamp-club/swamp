@@ -1,0 +1,41 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 3)
+id: 00000000-0000-4000-8000-000000000028
+# workflows/provision-networking/workflow.yaml
+name: provision-networking
+description: Provision complete networking stack
+version: 1
+jobs:
+  - name: create-vpc
+    description: Create the VPC first
+    steps:
+      - name: vpc
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: create
+
+  - name: create-subnet
+    description: Create subnets after VPC
+    dependsOn:
+      - job: create-vpc
+        condition:
+          type: succeeded
+    steps:
+      - name: subnet
+        task:
+          type: model_method
+          modelIdOrName: public-subnet
+          methodName: create
+
+  - name: create-sg
+    description: Create security groups after subnets
+    dependsOn:
+      - job: create-subnet
+        condition:
+          type: succeeded
+    steps:
+      - name: security-group
+        task:
+          type: model_method
+          modelIdOrName: app-sg
+          methodName: create

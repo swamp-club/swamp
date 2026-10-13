@@ -109,8 +109,8 @@ jobs:
           item: subnet
           in: ${{ data.findBySpec("subnet-scanner", "subnet") }}
         task:
-          type: model_method
-          modelIdOrName: subnet-tagger
+          type: behavior
+          behavior: subnet-tagger
           methodName: tag
           inputs:
             subnetId: ${{ self.subnet.attributes.subnetId }}
@@ -140,8 +140,8 @@ jobs:
     steps:
       - name: restore-config
         task:
-          type: model_method
-          modelIdOrName: config-restore
+          type: behavior
+          behavior: config-restore
           methodName: restore
           inputs:
             config: ${{ data.version("app-config", "config", 1).attributes }}
@@ -167,8 +167,8 @@ jobs:
       - name: check-versions
         condition: ${{ size(data.listVersions("app-config", "config")) > 1 }}
         task:
-          type: model_method
-          modelIdOrName: app-config
+          type: behavior
+          behavior: app-config
           methodName: rollback
 ```
 
@@ -279,8 +279,8 @@ jobs:
           workflowIdOrName: delete-all-resources
       - name: run-gc
         task:
-          type: model_method
-          modelIdOrName: gc-runner
+          type: behavior
+          behavior: gc-runner
           methodName: gc
 ```
 
@@ -309,8 +309,8 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
   - name: tag
     dependsOn:
