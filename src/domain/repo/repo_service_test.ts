@@ -4811,3 +4811,259 @@ Deno.test("RepoService.init and upgrade: kiro-cli agent denies read-secret", asy
     await check();
   });
 });
+
+// swamp-club#3346: Claude Code reads AGENTS.md only when no CLAUDE.md exists,
+// so the claude tool must not create a CLAUDE.md beside a repo's own AGENTS.md.
+
+const USER_AGENTS_MD = "# Repo rules\n\nUse tabs.\n";
+const CLAUDE_RULES_PATH = join(".claude", "rules", "swamp.md");
+
+async function readIfExists(path: string): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
+Deno.test("RepoService.init with claude writes a rules file, not CLAUDE.md, beside the repo's own AGENTS.md", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await testService("0.1.0", tempDir).init(repoPath, {
+      tools: ["claude"],
+    });
+
+    assertEquals(result.instructionsFileCreated, true);
+    assertEquals(await readIfExists(join(tempDir, "CLAUDE.md")), null);
+    assertEquals(
+      await Deno.readTextFile(join(tempDir, "AGENTS.md")),
+      USER_AGENTS_MD,
+    );
+    const rules = await Deno.readTextFile(join(tempDir, CLAUDE_RULES_PATH));
+    assertStringIncludes(rules, "This repository is managed with [swamp]");
+    assertEquals(rules.includes("BEGIN swamp managed section"), false);
+  });
+});
+
+Deno.test("RepoService.init with claude and no AGENTS.md writes CLAUDE.md without an import", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+
+    const claudeMd = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    assertStringIncludes(claudeMd, "BEGIN swamp managed section");
+    assertEquals(claudeMd.includes("@AGENTS.md"), false);
+    assertEquals(await readIfExists(join(tempDir, CLAUDE_RULES_PATH)), null);
+  });
+});
+
+Deno.test("RepoService.upgrade imports AGENTS.md into a CLAUDE.md that holds only swamp's section", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+
+    const first = await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    const claudeMd = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    assertStringIncludes(
+      claudeMd,
+      "\n@AGENTS.md\n<!-- END swamp managed section -->",
+    );
+    assert(first.changedFiles.includes("CLAUDE.md"));
+    assertEquals(
+      await Deno.readTextFile(join(tempDir, "AGENTS.md")),
+      USER_AGENTS_MD,
+    );
+
+    const second = await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(second.changedFiles.includes("CLAUDE.md"), false);
+    assertEquals(
+      await Deno.readTextFile(join(tempDir, "CLAUDE.md")),
+      claudeMd,
+    );
+  });
+});
+
+Deno.test("RepoService.init leaves a user's own CLAUDE.md without an AGENTS.md import", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+    await Deno.writeTextFile(join(tempDir, "CLAUDE.md"), "# Mine\n");
+    const repoPath = RepoPath.create(tempDir);
+
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    const claudeMd = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+    assertStringIncludes(claudeMd, "BEGIN swamp managed section");
+    assertStringIncludes(claudeMd, "# Mine");
+    assertEquals(claudeMd.includes("@AGENTS.md"), false);
+    assertEquals(await readIfExists(join(tempDir, CLAUDE_RULES_PATH)), null);
+  });
+});
+
+Deno.test("RepoService.init picks the claude target the same way whatever the tool order", async () => {
+  for (const userAgentsMd of [false, true]) {
+    const outcomes: string[] = [];
+    for (const tools of [["codex", "claude"], ["claude", "codex"]]) {
+      await withTempDir(async (tempDir) => {
+        if (userAgentsMd) {
+          await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+        }
+        const repoPath = RepoPath.create(tempDir);
+        await testService("0.1.0", tempDir).init(repoPath, { tools });
+
+        const claudeMd = await readIfExists(join(tempDir, "CLAUDE.md"));
+        const rules = await readIfExists(join(tempDir, CLAUDE_RULES_PATH));
+        const agentsMd = await Deno.readTextFile(join(tempDir, "AGENTS.md"));
+        assertStringIncludes(agentsMd, "BEGIN swamp managed section");
+        if (userAgentsMd) {
+          assertStringIncludes(agentsMd, USER_AGENTS_MD);
+        }
+        outcomes.push(JSON.stringify({ claudeMd, rules }));
+      });
+    }
+    assertEquals(outcomes[0], outcomes[1]);
+    const { claudeMd, rules } = JSON.parse(outcomes[0]);
+    if (userAgentsMd) {
+      assertEquals(claudeMd, null);
+      assert(rules !== null);
+    } else {
+      assert(claudeMd !== null && !claudeMd.includes("@AGENTS.md"));
+      assertEquals(rules, null);
+    }
+  }
+});
+
+Deno.test("RepoService.upgrade keeps the rules file once chosen", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    const rulesPath = join(tempDir, CLAUDE_RULES_PATH);
+    const rules = await Deno.readTextFile(rulesPath);
+
+    const again = await testService("0.1.0", tempDir).upgrade(repoPath);
+    assertEquals(again.changedFiles.includes(".claude/rules/swamp.md"), false);
+
+    await Deno.remove(join(tempDir, "AGENTS.md"));
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    assertEquals(await Deno.readTextFile(rulesPath), rules);
+    assertEquals(await readIfExists(join(tempDir, "CLAUDE.md")), null);
+  });
+});
+
+Deno.test("RepoService.init treats an AGENTS.md with legacy swamp content as swamp's, not the repo's", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(
+      join(tempDir, "AGENTS.md"),
+      "# Project\n\nThis repository is managed with [swamp](https://github.com/swamp-club/swamp).\n",
+    );
+    const repoPath = RepoPath.create(tempDir);
+
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+
+    assert((await readIfExists(join(tempDir, "CLAUDE.md"))) !== null);
+    assertEquals(await readIfExists(join(tempDir, CLAUDE_RULES_PATH)), null);
+  });
+});
+
+Deno.test("RepoService.upgrade adding claude to a codex repo with its own AGENTS.md content writes the rules file", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["codex"] });
+
+    await testService("0.2.0", tempDir).upgrade(repoPath, {
+      tools: ["codex", "claude"],
+    });
+
+    assertEquals(await readIfExists(join(tempDir, "CLAUDE.md")), null);
+    assert((await readIfExists(join(tempDir, CLAUDE_RULES_PATH))) !== null);
+  });
+});
+
+Deno.test({
+  name:
+    "RepoService.init and upgrade with claude never write through a CLAUDE.md symlink",
+  // Creating symlinks on Windows needs a privilege CI runners lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      await Deno.writeTextFile(join(tempDir, "AGENTS.md"), USER_AGENTS_MD);
+      const linkPath = join(tempDir, "CLAUDE.md");
+      await Deno.symlink("AGENTS.md", linkPath, { type: "file" });
+      const repoPath = RepoPath.create(tempDir);
+
+      await testService("0.1.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+      });
+      await testService("0.2.0", tempDir).upgrade(repoPath);
+
+      assertEquals((await Deno.lstat(linkPath)).isSymlink, true);
+      assertEquals(
+        await Deno.readTextFile(join(tempDir, "AGENTS.md")),
+        USER_AGENTS_MD,
+      );
+      assert((await readIfExists(join(tempDir, CLAUDE_RULES_PATH))) !== null);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "RepoService.init with claude succeeds when CLAUDE.md is a dangling symlink",
+  // Creating symlinks on Windows needs a privilege CI runners lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const linkPath = join(tempDir, "CLAUDE.md");
+      await Deno.symlink("MISSING.md", linkPath, { type: "file" });
+      const repoPath = RepoPath.create(tempDir);
+
+      await testService("0.1.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+      });
+
+      assertEquals((await Deno.lstat(linkPath)).isSymlink, true);
+      assert((await readIfExists(join(tempDir, CLAUDE_RULES_PATH))) !== null);
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "RepoService.init with claude never creates the target of a dangling rules-file symlink",
+  // Creating symlinks on Windows needs a privilege CI runners lack.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const repoDir = join(tempDir, "repo");
+      const outsideDir = join(tempDir, "outside");
+      await ensureDir(join(repoDir, ".claude", "rules"));
+      await ensureDir(outsideDir);
+      const outsideTarget = join(outsideDir, "planted.md");
+      const linkPath = join(repoDir, CLAUDE_RULES_PATH);
+      await Deno.symlink(outsideTarget, linkPath, { type: "file" });
+      await Deno.writeTextFile(join(repoDir, "AGENTS.md"), USER_AGENTS_MD);
+      const repoPath = RepoPath.create(repoDir);
+
+      await testService("0.1.0", tempDir).init(repoPath, {
+        tools: ["claude"],
+      });
+
+      assertEquals(await readIfExists(outsideTarget), null);
+      assertEquals((await Deno.lstat(linkPath)).isSymlink, false);
+      assertStringIncludes(
+        await Deno.readTextFile(linkPath),
+        "This repository is managed with [swamp]",
+      );
+    });
+  },
+});

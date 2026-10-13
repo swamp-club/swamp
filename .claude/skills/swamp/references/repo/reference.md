@@ -126,7 +126,10 @@ Use `swamp agent list` to see the current mode for each custom tool.
 - `.swamp/` directory structure for internal storage
 - `extensions/models/` directory for custom behavior types
 - `.swamp.yaml` configuration file with version metadata
-- `CLAUDE.md` with agent instructions and skill references
+- `CLAUDE.md` with agent instructions and skill references (with
+  `--tool claude`; in a repo that already keeps its own rules in `AGENTS.md`,
+  swamp writes `.claude/rules/swamp.md` instead, so Claude Code still reads
+  `AGENTS.md`)
 - `.gitignore` entries for `.swamp/` and `.swamp-sources.yaml`
 
 ### Verify the audit integration

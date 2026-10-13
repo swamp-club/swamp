@@ -46,7 +46,13 @@ import {
   removeSupersededSkills,
 } from "./superseded_skills.ts";
 import { assertStorableServerAddress } from "./server_address.ts";
-import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
+import {
+  assertPathContained,
+  CLAUDE_RULES_FILE,
+  type ClaudeInstructionsState,
+  claudeToolConfigFor,
+  type ToolConfig,
+} from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import {
   createDefaultVaultConfig,
@@ -586,8 +592,11 @@ export class RepoService {
     const resolvedConfigs: ToolConfig[] = [];
     let instructionsFileCreated = false;
     let settingsCreated = false;
+    const claudeState = await this.readClaudeInstructionsState(repoPath);
     for (const tool of tools) {
-      const config = await resolver.resolve(tool);
+      const config = tool === "claude"
+        ? claudeToolConfigFor(claudeState)
+        : await resolver.resolve(tool);
       resolvedConfigs.push(config);
       const r = await this.applyToolScaffolding(
         repoPath,
@@ -741,8 +750,11 @@ export class RepoService {
     // .swamp.yaml is always written during upgrade
     changedFiles.push(".swamp.yaml");
 
+    const claudeState = await this.readClaudeInstructionsState(repoPath);
     for (const tool of tools) {
-      const config = await resolver.resolve(tool);
+      const config = tool === "claude"
+        ? claudeToolConfigFor(claudeState)
+        : await resolver.resolve(tool);
       resolvedConfigs.push(config);
       const r = await this.applyToolScaffolding(repoPath, config, true);
       instructionsUpdated = instructionsUpdated || r.instructionsFileChanged;
@@ -1206,6 +1218,72 @@ export class RepoService {
   }
 
   /**
+   * Reads the instruction files that decide where the claude tool writes
+   * swamp's instructions. Taken once, before any tool writes, so the choice
+   * does not depend on the order tools are listed in.
+   */
+  private async readClaudeInstructionsState(
+    repoPath: RepoPath,
+  ): Promise<ClaudeInstructionsState> {
+    const path = (relative: string) => join(repoPath.value, relative);
+    // A file that can't be read or stat'ed (a directory, no permission)
+    // counts as absent, so the choice falls back to today's CLAUDE.md rather
+    // than failing here.
+    const readIfExists = async (relative: string): Promise<string | null> => {
+      try {
+        return await Deno.readTextFile(path(relative));
+      } catch {
+        return null;
+      }
+    };
+    const lstatIfExists = async (
+      relative: string,
+    ): Promise<Deno.FileInfo | null> => {
+      try {
+        return await Deno.lstat(path(relative));
+      } catch {
+        return null;
+      }
+    };
+    const claudeMd = await readIfExists("CLAUDE.md");
+    const agentsMd = await readIfExists("AGENTS.md");
+    // The marked section body contains the legacy signature too, so only
+    // unmarked content counts as legacy.
+    const isLegacy = (content: string) =>
+      !content.includes(INSTRUCTIONS_SECTION_BEGIN) &&
+      this.hasLegacyInstructionsContent(content);
+    return {
+      rulesFileExists: (await lstatIfExists(CLAUDE_RULES_FILE)) !== null,
+      claudeMdExists: claudeMd !== null,
+      claudeMdIsSymlink: (await lstatIfExists("CLAUDE.md"))?.isSymlink ??
+        false,
+      claudeMdHasSwampSection: claudeMd !== null &&
+        (claudeMd.includes(INSTRUCTIONS_SECTION_BEGIN) || isLegacy(claudeMd)),
+      claudeMdHasUserContent: claudeMd !== null &&
+        this.hasContentOutsideManagedSection(claudeMd),
+      agentsMdHasUserContent: agentsMd !== null && !isLegacy(agentsMd) &&
+        this.hasContentOutsideManagedSection(agentsMd),
+    };
+  }
+
+  /**
+   * True when the file has non-whitespace text outside a complete swamp
+   * managed section. A file with legacy (unmarked) swamp content or an
+   * orphaned marker counts as having user content, so callers stay on the
+   * conservative path.
+   */
+  private hasContentOutsideManagedSection(content: string): boolean {
+    const begin = content.indexOf(INSTRUCTIONS_SECTION_BEGIN);
+    const end = content.indexOf(INSTRUCTIONS_SECTION_END);
+    if (begin === -1 || end === -1 || end < begin) {
+      return content.trim().length > 0;
+    }
+    const outside = content.substring(0, begin) +
+      content.substring(end + INSTRUCTIONS_SECTION_END.length);
+    return outside.trim().length > 0;
+  }
+
+  /**
    * Creates the tool-appropriate instructions file if it doesn't already exist.
    * For shared-file tools, creates with section markers from the start.
    */
@@ -1220,7 +1298,9 @@ export class RepoService {
       return this.ensureInstructionsSection(filePath, config);
     }
 
-    // For tool-specific files, only create if missing
+    // For tool-specific files, only create if missing. The atomic write
+    // replaces a dangling symlink instead of creating its target, which may
+    // sit outside the repo.
     try {
       await Deno.stat(filePath);
       return false;
@@ -1228,7 +1308,7 @@ export class RepoService {
       if (error instanceof Deno.errors.NotFound) {
         const parentDir = join(filePath, "..");
         await ensureDir(parentDir);
-        await Deno.writeTextFile(
+        await atomicWriteTextFile(
           filePath,
           this.generateInstructionsContent(config),
         );
@@ -1512,7 +1592,8 @@ directly). Every \`swamp model …\` spelling remains supported.
    */
   private buildInstructionsSection(config: ToolConfig): string {
     const body = this.generateInstructionsBody(config);
-    return INSTRUCTIONS_SECTION_BEGIN + "\n" + body +
+    const agentsImport = config.importAgentsMd ? "\n@AGENTS.md\n" : "";
+    return INSTRUCTIONS_SECTION_BEGIN + "\n" + body + agentsImport +
       INSTRUCTIONS_SECTION_END;
   }
 

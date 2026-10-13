@@ -23,6 +23,9 @@ import {
   buildInstructionsChoices,
   buildSkillsDirChoices,
   builtInToolConfig,
+  CLAUDE_RULES_FILE,
+  type ClaudeInstructionsState,
+  claudeToolConfigFor,
   customToolConfig,
   deriveDefaults,
   detectToolConfig,
@@ -407,4 +410,107 @@ Deno.test("assertPathContained: rejects path traversal", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+const noFiles: ClaudeInstructionsState = {
+  rulesFileExists: false,
+  claudeMdExists: false,
+  claudeMdIsSymlink: false,
+  claudeMdHasSwampSection: false,
+  claudeMdHasUserContent: false,
+  agentsMdHasUserContent: false,
+};
+
+function claudeTarget(state: Partial<ClaudeInstructionsState>) {
+  const config = claudeToolConfigFor({ ...noFiles, ...state });
+  return {
+    file: config.instructionsFile,
+    mode: config.instructionsMode,
+    importAgentsMd: config.importAgentsMd ?? false,
+  };
+}
+
+const claudeMd = { file: "CLAUDE.md", mode: "shared", importAgentsMd: false };
+const rulesFile = {
+  file: CLAUDE_RULES_FILE,
+  mode: "owned",
+  importAgentsMd: false,
+};
+
+Deno.test("claudeToolConfigFor: a repo without instruction files gets CLAUDE.md", () => {
+  assertEquals(claudeTarget({}), claudeMd);
+  assertEquals(
+    claudeToolConfigFor(noFiles),
+    builtInToolConfig("claude"),
+  );
+});
+
+Deno.test("claudeToolConfigFor: a repo's own AGENTS.md without CLAUDE.md gets the rules file", () => {
+  assertEquals(claudeTarget({ agentsMdHasUserContent: true }), rulesFile);
+});
+
+Deno.test("claudeToolConfigFor: an existing rules file is kept whatever else the repo has", () => {
+  assertEquals(claudeTarget({ rulesFileExists: true }), rulesFile);
+  assertEquals(
+    claudeTarget({
+      rulesFileExists: true,
+      claudeMdExists: true,
+      claudeMdHasSwampSection: true,
+      agentsMdHasUserContent: true,
+    }),
+    rulesFile,
+  );
+});
+
+Deno.test("claudeToolConfigFor: a symlinked CLAUDE.md is never written through", () => {
+  assertEquals(claudeTarget({ claudeMdIsSymlink: true }), rulesFile);
+  assertEquals(
+    claudeTarget({
+      claudeMdIsSymlink: true,
+      claudeMdExists: true,
+      claudeMdHasSwampSection: true,
+      agentsMdHasUserContent: true,
+    }),
+    rulesFile,
+  );
+});
+
+Deno.test("claudeToolConfigFor: a CLAUDE.md holding only swamp's section imports the repo's AGENTS.md", () => {
+  assertEquals(
+    claudeTarget({
+      claudeMdExists: true,
+      claudeMdHasSwampSection: true,
+      agentsMdHasUserContent: true,
+    }),
+    { ...claudeMd, importAgentsMd: true },
+  );
+});
+
+Deno.test("claudeToolConfigFor: CLAUDE.md with swamp's section keeps it and imports nothing else", () => {
+  // No AGENTS.md content to import.
+  assertEquals(
+    claudeTarget({ claudeMdExists: true, claudeMdHasSwampSection: true }),
+    claudeMd,
+  );
+  // The user wrote their own CLAUDE.md; what it loads is their choice.
+  assertEquals(
+    claudeTarget({
+      claudeMdExists: true,
+      claudeMdHasSwampSection: true,
+      claudeMdHasUserContent: true,
+      agentsMdHasUserContent: true,
+    }),
+    claudeMd,
+  );
+});
+
+Deno.test("claudeToolConfigFor: a user's own CLAUDE.md gets swamp's section as before", () => {
+  assertEquals(
+    claudeTarget({
+      claudeMdExists: true,
+      claudeMdHasUserContent: true,
+      agentsMdHasUserContent: true,
+    }),
+    claudeMd,
+  );
 });
