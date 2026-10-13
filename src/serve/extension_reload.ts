@@ -83,6 +83,8 @@ import { transitionalInstalledNames } from "../infrastructure/persistence/instal
 import { isExtensionBackedDatastore } from "../infrastructure/persistence/managed_config_lockfile.ts";
 import {
   capturePulledTypes,
+  isBuiltInType,
+  isPulledTypeKind,
   type PulledTypeRef,
   type PulledTypeSnapshot,
   unregisterPulledType,
@@ -324,7 +326,10 @@ async function sweepRemovedPulledExtensions(args: {
         if (unregistered.has(key)) continue;
         // Another extension or a local source still provides this type.
         if (catalog.findAllByType(ref.type, ref.kind).length > 0) continue;
-        unregisterPulledType({ kind: ref.kind, type: ref.type });
+        // A built-in type stays registered (swamp-club#2746).
+        if (!unregisterPulledType({ kind: ref.kind, type: ref.type })) {
+          continue;
+        }
         unregistered.add(key);
       }
       await detachRemovedAddOns({
@@ -636,6 +641,20 @@ export async function reloadPulledExtensions(
       for (const row of rows) {
         if (!row.type_normalized) continue;
         try {
+          // A pulled type never replaces a built-in of the same name: the
+          // invalidate below would drop the built-in, and removing the
+          // extension later would leave nothing (swamp-club#2746). Inside
+          // the try, so a malformed row type fails only this row.
+          if (
+            isPulledTypeKind(row.kind) &&
+            isBuiltInType({ kind: row.kind, type: row.type_normalized })
+          ) {
+            logger.warn(
+              "Hot-reload: extension {extension} declares built-in {kind} type {type}, keeping the built-in",
+              { extension: name, kind: row.kind, type: row.type_normalized },
+            );
+            continue;
+          }
           const kind = row.kind;
 
           if (kind === "model") {

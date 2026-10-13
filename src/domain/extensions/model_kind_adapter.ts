@@ -894,6 +894,9 @@ export const modelKindAdapter: KindAdapter = {
   },
 
   updateSourceFingerprint(typeNormalized: string, fingerprint: string): void {
+    // A pulled source typed like a built-in did not produce the built-in's
+    // code, so its fingerprint must not reach provenance (swamp-club#2746).
+    if (modelRegistry.isBuiltIn(typeNormalized)) return;
     const modelDef = modelRegistry.get(typeNormalized);
     if (modelDef) {
       modelDef.sourceFingerprint = fingerprint;
