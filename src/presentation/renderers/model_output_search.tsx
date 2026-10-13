@@ -31,6 +31,7 @@ import type { SearchRenderer } from "./search_renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderInteractivePicker } from "./components/search_picker.tsx";
+import type { CommandSurface } from "../command_surface.ts";
 
 /**
  * Filters outputs by a query string.
@@ -114,12 +115,40 @@ class JsonModelOutputSearchRenderer implements ModelOutputSearchRenderer {
   }
 }
 
+/** What the interactive picker calls its items and itself. */
+export interface OutputSearchPickerLabels {
+  readonly itemLabel: string;
+  readonly commandName: string | undefined;
+}
+
+/**
+ * The picker labels for `command` (`output search` or `history search`) on
+ * `surface` (swamp-club#3409). Both legacy pickers, and `behavior output
+ * search`, keep the labels they always had: items called "outputs" and the
+ * default title built from them ("outputs search"). `behavior history
+ * search` lists method runs, so it calls them runs under its own name.
+ */
+export function outputSearchPickerLabels(
+  surface: CommandSurface,
+  command: "output" | "history",
+): OutputSearchPickerLabels {
+  if (surface === "behavior" && command === "history") {
+    return { itemLabel: "runs", commandName: "history search" };
+  }
+  return { itemLabel: "outputs", commandName: undefined };
+}
+
 class InkModelOutputSearchRenderer implements ModelOutputSearchRenderer {
   private _selected: ModelOutputSearchItem | undefined;
   private readonly fetchPreview: OutputPreviewFetcher | undefined;
+  private readonly labels: OutputSearchPickerLabels;
 
-  constructor(fetchPreview?: OutputPreviewFetcher) {
+  constructor(
+    fetchPreview: OutputPreviewFetcher | undefined,
+    labels: OutputSearchPickerLabels,
+  ) {
     this.fetchPreview = fetchPreview;
+    this.labels = labels;
   }
 
   selectedItem(): ModelOutputSearchItem | undefined {
@@ -143,10 +172,11 @@ class InkModelOutputSearchRenderer implements ModelOutputSearchRenderer {
           renderOutputResultLine,
           renderOutputPreview,
           renderOutputScrollback,
-          "outputs",
+          this.labels.itemLabel,
           {
             fetchPreview: this.fetchPreview,
             previewKeyFn: (item) => item.id,
+            commandName: this.labels.commandName,
           },
         );
         if (result) {
@@ -160,15 +190,28 @@ class InkModelOutputSearchRenderer implements ModelOutputSearchRenderer {
   }
 }
 
+/**
+ * Creates an output search renderer for the given output mode.
+ *
+ * @param mode - Output mode (log for interactive, json for machine-readable).
+ * @param fetchPreview - Optional callback to fetch output detail for the
+ *   preview pane.
+ * @param labels - What the interactive picker calls its items and itself;
+ *   defaults to the legacy labels. JSON output does not use them.
+ */
 export function createModelOutputSearchRenderer(
   mode: OutputMode,
   fetchPreview?: OutputPreviewFetcher,
+  labels: OutputSearchPickerLabels = outputSearchPickerLabels(
+    "model",
+    "output",
+  ),
 ): ModelOutputSearchRenderer {
   switch (mode) {
     case "json":
       return new JsonModelOutputSearchRenderer();
     case "log":
-      return new InkModelOutputSearchRenderer(fetchPreview);
+      return new InkModelOutputSearchRenderer(fetchPreview, labels);
   }
 }
 

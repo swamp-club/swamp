@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  outputArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -127,7 +128,7 @@ export function createModelMethodHistoryGetCommand(syntax: CommandSyntax) {
         `Show latest run for a ${syntax.surface}`,
         `${syntax.invocation} my-server`,
       )
-      .arguments("<output_id_or_model_name:string>")
+      .arguments(`<${outputArgument(syntax.surface)}:string>`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

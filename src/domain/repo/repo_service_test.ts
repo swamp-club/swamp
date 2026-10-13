@@ -515,7 +515,7 @@ Deno.test("RepoService.init creates settings.local.json for claude", async () =>
   });
 });
 
-Deno.test("RepoService.init: each behavior permission sits right after its legacy model twin", async () => {
+Deno.test("RepoService.init: each behavior permission sits right after its legacy model twin, then its behaviour spelling", async () => {
   await withTempDir(async (tempDir) => {
     const service = testService("0.1.0", tempDir);
     const repoPath = RepoPath.create(tempDir);
@@ -527,42 +527,52 @@ Deno.test("RepoService.init: each behavior permission sits right after its legac
     const allow: string[] = settings.permissions.allow;
 
     const twins: Array<[string, string]> = [
-      ["model type search", "behavior type search"],
-      ["model type describe", "behavior type describe"],
-      ["model search", "behavior search"],
-      ["model create", "behavior create"],
-      ["model edit", "behavior edit"],
-      ["model delete", "behavior delete"],
-      ["model get", "behavior get"],
-      ["model validate", "behavior validate"],
-      ["model output", "behavior output"],
-      ["model method history", "behavior history"],
+      ["model type search", "type search"],
+      ["model type describe", "type describe"],
+      ["model search", "search"],
+      ["model create", "create"],
+      ["model edit", "edit"],
+      ["model delete", "delete"],
+      ["model get", "get"],
+      ["model validate", "validate"],
+      ["model output", "output"],
+      ["model method history", "history"],
     ];
     for (const [legacy, preferred] of twins) {
       const legacyIndex = allow.indexOf(`Bash(swamp ${legacy}:*)`);
       assertEquals(legacyIndex >= 0, true, `missing legacy entry: ${legacy}`);
       assertEquals(
         allow[legacyIndex + 1],
-        `Bash(swamp ${preferred}:*)`,
-        `expected ${preferred} right after ${legacy}`,
+        `Bash(swamp behavior ${preferred}:*)`,
+        `expected behavior ${preferred} right after ${legacy}`,
+      );
+      assertEquals(
+        allow[legacyIndex + 2],
+        `Bash(swamp behaviour ${preferred}:*)`,
+        `expected behaviour ${preferred} right after behavior ${preferred}`,
       );
     }
 
     // run, cancel and evaluate were never pre-approved, and list is an alias of
-    // search that the legacy list does not approve either; all stay unapproved.
-    for (const command of ["run", "cancel", "evaluate", "list"]) {
+    // search that the legacy list does not approve either; all stay unapproved
+    // under both spellings.
+    for (const group of ["behavior", "behaviour"]) {
+      for (const command of ["run", "cancel", "evaluate", "list"]) {
+        assertEquals(
+          allow.some((entry) =>
+            entry.startsWith(`Bash(swamp ${group} ${command}`)
+          ),
+          false,
+          `${group} ${command} must not be pre-approved`,
+        );
+      }
       assertEquals(
-        allow.some((entry) =>
-          entry.startsWith(`Bash(swamp behavior ${command}`)
-        ),
-        false,
-        `behavior ${command} must not be pre-approved`,
+        allow.filter((entry) => entry.startsWith(`Bash(swamp ${group} `))
+          .length,
+        twins.length,
+        group,
       );
     }
-    assertEquals(
-      allow.filter((entry) => entry.startsWith("Bash(swamp behavior ")).length,
-      twins.length,
-    );
   });
 });
 

@@ -523,8 +523,8 @@ const PINNED: ReadonlyArray<
     calls: [
       "lines.push(...formatValidationLines(data.validations))",
       "lines.push(...formatValidationLines(model.validations))",
-      "lines.push(...formatWarningLines(data.warnings))",
-      "lines.push(...formatWarningLines(model.warnings))",
+      "lines.push(...formatWarningLines(data.warnings, this.surface))",
+      "lines.push(...formatWarningLines(model.warnings, this.surface))",
     ],
   },
   {

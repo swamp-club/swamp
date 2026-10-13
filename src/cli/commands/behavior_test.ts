@@ -52,43 +52,46 @@ function at(group: AnyCommand, path: string): AnyCommand {
   return command;
 }
 
-/**
- * Each `swamp behavior` command and the path of its legacy twin under
- * `swamp model`. `run`, `describe` and `history` come from under `model
- * method`; there is no `method` level under `behavior`.
- */
-const TWINS: ReadonlyArray<readonly [behavior: string, model: string]> = [
-  ["run", "method run"],
-  ["create", "create"],
-  ["get", "get"],
-  ["edit", "edit"],
-  ["delete", "delete"],
-  ["validate", "validate"],
-  ["evaluate", "evaluate"],
-  ["search", "search"],
-  ["cancel", "cancel"],
-  ["describe", "method describe"],
-  ["history", "method history"],
-  ["history get", "method history get"],
-  ["history search", "method history search"],
-  ["history logs", "method history logs"],
-  ["output", "output"],
-  ["output get", "output get"],
-  ["output search", "output search"],
-  ["output logs", "output logs"],
-  ["output data", "output data"],
-  ["type", "type"],
-  ["type describe", "type describe"],
-  ["type search", "type search"],
-];
-
 const behaviorTree = behaviorCommand as unknown as AnyCommand;
 const modelTree = modelCommand as unknown as AnyCommand;
 
-function argumentSignature(cmd: AnyCommand): string[] {
+/** Every command path under `group`, as words after the group, depth first. */
+function commandPaths(group: AnyCommand, prefix = ""): string[] {
+  return group.getCommands(true).flatMap((child: AnyCommand) => {
+    const path = `${prefix}${child.getName()}`;
+    return [path, ...commandPaths(child, `${path} `)];
+  });
+}
+
+/** The `swamp behavior` path a `swamp model` path is the legacy twin of. */
+function behaviorPathOf(modelPath: string): string {
+  return modelPath.replace(/^method /, "");
+}
+
+/**
+ * Each `swamp behavior` command and the path of its legacy twin under
+ * `swamp model`, derived from the two trees rather than listed by hand, so a
+ * command added to one tree only cannot slip past the twin checks. `run`,
+ * `describe` and `history` come from under `model method`; there is no
+ * `method` level under `behavior`.
+ */
+const TWINS: ReadonlyArray<readonly [behavior: string, model: string]> =
+  commandPaths(modelTree)
+    .filter((path) => path !== "method")
+    .map((path) => [behaviorPathOf(path), path] as const);
+
+/**
+ * A command's declared arguments. Argument names follow the spelling
+ * (swamp-club#3409), so with `asBehavior` a legacy name is read with
+ * `model` swapped for `behavior` before it is compared.
+ */
+function argumentSignature(cmd: AnyCommand, asBehavior = false): string[] {
   return cmd.getArguments().map((
     arg: { name: string; type: string; optional?: boolean },
-  ) => `${arg.name}:${arg.type}:${arg.optional ? "optional" : "required"}`);
+  ) => {
+    const name = asBehavior ? arg.name.replace("model", "behavior") : arg.name;
+    return `${name}:${arg.type}:${arg.optional ? "optional" : "required"}`;
+  });
 }
 
 function optionFlags(cmd: AnyCommand): string[] {
@@ -141,15 +144,31 @@ Deno.test("behaviorCommand: has the full behavior command set and no method leve
   assertStrictEquals(behaviorCommand.getCommand("run"), behaviorRunCommand);
 });
 
+Deno.test("behavior commands: the two trees have the same commands, both ways", () => {
+  const fromModel = TWINS.map(([behaviorPath]) => behaviorPath);
+  const fromBehavior = commandPaths(behaviorTree);
+  assertEquals(fromModel.length, new Set(fromModel).size);
+  for (const path of fromModel) {
+    assert(fromBehavior.includes(path), `model-only command: ${path}`);
+  }
+  for (const path of fromBehavior) {
+    assert(fromModel.includes(path), `behavior-only command: ${path}`);
+  }
+  assertEquals(new Set(fromModel), new Set(fromBehavior));
+});
+
 Deno.test("behavior commands: declare the same arguments, options and aliases as their model twins", () => {
   for (const [behaviorPath, modelPath] of TWINS) {
     const preferred = at(behaviorTree, behaviorPath);
     const legacy = at(modelTree, modelPath);
     assertEquals(
       argumentSignature(preferred),
-      argumentSignature(legacy),
+      argumentSignature(legacy, true),
       behaviorPath,
     );
+    for (const { name } of preferred.getArguments()) {
+      assertEquals(name.includes("model"), false, `${behaviorPath}: ${name}`);
+    }
     assertEquals(optionFlags(preferred), optionFlags(legacy), behaviorPath);
     assertEquals(preferred.getAliases(), legacy.getAliases(), behaviorPath);
     assertEquals(
@@ -335,7 +354,7 @@ Deno.test("behaviorCommand: the CLI schema lists the full subtree", () => {
   assertEquals(run !== undefined, true);
   assertEquals(
     run!.arguments.map((arg) => arg.name),
-    ["model_or_type", "method_name", "definition_name"],
+    ["behavior_or_type", "method_name", "definition_name"],
   );
   const flags = run!.options.flatMap((opt) => opt.flags);
   for (

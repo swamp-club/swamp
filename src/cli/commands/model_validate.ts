@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  definitionArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -80,7 +81,7 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
         "Filter by label",
         `${syntax.invocation} --label production`,
       )
-      .arguments("[model_id_or_name:string]")
+      .arguments(`[${definitionArgument(syntax.surface)}:string]`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

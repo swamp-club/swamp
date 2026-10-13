@@ -53,12 +53,12 @@ export {
 type AnyOptions = any;
 
 /**
- * The legacy text of the `swamp model type describe` help examples, which have
- * always read `swamp type describe`. Kept verbatim so the legacy surface does not
- * change; a factory built from another syntax renders that syntax instead.
+ * The legacy spelling: `swamp model type describe`. Its help examples once
+ * read `swamp type describe`, a spelling that never ran; they now name the
+ * command a user actually types (swamp-club#3409).
  */
 export const MODEL_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
-  invocation: "swamp type describe",
+  invocation: "swamp model type describe",
   surface: "model",
   preferred: "swamp behavior type describe aws-ec2",
 };

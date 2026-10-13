@@ -677,7 +677,19 @@ Deno.test("ConsoleModelMethodRunRenderer: verbose renders the frame of a report 
 
 // --- Surfaces (swamp-club#3331) ---
 
-function envVarWarning(surface?: "model" | "behavior"): string[] {
+/**
+ * A copy of the env-var warning libswamp's run generator yields
+ * (src/libswamp/models/run.ts does not export it); the same text as
+ * ValidationWarning.envVarUsage, which command_surface_test.ts checks the
+ * noun swap against directly.
+ */
+const RUN_ENV_VAR_WARNING =
+  "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.";
+
+function envVarWarning(
+  surface?: "model" | "behavior",
+  message = "Data stored under this model will vary.",
+): string[] {
   const renderer = createModelMethodRunRenderer("log", {
     modelName: "my-model",
     methodName: "run",
@@ -688,7 +700,7 @@ function envVarWarning(surface?: "model" | "behavior"): string[] {
       kind: "env_var_warning",
       modelName: "my-model",
       envVars: [{ path: "globalArguments.region", envVar: "AWS_REGION" }],
-      message: "Data stored under this model will vary.",
+      message,
     })
   );
 }
@@ -702,10 +714,26 @@ Deno.test("ConsoleModelMethodRunRenderer: the legacy env-var warning keeps its e
   assertEquals(envVarWarning("model"), envVarWarning());
 });
 
+Deno.test("ConsoleModelMethodRunRenderer: the legacy env-var warning keeps the full libswamp text", () => {
+  assertEquals(envVarWarning("model", RUN_ENV_VAR_WARNING), [
+    "    Warning   Environment variables detected in model definition",
+    "              globalArguments.region uses AWS_REGION",
+    `              ${RUN_ENV_VAR_WARNING}`,
+  ]);
+});
+
 Deno.test("ConsoleModelMethodRunRenderer: the behavior surface says behavior definition", () => {
   assertEquals(envVarWarning("behavior"), [
     "    Warning   Environment variables detected in behavior definition",
     "              globalArguments.region uses AWS_REGION",
-    "              Data stored under this model will vary.",
+    "              Data stored under this behavior will vary.",
+  ]);
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: the behavior surface words the libswamp warning for behaviors (swamp-club#3409)", () => {
+  assertEquals(envVarWarning("behavior", RUN_ENV_VAR_WARNING), [
+    "    Warning   Environment variables detected in behavior definition",
+    "              globalArguments.region uses AWS_REGION",
+    "              Data stored under this behavior will vary depending on these environment variables at runtime. Consider using separate behaviors per environment, or vault.get() for sensitive values.",
   ]);
 });

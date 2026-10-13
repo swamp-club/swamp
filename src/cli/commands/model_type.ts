@@ -76,8 +76,9 @@ export function createModelTypeCommand(
 }
 
 /**
- * Parent command for model type operations. Its subcommands keep their
- * legacy example text (`swamp type …`), so they are passed in.
+ * Parent command for model type operations. Its subcommands are the exported
+ * `typeDescribeCommand` and `typeSearchCommand` instances, so they are passed
+ * in rather than built fresh.
  */
 export const modelTypeCommand = createModelTypeCommand(MODEL_TYPE_SYNTAX, {
   describe: typeDescribeCommand,

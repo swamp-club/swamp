@@ -23,7 +23,11 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
-import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceMethodNoun,
+} from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -35,7 +39,10 @@ import {
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,
 } from "../../libswamp/models/output_search.ts";
-import { createModelOutputSearchRenderer } from "../../presentation/renderers/model_output_search.tsx";
+import {
+  createModelOutputSearchRenderer,
+  outputSearchPickerLabels,
+} from "../../presentation/renderers/model_output_search.tsx";
 import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
 import {
   createContext,
@@ -60,7 +67,9 @@ type AnyOptions = any;
 export async function modelMethodHistorySearchAction(
   options: AnyOptions,
   query?: string,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Promise<void> {
+  const labels = outputSearchPickerLabels(surface, "history");
   const ctx = createContext(options as GlobalOptions, [
     "model",
     "method",
@@ -85,6 +94,8 @@ export async function modelMethodHistorySearchAction(
     );
     const renderer = createModelOutputSearchRenderer(
       interactiveOutputMode(ctx),
+      undefined,
+      labels,
     );
     await consumeStream(
       (async function* () {
@@ -116,7 +127,11 @@ export async function modelMethodHistorySearchAction(
       ),
   };
 
-  const renderer = createModelOutputSearchRenderer(effectiveMode);
+  const renderer = createModelOutputSearchRenderer(
+    effectiveMode,
+    undefined,
+    labels,
+  );
   await consumeStream(
     modelOutputSearch(libCtx, deps, { query }),
     renderer.handlers(),
@@ -167,7 +182,9 @@ export function createModelMethodHistorySearchCommand(syntax: CommandSyntax) {
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
     syntax,
-  )).action(modelMethodHistorySearchAction);
+  )).action((options: AnyOptions, query?: string) =>
+    modelMethodHistorySearchAction(options, query, syntax.surface)
+  );
   return recordDefiningModule(command, import.meta.url);
 }
 

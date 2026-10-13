@@ -52,3 +52,21 @@ export function surfaceNounCapitalized(surface: CommandSurface): string {
 export function surfaceMethodNoun(surface: CommandSurface): string {
   return surface === "model" ? "model method" : "method";
 }
+
+/**
+ * The env-var warning `message` worded for `surface` (swamp-club#3409). The
+ * text comes from the application layer in model words; on the behavior
+ * surface the exact phrases "this model" and "separate models" read "this
+ * behavior" and "separate behaviors", so the rest of the sentence tracks
+ * whatever the application says. A message without those phrases is
+ * returned unchanged. JSON output always carries the original.
+ */
+export function envVarWarningMessage(
+  surface: CommandSurface,
+  message: string,
+): string {
+  if (surface === "model") return message;
+  return message
+    .replaceAll("this model", "this behavior")
+    .replaceAll("separate models", "separate behaviors");
+}

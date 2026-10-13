@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  outputArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -72,7 +73,7 @@ export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
         "Tail last 50 lines",
         `${syntax.invocation} abc123 --tail 50`,
       )
-      .arguments("<output_id_or_model_name:string>")
+      .arguments(`<${outputArgument(syntax.surface)}:string>`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

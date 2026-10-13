@@ -114,7 +114,7 @@ function buildContextSuggestions(
     const rest = hybrid === "method" && leaf !== "run" && trailing[0] === leaf
       ? trailing.slice(1)
       : trailing;
-    suggestions.push(hybridSuggestionFor(leaf, rest));
+    suggestions.push(hybridSuggestionFor(leaf, rest, parentName));
     return suggestions;
   }
 
@@ -265,20 +265,30 @@ function methodLeaf(word: string | undefined): HybridLeaf {
   return word === "describe" || word === "history" ? word : "run";
 }
 
-/** The behavior form of a hybrid invocation, filled from the positionals. */
-function hybridSuggestionFor(leaf: HybridLeaf, rest: string[]): string {
+/**
+ * The behavior form of a hybrid invocation, filled from the positionals. A
+ * positional the user left out is shown as a placeholder named in the words
+ * of the tree they typed in: `<behavior>` under `behavior`, `<model>` under
+ * `model` (swamp-club#3409).
+ */
+function hybridSuggestionFor(
+  leaf: HybridLeaf,
+  rest: string[],
+  parentName: string,
+): string {
+  const placeholder = parentName === "behavior" ? "<behavior>" : "<model>";
   switch (leaf) {
     case "run": {
       const args = rest[0] === "run" ? rest.slice(1) : rest;
-      return runSuggestionFor(args[0] ?? "<model>", args.slice(1));
+      return runSuggestionFor(args[0] ?? placeholder, args.slice(1));
     }
     case "describe":
-      return `swamp behavior describe ${rest[0] ?? "<model>"} ${
+      return `swamp behavior describe ${rest[0] ?? placeholder} ${
         rest[1] ?? "<method>"
       }`;
     case "history":
       return `swamp behavior history ${
-        rest.length > 0 ? rest.join(" ") : "<model>"
+        rest.length > 0 ? rest.join(" ") : placeholder
       }`;
   }
 }

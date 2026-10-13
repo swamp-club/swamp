@@ -247,7 +247,7 @@ Deno.test("buildUnknownCommandMessage - run under model suggests behavior run wi
 Deno.test("buildUnknownCommandMessage - the hybrid without raw args falls back to placeholders", () => {
   const cmd = buildCommand("behavior", ["run"]);
   const msg = buildUnknownCommandMessage("method", cmd);
-  assertStringIncludes(msg, "swamp behavior run <model> <method>");
+  assertStringIncludes(msg, "swamp behavior run <behavior> <method>");
 });
 
 const UNKNOWN_INPUT = 'Unknown option "--input".';
@@ -475,7 +475,7 @@ Deno.test("buildUnknownCommandMessage - behavior method describe suggests behavi
     "method",
     "describe",
   ]);
-  assertStringIncludes(bare, "swamp behavior describe <model> <method>");
+  assertStringIncludes(bare, "swamp behavior describe <behavior> <method>");
 });
 
 Deno.test("buildUnknownCommandMessage - behavior method history suggests behavior history (swamp-club#3331)", () => {

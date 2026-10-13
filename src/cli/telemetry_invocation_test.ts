@@ -60,17 +60,28 @@ function buildTree() {
     .command("method", method);
 
   // `swamp behavior run` (alias `behaviour`) declares the run leaf's
-  // positionals directly under a two-word path (swamp-club#3265).
+  // positionals directly under a two-word path (swamp-club#3265). Its
+  // argument names follow the spelling (swamp-club#3409).
   const behavior = new Command()
     .alias("behaviour")
     .command(
       "run",
       new Command()
         .arguments(
-          "<model_or_type:string> <method_name:string> [definition_name:string]",
+          "<behavior_or_type:string> <method_name:string> [definition_name:string]",
         )
         .option("--input <value:string>", "input", { collect: true })
         .option("--token <token:string>", "token")
+        .action(noop),
+    )
+    .command(
+      "get",
+      new Command().arguments("<behavior_id_or_name:string>").action(noop),
+    )
+    .command(
+      "output",
+      new Command()
+        .arguments("<output_id_or_behavior_name:string>")
         .action(noop),
     );
 
@@ -199,6 +210,28 @@ Deno.test("resolveTelemetryInvocation: the behaviour alias resolves to the canon
   assertEquals(result.command, "behaviour");
   assertEquals(result.commandPath, ["behavior", "run"]);
   assertEquals(result.args, ["acme-prod", "deploy"]);
+});
+
+Deno.test("resolveTelemetryInvocation: behavior argument names are sent like their model twins (swamp-club#3409)", () => {
+  const get = resolveTelemetryInvocation(buildTree(), [
+    "behavior",
+    "get",
+    "acme-prod",
+  ]);
+  assertEquals(get.commandPath, ["behavior", "get"]);
+  assertEquals(get.args, ["acme-prod"]);
+  const output = resolveTelemetryInvocation(buildTree(), [
+    "behaviour",
+    "output",
+    "acme-prod",
+  ]);
+  assertEquals(output.commandPath, ["behavior", "output"]);
+  assertEquals(output.args, ["acme-prod"]);
+  assertEquals(
+    resolveTelemetryInvocation(buildTree(), ["model", "get", "acme-prod"])
+      .args,
+    ["acme-prod"],
+  );
 });
 
 Deno.test("resolveTelemetryInvocation: canonicalises aliases in commandPath only", () => {

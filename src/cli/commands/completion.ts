@@ -45,6 +45,12 @@ import { CompletionsCommand } from "@cliffy/command/completions";
  *
  * Note: Model and workflow name completions are directory-dependent.
  * They return names from the current working directory's swamp repository.
+ *
+ * Note: command aliases complete only in zsh. Cliffy 1.0.1's zsh generator
+ * reads each command's aliases, but its bash and fish generators do not, so
+ * `swamp behaviour …` (the British alias of `swamp behavior`) and alias
+ * words such as `list` complete in zsh only. Typing them works in every
+ * shell; behavior_cli_surface_test.ts pins this.
  */
 export const completionCommand = new CompletionsCommand()
   .example("Generate zsh completions", "swamp completions zsh")

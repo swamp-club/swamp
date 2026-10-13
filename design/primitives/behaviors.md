@@ -56,6 +56,13 @@ JSON output, exit codes, error messages and the serve requests are the same.
 Only the help text and the words in human-readable output differ: the
 behavior spelling says "behavior", and the legacy spelling keeps saying
 "model". Each legacy command's help ends with its preferred spelling.
+Argument names in help follow the spelling too: `behavior_id_or_name`,
+`behavior_or_type` and `output_id_or_behavior_name` under `swamp behavior`,
+`model_id_or_name`, `model_or_type` and `output_id_or_model_name` under
+`swamp model`. They are positional, so a script passes the same values.
+Shell completion offers the `behaviour` alias in zsh only: the bash and fish
+scripts Cliffy generates leave command aliases out, though typing
+`swamp behaviour` works in every shell.
 
 These names stay `model`, because existing repos, workflows, extensions and
 scripts depend on them:
