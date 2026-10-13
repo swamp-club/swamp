@@ -265,10 +265,12 @@ Serve has three auth modes (`src/domain/access/serve_auth_config.ts`):
   serve. `swamp serve check-config` finds such names before a deploy, and
   reports `restricted-commands` entries that are not server commands and
   `restricted-model-types` entries that name no type; it does not load the
-  behavior registry, so a misspelled bare type is reported only by serve at
-  startup. It also reads the grant files serve reads (`grants/`,
-  `--grants-file`, `--grants-dir`) through the loader startup uses: a file
-  startup would refuse fails the check, while a grant type spelling that
+  behavior registry, so it checks a bare type (no leading `@`) against the
+  built-in types only and warns about any other, including a bare extension
+  type, which should be written with its `@`. serve checks bare types against
+  every registered type at startup. It also reads the grant files serve reads
+  (`grants/`, `--grants-file`, `--grants-dir`) through the loader startup
+  uses: a file startup would refuse fails the check, while a grant type spelling that
   matches no type as written, or an external source absent where the check
   runs, is a warning. Stored grants are in the datastore, which it never
   reads; serve reports their spellings at startup. See

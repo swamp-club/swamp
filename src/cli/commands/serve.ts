@@ -2112,8 +2112,11 @@ const checkConfigCommand = new Command()
       "printing it. It also reads the grant files serve reads (grants/, --grants-file " +
       "and --grants-dir) and fails if serve would refuse them; grant type spellings " +
       "that match no type as written are warnings, and stored grants are reported " +
-      "by serve at startup. Apart from a --grants-file or --grants-dir outside the " +
-      "repository, it reads only this repository's files and never contacts the " +
+      "by serve at startup. A restricted-model-types entry without a leading " +
+      "'@' that is not a built-in type is a warning, since extension types are " +
+      "not loaded here: write an extension type with its '@'. Apart from a " +
+      "--grants-file or --grants-dir outside the repository, it reads only this " +
+      "repository's files and never contacts the " +
       "datastore, so it cannot tell whether a control plane was already moved to a " +
       "key (or to a different key), and vaults whose configs arrive through the " +
       "datastore must be synced first; serve checks both at startup. Nothing is " +
@@ -2189,14 +2192,16 @@ const checkConfigCommand = new Command()
     );
 
     // Restriction entries that cannot match, judged without loading the
-    // model registry so this command stays read-only and offline: whether a
-    // bare type is registered is reported by serve at startup instead
-    // (swamp-club#3132). An entry that names no type stops serve starting,
-    // and would stop buildServeAuthConfig below, so it is reported first.
+    // model registry so this command stays read-only and offline: a bare
+    // type is checked against the built-in types only, and serve checks it
+    // against every registered type at startup (swamp-club#3132). An entry
+    // that names no type stops serve starting, and would stop
+    // buildServeAuthConfig below, so it is reported first.
     const restrictionFindings = findIneffectiveRestrictions({
       restrictedModelTypes: merged.restrictedModelTypes,
       restrictedCommands: merged.restrictedCommands,
       requestTypes: new Set(serverRequestPayloadFields().keys()),
+      isBuiltInModelType: (type) => modelRegistry.isBuiltIn(type),
     });
     const restrictionWarnings = restrictionFindings.filter((finding) =>
       finding.reason !== "no-type"
