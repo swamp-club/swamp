@@ -945,10 +945,6 @@ function extractFiles(content: string): ExtractedFile[] {
 }
 
 /**
- * Extracts workflow metadata from a YAML file content.
- * Returns null if the content doesn't contain a valid workflow structure.
- */
-/**
  * A step's task in its stored form: a behavior-spelled task is rewritten to
  * `model_method` (swamp-club#3334). Metadata extraction is best-effort, so a
  * task the rewrite refuses is read as written.
@@ -965,6 +961,10 @@ function readTask(raw: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/**
+ * Extracts workflow metadata from a YAML file content.
+ * Returns null if the content doesn't contain a valid workflow structure.
+ */
 function extractWorkflowFromYaml(
   content: string,
   fileName: string,

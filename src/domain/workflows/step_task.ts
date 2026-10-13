@@ -46,16 +46,6 @@ const recordOrExpression = z.union([
 export const AssertSeveritySchema = z.enum(["low", "medium", "high"]);
 export type AssertSeverity = z.infer<typeof AssertSeveritySchema>;
 
-/**
- * Raw schema for step tasks (without backward compat preprocessing).
- *
- * A task can be either:
- * - A model method invocation (`type: "model_method"`)
- * - A nested workflow invocation (`type: "workflow"`)
- * - A manual approval gate (`type: "manual_approval"`)
- * - A CEL predicate assertion (`type: "assert"`)
- * - A wait for a JSON signal (`type: "wait_for_signal"`)
- */
 /** The `model_method` step task, as stored. */
 export const ModelMethodTaskRawSchema = z.object({
   type: z.literal("model_method"),
@@ -84,6 +74,16 @@ export const BehaviorTaskDocSchema = z.object({
   globalArgs: recordOrExpression,
 });
 
+/**
+ * Raw schema for step tasks (without backward compat preprocessing).
+ *
+ * A task can be either:
+ * - A model method invocation (`type: "model_method"`)
+ * - A nested workflow invocation (`type: "workflow"`)
+ * - A manual approval gate (`type: "manual_approval"`)
+ * - A CEL predicate assertion (`type: "assert"`)
+ * - A wait for a JSON signal (`type: "wait_for_signal"`)
+ */
 const StepTaskRawSchema = z.discriminatedUnion("type", [
   ModelMethodTaskRawSchema,
   z.object({
