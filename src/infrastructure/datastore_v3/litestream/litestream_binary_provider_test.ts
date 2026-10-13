@@ -42,6 +42,7 @@ import {
   type LitestreamFs,
   LitestreamIntegrityError,
   LitestreamUnavailableError,
+  modificationTimeMs,
 } from "./litestream_binary_provider.ts";
 
 const encoder = new TextEncoder();
@@ -525,5 +526,27 @@ Deno.test("LitestreamBinaryProvider.resolve: an unshipped platform is unavailabl
       LitestreamUnavailableError,
       "windows/aarch64",
     );
+  });
+});
+
+Deno.test("modificationTimeMs: a path removed by another process reads as gone, not an error", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, ".tmp-0.5.17-other");
+    await Deno.mkdir(path);
+    assert((await modificationTimeMs(path)) !== undefined);
+    await Deno.remove(path);
+    assertEquals(await modificationTimeMs(path), undefined);
+  });
+});
+
+Deno.test("denoLitestreamFs.listDirs: lists only directories with the prefix", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(join(dir, ".tmp-0.5.17-a"));
+    await Deno.mkdir(join(dir, "0.5.17"));
+    await Deno.writeFile(join(dir, ".tmp-file"), BINARY);
+    const names = (await denoLitestreamFs.listDirs(dir, ".tmp-")).map((d) =>
+      d.name
+    );
+    assertEquals(names, [".tmp-0.5.17-a"]);
   });
 });

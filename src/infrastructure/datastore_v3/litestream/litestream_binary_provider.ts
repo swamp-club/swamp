@@ -105,8 +105,14 @@ export interface LitestreamFs {
   rename(from: string, to: string): Promise<void>;
   remove(path: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
-  /** Directory names under `dir` with their modification time in ms. */
-  listDirs(dir: string): Promise<{ name: string; mtimeMs: number }[]>;
+  /**
+   * Directories under `dir` whose names start with `prefix`, with their
+   * modification time in ms. One removed while it is listed is left out.
+   */
+  listDirs(
+    dir: string,
+    prefix: string,
+  ): Promise<{ name: string; mtimeMs: number }[]>;
 }
 
 /** Unpacks an archive's whole contents into `destDir`. */
@@ -138,6 +144,18 @@ export interface ResolvedLitestreamBinary {
   readonly path: string;
   readonly version: string;
   readonly source: "override" | "cache" | "download";
+}
+
+/** A path's modification time in ms, or undefined once it is gone. */
+export async function modificationTimeMs(
+  path: string,
+): Promise<number | undefined> {
+  try {
+    return (await Deno.lstat(path)).mtime?.getTime() ?? 0;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
 }
 
 export const denoLitestreamFs: LitestreamFs = {
@@ -178,12 +196,14 @@ export const denoLitestreamFs: LitestreamFs = {
     // Windows has no mode bits; Deno.chmod throws there.
     if (Deno.build.os !== "windows") await Deno.chmod(path, mode);
   },
-  async listDirs(dir) {
+  async listDirs(dir, prefix) {
     const dirs: { name: string; mtimeMs: number }[] = [];
     for await (const entry of Deno.readDir(dir)) {
-      if (!entry.isDirectory) continue;
-      const info = await Deno.lstat(join(dir, entry.name));
-      dirs.push({ name: entry.name, mtimeMs: info.mtime?.getTime() ?? 0 });
+      if (!entry.isDirectory || !entry.name.startsWith(prefix)) continue;
+      // Another process may rename or remove its staging dir between the
+      // listing and the stat.
+      const mtimeMs = await modificationTimeMs(join(dir, entry.name));
+      if (mtimeMs !== undefined) dirs.push({ name: entry.name, mtimeMs });
     }
     return dirs;
   },
@@ -219,8 +239,7 @@ export const defaultLitestreamExtractor: LitestreamArchiveExtractor = async (
     ],
     stdout: "null",
     stderr: "piped",
-  }).output();
-  await Deno.remove(zipPath);
+  }).output().finally(() => Deno.remove(zipPath).catch(() => {}));
   if (!result.success) {
     throw new Error(
       `Expand-Archive failed: ${new TextDecoder().decode(result.stderr)}`,
@@ -531,8 +550,8 @@ export class LitestreamBinaryProvider {
   /** Removes staging directories a crashed process left behind. */
   private async removeAbandonedStaging(): Promise<void> {
     const cutoff = this.now() - ABANDONED_STAGING_MAX_AGE_MS;
-    for (const dir of await this.fs.listDirs(this.cacheRoot)) {
-      if (dir.name.startsWith(STAGING_PREFIX) && dir.mtimeMs < cutoff) {
+    for (const dir of await this.fs.listDirs(this.cacheRoot, STAGING_PREFIX)) {
+      if (dir.mtimeMs < cutoff) {
         await this.fs.remove(join(this.cacheRoot, dir.name));
       }
     }

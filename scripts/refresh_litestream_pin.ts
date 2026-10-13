@@ -260,6 +260,9 @@ export async function deriveDigests(
     const binary = name.endsWith(".zip")
       ? await readFromZip(archive, binaryName)
       : await readFromTarGz(archive, binaryName);
+    // The Dockerfile extracts LICENSE from the linux archives by name, so a
+    // release without it must fail here, not in the image build.
+    if (!name.endsWith(".zip")) await readFromTarGz(archive, "LICENSE");
     targets[target] = { archiveSha256, binarySha256: await computeChecksum(binary) };
     console.log(`${target}: archive ${archiveSha256}`);
   }
