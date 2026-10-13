@@ -23,6 +23,20 @@ import type { StartServerRecord } from "../persistence/start_server_record.ts";
 /** How long the ping to a recorded server may take. */
 export const START_PROBE_TIMEOUT_MS = 2_000;
 
+/**
+ * How long the ping may take on Windows. Windows retries a refused
+ * loopback connect for about two seconds before it reports the refusal, so
+ * the default timeout would turn every closed port into `unknown`.
+ */
+export const WINDOWS_START_PROBE_TIMEOUT_MS = 5_000;
+
+/** The ping timeout for a probe running on `os`. */
+export function startProbeTimeoutMs(os: typeof Deno.build.os): number {
+  return os === "windows"
+    ? WINDOWS_START_PROBE_TIMEOUT_MS
+    : START_PROBE_TIMEOUT_MS;
+}
+
 /** The header carrying the recorded token on a `/start/ping` request. */
 export const START_PING_TOKEN_HEADER = "x-swamp-start-token";
 
@@ -70,7 +84,9 @@ export async function probeStartServer(
   try {
     response = await fetch(`http://127.0.0.1:${record.port}/start/ping`, {
       headers: { [START_PING_TOKEN_HEADER]: record.token },
-      signal: AbortSignal.timeout(options.timeoutMs ?? START_PROBE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(
+        options.timeoutMs ?? startProbeTimeoutMs(os),
+      ),
     });
   } catch (error) {
     return isConnectionRefused(error) ? "dead" : "unknown";
