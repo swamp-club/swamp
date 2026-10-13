@@ -606,10 +606,34 @@ that builds a sync service or takes a datastore lock, each with the reason it
 is guarded.
 
 **For writers.** The S3 and GCS extensions move every root `_control/*` record
-into `<namespace>/_control/` on a namespaced push when a namespaced v2 index
-already exists (`migrateRootControlPlaneToNamespace`). A guarded binary
-refuses before it pushes, but a binary older than the guard does not, so a
-writer of the marker must leave no v2 namespaced index behind.
+into `<namespace>/_control/` on a namespaced push when the legacy namespaced
+index `<namespace>/.datastore-index.json` exists, which marks a namespace a
+solo datastore was upgraded to (`migrateRootControlPlaneToNamespace`; checked
+against `@swamp/s3-datastore` 2026.10.13.1 on ministack, swamp-club#3364). A
+push into a namespace that has only the current `_index/` layout moves
+nothing. A guarded binary refuses before it pushes, but a binary older than
+the guard does not, so a writer of the marker must leave no legacy namespaced
+index behind.
+
+**Datastore-wide writes** (swamp-club#3364). `datastoreControlPlaneStore()` may
+return a `WritableDatastoreControlPlaneStore`: the same root `_control/`, with
+`put`, `putIfAbsent` (create-only), `delete` and `list`, binding no namespace.
+The v3 writer lease keeps its records (`writer/`) there, because one
+`commits.db` has one writer whatever namespace a checkout syncs, so a
+v3-capable provider must return a writable one.
+`assertWritableDatastoreControlPlaneStoreConformance` in
+`@swamp-club/swamp-testing` checks one: the control-plane store contract
+(create-only races, a refused create leaving the record unchanged), the
+read-only contract above, the root scope of its writes, and that a record
+under `writer/` stays at the root through a namespaced push into a namespace
+upgraded from solo, the push that triggers `migrateRootControlPlaneToNamespace`.
+The suite cannot create that state itself, so the extension's test supplies
+`markNamespaceUpgradedFromSolo` (for S3 and GCS: write the legacy index); the
+case is skipped without it. Datastore-wide records must
+never move into a namespace: serve's own boot copy takes only the prefixes in
+`ROOT_CONTROL_PLANE_IMPORT_PREFIXES`, which exclude `writer/` and
+`datastore-format`, and the S3 and GCS extensions must skip `_control/writer/`
+in their move before a bucket can be v3.
 
 ### Serve Runtime Data Refresh
 
@@ -4160,10 +4184,15 @@ acquisition: every CLI write command takes a new one, and so would replicate
 to a new path with a full snapshot, while serve keeps one fence for its
 lifetime. D plans for that cost and garbage-collects old fence paths.
 
-**Buckets.** The lease runs over any `ControlPlaneStore` with `putIfAbsent`,
-and its tests run against the in-memory remote's control plane too. Binding
-it at the datastore root of an S3 or GCS bucket, outside every namespace, is
-swamp-club#3364.
+**Buckets.** The lease runs over any store with `putIfAbsent`
+(`v3WriterLease`), and its tests run against the in-memory remote's control
+planes too. On a datastore that is not a filesystem one, it binds at the
+datastore root, outside every namespace, through the provider's writable
+datastore-wide control plane: `datastoreWriterLeaseStore` returns it, and
+refuses a provider that offers none or only a read-only one (swamp-club#3364;
+see "Datastore-wide writes" in the format marker section). It is dormant until
+the Phase 4 bucket opt-in calls it; the S3 and GCS extensions' side is part
+G.
 
 ### Foreign Catalog Export/Pull (Phase 6)
 

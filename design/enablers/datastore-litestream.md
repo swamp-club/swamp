@@ -293,7 +293,8 @@ nothing stops two writers sharing a path.
 
 **Layout.** The replica is datastore-scoped. It sits under the bucket prefix,
 beside the datastore-scoped control plane (`datastoreControlPlaneStore()`,
-swamp-club#3191), not under a namespace:
+swamp-club#3191; writable for the lease since swamp-club#3364), not under a
+namespace:
 
 ```
 <prefix>/_control/datastore-format

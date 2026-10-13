@@ -274,16 +274,17 @@ assertEquals(marks, ["data/a", undefined]);
 Plain async functions that reject with an assertion error when an implementation
 breaks the contract; call them from your own `Deno.test`.
 
-| Suite                                   | Checks                                                   |
-| --------------------------------------- | -------------------------------------------------------- |
-| `assertDatastoreExportConformance`      | The `datastore` export's shape and config schema         |
-| `assertLockConformance`                 | Acquire, release, `withLock`, inspect and force-release  |
-| `assertLockTimeoutConformance`          | A contended acquire times out with a `LOCK_TIMEOUT` code |
-| `assertVerifierConformance`             | The health check result shape                            |
-| `assertSyncServiceConformance`          | The sync service's methods and `capabilities()` shape    |
-| `assertSyncServiceRoundTripConformance` | Sync behaviour between two caches on one backend         |
-| `assertControlPlaneStoreConformance`    | A `controlPlaneStore()`: round-trip, list, atomic create |
-| `assertStorageConformance`              | A `storage()`: the `storage/1` chunk contract            |
+| Suite                                                 | Checks                                                          |
+| ----------------------------------------------------- | --------------------------------------------------------------- |
+| `assertDatastoreExportConformance`                    | The `datastore` export's shape and config schema                |
+| `assertLockConformance`                               | Acquire, release, `withLock`, inspect and force-release         |
+| `assertLockTimeoutConformance`                        | A contended acquire times out with a `LOCK_TIMEOUT` code        |
+| `assertVerifierConformance`                           | The health check result shape                                   |
+| `assertSyncServiceConformance`                        | The sync service's methods and `capabilities()` shape           |
+| `assertSyncServiceRoundTripConformance`               | Sync behaviour between two caches on one backend                |
+| `assertControlPlaneStoreConformance`                  | A `controlPlaneStore()`: round-trip, list, atomic create        |
+| `assertWritableDatastoreControlPlaneStoreConformance` | A writable `datastoreControlPlaneStore()` at the datastore root |
+| `assertStorageConformance`                            | A `storage()`: the `storage/1` chunk contract                   |
 
 ### `assertControlPlaneStoreConformance`
 
@@ -304,6 +305,55 @@ refuses to start a workflow with a `wait_for_signal` step on a datastore whose
 store lacks it, or whose create is not atomic. Pass
 `{ requirePutIfAbsent: false }` to check a store without it.
 `createInMemoryControlPlaneStore()` is a conforming store for tests of your own.
+
+### `assertWritableDatastoreControlPlaneStoreConformance`
+
+For a provider whose `datastoreControlPlaneStore()` returns a
+`WritableDatastoreControlPlaneStore`, as a v3-capable datastore must: the v3
+writer lease keeps its records (`_control/writer/`) there, at the datastore root
+whatever namespace a checkout syncs. It runs the control-plane store checks and
+the read-only datastore-wide checks, then checks that writes stay at the root
+and that a `writer/` record survives a namespaced push. That last case needs
+`openNamespacedSyncFixture` (a fresh service and its cache directory) and
+`markNamespaceUpgradedFromSolo`, which puts the backend in the state where a
+namespaced push moves root `_control/` records into the namespace: for the S3
+and GCS extensions, a legacy `<prefix>/<namespace>/.datastore-index.json`
+existing. A push into a fresh namespace never triggers that move, so without
+both the case is skipped rather than passing without checking anything. Check
+`namespacedPushSkipped` in the result to make sure it ran. The move takes every
+root `_control/` record, so the case also skips when the root holds any record
+the suite did not write: run it against an empty bucket or prefix, never one a
+swamp uses. It syncs a fresh namespace of its own and leaves that namespace's
+index and the legacy index behind, and can leave its one data file.
+
+```typescript
+Deno.test("writable datastore-wide control-plane store conformance", async () => {
+  const openSyncFixture = async () => {
+    const cacheDir = await Deno.makeTempDir();
+    return {
+      service: provider.createSyncService!(repoDir, cacheDir),
+      cacheDir,
+    };
+  };
+  await assertWritableDatastoreControlPlaneStoreConformance({
+    openDatastoreStore: () =>
+      provider
+        .datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
+    openSyncService: async () => (await openSyncFixture()).service,
+    openNamespacedSyncFixture: openSyncFixture,
+    markNamespaceUpgradedFromSolo: (namespace) =>
+      putObject(
+        `${prefix}/${namespace}/.datastore-index.json`,
+        // An empty legacy (v1) index; the extensions parse it.
+        JSON.stringify({
+          version: 1,
+          lastPulled: new Date().toISOString(),
+          entries: {},
+        }),
+      ),
+  });
+});
+```
 
 ### `assertStorageConformance`
 

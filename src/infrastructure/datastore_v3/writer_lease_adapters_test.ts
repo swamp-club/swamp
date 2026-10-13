@@ -18,10 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * The writer lease over both of its stores (swamp-club#3359): a filesystem
+ * The writer lease over its stores (swamp-club#3359): a filesystem
  * datastore's control plane on a real temp directory, and the in-memory
- * remote's, standing in for S3, GCS and extension datastores. One case list
- * runs against each.
+ * remote's sync-service and datastore-wide stores, standing in for S3, GCS
+ * and extension datastores (swamp-club#3364). One case list runs against
+ * each.
  */
 
 import { assert, assertEquals, assertRejects } from "@std/assert";
@@ -35,6 +36,7 @@ import {
 } from "../../domain/datastore_v3/writer_lease.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import { isAtomicControlPlaneStore } from "../persistence/control_plane_signal_wait_store.ts";
+import { datastoreWriterLeaseStore } from "./datastore_writer_lease_store.ts";
 
 const TTL = 30_000;
 const START = Date.parse("2026-10-13T12:00:00.000Z");
@@ -105,6 +107,15 @@ const STORES: [string, OpenStore][] = [
     if (!isAtomicControlPlaneStore(store)) {
       throw new Error("the in-memory remote has no putIfAbsent");
     }
+    return Promise.resolve({ store, close: () => Promise.resolve() });
+  }],
+  ["datastore-wide store", () => {
+    // The provider's writable datastore-wide control plane, as the lease
+    // binds it on a bucket (swamp-club#3364).
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const store = datastoreWriterLeaseStore({
+      datastoreControlPlaneStore: () => remote.datastoreControlPlaneStore!(),
+    }, "@test/remote");
     return Promise.resolve({ store, close: () => Promise.resolve() });
   }],
 ];

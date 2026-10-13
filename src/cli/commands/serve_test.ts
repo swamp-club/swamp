@@ -26,6 +26,8 @@ import {
 } from "@std/assert";
 import { isAbsolute, join, resolve } from "@std/path";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { DATASTORE_FORMAT_MARKER_KEY } from "../../domain/datastore/datastore_format.ts";
+import { WRITER_LEASE_PREFIX } from "../../domain/datastore_v3/writer_lease.ts";
 import {
   assertOffLoopbackSecurity,
   authorizeCancelRequest,
@@ -42,6 +44,7 @@ import {
   readCancelRequestReason,
   readTlsFile,
   resolveServeStartupSettings,
+  ROOT_CONTROL_PLANE_IMPORT_PREFIXES,
   shouldWarnGroupRefreshIgnored,
   validateDashboardSessionOrigin,
   validateWebSocketOrigin,
@@ -67,6 +70,22 @@ await initializeLogging({});
 Deno.test("serveCommand module loads", async () => {
   const { serveCommand } = await import("./serve.ts");
   assertEquals(serveCommand.getName(), "serve");
+});
+
+Deno.test("ROOT_CONTROL_PLANE_IMPORT_PREFIXES: never copies a datastore-wide record into a namespace", () => {
+  for (
+    const key of [
+      `${WRITER_LEASE_PREFIX}fence-000000000001`,
+      DATASTORE_FORMAT_MARKER_KEY,
+    ]
+  ) {
+    for (const prefix of ROOT_CONTROL_PLANE_IMPORT_PREFIXES) {
+      assert(
+        !key.startsWith(prefix) && !prefix.startsWith(key),
+        `serve's root import prefix ${prefix} must not cover ${key}`,
+      );
+    }
+  }
 });
 
 Deno.test("serveCommand has correct description", async () => {

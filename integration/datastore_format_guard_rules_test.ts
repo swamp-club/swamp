@@ -111,10 +111,11 @@ async function openingOwners(): Promise<string[]> {
  * datastoreSetupExtension checks the target datastore through its
  * assertDatastoreFormat dep before building anything that writes.
  *
- * readDatastoreFormatMarker is the guard's own read, and the only caller of
+ * readDatastoreFormatMarker is the guard's own read of
  * datastoreControlPlaneStore: once through that store, or twice through
  * createSyncService on the fallback (a fresh service, then the
- * shared-instance check). wrapExtensionProvider only wraps a provider's
+ * shared-instance check). datastoreWriterLeaseStore is its only other
+ * caller. wrapExtensionProvider only wraps a provider's
  * createLock.
  */
 const GUARDED_PINNED = [
@@ -126,6 +127,10 @@ const GUARDED_PINNED = [
   "src/cli/commands/datastore_gc.ts:datastoreGcCommand",
   "src/cli/commands/datastore_status.ts:datastoreStatusCommand",
   "src/infrastructure/datastore_v3/v3_repo_context.ts:anotherProcessWritesCheckout",
+  // swamp-club#3364: the v3 writer lease's datastore-wide store. Dormant;
+  // the Phase 4 bucket opt-in calls it with the provider of a config it has
+  // already checked, as holdV3Writer does on filesystem.
+  "src/infrastructure/datastore_v3/datastore_writer_lease_store.ts:datastoreWriterLeaseStore",
   // swamp-club#3359: holdV3Writer also opens the handle, to record its
   // writer lease's fence in commits.db.
   "src/infrastructure/datastore_v3/v3_repo_context.ts:holdV3Writer (x2)",

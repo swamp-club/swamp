@@ -152,6 +152,7 @@ export type {
   StoredChunk,
   SyncCapabilities,
   SyncContext,
+  WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
 export {
@@ -177,12 +178,16 @@ export type {
 export {
   assertControlPlaneStoreConformance,
   assertDatastoreControlPlaneStoreConformance,
+  assertWritableDatastoreControlPlaneStoreConformance,
   createInMemoryControlPlaneStore,
 } from "./control_plane_conformance.ts";
 
 export type {
   ControlPlaneStoreConformanceOptions,
   DatastoreControlPlaneStoreConformanceOptions,
+  NamespacedSyncFixture,
+  WritableDatastoreControlPlaneStoreConformanceOptions,
+  WritableDatastoreControlPlaneStoreConformanceResult,
 } from "./control_plane_conformance.ts";
 
 export { assertStorageConformance } from "./storage_conformance.ts";

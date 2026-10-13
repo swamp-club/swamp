@@ -66,6 +66,9 @@ export interface DatastoreProvider {
    * Optional — when omitted, core reads the marker through a fresh sync
    * service's `controlPlaneStore()` instead, which costs a sync service and
    * relies on that service not having bound a namespace yet.
+   *
+   * A provider may return a `WritableDatastoreControlPlaneStore`. The
+   * v3 writer lease needs one, so a v3-capable datastore must.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
 
