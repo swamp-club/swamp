@@ -381,11 +381,15 @@ Deno.test("AccessDataPoller: a grant created by a real method run through A stay
   // The run publishes ModelUpdated with the data versions it wrote, and it
   // also writes its method-summary report into the grant's directory after
   // that event. Neither may read as a peer change on A.
+  //
+  // A polls only once the run has finished. A cycle that lands between the
+  // run's write and its event counts the record as a peer change by design
+  // (the change source's unit tests pin that), so polling A during the run
+  // would race it (swamp-club#3393).
   await withPair(LAYOUTS[0], async ({ a, loaderB, pollerB }) => {
     await withCountedServeSide(
       a,
       async ({ loader: loaderA, poller, cycles }) => {
-        poller.start();
         pollerB.start();
         const deps = await createModelMethodRunDeps(a.repoDir, a.repoContext, {
           directExecution: true,
@@ -427,6 +431,7 @@ Deno.test("AccessDataPoller: a grant created by a real method run through A stay
           `expected a report beside grant-main: ${dataNames.join(", ")}`,
         );
 
+        poller.start();
         await untilDecision(loaderB, "allow", "B applies A's run");
         const after = cycles();
         await waitFor(() => cycles() >= after + 2, "two more cycles on A");
