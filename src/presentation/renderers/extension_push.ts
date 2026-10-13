@@ -70,14 +70,23 @@ export type AcceptedReviewWarning = Omit<
 export type AcceptedSafetyWarning = Omit<SafetyIssue, "remediation">;
 
 /**
- * The safety and review warnings the pusher waived with `--yes` or `--force`.
- * Recorded in the dry-run and push summaries so a reviewer can see exactly
- * what was accepted. Advisory warnings (dependency trust, version drift,
- * upgrade entries) never gate a push and are not part of the record.
+ * The safety and review warnings, and the unaudited dependencies, the pusher
+ * waived with `--yes` or `--force`. Recorded in the dry-run and push
+ * summaries so a reviewer can see exactly what was accepted. Advisory
+ * warnings (the other dependency trust warnings, version drift, upgrade
+ * entries) never gate a push and are not part of the record.
  */
 export interface AcceptedWarnings {
+  /** Unaudited dependencies; present only when there is at least one. */
+  dependencyTrust?: DependencyTrustIssue[];
   safety: AcceptedSafetyWarning[];
   review: AcceptedReviewWarning[];
+}
+
+/** How many warnings the record holds, across every family. */
+export function acceptedWarningCount(warnings: AcceptedWarnings): number {
+  return (warnings.dependencyTrust?.length ?? 0) + warnings.safety.length +
+    warnings.review.length;
 }
 
 /** The flag that waived safety and review warnings on a run. */
@@ -167,8 +176,7 @@ export interface ExtensionPushRenderPaths {
 type LogLevelName = "info" | "warn" | "error";
 
 function acceptedWarningsHeader(accepted: WarningsAcceptance): string {
-  const count = accepted.warnings.safety.length +
-    accepted.warnings.review.length;
+  const count = acceptedWarningCount(accepted.warnings);
   const noun = count === 1 ? "warning" : "warnings";
   return `Accepted ${count} ${noun} with ${accepted.waivedBy}:`;
 }
@@ -379,8 +387,18 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   }
 
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
+    const notAudited = warnings.filter((w) => w.cause === "not-audited");
+    const advisory = warnings.filter((w) => w.cause !== "not-audited");
+    if (notAudited.length > 0) {
+      this.logger
+        .warn`Dependencies not audited (re-run when OSV and npm are reachable; --yes accepts):`;
+      for (const w of notAudited) {
+        this.logger.warn`  ${w.dependency}: ${w.message}`;
+      }
+    }
+    if (advisory.length === 0) return;
     this.logger.warn`Dependency trust warnings (non-blocking):`;
-    for (const w of warnings) {
+    for (const w of advisory) {
       this.logger.warn`  ${w.dependency}: ${w.message}`;
     }
   }
@@ -487,6 +505,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 
   private renderAcceptedWarnings(accepted: WarningsAcceptance): void {
     this.logger.warn(acceptedWarningsHeader(accepted));
+    for (const w of accepted.warnings.dependencyTrust ?? []) {
+      this.logger.warn`  ${w.dependency}: ${w.message}`;
+    }
     for (const w of accepted.warnings.safety) {
       this.logger.warn`  ${this.where(w)}: ${w.message}`;
     }

@@ -19,9 +19,18 @@
 
 import type { DependencySpecifier } from "./extension_dependency_extractor.ts";
 
+/**
+ * Why a dependency's audit is incomplete. `not-audited`: an OSV or npm
+ * registry lookup failed, so the dependency was not checked and is never
+ * reported as passed.
+ */
+export type DependencyTrustCause = "not-audited";
+
 export interface DependencyTrustIssue {
   dependency: string;
   message: string;
+  /** Present only when the dependency was not audited. */
+  cause?: DependencyTrustCause;
 }
 
 export interface DependencyAuditSummary {
@@ -32,6 +41,10 @@ export interface DependencyAuditSummary {
   weeklyDownloads: number | null;
   publishedAgo: string | null;
   passed: boolean;
+  /** Present only when the dependency was not audited; `passed` is false. */
+  cause?: DependencyTrustCause;
+  /** Which lookup failed and how, present with `cause`. */
+  reason?: string;
 }
 
 export interface DependencyTrustResult {
@@ -81,6 +94,11 @@ interface NpmPackageFacts {
   weeklyDownloads: number | null;
   lastPublish: string | null;
 }
+
+/** A lookup's outcome: its data, or why the service could not answer. */
+type Lookup<T> =
+  | { kind: "found"; value: T }
+  | { kind: "unavailable"; reason: string };
 
 export type Fetcher = (
   url: string | URL,
@@ -233,12 +251,20 @@ async function fetchWithTimeout(
   }
 }
 
+function describeFailure(error: unknown, signal?: AbortSignal): string {
+  if (signal?.aborted) return "interrupted";
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return `no response within ${FETCH_TIMEOUT_MS / 1000}s`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function queryOsvVulns(
   name: string,
   version: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<OsvVuln[]> {
+): Promise<Lookup<OsvVuln[]>> {
   try {
     const resp = await fetchWithTimeout(
       OSV_QUERY_URL,
@@ -255,11 +281,11 @@ async function queryOsvVulns(
     );
     if (!resp.ok) {
       await resp.body?.cancel();
-      return [];
+      return { kind: "unavailable", reason: `HTTP ${resp.status}` };
     }
-    return normaliseVulns(await resp.json());
-  } catch {
-    return [];
+    return { kind: "found", value: normaliseVulns(await resp.json()) };
+  } catch (error) {
+    return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
 }
 
@@ -267,7 +293,7 @@ async function fetchNpmFacts(
   name: string,
   fetcher: Fetcher,
   signal?: AbortSignal,
-): Promise<NpmPackageFacts | null> {
+): Promise<Lookup<NpmPackageFacts>> {
   try {
     const [pkgResp, downloadsResp] = await Promise.all([
       fetchWithTimeout(`${NPM_REGISTRY_URL}/${name}`, {}, fetcher, signal),
@@ -277,7 +303,7 @@ async function fetchNpmFacts(
     if (!pkgResp.ok) {
       await pkgResp.body?.cancel();
       await downloadsResp.body?.cancel();
-      return null;
+      return { kind: "unavailable", reason: `HTTP ${pkgResp.status}` };
     }
     const pkgBody = await pkgResp.json() as Record<string, unknown>;
 
@@ -315,16 +341,46 @@ async function fetchNpmFacts(
     const lastPublish = time?.[latestVersion] ?? time?.modified ?? null;
 
     return {
-      version: latestVersion,
-      license,
-      deprecated,
-      maintainerCount,
-      weeklyDownloads,
-      lastPublish,
+      kind: "found",
+      value: {
+        version: latestVersion,
+        license,
+        deprecated,
+        maintainerCount,
+        weeklyDownloads,
+        lastPublish,
+      },
     };
-  } catch {
-    return null;
+  } catch (error) {
+    return { kind: "unavailable", reason: describeFailure(error, signal) };
   }
+}
+
+/**
+ * HIGH, CRITICAL and UNKNOWN vulnerabilities are errors; MEDIUM ones are
+ * warnings. Shared by a full audit and one whose npm lookup failed.
+ */
+function evaluateVulns(
+  name: string,
+  vulns: OsvVuln[],
+): { errors: DependencyTrustIssue[]; warnings: DependencyTrustIssue[] } {
+  const errors: DependencyTrustIssue[] = [];
+  const warnings: DependencyTrustIssue[] = [];
+  for (const v of vulns) {
+    const sev = v.severity.toUpperCase();
+    if (sev === "HIGH" || sev === "CRITICAL" || sev === "UNKNOWN") {
+      errors.push({
+        dependency: name,
+        message: `vulnerability ${v.id} (${sev})`,
+      });
+    } else if (sev === "MEDIUM") {
+      warnings.push({
+        dependency: name,
+        message: `vulnerability ${v.id} (${sev})`,
+      });
+    }
+  }
+  return { errors, warnings };
 }
 
 export function evaluateNpmTrustGates(
@@ -341,20 +397,9 @@ export function evaluateNpmTrustGates(
     errors.push({ dependency: name, message: "package is deprecated" });
   }
 
-  for (const v of vulns) {
-    const sev = v.severity.toUpperCase();
-    if (sev === "HIGH" || sev === "CRITICAL" || sev === "UNKNOWN") {
-      errors.push({
-        dependency: name,
-        message: `vulnerability ${v.id} (${sev})`,
-      });
-    } else if (sev === "MEDIUM") {
-      warnings.push({
-        dependency: name,
-        message: `vulnerability ${v.id} (${sev})`,
-      });
-    }
-  }
+  const vulnIssues = evaluateVulns(name, vulns);
+  errors.push(...vulnIssues.errors);
+  warnings.push(...vulnIssues.warnings);
 
   if (!licenseAllowed(facts.license)) {
     warnings.push({
@@ -430,52 +475,65 @@ export async function checkDependencyTrust(
     const batch = npmSpecs.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(async (spec) => {
-        const facts = await fetchNpmFacts(spec.name, fetcher, signal);
-        if (!facts) {
-          allWarnings.push({
-            dependency: spec.name,
-            message: "could not fetch package metadata (API unreachable)",
-          });
-          audited.push({
-            name: spec.name,
-            version: spec.version ?? "unknown",
-            registry: "npm",
-            license: null,
-            weeklyDownloads: null,
-            publishedAgo: null,
-            passed: true,
-          });
-          return;
-        }
+        const npm = await fetchNpmFacts(spec.name, fetcher, signal);
+        const version = spec.version ??
+          (npm.kind === "found" ? npm.value.version : null);
+        // Without npm metadata the specifier's own version still lets OSV
+        // answer; an unpinned specifier has nothing to query it with.
+        const osv = version === null
+          ? null
+          : await queryOsvVulns(spec.name, version, fetcher, signal);
 
-        const version = spec.version ?? facts.version;
-        const vulns = await queryOsvVulns(spec.name, version, fetcher, signal);
-        const { errors, warnings } = evaluateNpmTrustGates(
-          spec.name,
-          facts,
-          vulns,
-          thresholds,
-        );
+        const failures: string[] = [];
+        if (npm.kind === "unavailable") {
+          failures.push(`npm registry lookup failed (${npm.reason})`);
+        }
+        if (osv === null) {
+          failures.push("OSV not queried (no pinned version)");
+        } else if (osv.kind === "unavailable") {
+          failures.push(`OSV lookup failed (${osv.reason})`);
+        }
+        const vulns = osv?.kind === "found" ? osv.value : [];
+
+        const { errors, warnings } = npm.kind === "found"
+          ? evaluateNpmTrustGates(spec.name, npm.value, vulns, thresholds)
+          : evaluateVulns(spec.name, vulns);
         allErrors.push(...errors);
         allWarnings.push(...warnings);
 
-        audited.push({
+        const facts = npm.kind === "found" ? npm.value : null;
+        const summary: DependencyAuditSummary = {
           name: spec.name,
-          version,
+          version: version ?? "unknown",
           registry: "npm",
-          license: facts.license,
-          weeklyDownloads: facts.weeklyDownloads,
-          publishedAgo: formatAge(facts.lastPublish),
+          license: facts?.license ?? null,
+          weeklyDownloads: facts?.weeklyDownloads ?? null,
+          publishedAgo: formatAge(facts?.lastPublish ?? null),
           passed: errors.length === 0,
-        });
+        };
+        if (failures.length > 0) {
+          const reason = failures.join("; ");
+          allWarnings.push({
+            dependency: spec.name,
+            message: `not audited: ${reason}`,
+            cause: "not-audited",
+          });
+          summary.passed = false;
+          summary.cause = "not-audited";
+          summary.reason = reason;
+        }
+        audited.push(summary);
       }),
     );
 
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
         allWarnings.push({
-          dependency: "unknown",
-          message: `audit check failed: ${String(result.reason)}`,
+          dependency: batch[index].name,
+          message: `not audited: audit check failed (${
+            describeFailure(result.reason)
+          })`,
+          cause: "not-audited",
         });
       }
     }
@@ -487,4 +545,13 @@ export async function checkDependencyTrust(
     audited,
     passed: allErrors.length === 0,
   };
+}
+
+/** How many dependencies a lookup failure left unaudited. */
+export function notAuditedCount(result: DependencyTrustResult): number {
+  return new Set(
+    result.warnings
+      .filter((w) => w.cause === "not-audited")
+      .map((w) => w.dependency),
+  ).size;
 }

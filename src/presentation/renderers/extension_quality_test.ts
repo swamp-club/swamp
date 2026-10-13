@@ -546,3 +546,62 @@ Deno.test("createExtensionQualityRenderer: JSON carries an empty licenseWarnings
   );
   assertEquals(JSON.parse(json[0]).licenseWarnings, []);
 });
+
+Deno.test("createExtensionQualityRenderer: an unaudited dependency is marked ? with its reason in log and carries cause and reason in JSON", () => {
+  const manifestDir = resolve("/ext");
+  const reason = "OSV lookup failed (HTTP 503)";
+  const trust: DependencyTrustResult = {
+    passed: true,
+    errors: [],
+    warnings: [
+      { dependency: "tiny", message: "low weekly downloads (10 < 1000)" },
+      {
+        dependency: "leftpad",
+        message: `not audited: ${reason}`,
+        cause: "not-audited",
+      },
+    ],
+    audited: [{
+      name: "leftpad",
+      version: "1.3.0",
+      registry: "npm",
+      license: "MIT",
+      weeklyDownloads: null,
+      publishedAgo: null,
+      passed: false,
+      cause: "not-audited",
+      reason,
+    }],
+  };
+  const event = completedEvent(makeScore(), { dependencyTrustResult: trust });
+
+  const log = capture(() =>
+    createExtensionQualityRenderer("log").handlers({
+      manifestDir,
+      cwd: manifestDir,
+    }).completed(event)
+  ).join("\n");
+  // Each interpolation renders quoted: the mark, then the dependency.
+  assertStringIncludes(log, '"?" "leftpad"@"1.3.0"');
+  assertStringIncludes(log, `MIT, not audited: ${reason}`);
+  const notAuditedAt = log.indexOf(
+    "Dependencies not audited (re-run when OSV and npm are reachable):",
+  );
+  const advisoryAt = log.indexOf("Dependency trust warnings (non-blocking):");
+  assertEquals(notAuditedAt >= 0 && advisoryAt > notAuditedAt, true);
+  assertEquals(
+    log.slice(notAuditedAt, advisoryAt).includes("low weekly downloads"),
+    false,
+  );
+
+  const doc = JSON.parse(
+    capture(() =>
+      createExtensionQualityRenderer("json").handlers({ manifestDir })
+        .completed(event)
+    )[0],
+  );
+  assertEquals(doc.dependencyTrust.audited[0].passed, false);
+  assertEquals(doc.dependencyTrust.audited[0].cause, "not-audited");
+  assertEquals(doc.dependencyTrust.audited[0].reason, reason);
+  assertEquals(doc.dependencyTrust.warnings[1].cause, "not-audited");
+});

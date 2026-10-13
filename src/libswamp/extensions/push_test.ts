@@ -2641,6 +2641,40 @@ Deno.test("extensionPushPrepare: enforce mode (the default) still throws the fir
   });
 });
 
+Deno.test("extensionPushPrepare: an unaudited dependency fails no gate and reaches the prepared result", async () => {
+  await withCollectFixture({}, async (_dir, input) => {
+    const notAudited = {
+      dependency: "left-pad",
+      message: "not audited: OSV lookup failed (HTTP 503)",
+      cause: "not-audited" as const,
+    };
+    const deps = makePrepareDeps({
+      extractDependencySpecifiers: () =>
+        Promise.resolve([{
+          name: "left-pad",
+          version: "1",
+          registry: "npm",
+          sourceFile: input.allModelFiles[0],
+        }]),
+      checkDependencyTrust: () =>
+        Promise.resolve({
+          errors: [],
+          warnings: [notAudited],
+          audited: [],
+          passed: true,
+        }),
+    });
+
+    const result = await extensionPushPrepare(ctx, deps, {
+      ...input,
+      localGates: undefined,
+    });
+
+    assertEquals(result.gateFailures, []);
+    assertEquals(result.dependencyTrustResult.warnings, [notAudited]);
+  });
+});
+
 Deno.test("extensionPushPrepare: collect mode leaves files rejected by safety and the allowlist out of the archive", async () => {
   await withCollectFixture({
     "README.md": "# hi\n",
