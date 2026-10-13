@@ -21,7 +21,10 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { UserError } from "../errors.ts";
 import {
   HydrateContractViolationError,
+  isUnpublishedDataError,
+  ModelLockLostError,
   SyncTimeoutError,
+  UnpublishedDataVersionError,
 } from "./datastore_sync_service.ts";
 
 Deno.test("SyncTimeoutError: message includes direction, label, and timeout", () => {
@@ -135,4 +138,47 @@ Deno.test("HydrateContractViolationError: is a UserError with its own name and c
   assertEquals(err instanceof UserError, true);
   assertEquals(err.name, "HydrateContractViolationError");
   assertEquals(err.code, "datastore_hydrate_contract_violation");
+});
+
+Deno.test("ModelLockLostError: names each model, its current holder, and says nothing was pushed", () => {
+  const err = new ModelLockLostError([
+    {
+      modelType: "aws/s3",
+      modelId: "a1",
+      heldBy: { holder: "sam@ci", pid: 42 },
+    },
+    { modelType: "aws/s3", modelId: "a2" },
+  ]);
+  assertEquals(err instanceof UserError, true);
+  assertEquals(err.name, "ModelLockLostError");
+  assertEquals(err.code, "model_lock_lost");
+  assertStringIncludes(err.message, "aws/s3/a1 (now held by sam@ci, pid 42)");
+  assertStringIncludes(err.message, "aws/s3/a2 (now released)");
+  assertStringIncludes(err.message, "force-released or taken over");
+  assertStringIncludes(err.message, "Nothing was pushed");
+  assertStringIncludes(err.message, "version.\nNothing was pushed");
+  assertStringIncludes(err.message, "refreshed from the datastore");
+  assertStringIncludes(err.message, "Run the method or workflow again");
+});
+
+Deno.test("isUnpublishedDataError: matches the two push refusals and nothing else", () => {
+  assertEquals(
+    isUnpublishedDataError(
+      new ModelLockLostError([{ modelType: "t", modelId: "m" }]),
+    ),
+    true,
+  );
+  assertEquals(
+    isUnpublishedDataError(
+      new UnpublishedDataVersionError([{
+        modelType: "t",
+        modelId: "m",
+        dataName: "d",
+        version: 1,
+      }], 3),
+    ),
+    true,
+  );
+  assertEquals(isUnpublishedDataError(new UserError("other")), false);
+  assertEquals(isUnpublishedDataError(undefined), false);
 });
