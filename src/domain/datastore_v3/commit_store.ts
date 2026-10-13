@@ -178,6 +178,11 @@ export interface CompactHistoryOptions {
    * chunk sweep uses. `DEFAULT_CHUNK_GRACE_MS` by default.
    */
   readonly releasedRetentionMs?: number;
+  /**
+   * The compacting writer's fence (swamp-club#3359). A store that has seen
+   * a higher one refuses the compaction.
+   */
+  readonly fence?: number;
 }
 
 /** What {@link CommitStore.compactHistory} did. */
@@ -200,7 +205,7 @@ export interface CompactionReport {
  * `CommitRejectedError` and writes nothing.
  *
  * A process holds one writer per store. Two processes writing one store is a
- * bug, which the solo writer lock prevents.
+ * bug, which the writer lease prevents.
  */
 export interface CommitStore {
   /**

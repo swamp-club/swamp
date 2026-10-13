@@ -92,3 +92,13 @@ Deno.test("datastoreLockStatusRenderer json: carries the holderUnknown marker", 
   const parsed = JSON.parse(renderStatus("json", lockBeingWritten));
   assertEquals(parsed, lockBeingWritten);
 });
+
+Deno.test("datastoreLockStatusRenderer: shows a v3 writer lease's fence, and only then", () => {
+  const lease: DatastoreLockStatusData = {
+    ...heldLock,
+    info: { ...heldLock.info!, fence: 7 },
+  };
+  assertStringIncludes(renderStatus("log", lease), "Fence:    7");
+  assertEquals(renderStatus("log", heldLock).includes("Fence:"), false);
+  assertEquals(JSON.parse(renderStatus("json", lease)).info.fence, 7);
+});

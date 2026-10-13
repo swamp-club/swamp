@@ -353,7 +353,7 @@ async function scanModelLocks(
 
 /** Wires real infrastructure into DatastoreLockStatusDeps. */
 export function createDatastoreLockStatusDeps(
-  globalLock: DistributedLock,
+  globalLock: Pick<DistributedLock, "inspect">,
   config: DatastoreConfig,
 ): DatastoreLockStatusDeps {
   const isFilesystem = !isCustomDatastoreConfig(config) &&
@@ -368,7 +368,7 @@ export function createDatastoreLockStatusDeps(
 
 /** Wires real infrastructure into DatastoreLockReleaseDeps. */
 export function createDatastoreLockReleaseDeps(
-  lock: DistributedLock,
+  lock: Pick<DistributedLock, "inspect" | "forceRelease">,
 ): DatastoreLockReleaseDeps {
   return {
     inspectLock: () => lock.inspect(),

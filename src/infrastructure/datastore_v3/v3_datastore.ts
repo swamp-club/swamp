@@ -67,7 +67,7 @@ import {
   DEFAULT_COMPACTION_POLICY,
   retentionOf,
 } from "../../domain/datastore_v3/compaction_policy.ts";
-import type { CommitWriter } from "../../domain/datastore_v3/commit.ts";
+import type { Commit, CommitWriter } from "../../domain/datastore_v3/commit.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
 import { CatalogStore } from "../persistence/catalog_store.ts";
 import { writeDatastoreFormatMarker } from "../persistence/datastore_format_marker_writer.ts";
@@ -130,6 +130,17 @@ export interface OpenV3DatastoreOptions {
    */
   readonly directories?: readonly string[];
   readonly exclude?: readonly string[];
+  /**
+   * The fence of this process's writer lease, or undefined while it holds
+   * none (swamp-club#3359). Every commit a unit makes names the fence the
+   * lease held when the unit opened.
+   */
+  readonly writerFence?: () => number | undefined;
+  /**
+   * Throws when this process's writer lease was taken over or released;
+   * checked before each commit is appended.
+   */
+  readonly assertWriterCurrent?: () => void;
 }
 
 /**
@@ -283,13 +294,25 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       });
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
+      const assertWriterCurrent = options.assertWriterCurrent;
+      const sink = assertWriterCurrent === undefined ? commitStore : {
+        head: commitStore.head.bind(commitStore),
+        append: (commit: Commit) => {
+          assertWriterCurrent();
+          return commitStore.append(commit);
+        },
+      };
+      const fenced = () => {
+        const fence = options.writerFence?.();
+        return fence === undefined ? {} : { fence };
+      };
       const unitOptions = {
         admits: engineOptions.readOnly === true
           ? (key: string): boolean => {
             throw new ReadOnlyV3WriteError(key);
           }
           : admits,
-        sink: commitStore,
+        sink,
         chunkStore,
         namespace: unitNamespace,
         writer,
@@ -299,6 +322,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         openUnit(): UnitOfWork {
           return createCommitLogUnitOfWork(markDirty, {
             ...unitOptions,
+            ...fenced(),
             parent: currentUnitOfWork(),
           });
         },
@@ -312,6 +336,7 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         ): Promise<T> {
           return runInCommitLogRoot<T>({ markDirty }, {
             ...unitOptions,
+            ...fenced(),
             ...(rootOptions.disposition !== undefined
               ? { disposition: rootOptions.disposition }
               : {}),
@@ -338,7 +363,11 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
         policy,
       );
       if (through === undefined) return undefined;
-      return await commitStore.compactHistory(through, { signal });
+      const fence = options.writerFence?.();
+      return await commitStore.compactHistory(through, {
+        signal,
+        ...(fence !== undefined ? { fence } : {}),
+      });
     },
     describe() {
       return commitStore.history();

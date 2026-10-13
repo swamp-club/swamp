@@ -44,7 +44,9 @@ import {
 } from "./v3_datastore.ts";
 import {
   acquireV3WriterLock,
+  assertV3WriterCurrent,
   holdsV3WriterLock,
+  v3WriterFence,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
@@ -113,6 +115,8 @@ export function v3DatastoreFor(
         ? { directories: config.directories }
         : {}),
       ...(config.exclude !== undefined ? { exclude: config.exclude } : {}),
+      writerFence: () => v3WriterFence(config.path),
+      assertWriterCurrent: () => assertV3WriterCurrent(config.path),
     });
     opened.set(key, handle);
   }
@@ -120,7 +124,7 @@ export function v3DatastoreFor(
 }
 
 /**
- * Joins this process's hold on the writer lock of the v3 datastore `config`
+ * Joins this process's hold on the writer lease of the v3 datastore `config`
  * names, waiting up to the lock timeout for another process to finish. A
  * writing command calls it before it takes any other lock, so it never
  * holds the global or a model lock while it waits for another writer.
@@ -134,6 +138,9 @@ export async function holdV3Writer(
 ): Promise<void> {
   const release = await acquireV3WriterLock(config.path, {
     maxWaitMs: resolveLockTimeoutMs(),
+    // Records the lease's fence in commits.db, so a writer that loses the
+    // lease later can commit nothing (swamp-club#3359).
+    fenceStore: v3DatastoreFor(repoDir, config).commitStore,
   });
   const sidecar = writerCheckoutPath(config.path);
   const checkout = handleKey(repoDir, config);

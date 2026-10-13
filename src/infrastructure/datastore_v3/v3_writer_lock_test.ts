@@ -17,15 +17,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { FileLock } from "../persistence/file_lock.ts";
+import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
+import {
+  fenceKey,
+  releasedKey,
+  WriterFencedError,
+} from "../../domain/datastore_v3/writer_lease.ts";
 import {
   acquireV3WriterLock,
+  assertV3WriterCurrent,
+  checkV3WriterLease,
   holdsV3WriterLock,
-  V3_WRITER_LOCK_KEY,
+  tryAcquireV3WriterLock,
+  V3_LEGACY_WRITER_LOCK_KEY,
+  V3_WRITER_LEASE_DIR,
   V3WriterBusyError,
+  v3WriterFence,
+  type V3WriterFenceStore,
   v3WriterLockHandle,
 } from "./v3_writer_lock.ts";
 
@@ -42,80 +54,146 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
+/** A `commits.db` writer fence kept in memory. */
+function memoryFenceStore(initial?: number): V3WriterFenceStore & {
+  raised: number[];
+} {
+  let fence = initial;
+  const raised: number[] = [];
+  return {
+    raised,
+    writerFence: () => fence,
+    raiseWriterFence(next) {
+      if (fence !== undefined && next < fence) {
+        return Promise.reject(new WriterFencedError(next, fence));
+      }
+      fence = next;
+      raised.push(next);
+      return Promise.resolve();
+    },
+  };
+}
+
+/** A fence record as another process left it. */
+async function plantFence(
+  dir: string,
+  fence: number,
+  host: string,
+  options: { acquiredAt?: Date } = {},
+): Promise<void> {
+  await new FileSystemControlPlaneStore(dir).put(
+    fenceKey(fence),
+    new TextEncoder().encode(JSON.stringify({
+      fence,
+      holder: "other",
+      hostname: host,
+      // No process here has this pid.
+      pid: 2147483647,
+      nonce: crypto.randomUUID(),
+      ttlMs: 60_000,
+      acquiredAt: (options.acquiredAt ?? new Date()).toISOString(),
+    })),
+  );
+}
+
 Deno.test("acquireV3WriterLock: one hold per process, released by the last caller", async () => {
   await withTempDir(async (dir) => {
-    const lockPath = join(dir, V3_WRITER_LOCK_KEY);
+    const handle = v3WriterLockHandle(dir);
     const first = await acquireV3WriterLock(dir);
     const second = await acquireV3WriterLock(dir);
     assert(holdsV3WriterLock(dir));
-    await Deno.stat(lockPath);
+    assertEquals(v3WriterFence(dir), 1);
+    assertEquals((await handle.inspect())?.pid, Deno.pid);
 
     await first();
     assert(holdsV3WriterLock(dir), "the second caller still holds it");
-    await Deno.stat(lockPath);
+    assertEquals((await handle.inspect())?.fence, 1);
 
     await second();
     assertEquals(holdsV3WriterLock(dir), false);
-    await assertRejects(() => Deno.stat(lockPath), Deno.errors.NotFound);
+    assertEquals(v3WriterFence(dir), undefined);
+    assertEquals(await handle.inspect(), null, "released");
     // A release is idempotent.
     await second();
   });
 });
 
-Deno.test("acquireV3WriterLock: another process's hold refuses with its holder named", async () => {
+Deno.test("acquireV3WriterLock: each acquisition takes the next fence, and records it in commits.db", async () => {
   await withTempDir(async (dir) => {
-    const other = new FileLock(dir, { lockKey: V3_WRITER_LOCK_KEY });
-    await other.acquire();
-    try {
-      const error = await assertRejects(
-        () => acquireV3WriterLock(dir, { maxWaitMs: 100 }),
-        V3WriterBusyError,
-      );
-      assertEquals(error.code, "datastore_v3_writer_busy");
-      assert(error.message.includes(`pid ${Deno.pid}`));
-      assertEquals(holdsV3WriterLock(dir), false);
-    } finally {
-      await other.release();
+    const fences = memoryFenceStore();
+    for (const expected of [1, 2, 3]) {
+      const release = await acquireV3WriterLock(dir, { fenceStore: fences });
+      assertEquals(v3WriterFence(dir), expected);
+      await release();
     }
-    // Once the other process lets go, this one takes it.
-    const release = await acquireV3WriterLock(dir, { maxWaitMs: 1000 });
-    await release();
+    assertEquals(fences.raised, [1, 2, 3]);
   });
 });
 
-Deno.test("v3WriterLockHandle: inspects the writer lock without taking it", async () => {
+Deno.test("acquireV3WriterLock: the next fence is above the one commits.db has seen, even when the lease's records are gone", async () => {
   await withTempDir(async (dir) => {
-    const handle = v3WriterLockHandle(dir);
-    assertEquals(await handle.inspect(), null);
-    const release = await acquireV3WriterLock(dir);
+    const fences = memoryFenceStore(7);
+    const release = await acquireV3WriterLock(dir, { fenceStore: fences });
     try {
-      assertEquals((await handle.inspect())?.pid, Deno.pid);
+      assertEquals(v3WriterFence(dir), 8);
     } finally {
       await release();
     }
   });
 });
 
-/** A writer-lock file as another process left it. */
-async function plantHolder(dir: string, hostname: string): Promise<void> {
-  await Deno.mkdir(join(dir, "_control"), { recursive: true });
-  await Deno.writeTextFile(
-    join(dir, V3_WRITER_LOCK_KEY),
-    JSON.stringify({
-      holder: "other",
-      hostname,
-      // No process here has this pid.
-      pid: 2147483647,
-      acquiredAt: new Date().toISOString(),
-      ttlMs: 60_000,
-      nonce: crypto.randomUUID(),
-    }),
-  );
-}
-
-Deno.test("acquireV3WriterLock: another host's holder is alive until its TTL, whatever its pid here", async () => {
+Deno.test("acquireV3WriterLock: a fence commits.db refuses releases the lease and leaves no hold behind", async () => {
   await withTempDir(async (dir) => {
-    await plantHolder(dir, `other-host-${crypto.randomUUID()}`);
+    const failing: V3WriterFenceStore = {
+      writerFence: () => undefined,
+      raiseWriterFence: () => Promise.reject(new WriterFencedError(1, 9)),
+    };
+    await assertRejects(
+      () => acquireV3WriterLock(dir, { fenceStore: failing }),
+      WriterFencedError,
+    );
+    assertEquals(holdsV3WriterLock(dir), false);
+    assertEquals(v3WriterFence(dir), undefined);
+    assertEquals(await v3WriterLockHandle(dir).inspect(), null);
+    // Nothing in the process joins the failed hold: the next caller takes a
+    // fresh fence.
+    const release = await acquireV3WriterLock(dir);
+    try {
+      assertEquals(v3WriterFence(dir), 2);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: another process's hold refuses with its holder named", async () => {
+  await withTempDir(async (dir) => {
+    await plantFence(dir, 1, `other-host-${crypto.randomUUID()}`);
+    const error = await assertRejects(
+      () => acquireV3WriterLock(dir, { maxWaitMs: 100 }),
+      V3WriterBusyError,
+    );
+    assertEquals(error.code, "datastore_v3_writer_busy");
+    assert(error.message.includes("(other, pid 2147483647)"));
+    assertEquals(holdsV3WriterLock(dir), false);
+
+    // Once the other process lets go, this one takes the next fence.
+    await new FileSystemControlPlaneStore(dir).putIfAbsent(
+      releasedKey(1),
+      new TextEncoder().encode("{}"),
+    );
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 1000 });
+    try {
+      assertEquals(v3WriterFence(dir), 2);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: another host's holder is alive until its lease expires, whatever its pid here", async () => {
+  await withTempDir(async (dir) => {
+    await plantFence(dir, 1, `other-host-${crypto.randomUUID()}`);
     await assertRejects(
       () => acquireV3WriterLock(dir, { maxWaitMs: 100 }),
       V3WriterBusyError,
@@ -123,10 +201,118 @@ Deno.test("acquireV3WriterLock: another host's holder is alive until its TTL, wh
   });
 });
 
-Deno.test("acquireV3WriterLock: a holder on this host whose process is gone is cleared", async () => {
+Deno.test("acquireV3WriterLock: another host's holder whose lease expired is taken over", async () => {
   await withTempDir(async (dir) => {
-    await plantHolder(dir, hostname());
-    const release = await acquireV3WriterLock(dir, { maxWaitMs: 1_000 });
+    await plantFence(dir, 4, `other-host-${crypto.randomUUID()}`, {
+      acquiredAt: new Date(Date.now() - 600_000),
+    });
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 100 });
+    try {
+      assertEquals(v3WriterFence(dir), 5);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a holder on this host whose process is gone is taken over at once", async () => {
+  await withTempDir(async (dir) => {
+    await plantFence(dir, 1, hostname());
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+    try {
+      assertEquals(v3WriterFence(dir), 2);
+    } finally {
+      await release();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a live Phase 3 writer lock refuses the lease", async () => {
+  await withTempDir(async (dir) => {
+    const legacy = new FileLock(dir, { lockKey: V3_LEGACY_WRITER_LOCK_KEY });
+    await legacy.acquire();
+    try {
+      const error = await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 100 }),
+        V3WriterBusyError,
+      );
+      assert(error.message.includes(`pid ${Deno.pid}`));
+      // Status shows the old lock while it is the one held.
+      assertEquals((await v3WriterLockHandle(dir).inspect())?.pid, Deno.pid);
+    } finally {
+      await legacy.release();
+    }
+    const release = await acquireV3WriterLock(dir, { maxWaitMs: 100 });
     await release();
+  });
+});
+
+Deno.test("v3WriterLockHandle: force release marks the lease released, and its holder finds itself fenced", async () => {
+  await withTempDir(async (dir) => {
+    const release = await acquireV3WriterLock(dir);
+    try {
+      const handle = v3WriterLockHandle(dir);
+      const info = await handle.inspect();
+      assertEquals(info?.fence, 1);
+      assertEquals(await handle.forceRelease("not-the-nonce"), false);
+      assert(await handle.forceRelease(info!.nonce!));
+      assertEquals(await handle.inspect(), null);
+
+      // The next writer takes fence 2; the old holder's next check fails.
+      const other = await tryAcquireV3WriterLockElsewhere(dir);
+      assertEquals(other, 2);
+      await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+      assertThrows(() => assertV3WriterCurrent(dir), WriterFencedError);
+    } finally {
+      await release();
+    }
+  });
+});
+
+/**
+ * Takes the next fence as another process would, by creating its record
+ * directly, and returns it.
+ */
+async function tryAcquireV3WriterLockElsewhere(dir: string): Promise<number> {
+  const store = new FileSystemControlPlaneStore(dir);
+  const keys = await store.list("writer/");
+  const next = keys.filter((key) => key.includes("fence-")).length + 1;
+  await plantFence(dir, next, `other-host-${crypto.randomUUID()}`);
+  return next;
+}
+
+Deno.test("tryAcquireV3WriterLock: takes the lease without waiting, or resolves undefined when it is held", async () => {
+  await withTempDir(async (dir) => {
+    const release = await tryAcquireV3WriterLock(dir);
+    assert(release !== undefined);
+    assertEquals(holdsV3WriterLock(dir), false, "the hold is not shared");
+    assertEquals(await tryAcquireV3WriterLock(dir), undefined);
+    await release();
+
+    const held = await acquireV3WriterLock(dir);
+    try {
+      assertEquals(
+        await tryAcquireV3WriterLock(dir),
+        undefined,
+        "this process already writes",
+      );
+    } finally {
+      await held();
+    }
+  });
+});
+
+Deno.test("v3WriterLockHandle: the lease's records live under _control/writer", async () => {
+  await withTempDir(async (dir) => {
+    const release = await acquireV3WriterLock(dir);
+    await release();
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(join(dir, V3_WRITER_LEASE_DIR))) {
+      names.push(entry.name);
+    }
+    assertEquals(names.sort(), [
+      "fence-000000000001",
+      "released-000000000001",
+    ]);
   });
 });

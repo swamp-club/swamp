@@ -266,8 +266,8 @@ nothing stops two writers sharing a path.
   the zombie kept writing to `fence-1/`. The new leader's first sync uploads a
   full snapshot, which costs the same as an initial sync (3.4 s per GB locally).
 - **So:** "a generation per fence" becomes **a replica path per fence**. The
-  fence id comes from the leader lease in team mode and the writer lock in solo
-  mode. Restore reads the current fence from that record, then restores
+  fence id comes from the leader lease in team mode and the writer lease in solo
+  mode (swamp-club#3359; `datastores.md`, **v3 writer lease**). Restore reads the current fence from that record, then restores
   `_litestream/<fence>/`. Paths left by older fences are garbage-collected after
   the next fence's first confirmed sync.
 - A zombie's confirmations on its old path count for nothing. **A leader must
@@ -297,7 +297,7 @@ swamp-club#3191), not under a namespace:
 
 ```
 <prefix>/_control/datastore-format
-<prefix>/_control/writer              solo writer lock (carries the fence)
+<prefix>/_control/writer/             solo writer lease (fence-<n>, heartbeat-<n>, released-<n>)
 <prefix>/_litestream/<fence>/<level>/<min>-<max>.ltx
 <prefix>/_blobs/<namespace>/sha256/<aa>/<sha256>   content chunks (storage/1)
 ```
