@@ -277,6 +277,45 @@ Deno.test("loader: a helper file whose only export is an unrelated behavior conf
   });
 });
 
+Deno.test("loader: helper configs exporting behavior in both directories are not a duplicate type", async () => {
+  await withRepo(async ({ modelsDir, behaviorsDir, loader }) => {
+    await ensureDir(behaviorsDir);
+    const helper = 'export const behavior = { type: "retry", retries: 3 };\n';
+    await Deno.writeTextFile(join(modelsDir, "retry_config.ts"), helper);
+    await Deno.writeTextFile(join(behaviorsDir, "retry_config.ts"), helper);
+    const result = await loader.load(modelsDir, {
+      localDirs: [behaviorsDir],
+      skipAlreadyRegistered: true,
+    });
+    assertEquals(result.failed, []);
+  });
+});
+
+Deno.test("loader: a malformed type in one file does not abort the duplicate check", async () => {
+  await withRepo(async ({ modelsDir, behaviorsDir, loader }) => {
+    const type = uniqueType("after-malformed");
+    await ensureDir(behaviorsDir);
+    await Deno.writeTextFile(
+      join(behaviorsDir, "real.ts"),
+      modelSource("behavior", type),
+    );
+    await Deno.writeTextFile(
+      join(modelsDir, "broken.ts"),
+      'export const model = { type: "  ", version: "2026.01.01.1", methods: {} };\n',
+    );
+    try {
+      // The load reaches the files instead of throwing from the check.
+      await loader.load(modelsDir, {
+        localDirs: [behaviorsDir],
+        skipAlreadyRegistered: true,
+      });
+      assertEquals(modelRegistry.has(type), true);
+    } finally {
+      modelRegistry.invalidateType(type);
+    }
+  });
+});
+
 Deno.test({
   name:
     "loader: a symlinked extensions/behaviors/ is found and loaded like a symlinked models dir",

@@ -329,7 +329,15 @@ export class ExtensionLoader {
           continue;
         }
         if (!this.adapter.exportRegex.test(source)) continue;
-        const extracted = this.adapter.extractTypeFromSource(source);
+        // A malformed type (one that normalizes to nothing) is skipped here,
+        // as the catalog's own extraction skips it, rather than aborting the
+        // whole load; the file's own load reports the problem.
+        let extracted: ReturnType<typeof this.adapter.extractTypeFromSource>;
+        try {
+          extracted = this.adapter.extractTypeFromSource(source);
+        } catch {
+          continue;
+        }
         if (!extracted || extracted.kind !== primaryKind) continue;
         if (!types.has(extracted.typeNormalized)) {
           types.set(extracted.typeNormalized, canonicalizePath(absolutePath));

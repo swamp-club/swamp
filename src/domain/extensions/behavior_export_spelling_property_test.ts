@@ -57,8 +57,10 @@ const noiseArb = fc.constantFrom(
   "const fixture = `export const model = { ...x }`;",
   'const PROMPT = `Reply with { type: "anime" }`;',
 );
+// Every body declares methods: a behavior-spelled object without methods is
+// deliberately not a definition (see the lone-config test below), while the
+// model spelling keeps reading as it always has.
 const bodyArb = fc.constantFrom(
-  "",
   [
     "  globalArguments: z.object({ region: z.string() }),",
     "  methods: {",
@@ -188,7 +190,7 @@ Deno.test("behavior spelling: an extension file with no model export keeps its e
   );
   assertEquals(
     modelKindAdapter.extractTypeFromSource(
-      'export const behavior = { type: "@acme/b", version: "2026.01.01.1" };\n',
+      'export const behavior = { type: "@acme/b", version: "2026.01.01.1", methods: {} };\n',
     ),
     {
       typeNormalized: "@acme/b",
@@ -197,4 +199,29 @@ Deno.test("behavior spelling: an extension file with no model export keeps its e
       extendsType: "",
     },
   );
+});
+
+Deno.test("behavior spelling: a lone behavior config without methods is not a definition in source text", () => {
+  // Matches primaryExport at runtime: a helper whose only export is an
+  // unrelated config gets no catalog type and no registry metadata.
+  for (
+    const source of [
+      'export const behavior = { type: "retry", retries: 3 };\n',
+      'export const behavior = { type: "retry" };\nconst methods = {};\n',
+    ]
+  ) {
+    assertEquals(modelKindAdapter.extractTypeFromSource(source), null, source);
+  }
+  for (
+    const source of [
+      'export const behavior = { type: "@acme/x", version: "2026.01.01.1", methods: {} };\n',
+      'const methods = {};\nexport const behavior = { type: "@acme/x", version: "2026.01.01.1", methods };\n',
+    ]
+  ) {
+    assertEquals(
+      modelKindAdapter.extractTypeFromSource(source)?.typeNormalized,
+      "@acme/x",
+      source,
+    );
+  }
 });

@@ -284,8 +284,47 @@ function extractBalancedBrackets(
  * always has.
  */
 function matchModelExportObject(content: string): RegExpMatchArray | null {
-  return content.match(/export\s+const\s+model\s*=\s*\{/) ??
-    content.match(/export\s+const\s+behavior\s*=\s*\{/);
+  const model = content.match(/export\s+const\s+model\s*=\s*\{/);
+  if (model) return model;
+  // The behavior spelling reads exactly as the model spelling does (first
+  // match), but only in a file that holds a behavior definition at all: an
+  // object that declares methods, as the loader requires. A helper whose
+  // only export is an unrelated config such as `{ type: "retry" }` has none.
+  return hasBehaviorDefinition(content)
+    ? content.match(/export\s+const\s+behavior\s*=\s*\{/)
+    : null;
+}
+
+/**
+ * Whether `content` declares `export const behavior` with an object that
+ * declares methods (swamp-club#3338): the first object after the `=`, so a
+ * plain literal (`= { ... }`), a wrapped one (`= make({ ... })`) and an
+ * annotated one (`: T = { ... }`) all count, and an unrelated config such as
+ * `{ type: "retry" }` does not.
+ */
+export function hasBehaviorDefinition(content: string): boolean {
+  for (
+    const match of content.matchAll(/export\s+const\s+behavior\b[^=;]*=/g)
+  ) {
+    if (match.index === undefined) continue;
+    const after = match.index + match[0].length;
+    const brace = content.indexOf("{", after);
+    const end = content.indexOf(";", after);
+    if (brace === -1 || (end !== -1 && end < brace)) continue;
+    const body = extractBalancedBraces(content, brace + 1);
+    if (body !== null && declaresMethods(body)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an object body declares a `methods` property, written out
+ * (`methods: {`) or as a shorthand (`methods,`). Used to tell a
+ * behavior-spelled definition from an unrelated `behavior` binding
+ * (swamp-club#3338).
+ */
+export function declaresMethods(body: string): boolean {
+  return /(?<![.\w])methods\s*[:,}(]/.test(body);
 }
 
 /**
