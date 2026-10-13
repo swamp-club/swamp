@@ -406,16 +406,11 @@ export function evaluateNpmTrustGates(
   thresholds: TrustThresholds = DEFAULT_TRUST_THRESHOLDS,
   now: Date = new Date(),
 ): { errors: DependencyTrustIssue[]; warnings: DependencyTrustIssue[] } {
-  const errors: DependencyTrustIssue[] = [];
-  const warnings: DependencyTrustIssue[] = [];
+  const { errors, warnings } = evaluateVulns(name, vulns);
 
   if (facts.deprecated) {
-    errors.push({ dependency: name, message: "package is deprecated" });
+    errors.unshift({ dependency: name, message: "package is deprecated" });
   }
-
-  const vulnIssues = evaluateVulns(name, vulns);
-  errors.push(...vulnIssues.errors);
-  warnings.push(...vulnIssues.warnings);
 
   if (!licenseAllowed(facts.license)) {
     warnings.push({
