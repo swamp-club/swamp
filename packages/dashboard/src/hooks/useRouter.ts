@@ -22,6 +22,7 @@ import type { View } from "../types.ts";
 import {
   buildPath,
   type DetailView,
+  legacyRedirectPath,
   parentOf,
   parseRoute,
   type RouteState,
@@ -35,7 +36,25 @@ function currentPathname(): string {
   return globalThis.location?.pathname ?? "/";
 }
 
-let currentState: RouteState = parseRoute(currentPathname());
+/**
+ * The route the address bar shows. A link with an old segment for the
+ * behaviors view (`/dashboard/models/...`) is rewritten in place to its
+ * canonical `/dashboard/behaviors/...` path, keeping query and hash.
+ */
+function currentRoute(): RouteState {
+  const location = globalThis.location;
+  const redirect = location ? legacyRedirectPath(location.pathname) : null;
+  if (location && redirect !== null) {
+    browserHistory()?.replaceState(
+      null,
+      "",
+      redirect + location.search + location.hash,
+    );
+  }
+  return parseRoute(currentPathname());
+}
+
+let currentState: RouteState = currentRoute();
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -61,7 +80,7 @@ function pushState(next: RouteState) {
 }
 
 function onPopState() {
-  currentState = parseRoute(currentPathname());
+  currentState = currentRoute();
   notify();
 }
 

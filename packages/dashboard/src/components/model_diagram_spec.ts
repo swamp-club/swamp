@@ -398,7 +398,9 @@ export function describeDiagram(spec: DiagramSpec): string {
       spec.extension.inferred ? " (inferred from its type)" : ""
     }`
     : "";
-  sentences.push(`Model ${spec.model.name} of type ${spec.model.type}${ext}.`);
+  sentences.push(
+    `Behavior ${spec.model.name} of type ${spec.model.type}${ext}.`,
+  );
   for (const g of spec.groups) {
     const names = listOf(g.nodes);
     const verb = VERBS[g.key];

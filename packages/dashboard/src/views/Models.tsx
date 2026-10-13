@@ -67,6 +67,11 @@ import {
   outputPips,
   usageByModel,
 } from "./model_executions.ts";
+import {
+  behaviorNoun,
+  BEHAVIORS_LABEL,
+  NO_BEHAVIORS_TITLE,
+} from "../lib/behavior_labels.ts";
 import "../styles/models.css";
 
 interface ModelsProps {
@@ -153,7 +158,7 @@ export function Models({ onOpenModel }: ModelsProps) {
   const typeCount = new Set(models.map((m) => m.type)).size;
   const stats: Stat[] = [
     {
-      label: models.length === 1 ? "model" : "models",
+      label: behaviorNoun(models.length),
       value: formatCount(models.length),
     },
     {
@@ -183,9 +188,9 @@ export function Models({ onOpenModel }: ModelsProps) {
   return (
     <>
       <div className="page-header">
-        <h1>Models</h1>
+        <h1>{BEHAVIORS_LABEL}</h1>
         <div className="header-right">
-          {loaded ? <StatPills stats={stats} label="Models summary" /> : (
+          {loaded ? <StatPills stats={stats} label="Behaviors summary" /> : (
             !error && <SkeletonPills count={4} />
           )}
         </div>
@@ -195,7 +200,7 @@ export function Models({ onOpenModel }: ModelsProps) {
         ? (
           <div className="panel">
             <EmptyState
-              title="Couldn't load models"
+              title="Couldn't load behaviors"
               action={
                 <button type="button" className="btn-sm" onClick={refetch}>
                   Retry
@@ -207,13 +212,13 @@ export function Models({ onOpenModel }: ModelsProps) {
           </div>
         )
         : !loaded
-        ? <SkeletonCardGrid label="Loading models" />
+        ? <SkeletonCardGrid label="Loading behaviors" />
         : models.length === 0
         ? (
           <div className="panel">
-            <EmptyState title="No models defined yet">
+            <EmptyState title={NO_BEHAVIORS_TITLE}>
               Create one with{" "}
-              <code>swamp model create</code>, then it shows up here with its
+              <code>swamp behavior create</code>, then it shows up here with its
               inputs, outputs and executions.
             </EmptyState>
           </div>
@@ -232,7 +237,7 @@ export function Models({ onOpenModel }: ModelsProps) {
               ? (
                 <div className="panel">
                   <EmptyState
-                    title="No models match these filters"
+                    title="No behaviors match these filters"
                     action={
                       <button
                         type="button"
@@ -283,7 +288,7 @@ function ModelFilterBar(
     {
       key: "type",
       label: "Type",
-      description: "Models of one model type",
+      description: "Behaviors of one behavior type",
       values: types.length > 1 ? types : [],
       selected: filter.types,
       onSelect: (v) => onChange({ ...filter, types: v }),
@@ -291,7 +296,7 @@ function ModelFilterBar(
     {
       key: "prefix",
       label: "Prefix",
-      description: "Models whose name starts with a prefix",
+      description: "Behaviors whose name starts with a prefix",
       values: prefixes.length > 1 ? prefixes : [],
       selected: filter.prefixes,
       onSelect: (v) => onChange({ ...filter, prefixes: v }),
@@ -302,10 +307,10 @@ function ModelFilterBar(
       query={filter.query}
       onQuery={(query) => onChange({ ...filter, query })}
       facets={facets}
-      placeholder="Search models or filter by type, prefix…"
+      placeholder="Search behaviors or filter by type, prefix…"
       shown={shown}
       total={models.length}
-      noun="models"
+      noun="behaviors"
       onClear={() => onChange({ query: "", types: [], prefixes: [] })}
       trailing={
         <ViewMenu

@@ -447,15 +447,15 @@ Deno.test("contentsLabel: pluralises, and says when nothing is built", () => {
   );
   assertEquals(
     contentsLabel({ models: 1, workflows: 1 }),
-    "1 model, 1 workflow",
+    "1 behavior, 1 workflow",
   );
   assertEquals(
     contentsLabel({ models: 3, workflows: 0 }),
-    "3 models, 0 workflows",
+    "3 behaviors, 0 workflows",
   );
   assertEquals(
     contentsLabel({ models: 0, workflows: 2 }),
-    "0 models, 2 workflows",
+    "0 behaviors, 2 workflows",
   );
 });
 

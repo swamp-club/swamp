@@ -84,6 +84,8 @@ Deno.test("DataTableSkeleton: the data table's real headers", () => {
   const html = renderBusy(<DataTableSkeleton />, "Loading data");
   assertStringIncludes(html, headers(DATA_COLUMNS));
   assertStringIncludes(html, "<th>Content Type</th>");
+  assertStringIncludes(html, "<th>Behavior</th>");
+  assertEquals(html.includes("<th>Model</th>"), false);
 });
 
 Deno.test("ExtensionsTableSkeleton: the extensions table's real headers", () => {

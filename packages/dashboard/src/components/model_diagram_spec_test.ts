@@ -241,7 +241,7 @@ Deno.test("describeDiagram: summarises every group in words", () => {
   const text = describeDiagram(
     buildDiagramSpec({ ...base, type: "@acme/aws/ec2" }, rows),
   );
-  assertStringIncludes(text, "Model echo-shell of type @acme/aws/ec2");
+  assertStringIncludes(text, "Behavior echo-shell of type @acme/aws/ec2");
   assertStringIncludes(text, "extension @acme/aws (inferred from its type)");
   assertStringIncludes(text, "Offers 1 method: execute()");
   assertStringIncludes(text, "Writes 2 outputs: log, result");

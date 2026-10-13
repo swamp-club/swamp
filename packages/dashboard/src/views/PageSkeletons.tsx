@@ -30,6 +30,7 @@ import {
   widthAt,
 } from "../components/Skeleton.tsx";
 import { HealthUnavailable } from "../components/HealthUnavailable.tsx";
+import { BEHAVIOR_COLUMN } from "../lib/behavior_labels.ts";
 
 // Loading states for the Overview, Data, Data detail, Vaults, Extensions,
 // System and Login pages. Each is the loaded layout with placeholders where
@@ -122,7 +123,7 @@ export function CountSkeleton() {
 
 export const DATA_COLUMNS: SkeletonColumn[] = [
   { header: "Name" },
-  { header: "Model", cell: 110 },
+  { header: BEHAVIOR_COLUMN, cell: 110 },
   { header: "Type", cell: 56 },
   { header: "Content Type", cell: 120 },
   { header: "Version", cell: 32 },

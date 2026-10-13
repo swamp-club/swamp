@@ -92,7 +92,8 @@ export function Vaults() {
       {state === "empty" && (
         <div className="panel">
           <EmptyState title="No vaults configured">
-            Vaults hold the secrets your models reference. Create one with{" "}
+            Vaults hold the secrets your behaviors reference. Create one with
+            {" "}
             <code>swamp vault create local_encryption my-vault</code>.
           </EmptyState>
         </div>

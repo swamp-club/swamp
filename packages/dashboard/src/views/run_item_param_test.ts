@@ -52,7 +52,7 @@ Deno.test("itemParamFor: round-trips every drawer item", () => {
 Deno.test("itemParamFor: is the full page's path without the prefix", () => {
   assertEquals(
     itemParamFor(items[0]),
-    "models/echo-shell/data/result/versions/12",
+    "behaviors/echo-shell/data/result/versions/12",
   );
   assertEquals(
     itemParamFor(items[3]),
@@ -65,7 +65,19 @@ Deno.test("parseItemParam: ignores missing and non-item values", () => {
   assertEquals(parseItemParam(""), null);
   assertEquals(parseItemParam("workflows/deploy"), null);
   assertEquals(parseItemParam("models/m"), null);
+  assertEquals(parseItemParam("behaviors/m"), null);
   assertEquals(parseItemParam("nonsense/%E0%A4%A"), null);
+});
+
+Deno.test("parseItemParam: a param shared before the behaviors rename still opens", () => {
+  assertEquals(
+    parseItemParam("models/echo-shell/data/result/versions/12"),
+    items[0],
+  );
+  assertEquals(
+    parseItemParam("behaviours/echo-shell/data/result/versions/12"),
+    items[0],
+  );
 });
 
 Deno.test("withItemParam: sets and clears the param, keeping others", () => {
@@ -74,7 +86,7 @@ Deno.test("withItemParam: sets and clears the param, keeping others", () => {
   const open = withItemParam(base, items[0]);
   assertEquals(
     new URL(open).searchParams.get("item"),
-    "models/echo-shell/data/result/versions/12",
+    "behaviors/echo-shell/data/result/versions/12",
   );
   assertEquals(new URL(open).searchParams.get("job"), "build");
   assertEquals(withItemParam(open, null), base);

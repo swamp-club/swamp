@@ -21,6 +21,7 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
 import { buildPath, isPlainLeftClick } from "../routes.ts";
+import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
 import { formatCompactCount, formatDuration } from "../lib/format.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
@@ -353,7 +354,7 @@ export function Sidebar({
           onClick={onNavigate}
         />
         <NavItem
-          label="Models"
+          label={BEHAVIORS_LABEL}
           view="models"
           active={activeView === "models"}
           onClick={onNavigate}

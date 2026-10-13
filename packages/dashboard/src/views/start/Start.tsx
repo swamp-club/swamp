@@ -38,6 +38,7 @@ import { Logo } from "../../components/Logo";
 import { copyText } from "../../components/clipboard.ts";
 import { useDocumentTitle } from "../../hooks/useDocumentTitle";
 import { RequestError } from "../../client/stream.ts";
+import { behaviorNoun, BEHAVIORS_LABEL } from "../../lib/behavior_labels.ts";
 import { AgentBadge } from "./AgentBadge.tsx";
 import { StartClient } from "./client.ts";
 import {
@@ -712,7 +713,7 @@ const SWAMP_ONE_LINER =
   "Swamp turns what you'd do by hand into automation your AI agent builds, runs and keeps.";
 
 const WORKSPACE_EXPLAINER =
-  "A workspace holds the automations your agent builds: its models, workflows and the results of every run.";
+  "A workspace holds the automations your agent builds: its behaviors, workflows and the results of every run.";
 
 const IMPORT_FOLDER_HINT = "Choose a folder that's already a swamp folder.";
 
@@ -2591,7 +2592,7 @@ function HomeScreen({ status, client, onStatus }: ScreenProps) {
           <div className="start-stats" aria-label="Built so far">
             <div className="start-stat">
               <b>{stats.models}</b>
-              <span>{stats.models === 1 ? "model" : "models"}</span>
+              <span>{behaviorNoun(stats.models)}</span>
             </div>
             <div className="start-stat">
               <b>{stats.workflows}</b>
@@ -2996,7 +2997,7 @@ function TaskPreview({ text }: { text: string }) {
   );
 }
 
-/** The models and workflows a workspace holds, by name, in a summary. */
+/** The behaviors and workflows a workspace holds, by name, in a summary. */
 function BuiltList(
   { contents, fallback }: {
     contents: StartStatus["contents"];
@@ -3021,7 +3022,7 @@ function BuiltList(
     );
   return (
     <div className="start-built">
-      {group("Models", names.models, names.moreModels)}
+      {group(BEHAVIORS_LABEL, names.models, names.moreModels)}
       {group("Workflows", names.workflows, names.moreWorkflows)}
     </div>
   );

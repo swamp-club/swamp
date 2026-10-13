@@ -44,7 +44,7 @@ function SkeletonBoxes({ count, offset }: { count: number; offset: number }) {
  */
 export function ModelDiagramSkeleton() {
   return (
-    <SkeletonRegion label="Loading model" className="mds">
+    <SkeletonRegion label="Loading behavior" className="mds">
       <SkeletonBoxes count={4} offset={0} />
       <div className="mds-model">
         <Skeleton width={180} height={20} radius={4} />

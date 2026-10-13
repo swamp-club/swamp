@@ -63,8 +63,12 @@ Deno.test("ModelDiagram: renders an old server's model from its methods and data
   assertStringIncludes(html, "echo-shell");
   assertStringIncludes(html, "execute()");
   // Outputs and reports link to their pages.
-  assertStringIncludes(html, 'href="/dashboard/models/echo-shell/data/log"');
-  assertStringIncludes(html, "/dashboard/models/echo-shell/reports/");
+  assertStringIncludes(
+    html,
+    'href="/dashboard/behaviors/echo-shell/data/log"',
+  );
+  assertStringIncludes(html, "/dashboard/behaviors/echo-shell/reports/");
+  assertStringIncludes(html, 'aria-label="Diagram of behavior echo-shell"');
   assertStringIncludes(html, 'aria-label="Output log, file · text/plain"');
   // A built-in type has no extension frame.
   assertEquals(html.includes("md-frame"), false);
