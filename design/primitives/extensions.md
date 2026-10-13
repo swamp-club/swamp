@@ -940,10 +940,13 @@ registered, and the winner does not depend on catalog order or on which attach
 path ran (swamp-club#2562):
 
 1. A member the base behavior defines always wins.
-2. Between extensions, a non-pulled source (local or source-mounted) beats a
+2. Between extensions, a local source beats a source-mounted one, which beats a
    pulled one. A source is pulled when its path is under
    `<repo>/.swamp/pulled-extensions/` or `<repo>/.swamp/config/pulled-extensions/`
-   (`isPulledExtensionPath`, which `resolveOriginConflicts` shares).
+   (`isPulledExtensionPath`, which `resolveOriginConflicts` shares), and
+   source-mounted when it is under one of the repository's `mountedSourceDirs`
+   (swamp-club#2563). Between two mounted sources the earlier
+   `.swamp-sources.yaml` entry wins.
 3. Within one tier, the lexicographically smaller canonical path wins, the same
    tie-break as I2.
 
@@ -2382,6 +2385,34 @@ vs `/Users/...`). Unpruned, these phantom rows cause cross-aggregate
 `(kind, typeNormalized)` collisions that block every catalog write, including
 `rm` of unrelated extensions.
 
+Sources mounted through `.swamp-sources.yaml` can live outside the repo root
+(a sibling checkout, or the git main worktree when the repo is a worktree). Each
+repository is built with `mountedSourceDirs`, the per-kind directories the
+current `.swamp-sources.yaml` resolves to (`resolveMountedSourceDirs`), and the
+prune keeps a row under one of them whose source file still exists
+(swamp-club#2563). Without that, every partial save (`extension pull`, `rm`,
+`update`, the loader's failure records) deleted the mounted rows until the next
+index. Keeping any out-of-root row whose source exists would be wrong: a repo
+copied from A to B, with A still on disk, would keep A's local rows, and
+`resolveOriginConflicts` treats them as local, so they would clear the type on
+B's pulled rows. `integration/extension_repository_mount_dirs_rules_test.ts`
+fails on a production construction that omits `mountedSourceDirs`.
+
+### Mounted-source conflict settle
+
+A kept mounted row can share a `(kind, type)` with a local row or with a row
+under another mount: a cold index types every file it discovers, and older
+binaries left such pairs typed.
+`ExtensionCatalogStore.settleMountedTypeConflicts` settles them in the loader's
+registration order: a local row beats a mounted one, a row under an earlier
+`.swamp-sources.yaml` entry beats a later one, then the smaller canonical path.
+`saveAll` runs it before I-Repo-1, and the loader runs it after each pass
+(through `ExtensionRepository.settleMountedTypeConflicts`). The losing mounted
+row's type is cleared, as `resolveOriginConflicts` clears a pulled row's. This
+runs whenever the repository has mount directories, including saves that pass
+`pruneUnreachable: false`. Pulled rows are left to `resolveOriginConflicts`, and
+conflicts between two local rows still fail I-Repo-1.
+
 ### Stale-source pre-flight prune
 
 In the same step, `saveAll` also deletes rows that could only mislead type
@@ -2429,14 +2460,19 @@ stale row never crashes a command (swamp-club#2490):
   extension rows the same way. Every kind registry drops a lazy entry that its
   loader did not promote.
 - **Conflict settle.** A rebundle never writes a type that a higher-ranked row
-  already holds: a local row outranks a pulled one, and a pulled row that holds
-  the type outranks any other pulled row. A cold index discovers files in
-  sorted order, so there the smallest path is indexed first and wins. After
+  already holds: a local row outranks a source-mounted one, which outranks a
+  pulled one (`compareExtensionPrecedence`), and a pulled row that holds the
+  type outranks any other pulled row. Before swamp-club#2563 the loader ranked
+  a mounted row as local and broke the tie by path, so a local override added
+  after a mounted source was indexed typeless when the mounted path sorted
+  first. A cold index discovers files in sorted order, so there the smallest
+  path is indexed first and wins. After
   each pass, pulled rows that still share a `(kind, type)`, as an older binary
   could leave them, are settled by insertion order: the earliest row keeps the
   type (`settlePulledTypeConflicts`), which is the row that binary resolved.
-  Pulled-vs-local conflicts are then resolved (`resolveOriginConflicts`), so a
-  local override ends up the only claimant.
+  Conflicts with source-mounted rows are settled next
+  (`settleMountedTypeConflicts`), then pulled-vs-local conflicts
+  (`resolveOriginConflicts`), so a local override ends up the only claimant.
   `saveAll` settles pulled conflicts only when asked
   (`settlePulledTypeConflicts: true`), which only ReconcileFromDisk does: a
   conflicting install still fails with `DuplicateTypeError`. The loader and the
@@ -2444,14 +2480,18 @@ stale row never crashes a command (swamp-club#2490):
 - **Typeless-row heal.** A row whose type was cleared for a conflict keeps an
   empty type after the winning row is gone, because its fingerprint still
   matches. The per-kind `bundle_meta` marker
-  `migration_applied:typeless-row-heal-v1:<kind>` is absent after an upgrade
-  and is cleared whenever a row that claims a type is deleted or upserted with
-  a different type. While it is absent, the next warm pass imports the existing
-  bundle of each seen, typeless `Indexed` row, and of each row it wrote
-  typeless in the same pass, to learn its type. It writes the type back only
-  when no row claims it, for at most one row per type: a local row before a
-  pulled one, then the smallest path. The pass then sets the marker. This
-  writes the catalog only and never the registry, so a pulled row cannot
+  `migration_applied:typeless-row-heal-v2:<kind>` is absent after an upgrade and
+  is cleared whenever a row that claims a type is deleted or upserted with a
+  different type. While it is absent, the next warm pass imports the existing
+  bundle of each seen, typeless `Indexed` row, and of each row it wrote typeless
+  in the same pass, to learn its type. It writes the type back only when no row
+  claims it, for at most one row per type: a local row before a source-mounted
+  one before a pulled one, then the smallest path. When every row claiming the
+  type is a source-mounted row the chosen row outranks, the type moves to the
+  chosen row instead. That repairs local overrides an older binary indexed
+  typeless behind a mounted row; the marker moved from `v1` to `v2` so the heal
+  runs once after upgrading (swamp-club#2563). The pass then sets the marker.
+  This writes the catalog only and never the registry, so a pulled row cannot
   displace a local override. The heal is also skipped, with the marker left
   unset, while the kind has a local row in a failed state whose source still
   exists: a failed row claims no type, so a broken local override would
@@ -2721,8 +2761,9 @@ scoped form never reconciles an existing aggregate. Each save still runs
 saveAll's origin-conflict resolution across the repo, as every pull does, so it
 can clear the type on a pulled row that a local or source-mounted row also
 claims. Its saves skip saveAll's prune of rows whose source is outside the repo
-root (`pruneUnreachable: false`), which would otherwise delete the rows of
-sources mounted from outside the repo. An entry with no entry-point sources on
+root (`pruneUnreachable: false`), so they cannot delete any row they did not
+create. The prune itself keeps the rows of live mounted sources only through
+the repository's `mountedSourceDirs`. An entry with no entry-point sources on
 disk is reported as skipped, and nothing is saved for it.
 
 **dryRun mode:** `execute({ dryRun: true })` collects transitions without

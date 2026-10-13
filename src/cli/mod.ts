@@ -244,6 +244,7 @@ import {
 import {
   collectDirsForKind,
   expandSourcePaths,
+  flattenSourceKindDirs,
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
@@ -547,6 +548,7 @@ export async function configureStartupExtensions(
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
   const sourceWebhooksDirs = collectDirsForKind(resolvedSources, "webhooks");
+  const mountedSourceDirs = flattenSourceKindDirs(resolvedSources);
 
   const resolveAbsoluteKindDir = (
     resolveDir: (m: RepoMarkerData | null) => string,
@@ -611,6 +613,7 @@ export async function configureStartupExtensions(
         ),
         repoRoot: repoDir,
         localManifestIdentity,
+        mountedSourceDirs,
       });
       datastoreTypeRegistry.setLoader(() =>
         loadUserDatastores(
@@ -681,6 +684,7 @@ export async function configureStartupExtensions(
               lockfileRepository,
               repoRoot: repoDir,
               localManifestIdentity,
+              mountedSourceDirs,
             }),
           }),
         );
@@ -1007,6 +1011,7 @@ export function configureExtensionAutoResolver(
   outputMode: "log" | "json",
   identity: ClientIdentity = {},
   managedLockfilePath?: string,
+  mountedSourceDirs: readonly string[] = [],
 ): void {
   const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length === 0 || !marker) {
@@ -1058,6 +1063,7 @@ export function configureExtensionAutoResolver(
             {},
           ),
           repoRoot: repoDir,
+          mountedSourceDirs,
         }),
       }),
       output: createAutoResolveOutputAdapter(outputMode),
@@ -2591,6 +2597,7 @@ async function runInvocation(
       getOutputModeFromArgs(args),
       autoResolverIdentity,
       resolveAutoResolverLockfilePath(repoDir, marker),
+      flattenSourceKindDirs(resolvedSources),
     );
   }
 
