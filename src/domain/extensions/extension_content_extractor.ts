@@ -527,14 +527,16 @@ export function extractVaultFromSource(
  * The top-level entries of an object literal body whose whole value is a
  * constant string, by key. A value that only starts with a string literal,
  * such as `"Foo" + suffix` or a template with a substitution, is computed
- * and is left out.
+ * and is left out. A repeated key takes its last entry, as it does at runtime.
  */
 function topLevelStringValues(body: string): Map<string, string> {
   const values = new Map<string, string>();
   for (const entry of extractTopLevelEntries(body)) {
-    if (entry.raw === undefined || values.has(entry.key)) continue;
-    const value = evaluateStringExpression(entry.raw);
-    if (value !== undefined) values.set(entry.key, value);
+    const value = entry.raw === undefined
+      ? undefined
+      : evaluateStringExpression(entry.raw);
+    if (value === undefined) values.delete(entry.key);
+    else values.set(entry.key, value);
   }
   return values;
 }
@@ -547,18 +549,34 @@ const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
   f: "\f",
   v: "\v",
   "0": "\0",
-  "\n": "",
 };
+
+// What may follow a constant string without changing its value.
+const TYPE_ONLY_SUFFIX = /(?:as\s+const|satisfies\s+string)\b/y;
 
 /**
  * The value of `expression` when it is one string literal or several joined
- * with `+`, with escape sequences decoded. Undefined for anything else.
+ * with `+`, with escape sequences decoded. Comments around the literals and a
+ * trailing `as const` or `satisfies string` are ignored. Undefined for
+ * anything else.
  */
 function evaluateStringExpression(expression: string): string | undefined {
   let result = "";
   let i = 0;
   const skipSpace = () => {
-    while (i < expression.length && /\s/.test(expression[i])) i++;
+    while (i < expression.length) {
+      if (/\s/.test(expression[i])) {
+        i++;
+      } else if (expression.startsWith("//", i)) {
+        const end = expression.indexOf("\n", i);
+        i = end === -1 ? expression.length : end + 1;
+      } else if (expression.startsWith("/*", i)) {
+        const end = expression.indexOf("*/", i + 2);
+        i = end === -1 ? expression.length : end + 2;
+      } else {
+        return;
+      }
+    }
   };
   while (true) {
     skipSpace();
@@ -570,6 +588,11 @@ function evaluateStringExpression(expression: string): string | undefined {
       const c = expression[i];
       if (c === quote) break;
       if (c === "\n" && quote !== "`") return undefined;
+      // A template's CRLF line ending reads as a line feed.
+      if (c === "\r" && expression[i + 1] === "\n") {
+        i++;
+        continue;
+      }
       if (quote === "`" && c === "$" && expression[i + 1] === "{") {
         return undefined;
       }
@@ -600,8 +623,15 @@ function evaluateStringExpression(expression: string): string | undefined {
     i++;
     skipSpace();
     if (i >= expression.length) return result;
-    if (expression[i] !== "+") return undefined;
-    i++;
+    if (expression[i] === "+") {
+      i++;
+      continue;
+    }
+    TYPE_ONLY_SUFFIX.lastIndex = i;
+    if (!TYPE_ONLY_SUFFIX.test(expression)) return undefined;
+    i = TYPE_ONLY_SUFFIX.lastIndex;
+    skipSpace();
+    return i >= expression.length ? result : undefined;
   }
 }
 
