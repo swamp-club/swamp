@@ -313,9 +313,15 @@ For a provider whose `datastoreControlPlaneStore()` returns a
 writer lease keeps its records (`_control/writer/`) there, at the datastore root
 whatever namespace a checkout syncs. It runs the control-plane store checks and
 the read-only datastore-wide checks, then checks that writes stay at the root
-and that a `writer/` record survives namespaced pulls and pushes. That last case
-needs `openNamespacedSyncFixture` (a fresh service and its cache directory) and
-is skipped without it; on a real bucket it leaves the namespace's index behind.
+and that a `writer/` record survives a namespaced push. That last case needs
+`openNamespacedSyncFixture` (a fresh service and its cache directory) and
+`markNamespaceUpgradedFromSolo`, which puts the backend in the state where a
+namespaced push moves root `_control/` records into the namespace: for the S3
+and GCS extensions, a legacy `<prefix>/<namespace>/.datastore-index.json`
+existing. A push into a fresh namespace never triggers that move, so without
+both the case is skipped rather than passing without checking anything. On a
+real bucket it leaves the namespace's index and the legacy index behind, and can
+leave its one data file.
 
 ```typescript
 Deno.test("writable datastore-wide control-plane store conformance", async () => {
@@ -332,6 +338,8 @@ Deno.test("writable datastore-wide control-plane store conformance", async () =>
         .datastoreControlPlaneStore!() as WritableDatastoreControlPlaneStore,
     openSyncService: async () => (await openSyncFixture()).service,
     openNamespacedSyncFixture: openSyncFixture,
+    markNamespaceUpgradedFromSolo: (namespace) =>
+      putObject(`${prefix}/${namespace}/.datastore-index.json`, "{}"),
   });
 });
 ```

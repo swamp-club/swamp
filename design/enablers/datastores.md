@@ -606,10 +606,14 @@ that builds a sync service or takes a datastore lock, each with the reason it
 is guarded.
 
 **For writers.** The S3 and GCS extensions move every root `_control/*` record
-into `<namespace>/_control/` on a namespaced push when a namespaced v2 index
-already exists (`migrateRootControlPlaneToNamespace`). A guarded binary
-refuses before it pushes, but a binary older than the guard does not, so a
-writer of the marker must leave no v2 namespaced index behind.
+into `<namespace>/_control/` on a namespaced push when the legacy namespaced
+index `<namespace>/.datastore-index.json` exists, which marks a namespace a
+solo datastore was upgraded to (`migrateRootControlPlaneToNamespace`; checked
+against `@swamp/s3-datastore` 2026.10.13.1 on ministack, swamp-club#3364). A
+push into a namespace that has only the current `_index/` layout moves
+nothing. A guarded binary refuses before it pushes, but a binary older than
+the guard does not, so a writer of the marker must leave no legacy namespaced
+index behind.
 
 **Datastore-wide writes** (swamp-club#3364). `datastoreControlPlaneStore()` may
 return a `WritableDatastoreControlPlaneStore`: the same root `_control/`, with
@@ -621,8 +625,11 @@ v3-capable provider must return a writable one.
 `@swamp-club/swamp-testing` checks one: the control-plane store contract
 (create-only races, a refused create leaving the record unchanged), the
 read-only contract above, the root scope of its writes, and that a record
-under `writer/` stays at the root through the namespaced pulls and pushes that
-trigger `migrateRootControlPlaneToNamespace`. Datastore-wide records must
+under `writer/` stays at the root through a namespaced push into a namespace
+upgraded from solo, the push that triggers `migrateRootControlPlaneToNamespace`.
+The suite cannot create that state itself, so the extension's test supplies
+`markNamespaceUpgradedFromSolo` (for S3 and GCS: write the legacy index); the
+case is skipped without it. Datastore-wide records must
 never move into a namespace: serve's own boot copy takes only the prefixes in
 `ROOT_CONTROL_PLANE_IMPORT_PREFIXES`, which exclude `writer/` and
 `datastore-format`, and the S3 and GCS extensions must skip `_control/writer/`

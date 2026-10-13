@@ -181,6 +181,9 @@ function remoteFixtures(remote: InMemoryRemote, dir: string) {
     openSyncService: (): DatastoreSyncService =>
       remote.connect(join(dir, `cache-${caches++}`)),
     openNamespacedSyncFixture,
+    // The in-memory remote never moves root records, so there is no state
+    // to put it in.
+    markNamespaceUpgradedFromSolo: () => Promise.resolve(),
   };
 }
 
@@ -207,6 +210,25 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: skips the namesp
     assertEquals(
       result.namespacedPushSkipped,
       "no openNamespacedSyncFixture was given",
+    );
+  });
+});
+
+Deno.test("assertWritableDatastoreControlPlaneStoreConformance: skips the namespaced-push case when the namespace cannot be marked upgraded from solo", async () => {
+  await withRemoteDir(async (dir) => {
+    const remote = createInMemoryRemote({ controlPlane: true });
+    const { openSyncService, openNamespacedSyncFixture } = remoteFixtures(
+      remote,
+      dir,
+    );
+    const result = await assertWritableDatastoreControlPlaneStoreConformance({
+      openDatastoreStore: () => remote.datastoreControlPlaneStore!(),
+      openSyncService,
+      openNamespacedSyncFixture,
+    });
+    assertEquals(
+      result.namespacedPushSkipped,
+      "no markNamespaceUpgradedFromSolo was given",
     );
   });
 });
@@ -287,23 +309,22 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a store 
   });
 });
 
-Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namespaced pull that moves root records into the namespace", async () => {
+Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namespaced push that moves root records into an upgraded namespace, and removes the moved record", async () => {
   await withRemoteDir(async (dir) => {
     const remote = createInMemoryRemote({ controlPlane: true });
     const fixtures = remoteFixtures(remote, dir);
     const root = remote.datastoreControlPlaneStore!();
     // Models the S3 and GCS extensions' migrateRootControlPlaneToNamespace:
-    // once the namespace has files, a namespaced pull moves every root
-    // _control record into it.
+    // a namespaced push into a namespace with a legacy index (one upgraded
+    // from solo) moves every root _control record into it.
+    const upgraded = new Set<string>();
     const migrating = (
       service: DatastoreSyncService,
     ): DatastoreSyncService => ({
       ...service,
-      pullChanged: async (options) => {
+      pushChanged: async (options) => {
         const ns = options?.namespace;
-        if (
-          ns && [...remote.files().keys()].some((k) => k.startsWith(`${ns}/`))
-        ) {
+        if (ns && upgraded.has(ns)) {
           for (const [key, data] of remote.controlPlaneRecords()) {
             if (!key.startsWith("_control/")) continue;
             const relative = key.slice("_control/".length);
@@ -311,7 +332,7 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namesp
             await root.delete(relative);
           }
         }
-        return await service.pullChanged(options);
+        return await service.pushChanged(options);
       },
     });
     await assertRejects(
@@ -324,9 +345,19 @@ Deno.test("assertWritableDatastoreControlPlaneStoreConformance: catches a namesp
             const fixture = await fixtures.openNamespacedSyncFixture();
             return { ...fixture, service: migrating(fixture.service) };
           },
+          markNamespaceUpgradedFromSolo: (namespace) => {
+            upgraded.add(namespace);
+            return Promise.resolve();
+          },
         }),
       Error,
-      "must stay at the datastore-wide root after namespaced pulls and pushes",
+      "must stay at the datastore-wide root after a namespaced push",
+    );
+    assertEquals(
+      [...remote.controlPlaneRecords().keys()].filter((key) =>
+        key.includes("/writer/")
+      ),
+      [],
     );
   });
 });
