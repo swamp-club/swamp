@@ -23,23 +23,23 @@ When a method fails with a check-related error (e.g., "Pre-flight check failed:
   ```
 - To run only the checks (without running the method) to diagnose:
   ```bash
-  swamp model validate <name> --method <method> --json
+  swamp behavior validate <name> --method <method> --json
   ```
 - To run only checks with a specific label:
   ```bash
-  swamp model validate <name> --label offline --json
+  swamp behavior validate <name> --label offline --json
   ```
 - Check source at `src/domain/models/` for the check's `execute` function to
   understand what it validates.
 
 ## Check Selection Errors
 
-When `model validate` reports `Check selection` failed:
+When `behavior validate` reports `Check selection` failed:
 
 - **"Required check X not found on model type Y"** — the definition's
-  `checks.require` references a check name that doesn't exist on the model type.
-  Fix: run `swamp model type describe <type>` to see available checks, then
-  correct the name in the YAML definition.
+  `checks.require` references a check name that doesn't exist on the behavior
+  type. Fix: run `swamp behavior type describe <type>` to see available checks,
+  then correct the name in the YAML definition.
 - **"Skipped check X not found on model type Y"** — same issue but for
   `checks.skip`. The check was removed or renamed in the extension.
 - **"Check X is in both require and skip lists"** — the definition lists the
@@ -51,7 +51,7 @@ When `model validate` reports `Check selection` failed:
 When an extension fails to load with "Check 'X' already exists on model type
 'Y'":
 
-- Two extensions define the same check name for the same model type.
+- Two extensions define the same check name for the same behavior type.
 - Fix: rename one of the checks in the extension's `checks` array.
 
 ## Required Check Won't Skip

@@ -1,6 +1,6 @@
 # Swamp Report Skill
 
-Create and run reports that analyze model and workflow executions. Reports
+Create and run reports that analyze behavior and workflow executions. Reports
 produce markdown (human-readable) and JSON (machine-readable) output. All
 commands support `--json`. Always run `swamp help report` or
 `swamp help behavior run` to confirm exact flags before executing — the output
@@ -26,10 +26,10 @@ is structured JSON.
 
 ## How Reports Work
 
-Reports run automatically after model method executions and workflow steps. They
+Reports run automatically after method executions and workflow steps. They
 analyze execution output and produce both markdown and JSON artifacts.
 
-1. **Reports are attached to model types** — each type defines its default
+1. **Reports are attached to behavior types** — each type defines its default
    reports
 2. **Definitions can override** — `reports.require` adds, `reports.skip` removes
 3. **CLI flags control per-run** — `--skip-reports`, `--report <name>`,

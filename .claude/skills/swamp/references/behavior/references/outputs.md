@@ -1,12 +1,12 @@
-# Model Outputs Reference
+# Behavior Outputs Reference
 
 ## Search Outputs
 
 Find method execution outputs.
 
 ```bash
-swamp model output search --json
-swamp model output search "my-shell" --json
+swamp behavior output search --json
+swamp behavior output search "my-shell" --json
 ```
 
 **Output shape:**
@@ -28,11 +28,11 @@ swamp model output search "my-shell" --json
 
 ## Get Output Details
 
-Get full details of a specific output or latest output for a model.
+Get full details of a specific output or latest output for a behavior.
 
 ```bash
-swamp model output get d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
-swamp model output get my-shell --json  # Latest output for model
+swamp behavior output get d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
+swamp behavior output get my-shell --json  # Latest output for behavior
 ```
 
 **Output shape:**
@@ -58,7 +58,7 @@ swamp model output get my-shell --json  # Latest output for model
 Get log content from a method execution.
 
 ```bash
-swamp model output logs d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
+swamp behavior output logs d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
 ```
 
 **Output shape:**
@@ -75,7 +75,7 @@ swamp model output logs d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
 Get data artifact content from a method execution.
 
 ```bash
-swamp model output data d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
+swamp behavior output data d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5 --json
 ```
 
 **Output shape:**

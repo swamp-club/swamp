@@ -69,7 +69,7 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 ### Dynamic Targeting
 
 During forEach expansion, `self.*` expressions resolve in **any** task field —
-the step `name`, model targets (`modelIdOrName`, `modelName`, `methodName`),
+the step `name`, behavior targets (`modelIdOrName`, `modelName`, `methodName`),
 workflow targets (`workflowIdOrName`), `inputs`, and shell `args` — so each
 iteration can pick a different target:
 
@@ -122,7 +122,7 @@ expansion — they resolve at their own runtime/execution stage.
 `self._index` exists only inside a forEach step. It counts iterations in the
 order they run: array order, or the order object entries are iterated. It gives
 each iteration a slug-safe identifier when the item itself is not one, such as a
-file path, so each iteration can target its own model:
+file path, so each iteration can target its own behavior:
 
 ```yaml
 steps:
@@ -140,14 +140,15 @@ steps:
 
 In CEL string concatenation, convert it with `string(self._index)`. An item
 named `_index` shadows the index. The index follows position, not the item, so
-reordering `forEach.in` gives an item a different index; scope index-based model
-names to the run (as `run.id` does above) rather than reusing them across runs.
+reordering `forEach.in` gives an item a different index; scope index-based
+behavior names to the run (as `run.id` does above) rather than reusing them
+across runs.
 
 ### forEach.in with Data Helpers
 
 `forEach.in` awaits async CEL expressions during expansion, so it accepts data
 helpers directly. A common pattern is iterating over every instance produced by
-a factory model:
+a factory behavior:
 
 ```yaml
 jobs:
@@ -285,7 +286,7 @@ each iteration its own versioned storage and `latest` symlink.
 
 ## Step Task Inputs
 
-When a step calls a model method, pass inputs to the model:
+When a step calls a method, pass inputs to the behavior:
 
 ```yaml
 steps:
@@ -300,14 +301,15 @@ steps:
           replicas: ${{ inputs.replicas }}
 ```
 
-The `inputs` field on `model_method` tasks passes values to the model's input
+The `inputs` field on `model_method` tasks passes values to the behavior's input
 schema, enabling dynamic configuration at workflow runtime.
 
 ## Expressions in Workflows
 
-Model inputs can contain CEL expressions using `${{ <expression> }}` syntax. To
-keep another service's template text literal in the same value, pass it through
-with `literal()`: `${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
+Behavior inputs can contain CEL expressions using `${{ <expression> }}` syntax.
+To keep another service's template text literal in the same value, pass it
+through with `literal()`:
+`${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
 
 ### Environment Variables
 
@@ -423,6 +425,6 @@ workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
 # Find data from a specific step
 stepData: ${{ data.findByTag("step", "build.compile") }}
 
-# Find all instances from a factory model's output spec
+# Find all instances from a factory behavior's output spec
 subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 ```

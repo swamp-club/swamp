@@ -85,7 +85,7 @@ When `swamp serve` starts, it scans all workflows and registers cron entries for
 any with `trigger.schedule`. A filesystem watcher monitors for changes — adding,
 modifying, or removing a schedule takes effect without restart.
 
-**Key behaviors:**
+**Key points:**
 
 - Overlap prevention: if still running from previous trigger, next trigger skips
 - Concurrency: one scheduled run at a time by default; raise it with
@@ -161,7 +161,7 @@ rewrite that file, dropping YAML comments, and are refused when it is not
 writable (e.g. a read-only ConfigMap mount): edit it directly, then run
 `swamp serve reload` (with `--hot-reload`) or restart serve.
 
-**`set` behavior:** `--schedule` is required. Each call replaces the entire
+**`set` semantics:** `--schedule` is required. Each call replaces the entire
 override entry (not a merge). To keep existing inputs, re-specify them.
 
 **`get` output:** Shows three sections — built-in (from workflow YAML), override
@@ -175,7 +175,7 @@ is `github` (default), `jira`, `linear`, `stripe`, `slack`, `generic` (requires
 header; optional prefix), or a webhook extension type such as `@swamp/telegram`
 (see
 [../extension/references/webhook/api.md](../extension/references/webhook/api.md)).
-Omitting the scheme preserves the original behavior. The secret field supports
+Omitting the scheme keeps the `github` default. The secret field supports
 indirection to avoid exposing secrets in argv: `@env=VAR_NAME` reads from an
 environment variable, `@file=/path` reads from a file (trailing newline
 trimmed). Plain strings are literal secrets.
@@ -231,7 +231,7 @@ inputs match required method/workflow arguments.
 8. Step inputs match required arguments — for `model_method` tasks, checks that
    all required method arguments are provided in the step's `inputs:` block. For
    `workflow` tasks, checks that all required workflow inputs are provided.
-   Dynamic CEL references (`${{ ... }}`) in model/workflow names are skipped.
+   Dynamic CEL references (`${{ ... }}`) in behavior/workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json
@@ -421,8 +421,8 @@ swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 build.compile -
 
 ### Run Tracking
 
-Workflow runs and their individual model method step executions are tracked in
-the SQLite run tracker (`.swamp/run_tracker.db`). Use `swamp run history` to see
+Workflow runs and their individual method step executions are tracked in the
+SQLite run tracker (`.swamp/run_tracker.db`). Use `swamp run history` to see
 both workflow-level and step-level runs in a single view:
 
 ```bash
@@ -436,10 +436,10 @@ A run whose process was killed (for example by a second Ctrl-C) stays `running`
 with a dead pid. `swamp run doctor --fix` or
 `swamp workflow recover <workflow> --run <id>` marks it `interrupted`, with the
 in-flight step `unknown`, and marks the step's method run `cancelled` in
-`swamp model method history`. Then resume it with `swamp workflow resume`.
+`swamp behavior history`. Then resume it with `swamp workflow resume`.
 
 The history output shows the `KIND` column as `workflow` or `method`, with the
-workflow name or model/method name respectively.
+workflow name or behavior/method name respectively.
 
 ## Workflow Inputs
 
@@ -495,7 +495,7 @@ the workflow itself contains (data from `data.latest`, step outputs and forEach
 items behaves the same way). They are also **recorded** (after type coercion and
 schema defaults) in the run record, the history index that
 `workflow history search --input` filters on, any child workflow run they are
-forwarded to, evaluated model definitions, and the data of any model that
+forwarded to, evaluated behavior definitions, and the data of any behavior that
 records its arguments. This holds for `workflow resume --input`, `--input-file`,
 and `--stdin` too; the run record's `resumeInputs` lists only the key names, but
 the merged values persist everywhere else.
@@ -529,7 +529,7 @@ apiKey: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
 - If a secret was already passed as an input: rotate it, then remove the runs
   (`swamp run gc --older-than` for finished runs, or `swamp workflow delete`),
   which also removes each run's `.swamp/workflows-evaluated/runs/<run-id>/`
-  snapshot, and the affected `.swamp/definitions-evaluated/` files and model
+  snapshot, and the affected `.swamp/definitions-evaluated/` files and behavior
   data (`swamp data delete <model> <data_name>`), which neither command removes.
   Suspended and running runs are never removed by `run gc`.
 
@@ -544,7 +544,7 @@ swamp workflow evaluate my-workflow --input environment=dev --json
 swamp workflow evaluate --all --json
 ```
 
-**Key behaviors:**
+**Key points:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
 - forEach steps are expanded into concrete steps with resolved `modelIdOrName`,
@@ -633,7 +633,7 @@ jobs:
         task: ... # no affinity — dispatched independently
 ```
 
-**Key behaviors:**
+**Key points:**
 
 - Workflow-level affinity scopes to the entire run; job-level scopes to the job
 - If the pinned worker disconnects or starts draining mid-group, steps fail with
@@ -760,7 +760,7 @@ steps:
       modelIdOrName: liquid-handler
       methodName: dispense
 
-  # Method call — invoke a model method to check external state
+  # Method call — invoke a method to check external state
   - name: create-instance
     guard: >-
       ${{ model.method("infra", "check-exists",
@@ -774,11 +774,11 @@ steps:
 **`model.method()` in guards:**
 
 `model.method(modelName, methodName)` or
-`model.method(modelName, methodName, inputs)` invokes a model method and returns
-the content of its first resource data output (parsed as JSON if possible). This
+`model.method(modelName, methodName, inputs)` invokes a method and returns the
+content of its first resource data output (parsed as JSON if possible). This
 lets guards check external state by running a lightweight probe method. For
-command/shell models the return value is `{exitCode, stdout, stderr, ...}`, so
-guard expressions typically access a specific field like `.stdout`.
+command/shell behaviors the return value is `{exitCode, stdout, stderr, ...}`,
+so guard expressions typically access a specific field like `.stdout`.
 
 **forEach compatibility:** Guard expressions can reference `self.*`, so each
 expanded iteration evaluates its own guard independently:
@@ -1145,12 +1145,12 @@ output from prior steps:
 data.latest("<modelName>", "<dataName>").attributes.<field>
 ```
 
-The second argument is the data name the model wrote, which is not always its
+The second argument is the data name the behavior wrote, which is not always its
 output spec name — see
-[data-chaining.md](references/data-chaining.md#choosing-model-vs-datalatest-expressions).
+[data-chaining.md](references/data-chaining.md#choosing-data-accessors-vs-model-expressions).
 The result of `data.latest()` is a `DataRecord` — access fields via
 `.attributes.<field>`, NOT `.content.<field>`. The `.attributes` map contains
-the structured output data that models produce.
+the structured output data that behaviors produce.
 
 **Dynamic messages:** The `message` field supports `${{ }}` expression
 interpolation. Use this to include actual values in failure messages:
@@ -1166,7 +1166,7 @@ interpolation. Use this to include actual values in failure messages:
     severity: high
 ```
 
-**Severity and failure behavior:**
+**Severity and failure handling:**
 
 - An assert step that fails records `status: failed` with the resolved message
 - By default, ANY failed assert fails the job and workflow (like any other step)
@@ -1255,7 +1255,7 @@ are treated as allowed failures.
 # Only fail on high-severity assertions (treat low/medium as warnings)
 swamp workflow run my-checks --fail-on high
 
-# Default behavior — any failure fails the run
+# Default — any failure fails the run
 swamp workflow run my-checks --fail-on low
 ```
 
@@ -1419,11 +1419,11 @@ End-to-end workflow creation:
 
 | Need                       | Use Skill               |
 | -------------------------- | ----------------------- |
-| Create/run models          | `swamp-model`           |
+| Create/run behaviors       | `swamp-model`           |
 | Vault management           | `swamp-vault`           |
 | Repository structure       | `swamp-repo`            |
-| Manage model data          | `swamp-data`            |
-| Create custom models       | `swamp-extension`       |
+| Manage behavior data       | `swamp-data`            |
+| Create custom behaviors    | `swamp-extension`       |
 | Understand swamp internals | `swamp-troubleshooting` |
 
 ## References

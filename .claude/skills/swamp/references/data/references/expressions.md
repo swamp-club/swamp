@@ -1,10 +1,10 @@
 # Accessing Data in Expressions
 
-Use CEL expressions to access model data in workflows and model inputs.
+Use CEL expressions to access behavior data in workflows and behavior inputs.
 
-**Note:** `model.<name>.resource.<spec>` requires the model to have previously
-produced data (a method was run that called `writeResource`). If no data exists
-yet, accessing `.resource` will fail with "No such key". Use
+**Note:** `model.<name>.resource.<spec>` requires the behavior to have
+previously produced data (a method was run that called `writeResource`). If no
+data exists yet, accessing `.resource` will fail with "No such key". Use
 `swamp data list <model-name>` to verify data exists.
 
 ```yaml
@@ -83,13 +83,13 @@ current: ${{ data.latest("my-model", "output").attributes.result }}
 # List versions for conditional logic
 hasHistory: ${{ size(data.listVersions("my-model", "state")) > 1 }}
 
-# Find all resources across models
+# Find all resources across behaviors
 allResources: ${{ data.findByTag("type", "resource") }}
 
 # Find data from a specific workflow
 workflowData: ${{ data.findByTag("workflow", "my-workflow") }}
 
-# Find all instances from a factory model's output spec
+# Find all instances from a factory behavior's output spec
 subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 
 # Query with a multi-field predicate — reach for data.query() when no
@@ -106,11 +106,11 @@ manifest: ${{ data.query('tags.role == "manifest"', '{"name": name, "version": v
   version of a resource. Works both within a workflow run (in-memory updates)
   and across workflow runs (persisted data).
 - `model.<name>.file.<specName>.<instanceName>` — accesses file metadata (path,
-  size, contentType). Same behavior as resource expressions.
+  size, contentType). Works like resource expressions.
 - `data.latest(modelName, dataName)` — reads the latest persisted data for a
-  model. Sees writes made by earlier steps in the same workflow run.
+  behavior. Sees writes made by earlier steps in the same workflow run.
 - Use `data.version()` function for specific versions
-- Use `data.findByTag()` to query across models
+- Use `data.findByTag()` to query across behaviors
 - See the workflow skill's
   [data-chaining reference](../../workflow/references/data-chaining.md) for
   detailed guidance on expression choice in workflows.

@@ -65,7 +65,7 @@ Deno.test("gateway routing: guide topics are discovered from the references dire
     true,
     "No guide topics discovered under swamp/references — discovery is broken",
   );
-  for (const topic of ["model", "workflow", "data"]) {
+  for (const topic of ["behavior", "workflow", "data"]) {
     assertEquals(
       EXPECTED_GUIDE_TOPICS.includes(topic),
       true,

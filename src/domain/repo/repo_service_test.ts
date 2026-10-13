@@ -515,6 +515,76 @@ Deno.test("RepoService.init creates settings.local.json for claude", async () =>
   });
 });
 
+Deno.test("RepoService.init: each behavior permission sits right after its legacy model twin", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(tempDir, ".claude", "settings.local.json")),
+    );
+    const allow: string[] = settings.permissions.allow;
+
+    const twins: Array<[string, string]> = [
+      ["model type search", "behavior type search"],
+      ["model type describe", "behavior type describe"],
+      ["model search", "behavior search"],
+      ["model create", "behavior create"],
+      ["model edit", "behavior edit"],
+      ["model delete", "behavior delete"],
+      ["model get", "behavior get"],
+      ["model validate", "behavior validate"],
+      ["model output", "behavior output"],
+      ["model method history", "behavior history"],
+    ];
+    for (const [legacy, preferred] of twins) {
+      const legacyIndex = allow.indexOf(`Bash(swamp ${legacy}:*)`);
+      assertEquals(legacyIndex >= 0, true, `missing legacy entry: ${legacy}`);
+      assertEquals(
+        allow[legacyIndex + 1],
+        `Bash(swamp ${preferred}:*)`,
+        `expected ${preferred} right after ${legacy}`,
+      );
+    }
+
+    // run, cancel and evaluate were never pre-approved, and list is an alias of
+    // search that the legacy list does not approve either; all stay unapproved.
+    for (const command of ["run", "cancel", "evaluate", "list"]) {
+      assertEquals(
+        allow.some((entry) =>
+          entry.startsWith(`Bash(swamp behavior ${command}`)
+        ),
+        false,
+        `behavior ${command} must not be pre-approved`,
+      );
+    }
+    assertEquals(
+      allow.filter((entry) => entry.startsWith("Bash(swamp behavior ")).length,
+      twins.length,
+    );
+  });
+});
+
+Deno.test("RepoService.init generates CLAUDE.md with behavior commands and the legacy-spelling note", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = testService("0.1.0", tempDir);
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    const content = await Deno.readTextFile(join(tempDir, "CLAUDE.md"));
+
+    assertStringIncludes(content, "swamp behavior run <name> <method>");
+    assertStringIncludes(content, "swamp behavior get <name> --json");
+    assertStringIncludes(
+      content,
+      "Every `swamp model …` spelling remains supported.",
+    );
+    // The legacy note is the only place the model spelling appears.
+    assertEquals(content.split("swamp model").length - 1, 1);
+  });
+});
+
 Deno.test("RepoService.init does not overwrite existing settings.local.json", async () => {
   await withTempDir(async (tempDir) => {
     // Create existing settings
@@ -1012,7 +1082,7 @@ Deno.test("RepoService.init generates CLAUDE.md with extension search guidance",
 
     assertStringIncludes(content, "extension search");
     assertStringIncludes(content, "Search before you build");
-    assertStringIncludes(content, "swamp model type search");
+    assertStringIncludes(content, "swamp behavior type search");
   });
 });
 
@@ -1044,7 +1114,7 @@ Deno.test("RepoService.init generates CLAUDE.md with anti-bypass guidance", asyn
 
     assertStringIncludes(content, "Use swamp, don't bypass it");
     assertStringIncludes(content, "swamp data query");
-    assertStringIncludes(content, "swamp model type search");
+    assertStringIncludes(content, "swamp behavior type search");
     assertStringIncludes(
       content,
       "the anti-pattern is bypassing swamp entirely",
@@ -1071,6 +1141,7 @@ Deno.test("RepoService.init generates CLAUDE.md without a session-start model se
 
     assertEquals(content.includes("At the start of every conversation"), false);
     assertEquals(section.includes("swamp model search"), false);
+    assertEquals(section.includes("swamp behavior search"), false);
     assertStringIncludes(section, "invoke the\n`swamp-getting-started` skill");
     assertStringIncludes(section, "use the `swamp` skill");
   });
@@ -1095,6 +1166,7 @@ Deno.test("RepoService.init: path-style custom tool instructions point at gettin
 
     assertEquals(content.includes("At the start of every conversation"), false);
     assertEquals(section.includes("swamp model search"), false);
+    assertEquals(section.includes("swamp behavior search"), false);
     assertStringIncludes(
       section,
       "`.myagent/skills/swamp-getting-started/SKILL.md`",
@@ -3807,6 +3879,46 @@ Deno.test("RepoService.upgrade removes superseded skills from the repo-local cla
     assertEquals(await detectSupersededSkills(skillsDir), []);
     const stat = await Deno.stat(join(skillsDir, "my-skill"));
     assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("RepoService.upgrade removes the moved swamp model reference folder from the global skills dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoPath = RepoPath.create(tempDir);
+    await testService("0.1.0", tempDir).init(repoPath, { tools: ["claude"] });
+    // The global skills dir testService installs to under its scratch home.
+    const refs = join(
+      tempDir,
+      "test-home",
+      ".claude",
+      "skills",
+      "swamp",
+      "references",
+    );
+    await ensureDir(join(refs, "model", "references"));
+    await Deno.writeTextFile(join(refs, "model", "guide.md"), "old");
+    await Deno.writeTextFile(
+      join(refs, "model", "references", "examples.md"),
+      "old",
+    );
+
+    await testService("0.2.0", tempDir).upgrade(repoPath);
+
+    await assertRejects(
+      () => Deno.lstat(join(refs, "model")),
+      Deno.errors.NotFound,
+    );
+    assertEquals(
+      (await Deno.stat(join(refs, "behavior", "guide.md"))).isFile,
+      true,
+    );
+    assertEquals(
+      (await Deno.stat(
+        join(refs, "extension", "references", "model", "api.md"),
+      ))
+        .isFile,
+      true,
+    );
   });
 });
 

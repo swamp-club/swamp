@@ -75,7 +75,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
 const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
 
 const GUIDE_DIRS: Record<string, string> = {
-  "model": "references/model",
+  "behavior": "references/behavior",
   "workflow": "references/workflow",
   "data": "references/data",
   "extension": "references/extension",

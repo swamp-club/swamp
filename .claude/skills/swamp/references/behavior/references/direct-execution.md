@@ -1,6 +1,6 @@
 # Direct Type Execution
 
-The default way to run model methods. Pass inputs at runtime without managing
+The default way to run methods. Pass inputs at runtime without managing
 definition YAML files — the right choice for dynamic inputs, scripts, CI,
 workflows, and any case where you don't need a persistent definition.
 
@@ -29,13 +29,13 @@ ambiguous keys, unknown keys are rejected.
 ## Storage
 
 Auto-created definitions live in `.swamp/auto-definitions/{type}/{name}.yaml`.
-They exist for data ownership boundaries — giving model data a home without
+They exist for data ownership boundaries — giving behavior data a home without
 requiring a hand-authored definition file.
 
 - Not git-tracked (local runtime state)
-- Not visible in `swamp model search` or `swamp model list` (by design)
-- Findable by name for `model get`, `behavior run`, workflows
-- `swamp model get` shows `Auto-created: yes` for these definitions
+- Not visible in `swamp behavior search` or `swamp behavior list` (by design)
+- Findable by name for `behavior get`, `behavior run`, workflows
+- `swamp behavior get` shows `Auto-created: yes` for these definitions
 - Synced via datastores when configured (shared across team)
 
 ## Input Routing
@@ -48,11 +48,11 @@ When the type declares both `globalArguments` and method `arguments` schemas,
    arguments
 3. Keys in neither schema → rejected with error listing valid keys
 
-## When to Use `model create` Instead
+## When to Use `behavior create` Instead
 
-Use explicit `model create` when you want to:
+Use explicit `behavior create` when you want to:
 
-- Manage values in the definition file (edit with `model edit`)
+- Manage values in the definition file (edit with `behavior edit`)
 - Version-control the definition in git
 - Use CEL expressions in global arguments
 - Share a definition across multiple workflow steps

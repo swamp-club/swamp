@@ -694,7 +694,7 @@ to the run's inbound context until they have all finished.
 
 ### Arguments Holding Another Service's Template Syntax
 
-`swamp model validate` (and every workflow step) checks `{{ ... }}` and
+`swamp behavior validate` (and every workflow step) checks `{{ ... }}` and
 `${ ... }` text. Text on a swamp root (`self`, `env`, `inputs`, `model`, `data`,
 ...) is treated as a dropped `$` and fails, even when it belongs to a vendor
 (Datadog `{{env.name}}`, Terraform `${data.x.id}`). Other text warns. If a
