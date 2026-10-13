@@ -1754,6 +1754,7 @@ export {
 export {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
+  type CustomModelLockSource,
   datastoreLockRelease,
   type DatastoreLockReleaseData,
   type DatastoreLockReleaseDeps,
