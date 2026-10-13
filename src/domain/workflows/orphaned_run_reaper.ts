@@ -190,6 +190,62 @@ export function trackerShowsDeadOwner(
     liveness.isDead(tracked.pid);
 }
 
+/** What {@link goneInstanceIds} needs to judge a serve instance's rows. */
+export interface GoneInstanceCheck {
+  /** The caller's host and serve instance id, and a pid check for this host. */
+  readonly liveness: OwnerLiveness & { readonly instanceId: string };
+  /** The caller's own pid, which says nothing about another instance's row. */
+  readonly selfPid: number;
+  /** Whether the control-plane store holds a heartbeat for the instance. */
+  hasHeartbeat(instanceId: string): boolean;
+  /** How old a row must be before it is judged on its age. */
+  readonly staleTtlMs: number;
+  readonly now: number;
+}
+
+/**
+ * The serve instances whose `running` tracker rows show they are gone: not
+ * the caller, no heartbeat in the control-plane store, and every row either
+ * owned on this host by a dead pid, or with a tracker heartbeat older than
+ * the stale TTL. A peer that reaps a crashed instance deletes its heartbeat
+ * without seeing its runs, so a missing heartbeat is the only signal left to
+ * the instance that restarts on the same tracker (swamp-club#3355).
+ *
+ * A row is judged on its age when its pid cannot be checked here: it is
+ * owned on another host, or it carries the caller's own pid. A restarted
+ * container reuses its pid, but so does a live sibling container with the
+ * same hostname, and only a row its owner stopped refreshing tells them
+ * apart. The age wait also covers a live instance sharing this tracker that
+ * has started listening but not yet written its first heartbeat. A row on
+ * this host with a live pid always keeps its instance. As in
+ * {@link trackerShowsDeadOwner}, a pid that is not the caller's is checked
+ * against this host's process table.
+ */
+export function goneInstanceIds(
+  running: readonly ActiveRun[],
+  check: GoneInstanceCheck,
+): Set<string> {
+  const gone = new Set<string>();
+  const kept = new Set<string>();
+  for (const row of running) {
+    const id = row.instanceId;
+    if (row.status !== "running" || !id || kept.has(id)) continue;
+    if (id === check.liveness.instanceId || check.hasHeartbeat(id)) continue;
+    const pidCheckable = row.hostname === check.liveness.hostname &&
+      row.pid !== check.selfPid;
+    const ownerGone = pidCheckable
+      ? check.liveness.isDead(row.pid)
+      : check.now - row.heartbeatAt.getTime() > check.staleTtlMs;
+    if (ownerGone) {
+      gone.add(id);
+    } else {
+      gone.delete(id);
+      kept.add(id);
+    }
+  }
+  return gone;
+}
+
 /**
  * Whether a run record says `running` while its tracker row shows the owner
  * is gone. A run with no tracker row is never judged: the record carries no

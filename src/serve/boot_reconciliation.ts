@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { hostname } from "node:os";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { runInRootUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
@@ -32,9 +33,13 @@ import type {
   DatastoreSyncService,
   MarkDirtyHook,
 } from "../domain/datastore/datastore_sync_service.ts";
-import { InstanceHeartbeatService } from "./instance_heartbeat.ts";
+import {
+  DEFAULT_STALE_TTL_MS,
+  InstanceHeartbeatService,
+} from "./instance_heartbeat.ts";
 import { cleanupActiveRunsForInstance } from "./active_run_tracker.ts";
 import type { PendingRunEntry } from "../infrastructure/persistence/run_tracker_store.ts";
+import { isProcessGone } from "../infrastructure/runtime/process.ts";
 import { isSensitiveHeader } from "./webhook.ts";
 import {
   SERVER_TOKEN_MODEL_TYPE,
@@ -45,6 +50,13 @@ import type {
   VaultProvider,
 } from "../domain/vaults/vault_provider.ts";
 import type { WorkflowRunRepository } from "../domain/workflows/repositories.ts";
+import {
+  cancelOrphanedMethodRuns,
+  goneInstanceIds,
+  type MethodRunOutputs,
+  type OwnerLiveness,
+  warnUnsettledMethodRuns,
+} from "../domain/workflows/orphaned_run_reaper.ts";
 
 const logger = getSwampLogger(["serve", "boot-reconciliation"]);
 
@@ -511,6 +523,18 @@ export async function replayPendingRuns(
 
 export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * How often a live owner refreshes its tracker rows (the interval the
+ * workflow execution service heartbeats on). A row owned on another host is
+ * only judged once it has missed two of these, however small `--stale-ttl`
+ * is.
+ */
+const TRACKER_ROW_HEARTBEAT_MS = 30_000;
+
+/** What a method run's output is cancelled with when its instance is gone. */
+const INSTANCE_GONE_REASON =
+  "cancelled: the serve instance running this method run is gone";
+
 export interface ReconcileRemoteInterruptedRunsDeps {
   controlPlaneStore: ControlPlaneStore;
   instanceId: string;
@@ -524,11 +548,32 @@ export interface ReconcileRemoteInterruptedRunsDeps {
    * (swamp-club#3056).
    */
   markDirty?: MarkDirtyHook;
+  /**
+   * Where method-run outputs are read and cancelled. Without it a dead
+   * instance's method-run rows are interrupted but left unsettled: nothing
+   * here retries them, but a settled row would hide a `running` output from
+   * the dead-owner settle that boot and `run doctor --fix` run for rows
+   * owned on this host.
+   */
+  outputRepo?: MethodRunOutputs;
+  /**
+   * How a tracker row's host and pid are judged. Defaults to this host's
+   * name and `isProcessGone`: the pass runs on every tick against pids that
+   * may have been reused, so the probe must not disturb the process.
+   */
+  ownerLiveness?: Pick<OwnerLiveness, "hostname" | "isDead">;
+  /** This process's pid. Defaults to `Deno.pid`. */
+  selfPid?: number;
 }
 
 /**
  * Scan heartbeats from the control-plane store and interrupt runs
  * belonging to instances that have gone stale (crashed / lost network).
+ *
+ * Runs in the local tracker whose instance has no heartbeat at all are
+ * interrupted too (see {@link goneInstanceIds}): a peer that claimed the
+ * instance first deleted its heartbeat without seeing these runs
+ * (swamp-club#3355).
  *
  * When putIfAbsent is available, claims each stale instance before
  * reaping to prevent multiple instances from reconciling the same peer.
@@ -542,7 +587,6 @@ export async function reconcileRemoteInterruptedRuns(
   deps: ReconcileRemoteInterruptedRunsDeps,
 ): Promise<number> {
   const heartbeatKeys = await deps.controlPlaneStore.list("heartbeats/");
-  if (heartbeatKeys.length === 0) return 0;
 
   const staleInstances: Array<{ instanceId: string; heartbeatKey: string }> =
     [];
@@ -556,8 +600,6 @@ export async function reconcileRemoteInterruptedRuns(
       staleInstances.push({ instanceId: record.instanceId, heartbeatKey: key });
     }
   }
-
-  if (staleInstances.length === 0) return 0;
 
   const claimedInstanceIds: string[] = [];
   const claimedHeartbeatKeys: string[] = [];
@@ -584,17 +626,70 @@ export async function reconcileRemoteInterruptedRuns(
     claimedHeartbeatKeys.push(heartbeatKey);
   }
 
-  if (claimedInstanceIds.length === 0) return 0;
-
-  const claimedSet = new Set(claimedInstanceIds);
   const allRunning = deps.runTracker.findAllRunning();
+  const heartbeatIds = new Set(
+    heartbeatKeys.map((key) => key.slice("heartbeats/".length)),
+  );
+  // Gone instances are not claimed: their rows are in this tracker only, so
+  // the instances that can see them share it, and two that judge the same
+  // instance in one tick write the same interruption twice.
+  const deadSet = goneInstanceIds(allRunning, {
+    liveness: {
+      ...(deps.ownerLiveness ??
+        { hostname: hostname(), isDead: isProcessGone }),
+      instanceId: deps.instanceId,
+    },
+    selfPid: deps.selfPid ?? Deno.pid,
+    hasHeartbeat: (id) => heartbeatIds.has(id),
+    staleTtlMs: Math.max(
+      deps.staleTtlMs ?? DEFAULT_STALE_TTL_MS,
+      2 * TRACKER_ROW_HEARTBEAT_MS,
+    ),
+    now: Date.now(),
+  });
+  for (const claimedId of claimedInstanceIds) deadSet.add(claimedId);
+
+  if (deadSet.size === 0) return 0;
+
   let reaped = 0;
 
-  for (const run of allRunning) {
-    if (!run.instanceId) continue;
-    if (run.status !== "running") continue;
-    if (!claimedSet.has(run.instanceId)) continue;
-    deps.runTracker.complete(run.id, "interrupted", "remote_instance_dead");
+  const deadRows = allRunning.filter((run) =>
+    run.status === "running" && run.instanceId !== undefined &&
+    deadSet.has(run.instanceId)
+  );
+  const methodRows = deadRows.filter((run) => run.runKind === "model_method");
+  // A reason settles a row, and a settled method-run row is never looked at
+  // again, so a method-run row only gets one once its output is cancelled.
+  const settledMethodRows = new Set<string>();
+  if (deps.outputRepo && methodRows.length > 0) {
+    const outputRepo = deps.outputRepo;
+    try {
+      const cancellation = await runInRootUnitOfWork(
+        { markDirty: deps.markDirty },
+        { flush: undefined },
+        () =>
+          cancelOrphanedMethodRuns(
+            outputRepo,
+            methodRows,
+            INSTANCE_GONE_REASON,
+          ),
+      );
+      for (const row of cancellation.closed) settledMethodRows.add(row.id);
+      warnUnsettledMethodRuns(
+        cancellation.failed.length,
+        cancellation.errors,
+      );
+    } catch (err: unknown) {
+      warnUnsettledMethodRuns(methodRows.length, [err]);
+    }
+  }
+
+  for (const run of deadRows) {
+    if (run.runKind === "model_method" && !settledMethodRows.has(run.id)) {
+      deps.runTracker.complete(run.id, "interrupted");
+    } else {
+      deps.runTracker.complete(run.id, "interrupted", "remote_instance_dead");
+    }
     reaped++;
     logger.warn(
       "Reaped run {runId} from dead remote instance {instanceId}",
@@ -628,14 +723,17 @@ export async function reconcileRemoteInterruptedRuns(
             "running",
           );
           for (const { run, workflowId } of yamlRuns) {
-            if (!run.instanceId || !claimedSet.has(run.instanceId)) continue;
+            if (!run.instanceId || !deadSet.has(run.instanceId)) continue;
             if (run.status !== "running") continue;
+            // Read before the interrupt: it hands a resumed run back to the
+            // owner it had before the resume.
+            const deadInstanceId = run.instanceId;
             run.interruptOrphaned("remote_instance_dead");
             await workflowRunRepo.save(workflowId, run);
             reaped++;
             logger.warn(
               "Reaped YAML workflow run {runId} from dead remote instance {instanceId}",
-              { runId: run.id, instanceId: run.instanceId },
+              { runId: run.id, instanceId: deadInstanceId },
             );
           }
         },
