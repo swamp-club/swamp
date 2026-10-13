@@ -265,6 +265,17 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
     stateDir,
     catalog: new V3Catalog(catalogStore),
   });
+  // One sink for every engine on this handle: units serialize appends to a
+  // partition per sink, so contexts that share the handle queue behind each
+  // other. It refuses a commit once the process's writer lease is lost.
+  const assertWriterCurrent = options.assertWriterCurrent;
+  const sink = assertWriterCurrent === undefined ? commitStore : {
+    head: commitStore.head.bind(commitStore),
+    append: (commit: Commit) => {
+      assertWriterCurrent();
+      return commitStore.append(commit);
+    },
+  };
   // Bounds every commit's content uploads for the process's lifetime; close
   // aborts what is still in flight.
   const lifetime = new AbortController();
@@ -294,14 +305,6 @@ export function openV3Datastore(options: OpenV3DatastoreOptions): V3Datastore {
       });
     },
     engineFor(markDirty, runRepo, engineOptions = {}) {
-      const assertWriterCurrent = options.assertWriterCurrent;
-      const sink = assertWriterCurrent === undefined ? commitStore : {
-        head: commitStore.head.bind(commitStore),
-        append: (commit: Commit) => {
-          assertWriterCurrent();
-          return commitStore.append(commit);
-        },
-      };
       const fenced = () => {
         const fence = options.writerFence?.();
         return fence === undefined ? {} : { fence };

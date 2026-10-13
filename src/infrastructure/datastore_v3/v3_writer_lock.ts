@@ -187,7 +187,14 @@ export async function acquireV3WriterLock(
     // the attempt; one the renewal timer made without waiting may leave
     // the hold lost, so look again after it.
     while (entry.hold?.lost !== undefined && entry.retake !== undefined) {
-      await (entry.retaking ??= retaking(entry, datastorePath, maxWaitMs));
+      const joined = entry.retaking !== undefined;
+      try {
+        await (entry.retaking ??= retaking(entry, datastorePath, maxWaitMs));
+      } catch (error) {
+        // An attempt this caller joined may not have waited (the renewal
+        // timer's): make one that waits as long as this caller does.
+        if (!(joined && error instanceof V3WriterBusyError)) throw error;
+      }
     }
   } catch (error) {
     entry.refs--;

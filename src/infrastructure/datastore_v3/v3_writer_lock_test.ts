@@ -382,6 +382,28 @@ Deno.test("acquireV3WriterLock: a retake that fails after every other caller rel
   });
 });
 
+Deno.test("acquireV3WriterLock: a caller that waits is not refused by an attempt it joined that did not wait", async () => {
+  await withTempDir(async (dir) => {
+    const lifetime = await acquireV3WriterLock(dir);
+    const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+    try {
+      await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+      // The first caller's attempt does not wait, as the renewal timer's
+      // does not; the second joins it, but is willing to wait.
+      const quick = acquireV3WriterLock(dir, { maxWaitMs: 0 });
+      const patient = acquireV3WriterLock(dir, { maxWaitMs: 5_000 });
+      await assertRejects(() => quick, V3WriterBusyError);
+      await other.release();
+      const next = await patient;
+      assert(v3WriterFence(dir)! > other.fence);
+      await next();
+    } finally {
+      await other.release();
+      await lifetime();
+    }
+  });
+});
+
 Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is released", async () => {
   await withTempDir(async (dir) => {
     const release = await tryAcquireV3WriterLock(dir, { ttlMs: 30 });

@@ -412,3 +412,51 @@ async function commitThrough(
     await unit.commit();
   });
 }
+
+Deno.test("v3 writer lease: engines on one handle still queue their appends to a partition behind each other", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-v3-lease-sink-" });
+  const datastorePath = join(dir, "datastore");
+  await initializeV3Datastore(datastorePath, "test");
+  const handle = openV3Datastore({
+    repoDir: join(dir, "repo"),
+    datastorePath,
+    writerFence: () => v3WriterFence(datastorePath),
+    assertWriterCurrent: () => assertV3WriterCurrent(datastorePath),
+  });
+  const release = await acquireV3WriterLock(datastorePath, {
+    fenceStore: handle.commitStore,
+  });
+  try {
+    // One partition, written by several contexts' engines at once.
+    const definition = crypto.randomUUID();
+    const commits = Array.from({ length: 8 }, async (_, i) => {
+      const engine = handle.engineFor(() => Promise.resolve(), () => {
+        throw new Error("no run repository needed");
+      });
+      await engine.runRoot({}, async () => {
+        const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+        await unit.stageOps([
+          new AutoDefinitionChanges(definition).write(
+            recordKeyOf(["auto-definitions", `${definition}.yaml`]),
+            new TextEncoder().encode(`v${i}`),
+          ),
+        ]);
+        await unit.commit();
+      });
+    });
+    const outcomes = await Promise.allSettled(commits);
+    assertEquals(
+      outcomes.filter((outcome) => outcome.status === "rejected"),
+      [],
+    );
+    assertEquals((await commitFences(datastorePath)).length, 8);
+  } finally {
+    await release();
+    await handle.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
