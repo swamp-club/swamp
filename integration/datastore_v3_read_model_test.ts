@@ -545,7 +545,11 @@ Deno.test("read model: a commit whose unsynced keys cannot be recorded is not re
   const clean = await cleanResult();
   await withV3Env(async (env) => {
     await appendScenario(env);
-    const readModel = env.openReadModel();
+    // A boot identity makes the catch-up record unsynced keys, which the
+    // injected trigger refuses; without one it syncs instead.
+    const readModel = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+    });
     // Recording unsynced keys fails, as on a full disk.
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
     db.exec(
@@ -612,7 +616,11 @@ Deno.test("read model: when SQLite rolls a page back itself, the error that caus
   const clean = await cleanResult();
   await withV3Env(async (env) => {
     await appendScenario(env);
-    const readModel = env.openReadModel();
+    // A boot identity makes the catch-up record unsynced keys, which the
+    // injected trigger refuses; without one it syncs instead.
+    const readModel = env.openReadModel({
+      bootIdentity: () => Promise.resolve("boot-id:1"),
+    });
     // RAISE(ROLLBACK) ends the whole transaction, as a full disk can, so
     // the savepoint the failing commit ran in is gone.
     const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
