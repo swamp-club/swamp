@@ -29,6 +29,7 @@ import {
   parsesAsCel,
   readsSwampBinding,
   type SwampScope,
+  unlistedForeignRoots,
   unresolvableVaultArguments,
   WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
@@ -412,8 +413,11 @@ Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other system
   const cases = [
     "inputs.region",
     "self.h + steps.build.outputs.sha",
-    // What GitHub Actions binds and swamp does not.
+    // The known foreign roots.
     "github.sha",
+    "gitea.sha",
+    "forgejo.sha",
+    "jobs.build.result",
     "matrix.os",
     "secrets.TOKEN",
     "vars.REGION",
@@ -427,8 +431,6 @@ Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other system
     "node.name",
     "stats.count",
     "date.year",
-    "mode.name",
-    "files.changed",
     '"unclosed',
   ];
   for (const cel of cases) {
@@ -436,7 +438,81 @@ Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other system
   }
 });
 
-Deno.test("failedOnForeignRoot: true only for an unknown variable that is not a swamp namespace", () => {
+Deno.test("misspeltSwampNamespace: names an ordinary word one slip from a namespace", () => {
+  // Such a root fails in a step argument either way, so the hint is safe.
+  assertEquals(misspeltSwampNamespace("mode.name"), {
+    root: "mode",
+    namespace: "model",
+  });
+  assertEquals(misspeltSwampNamespace("files.changed"), {
+    root: "files",
+    namespace: "file",
+  });
+});
+
+Deno.test("unlistedForeignRoots: names each root that is neither swamp's nor a known foreign one", () => {
+  const cases: [string, string[]][] = [
+    ["nonexistent.variable", ["nonexistent"]],
+    ["input.region", ["input"]],
+    ["github.sha + nonexistent.x", ["nonexistent"]],
+    ["true ? github.sha : other.x + another.y", ["other", "another"]],
+    ["self.h + missing.x", ["missing"]],
+    // Subtraction written out is still two references.
+    ["matrix.count - offset.x", ["offset"]],
+    ["inputs.node-version", ["version"]],
+    // A vault.get argument holding a `.` is not read as a root.
+    ["vault.get(t, db.password)", []],
+    // Bound by a macro, so not a free root.
+    ["[1, 2].map(x, x + 1)", []],
+  ];
+  for (const [cel, roots] of cases) {
+    assertEquals(unlistedForeignRoots(cel), roots, cel);
+  }
+});
+
+Deno.test("unlistedForeignRoots: empty for swamp's roots, known foreign roots and text that does not parse", () => {
+  const cases = [
+    "inputs.region",
+    "self.h + steps.build.outputs.sha",
+    "github.sha",
+    "gitea.sha",
+    "forgejo.sha",
+    "matrix.os",
+    "secrets.TOKEN",
+    "vars.REGION",
+    "needs.build.outputs.sha",
+    "runner.os",
+    "job.status",
+    "jobs.build.result",
+    "strategy.fail-fast",
+    "inputs.version + github.sha",
+    // A hyphen in a name on a known foreign root is part of the name.
+    "matrix.node-version",
+    "needs.build-app.outputs.image-tag",
+    "self.h + matrix.node-version",
+    "literal('${{ nonexistent.variable }}')",
+    // Swamp's own reference to a deferred expression.
+    "__swamp_deferred_c48b0da2_33b3_4727_9c85_6370d730c8c3",
+    '"unclosed',
+  ];
+  for (const cel of cases) {
+    assertEquals(unlistedForeignRoots(cel), [], cel);
+  }
+});
+
+Deno.test("failedOnForeignRoot: true only for an unknown variable that is a known foreign root", () => {
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: nonexistent")),
+    false,
+  );
+  assertEquals(
+    failedOnForeignRoot(
+      new Error(
+        "Unknown variable: __swamp_deferred_c48b0da2_33b3_4727_9c85_6370d730c8c3",
+      ),
+    ),
+    true,
+  );
   assertEquals(
     failedOnForeignRoot(new Error("Unknown variable: github")),
     true,

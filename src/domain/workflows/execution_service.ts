@@ -291,6 +291,10 @@ import {
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
 import {
+  isForeignExpression,
+  unlistedForeignRootError,
+} from "../expressions/swamp_namespaces.ts";
+import {
   getRunLogger,
   getSwampLogger,
   getWorkflowRunLogger,
@@ -625,28 +629,52 @@ async function resolveScalarExpression(
 
 /**
  * Warns about each step argument that reaches its method holding another
- * templating system's `${{ ... }}` text. Evaluation no longer fails on such
- * text, so a misspelt namespace (`input.region`) would otherwise pass
- * unnoticed (swamp-club#2528). It covers text deferred past run start too
- * (one reading `self.*` or `steps.*`), which the step-time passes leave raw
- * without a report of their own.
+ * templating system's `${{ ... }}` text (swamp-club#2528). It covers text
+ * deferred past run start too (one reading `self.*` or `steps.*`), which the
+ * step-time passes leave raw without a report of their own.
  */
 function warnForeignTaskArguments(
   workflowName: string,
   foreign: readonly ForeignTaskArgument[],
 ): void {
   const logger = getSwampLogger(["swamp", "expressions"]);
-  for (const { jobName, stepName, path, text, deferred, misspelt } of foreign) {
-    if (misspelt) {
-      logger
-        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, and ${misspelt.root} is not a swamp namespace. Did you mean ${misspelt.namespace}? As written, the step receives it as literal text`;
-    } else if (deferred) {
+  for (const { jobName, stepName, path, text, deferred } of foreign) {
+    if (deferred) {
       logger
         .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text`;
     } else {
       logger
         .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which is not a swamp expression, so the step receives it as literal text`;
     }
+  }
+}
+
+/**
+ * Fails a direct step whose authored arguments still hold `${{ ... }}` text
+ * reading a root that is neither a swamp namespace nor a known foreign one
+ * (swamp-club#3400). Run-start evaluation fails such text itself; this
+ * covers text it deferred to step time (one that also reads `self.*`). A
+ * direct step's global arguments, and the inputs routed to them, are
+ * evaluated with its definition, under the looser rule for definitions, and
+ * would pass through. Expression text that arrived as data, such as the
+ * result of `literal()`, is not the author's expression and is left to the
+ * checks on persisting the definition.
+ */
+function assertNoUnlistedForeignArguments(
+  field: "inputs" | "globalArgs",
+  args: unknown,
+  provenance: ProvenanceMap,
+): void {
+  for (const expr of extractExpressions(args)) {
+    const inData = expr.start === undefined || expr.end === undefined
+      ? provenance.hasDataAtOrBelow(expr.path)
+      : provenance.overlapsData(expr.path, expr.start, expr.end);
+    if (inData || !isForeignExpression(expr.celExpression)) continue;
+    const unlisted = unlistedForeignRootError(
+      expr.celExpression,
+      `${field}.${expr.path}`,
+    );
+    if (unlisted) throw unlisted;
   }
 }
 
@@ -1916,6 +1944,13 @@ export class DefaultStepExecutor implements StepExecutor {
       const { modelType: typeArg, modelName, methodName } = task;
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
+      for (const field of ["inputs", "globalArgs"] as const) {
+        assertNoUnlistedForeignArguments(
+          field,
+          task[field],
+          taskArgs.rawProvenance.subtree(field),
+        );
+      }
 
       const result = await resolver(
         typeArg,

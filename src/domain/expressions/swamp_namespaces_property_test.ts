@@ -22,8 +22,10 @@ import fc from "fast-check";
 import {
   isForeignExpression,
   isSwampExpression,
+  KNOWN_FOREIGN_ROOTS,
   misspeltSwampNamespace,
   type SwampScope,
+  unlistedForeignRoots,
   WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
 
@@ -42,6 +44,7 @@ const SWAMP_ROOTS = [
   "webhook",
 ];
 const FOREIGN_ROOTS = ["github", "secrets", "matrix", "host", "value"];
+const KNOWN_ROOTS = [...KNOWN_FOREIGN_ROOTS];
 const MEMBERS = ["sha", "version", "region", "name", "outputs"];
 
 /** A member-access chain rooted at a swamp or foreign identifier. */
@@ -191,13 +194,46 @@ Deno.test("misspeltSwampNamespace: catches a dropped or doubled letter in every 
         const typo = drop
           ? root.slice(0, i) + root.slice(i + 1)
           : root.slice(0, i) + root[i] + root.slice(i);
-        // A typo that spells another namespace (none today) is swamp's own,
-        // and `mode` is excluded by name as an ordinary word.
-        fc.pre(
-          !SWAMP_ROOTS.includes(typo) && typo.length > 0 && typo !== "mode",
-        );
+        // A typo that spells another namespace (none today) is swamp's own.
+        fc.pre(!SWAMP_ROOTS.includes(typo) && typo.length > 0);
         assert(misspeltSwampNamespace(`${typo}.x`) !== undefined, typo);
       },
     ),
   );
+});
+
+Deno.test("unlistedForeignRoots: empty exactly when every root is swamp's or a known foreign one", () => {
+  fc.assert(
+    fc.property(
+      fc.uniqueArray(
+        fc.constantFrom(
+          ...SWAMP_ROOTS.filter((root) => root !== "vault"),
+          ...KNOWN_ROOTS,
+          "host",
+          "value",
+          "nonexistent",
+        ),
+        { minLength: 1, maxLength: 4 },
+      ),
+      (roots) => {
+        const cel = roots.map((root) => `${root}.x`).join(" + ");
+        const expected = roots.filter((root) =>
+          !SWAMP_ROOTS.includes(root) && !KNOWN_FOREIGN_ROOTS.has(root)
+        );
+        assert(
+          unlistedForeignRoots(cel).join() === expected.join(),
+          cel,
+        );
+      },
+    ),
+  );
+});
+
+Deno.test("known foreign roots: none is a swamp namespace or nearly spells one", () => {
+  for (const root of KNOWN_ROOTS) {
+    assert(!SWAMP_ROOTS.includes(root), root);
+    assert(isForeignExpression(`${root}.x`), root);
+    assert(misspeltSwampNamespace(`${root}.x + input.y`)?.root === "input");
+    assert(misspeltSwampNamespace(`${root}.x`) === undefined, root);
+  }
 });

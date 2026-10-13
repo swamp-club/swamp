@@ -558,15 +558,14 @@ Deno.test("foreign template text: a run and its resume warn about each step argu
     );
     const step = (name: string, task: StepTask) => Step.create({ name, task });
     await repo.workflowRepo.save(Workflow.create({
-      name: "typo",
+      name: "passed",
       jobs: [Job.create({
         name: "main",
         steps: [
-          // A misspelt namespace reads as another templating system's text.
           step(
             "capture",
             StepTask.model("stored-model", "run", {
-              note: "${{ input.region }}",
+              note: "${{ github.actor }}",
             }),
           ),
           step("stop", StepTask.assert("false", "always fails")),
@@ -584,11 +583,11 @@ Deno.test("foreign template text: a run and its resume warn about each step argu
     }));
     const service = await executionService(repo, dir);
     const expected =
-      "Template syntax passed through in workflow typo, job main, step capture: inputs.note holds ${{ input.region }}, and input is not a swamp namespace. Did you mean inputs? As written, the step receives it as literal text";
+      "Template syntax passed through in workflow passed, job main, step capture: inputs.note holds ${{ github.actor }}, which is not a swamp expression, so the step receives it as literal text";
 
     let failedId = "";
     const onRun = await capturingRunWarnings(async () => {
-      const failed = await service.execute("typo");
+      const failed = await service.execute("passed");
       assertEquals(failed.status, "failed");
       failedId = failed.id;
     });
@@ -597,7 +596,9 @@ Deno.test("foreign template text: a run and its resume warn about each step argu
     ]);
 
     const onResume = await capturingRunWarnings(async () => {
-      await collect(service.resume("typo", failedId, { fromStep: "capture" }));
+      await collect(
+        service.resume("passed", failedId, { fromStep: "capture" }),
+      );
     });
     assertEquals(onResume.filter((m) => m.includes("Template syntax")), [
       expected,
@@ -608,6 +609,183 @@ Deno.test("foreign template text: a run and its resume warn about each step argu
       assertEquals(clean.status, "succeeded", JSON.stringify(clean.toData()));
     });
     assertEquals(onClean.filter((m) => m.includes("Template syntax")), []);
+  });
+});
+
+Deno.test("foreign template text: only known foreign roots pass through step arguments (swamp-club#3400)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    await repo.definitionRepo.save(
+      type,
+      Definition.create({
+        name: "stored-model",
+        type: type.normalized,
+        globalArguments: { message: "${{ inputs.note }}" },
+        inputs: { properties: { note: { type: "string" } } },
+        methods: { run: { arguments: {} } },
+      }),
+    );
+    const stored = (name: string, note: string) =>
+      Workflow.create({
+        name,
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.model("stored-model", "run", { note }),
+          })],
+        })],
+      });
+    // A made-up or misspelt root, in step inputs and in a direct step's
+    // global arguments. A known root beside it does not excuse it.
+    const rejected: [Workflow, string][] = [
+      [
+        stored("inputs-unlisted", "echo ${{ nonexistent.variable }}"),
+        "Unknown variable: nonexistent",
+      ],
+      [
+        stored("inputs-misspelt", "${{ input.region }}"),
+        "Unknown variable: input",
+      ],
+      [
+        directWorkflow("direct-unlisted", type, "${{ nonexistent.variable }}"),
+        "Unknown variable: nonexistent",
+      ],
+      [
+        directWorkflow("mixed", type, "${{ github.sha + nonexistent.x }}"),
+        "Unknown variable: nonexistent",
+      ],
+    ];
+    // A nested workflow's input value follows the same rule.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "child",
+      inputs: { type: "object", properties: { note: { type: "string" } } },
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          task: StepTask.model("stored-model", "run", {
+            note: "${{ inputs.note }}",
+          }),
+        })],
+      })],
+    }));
+    rejected.push([
+      Workflow.create({
+        name: "parent",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "call",
+            task: StepTask.workflow("child", {
+              note: "${{ nonexistent.actor }}",
+            }),
+          })],
+        })],
+      }),
+      "Unknown variable: nonexistent",
+    ]);
+    const service = await executionService(repo, dir);
+    for (const [workflow, message] of rejected) {
+      await repo.workflowRepo.save(workflow);
+      // The run fails before any step starts.
+      await assertRejects(
+        () => service.execute(workflow.name),
+        Error,
+        message,
+      );
+    }
+    assertEquals(received, []);
+
+    // A known root still reaches the method, hyphenated name and all, and
+    // literal() still carries any text through step inputs.
+    const passed = [
+      stored("known", "${{ matrix.node-version }}"),
+      stored("literal", "${{ literal('${{ nonexistent.variable }}') }}"),
+    ];
+    for (const workflow of passed) {
+      await repo.workflowRepo.save(workflow);
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+    }
+    assertEquals(received, [
+      "${{ matrix.node-version }}",
+      "${{ nonexistent.variable }}",
+    ]);
+  });
+});
+
+Deno.test("foreign template text: an unlisted root deferred past run start fails when its step runs (swamp-club#3400)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    await repo.definitionRepo.save(
+      type,
+      Definition.create({
+        name: "stored-model",
+        type: type.normalized,
+        globalArguments: { message: "${{ inputs.note }}" },
+        inputs: { properties: { note: { type: "string" } } },
+        methods: { run: { arguments: {} } },
+      }),
+    );
+    // Deferred by self.*, so only the step-time pass sees it.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "deferred-inputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          task: StepTask.model("stored-model", "run", {
+            note: "${{ self.h + nonexistent.os }}",
+          }),
+        })],
+      })],
+    }));
+    await repo.workflowRepo.save(
+      directWorkflow(
+        "deferred-direct",
+        type,
+        "${{ self.h + nonexistent.os }}",
+        {
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+        },
+      ),
+    );
+    // A direct step whose inputs carry it, with no global arguments.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "deferred-direct-inputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          task: StepTask.directExecution(
+            type.normalized,
+            "deferred-direct-inputs-model",
+            "run",
+            { message: "${{ self.h + nonexistent.os }}" },
+          ),
+        })],
+      })],
+    }));
+    const service = await executionService(repo, dir);
+    for (
+      const name of [
+        "deferred-inputs",
+        "deferred-direct",
+        "deferred-direct-inputs",
+      ]
+    ) {
+      const warnings = await capturingRunWarnings(async () => {
+        const run = await service.execute(name);
+        assertEquals(run.status, "failed", name);
+        assertStringIncludes(
+          JSON.stringify(run.toData()),
+          "Unknown variable: nonexistent",
+        );
+      });
+      assertEquals(warnings.filter((m) => m.includes("Template syntax")), []);
+    }
+    assertEquals(received, []);
   });
 });
 

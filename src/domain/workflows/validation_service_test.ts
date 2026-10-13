@@ -3029,12 +3029,79 @@ Deno.test("fails a root that nearly spells a swamp namespace in step arguments",
   const failures = results.filter((r) => !r.passed);
   assertEquals(failures.map((r) => [r.name, r.error]), [[
     "Task expressions in job 'build' step 'emit'",
-    "inputs.region holds ${{ input.region }}: 'input' is not a swamp namespace. Did you mean 'inputs'? " +
-    "A run would pass this text to the method unchanged. If it is another templating system's text, write it with literal()",
+    "inputs.region holds ${{ input.region }}: 'input' is not a swamp namespace or a known templating root, " +
+    "so a run fails with \"Unknown variable\". Did you mean 'inputs'? " +
+    "If it is another templating system's text, write it with literal()",
   ]]);
   // The other system's text beside it still only warns.
   assertEquals(
     results.filter((r) => r.warning).map((r) => r.error?.slice(0, 16)),
     ["inputs.sha holds"],
+  );
+});
+
+// Only known foreign roots pass through step arguments (swamp-club#3400).
+
+Deno.test("fails an unlisted root in step arguments", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      run: "echo ${{ nonexistent.variable }}",
+      both: "${{ github.sha + other.x + another.y }}",
+    }),
+  ));
+  assertEquals(
+    results.filter((r) => !r.passed).map((r) => [r.name, r.error]),
+    [
+      [
+        "Task expressions in job 'build' step 'emit'",
+        "inputs.run holds ${{ nonexistent.variable }}: 'nonexistent' is not a swamp namespace or a known templating root, " +
+        'so a run fails with "Unknown variable". ' +
+        "If it is another templating system's text, write it with literal()",
+      ],
+      [
+        "Task expressions in job 'build' step 'emit'",
+        "inputs.both holds ${{ github.sha + other.x + another.y }}: 'other', 'another' are not swamp namespaces or known templating roots, " +
+        'so a run fails with "Unknown variable". ' +
+        "If it is another templating system's text, write it with literal()",
+      ],
+    ],
+  );
+  assertEquals(results.filter((r) => r.warning), []);
+});
+
+Deno.test("fails an unlisted root in a branch a run would not evaluate", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      // Evaluates to "x" in a run, which never reads the other branch.
+      sha: "${{ true ? 'x' : nonexistent.variable }}",
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed).map((r) => r.name), [
+    "Task expressions in job 'build' step 'emit'",
+  ]);
+});
+
+Deno.test("does not suggest literal() for an unlisted root in a direct step's globalArgs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+      env: { REGION: "${{ nonexistent.region }}" },
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed).map((r) => r.error), [
+    "globalArgs.env.REGION holds ${{ nonexistent.region }}: 'nonexistent' is not a swamp namespace or a known templating root, " +
+    'so a run fails with "Unknown variable". ' +
+    "If it is another templating system's text, pass it as a step input written with literal() instead of a global argument",
+  ]);
+});
+
+Deno.test("passes literal() around an unlisted root in step inputs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      run: "${{ literal('${{ nonexistent.variable }}') }}",
+    }),
+  ));
+  assertEquals(
+    results.filter((r) => /Template syntax|Task expressions/.test(r.name)),
+    [],
   );
 });

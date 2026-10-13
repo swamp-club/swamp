@@ -672,27 +672,76 @@ value. Text in a swamp namespace, such as GitHub's `${{ inputs.version }}` or
 `${{ steps.build.outputs.sha }}`, stays guarded in a global argument because
 swamp cannot tell it from its own.
 
-**Workflow step arguments follow the same rule.** Workflow evaluation is
-strict: an expression that throws fails the run before any step starts
-(`WorkflowExpressionEvaluator`, `src/domain/workflows/expression_evaluators.ts`).
-The one exception is another templating system's text nested in a step's task
-`inputs` or `globalArgs`, such as `env: { SHA: "${{ github.sha }}" }`
-(swamp-club#2528). When such an expression fails on its foreign root and
-`isForeignExpression` holds, it is left raw and reaches the method as literal
-text. Failing on its foreign root means CEL reported an unknown variable that
-is not a swamp namespace (`failedOnForeignRoot`). Any other error still fails:
-in `${{ has(inputs.cache) ? data.latest("m", "d") : github.sha }}`, a datastore
+**Workflow step arguments pass through known foreign roots only.** Workflow
+evaluation is strict: an expression that throws fails the run before any step
+starts (`WorkflowExpressionEvaluator`,
+`src/domain/workflows/expression_evaluators.ts`). The one exception is another
+templating system's text nested in a step's task `inputs` or `globalArgs`,
+such as `env: { SHA: "${{ github.sha }}" }` (swamp-club#2528). Such an
+expression is left raw, and reaches the method as literal text, when all of
+these hold:
+
+- `isForeignExpression` holds.
+- It fails on a known foreign root: CEL reported an unknown variable that is
+  on the list below (`failedOnForeignRoot`).
+- Every root swamp does not bind is on that list (`unlistedForeignRoots`
+  returns none). CEL stops at the first unknown name, so the failing root
+  alone says nothing about the others: `${{ github.sha + nonexistent.x }}`
+  fails on `github`, and still fails the run. The run's error names the
+  unlisted root, `Unknown variable: nonexistent`
+  (`unlistedForeignRootError`), with CEL's own error as its cause.
+
+The known foreign roots are the GitHub Actions contexts swamp does not bind
+itself, and the Gitea and Forgejo equivalents of `github`:
+
+`github`, `gitea`, `forgejo`, `matrix`, `secrets`, `vars`, `needs`, `runner`,
+`job`, `jobs`, `strategy`
+
+The list is the `KNOWN_FOREIGN_ROOTS` constant in
+`src/domain/expressions/swamp_namespaces.ts`, and that constant is the only
+place it lives. A root is added by changing the constant, with a test, and
+this section. It is not configurable.
+
+Any other root fails as any expression does. `${{ nonexistent.variable }}`
+fails the run with `Unknown variable: nonexistent` (swamp-club#3400): a root
+swamp has never heard of is far more likely a typo or a mistake than another
+system's text. An author who does mean such text for another system writes it
+with `literal()` in a step's `inputs`. A direct step's `globalArgs` has no
+such escape until swamp-club#3389 lands, because `literal()` output is
+refused there; the text goes in a step input instead.
+
+Those systems name things with hyphens and have no subtraction, so a hyphen
+in a member chain on a known foreign root, written with no spaces, is read as
+part of the name. `${{ matrix.node-version }}` passes through, although CEL
+parses it as `matrix.node - version`.
+
+Any other error still fails: in
+`${{ has(inputs.cache) ? data.latest("m", "d") : github.sha }}`, a datastore
 error from `data.latest` surfaces instead of turning the expression into
-literal text. Step inputs are
-evaluated again when the step runs (`evaluateDataPair` and
+literal text. Text in a swamp namespace, such as GitHub's
+`${{ inputs.version }}` or `${{ steps.build.outputs.sha }}`, is still
+evaluated as swamp's.
+
+Step inputs are evaluated again when the step runs (`evaluateDataPair` and
 `evaluateDataTracked`, `src/domain/expressions/expression_evaluation_service.ts`).
 Those two calls opt in to the same rule with `"passThrough"`, so text deferred
 past run start, and text a nested workflow receives as an input value, is
 handled the same way. Every other caller of that pass keeps the default,
-`"fail"`. The judgement is the one the guard on global arguments uses, so
-evaluation never passes text that the guard then rejects. Text in a swamp
-namespace, such as GitHub's `${{ inputs.version }}` or
-`${{ steps.build.outputs.sha }}`, is still evaluated as swamp's.
+`"fail"`. A direct step's `globalArgs`, and the `inputs` routed to them, are
+not evaluated by that pass: they become its definition's global arguments.
+Before the definition is built, the step fails any authored argument that
+still reads an unlisted root (`assertNoUnlistedForeignArguments`,
+`src/domain/workflows/execution_service.ts`), with the same
+`Unknown variable` error. That check reads the roots as written, so for an
+expression deferred past run start it also fails a root in a branch that
+would not have been evaluated.
+
+Model definitions keep the looser rule above: `swamp model method run` on a
+definition holding `${{ nonexistent.variable }}` passes it through
+(swamp-club#2491). A definition is often a file for another system, written
+whole; a workflow step argument is a value handed to a method. The guard on
+global arguments judges by the definitions rule, so it accepts everything
+workflow evaluation passes through.
 
 Everywhere else in a workflow the text still fails, at run start or when the
 step runs: where a task names what it runs (`modelIdOrName`, `modelName`,
@@ -700,12 +749,9 @@ step runs: where a task names what it runs (`modelIdOrName`, `modelName`,
 `globalArgs` expression, which must evaluate to a record, in step placement
 (`target`, `labels`, `platform`), and outside tasks.
 
-Passing the text through means a misspelt namespace (`${{ input.region }}`)
-no longer fails the run. Two reports compensate. `swamp workflow validate`
+Two reports cover text that is passed through. `swamp workflow validate`
 warns `Template syntax passed through in job '<job>' step '<step>'` for each
-occurrence in step arguments, and fails `Task expressions in job '<job>' step
-'<step>'` for one where a task names what it runs or in a whole-field record
-expression (`findForeignTaskText`). `swamp workflow run` and
+occurrence in step arguments (`findForeignTaskText`). `swamp workflow run` and
 `swamp workflow resume` log a warning for each occurrence in step arguments
 that run-start evaluation spliced no value over, naming the workflow, job,
 step, argument path and text. That covers text the evaluator left raw, and
@@ -716,22 +762,24 @@ warning for a deferred occurrence says it applies unless the expression
 evaluates when the step runs. It is logged once for the step as authored, not
 once per `forEach` iteration.
 
-A root that nearly spells a swamp namespace is treated as a probable typo
+`swamp workflow validate` fails `Task expressions in job '<job>' step
+'<step>'` for text a run fails on: where a task names what it runs, in a
+whole-field record expression, and in step arguments that read an unlisted
+root. The message for an unlisted root names it and points at `literal()`,
+or, for a `globalArgs` path, at a step input. The check is static, so it
+fails every unlisted root in step arguments, including one in a branch a run
+would never evaluate (`${{ true ? "x" : nonexistent.x }}`); there it
+is stricter than a run.
+
+A root that nearly spells a swamp namespace gets a hint
 (`misspeltSwampNamespace`, `src/domain/expressions/swamp_namespaces.ts`):
 `input` for `inputs`, `modle` for `model`. A root counts when it is a namespace
 with one slip: a letter dropped or added, two adjacent letters swapped, or, in a
 namespace of five letters or more, one letter replaced. Replacing a letter in a
 short namespace reaches unrelated words (`date` for `data`), so that does not
-count, and a few ordinary words one slip away are excluded by name (`mode`,
-`files`). The roots GitHub Actions binds that swamp does not (`github`, `matrix`,
-`secrets`, `vars`, `needs`, `runner`, `job`, `strategy`) are near none. In step arguments,
-`swamp workflow validate` fails such text under `Task expressions in job '<job>'
-step '<step>'` and names the namespace it resembles. A run still passes it
-through, and its warning asks the same question. The judgement is a guess, so
-it never stops a run; this is the one validate check that fails a workflow a
-run accepts. An author who means the text for another system writes it with
-`literal()`. The check applies to workflow step arguments only, not to model
-definitions.
+count. Such a root is unlisted, so the run and validate fail it either way;
+the validate message adds `Did you mean '<namespace>'?`. The known foreign
+roots are near no namespace and are never named.
 
 The schema check skips only the unresolved fields. The resolved ones are
 still coerced, checked against the schema, checked for unknown keys and given

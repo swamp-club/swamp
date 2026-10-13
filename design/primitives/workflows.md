@@ -115,11 +115,14 @@ See "Task-target deferral" in
 
 Another templating system's `${{ ... }}` text, such as GitHub Actions
 `${{ github.sha }}`, passes through to the method unchanged when it is nested
-in a step's `inputs` or `globalArgs`. `swamp workflow validate` warns about it,
-and a run logs a warning, because a misspelt swamp namespace reads the same way.
-Validate fails a root that nearly spells one, such as `${{ input.region }}`.
+in a step's `inputs` or `globalArgs` and every root swamp does not bind is a
+known foreign root (`github`, `matrix`, `secrets` and the others listed in the
+section below). `swamp workflow validate` warns about it, and a run logs a
+warning. Any other root, such as `${{ nonexistent.variable }}` or
+`${{ input.region }}`, fails the run with `Unknown variable` and fails
+validate; text meant for another system is then written with `literal()`.
 In a task target, a whole-field `inputs` or `globalArgs` expression, or step
-placement it fails.
+placement, another system's text fails whatever its root.
 See "Definition Evaluation" in
 [../enablers/expressions.md](../enablers/expressions.md).
 

@@ -1427,6 +1427,33 @@ Deno.test("evaluateDataTracked: passes another templating system's text through 
   });
 });
 
+Deno.test("evaluateDataTracked: an unlisted root fails even when asked to pass through (swamp-club#3400)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const cases: [string, string][] = [
+      ["${{ nonexistent.variable }}", "Unknown variable: nonexistent"],
+      // CEL stops at the known root; the unlisted one still fails it, and
+      // is the one the error names.
+      ["${{ github.sha + nonexistent.x }}", "Unknown variable: nonexistent"],
+    ];
+    for (const [text, message] of cases) {
+      await assertRejects(
+        () =>
+          service.evaluateDataTracked(
+            { run: text },
+            ProvenanceMap.authored(),
+            { model: {}, env: {}, inputs: {} },
+            "unrestricted",
+            "passThrough",
+          ),
+        Error,
+        message,
+      );
+    }
+  });
+});
+
 Deno.test("evaluateData: unrestricted evaluates everything", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);

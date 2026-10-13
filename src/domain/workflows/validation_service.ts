@@ -238,28 +238,43 @@ export class DefaultWorkflowValidationService
    * names what it runs, or as a whole-field record expression, a run fails
    * on it.
    *
-   * A root that nearly spells a swamp namespace (`input.region`) fails here
-   * even in step arguments. A run passes it through with a warning, since
-   * the judgement is a guess; this is the one check that fails a workflow a
-   * run accepts.
+   * In step arguments that holds only for the known foreign roots. Text
+   * reading any other root (`nonexistent.variable`, `input.region`) fails
+   * here, as a run fails on it with "Unknown variable" (swamp-club#3400).
+   * The check is static, so it also fails a root in a branch a run would
+   * never evaluate.
    */
   private validateForeignTaskText(
     workflow: Workflow,
   ): WorkflowValidationResult[] {
-    const { arguments: passed, unresolvable } = findForeignTaskText(workflow);
+    const { arguments: passed, unlisted, unresolvable } = findForeignTaskText(
+      workflow,
+    );
     return [
-      ...passed.map(({ jobName, stepName, path, text, misspelt }) =>
-        misspelt
-          ? WorkflowValidationResult.fail(
-            `Task expressions in job '${jobName}' step '${stepName}'`,
-            `${path} holds ${text}: '${misspelt.root}' is not a swamp namespace. Did you mean '${misspelt.namespace}'? ` +
-              `A run would pass this text to the method unchanged. If it is another templating system's text, write it with literal()`,
-          )
-          : WorkflowValidationResult.warning(
-            `${FOREIGN_TEMPLATE_WARNING_NAME} in job '${jobName}' step '${stepName}'`,
-            `${path} holds ${text}, which is not a swamp expression and is passed to the method unchanged. ` +
-              `If you meant a swamp expression, reference one of swamp's namespaces (model, self, inputs, env, vault, data)`,
-          )
+      ...passed.map(({ jobName, stepName, path, text }) =>
+        WorkflowValidationResult.warning(
+          `${FOREIGN_TEMPLATE_WARNING_NAME} in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}, which is not a swamp expression and is passed to the method unchanged. ` +
+            `If you meant a swamp expression, reference one of swamp's namespaces (model, self, inputs, env, vault, data)`,
+        )
+      ),
+      ...unlisted.map(({ jobName, stepName, path, text, roots, misspelt }) =>
+        WorkflowValidationResult.fail(
+          `Task expressions in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}: ${
+            roots.map((root) => `'${root}'`).join(", ")
+          } ${
+            roots.length === 1
+              ? "is not a swamp namespace or a known templating root"
+              : "are not swamp namespaces or known templating roots"
+          }, so a run fails with "Unknown variable". ` +
+            (misspelt ? `Did you mean '${misspelt.namespace}'? ` : "") +
+            // literal() output is refused in a direct step's globalArgs
+            // until swamp-club#3389 lands.
+            (path.startsWith("globalArgs")
+              ? `If it is another templating system's text, pass it as a step input written with literal() instead of a global argument`
+              : `If it is another templating system's text, write it with literal()`),
+        )
       ),
       ...unresolvable.map(({ jobName, stepName, path, text }) =>
         WorkflowValidationResult.fail(
