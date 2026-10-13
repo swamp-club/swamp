@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelDeleteDeps,
@@ -58,17 +62,25 @@ import { promptConfirmation } from "../prompt_helpers.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior delete`. */
+export const BEHAVIOR_DELETE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior delete",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model delete`. */
 export const MODEL_DELETE_SYNTAX: CommandSyntax = {
   invocation: "swamp model delete",
+  surface: "model",
+  preferred: `${BEHAVIOR_DELETE_SYNTAX.invocation} my-server`,
 };
 
 export function createModelDeleteCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("delete")
-      .description("Delete a model and all related artifacts")
-      .example("Delete a model", `${syntax.invocation} my-server`)
+      .description(`Delete a ${syntax.surface} and all related artifacts`)
+      .example(`Delete a ${syntax.surface}`, `${syntax.invocation} my-server`)
       .example("Force delete", `${syntax.invocation} my-server --force`)
       .arguments("<model_id_or_name:model_name>")
       .option(
@@ -80,7 +92,8 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
         "-f, --force",
         "Skip confirmation and allow deletion when data artifacts exist",
       ),
-  ).action(
+    syntax,
+  )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (options: AnyOptions, modelIdOrName: string) {
       const cliCtx = createContext(options as GlobalOptions, [
@@ -102,7 +115,10 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
             payload: { modelIdOrName, force },
           },
         );
-        const renderer = createModelDeleteRenderer(cliCtx.outputMode);
+        const renderer = createModelDeleteRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
         await consumeStream(
           (async function* () {
             yield {
@@ -243,7 +259,7 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
             }
 
             const confirmed = await promptConfirmation(
-              `Delete model '${preview.name}' (${preview.id})?${deleteDetails}`,
+              `Delete ${syntax.surface} '${preview.name}' (${preview.id})?${deleteDetails}`,
             );
             if (!confirmed) {
               renderModelDeleteCancelled(cliCtx.outputMode);
@@ -252,7 +268,10 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
           }
 
           // Phase 3: Execute mutation
-          const renderer = createModelDeleteRenderer(cliCtx.outputMode);
+          const renderer = createModelDeleteRenderer(
+            cliCtx.outputMode,
+            syntax.surface,
+          );
           await consumeStream(
             modelDelete(ctx, deps, { modelIdOrName, force }),
             renderer.handlers(),
@@ -264,6 +283,7 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
       );
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelDeleteCommand = createModelDeleteCommand(MODEL_DELETE_SYNTAX);

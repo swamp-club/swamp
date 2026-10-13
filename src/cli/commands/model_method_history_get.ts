@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -99,19 +104,27 @@ export async function modelMethodHistoryGetAction(
   cliCtx.logger.debug("Model method history get command completed");
 }
 
+/** The preferred spelling: `swamp behavior history get`. */
+export const BEHAVIOR_HISTORY_GET_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior history get",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model method history get`. */
 export const MODEL_METHOD_HISTORY_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history get",
+  surface: "model",
+  preferred: `${BEHAVIOR_HISTORY_GET_SYNTAX.invocation} abc123`,
 };
 
 export function createModelMethodHistoryGetCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("get")
-      .description("Show details of a model method run")
+      .description(`Show details of a ${surfaceMethodNoun(syntax.surface)} run`)
       .example("Show run details by ID", `${syntax.invocation} abc123`)
       .example(
-        "Show latest run for a model",
+        `Show latest run for a ${syntax.surface}`,
         `${syntax.invocation} my-server`,
       )
       .arguments("<output_id_or_model_name:string>")
@@ -119,7 +132,9 @@ export function createModelMethodHistoryGetCommand(syntax: CommandSyntax) {
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
-  ).action(modelMethodHistoryGetAction);
+    syntax,
+  )).action(modelMethodHistoryGetAction);
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelMethodHistoryGetCommand = createModelMethodHistoryGetCommand(

@@ -674,3 +674,38 @@ Deno.test("ConsoleModelMethodRunRenderer: verbose renders the frame of a report 
   assertStringIncludes(output, "Report");
   assertStringIncludes(output, "── Report: @test/quiet-report ");
 });
+
+// --- Surfaces (swamp-club#3331) ---
+
+function envVarWarning(surface?: "model" | "behavior"): string[] {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "my-model",
+    methodName: "run",
+    ...(surface ? { surface } : {}),
+  });
+  return captureOutput(() =>
+    renderer.handlers().env_var_warning({
+      kind: "env_var_warning",
+      modelName: "my-model",
+      envVars: [{ path: "globalArguments.region", envVar: "AWS_REGION" }],
+      message: "Data stored under this model will vary.",
+    })
+  );
+}
+
+Deno.test("ConsoleModelMethodRunRenderer: the legacy env-var warning keeps its exact text", () => {
+  assertEquals(envVarWarning(), [
+    "    Warning   Environment variables detected in model definition",
+    "              globalArguments.region uses AWS_REGION",
+    "              Data stored under this model will vary.",
+  ]);
+  assertEquals(envVarWarning("model"), envVarWarning());
+});
+
+Deno.test("ConsoleModelMethodRunRenderer: the behavior surface says behavior definition", () => {
+  assertEquals(envVarWarning("behavior"), [
+    "    Warning   Environment variables detected in behavior definition",
+    "              globalArguments.region uses AWS_REGION",
+    "              Data stored under this model will vary.",
+  ]);
+});

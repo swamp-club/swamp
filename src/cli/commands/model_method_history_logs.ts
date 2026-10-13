@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -44,16 +49,24 @@ import type { ModelMethodHistoryLogsResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior history logs`. */
+export const BEHAVIOR_HISTORY_LOGS_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior history logs",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model method history logs`. */
 export const MODEL_METHOD_HISTORY_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history logs",
+  surface: "model",
+  preferred: `${BEHAVIOR_HISTORY_LOGS_SYNTAX.invocation} abc123`,
 };
 
 export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("logs")
-      .description("Show logs for a model method run")
+      .description(`Show logs for a ${surfaceMethodNoun(syntax.surface)} run`)
       .example("Show run logs", `${syntax.invocation} abc123`)
       .example(
         "Tail last 50 lines",
@@ -65,7 +78,8 @@ export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
         "Repository directory (env: SWAMP_REPO_DIR)",
       )
       .option("--tail <lines:number>", "Show only the last N lines"),
-  ).action(async function (options: AnyOptions, outputIdOrModelName: string) {
+    syntax,
+  )).action(async function (options: AnyOptions, outputIdOrModelName: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "model",
       "method",
@@ -132,6 +146,7 @@ export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
 
     cliCtx.logger.debug("Model method history logs command completed");
   });
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelMethodHistoryLogsCommand =

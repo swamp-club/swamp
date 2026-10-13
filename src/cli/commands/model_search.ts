@@ -18,7 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+} from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -83,6 +91,7 @@ async function createModelFetchPreview(
 export async function modelSearchAction(
   options: AnyOptions,
   query?: string,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Promise<void> {
   const ctx = createContext(options as GlobalOptions, ["model", "search"]);
   const includeInternal = options.all as boolean | undefined;
@@ -100,7 +109,11 @@ export async function modelSearchAction(
         payload: { query, includeInternal },
       },
     );
-    const renderer = createModelSearchRenderer(interactiveOutputMode(ctx));
+    const renderer = createModelSearchRenderer(
+      interactiveOutputMode(ctx),
+      undefined,
+      surface,
+    );
     await renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as ModelSearchData,
@@ -125,7 +138,11 @@ export async function modelSearchAction(
   const fetchPreview = await createModelFetchPreview(
     repoContext.definitionRepo,
   );
-  const renderer = createModelSearchRenderer(effectiveMode, fetchPreview);
+  const renderer = createModelSearchRenderer(
+    effectiveMode,
+    fetchPreview,
+    surface,
+  );
   await consumeStream(
     modelSearch(libCtx, deps, { query, includeInternal }),
     renderer.handlers(),
@@ -141,18 +158,26 @@ export async function modelSearchAction(
   ctx.logger.debug("Model search command completed");
 }
 
+/** The preferred spelling: `swamp behavior search`. */
+export const BEHAVIOR_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior search",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model search`. */
 export const MODEL_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model search",
+  surface: "model",
+  preferred: `${BEHAVIOR_SEARCH_SYNTAX.invocation} aws`,
 };
 
 export function createModelSearchCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("search")
       .alias("list")
-      .description("Search for model definitions")
-      .example("Browse all models", syntax.invocation)
+      .description(`Search for ${syntax.surface} definitions`)
+      .example(`Browse all ${syntax.surface}s`, syntax.invocation)
       .example("Search by keyword", `${syntax.invocation} aws`)
       .example("Include internal types", `${syntax.invocation} --all`)
       .arguments("[query:string]")
@@ -160,8 +185,12 @@ export function createModelSearchCommand(syntax: CommandSyntax) {
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       )
-      .option("--all", "Include internal model types"),
-  ).action(modelSearchAction);
+      .option("--all", `Include internal ${syntax.surface} types`),
+    syntax,
+  )).action((options: AnyOptions, query?: string) =>
+    modelSearchAction(options, query, syntax.surface)
+  );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelSearchCommand = createModelSearchCommand(MODEL_SEARCH_SYNTAX);

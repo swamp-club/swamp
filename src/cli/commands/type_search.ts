@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -153,14 +157,22 @@ export async function typeSearchAction(
  */
 export const MODEL_TYPE_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp type search",
+  surface: "model",
+  preferred: "swamp behavior type search aws",
+};
+
+/** The preferred spelling: `swamp behavior type search`. */
+export const BEHAVIOR_TYPE_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior type search",
+  surface: "behavior",
 };
 
 export function createTypeSearchCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("search")
       .alias("list")
-      .description("Search for model types")
+      .description(`Search for ${syntax.surface} types`)
       .example("Browse all types", syntax.invocation)
       .example("Search by keyword", `${syntax.invocation} aws`)
       .option(
@@ -168,7 +180,9 @@ export function createTypeSearchCommand(syntax: CommandSyntax) {
         "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
       )
       .arguments("[query:string]"),
-  ).action(typeSearchAction);
+    syntax,
+  )).action(typeSearchAction);
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const typeSearchCommand = createTypeSearchCommand(

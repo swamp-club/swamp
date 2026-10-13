@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -50,18 +54,28 @@ import type { ModelValidateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior validate`. */
+export const BEHAVIOR_VALIDATE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior validate",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model validate`. */
 export const MODEL_VALIDATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model validate",
+  surface: "model",
+  preferred: `${BEHAVIOR_VALIDATE_SYNTAX.invocation} my-server`,
 };
 
 export function createModelValidateCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("validate")
-      .description("Validate a model definition against its schema")
-      .example("Validate a model", `${syntax.invocation} my-server`)
-      .example("Validate all models", syntax.invocation)
+      .description(
+        `Validate a ${syntax.surface} definition against its schema`,
+      )
+      .example(`Validate a ${syntax.surface}`, `${syntax.invocation} my-server`)
+      .example(`Validate all ${syntax.surface}s`, syntax.invocation)
       .example(
         "Filter by label",
         `${syntax.invocation} --label production`,
@@ -80,7 +94,8 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
         "--method <method:string>",
         "Only run checks that apply to this method",
       ),
-  ).action(
+    syntax,
+  )).action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const cliCtx = createContext(options as GlobalOptions, [
         "model",
@@ -102,7 +117,10 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
             payload: { modelIdOrName, labels, method },
           },
         );
-        const renderer = createModelValidateRenderer(cliCtx.outputMode);
+        const renderer = createModelValidateRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
         await consumeStream(
           (async function* () {
             yield {
@@ -148,7 +166,10 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
           repoContext.unifiedDataRepo.fetchForeignContent,
         );
 
-        const renderer = createModelValidateRenderer(cliCtx.outputMode);
+        const renderer = createModelValidateRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
         await consumeStream(
           modelValidate(ctx, deps, { modelIdOrName }),
           renderer.handlers(),
@@ -160,6 +181,7 @@ export function createModelValidateCommand(syntax: CommandSyntax) {
       });
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelValidateCommand = createModelValidateCommand(

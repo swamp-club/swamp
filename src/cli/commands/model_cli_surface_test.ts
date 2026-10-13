@@ -39,6 +39,7 @@ import type { CommandSyntax } from "./command_syntax.ts";
 import {
   createModelCommand,
   createModelCreateCommand,
+  MODEL_CREATE_SYNTAX,
   MODEL_SYNTAX,
   modelCommand,
 } from "./model_create.ts";
@@ -47,31 +48,74 @@ import {
   createModelCancelCommand,
   MODEL_CANCEL_SYNTAX,
 } from "./model_cancel.ts";
-import { createModelDeleteCommand } from "./model_delete.ts";
+import {
+  createModelDeleteCommand,
+  MODEL_DELETE_SYNTAX,
+} from "./model_delete.ts";
 import {
   createModelEditCommand,
+  MODEL_EDIT_SYNTAX,
   requireModelEditContent,
 } from "./model_edit.ts";
-import { createModelEvaluateCommand } from "./model_evaluate.ts";
-import { createModelGetCommand } from "./model_get.ts";
-import { createModelSearchCommand } from "./model_search.ts";
-import { createModelValidateCommand } from "./model_validate.ts";
+import {
+  createModelEvaluateCommand,
+  MODEL_EVALUATE_SYNTAX,
+} from "./model_evaluate.ts";
+import { createModelGetCommand, MODEL_GET_SYNTAX } from "./model_get.ts";
+import {
+  createModelSearchCommand,
+  MODEL_SEARCH_SYNTAX,
+} from "./model_search.ts";
+import {
+  createModelValidateCommand,
+  MODEL_VALIDATE_SYNTAX,
+} from "./model_validate.ts";
 import {
   createModelMethodCommand,
   createModelMethodRunCommand,
   MODEL_METHOD_RUN_SYNTAX,
   MODEL_METHOD_SYNTAX,
 } from "./model_method_run.ts";
-import { createModelMethodDescribeCommand } from "./model_method_describe.ts";
-import { createModelMethodHistoryCommand } from "./model_method_history.ts";
-import { createModelMethodHistoryGetCommand } from "./model_method_history_get.ts";
-import { createModelMethodHistorySearchCommand } from "./model_method_history_search.ts";
-import { createModelMethodHistoryLogsCommand } from "./model_method_history_logs.ts";
-import { createModelOutputCommand } from "./model_output.ts";
-import { createModelOutputGetCommand } from "./model_output_get.ts";
-import { createModelOutputSearchCommand } from "./model_output_search.ts";
-import { createModelOutputLogsCommand } from "./model_output_logs.ts";
-import { createModelOutputDataCommand } from "./model_output_data.ts";
+import {
+  createModelMethodDescribeCommand,
+  MODEL_METHOD_DESCRIBE_SYNTAX,
+} from "./model_method_describe.ts";
+import {
+  createModelMethodHistoryCommand,
+  MODEL_METHOD_HISTORY_SYNTAX,
+} from "./model_method_history.ts";
+import {
+  createModelMethodHistoryGetCommand,
+  MODEL_METHOD_HISTORY_GET_SYNTAX,
+} from "./model_method_history_get.ts";
+import {
+  createModelMethodHistorySearchCommand,
+  MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
+} from "./model_method_history_search.ts";
+import {
+  createModelMethodHistoryLogsCommand,
+  MODEL_METHOD_HISTORY_LOGS_SYNTAX,
+} from "./model_method_history_logs.ts";
+import {
+  createModelOutputCommand,
+  MODEL_OUTPUT_SYNTAX,
+} from "./model_output.ts";
+import {
+  createModelOutputGetCommand,
+  MODEL_OUTPUT_GET_SYNTAX,
+} from "./model_output_get.ts";
+import {
+  createModelOutputSearchCommand,
+  MODEL_OUTPUT_SEARCH_SYNTAX,
+} from "./model_output_search.ts";
+import {
+  createModelOutputLogsCommand,
+  MODEL_OUTPUT_LOGS_SYNTAX,
+} from "./model_output_logs.ts";
+import {
+  createModelOutputDataCommand,
+  MODEL_OUTPUT_DATA_SYNTAX,
+} from "./model_output_data.ts";
 import { createModelTypeCommand, MODEL_TYPE_SYNTAX } from "./model_type.ts";
 import {
   createTypeDescribeCommand,
@@ -91,9 +135,10 @@ await initializeLogging({});
  * The golden file pins everything a user or agent can see of the `swamp
  * model` tree: the `swamp help` JSON, the `--help` text of every command
  * (examples and usage are not in the schema) and the shell completion
- * scripts. The commands are being rebuilt from factories so `swamp behavior`
- * can share them (swamp-club#3330); this file must not change while that
- * happens. Regenerate it only for an intended surface change, with
+ * scripts. The commands are built from factories shared with `swamp behavior`
+ * (swamp-club#3330, swamp-club#3331); the behavior tree has its own golden
+ * (behavior_cli_surface_test.ts). Regenerate this one only for an intended
+ * surface change, with
  * `SWAMP_UPDATE_GOLDEN=1 deno run test src/cli/commands/model_cli_surface_test.ts`.
  */
 const GOLDEN_PATH = fromFileUrl(
@@ -215,15 +260,42 @@ function allCommands(command: AnyCommand, into: AnyCommand[] = []) {
 }
 
 /**
- * A `model` tree built entirely from factories. The run leaf and the type
- * leaves have legacy text no syntax derivation reproduces (`swamp model
- * @type method run …`, and `swamp type …` examples), so those are passed in
- * as fresh leaves built from their legacy syntaxes.
+ * A `model` tree built entirely from factories, each leaf from its legacy
+ * syntax constant. A syntax derived with `subcommandSyntax` has no preferred
+ * spelling (that is a per-command example, swamp-club#3331), and the run and
+ * type leaves have legacy text no derivation reproduces (`swamp model @type
+ * method run …`, `swamp type …`), so every leaf is passed in.
  */
 function freshLegacyModelCommand(): AnyCommand {
   return createModelCommand(MODEL_SYNTAX, {
+    cancel: createModelCancelCommand(MODEL_CANCEL_SYNTAX),
+    create: createModelCreateCommand(MODEL_CREATE_SYNTAX),
+    delete: createModelDeleteCommand(MODEL_DELETE_SYNTAX),
+    edit: createModelEditCommand(MODEL_EDIT_SYNTAX),
+    evaluate: createModelEvaluateCommand(MODEL_EVALUATE_SYNTAX),
+    get: createModelGetCommand(MODEL_GET_SYNTAX),
+    search: createModelSearchCommand(MODEL_SEARCH_SYNTAX),
+    validate: createModelValidateCommand(MODEL_VALIDATE_SYNTAX),
     method: createModelMethodCommand(MODEL_METHOD_SYNTAX, {
       run: createModelMethodRunCommand(MODEL_METHOD_RUN_SYNTAX),
+      describe: createModelMethodDescribeCommand(MODEL_METHOD_DESCRIBE_SYNTAX),
+      history: createModelMethodHistoryCommand(MODEL_METHOD_HISTORY_SYNTAX, {
+        get: createModelMethodHistoryGetCommand(
+          MODEL_METHOD_HISTORY_GET_SYNTAX,
+        ),
+        search: createModelMethodHistorySearchCommand(
+          MODEL_METHOD_HISTORY_SEARCH_SYNTAX,
+        ),
+        logs: createModelMethodHistoryLogsCommand(
+          MODEL_METHOD_HISTORY_LOGS_SYNTAX,
+        ),
+      }),
+    }),
+    output: createModelOutputCommand(MODEL_OUTPUT_SYNTAX, {
+      get: createModelOutputGetCommand(MODEL_OUTPUT_GET_SYNTAX),
+      search: createModelOutputSearchCommand(MODEL_OUTPUT_SEARCH_SYNTAX),
+      logs: createModelOutputLogsCommand(MODEL_OUTPUT_LOGS_SYNTAX),
+      data: createModelOutputDataCommand(MODEL_OUTPUT_DATA_SYNTAX),
     }),
     type: createModelTypeCommand(MODEL_TYPE_SYNTAX, {
       describe: createTypeDescribeCommand(MODEL_TYPE_DESCRIBE_SYNTAX),
@@ -258,7 +330,7 @@ Deno.test("createModelCommand: a fresh tree shares no command instance with mode
 });
 
 Deno.test("createModelCommand: default children render the given syntax", () => {
-  const tree = createModelCommand({ invocation: "swamp x" });
+  const tree = createModelCommand({ invocation: "swamp x", surface: "model" });
   const examplesOf = (path: string[]) => {
     let command = tree as unknown as AnyCommand;
     for (const word of path) command = command.getCommand(word) as AnyCommand;
@@ -313,14 +385,20 @@ const LEAF_FACTORIES: ReadonlyArray<
 
 Deno.test("model command factories: each call returns a new instance", () => {
   for (const [path, factory] of LEAF_FACTORIES) {
-    const syntax = { invocation: `swamp x ${path}` };
+    const syntax: CommandSyntax = {
+      invocation: `swamp x ${path}`,
+      surface: "model",
+    };
     assertNotStrictEquals(factory(syntax), factory(syntax), path);
   }
 });
 
 Deno.test("model command factories: examples name the given syntax", () => {
   for (const [path, factory] of LEAF_FACTORIES) {
-    const syntax = { invocation: `swamp x ${path}` };
+    const syntax: CommandSyntax = {
+      invocation: `swamp x ${path}`,
+      surface: "model",
+    };
     const examples = (factory(syntax) as AnyCommand).getExamples() as {
       description: string;
     }[];
@@ -335,7 +413,7 @@ Deno.test("model command factories: examples name the given syntax", () => {
 
 Deno.test("cancelAllHint: names the cancel command of the given syntax", () => {
   assertStringIncludes(
-    cancelAllHint({ invocation: "swamp x cancel" }),
+    cancelAllHint({ invocation: "swamp x cancel", surface: "model" }),
     "'swamp x cancel --all' stops them",
   );
   assertEquals(
@@ -346,7 +424,10 @@ Deno.test("cancelAllHint: names the cancel command of the given syntax", () => {
 
 Deno.test("requireModelEditContent: refusal names the edit command of the given syntax", () => {
   const error = assertThrows(() =>
-    requireModelEditContent("", { invocation: "swamp x edit" })
+    requireModelEditContent("", {
+      invocation: "swamp x edit",
+      surface: "model",
+    })
   );
   assertStringIncludes(
     (error as Error).message,
@@ -357,7 +438,10 @@ Deno.test("requireModelEditContent: refusal names the edit command of the given 
     "cat edited.yaml | swamp x edit <name>",
   );
   assertEquals(
-    requireModelEditContent("name: a\n", { invocation: "swamp x edit" }),
+    requireModelEditContent("name: a\n", {
+      invocation: "swamp x edit",
+      surface: "model",
+    }),
     "name: a\n",
   );
 });

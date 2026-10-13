@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -44,16 +48,24 @@ import type { ModelOutputDataResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior output data`. */
+export const BEHAVIOR_OUTPUT_DATA_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior output data",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model output data`. */
 export const MODEL_OUTPUT_DATA_SYNTAX: CommandSyntax = {
   invocation: "swamp model output data",
+  surface: "model",
+  preferred: `${BEHAVIOR_OUTPUT_DATA_SYNTAX.invocation} abc123`,
 };
 
 export function createModelOutputDataCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("data")
-      .description("Show data artifact content for a model output")
+      .description(`Show data artifact content for a ${syntax.surface} output`)
       .example("Show output data", `${syntax.invocation} abc123`)
       .example(
         "Show specific field",
@@ -80,7 +92,8 @@ export function createModelOutputDataCommand(syntax: CommandSyntax) {
         "--name <name:string>",
         "Data name to retrieve (if output has multiple artifacts)",
       ),
-  ).action(async function (options: AnyOptions, outputIdArg: string) {
+    syntax,
+  )).action(async function (options: AnyOptions, outputIdArg: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "model",
       "output",
@@ -143,6 +156,7 @@ export function createModelOutputDataCommand(syntax: CommandSyntax) {
 
     cliCtx.logger.debug("Model output data command completed");
   });
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelOutputDataCommand = createModelOutputDataCommand(

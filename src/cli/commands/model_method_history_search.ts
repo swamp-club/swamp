@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -135,17 +140,25 @@ export async function modelMethodHistorySearchAction(
   ctx.logger.debug("Model method history search command completed");
 }
 
+/** The preferred spelling: `swamp behavior history search`. */
+export const BEHAVIOR_HISTORY_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior history search",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model method history search`. */
 export const MODEL_METHOD_HISTORY_SEARCH_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history search",
+  surface: "model",
+  preferred: `${BEHAVIOR_HISTORY_SEARCH_SYNTAX.invocation} deploy`,
 };
 
 export function createModelMethodHistorySearchCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("search")
       .alias("list")
-      .description("Search model method run history")
+      .description(`Search ${surfaceMethodNoun(syntax.surface)} run history`)
       .example("Browse all history", syntax.invocation)
       .example("Search by keyword", `${syntax.invocation} deploy`)
       .arguments("[query:string]")
@@ -153,7 +166,9 @@ export function createModelMethodHistorySearchCommand(syntax: CommandSyntax) {
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
-  ).action(modelMethodHistorySearchAction);
+    syntax,
+  )).action(modelMethodHistorySearchAction);
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelMethodHistorySearchCommand =

@@ -599,3 +599,141 @@ Deno.test("isExternalVaultConfigured: all external vaults detected", () => {
     true,
   );
 });
+
+Deno.test("extractCommandInfo: --log is a boolean flag and does not swallow the command (swamp-club#3331)", () => {
+  const leading = extractCommandInfo(["--log", "model", "get", "my-model"]);
+  assertEquals(leading.command, "model");
+  assertEquals(leading.subcommand, "get");
+  assertEquals(leading.args, ["<REDACTED>"]);
+  // --log is not a tracked global option; it only stops value-skipping.
+  assertEquals(leading.globalOptions, []);
+
+  const beforeSubcommand = extractCommandInfo([
+    "behavior",
+    "--log",
+    "run",
+    "my-model",
+    "train",
+  ]);
+  assertEquals(beforeSubcommand.subcommand, "run");
+  assertEquals(beforeSubcommand.optionKeys, ["--log"]);
+  assertEquals(beforeSubcommand.args, ["<REDACTED>", "train"]);
+
+  const beforeMethod = extractCommandInfo([
+    "model",
+    "method",
+    "run",
+    "my-model",
+    "--log",
+    "train",
+  ]);
+  assertEquals(beforeMethod.args, ["run", "<REDACTED>", "train"]);
+});
+
+Deno.test("extractCommandInfo: every behavior path is classified like its model twin, under both spellings (swamp-club#3331)", () => {
+  const cases: ReadonlyArray<
+    readonly [legacy: string[], preferred: string[], args: string[]]
+  > = [
+    [
+      ["model", "create", "aws-ec2", "my-server"],
+      ["create", "aws-ec2", "my-server"],
+      ["aws-ec2", "<REDACTED>"],
+    ],
+    [
+      ["model", "get", "my-server"],
+      ["get", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "edit", "my-server"],
+      ["edit", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "delete", "my-server"],
+      ["delete", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "validate", "my-server"],
+      ["validate", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "evaluate", "my-server"],
+      ["evaluate", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "search", "aws"],
+      ["search", "aws"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "list", "aws"],
+      ["list", "aws"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "cancel", "my-server"],
+      ["cancel", "my-server"],
+      ["<REDACTED>"],
+    ],
+    [
+      ["model", "output", "get", "abc123"],
+      ["output", "get", "abc123"],
+      ["get", "<REDACTED>"],
+    ],
+    [
+      ["model", "type", "describe", "aws-ec2"],
+      ["type", "describe", "aws-ec2"],
+      ["<REDACTED>", "<REDACTED>"],
+    ],
+  ];
+  for (const [legacyWords, preferredWords, args] of cases) {
+    assertEquals(
+      extractCommandInfo(legacyWords).args,
+      args,
+      legacyWords.join(" "),
+    );
+    for (const group of ["behavior", "behaviour"]) {
+      const info = extractCommandInfo([group, ...preferredWords]);
+      assertEquals(info.command, group);
+      assertEquals(info.subcommand, preferredWords[0]);
+      assertEquals(info.args, args, `${group} ${preferredWords.join(" ")}`);
+    }
+  }
+
+  // `behavior describe` / `history` take the slots after `model method <word>`.
+  const legacyDescribe = extractCommandInfo([
+    "model",
+    "method",
+    "describe",
+    "my-server",
+    "getSystemInfo",
+  ]);
+  assertEquals(legacyDescribe.args, [
+    "describe",
+    "<REDACTED>",
+    "getSystemInfo",
+  ]);
+  const legacyHistory = extractCommandInfo([
+    "model",
+    "method",
+    "history",
+    "get",
+    "abc123",
+  ]);
+  assertEquals(legacyHistory.args, ["history", "<REDACTED>", "abc123"]);
+  for (const group of ["behavior", "behaviour"]) {
+    assertEquals(
+      extractCommandInfo([group, "describe", "my-server", "getSystemInfo"])
+        .args,
+      legacyDescribe.args.slice(1),
+    );
+    assertEquals(
+      extractCommandInfo([group, "history", "get", "abc123"]).args,
+      legacyHistory.args.slice(1),
+    );
+  }
+});

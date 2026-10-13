@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import type { Logger } from "@logtape/logtape";
 import { hostname } from "node:os";
 import {
@@ -454,21 +459,36 @@ export function cancelAllHint(syntax: CommandSyntax): string {
   return `'${syntax.invocation} --all' stops them, along with every other running method run a swamp serve does not own.`;
 }
 
+/** The preferred spelling: `swamp behavior cancel`. */
+export const BEHAVIOR_CANCEL_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior cancel",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model cancel`. */
 export const MODEL_CANCEL_SYNTAX: CommandSyntax = {
   invocation: "swamp model cancel",
+  surface: "model",
+  preferred: `${BEHAVIOR_CANCEL_SYNTAX.invocation} my-server`,
 };
 
 export function createModelCancelCommand(syntax: CommandSyntax) {
-  return new Command()
-    .name("cancel")
-    .description("Cancel a running model method run")
-    .example("Cancel a model run", `${syntax.invocation} my-server`)
-    .example(
-      "Cancel with reason",
-      `${syntax.invocation} my-server --reason 'No longer needed'`,
-    )
-    .example("Cancel all running", `${syntax.invocation} --all`)
+  const methodNoun = surfaceMethodNoun(syntax.surface);
+  const command = withPreferredExample(
+    new Command()
+      .name("cancel")
+      .description(`Cancel a running ${methodNoun} run`)
+      .example(
+        `Cancel a ${syntax.surface} run`,
+        `${syntax.invocation} my-server`,
+      )
+      .example(
+        "Cancel with reason",
+        `${syntax.invocation} my-server --reason 'No longer needed'`,
+      )
+      .example("Cancel all running", `${syntax.invocation} --all`),
+    syntax,
+  )
     .arguments("[model_id_or_name:model_name]")
     .option(
       "--repo-dir <dir:string>",
@@ -476,7 +496,9 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
     )
     .option(
       "--all",
-      "Cancel all running model method runs, skipping runs a live swamp serve owns",
+      `Cancel all running ${
+        surfaceMethodNoun(syntax.surface)
+      } runs, skipping runs a live swamp serve owns`,
     )
     .option("--reason <reason:string>", "Reason for cancellation")
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -518,7 +540,7 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
                 JSON.stringify({ cancelled: [], finished: [], skipped }),
               );
             } else if (serveOwned.length === 0) {
-              cliCtx.logger.info("No running model method runs to cancel.");
+              cliCtx.logger.info(`No running ${methodNoun} runs to cancel.`);
             } else {
               warnServeOwnedSkipped(cliCtx.logger, serveOwned);
             }
@@ -560,8 +582,15 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             }));
           } else {
             if (cancelled.length > 0) {
-              cliCtx.logger
-                .info`Cancelled ${cancelled.length} running model method run(s)`;
+              // Tagged templates, so a count renders as before; the noun is
+              // literal text, not an interpolated (quoted) value.
+              if (syntax.surface === "model") {
+                cliCtx.logger
+                  .info`Cancelled ${cancelled.length} running model method run(s)`;
+              } else {
+                cliCtx.logger
+                  .info`Cancelled ${cancelled.length} running method run(s)`;
+              }
               for (const c of cancelled) {
                 cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
               }
@@ -654,16 +683,26 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
             reason: status === "cancelled" ? reason ?? null : null,
             skipped: skipped.map(skippedFields),
           }));
-        } else if (status === "cancelled") {
+        } else if (status === "cancelled" && syntax.surface === "model") {
           cliCtx.logger
             .info`Cancelled method run ${
             latest.methodName ?? "unknown"
           } for model ${definition.name} (${latest.id})`;
-        } else {
+        } else if (status === "cancelled") {
+          cliCtx.logger
+            .info`Cancelled method run ${
+            latest.methodName ?? "unknown"
+          } for behavior ${definition.name} (${latest.id})`;
+        } else if (syntax.surface === "model") {
           cliCtx.logger
             .warn`Method run ${
             latest.methodName ?? "unknown"
           } for model ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
+        } else {
+          cliCtx.logger
+            .warn`Method run ${
+            latest.methodName ?? "unknown"
+          } for behavior ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
         }
         if (cliCtx.outputMode !== "json") {
           warnServeOwnedSkipped(cliCtx.logger, skipped);
@@ -672,6 +711,7 @@ export function createModelCancelCommand(syntax: CommandSyntax) {
         runTracker.close();
       }
     });
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelCancelCommand = createModelCancelCommand(MODEL_CANCEL_SYNTAX);
