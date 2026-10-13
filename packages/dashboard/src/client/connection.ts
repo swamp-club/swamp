@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { serverPath, withLocalToken } from "./workspace_path.ts";
 import {
   backoffDelayMs,
   type CloseAction,
@@ -30,6 +31,11 @@ export type AuthMode = "none" | "token" | "oauth";
 export interface AuthInfo {
   mode: AuthMode;
   verificationBaseUri?: string;
+  /**
+   * Set by the local dashboard (`swamp dashboard`), which serves one repo
+   * from the CLI with no serve behind it. Serve never sends it.
+   */
+  local?: true;
 }
 
 /** Aborts a token probe or `/auth/info` request that has not answered. */
@@ -315,11 +321,16 @@ export function socketProtocols(
 /** Validates an `/auth/info` body. */
 export function parseAuthInfo(value: unknown): AuthInfo | null {
   if (typeof value !== "object" || value === null) return null;
-  const { mode, verificationBaseUri } = value as Record<string, unknown>;
+  const { mode, verificationBaseUri, local } = value as Record<
+    string,
+    unknown
+  >;
   if (mode !== "none" && mode !== "token" && mode !== "oauth") return null;
-  return typeof verificationBaseUri === "string"
-    ? { mode, verificationBaseUri }
-    : { mode };
+  return {
+    mode,
+    ...(typeof verificationBaseUri === "string" ? { verificationBaseUri } : {}),
+    ...(local === true ? { local } : {}),
+  };
 }
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
@@ -330,7 +341,10 @@ export async function requestAuthInfo(
   signal: AbortSignal,
 ): Promise<AuthInfo | null> {
   try {
-    const response = await fetchFn("/auth/info", { signal });
+    const response = await fetchFn(serverPath("/auth/info"), {
+      signal,
+      headers: withLocalToken(),
+    });
     if (!response.ok) {
       await response.body?.cancel();
       return null;
@@ -361,7 +375,7 @@ export async function requestTokenProbe(
       ? undefined
       : location.origin;
     const response = await fetchFn(
-      "/api/v1/health",
+      serverPath("/api/v1/health"),
       !token
         ? {
           headers: dashboardOrigin === undefined

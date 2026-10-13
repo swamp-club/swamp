@@ -48,6 +48,7 @@ import { findHarness } from "../../domain/start/harness.ts";
 import { timingSafeEqual } from "../../domain/crypto/timing_safe_equal.ts";
 import { validateWebSocketOrigin } from "../origin.ts";
 import { serveDashboardRoute } from "../dashboard_assets.ts";
+import type { WorkspaceHub } from "../local/workspace_hub.ts";
 import { START_PING_TOKEN_HEADER } from "../../infrastructure/process/start_instance_probe.ts";
 
 /** How long each end condition waits. Injected so tests can shorten them. */
@@ -104,6 +105,12 @@ export interface StartServerOptions {
     created: boolean,
   ) => void;
   readonly timeouts?: StartServerTimeouts;
+  /**
+   * The local dashboard's workspace routes (`/w/<workspace>/...` and the
+   * workspace list). A dashboard tab keeps the server up like the start
+   * page does.
+   */
+  readonly hub?: WorkspaceHub;
 }
 
 export interface StartServerHandle {
@@ -1043,6 +1050,8 @@ export function startStartServer(
         onSocket(upgraded.socket);
         return upgraded.response;
       }
+      const hubAnswer = await options.hub?.handle(req, trackDashboardSocket);
+      if (hubAnswer) return hubAnswer;
       const asset = await serveDashboardRoute(distDir, req);
       if (asset) return asset;
       return new Response("Not found", { status: 404 });
@@ -1050,6 +1059,18 @@ export function startStartServer(
   );
   port = server.addr.port;
   reevaluate();
+
+  function trackDashboardSocket(socket: WebSocket): void {
+    sockets.add(socket);
+    socket.addEventListener("open", () => {
+      opened.add(socket);
+      reevaluate();
+    });
+    socket.addEventListener("close", () => {
+      sockets.delete(socket);
+      if (opened.delete(socket)) reevaluate();
+    });
+  }
 
   return {
     port,
@@ -1063,6 +1084,9 @@ export function startStartServer(
       finish({ kind: "paused" });
       for (const socket of sockets) socket.close(1001, "swamp start stopped");
       await drainQueue();
+      // The hub first: it ends the dashboard streams it forwards, which
+      // the server's shutdown would otherwise wait on forever.
+      await options.hub?.shutdown();
       await server.shutdown();
       if (bound !== null) {
         const path = bound.path;

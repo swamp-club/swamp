@@ -84,6 +84,8 @@ const RAW_STDOUT_WRITE = /Deno\.stdout\.write(?:Sync)?\(/;
  */
 const PINNED_STDOUT_WRITERS: readonly string[] = [
   // Group 1 — the value on stdout.
+  // `swamp dashboard --child` prints `{"port":N}`, the value its hub reads.
+  "src/cli/commands/dashboard.ts",
   "src/presentation/renderers/components/search_picker.tsx",
   "src/presentation/renderers/data_query_tui.tsx",
   "src/presentation/renderers/vault_read_secret.ts",

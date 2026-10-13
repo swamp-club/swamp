@@ -42,6 +42,7 @@ import type {
   StartWorkspaceSummary,
 } from "../src/libswamp/start/start.ts";
 import type { HarnessLaunchSpec } from "../src/domain/start/harness.ts";
+import type { WorkspaceHub } from "../src/serve/local/workspace_hub.ts";
 import { StartSessionFileRepository } from "../src/infrastructure/persistence/start_session_file_repository.ts";
 import { WorkspaceRegistryFileRepository } from "../src/infrastructure/persistence/workspace_registry_file_repository.ts";
 import { assertPathEquals } from "../src/infrastructure/persistence/path_test_helpers.ts";
@@ -213,6 +214,7 @@ const workspaceDir = (dataDir: string, name: string) =>
 async function withStartServer(
   fn: (env: Env) => Promise<void>,
   timeouts: StartServerTimeouts = LONG,
+  hub?: WorkspaceHub,
 ): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-start-server-" });
   const dist = join(dir, "dist");
@@ -232,6 +234,7 @@ async function withStartServer(
     claims: claims.claims,
     onWorkspaceOpened: (path, created) => opened.push({ path, created }),
     timeouts,
+    hub,
   });
   let stopped = false;
   const shutdown = async () => {
@@ -751,6 +754,51 @@ Deno.test("startStartServer: ends launched once the page closes after a launch",
       displayName: "Claude Code",
     });
   }, { ...LONG, afterLaunchIdleMs: 20 });
+});
+
+/**
+ * A hub whose one route, `/w/x/`, upgrades and holds the socket open: it
+ * stands in for a workspace dashboard tab.
+ */
+function dashboardTabHub(): WorkspaceHub & { shutdowns: number } {
+  const hub = {
+    shutdowns: 0,
+    handle: (req: Request, track: (socket: WebSocket) => void) => {
+      if (new URL(req.url).pathname !== "/w/x/") return Promise.resolve(null);
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      track(socket);
+      return Promise.resolve(response);
+    },
+    shutdown: () => {
+      hub.shutdowns++;
+      return Promise.resolve();
+    },
+  };
+  return hub;
+}
+
+Deno.test("startStartServer: a dashboard tab keeps the server up after a launch, until it closes", async () => {
+  const hub = dashboardTabHub();
+  await withStartServer(
+    async ({ handle }) => {
+      const tab = new WebSocket(`ws://127.0.0.1:${handle.port}/w/x/`);
+      await new Promise((resolve) => tab.onopen = resolve);
+      const client = await Client.open(handle.port);
+      await walkToTrust(client);
+      await client.request("start.launch", { trustConfirmed: true });
+      await client.close();
+      // The start page is gone; the dashboard tab still holds the server.
+      assertEquals(await settlesWithin(handle.ended, 100), false);
+      tab.close();
+      assertEquals(await handle.ended, {
+        kind: "launched",
+        displayName: "Claude Code",
+      });
+    },
+    { ...LONG, afterLaunchIdleMs: 20 },
+    hub,
+  );
+  assertEquals(hub.shutdowns, 1);
 });
 
 Deno.test("startStartServer: ends paused once the page closes after a copy-command launch", async () => {

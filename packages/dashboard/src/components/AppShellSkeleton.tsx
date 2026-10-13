@@ -230,3 +230,11 @@ export function AppShellSkeleton(
     </div>
   );
 }
+
+/**
+ * What the dashboard says while its connection opens: to `swamp serve`, or,
+ * on the local dashboard (`swamp start` / `swamp dashboard`), to The Swamp.
+ */
+export function connectingLabel(local: boolean): string {
+  return local ? "Connecting to The Swamp" : "Connecting to swamp serve";
+}

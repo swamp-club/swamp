@@ -172,6 +172,48 @@ body {
   padding: 20px 20px 24px;
 }
 
+a.start-chip-dashboard {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+a.start-dashboard-link {
+  display: inline-block;
+  text-decoration: none;
+}
+
+/* Local dashboard: which workspace this is, and the way to the others. */
+.workspace-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 16px 20px;
+}
+.workspace-switcher-label {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sidebar-text-muted, rgba(255, 255, 255, 0.45));
+}
+.workspace-switcher-select {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--sidebar-text);
+  font: inherit;
+  font-size: 0.8rem;
+}
+.workspace-switcher-all {
+  font-size: 0.74rem;
+  color: var(--sidebar-text-muted, rgba(255, 255, 255, 0.55));
+  text-decoration: none;
+}
+.workspace-switcher-all:hover {
+  color: var(--sidebar-text);
+}
+
 .sidebar-icon-button {
   margin-left: auto;
   display: flex;
@@ -1611,7 +1653,8 @@ a.run-pip:focus-visible {
 .sys-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: baseline;
+  gap: 16px;
   padding: 5px 0;
   font-size: 0.82rem;
   border-bottom: 1px solid var(--border-subtle);
@@ -1622,8 +1665,14 @@ a.run-pip:focus-visible {
 }
 .sys-key {
   color: var(--text-2);
+  flex-shrink: 0;
 }
+/* A long value (a path) wraps right-aligned beside its key, at its
+   separators where it has them (withPathBreaks). */
 .sys-val {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.78rem;
   font-weight: 500;

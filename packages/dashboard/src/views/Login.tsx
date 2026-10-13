@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { serverPath } from "../client/workspace_path.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSwamp } from "../client/SwampProvider";
 import { Logo } from "../components/Logo";
@@ -127,7 +128,7 @@ function OAuthLogin(
     setState("starting");
     setError(null);
 
-    fetch("/auth/dashboard/device", {
+    fetch(serverPath("/auth/dashboard/device"), {
       method: "POST",
       signal: AbortSignal.timeout(5_000),
     })
@@ -164,7 +165,7 @@ function OAuthLogin(
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const resp = await fetch("/auth/dashboard/device/token", {
+        const resp = await fetch(serverPath("/auth/dashboard/device/token"), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ deviceCode: grant.deviceCode }),

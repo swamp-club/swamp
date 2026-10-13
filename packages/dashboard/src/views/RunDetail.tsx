@@ -27,6 +27,8 @@ import {
 } from "react";
 import "../styles/run-detail.css";
 import { useRequest } from "../client/useRequest";
+import { useSwamp } from "../client/SwampProvider";
+import { runUnreadableHint } from "./run_load_error.ts";
 import { extractArray, extractObject } from "../client/extract";
 import {
   activeRunIds,
@@ -160,6 +162,7 @@ export function RunDetail(props: RunDetailProps) {
 }
 
 function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
+  const { local } = useSwamp();
   const historyReq = useRequest(
     "workflow.history.get",
     { workflowIdOrName: runId ?? workflowName },
@@ -363,7 +366,7 @@ function RunPage({ workflowName, runId, health, onBack }: RunDetailProps) {
             <p>
               {historyReq.errorInfo?.reason === "not_found"
                 ? "It may have been deleted, or the link is wrong."
-                : "Step-level detail is only available for runs swamp serve can read; a run executed with the CLI elsewhere may not be visible here."}
+                : runUnreadableHint(local)}
             </p>
             <code className="rd-error-detail">{historyReq.error}</code>
           </div>

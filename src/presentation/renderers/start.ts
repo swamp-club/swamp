@@ -33,9 +33,17 @@ import { UserError } from "../../domain/errors.ts";
 export interface StartRenderer {
   prepareHandlers(): EventHandlers<StartPrepareEvent>;
   workspaceOpened(path: string, created: boolean): void;
-  pageReady(url: string, opened: boolean): void;
+  /**
+   * The page is up at `url`. `dashboard` is set for `swamp dashboard`, whose
+   * page is one repo's dashboard rather than the start page.
+   */
+  pageReady(url: string, opened: boolean, dashboard?: boolean): void;
   launchedEnd(displayName: string): void;
-  paused(): void;
+  /**
+   * The server stopped. `dashboard` is set when it served one repo's
+   * dashboard (`swamp dashboard`), which is what to run again.
+   */
+  paused(dashboard?: boolean): void;
   /**
    * `workspaceName` is the `--workspace` filter, when one was given; it
    * changes the empty-result line from "no workspaces yet" to "no workspace
@@ -78,9 +86,9 @@ class LogStartRenderer implements StartRenderer {
     };
   }
 
-  pageReady(url: string, opened: boolean): void {
+  pageReady(url: string, opened: boolean, dashboard = false): void {
     writeOutput("");
-    this.urlLine(url, opened);
+    this.urlLine(url, opened, dashboard);
     writeOutput(
       dim("This terminal keeps the page running. Press Ctrl-C to stop it."),
     );
@@ -95,10 +103,12 @@ class LogStartRenderer implements StartRenderer {
     );
   }
 
-  paused(): void {
+  paused(dashboard = false): void {
     writeOutput("");
     writeOutput(
-      "Stopped. Run `swamp start` to get back to your workspaces.",
+      dashboard
+        ? "Stopped. Run `swamp dashboard` to open it again."
+        : "Stopped. Run `swamp start` to get back to your workspaces.",
     );
   }
 
@@ -172,14 +182,8 @@ class LogStartRenderer implements StartRenderer {
     }
   }
 
-  private urlLine(url: string, opened: boolean): void {
-    writeOutput(
-      opened
-        ? `Opened ${
-          bold("swamp start")
-        } in your browser. If it didn't appear, open:`
-        : `Open this page in your browser to continue:`,
-    );
+  private urlLine(url: string, opened: boolean, dashboard: boolean): void {
+    writeOutput(pageReadyLine(opened, dashboard, bold));
     writeOutput(`  ${cyan(url)}`);
   }
 }
@@ -238,4 +242,23 @@ export function createStartRenderer(mode: OutputMode): StartRenderer {
     case "log":
       return new LogStartRenderer();
   }
+}
+
+/**
+ * The line above the page's URL: what was opened, or that it should be.
+ * `swamp dashboard` names the repo's dashboard, never `swamp start`.
+ */
+export function pageReadyLine(
+  opened: boolean,
+  dashboard: boolean,
+  emphasis: (text: string) => string = (text) => text,
+): string {
+  if (!opened) return "Open this page in your browser to continue:";
+  return dashboard
+    ? `Opened ${
+      emphasis("this repo's dashboard")
+    } in your browser. If it didn't appear, open:`
+    : `Opened ${
+      emphasis("swamp start")
+    } in your browser. If it didn't appear, open:`;
 }

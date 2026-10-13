@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export const DASHBOARD_SESSION_PATH = "/auth/dashboard/session";
+import { localToken, serverPath, withLocalToken } from "./workspace_path.ts";
+export const DASHBOARD_SESSION_PATH = serverPath("/auth/dashboard/session");
 const DASHBOARD_SESSION_TIMEOUT_MS = 5_000;
 
 export type SessionFetch = (
@@ -25,9 +26,15 @@ export type SessionFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-function dashboardOriginHeader(): HeadersInit | undefined {
+function dashboardOriginHeader(): Record<string, string> | undefined {
   if (typeof location === "undefined") return undefined;
   return { "X-Swamp-Dashboard-Origin": location.origin };
+}
+
+/** The origin header, plus the local token on the local dashboard. */
+function withLocalOrigin(): Record<string, string> | undefined {
+  const origin = dashboardOriginHeader();
+  return localToken() === null ? origin : withLocalToken(origin);
 }
 
 function requestSignal(signal?: AbortSignal): AbortSignal {
@@ -40,7 +47,7 @@ export function createDashboardSessionClient(fetchFn: SessionFetch) {
   return {
     async restore(signal?: AbortSignal): Promise<boolean> {
       const response = await fetchFn(DASHBOARD_SESSION_PATH, {
-        headers: dashboardOriginHeader(),
+        headers: withLocalOrigin(),
         signal: requestSignal(signal),
       });
       await response.body?.cancel();

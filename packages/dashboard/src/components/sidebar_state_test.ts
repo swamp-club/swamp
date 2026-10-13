@@ -20,8 +20,10 @@
 import { assertEquals } from "@std/assert";
 import {
   MOBILE_MEDIA_QUERY,
+  operationsOff,
   parseCollapsed,
   resolveEscape,
+  showsLogout,
 } from "./sidebar_state.ts";
 
 // ── parseCollapsed ──────────────────────────────────────────────────────
@@ -66,4 +68,31 @@ Deno.test("resolveEscape: nothing open does nothing", () => {
 
 Deno.test("MOBILE_MEDIA_QUERY: matches the 768px breakpoint in styles.css", () => {
   assertEquals(MOBILE_MEDIA_QUERY, "(max-width: 768px)");
+});
+
+Deno.test("operationsOff: under serve every operation is on", () => {
+  assertEquals(operationsOff({ auditEnabled: true, local: false }), {});
+});
+
+Deno.test("operationsOff: under serve with no audit log only Activity is off", () => {
+  assertEquals(operationsOff({ auditEnabled: false, local: false }), {
+    activity: { hint: "Off", description: "Audit log is disabled" },
+  });
+});
+
+Deno.test("operationsOff: the local dashboard turns off Schedules and Webhooks", () => {
+  const off = { hint: "Off", description: "Needs swamp serve" };
+  assertEquals(operationsOff({ auditEnabled: true, local: true }), {
+    schedules: off,
+    webhooks: off,
+  });
+  assertEquals(
+    Object.keys(operationsOff({ auditEnabled: false, local: true })).sort(),
+    ["activity", "schedules", "webhooks"],
+  );
+});
+
+Deno.test("showsLogout: serve has a login to leave, the local dashboard has none", () => {
+  assertEquals(showsLogout(false), true);
+  assertEquals(showsLogout(true), false);
 });

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { localSocketProtocols, serverPath } from "./workspace_path.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { socketProtocols } from "./connection.ts";
 import { useSwamp } from "./SwampProvider";
@@ -149,8 +150,11 @@ export function useAuditStream(): AuditStream {
     // that follows is not reported as a dropped feed.
     let failed = false;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${proto}//${location.host}/`;
-    const ws = new WebSocket(wsUrl, socketProtocols(token, authMode));
+    const wsUrl = `${proto}//${location.host}${serverPath("/")}`;
+    const ws = new WebSocket(
+      wsUrl,
+      localSocketProtocols() ?? socketProtocols(token, authMode),
+    );
     wsRef.current = ws;
 
     ws.onopen = () => {

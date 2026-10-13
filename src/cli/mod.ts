@@ -79,6 +79,7 @@ import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
 import { startCommand } from "./commands/start.ts";
+import { dashboardCommand } from "./commands/dashboard.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -2055,7 +2056,8 @@ export function registerCommands(cli: AnyCommand): void {
     .command("agent", agentCommand)
     .command("worker", workerCommand)
     .command("quest", questCommand)
-    .command("start", startCommand);
+    .command("start", startCommand)
+    .command("dashboard", dashboardCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
