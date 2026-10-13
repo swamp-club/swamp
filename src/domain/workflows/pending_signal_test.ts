@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  applicablePendingOutcome,
   decodePendingRecord,
   earliestReceipt,
   type EarlyWaitRef,
@@ -290,6 +291,49 @@ Deno.test("pendingOutcome: a record for another workflow, key or slot is never t
   );
   assertEquals(pendingOutcome(pending({ key: "other" }), ref()), undefined);
   assertEquals(pendingOutcome(pending({ slot: 2 }), ref()), undefined);
+});
+
+Deno.test("applicablePendingOutcome: the outcome the slot's pending signal would give, with nothing settled", async () => {
+  const store = new InMemorySignalWaitStore();
+  assertEquals(await applicablePendingOutcome(store, ref()), undefined);
+  await store.createPendingRecord(pending());
+
+  const outcome = await applicablePendingOutcome(store, ref());
+  assertEquals(outcome, pendingOutcome(pending(), ref()));
+  assert(outcome, "the pending signal applies");
+  assertEquals(store.outcomes.size, 0);
+  // The take stores that same outcome.
+  assertEquals(await takePendingSignal(store, ref()), {
+    kind: "found",
+    record: outcome,
+  });
+});
+
+Deno.test("applicablePendingOutcome: a signal that does not apply, a lapse or an unreadable head gives nothing", async () => {
+  const old = new InMemorySignalWaitStore();
+  await old.createPendingRecord(
+    pending({ receivedAt: "2025-12-31T23:00:00.000Z" }),
+  );
+  assertEquals(await applicablePendingOutcome(old, ref()), undefined);
+
+  const lapsed = new InMemorySignalWaitStore();
+  await lapsed.createPendingRecord(pending());
+  await lapsed.createPendingRecord({
+    kind: "lapse",
+    workflowId: WORKFLOW,
+    key: KEY,
+    slot: 1,
+    number: 2,
+    recordedAt: "2026-01-02T00:00:00.000Z",
+  });
+  assertEquals(await applicablePendingOutcome(lapsed, ref()), undefined);
+
+  const damaged = new InMemorySignalWaitStore();
+  damaged.pendingRecords.set(
+    pendingRecordKey(pending()),
+    new TextEncoder().encode("{"),
+  );
+  assertEquals(await applicablePendingOutcome(damaged, ref()), undefined);
 });
 
 Deno.test("takePendingSignal: settles the wait with the highest pending signal of its slot", async () => {
