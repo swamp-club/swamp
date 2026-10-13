@@ -1,0 +1,18 @@
+import * as L from "./lib.ts";
+import { join } from "jsr:@std/path@1";
+const d = L.tmpdir("smoke");
+const dbPath = join(d, "commits.db");
+const db = L.openWriter(dbPath, { appAutoCheckpoint: 1000 });
+const sock = L.sockPath(d);
+const cfg = L.writeConfig(d, dbPath, { kind: "file", path: join(d, "replica") }, { socket: sock });
+const t0 = performance.now();
+const p = L.startReplicate(cfg);
+console.log("ready ms", await L.waitReady(sock));
+for (let i = 0; i < 10; i++) L.insertCommit(db, 512);
+const r = await L.syncWait(sock, dbPath);
+console.log("sync", r.status, r.json, "ms since start", performance.now() - t0);
+console.log("txid", (await L.control(sock, "GET", `/txid?path=${encodeURIComponent(dbPath)}`)).json);
+console.log(await L.stop(p, "SIGTERM"));
+db.close();
+const ms = await L.restore(null, "file://" + join(d, "replica"), join(d, "restored.db"));
+console.log("restore ms", ms, L.verifyRestored(join(d, "restored.db")));

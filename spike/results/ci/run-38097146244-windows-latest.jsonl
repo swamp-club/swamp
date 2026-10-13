@@ -1,0 +1,14 @@
+## win_diag.ts
+{"os":"windows","arch":"x86_64","socketStat":"missing: Error","denoUnixConnect":"Error: Operation `\"op_net_connect_unix\"` not supported on non-unix platforms.","curlUnixSocket":"{\"version\":\"0.5.17\",\"pid\":8376,\"uptime_seconds\":2,\"started_at\":\"2026-10-11T00:04:10.8003642Z\",\"database_count\":1}\n","curlSync":"{\"error\":\"sync database: db sync: sync: sync ltx dir: sync C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\ls3234-wdiag-d3cfa62c49a550b6\\\\.commits.db-litestream\\\\ltx\\\\0: Access is denied.\"}\n","exit":{"success":false,"code":1,"signal":null},"litestreamLog":[],"restore:\\r1.db":"Error: sync restore output dir: sync C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\ls3234-wdiag-d3cfa62c49a550b6: Access is denied.","restore:\\r2.db":"Error: sync restore output dir: sync C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\52cd0d28afb2502c: Access is denied.","replicaListing":["level  min_txid          max_txid          size   created","0      0000000000000001  0000000000000001  656    2026-10-11T00:04:12Z","0      0000000000000002  0000000000000002  58447  2026-10-11T00:04:14Z"]}
+## platform_probe.ts
+{"failed":"platform_probe.ts"}
+## exp_compat.ts passive-default 5000
+{"failed":"exp_compat.ts"}
+## exp_compat.ts app-truncate 5000
+{"failed":"exp_compat.ts"}
+## exp_latency.ts file 10
+{"failed":"exp_latency.ts"}
+## exp_crash.ts 10 file
+{"failed":"exp_crash.ts"}
+## exp_failover.ts file 1,100
+{"failed":"exp_failover.ts"}

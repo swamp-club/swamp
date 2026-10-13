@@ -63,6 +63,10 @@ import {
 import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import type { RepositoryFactoryConfig } from "../persistence/repository_factory.ts";
 import { getSwampLogger } from "../logging/logger.ts";
+import {
+  spikeLitestreamStart,
+  spikeLitestreamSyncAll,
+} from "./spike_litestream.ts";
 
 const logger = getSwampLogger(["datastore", "v3"]);
 
@@ -192,6 +196,8 @@ export async function holdV3Writer(
     await release();
     throw error;
   }
+  // SPIKE (swamp-club#3357): the writer starts replication with the lock.
+  await spikeLitestreamStart(config.path);
   releases.push(async () => {
     // The marker goes once every unit has ended, before the lock does. A
     // marker that cannot be removed costs one needless recovery, never the
@@ -399,11 +405,19 @@ export async function closeV3Datastores(): Promise<void> {
   for (const handle of handles) {
     if (holdsV3WriterLock(handle.datastorePath)) await compactQuietly(handle);
   }
+  // SPIKE (swamp-club#3357): one forced sync covers every commit this
+  // command made, compaction included, before the lock is released.
+  // SWAMP_SPIKE_LITESTREAM_ORDER=after-close moves it after the stores
+  // close, so the sidecar, not swamp, holds the last connection.
+  const syncAfterClose =
+    Deno.env.get("SWAMP_SPIKE_LITESTREAM_ORDER") === "after-close";
+  if (!syncAfterClose) await spikeLitestreamSyncAll();
   // Close before releasing, so no other writer starts while this process
   // still has the commit log open.
   const closed = await Promise.allSettled(
     handles.map((handle) => handle.close()),
   );
+  if (syncAfterClose) await spikeLitestreamSyncAll();
   const released = await Promise.allSettled(
     pending.map((release) => release()),
   );

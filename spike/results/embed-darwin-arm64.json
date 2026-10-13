@@ -1,0 +1,13 @@
+{
+  "litestreamVersion": "0.5.17",
+  "releaseBinaryBytes": {"darwin-arm64": 37553346, "darwin-x86_64": 40096832, "linux-arm64": 36241592, "linux-x86_64": 38969528, "windows-x86_64": 39965184},
+  "releaseArchiveBytes": {"darwin-arm64": 12967464, "darwin-x86_64": 13891626, "linux-arm64": 12336596, "linux-x86_64": 13540484, "windows-x86_64": 13870760, "windows-arm64": 12433194},
+  "denoCompileIncludeDelta": {"plain": 67662226, "withLitestream": 105507730, "deltaBytes": 37845504},
+  "swampInstalledBinaryBytes": 312237970,
+  "extractFromCompiledBinary": {"extractMs": [24.9, 12.2, 12.4], "sha256Ms": [11.9, 14.1, 14.2], "firstExecOfNewFileMs": [377.7, 252.3, 239.9]},
+  "goCShared": {"dylibBytesStripped": 29457970, "buildSeconds": 6.6, "dlopenMs": 4.0, "openMs": 3.3, "syncInProcessMs": {"n": 20, "min": 12.8, "p50": 13, "p90": 14.8, "max": 17.2}, "denoSignalListenerWorks": true, "restoredOk": true},
+  "commands": {
+    "size": "deno compile -A -o plain main.ts && deno compile -A --include litestream-bin -o withls main.ts (see spike/README.md)",
+    "goCShared": "cd spike/golib && CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags '-s -w' -o liblitestream.dylib . && deno run -A spike/ffi_probe.ts"
+  }
+}
