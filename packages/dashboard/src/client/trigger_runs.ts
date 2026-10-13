@@ -25,7 +25,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useRequest } from "./useRequest.ts";
 import { extractArray, extractTotal } from "./extract.ts";
-import { useTimeBounds } from "./time_range.ts";
+import { useTimeBounds, useTimeRange } from "./time_range.ts";
+import { useKeepPrevious } from "./useKeepPrevious.ts";
 import { useRunSummary } from "./run_summary.ts";
 import {
   legacySince,
@@ -64,6 +65,16 @@ export function useTriggerRunSummaries(
     { triggerSource, workflows: sent, recentLimit },
     { enabled },
   );
+  // A preset's window moves every minute, re-keying the request: hold the
+  // last answer meanwhile so the pills and Last-run columns don't flash
+  // back to loading. A different range is a different question, so it
+  // still shows a skeleton then.
+  const { range } = useTimeRange();
+  const heldSummary = useKeepPrevious(
+    summary.summary,
+    false,
+    JSON.stringify(range),
+  );
   // Older serves don't know the summary request: fall back to a search.
   const fallback = enabled && summary.error !== null;
   const bounds = useTimeBounds();
@@ -76,13 +87,13 @@ export function useTriggerRunSummaries(
   return useMemo(() => {
     if (!fallback) {
       const keep = new Set(names);
-      const list = (summary.summary?.workflows ?? []).filter((w) =>
+      const list = (heldSummary?.workflows ?? []).filter((w) =>
         keep.has(w.workflowName)
       );
       return {
         byWorkflow: new Map(list.map((w) => [w.workflowName, w])),
         totals: sumCounts(list),
-        loading: enabled && summary.data === null && summary.error === null,
+        loading: enabled && heldSummary === null && summary.error === null,
         error: null,
         refetch: summary.refetch,
       };
@@ -98,8 +109,7 @@ export function useTriggerRunSummaries(
     };
   }, [
     fallback,
-    summary.summary,
-    summary.data,
+    heldSummary,
     summary.error,
     summary.refetch,
     search,
