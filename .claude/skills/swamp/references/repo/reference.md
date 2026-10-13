@@ -6,7 +6,7 @@ my-swamp-repo/
 ├── workflows/               # Workflow definitions (YAML)
 ├── vaults/                  # Vault configurations (YAML)
 ├── extensions/              # Custom extensions
-│   ├── models/              # TypeScript model definitions
+│   ├── models/              # TypeScript behavior types (behaviors/ also loads)
 │   ├── vaults/              # TypeScript vault implementations
 │   └── datastores/          # TypeScript datastore implementations
 ├── .swamp/                  # Runtime data (datastore)
@@ -124,7 +124,8 @@ Use `swamp agent list` to see the current mode for each custom tool.
 **What gets created:**
 
 - `.swamp/` directory structure for internal storage
-- `extensions/models/` directory for custom behavior types
+- `extensions/models/` directory for custom behavior types (swamp also loads
+  `extensions/behaviors/` if you create it)
 - `.swamp.yaml` configuration file with version metadata
 - `CLAUDE.md` with agent instructions and skill references (with
   `--tool claude`; in a repo that already keeps its own rules in `AGENTS.md`,
@@ -425,7 +426,7 @@ sources:
   1. **Repo root**: a directory with `extensions/<kind>/` subdirectories. Most
      common — matches how published extensions are structured.
   2. **Direct content**: a directory whose files declare extension exports
-     (`export const model = …`, `export const vault = …`, etc.) or workflow
+     (`export const behavior = …`, `export const vault = …`, etc.) or workflow
      YAML. Useful when you want to point at a single-kind development tree or at
      an `extensions/<kind>/` directory directly. When both layouts exist in the
      same directory, the repo-root layout wins — the direct-content files at the
@@ -465,7 +466,7 @@ swamp extension source list --json  # Confirm the new source appears
 
 ### Load Order
 
-1. **Local extensions** (`extensions/models/`, etc.)
+1. **Local extensions** (`extensions/models/`, `extensions/behaviors/`, etc.)
 2. **Source extensions** (from `.swamp-sources.yaml`, in order listed)
 3. **Pulled extensions** (`.swamp/pulled-extensions/`)
 

@@ -260,7 +260,11 @@ import "../domain/models/models.ts";
 
 // Import and re-export — the canonical definitions live in
 // separate files to avoid circular imports through mod.ts.
-import { resolveModelsDir } from "./resolve_models_dir.ts";
+import {
+  existingBehaviorsDir,
+  resolveBehaviorsDir,
+  resolveModelsDir,
+} from "./resolve_models_dir.ts";
 export { resolveModelsDir };
 import {
   ensureManagedConfigBase,
@@ -557,8 +561,17 @@ export async function configureStartupExtensions(
     return isAbsolute(dir) ? dir : resolve(effectiveExtDir, dir);
   };
 
+  const behaviorsDir = resolveBehaviorsDir(marker);
   const kindDirs = new Map<ExtensionKind, string[]>([
-    ["models", [resolveAbsoluteKindDir(resolveModelsDir), ...sourceModelsDirs]],
+    ["models", [
+      resolveAbsoluteKindDir(resolveModelsDir),
+      // The behavior-spelled sibling of the default models directory
+      // (swamp-club#3338); discovery skips it when it does not exist.
+      ...(behaviorsDir === undefined
+        ? []
+        : [resolve(effectiveExtDir, behaviorsDir)]),
+      ...sourceModelsDirs,
+    ]],
     ["vaults", [resolveAbsoluteKindDir(resolveVaultsDir), ...sourceVaultsDirs]],
     [
       "datastores",
@@ -1226,10 +1239,16 @@ async function loadUserModels(
     // pulledDirs is one entry per installed extension — the loader walks
     // each extension's subtree independently so file-name collisions across
     // sibling extensions can't bleed into each other.
+    // extensions/behaviors/ loads beside extensions/models/ at the same
+    // local tier while the models directory is the default
+    // (swamp-club#3338). Passed only when it exists, so a repo without one
+    // keeps its catalog's source-dirs fingerprint.
+    const behaviorsDir = await existingBehaviorsDir(extBase, marker);
     const result = await loader.buildIndex(
       absoluteModelsDir,
       {
         additionalDirs: [...sourceDirs, ...pulledDirs],
+        ...(behaviorsDir ? { localDirs: [behaviorsDir] } : {}),
         indexOnly: true,
       },
     );

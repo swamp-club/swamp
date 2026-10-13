@@ -172,6 +172,17 @@ export const RULE_CATALOG: readonly RuleCatalogEntry[] = [
     remediation:
       'Write type and version as string literals directly in an unannotated export const model = { ... } object, repeating both after a spread of a shared factory\'s result (e.g. { ...definition, type: "@acme/thing", version: "2026.09.25.1" }). Check the shape with satisfies after the object instead of a type annotation.',
   },
+  // Acceptable: the behavior spelling is the new product term, and an
+  // author who only targets current releases may acknowledge that older
+  // clients and workers cannot load the extension (swamp-club#3338).
+  {
+    id: "behavior-spelling",
+    severity: "warning",
+    scope: "extension",
+    acceptable: true,
+    remediation:
+      "Keep the behavior spelling if every client and worker that installs this extension runs this swamp release or later; otherwise use the model spelling (export const model, extensions/models/, manifest models:). Accept the finding in quality.yaml to stop this prompt.",
+  },
   // ── Adversarial-review evidence: warnings, never acceptable here ────
   {
     id: "adversarial-review-report",

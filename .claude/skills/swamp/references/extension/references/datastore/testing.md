@@ -177,7 +177,7 @@ Test the exact production code path by intercepting at the runtime boundary.
 ### S3/AWS-based datastores
 
 Datastores that accept an `endpoint` config can point at a local mock server to
-test verifier and sync behavior without real AWS credentials:
+test the verifier and sync without real AWS credentials:
 
 ```typescript
 import { assertVerifierConformance } from "@swamp-club/swamp-testing";

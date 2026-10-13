@@ -6,16 +6,45 @@ via `swamp-extension-publish`.
 
 ## Determine Extension Type
 
-| User intent                                    | Type      | Export                   | Location                         |
-| ---------------------------------------------- | --------- | ------------------------ | -------------------------------- |
-| New data source, API integration, automation   | Model     | `export const model`     | `extensions/models/*.ts`         |
-| Custom secret backend (HashiCorp Vault, 1P, …) | Vault     | `export const vault`     | `extensions/vaults/*/mod.ts`     |
-| Custom storage backend (GCS, DB, …)            | Datastore | `export const datastore` | `extensions/datastores/*/mod.ts` |
-| Repeatable analysis of model/workflow output   | Report    | `export const report`    | `extensions/reports/*.ts`        |
-| Custom `swamp serve` webhook auth/response     | Webhook   | `export const webhook`   | `extensions/webhooks/*.ts`       |
+| User intent                                     | Type      | Export                   | Location                         |
+| ----------------------------------------------- | --------- | ------------------------ | -------------------------------- |
+| New data source, API integration, automation    | Behavior  | `export const behavior`  | `extensions/behaviors/*.ts`      |
+| Custom secret backend (HashiCorp Vault, 1P, …)  | Vault     | `export const vault`     | `extensions/vaults/*/mod.ts`     |
+| Custom storage backend (GCS, DB, …)             | Datastore | `export const datastore` | `extensions/datastores/*/mod.ts` |
+| Repeatable analysis of behavior/workflow output | Report    | `export const report`    | `extensions/reports/*.ts`        |
+| Custom `swamp serve` webhook auth/response      | Webhook   | `export const webhook`   | `extensions/webhooks/*.ts`       |
 
 For webhook extensions, read
 [references/webhook/api.md](references/webhook/api.md).
+
+## Behavior and model spellings
+
+Write new behavior extensions with the behavior spelling:
+`export const behavior`, files under `extensions/behaviors/`, and the manifest
+`behaviors:` key. The model spelling (`export const model`,
+`extensions/models/`, manifest `models:`) is an exact synonym and keeps working,
+so existing extensions need no change.
+
+- Export `behavior` or `model` from a file, never both. Exporting both as
+  definitions fails to load.
+- `extensions/behaviors/` loads beside `extensions/models/` only while the
+  models directory is the default. A type defined in both is a duplicate-type
+  error.
+- A manifest lists entry points under `behaviors:`, resolved (with `include`)
+  from `extensions/behaviors/`, or under `models:`, resolved from
+  `extensions/models/`. A manifest that sets `models:` ignores `behaviors:`.
+- `swamp extension push` packs behaviors-directory files under the archive's
+  `models/` and writes `models:` into the pushed manifest. Two files that would
+  pack to the same path fail the push.
+- swamp clients and workers older than the release that added the behavior
+  spelling cannot load such an extension. Push warns with `behavior-spelling`;
+  accept it with `--yes` or in `quality.yaml`, or use the model spelling when
+  older clients must install the extension.
+- `swamp repo init` still creates `extensions/models/`. Create
+  `extensions/behaviors/` yourself.
+- Releases of `@swamp-club/swamp-testing` that export `defineBehavior` make it
+  the same function as `defineModel`. Code names such as `ModelDefinition`,
+  `modelRegistry.extend` and `export const extension` have no behavior spelling.
 
 ## Before Creating an Extension
 
@@ -40,7 +69,7 @@ For webhook extensions, read
    swamp extension info <package> --json
    ```
 
-   The `contentMetadata` field in the JSON output lists every model type with
+   The `contentMetadata` field in the JSON output lists every behavior type with
    its methods and arguments, plus workflows, vaults, and other content. If the
    type you need isn't listed, don't pull — move to step 5. Method lists are
    read from source at push time and can be incomplete (versions pushed by older
@@ -63,7 +92,7 @@ For webhook extensions, read
 
 6. **Confirmed no type/method exists?** If `extension info` and `type search`
    both confirm no type or method covers the operation, stop searching.
-   `command/shell` or a custom model is the correct approach — file a feature
+   `command/shell` or a custom behavior is the correct approach — file a feature
    request (`swamp issue feature --extension @swamp/<name>`) to track the gap.
 
 7. For local or private extensions, use `swamp extension source add <path>`.
@@ -76,7 +105,7 @@ default; trust others explicitly with `swamp extension trust add <collective>`
 
 Don't use `command/shell` when an extension type covers the operation. If
 `extension info` confirms no type or method exists for the operation,
-`command/shell` or a custom model is the correct approach — file a feature
+`command/shell` or a custom behavior is the correct approach — file a feature
 request to track the gap.
 
 ## Choosing a Collective Name

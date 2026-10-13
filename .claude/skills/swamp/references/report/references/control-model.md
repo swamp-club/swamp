@@ -8,8 +8,8 @@ The `reports` field on the behavior type (`ModelDefinition`) lists standalone
 report names that are defaults for any behavior of this type:
 
 ```typescript
-// extensions/models/my_model.ts
-export const model = {
+// extensions/behaviors/ec2.ts
+export const behavior = {
   type: "@myorg/ec2",
   version: "2026.03.01.1",
   reports: ["@myorg/cost-report", "@myorg/drift-report"],

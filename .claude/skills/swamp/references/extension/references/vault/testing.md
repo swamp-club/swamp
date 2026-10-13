@@ -26,7 +26,7 @@ This verifies: type matches naming pattern, name/description are non-empty,
 configSchema accepts valid and rejects invalid configs, createProvider returns
 an object with get/put/list/getName.
 
-## Behavioral Conformance
+## Contract Conformance
 
 Test the full VaultProvider contract against a real or mocked provider:
 
@@ -78,7 +78,7 @@ Deno.test("vault export conforms with annotations", () => {
 This verifies: the provider has `getAnnotation`, `putAnnotation`,
 `deleteAnnotation`, and `listAnnotations` methods.
 
-### Annotation Behavioral Conformance
+### Annotation Contract Conformance
 
 Test the full `VaultAnnotationProvider` contract:
 

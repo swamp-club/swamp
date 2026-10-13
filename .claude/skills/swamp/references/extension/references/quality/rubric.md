@@ -229,8 +229,8 @@ additionalFiles:
   - README.md
   - LICENSE
 
-models:
-  - my-model.ts
+behaviors:
+  - my-behavior.ts
 
 platforms:
   - linux-x86_64

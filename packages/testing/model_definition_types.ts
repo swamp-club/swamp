@@ -201,3 +201,20 @@ export function defineModel<TGlobalArgs extends z.ZodTypeAny>(
 ): ModelDefinition<TGlobalArgs> {
   return def;
 }
+
+/**
+ * `defineModel` under the behavior spelling: "behavior" is the product term
+ * for what swamp used to call a model (swamp-club#3338). Identical to
+ * {@link defineModel} — pair it with `export const behavior`, which swamp
+ * loads exactly as `export const model`.
+ *
+ * @example
+ * ```ts
+ * export const behavior = defineBehavior({
+ *   type: "@myorg/my-behavior",
+ *   version: "2026.10.13.1",
+ *   methods: {},
+ * });
+ * ```
+ */
+export const defineBehavior: typeof defineModel = defineModel;

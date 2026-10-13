@@ -61,7 +61,7 @@ Use labels to categorize checks for selective skipping:
 
 - `policy` — business rules and constraints
 - `live` — checks that make live API calls
-- `dependency` — cross-model dependency validation
+- `dependency` — cross-behavior dependency validation
 
 ## appliesTo Scoping
 
@@ -76,14 +76,14 @@ appliesTo: ["create", "update"], // on create and update, not delete
 ## Skipping Checks
 
 ```bash
-swamp behavior run my-model create --skip-checks              # skip all
-swamp behavior run my-model create --skip-check valid-region  # skip by name
-swamp behavior run my-model create --skip-check-label live    # skip by label
+swamp behavior run my-behavior create --skip-checks              # skip all
+swamp behavior run my-behavior create --skip-check valid-region  # skip by name
+swamp behavior run my-behavior create --skip-check-label live    # skip by label
 ```
 
 ## Extension Checks
 
-Extensions can add checks to existing model types. The `checks` field is an
+Extensions can add checks to existing behavior types. The `checks` field is an
 array of `Record<string, CheckDefinition>` objects, following the same
 array-of-records pattern as `methods`:
 
@@ -104,7 +104,7 @@ export const extension = {
 };
 ```
 
-A check whose name the base model already defines is not registered (the base
+A check whose name the base behavior already defines is not registered (the base
 check wins) and a `swamp-warning` names the file. When two extensions add the
 same check name, a local extension beats a pulled one, then the smaller file
 path wins — the same rule as methods (see `api.md`, "Name collisions").

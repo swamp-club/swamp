@@ -41,7 +41,7 @@ import {
 } from "../domain/extensions/extension_manifest.ts";
 import { resolveLocalImports } from "../domain/extensions/extension_import_resolver.ts";
 import { resolveWorkflowDependencies } from "../domain/extensions/extension_dependency_resolver.ts";
-import { resolveModelsDir } from "./resolve_models_dir.ts";
+import { resolveBehaviorsDir, resolveModelsDir } from "./resolve_models_dir.ts";
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
@@ -77,6 +77,15 @@ export interface ResolvedExtensionFiles {
    * layout so archive sub-paths match the manifest entries verbatim.
    */
   modelsDir: string;
+  /**
+   * Effective base for the model entry points when the manifest lists them
+   * under `behaviors:` (swamp-club#3338): the behaviors directory beside the
+   * default models directory, the configured models directory otherwise,
+   * or the manifest's directory under `paths.base: manifest`. Undefined for
+   * a `models:` manifest. Push packs files under it at `models/` by their
+   * path from it.
+   */
+  behaviorsDir?: string;
   modelEntryPoints: string[];
   allModelFiles: string[];
   /** Effective base for `vaults` — see {@link modelsDir}. */
@@ -216,6 +225,7 @@ export function planWorkflowArchiveNames(
 /** Manifest fields whose entries resolve from a typed directory. */
 type TypedField =
   | "models"
+  | "behaviors"
   | "vaults"
   | "datastores"
   | "reports"
@@ -224,6 +234,7 @@ type TypedField =
 
 const TYPED_KIND: Record<TypedField, string> = {
   models: "Model file",
+  behaviors: "Behavior file",
   vaults: "Vault file",
   datastores: "Datastore file",
   reports: "Report file",
@@ -250,6 +261,22 @@ interface SelectExtensionsRootOptions {
   typedDirs: Record<TypedField, string>;
   useManifestBase: boolean;
   logger: Logger;
+}
+
+/**
+ * A typed field's manifest entries. The model entry points are listed
+ * under `models` or, behavior-spelled, under `behaviors` (swamp-club#3338),
+ * never both, so each of the two fields holds them only when the author
+ * used it.
+ */
+function typedEntries(
+  manifest: ExtensionManifest,
+  field: TypedField,
+): readonly string[] {
+  const behaviorsKey = manifest.modelsKey === "behaviors";
+  if (field === "models") return behaviorsKey ? [] : manifest.models;
+  if (field === "behaviors") return behaviorsKey ? manifest.models : [];
+  return manifest[field];
 }
 
 function isSameOrUnder(path: string, root: string): boolean {
@@ -433,6 +460,7 @@ async function selectExtensionsRoot(
   let anyUnderRepo = false;
   const fields: TypedField[] = [
     "models",
+    "behaviors",
     "vaults",
     "datastores",
     "reports",
@@ -440,7 +468,7 @@ async function selectExtensionsRoot(
     "include",
   ];
   for (const field of fields) {
-    for (const ref of manifest[field]) {
+    for (const ref of typedEntries(manifest, field)) {
       const underRepo = resolve(repo, typedDirs[field], ref);
       const underInferred = resolve(inferred, typedDirs[field], ref);
       const repoReal = await realPathOrNull(underRepo);
@@ -626,8 +654,14 @@ export async function resolveExtensionFiles(
   );
 
   // 1b. Defensive path traversal check (belt-and-suspenders with Zod schema)
+  // The model entry points come from `models:` or, behavior-spelled, from
+  // `behaviors:` (swamp-club#3338); the field named in messages is the one
+  // the author wrote.
+  const modelsField: "models" | "behaviors" = manifest.modelsKey === "behaviors"
+    ? "behaviors"
+    : "models";
   const allManifestPaths = [
-    ...manifest.models.map((p) => ({ field: "models", path: p })),
+    ...manifest.models.map((p) => ({ field: modelsField, path: p })),
     ...manifest.workflows.map((p) => ({ field: "workflows", path: p })),
     ...manifest.vaults.map((p) => ({ field: "vaults", path: p })),
     ...manifest.datastores.map((p) => ({ field: "datastores", path: p })),
@@ -666,13 +700,21 @@ export async function resolveExtensionFiles(
   const marker = await markerRepo.read(repoPath);
   const manifestDir = dirname(absoluteManifestPath);
   const useManifestBase = manifest.paths.base === "manifest";
+  // `behaviors:` entries resolve from the behaviors directory while the
+  // models directory is the default, and from the configured models
+  // directory otherwise. Include files sit beside the model entry points,
+  // so they follow the same directory.
+  const behaviorsRel = resolveBehaviorsDir(marker) ?? resolveModelsDir(marker);
   const typedDirs: Record<TypedField, string> = {
     models: resolveModelsDir(marker),
+    behaviors: behaviorsRel,
     vaults: resolveVaultsDir(marker),
     datastores: resolveDatastoresDir(marker),
     reports: resolveReportsDir(marker),
     webhooks: resolveWebhooksDir(marker),
-    include: resolveModelsDir(marker),
+    include: modelsField === "behaviors"
+      ? behaviorsRel
+      : resolveModelsDir(marker),
   };
   const extensionsRoot = await selectExtensionsRoot({
     repoDir,
@@ -686,6 +728,10 @@ export async function resolveExtensionFiles(
   const typedBase = (field: TypedField): string =>
     useManifestBase ? manifestDir : resolve(extensionsRoot, typedDirs[field]);
   const modelsDir = typedBase("models");
+  const behaviorsDir = modelsField === "behaviors"
+    ? typedBase("behaviors")
+    : undefined;
+  const modelEntryDir = behaviorsDir ?? modelsDir;
   const vaultsDir = typedBase("vaults");
   const datastoresDir = typedBase("datastores");
   const reportsDir = typedBase("reports");
@@ -705,6 +751,9 @@ export async function resolveExtensionFiles(
   if (useManifestBase) {
     const typedFieldPrefixes: Array<{ field: string; prefix: string }> = [
       { field: "models", prefix: "models/" },
+      // Behavior entries are packed under models/ too.
+      { field: "behaviors", prefix: "behaviors/" },
+      { field: "behaviors", prefix: "models/" },
       { field: "vaults", prefix: "vaults/" },
       { field: "datastores", prefix: "datastores/" },
       { field: "reports", prefix: "reports/" },
@@ -712,8 +761,7 @@ export async function resolveExtensionFiles(
       { field: "include", prefix: "models/" },
     ];
     for (const { field, prefix } of typedFieldPrefixes) {
-      const entries = manifest[field as keyof typeof manifest];
-      if (!Array.isArray(entries)) continue;
+      const entries = typedEntries(manifest, field as TypedField);
       for (const entry of entries) {
         if (typeof entry !== "string") continue;
         const normalized = entry.replace(/^\.\//, "");
@@ -721,7 +769,12 @@ export async function resolveExtensionFiles(
           throw markErrorPaths(
             new UserError(
               `Manifest field '${field}' entry '${entry}' starts with '${prefix}', ` +
-                `which would double the archive path to ${prefix}${normalized}. ` +
+                (field === "behaviors"
+                  // Behavior files pack under models/, so nothing doubles;
+                  // the prefix names a typed directory the manifest base
+                  // does not use (swamp-club#3338).
+                  ? `a typed directory, but paths.base: manifest resolves entries from the manifest's own directory. `
+                  : `which would double the archive path to ${prefix}${normalized}. `) +
                 `With paths.base: manifest, use the bare filename (e.g. '${
                   normalized.slice(prefix.length)
                 }') ` +
@@ -743,12 +796,15 @@ export async function resolveExtensionFiles(
   const modelEntryPoints: string[] = [];
   for (const modelRef of manifest.models) {
     modelEntryPoints.push(
-      await findTypedEntry(lookup, "models", modelsDir, modelRef),
+      await findTypedEntry(lookup, modelsField, modelEntryDir, modelRef),
     );
   }
 
   // 4. Resolve local imports for each model entry point
-  const importResult = await resolveLocalImports(modelEntryPoints, modelsDir);
+  const importResult = await resolveLocalImports(
+    modelEntryPoints,
+    modelEntryDir,
+  );
   const allModelFiles = [...importResult.resolvedFiles];
 
   // 5. Resolve workflow dependencies if workflows present
@@ -1084,7 +1140,12 @@ export async function resolveExtensionFiles(
   // 15. Validate include files (resolved relative to modelsDir)
   const includeFilePaths: string[] = [];
   for (const inc of manifest.include) {
-    const incPath = await findTypedEntry(lookup, "include", modelsDir, inc);
+    const incPath = await findTypedEntry(
+      lookup,
+      "include",
+      typedBase("include"),
+      inc,
+    );
     // stat, not lstat: findTypedEntry follows symlinks for include entries.
     assertRegularFile(
       "Include file",
@@ -1209,6 +1270,7 @@ export async function resolveExtensionFiles(
     absoluteManifestPath,
     extensionsRoot,
     modelsDir,
+    ...(behaviorsDir !== undefined ? { behaviorsDir } : {}),
     modelEntryPoints,
     allModelFiles,
     vaultsDir,

@@ -82,6 +82,26 @@ const HINT_BY_KIND: Record<ExtensionKind, string> = {
     "extensions/webhooks/ is auto-discovered — running `swamp extension source add` here is a no-op.",
 };
 
+/**
+ * extensions/behaviors/ is the behavior-spelled sibling of
+ * extensions/models/ (swamp-club#3338), auto-discovered the same way.
+ */
+const BEHAVIORS_HINT =
+  "extensions/behaviors/ is auto-discovered — running `swamp extension source add` here is a no-op.";
+
+/** The hint for a warning: the behaviors one for a model file there. */
+function hintFor(
+  warning: Pick<ExtensionLoadWarningEvent, "kind" | "file">,
+): string {
+  if (
+    warning.kind === "model" &&
+    warning.file.replaceAll("\\", "/").includes("extensions/behaviors/")
+  ) {
+    return BEHAVIORS_HINT;
+  }
+  return HINT_BY_KIND[warning.kind];
+}
+
 function defaultWriter(line: string): void {
   console.error(line);
 }
@@ -123,7 +143,7 @@ export function emitExtensionLoadWarning(
 
   if (!state.hintsEmittedFor.has(warning.kind)) {
     state.hintsEmittedFor.add(warning.kind);
-    writer(`  hint: ${HINT_BY_KIND[warning.kind]}`);
+    writer(`  hint: ${hintFor(warning)}`);
   }
 }
 

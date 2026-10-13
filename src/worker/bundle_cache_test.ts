@@ -38,7 +38,7 @@ export const model = {
 };
 `;
 
-function stubClient(): {
+function stubClient(bundle = FAKE_BUNDLE): {
   client: DataPlaneClient;
   bundleFetches: string[];
   assetFetches: string[];
@@ -50,7 +50,7 @@ function stubClient(): {
   const client = {
     fetchBundle: (fingerprint: string) => {
       bundleFetches.push(fingerprint);
-      return Promise.resolve(FAKE_BUNDLE);
+      return Promise.resolve(bundle);
     },
     listAssets: () => Promise.resolve([...files.keys()]),
     fetchAsset: (_fingerprint: string, relPath: string) => {
@@ -130,5 +130,31 @@ Deno.test("WorkerBundleCache: prefetches co-located assets beside the bundle", a
       ),
       "<html>",
     );
+  });
+});
+
+Deno.test("WorkerBundleCache: loads a bundle that exports behavior, the other spelling of model", async () => {
+  await withCacheDir(async (dir) => {
+    const { client } = stubClient(
+      FAKE_BUNDLE.replace("export const model", "export const behavior"),
+    );
+    const cache = new WorkerBundleCache(dir, client);
+    const loaded = await cache.load(`fp-behavior-${crypto.randomUUID()}`);
+    assertEquals(loaded.modelDef.type.normalized, "swamp/bundled-test");
+    assertEquals(typeof loaded.modelDef.methods.run.execute, "function");
+  });
+});
+
+Deno.test("WorkerBundleCache: refuses a bundle that exports both model and behavior", async () => {
+  await withCacheDir(async (dir) => {
+    const { client } = stubClient(
+      FAKE_BUNDLE + "\nexport const behavior = model;\n",
+    );
+    const cache = new WorkerBundleCache(dir, client);
+    const error = await assertRejects(
+      () => cache.load(`fp-both-${crypto.randomUUID()}`),
+      Error,
+    );
+    assertStringIncludes(error.message, "both 'model' and 'behavior'");
   });
 });

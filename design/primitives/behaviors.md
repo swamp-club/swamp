@@ -68,14 +68,15 @@ scripts depend on them:
 - The workflow step type `model_method` and its `modelIdOrName`, `modelType` and
   `modelName` fields.
 - The extension export `export const model`, the `extensions/models/` directory
-  and the manifest `models:` key.
+  and the manifest `models:` key, which swamp keeps writing and an extension
+  archive keeps using.
 - Extension API names, such as `context.runModel`.
 - Code names, such as the `ModelType` and `ModelRegistry` classes,
   `src/domain/models/`, libswamp names and log categories like
   `["model", "get"]`.
 
-Three of these names also accept a behavior spelling where people write them
-(swamp-club#3334):
+Some of these names also accept a behavior spelling where people write them
+(swamp-club#3334, swamp-club#3338):
 
 - The workflow step type `behavior`, with `behavior`, `behaviorType` and
   `behaviorName`. See "Model spelling" in [workflows.md](./workflows.md).
@@ -84,14 +85,18 @@ Three of these names also accept a behavior spelling where people write them
 - Audit filters and rules that name a `behavior.*` action or a `behavior:`
   resource. See "Behavior spelling" in
   [../enablers/serve-audit.md](../enablers/serve-audit.md).
+- The extension export `export const behavior`, the `extensions/behaviors/`
+  directory and the manifest `behaviors:` key. See "Behavior Spelling" in
+  [extensions.md](./extensions.md).
 
 Each is an exact synonym. Swamp translates it to the model form where the value
 enters, before it is used or authorized. `behaviour` and other near-misses are
 not synonyms. A step type or grant selector spelled that way is refused. Swamp
 keeps writing the model form, so older swamp releases can still read what it
-wrote. The other names above accept only the model form, and any new behavior
-spelling must follow the same rules. The synonyms are listed in
-`src/domain/terminology/behavior_aliases.ts`.
+wrote. A file or extension written by hand in the behavior spelling needs a
+swamp release that accepts it. The other names above accept only the model
+form, and any new behavior spelling must follow the same rules. The synonyms
+are listed in `src/domain/terminology/behavior_aliases.ts`.
 
 ## Type
 

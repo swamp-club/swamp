@@ -37,6 +37,10 @@ import {
 } from "../../domain/repo/swamp_sources.ts";
 import type { RepoMarkerData } from "./repo_marker_repository.ts";
 import { isWorkflowDocument } from "../../domain/workflows/workflow_document.ts";
+import {
+  DEFAULT_BEHAVIORS_DIR,
+  DEFAULT_MODELS_DIR,
+} from "../../domain/terminology/behavior_aliases.ts";
 
 const logger = getLogger(["swamp", "sources"]);
 
@@ -207,6 +211,34 @@ async function probeStandardLayout(
   return out;
 }
 
+/**
+ * The source's `extensions/behaviors/` (swamp-club#3338) when `models` is
+ * among the kinds it contributes, its marker leaves the models directory at
+ * the default, and the directory exists; otherwise undefined.
+ */
+async function probeBehaviorsDir(
+  sourceDir: string,
+  marker: RepoMarkerData | null,
+  only: ReadonlyArray<ExtensionKind>,
+): Promise<string | undefined> {
+  // As for the repo itself: the behaviors dir exists only while the models
+  // dir is the default, whether the marker leaves modelsDir unset or sets it
+  // to the default value.
+  const modelsDir = marker?.modelsDir;
+  if (
+    !only.includes("models") ||
+    (modelsDir !== undefined && modelsDir !== DEFAULT_MODELS_DIR)
+  ) {
+    return undefined;
+  }
+  const absDir = resolve(sourceDir, DEFAULT_BEHAVIORS_DIR);
+  try {
+    return (await Deno.stat(absDir)).isDirectory ? absDir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Directories skipped during the content pre-scan: test helpers and
  * unrelated package detritus that would never hold an extension file. */
 const PRE_SCAN_SKIP_DIRS = new Set([
@@ -373,11 +405,17 @@ export async function resolveSourceExtensionDirs(
 
     const only = source.only ?? EXTENSION_KINDS;
     const standard = await probeStandardLayout(sourceDir, marker, only);
+    const behaviorsDir = await probeBehaviorsDir(sourceDir, marker, only);
 
+    // Layout detection is unchanged: a source is standard-layout only by
+    // the existing kind dirs, so a source that already had an
+    // extensions/behaviors/ folder loads as it did before. The behaviors
+    // dir is added on top of a standard layout (swamp-club#3338).
     if (standard.size > 0) {
       for (const [kind, dir] of standard) {
         setKindDir(resolved, kind, dir);
       }
+      if (behaviorsDir !== undefined) resolved.behaviorsDir = behaviorsDir;
     } else {
       // Standard layout yielded zero known kinds — fall back to content
       // pre-scan. Each detected kind's dir becomes the source path itself
@@ -411,6 +449,7 @@ export function flattenSourceKindDirs(
     for (
       const dir of [
         source.modelsDir,
+        source.behaviorsDir,
         source.vaultsDir,
         source.datastoresDir,
         source.reportsDir,
@@ -488,8 +527,10 @@ export async function resolveExtensionKindsForSource(
     if (!stat.isDirectory) continue;
 
     const standard = await probeStandardLayout(ex.path, marker, only);
+    const behaviorsDir = await probeBehaviorsDir(ex.path, marker, only);
     if (standard.size > 0) {
       for (const kind of standard.keys()) union.add(kind);
+      if (behaviorsDir !== undefined) union.add("models");
       continue;
     }
 
@@ -515,6 +556,11 @@ export function collectDirsForKind(
     const dir = getKindDir(source, kind);
     if (dir) {
       dirs.push(dir);
+    }
+    // The behaviors directory loads as models, after the models directory
+    // so the source's own precedence matches the repo's (swamp-club#3338).
+    if (kind === "models" && source.behaviorsDir) {
+      dirs.push(source.behaviorsDir);
     }
   }
   return dirs;

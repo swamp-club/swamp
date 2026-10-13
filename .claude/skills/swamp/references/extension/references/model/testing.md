@@ -1,12 +1,12 @@
-# Unit Testing Extension Models
+# Unit Testing Extension Behaviors
 
 The `@swamp-club/swamp-testing` package provides `createModelTestContext()` for
-unit testing extension model `execute` functions without real infrastructure.
+unit testing extension behavior `execute` functions without real infrastructure.
 
 Install: `deno add jsr:@swamp-club/swamp-testing`
 
-> **If your `_test.ts` imports the model source directly and fails with TS7006
-> under strict mode**, see [typing.md](typing.md) for the
+> **If your `_test.ts` imports the behavior source directly and fails with
+> TS7006 under strict mode**, see [typing.md](typing.md) for the
 > `satisfies ModelDefinition<...>` escape hatch.
 
 ## createModelTestContext Options
@@ -34,7 +34,7 @@ const {
 } = createModelTestContext();
 ```
 
-## Testing CRUD Lifecycle Models
+## Testing CRUD Lifecycle Behaviors
 
 Seed stored resources to test methods that read existing state:
 
@@ -46,7 +46,7 @@ Deno.test("sync refreshes state from API", async () => {
     },
   });
 
-  await model.methods.sync.execute({}, context);
+  await behavior.methods.sync.execute({}, context);
   assertEquals(getWrittenResources()[0].data.instanceId, "i-abc123");
 });
 ```
@@ -57,7 +57,7 @@ Accept an optional client parameter in the method arguments so tests can inject
 a stub instead of the live SDK:
 
 ```typescript
-// In the model execute function
+// In the behavior execute function
 execute: (async (
   args: z.infer<typeof ArgsSchema> & { _s3Client?: S3Client },
   context: { globalArgs: { region: string; bucket: string } },
@@ -76,7 +76,7 @@ const { context } = createModelTestContext({
   globalArgs: { region: "us-east-1", bucket: "my-bucket" },
 });
 
-await model.methods.create.execute({ _s3Client: mockS3 }, context);
+await behavior.methods.create.execute({ _s3Client: mockS3 }, context);
 ```
 
 ### Alternative: Extract Logic Into Testable Functions
@@ -85,7 +85,7 @@ Extract business logic into a separate function with explicit dependencies. This
 keeps the `execute` function thin:
 
 ```typescript
-// extensions/models/_lib/vpc_ops.ts
+// extensions/behaviors/_lib/vpc_ops.ts
 export async function createVpc(
   client: { send: (cmd: unknown) => Promise<unknown> },
   cidr: string,
@@ -117,7 +117,7 @@ Deno.test("sync cleans up stale error data on recovery", async () => {
     },
   });
 
-  await model.methods.sync.execute({}, context);
+  await behavior.methods.sync.execute({}, context);
   assertEquals(getDeletedResources(), ["last-error"]);
 });
 ```

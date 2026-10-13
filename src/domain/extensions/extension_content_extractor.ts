@@ -275,6 +275,59 @@ function extractBalancedBrackets(
 }
 
 /**
+ * The opening of a model entry point's plain object literal:
+ * `export const model = {`, or else its behavior spelling
+ * `export const behavior = {` (swamp-club#3338). Both read the same, so a
+ * behavior-spelled extension reaches the registry catalog exactly as its
+ * model-spelled twin does. The model spelling is looked for first, so a
+ * model file that also exports an unrelated `behavior` object reads as it
+ * always has.
+ */
+function matchModelExportObject(content: string): RegExpMatchArray | null {
+  const model = content.match(/export\s+const\s+model\s*=\s*\{/);
+  if (model) return model;
+  // The behavior spelling reads exactly as the model spelling does (first
+  // match), but only in a file that holds a behavior definition at all: an
+  // object that declares methods, as the loader requires. A helper whose
+  // only export is an unrelated config such as `{ type: "retry" }` has none.
+  return hasBehaviorDefinition(content)
+    ? content.match(/export\s+const\s+behavior\s*=\s*\{/)
+    : null;
+}
+
+/**
+ * Whether `content` declares `export const behavior` with an object that
+ * declares methods (swamp-club#3338): the first object after the `=`, so a
+ * plain literal (`= { ... }`), a wrapped one (`= make({ ... })`) and an
+ * annotated one (`: T = { ... }`) all count, and an unrelated config such as
+ * `{ type: "retry" }` does not.
+ */
+export function hasBehaviorDefinition(content: string): boolean {
+  for (
+    const match of content.matchAll(/export\s+const\s+behavior\b[^=;]*=/g)
+  ) {
+    if (match.index === undefined) continue;
+    const after = match.index + match[0].length;
+    const brace = content.indexOf("{", after);
+    const end = content.indexOf(";", after);
+    if (brace === -1 || (end !== -1 && end < brace)) continue;
+    const body = extractBalancedBraces(content, brace + 1);
+    if (body !== null && declaresMethods(body)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether an object body declares a `methods` property, written out
+ * (`methods: {`) or as a shorthand (`methods,`, or last in the body). Used to tell a
+ * behavior-spelled definition from an unrelated `behavior` binding
+ * (swamp-club#3338).
+ */
+export function declaresMethods(body: string): boolean {
+  return /(?<![.\w])methods\s*(?:[:,}(]|$)/.test(body);
+}
+
+/**
  * Extracts the model type string.
  * Matches `ModelType.create("...")` or `type: "..."` patterns.
  *
@@ -307,7 +360,7 @@ export function extractModelType(content: string): string | null {
  * balance. Every field the catalog reads from a model comes from this body.
  */
 export function extractModelExportBody(content: string): string | null {
-  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  const modelExportMatch = matchModelExportObject(content);
   if (!modelExportMatch || modelExportMatch.index === undefined) return null;
 
   const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
@@ -332,7 +385,7 @@ export function extractModelVersion(content: string): string | null {
 export function extractLastUpgradeToVersion(
   content: string,
 ): string | null {
-  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  const modelExportMatch = matchModelExportObject(content);
   if (!modelExportMatch || modelExportMatch.index === undefined) return null;
 
   const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
@@ -533,6 +586,8 @@ function resolveMethodsReference(content: string): string | null {
   // as a shorthand property in the model object literal.
   const shorthandMatch = content.match(
     /(?:export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
+  ) ?? content.match(
+    /(?:export\s+const\s+behavior\s*=\s*\{[\s\S]*?)(?<![.\w])methods\s*[,}]/,
   );
   if (shorthandMatch) {
     // Verify it's not `methods: {` (inline) or `methods: someRef` (reference)

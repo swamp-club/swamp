@@ -21,14 +21,22 @@ import { assertEquals } from "@std/assert";
 import {
   BEHAVIOR_AUDIT_ACTION_PREFIX,
   BEHAVIOR_AUDIT_RESOURCE_PREFIX,
+  BEHAVIOR_EXPORT_NAME,
+  BEHAVIOR_MANIFEST_KEY,
   BEHAVIOR_SELECTOR_KIND,
   BEHAVIOR_STEP_TASK_FIELDS,
   BEHAVIOR_STEP_TASK_TYPE,
+  BEHAVIORS_DIR_NAME,
   canonicalResourceKind,
+  DEFAULT_BEHAVIORS_DIR,
+  DEFAULT_MODELS_DIR,
   MODEL_AUDIT_ACTION_PREFIX,
   MODEL_AUDIT_RESOURCE_PREFIX,
+  MODEL_EXPORT_NAME,
+  MODEL_MANIFEST_KEY,
   MODEL_SELECTOR_KIND,
   MODEL_STEP_TASK_TYPE,
+  MODELS_DIR_NAME,
   replacePrefix,
 } from "./behavior_aliases.ts";
 
@@ -81,4 +89,15 @@ Deno.test("replacePrefix: replaces a leading prefix only", () => {
     "behaviour.run",
   );
   assertEquals(replacePrefix("behavior.", "behavior.", "model."), "model.");
+});
+
+Deno.test("behavior aliases: the extension export, directory and manifest key pair with their model forms", () => {
+  assertEquals(BEHAVIOR_EXPORT_NAME, "behavior");
+  assertEquals(MODEL_EXPORT_NAME, "model");
+  assertEquals(BEHAVIORS_DIR_NAME, "behaviors");
+  assertEquals(MODELS_DIR_NAME, "models");
+  assertEquals(DEFAULT_BEHAVIORS_DIR, "extensions/behaviors");
+  assertEquals(DEFAULT_MODELS_DIR, "extensions/models");
+  assertEquals(BEHAVIOR_MANIFEST_KEY, "behaviors");
+  assertEquals(MODEL_MANIFEST_KEY, "models");
 });
