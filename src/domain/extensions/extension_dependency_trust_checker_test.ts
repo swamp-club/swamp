@@ -561,6 +561,24 @@ Deno.test("checkDependencyTrust: a failed downloads lookup alone still audits th
   assertEquals(notAuditedCount(result), 0);
 });
 
+Deno.test("checkDependencyTrust: an unreachable downloads API alone still audits the dependency", async () => {
+  const result = await checkDependencyTrust(
+    [npmSpec("some-pkg", "1.0.0")],
+    routedFetcher({
+      [OSV_URL]: { status: 200, body: { vulns: [] } },
+      [NPM_URL]: { status: 200, body: HEALTHY_NPM_BODY },
+      [DOWNLOADS_URL]: "throw",
+    }),
+  );
+
+  const [summary] = result.audited;
+  assertEquals(summary.passed, true);
+  assertEquals(summary.cause, undefined);
+  assertEquals(summary.license, "MIT");
+  assertEquals(summary.weeklyDownloads, null);
+  assertEquals(notAuditedCount(result), 0);
+});
+
 Deno.test("checkDependencyTrust: counts each unaudited dependency once, by name", async () => {
   const result = await checkDependencyTrust(
     [npmSpec("pkg-a", "1.0.0"), npmSpec("pkg-b", "2.0.0")],

@@ -294,28 +294,44 @@ async function fetchNpmFacts(
   fetcher: Fetcher,
   signal?: AbortSignal,
 ): Promise<Lookup<NpmPackageFacts>> {
-  try {
-    const [pkgResp, downloadsResp] = await Promise.all([
-      fetchWithTimeout(`${NPM_REGISTRY_URL}/${name}`, {}, fetcher, signal),
-      fetchWithTimeout(`${NPM_DOWNLOADS_URL}/${name}`, {}, fetcher, signal),
-    ]);
+  // The download count is a soft signal: its failure leaves it null and
+  // never makes the package metadata lookup, or the audit, fail.
+  const [pkgSettled, downloadsSettled] = await Promise.allSettled([
+    fetchWithTimeout(`${NPM_REGISTRY_URL}/${name}`, {}, fetcher, signal),
+    fetchWithTimeout(`${NPM_DOWNLOADS_URL}/${name}`, {}, fetcher, signal),
+  ]);
+  const downloadsResp = downloadsSettled.status === "fulfilled"
+    ? downloadsSettled.value
+    : null;
+  if (pkgSettled.status === "rejected") {
+    await downloadsResp?.body?.cancel();
+    return {
+      kind: "unavailable",
+      reason: describeFailure(pkgSettled.reason, signal),
+    };
+  }
+  const pkgResp = pkgSettled.value;
 
-    if (!pkgResp.ok) {
-      await pkgResp.body?.cancel();
-      await downloadsResp.body?.cancel();
-      return { kind: "unavailable", reason: `HTTP ${pkgResp.status}` };
-    }
-    const pkgBody = await pkgResp.json() as Record<string, unknown>;
-
-    let weeklyDownloads: number | null = null;
-    if (downloadsResp.ok) {
+  let weeklyDownloads: number | null = null;
+  if (downloadsResp?.ok) {
+    try {
       const dlBody = await downloadsResp.json() as Record<string, unknown>;
       if (typeof dlBody.downloads === "number") {
         weeklyDownloads = dlBody.downloads;
       }
-    } else {
-      await downloadsResp.body?.cancel();
+    } catch {
+      // An unreadable count is as good as none.
     }
+  } else {
+    await downloadsResp?.body?.cancel();
+  }
+
+  try {
+    if (!pkgResp.ok) {
+      await pkgResp.body?.cancel();
+      return { kind: "unavailable", reason: `HTTP ${pkgResp.status}` };
+    }
+    const pkgBody = await pkgResp.json() as Record<string, unknown>;
 
     const distTags = pkgBody["dist-tags"] as Record<string, string> | undefined;
     const latestVersion = distTags?.latest ??
