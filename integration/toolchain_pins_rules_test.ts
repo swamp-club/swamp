@@ -30,6 +30,8 @@ import { assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml";
 import { join } from "@std/path";
 import { repoRelative, ROOT } from "./arch_fitness_helpers.ts";
+import { litestreamArchiveUrl } from "../src/domain/datastore_v3/litestream_release.ts";
+import { LITESTREAM_PIN } from "../src/infrastructure/datastore_v3/litestream/litestream_pin.ts";
 
 const TOOL_VERSIONS = join(ROOT, ".tool-versions");
 const DOCKERFILE = join(ROOT, "Dockerfile");
@@ -151,6 +153,36 @@ Deno.test("Dockerfile runs swamp under tini as a child subreaper", async () => {
     `${repoRelative(DOCKERFILE)} must check at build time that /tini exists, ` +
       `so a base image without it fails the build instead of shipping an ` +
       `image whose entrypoint cannot start`,
+  );
+});
+
+Deno.test("Dockerfile bakes in the pinned Litestream and points swamp at it", async () => {
+  const dockerfile = await Deno.readTextFile(DOCKERFILE);
+  const stages: Record<string, "linux-x86_64" | "linux-arm64"> = {
+    amd64: "linux-x86_64",
+    arm64: "linux-arm64",
+  };
+  for (const [arch, target] of Object.entries(stages)) {
+    const expected = `FROM scratch AS litestream-${arch}\n` +
+      `ADD --checksum=sha256:${LITESTREAM_PIN.digests(target).archiveSha256} ${
+        litestreamArchiveUrl(LITESTREAM_PIN.version, target)
+      } /litestream.tar.gz\n`;
+    assertEquals(
+      dockerfile.includes(expected),
+      true,
+      `${repoRelative(DOCKERFILE)} must fetch Litestream ` +
+        `${LITESTREAM_PIN.version} for ${target} with the pinned archive ` +
+        `digest. Run \`deno run litestream-pin --version ` +
+        `${LITESTREAM_PIN.version}\` to rewrite it from the pin.`,
+    );
+  }
+  assertEquals(
+    /^ENV SWAMP_LITESTREAM_PATH=\/usr\/local\/bin\/litestream$/m.test(
+      dockerfile,
+    ),
+    true,
+    `${repoRelative(DOCKERFILE)} must point SWAMP_LITESTREAM_PATH at the ` +
+      `baked-in binary, so serve never downloads Litestream at runtime`,
   );
 });
 
