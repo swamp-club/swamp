@@ -909,6 +909,11 @@ With `rollbackOnFailure` true, writes use deferred-latest mode:
 Because markers never advance during execution, deferred-latest has no TOCTOU
 window and nothing to roll back on failure.
 
+The same holds when the method runs as a workflow step: the step's composite
+repository sends each deferred write to the store that owns it by lifetime
+(persistent, or the run's ephemeral store) and settles it there
+([data.md](./data.md)).
+
 **When NOT to use**: methods that interact with external systems and write data
 reflecting real-world state should leave this flag unset. Their writes may be
 the most accurate picture of reality even if the method fails partway. Methods

@@ -139,6 +139,12 @@ row has `is_latest=0`. On success `advanceLatestMarkers` flips them; on failure
 `rollbackVersions` removes the directories and rows
 (`unified_data_repository.ts`; [behaviors.md §Write
 Atomicity](./behaviors.md#write-atomicity-rollbackonfailure)).
+In a workflow step the writers reach the composite repository, which routes a
+deferred write by lifetime as it does `save`, remembers which store issued each
+unsettled version, and settles each receipt in that store. Promotion runs
+persistent first, then ephemeral; it is ordered, not atomic across the two
+stores. Rollback attempts both stores even when one fails
+(`composite_data_repository.ts`).
 
 **Tags** are resolved in a fixed order (`data_writer.ts`): the `type`
 auto-tag, the definition's `tags`, the spec's default tags, per-call
