@@ -20,6 +20,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   compareExtensionPrecedence,
+  contributorTier,
   type ExtensionContributor,
   isPulledExtensionPath,
 } from "./extension_precedence.ts";
@@ -94,4 +95,41 @@ Deno.test("compareExtensionPrecedence: within a tier the smaller path wins", () 
   assert(compareExtensionPrecedence(aa, zz) < 0);
   assert(compareExtensionPrecedence(zz, aa) > 0);
   assertEquals(compareExtensionPrecedence(aa, { ...aa }), 0);
+});
+
+Deno.test("compareExtensionPrecedence: local beats source-mounted beats pulled, whatever the paths (swamp-club#2563)", () => {
+  const local: ExtensionContributor = {
+    sourcePath: "/zz/repo/extensions/models/z.ts",
+    pulled: false,
+  };
+  const mounted: ExtensionContributor = {
+    sourcePath: "/aa/shared/extensions/models/a.ts",
+    pulled: false,
+    mountIndex: 0,
+  };
+  const pulled: ExtensionContributor = {
+    sourcePath: "/00/repo/.swamp/pulled-extensions/@a/models/a.ts",
+    pulled: true,
+  };
+  assert(compareExtensionPrecedence(local, mounted) < 0);
+  assert(compareExtensionPrecedence(mounted, local) > 0);
+  assert(compareExtensionPrecedence(mounted, pulled) < 0);
+  assertEquals(contributorTier(local), "local");
+  assertEquals(contributorTier(mounted), "source-mounted");
+  assertEquals(contributorTier(pulled), "pulled");
+});
+
+Deno.test("compareExtensionPrecedence: an earlier mount beats a later one, whatever the paths", () => {
+  const first: ExtensionContributor = {
+    sourcePath: "/zz/extensions/models/x.ts",
+    pulled: false,
+    mountIndex: 0,
+  };
+  const second: ExtensionContributor = {
+    sourcePath: "/aa/extensions/models/x.ts",
+    pulled: false,
+    mountIndex: 1,
+  };
+  assert(compareExtensionPrecedence(first, second) < 0);
+  assert(compareExtensionPrecedence(second, first) > 0);
 });

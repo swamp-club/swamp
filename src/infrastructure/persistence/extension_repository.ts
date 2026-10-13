@@ -24,6 +24,7 @@ import type {
   ExtensionCatalogStore,
   ExtensionKind,
   ExtensionTypeRow,
+  MountedTypeConflict,
   OriginConflict,
   PulledTypeConflict,
 } from "./extension_catalog_store.ts";
@@ -128,6 +129,7 @@ export class ExtensionRepository {
   private _lastPulledTypeConflicts: PulledTypeConflict[] = [];
   private readonly activePulledRoot: () => string | undefined;
   private readonly sourceExists: (sourcePath: string) => boolean;
+  private readonly mountedSourceDirsCanonical: readonly string[];
 
   /**
    * @param args.activePulledRoot Returns the repo's active pulled root, or
@@ -136,6 +138,11 @@ export class ExtensionRepository {
    *   call time because managed status is recorded during startup.
    * @param args.sourceExists Whether a catalog row's source file exists.
    *   Defaults to a stat where only NotFound counts as missing.
+   * @param args.mountedSourceDirs The extension directories
+   *   `.swamp-sources.yaml` mounts, in source order (see
+   *   `resolveMountedSourceDirs`). {@link saveAll} keeps catalog rows
+   *   under them although they are outside the repo root, and settles
+   *   their type conflicts (swamp-club#2563). Defaults to none.
    */
   constructor(args: {
     catalog: ExtensionCatalogStore;
@@ -144,6 +151,7 @@ export class ExtensionRepository {
     localManifestIdentity?: LocalManifestIdentity | null;
     activePulledRoot?: () => string | undefined;
     sourceExists?: (sourcePath: string) => boolean;
+    mountedSourceDirs?: readonly string[];
   }) {
     this.catalog = args.catalog;
     this.lockfileRepository = args.lockfileRepository;
@@ -156,6 +164,26 @@ export class ExtensionRepository {
     this.activePulledRoot = args.activePulledRoot ??
       (() => activePulledExtensionsRoot(rawRepoRoot));
     this.sourceExists = args.sourceExists ?? sourceFileExists;
+    this.mountedSourceDirsCanonical = (args.mountedSourceDirs ?? []).map(
+      canonicalizePath,
+    );
+  }
+
+  /** The canonical directories `.swamp-sources.yaml` mounts, in order. */
+  get mountedSourceDirs(): readonly string[] {
+    return this.mountedSourceDirsCanonical;
+  }
+
+  /**
+   * Settles type conflicts involving mounted sources outside a save, for
+   * the loader's own catalog writes. See
+   * {@link ExtensionCatalogStore.settleMountedTypeConflicts}.
+   */
+  settleMountedTypeConflicts(): MountedTypeConflict[] {
+    return this.catalog.settleMountedTypeConflicts(
+      this.repoRoot,
+      this.mountedSourceDirsCanonical,
+    );
   }
 
   get lastOriginConflicts(): readonly OriginConflict[] {
@@ -255,10 +283,16 @@ export class ExtensionRepository {
    * {@link DuplicateTypeError}.
    *
    * `pruneUnreachable: false` skips pruning rows whose source is outside
-   * the repo root. That prune deletes every such row not in this save,
-   * including live sources mounted from outside the repo, so a caller
-   * that only creates aggregates for extensions that have none (serve
-   * reload's scoped reconcile, swamp-club#2355) turns it off.
+   * the repo root. That prune deletes every such row not in this save
+   * unless its source still exists under one of the repository's
+   * `mountedSourceDirs` (swamp-club#2563). Serve reload's scoped
+   * reconcile, which only creates aggregates for extensions that have
+   * none (swamp-club#2355), turns it off.
+   *
+   * Type conflicts involving rows under `mountedSourceDirs` are settled
+   * before the I-Repo-1 check, local before mounted and earlier mounts
+   * before later ones, so a kept mounted row that a local extension
+   * overrides does not fail the save.
    *
    * `settlePulledTypeConflicts: true` settles pulled-vs-pulled type
    * conflicts before the I-Repo-1 check instead of rejecting them: the
@@ -298,6 +332,10 @@ export class ExtensionRepository {
         const pruned = this.catalog.pruneUnreachableSources(
           this.repoRoot,
           protectedPaths,
+          {
+            dirs: this.mountedSourceDirsCanonical,
+            sourceExists: this.sourceExists,
+          },
         );
         if (pruned.length > 0) {
           logger
@@ -313,6 +351,14 @@ export class ExtensionRepository {
           logger
             .debug`Pruned ${staleRows.length} catalog row(s) whose source is missing or under the inactive pulled root`;
         }
+      }
+      const mountedConflicts = this.catalog.settleMountedTypeConflicts(
+        this.repoRoot,
+        this.mountedSourceDirsCanonical,
+      );
+      if (mountedConflicts.length > 0) {
+        logger
+          .debug`Cleared the type on ${mountedConflicts.length} source-mounted catalog row(s) a higher-precedence row also claims`;
       }
       // Pulled-vs-pulled first, then pulled-vs-local, so a local override
       // ends up the only claimant however many pulled rows share a type.

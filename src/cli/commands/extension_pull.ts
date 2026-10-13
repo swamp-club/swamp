@@ -26,6 +26,7 @@ import { ExtensionRepository } from "../../infrastructure/persistence/extension_
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -360,6 +361,7 @@ export const extensionPullCommand = withRemoteOptions(
       lockfileRepository: deps.lockfileRepository,
       repoRoot: repoDir,
       localManifestIdentity: readLocalManifestIdentity(repoDir),
+      mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
     });
 
     // The lockfile change is made against the datastore's copy and

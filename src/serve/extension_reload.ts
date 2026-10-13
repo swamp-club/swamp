@@ -26,6 +26,7 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { webhookTypeRegistry } from "../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { resolveMountedSourceDirs } from "../infrastructure/persistence/swamp_sources_repository.ts";
 import {
   enumeratePulledDatastoreExtensionsOnDisk,
   enumeratePulledExtensionDirs,
@@ -88,6 +89,26 @@ import {
 } from "./pulled_type_snapshot.ts";
 
 const logger = getSwampLogger(["serve", "reload"]);
+
+/**
+ * The extension directories `.swamp-sources.yaml` mounts, for the
+ * reload's catalog saves (swamp-club#2563). A reload must not fail on a
+ * sources file being edited, so an unreadable one logs a warning and
+ * counts as no mounts, which is how these saves behaved before.
+ */
+async function mountedSourceDirsForReload(
+  repoDir: string,
+): Promise<string[]> {
+  try {
+    return await resolveMountedSourceDirs(repoDir);
+  } catch (err) {
+    logger.warn(
+      "Hot-reload: could not read the extension sources: {error}",
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return [];
+  }
+}
 
 let reloading = false;
 
@@ -225,6 +246,7 @@ async function sweepRemovedPulledExtensions(args: {
     catalog,
     lockfileRepository: lockfile,
     repoRoot: repoDir,
+    mountedSourceDirs: await mountedSourceDirsForReload(repoDir),
   });
   let installed: Set<string>;
   const candidates = new Set<string>();
@@ -421,6 +443,7 @@ async function attachPulledAddOns(args: {
         catalog: args.catalog,
         lockfileRepository: args.lockfile,
         repoRoot: args.repoDir,
+        mountedSourceDirs: await mountedSourceDirsForReload(args.repoDir),
       }),
     );
     try {
@@ -458,6 +481,7 @@ async function catalogueUncataloguedPulled(args: {
       catalog: args.catalog,
       lockfileRepository: args.lockfile,
       repoRoot: args.repoDir,
+      mountedSourceDirs: await mountedSourceDirsForReload(args.repoDir),
     }),
     lockfileRepository: args.lockfile,
     repoDir: args.repoDir,

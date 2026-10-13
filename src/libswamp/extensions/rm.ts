@@ -22,6 +22,7 @@ import { LockfileRepository } from "../../infrastructure/persistence/lockfile_re
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -265,6 +266,7 @@ export async function createExtensionRmDeps(
     catalog,
     lockfileRepository,
     repoRoot: repoDir,
+    mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
   });
   return {
     findDependents,

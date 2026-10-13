@@ -17,19 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { basename, join } from "@std/path";
 import {
   collectDirsForKind,
   expandSourcePaths,
+  flattenSourceKindDirs,
   readSwampSources,
   removeSwampSources,
   resolveExtensionKindsForSource,
+  resolveMountedSourceDirs,
   resolveSourceExtensionDirs,
   writeSwampSources,
 } from "./swamp_sources_repository.ts";
 import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 
 Deno.test("readSwampSources: returns null when file does not exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
@@ -775,5 +778,76 @@ Deno.test("resolveSourceExtensionDirs: standard layout wins over loose root file
     assertEquals(result[0].sourcePath, src);
   } finally {
     await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("flattenSourceKindDirs: lists each source's kind dirs in source order", () => {
+  assertEquals(
+    flattenSourceKindDirs([
+      { sourcePath: "/b", vaultsDir: "/b/v", modelsDir: "/b/m" },
+      { sourcePath: "/missing" },
+      { sourcePath: "/a", modelsDir: "/a/m", workflowsDir: "/a/w" },
+      { sourcePath: "/b-again", modelsDir: "/b/m" },
+    ]),
+    ["/b/m", "/b/v", "/a/m", "/a/w"],
+  );
+});
+
+Deno.test("resolveMountedSourceDirs: returns no dirs without a sources file", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const { result, calls } = await withMockedCommand(
+      [],
+      () => resolveMountedSourceDirs(tmpDir),
+    );
+    assertEquals(result, []);
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveMountedSourceDirs: resolves relative and absolute sources in order with the only filter", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const repoDir = join(tmpDir, "repo");
+    const sibling = join(tmpDir, "sibling");
+    const other = join(tmpDir, "other");
+    await Deno.mkdir(repoDir, { recursive: true });
+    for (const kind of ["models", "vaults"]) {
+      await Deno.mkdir(join(sibling, "extensions", kind), { recursive: true });
+      await Deno.mkdir(join(other, "extensions", kind), { recursive: true });
+    }
+    await writeSwampSources(repoDir, {
+      sources: [
+        { path: other, only: ["vaults"] },
+        { path: "../sibling" },
+      ],
+    });
+
+    // Not a git checkout: relative paths resolve against the repo dir.
+    const { result } = await withMockedCommand(
+      [{ code: 128, stdout: "" }],
+      () => resolveMountedSourceDirs(repoDir),
+    );
+    assertEquals(result.length, 3);
+    assertPathEquals(result[0], join(other, "extensions", "vaults"));
+    assertPathEquals(result[1], join(sibling, "extensions", "models"));
+    assertPathEquals(result[2], join(sibling, "extensions", "vaults"));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveMountedSourceDirs: rejects an invalid sources file", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp-sources.yaml"),
+      "sources: not-a-list\n",
+    );
+    await assertRejects(() => resolveMountedSourceDirs(tmpDir));
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
   }
 });

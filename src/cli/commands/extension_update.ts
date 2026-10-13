@@ -49,6 +49,7 @@ import { UpgradeExtensionService } from "../../libswamp/extensions/upgrade_exten
 import { warnLegacyExtensionLayout } from "../../libswamp/extensions/layout.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   isManagedConfigBaseResolved,
@@ -193,6 +194,7 @@ export const extensionUpdateCommand = withRemoteOptions(
   // rollback to the previous version). The catalog stays open for the
   // duration of the bulk update — closed in the finally block.
   const denoRuntime = new EmbeddedDenoRuntime();
+  const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
   const catalog = new ExtensionCatalogStore(
     swampPath(repoDir, "_extension_catalog.db"),
   );
@@ -226,6 +228,7 @@ export const extensionUpdateCommand = withRemoteOptions(
           catalog,
           lockfileRepository: installCtx.lockfileRepository,
           repoRoot: repoDir,
+          mountedSourceDirs,
         });
         // W2 (commit 5): route through UpgradeExtensionService for
         // explicit upgrade-intent at the call site. Internally this

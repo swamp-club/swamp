@@ -1666,8 +1666,10 @@ extension's pulled row when a local or source-mounted row claims the same
 type. It passes
 `pruneUnreachable: false`, so it skips the prune of rows whose source is outside
 the repo root. That prune deletes every such row the save does not include,
-which would drop the rows of live sources mounted from outside the repo
-through `.swamp-sources.yaml`.
+except rows of live sources under the repository's `mountedSourceDirs`
+(swamp-club#2563). The reload resolves those directories from
+`.swamp-sources.yaml` on each pass; a sources file it cannot read logs a warning
+and counts as no mounts, so a reload never fails on one.
 
 ### Concurrency
 
