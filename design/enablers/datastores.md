@@ -4108,7 +4108,10 @@ chunk GC like any unreferenced chunk.
 fence's released marker, when its nonce still matches. Unlike Phase 3's lock,
 this is safe against a live holder: its next renewal finds the marker and
 stops committing, and the next writer's fence refuses anything it still
-tries.
+tries. A long-lived holder takes the lease back once it is free, so
+a force release against a running serve frees the datastore only until
+serve's next renewal (within a third of the TTL); to hand a datastore to
+another writer for longer, stop serve.
 
 **Serve.** Serve holds the lease from start-up to shutdown and renews it.
 Once it loses the lease, the roots in flight on the old fence fail with

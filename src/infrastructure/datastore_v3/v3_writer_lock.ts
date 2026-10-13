@@ -191,6 +191,9 @@ export async function acquireV3WriterLock(
     }
   } catch (error) {
     entry.refs--;
+    // Every other caller may have released while this one waited: nothing
+    // would end the hold, and its timer would keep taking the lease back.
+    if (entry.refs === 0) await endHold(key, entry).catch(() => {});
     throw error;
   }
   const holding = entry;
@@ -200,11 +203,16 @@ export async function acquireV3WriterLock(
     released = true;
     holding.refs--;
     if (holding.refs > 0) return;
-    if (held.get(key) === holding) held.delete(key);
-    if (holding.renewal !== undefined) clearInterval(holding.renewal);
-    await holding.renewing;
-    await holding.hold?.release();
+    await endHold(key, holding);
   };
+}
+
+/** Ends the process's hold once no caller holds it. */
+async function endHold(key: string, entry: Held): Promise<void> {
+  if (held.get(key) === entry) held.delete(key);
+  if (entry.renewal !== undefined) clearInterval(entry.renewal);
+  await entry.renewing;
+  await entry.hold?.release();
 }
 
 /** A shared {@link retakeLease} for `entry`, cleared when it settles. */

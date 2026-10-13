@@ -273,6 +273,36 @@ const CASES: [
     },
   ],
   [
+    "a take whose first renewal fails gives the fence up",
+    async (store, clock) => {
+      let failPut = true;
+      const flaky: WriterLeaseStore = {
+        put: (key, data) => {
+          if (failPut) {
+            failPut = false;
+            return Promise.reject(new Error("disk full"));
+          }
+          return store.put(key, data);
+        },
+        get: (key, options) => store.get(key, options),
+        delete: (key) => store.delete(key),
+        list: (prefix) => store.list(prefix),
+        putIfAbsent: (key, data) => store.putIfAbsent(key, data),
+      };
+      const { writer } = writers(flaky, clock, "host-a");
+      await assertRejects(
+        () => writer().lease.acquire({ maxWaitMs: 0 }),
+        Error,
+        "disk full",
+      );
+      // Released at once, not held until it expires.
+      const { writer: next } = writers(store, clock, "host-b");
+      const hold = await next().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(hold.fence, 2);
+      await hold.release();
+    },
+  ],
+  [
     "the next fence is above a floor the commit store gives",
     async (store, clock) => {
       const { writer } = writers(store, clock);

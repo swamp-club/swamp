@@ -400,7 +400,16 @@ export class WriterLease {
       return undefined;
     }
     const hold = new WriterLeaseHold(this.#options, record);
-    if (await hold.renew() !== "held") {
+    let renewed: "held" | "fenced";
+    try {
+      renewed = await hold.renew();
+    } catch (error) {
+      // The fence is taken: give it up rather than keep others out until
+      // it expires.
+      await hold.release().catch(() => {});
+      throw error;
+    }
+    if (renewed !== "held") {
       // A writer that read the lease before this one took it created a
       // higher fence: it holds the lease.
       await hold.release();

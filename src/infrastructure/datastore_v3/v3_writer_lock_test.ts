@@ -356,6 +356,32 @@ Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquir
   });
 });
 
+Deno.test("acquireV3WriterLock: a retake that fails after every other caller released ends the hold", async () => {
+  await withTempDir(async (dir) => {
+    const first = await acquireV3WriterLock(dir);
+    const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+    await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+    try {
+      // A second caller waits to take the lost hold again; the first
+      // releases meanwhile; the wait runs out.
+      const second = acquireV3WriterLock(dir, { maxWaitMs: 200 });
+      await first();
+      await assertRejects(() => second, V3WriterBusyError);
+      // Nothing in the process holds the datastore, so nothing renews or
+      // takes the lease back.
+      assertEquals(holdsV3WriterLock(dir), false);
+      const probe = await tryAcquireV3WriterLock(dir);
+      assertEquals(probe, undefined, "the other writer still holds it");
+      await other.release();
+      const taken = await tryAcquireV3WriterLock(dir);
+      assert(taken !== undefined, "no stranded hold blocks the next writer");
+      await taken();
+    } finally {
+      await other.release();
+    }
+  });
+});
+
 Deno.test("tryAcquireV3WriterLock: the recovery's hold is renewed until it is released", async () => {
   await withTempDir(async (dir) => {
     const release = await tryAcquireV3WriterLock(dir, { ttlMs: 30 });
