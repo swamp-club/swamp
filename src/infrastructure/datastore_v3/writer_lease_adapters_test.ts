@@ -109,6 +109,9 @@ const STORES: [string, OpenStore][] = [
   }],
 ];
 
+/** The body of a stray key: never one swamp wrote. */
+const STRAY = new TextEncoder().encode("{}");
+
 const CASES: [
   string,
   (store: WriterLeaseStore, clock: Clock) => Promise<void>,
@@ -326,6 +329,62 @@ const CASES: [
         "writer/released-000000000003",
         "writer/released-000000000004",
       ]);
+    },
+  ],
+  [
+    "an out-of-range stray fence key is ignored",
+    async (store, clock) => {
+      await store.put("writer/fence-1000000000000", STRAY);
+      const { writer } = writers(store, clock);
+      const first = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(first.fence, 1);
+      const other = writer().lease;
+      assertEquals((await other.inspect())?.fence, 1);
+      assertEquals(await other.forceRelease(first.record.nonce), true);
+      assertEquals((await other.inspect())?.state, "released");
+      const second = await other.acquire({ maxWaitMs: 0 });
+      assertEquals(second.fence, 2);
+      await second.release();
+    },
+  ],
+  [
+    "an unpadded stray fence key neither counts nor blocks the real one",
+    async (store, clock) => {
+      await store.put("writer/fence-5", STRAY);
+      const { writer } = writers(store, clock);
+      assertEquals(await writer().lease.inspect(), null);
+      for (let fence = 1; fence <= 5; fence++) {
+        const hold = await writer().lease.acquire({ maxWaitMs: 0 });
+        assertEquals(hold.fence, fence);
+        await hold.release();
+      }
+      assert(
+        (await store.list("writer/")).includes("writer/fence-000000000005"),
+      );
+    },
+  ],
+  [
+    "unpadded stray heartbeat and released keys do not touch the holder",
+    async (store, clock) => {
+      const { writer } = writers(store, clock);
+      const hold = await writer().lease.acquire({ maxWaitMs: 0 });
+      await store.put("writer/released-1", STRAY);
+      assertEquals(await hold.renew(), "held");
+      // A stray renewal does not keep an expired holder in.
+      clock.advance(TTL + WRITER_LEASE_CLOCK_SKEW_MS + 1);
+      await store.put(
+        "writer/heartbeat-1",
+        new TextEncoder().encode(
+          JSON.stringify({
+            fence: 1,
+            renewedAt: new Date(clock.now).toISOString(),
+            nonce: hold.record.nonce,
+          }),
+        ),
+      );
+      const taker = await writer().lease.acquire({ maxWaitMs: 0 });
+      assertEquals(taker.fence, 2);
+      await taker.release();
     },
   ],
 ];
