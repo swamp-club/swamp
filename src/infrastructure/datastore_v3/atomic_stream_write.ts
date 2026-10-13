@@ -108,7 +108,16 @@ export class DurableWriteBatch {
         ? [...options.absentDirectories]
         : await missingDirectories(dir);
       if (created.length > 0) await Deno.mkdir(dir, { recursive: true });
-      file = await Deno.open(tmpPath, { write: true, createNew: true });
+      try {
+        file = await Deno.open(tmpPath, { write: true, createNew: true });
+      } catch (error) {
+        // A hint can be stale: the directory was removed since the caller
+        // looked. Find what is missing and make it, as without a hint.
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        created = await missingDirectories(dir);
+        await Deno.mkdir(dir, { recursive: true });
+        file = await Deno.open(tmpPath, { write: true, createNew: true });
+      }
       if (content instanceof Uint8Array) {
         await writeAll(file, content);
       } else {
@@ -201,7 +210,8 @@ export class DurableWriteBatch {
 
 /**
  * Writes `content` to `path` durably: one {@link DurableWriteBatch} write and
- * its barrier.
+ * its barrier. The read model writes through batches; this is the one-file
+ * form.
  */
 export async function writeFileDurably(
   path: string,

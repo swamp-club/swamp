@@ -433,8 +433,13 @@ export class SqliteReadModel implements ReadModel {
         ...file.record_key.split("/"),
       );
       if (!await holdsExpected(path, file)) {
-        logger
-          .warn`${file.record_key} does not hold what the read model applied, after a restart since it was written; applying every commit again`;
+        if (file.expect === "unknown") {
+          logger
+            .warn`The read model's state has no live record for ${file.record_key}, written before a restart; applying every commit again`;
+        } else {
+          logger
+            .warn`${file.record_key} does not hold what the read model applied, after a restart since it was written; applying every commit again`;
+        }
         this.#state.reset(generation);
         return;
       }
@@ -546,10 +551,8 @@ export class SqliteReadModel implements ReadModel {
         records,
         live: projection.live,
         files,
+        unsynced: { keys: touched, boot: this.#boot },
       });
-      if (touched.size > 0) {
-        this.#state.markUnsynced(namespace, touched, this.#boot);
-      }
       return true;
     } catch (error) {
       if (signal.aborted) throw signal.reason;

@@ -538,6 +538,35 @@ Deno.test("read model: files a reboot lost after their page committed are repair
   });
 });
 
+Deno.test("read model: a commit whose unsynced keys cannot be recorded is not recorded as applied (swamp-club#3337)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const readModel = env.openReadModel();
+    // Recording unsynced keys fails, as on a full disk.
+    const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
+    db.exec(
+      "CREATE TRIGGER refuse_unsynced BEFORE INSERT ON unsynced_keys BEGIN SELECT RAISE(ABORT, 'injected: disk full'); END",
+    );
+    try {
+      const error = await assertRejects(
+        () => readModel.catchUp(signal()),
+        ReadModelApplyError,
+      );
+      assertEquals(error.seq, 1);
+      // Commit 1 is not applied: its keys would be missing from the
+      // reboot check.
+      assertEquals(committedCursor(env), 0);
+      db.exec("DROP TRIGGER refuse_unsynced");
+      assertEquals((await readModel.catchUp(signal())).cursor, 5);
+    } finally {
+      db.close();
+      await readModel.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
 Deno.test("read model: a reboot that kept every file clears the unsynced list without applying anything again (swamp-club#3337)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {

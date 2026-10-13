@@ -22,7 +22,7 @@
  * 1,000 data items saved in one commit, as a first clone of a populated
  * datastore sees them, and 500 single-item commits, as a checkout behind
  * other writers sees them. Each run starts from an empty checkout, so every
- * file is written and synced. Run with:
+ * file is written, unsynced as the catch-up writes them. Run with:
  *
  * ```
  * deno bench -A scripts/bench_read_model_catch_up.ts

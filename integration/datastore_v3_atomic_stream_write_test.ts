@@ -279,3 +279,18 @@ Deno.test("DurableWriteBatch: with sync false writes and renames without syncing
     ]);
   });
 });
+
+Deno.test("DurableWriteBatch: a stale hint that the directory exists still creates it", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "gone", "raw");
+    const batch = new DurableWriteBatch({ sync: false });
+    try {
+      await batch.write(path, new Uint8Array([7]), signal(), {
+        absentDirectories: [],
+      });
+    } finally {
+      batch.discard();
+    }
+    assertEquals(await Deno.readFile(path), new Uint8Array([7]));
+  });
+});

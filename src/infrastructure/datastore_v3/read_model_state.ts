@@ -236,6 +236,15 @@ export interface AppliedCommit {
   readonly live: ReadonlyMap<string, readonly LiveDataVersion[]>;
   /** The new ownership of each file the commit wrote or removed; none when absent. */
   readonly files?: ReadonlyMap<string, FileOwnership>;
+  /**
+   * The keys whose files the commit wrote or removed without a sync, and
+   * the boot it ran in (swamp-club#3337): recorded in the same transaction
+   * as the commit, so a commit is never applied without them.
+   */
+  readonly unsynced?: {
+    readonly keys: ReadonlySet<string>;
+    readonly boot: string;
+  };
 }
 
 /** The read model's state database. One connection per instance. */
@@ -254,6 +263,8 @@ export class ReadModelState {
   readonly #insertVersion: StatementSync;
   readonly #selectOwnership: StatementSync;
   readonly #upsertOwnership: StatementSync;
+  readonly #insertUnsynced: StatementSync;
+  readonly #upsertUnsyncedBoot: StatementSync;
   #closed = false;
   #batchOpen = false;
 
@@ -298,6 +309,12 @@ export class ReadModelState {
     this.#upsertOwnership = db.prepare(
       "INSERT INTO materialised_keys (namespace, record_key, owner, mark, present) VALUES (?, ?, ?, ?, ?) " +
         "ON CONFLICT (namespace, record_key) DO UPDATE SET owner = excluded.owner, mark = excluded.mark, present = excluded.present",
+    );
+    this.#insertUnsynced = db.prepare(
+      "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) VALUES (?, ?)",
+    );
+    this.#upsertUnsyncedBoot = db.prepare(
+      "INSERT INTO unsynced_boot (only, boot) VALUES (0, ?) ON CONFLICT (only) DO UPDATE SET boot = excluded.boot",
     );
   }
 
@@ -484,6 +501,13 @@ export class ReadModelState {
           );
         }
         this.#upsertApplied.run(commit.namespace, commit.partition, commit.seq);
+        if (commit.unsynced !== undefined && commit.unsynced.keys.size > 0) {
+          this.#markUnsynced(
+            commit.namespace,
+            commit.unsynced.keys,
+            commit.unsynced.boot,
+          );
+        }
       }
       if (commit.cursor !== undefined) this.#advanceCursor(commit.cursor);
     });
@@ -757,27 +781,6 @@ export class ReadModelState {
     rollbackQuietly(this.#db);
   }
 
-  /**
-   * Records keys whose files were written or removed without a sync, in
-   * `boot` (swamp-club#3337). Recording keys from another boot first needs
-   * {@link clearUnsynced}: one boot is kept.
-   */
-  markUnsynced(
-    namespace: string,
-    keys: Iterable<string>,
-    boot: string,
-  ): void {
-    this.#transaction(() => {
-      const insert = this.#db.prepare(
-        "INSERT OR IGNORE INTO unsynced_keys (namespace, record_key) VALUES (?, ?)",
-      );
-      for (const key of keys) insert.run(namespace, key);
-      this.#db.prepare(
-        "INSERT INTO unsynced_boot (only, boot) VALUES (0, ?) ON CONFLICT (only) DO UPDATE SET boot = excluded.boot",
-      ).run(boot);
-    });
-  }
-
   /** The boot the unsynced files were written in; undefined when none are. */
   unsyncedBoot(): string | undefined {
     this.#requireOpen();
@@ -827,6 +830,20 @@ export class ReadModelState {
     if (this.#closed) return;
     this.#closed = true;
     this.#db.close();
+  }
+
+  /**
+   * Records keys whose files were written or removed without a sync, in
+   * `boot`, inside the caller's transaction. One boot is kept: the read
+   * model checks and clears the list before it writes in a new boot.
+   */
+  #markUnsynced(
+    namespace: string,
+    keys: Iterable<string>,
+    boot: string,
+  ): void {
+    for (const key of keys) this.#insertUnsynced.run(namespace, key);
+    this.#upsertUnsyncedBoot.run(boot);
   }
 
   #advanceCursor(cursor: number): void {

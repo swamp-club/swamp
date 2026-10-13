@@ -3086,6 +3086,13 @@ not, the state is reset and the catch-up applies every commit again, which
 rewrites and removes every file. A boot identity that cannot be compared is
 taken as a new boot, so a doubt costs a check, never skips one.
 
+The cost moves to the first open after a reboot: it hashes every file
+written since the list was last cleared, holding the read model's lock. The
+list is bounded by the checkout's keys, but a long-running `serve` can
+leave most of its cache on it. A listed file the state shows present with no
+live record for its owner cannot be checked, so it also resets the state; it
+is logged as such, apart from a file that does not match.
+
 What this does not cover: a disk detached without the OS restarting (a
 removable drive pulled mid-write) can lose page-cache writes within one
 boot, and the read model will not notice. `commits.db` keeps
