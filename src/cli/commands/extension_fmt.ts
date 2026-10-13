@@ -35,6 +35,7 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveManifestArgument } from "../resolve_manifest_path.ts";
 import {
+  createModuleGraphReader,
   findDenoConfig,
   isPulledExtensionManifest,
   projectConfigBoundary,
@@ -107,6 +108,7 @@ export const extensionFmtCommand = new Command()
       repoContext,
       logger: cliCtx.logger,
       extensionsDir,
+      moduleGraphReader: await createModuleGraphReader(),
     });
 
     // 3. Combine all files and filter to .ts

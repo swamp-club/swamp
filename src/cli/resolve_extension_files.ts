@@ -39,7 +39,21 @@ import {
   isSafeRelativePath,
   parseExtensionManifest,
 } from "../domain/extensions/extension_manifest.ts";
-import { resolveLocalImports } from "../domain/extensions/extension_import_resolver.ts";
+import type {
+  ModuleGraphProject,
+  ModuleGraphReader,
+  SourceModuleGraph,
+} from "../domain/extensions/extension_source_graph.ts";
+import { mergeSourceGraphs } from "../domain/extensions/extension_source_graph.ts";
+import {
+  planSourceArchive,
+  type SourceArchiveKind,
+  type SourceArchiveKindInput,
+  type SourceArchivePlan,
+} from "../domain/extensions/source_archive_plan.ts";
+import { sourceHasBareSpecifiers } from "../domain/models/bundle.ts";
+import { DenoInfoModuleGraphReader } from "../infrastructure/runtime/deno_info_module_graph_reader.ts";
+import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { resolveWorkflowDependencies } from "../domain/extensions/extension_dependency_resolver.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
@@ -56,6 +70,12 @@ export interface ResolveExtensionFilesContext {
   repoContext: RepositoryContext;
   logger: Logger;
   extensionsDir?: string;
+  /**
+   * Reads each entry point's local module graph. The source copy, the
+   * content hash and every push gate take their files from it
+   * (swamp-club#3376).
+   */
+  moduleGraphReader: ModuleGraphReader;
 }
 
 export interface ResolvedExtensionFiles {
@@ -101,6 +121,19 @@ export interface ResolvedExtensionFiles {
   includeFilePaths: string[];
   additionalFilePaths: string[];
   binaryFilePaths: string[];
+  /**
+   * Local data modules (JSON, text or bytes imports) each kind reaches. They
+   * are packaged, hashed with their kind and safety-scanned, but never sent
+   * to fmt, lint or the TypeScript review rules, which `all<Kind>Files`
+   * feed.
+   */
+  dataFilesByKind: Record<SourceArchiveKind, string[]>;
+  /** Where each local module goes in the archive, and the imports rewritten there. */
+  sourcePlan: SourceArchivePlan;
+  /** The project deno.json push bundles, formats and lints under. */
+  denoConfigPath?: string;
+  /** The package.json project push bundles under, when the extension uses bare specifiers. */
+  packageJsonDir?: string;
 }
 
 /**
@@ -606,6 +639,18 @@ export function isPulledExtensionManifest(
     resolved.startsWith(managedPulledRoot + "\\");
 }
 
+/**
+ * The module graph reader push, quality and fmt resolve files with: the
+ * embedded deno, run with the environment the bundler gets.
+ */
+export async function createModuleGraphReader(): Promise<ModuleGraphReader> {
+  const runtime = new EmbeddedDenoRuntime();
+  return new DenoInfoModuleGraphReader(
+    await runtime.ensureDeno(),
+    runtime.getDenoEnv(),
+  );
+}
+
 export async function resolveExtensionFiles(
   ctx: ResolveExtensionFilesContext,
 ): Promise<ResolvedExtensionFiles> {
@@ -747,9 +792,9 @@ export async function resolveExtensionFiles(
     );
   }
 
-  // 4. Resolve local imports for each model entry point
-  const importResult = await resolveLocalImports(modelEntryPoints, modelsDir);
-  const allModelFiles = [...importResult.resolvedFiles];
+  // 4. Model roots for the module graph: the manifest's models, plus the
+  // models workflows reference (merged in step 5).
+  const modelRoots = [...modelEntryPoints];
 
   // 5. Resolve workflow dependencies if workflows present
   const workflowFiles: Array<{ sourcePath: string; archiveName: string }> = [];
@@ -842,12 +887,12 @@ export async function resolveExtensionFiles(
     });
 
     // Merge auto-resolved model files (dedup, skip non-existent)
-    const existingSet = new Set(allModelFiles);
+    const existingSet = new Set(modelRoots);
     for (const mf of depResult.modelFiles) {
       if (existingSet.has(mf)) continue;
       try {
         await Deno.stat(mf);
-        allModelFiles.push(mf);
+        modelRoots.push(mf);
         existingSet.add(mf);
       } catch {
         // Model source not at conventional path — it may already be
@@ -902,16 +947,6 @@ export async function resolveExtensionFiles(
     vaultEntryPoints.push(vaultPath);
   }
 
-  // 7. Resolve local imports for vault entry points
-  const allVaultFiles: string[] = [];
-  if (vaultEntryPoints.length > 0) {
-    const vaultImportResult = await resolveLocalImports(
-      vaultEntryPoints,
-      vaultsDir,
-    );
-    allVaultFiles.push(...vaultImportResult.resolvedFiles);
-  }
-
   // 8. Collect datastore files from manifest
   const datastoreEntryPoints: string[] = [];
   for (const datastoreRef of manifest.datastores) {
@@ -922,16 +957,6 @@ export async function resolveExtensionFiles(
       datastoreRef,
     );
     datastoreEntryPoints.push(datastorePath);
-  }
-
-  // 11. Resolve local imports for datastore entry points
-  const allDatastoreFiles: string[] = [];
-  if (datastoreEntryPoints.length > 0) {
-    const datastoreImportResult = await resolveLocalImports(
-      datastoreEntryPoints,
-      datastoresDir,
-    );
-    allDatastoreFiles.push(...datastoreImportResult.resolvedFiles);
   }
 
   // 12. Collect report files from manifest
@@ -946,16 +971,6 @@ export async function resolveExtensionFiles(
     reportEntryPoints.push(reportPath);
   }
 
-  // 13. Resolve local imports for report entry points
-  const allReportFiles: string[] = [];
-  if (reportEntryPoints.length > 0) {
-    const reportImportResult = await resolveLocalImports(
-      reportEntryPoints,
-      reportsDir,
-    );
-    allReportFiles.push(...reportImportResult.resolvedFiles);
-  }
-
   // 13a. Collect webhook files from manifest
   const webhookEntryPoints: string[] = [];
   for (const webhookRef of manifest.webhooks) {
@@ -966,16 +981,6 @@ export async function resolveExtensionFiles(
       webhookRef,
     );
     webhookEntryPoints.push(webhookPath);
-  }
-
-  // 13b. Resolve local imports for webhook entry points
-  const allWebhookFiles: string[] = [];
-  if (webhookEntryPoints.length > 0) {
-    const webhookImportResult = await resolveLocalImports(
-      webhookEntryPoints,
-      webhooksDir,
-    );
-    allWebhookFiles.push(...webhookImportResult.resolvedFiles);
   }
 
   // 14. Resolve skill directories from manifest
@@ -1204,6 +1209,69 @@ export async function resolveExtensionFiles(
     binaryFilePaths.push(bfPath);
   }
 
+  // 17. Project config: the deno.json, or the package.json project when the
+  // extension uses bare specifiers, that push bundles under. The module
+  // graph is read under the same config, so it is the bundle's graph.
+  const configBoundary = projectConfigBoundary(
+    manifestDir,
+    extensionsRoot,
+    repoDir,
+  );
+  const denoConfigPath = await findDenoConfig(manifestDir, configBoundary);
+  let packageJsonDir: string | undefined;
+  if (denoConfigPath) {
+    logger.debug`Found deno.json at ${denoConfigPath}`;
+  } else {
+    const candidateDir = await findPackageJsonDir(manifestDir, configBoundary);
+    if (candidateDir) {
+      let hasBare = false;
+      for (
+        const ep of [
+          ...modelEntryPoints,
+          ...vaultEntryPoints,
+          ...datastoreEntryPoints,
+          ...reportEntryPoints,
+          ...webhookEntryPoints,
+        ]
+      ) {
+        if (sourceHasBareSpecifiers(await Deno.readTextFile(ep))) {
+          hasBare = true;
+          break;
+        }
+      }
+      if (hasBare) {
+        packageJsonDir = candidateDir;
+        logger.debug`Found package.json project at ${packageJsonDir}`;
+        await requireNodeModules(packageJsonDir);
+      } else {
+        logger
+          .debug`Ignoring package.json at ${candidateDir} (extension uses npm: prefixed imports)`;
+      }
+    }
+  }
+
+  // 18. Local modules, from each entry point's module graph — the graph the
+  // bundler follows — so the source copy holds every local module the
+  // bundle was built from, wherever it lives (swamp-club#3376).
+  const sources = await resolveSourceModules({
+    reader: ctx.moduleGraphReader,
+    project: { denoConfigPath, packageJsonDir },
+    repoDir,
+    extensionsRoot,
+    kinds: [
+      { kind: "models", dir: modelsDir, roots: modelRoots },
+      { kind: "vaults", dir: vaultsDir, roots: vaultEntryPoints },
+      { kind: "datastores", dir: datastoresDir, roots: datastoreEntryPoints },
+      { kind: "reports", dir: reportsDir, roots: reportEntryPoints },
+      { kind: "webhooks", dir: webhooksDir, roots: webhookEntryPoints },
+    ],
+  });
+  const allModelFiles = sources.codeFilesByKind.models;
+  const allVaultFiles = sources.codeFilesByKind.vaults;
+  const allDatastoreFiles = sources.codeFilesByKind.datastores;
+  const allReportFiles = sources.codeFilesByKind.reports;
+  const allWebhookFiles = sources.codeFilesByKind.webhooks;
+
   return {
     manifest,
     absoluteManifestPath,
@@ -1229,5 +1297,162 @@ export async function resolveExtensionFiles(
     includeFilePaths,
     additionalFilePaths,
     binaryFilePaths,
+    dataFilesByKind: sources.dataFilesByKind,
+    sourcePlan: sources.plan,
+    ...(denoConfigPath ? { denoConfigPath } : {}),
+    ...(packageJsonDir ? { packageJsonDir } : {}),
   };
+}
+
+/**
+ * Fails when a package.json project has no node_modules: bundling and the
+ * module graph read both resolve bare specifiers from it.
+ */
+async function requireNodeModules(projectDir: string): Promise<void> {
+  const nodeModulesPath = join(projectDir, "node_modules");
+  try {
+    const stat = await Deno.stat(nodeModulesPath);
+    if (!stat.isDirectory) {
+      throw markErrorPaths(
+        new UserError(
+          `Expected node_modules/ to be a directory at ${nodeModulesPath}. ` +
+            `Run 'npm install' or 'deno install' in ${projectDir} first.`,
+        ),
+        [nodeModulesPath, projectDir],
+      );
+    }
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    throw markErrorPaths(
+      new UserError(
+        `No node_modules/ found at ${projectDir}. ` +
+          `Run 'npm install' or 'deno install' to install dependencies before pushing.`,
+      ),
+      [projectDir],
+    );
+  }
+}
+
+interface SourceModuleKindRoots {
+  kind: SourceArchiveKind;
+  dir: string;
+  roots: string[];
+}
+
+interface ResolvedSourceModules {
+  codeFilesByKind: Record<SourceArchiveKind, string[]>;
+  dataFilesByKind: Record<SourceArchiveKind, string[]>;
+  plan: SourceArchivePlan;
+}
+
+/** The real path of `path`, or `path` itself when it cannot be resolved. */
+async function realPathOr(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Reads the module graph of every entry point, fails on a local module the
+ * graph cannot load or whose real path leaves the repository and the
+ * extensions root, and plans the archive's source copy.
+ */
+async function resolveSourceModules(options: {
+  reader: ModuleGraphReader;
+  project: ModuleGraphProject;
+  repoDir: string;
+  extensionsRoot: string;
+  kinds: SourceModuleKindRoots[];
+}): Promise<ResolvedSourceModules> {
+  const graphOf = new Map<string, SourceModuleGraph>();
+  const kindGraphs: Array<
+    { k: SourceModuleKindRoots; graph: SourceModuleGraph }
+  > = [];
+  for (const k of options.kinds) {
+    const graphs: SourceModuleGraph[] = [];
+    for (const root of k.roots) {
+      let graph = graphOf.get(root);
+      if (!graph) {
+        graph = await options.reader.read(root, options.project);
+        graphOf.set(root, graph);
+      }
+      graphs.push(graph);
+    }
+    kindGraphs.push({ k, graph: mergeSourceGraphs(graphs) });
+  }
+  const graph = mergeSourceGraphs(kindGraphs.map((g) => g.graph));
+
+  if (graph.missing.length > 0) {
+    const lines = graph.missing.map((m) =>
+      `  ${m.path}${m.importer ? ` (imported from ${m.importer})` : ""}`
+    );
+    throw markErrorPaths(
+      new UserError(
+        `Local modules not found:\n${lines.join("\n")}\n` +
+          `Every local module an entry point imports must exist, so the ` +
+          `archive's source copy matches its bundle.`,
+      ),
+      graph.missing.flatMap((m) =>
+        m.importer ? [m.path, m.importer] : [m.path]
+      ),
+    );
+  }
+
+  // Containment on real paths: a symlink anywhere on a module's path must
+  // not carry the archive outside the repository and the extensions root.
+  const realRoots = [
+    await realPathOr(resolve(options.repoDir)),
+    await realPathOr(resolve(options.extensionsRoot)),
+  ];
+  const importerOf = new Map(graph.edges.map((e) => [e.target, e.importer]));
+  for (const m of graph.modules) {
+    const real = await realPathOr(m.path);
+    if (!realRoots.some((root) => isSameOrUnder(real, root) && real !== root)) {
+      const importer = importerOf.get(m.path);
+      throw markErrorPaths(
+        new UserError(
+          `Local module ${m.path}${
+            importer ? ` (imported from ${importer})` : ""
+          } resolves to ${real}, outside the repository and the extensions ` +
+            `root, so push cannot include it in the archive. Move it inside ` +
+            `the repository.`,
+        ),
+        importer ? [m.path, real, importer] : [m.path, real],
+      );
+    }
+  }
+
+  const kindOf = new Map(graph.modules.map((m) => [m.path, m.kind]));
+  const codeFilesByKind = {} as Record<SourceArchiveKind, string[]>;
+  const dataFilesByKind = {} as Record<SourceArchiveKind, string[]>;
+  const planKinds: SourceArchiveKindInput[] = [];
+  const listedBy = kindGraphs.map(({ k, graph: g }) => ({
+    k,
+    paths: new Set(g.modules.map((m) => m.path)),
+  }));
+  // A module inside another kind's directory that the other kind reaches is
+  // listed (and hashed, and checked) with that kind only, as it always was.
+  const ownedElsewhere = (k: SourceModuleKindRoots, path: string) =>
+    !isSameOrUnder(resolve(path), resolve(k.dir)) &&
+    listedBy.some((o) =>
+      o.k.kind !== k.kind && o.paths.has(path) &&
+      isSameOrUnder(resolve(path), resolve(o.k.dir))
+    );
+  for (const { k, graph: g } of kindGraphs) {
+    const paths = g.modules.map((m) => m.path).sort();
+    const listed = paths.filter((p) => !ownedElsewhere(k, p));
+    codeFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "code");
+    dataFilesByKind[k.kind] = listed.filter((p) => kindOf.get(p) === "data");
+    planKinds.push({ kind: k.kind, dir: k.dir, modules: paths });
+  }
+
+  const plan = planSourceArchive({
+    kinds: planKinds,
+    graph,
+    extensionsRoot: resolve(options.extensionsRoot),
+    allowedRoots: [resolve(options.repoDir), resolve(options.extensionsRoot)],
+  });
+  return { codeFilesByKind, dataFilesByKind, plan };
 }

@@ -38,6 +38,7 @@ import {
   type ExtensionPushPrepareInput,
 } from "../src/libswamp/extensions/push.ts";
 import { RUBRIC_VERSION } from "../src/domain/extensions/extension_rubric_scorer.ts";
+import { kindDirectorySourcePlan } from "../src/libswamp/extensions/push_test_helpers.ts";
 
 const selections: Array<{
   name: string;
@@ -127,7 +128,7 @@ for (
           cli,
         ),
       };
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: root,
         manifestDir: root,
@@ -154,6 +155,10 @@ for (
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
       let bundles = 0;
       const prepareDeps: ExtensionPushPrepareDeps = {

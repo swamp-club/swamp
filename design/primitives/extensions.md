@@ -875,12 +875,33 @@ source-mode callers get the absolute path and a pointer to the manifest entry.
 
 ## Import Resolution
 
-When packaging, the CLI follows local TypeScript imports from each entry point
-(behavior, vault, datastore or report). It follows relative `import`/`export`
-statements (e.g., `./helpers.ts`, `../shared.ts`) transitively and includes
-every file reached inside that kind's directory boundary. Non-local imports
-(`npm:`, `jsr:`, `https:`) are skipped here; `deno bundle` inlines them at
-bundle time.
+When packaging, the CLI reads each entry point's module graph (behavior, vault,
+datastore, report or webhook) with `deno info`, under the same project config
+`deno bundle` uses, so the archive's source copy holds every local module the
+bundle was built from (swamp-club#3376). That covers static, side-effect, type
+and literal dynamic imports, and JSON, text or bytes imports, wherever the
+module lives in the repository. Non-local imports (`npm:`, `jsr:`, `https:`) are
+not packaged as source; `deno bundle` inlines them at bundle time.
+
+Each local module goes where its relative imports still resolve:
+
+- Inside the kind's directory: `<kind>/<path relative to the directory>`, byte
+  for byte, as it always has.
+- One level above the kind's directory: its mirrored path at the archive root
+  (`../lib/cmp.ts` from `models/` becomes `lib/cmp.ts`), byte for byte, unless
+  the name is one the archive reserves (`bundles`, `files`, a kind directory,
+  and so on).
+- Anywhere else in the repository: `_shared/<path from the extensions root>`,
+  with each leading `..` written as `_up` (the registry rejects `..` in archive
+  paths). Only the archived copies of the importing files change: the import
+  specifiers that point at a `_shared/` module are rewritten, and line numbers
+  stay the same.
+
+Push fails when a local module is missing, when its real path leaves the
+repository and the extensions root, or when two different files would share an
+archive path. Data modules are packaged, hashed and safety-scanned, but not
+formatted, linted or reviewed as TypeScript. Pull does not yet install the
+archive-root shared sources (swamp-club#3384).
 
 ## Per-Subdirectory Extension Identity
 

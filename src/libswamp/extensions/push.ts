@@ -85,7 +85,7 @@ import {
   type RegistryChecksMode,
   signedInCheck,
 } from "../../domain/extensions/extension_publish_checks.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
@@ -215,6 +215,16 @@ export interface ExtensionPushPrepareInput {
   includeFilePaths: string[];
   additionalFilePaths: string[];
   binaryFilePaths: string[];
+  /**
+   * Local data modules (JSON, text or bytes imports) each kind reaches:
+   * packaged and safety-scanned, never sent to fmt, lint or review rules.
+   */
+  dataFilesByKind?: Partial<Record<SourceArchiveKind, string[]>>;
+  /**
+   * The archive's source copy: where every local module goes and which of
+   * its imports are rewritten there (swamp-club#3376).
+   */
+  sourcePlan: SourceArchivePlan;
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -559,6 +569,11 @@ import {
   qualitySidecarPath,
   sidecarDirectives,
 } from "../../domain/extensions/extension_quality_sidecar.ts";
+import {
+  applySpecifierRewrites,
+  type SourceArchiveKind,
+  type SourceArchivePlan,
+} from "../../domain/extensions/source_archive_plan.ts";
 import {
   type AcceptanceDirective,
   type AcceptanceSource,
@@ -1075,6 +1090,7 @@ export async function extensionPushPrepare(
   ];
   const allFiles = [
     ...qualityFiles,
+    ...Object.values(input.dataFilesByKind ?? {}).flat(),
     ...input.includeFilePaths,
     ...input.binaryFilePaths,
     ...(sidecar ? [sidecar.path] : []),
@@ -1805,19 +1821,22 @@ function archivePathFor(
     const rel = under(input.modelsDir);
     return rel !== undefined ? `models/${rel}` : undefined;
   }
-  const typed: Array<[string, string[], string]> = [
-    ["models", input.allModelFiles, input.modelsDir],
-    ["vaults", input.allVaultFiles, input.vaultsDir],
-    ["datastores", input.allDatastoreFiles, input.datastoresDir],
-    ["reports", input.allReportFiles, input.reportsDir],
-    ["webhooks", input.allWebhookFiles, input.webhooksDir],
+  // A module copied into several kinds names the copy of the first kind
+  // that lists it, as before; a shared module has a single copy.
+  const planned = input.sourcePlan.entries.filter((e) => e.sourcePath === file);
+  const typed: Array<[string, string[]]> = [
+    ["models", input.allModelFiles],
+    ["vaults", input.allVaultFiles],
+    ["datastores", input.allDatastoreFiles],
+    ["reports", input.allReportFiles],
+    ["webhooks", input.allWebhookFiles],
   ];
-  for (const [kind, files, dir] of typed) {
+  for (const [kind, files] of typed) {
     if (!files.includes(file)) continue;
-    const rel = under(dir);
-    if (rel !== undefined) return `${kind}/${rel}`;
+    const inKind = planned.find((e) => e.archivePath.startsWith(`${kind}/`));
+    if (inKind) return inKind.archivePath;
   }
-  return undefined;
+  return planned[0]?.archivePath;
 }
 
 /**
@@ -2414,12 +2433,32 @@ async function createArchive(
       await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
     }
 
-    // Copy model source files
-    for (const modelFile of input.allModelFiles) {
-      const relPath = relative(input.modelsDir, modelFile);
-      const destPath = join(extDir, "models", relPath);
+    // Copy every local module the entry points reach to its planned path,
+    // rewriting the imports the plan names; the rest are byte for byte.
+    for (const entry of input.sourcePlan.entries) {
+      const parts = entry.archivePath.split("/");
+      if (
+        isAbsolute(entry.archivePath) || parts.includes("..") ||
+        parts.includes("")
+      ) {
+        throw markErrorPaths(
+          new Error(`Unsafe archive path: ${entry.archivePath}`),
+          [entry.archivePath, entry.sourcePath],
+        );
+      }
+      const destPath = join(extDir, ...parts);
       await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(modelFile, destPath);
+      if (entry.rewrites.length === 0) {
+        await Deno.copyFile(entry.sourcePath, destPath);
+      } else {
+        await Deno.writeTextFile(
+          destPath,
+          applySpecifierRewrites(
+            await Deno.readTextFile(entry.sourcePath),
+            entry.rewrites,
+          ),
+        );
+      }
     }
 
     // Copy include files (alongside model sources, not bundled)
@@ -2443,27 +2482,11 @@ async function createArchive(
       await Deno.copyFile(wf.sourcePath, destPath);
     }
 
-    // Copy vault source files
-    for (const vaultFile of input.allVaultFiles) {
-      const relPath = relative(input.vaultsDir, vaultFile);
-      const destPath = join(extDir, "vaults", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(vaultFile, destPath);
-    }
-
     // Write compiled vault bundles
     for (const [entryName, js] of vaultBundles) {
       const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
-    }
-
-    // Copy datastore source files
-    for (const datastoreFile of input.allDatastoreFiles) {
-      const relPath = relative(input.datastoresDir, datastoreFile);
-      const destPath = join(extDir, "datastores", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(datastoreFile, destPath);
     }
 
     // Write compiled datastore bundles
@@ -2477,27 +2500,11 @@ async function createArchive(
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Copy report source files
-    for (const reportFile of input.allReportFiles) {
-      const relPath = relative(input.reportsDir, reportFile);
-      const destPath = join(extDir, "reports", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(reportFile, destPath);
-    }
-
     // Write compiled report bundles
     for (const [entryName, js] of reportBundles) {
       const destPath = join(extDir, "report-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
-    }
-
-    // Copy webhook source files
-    for (const webhookFile of input.allWebhookFiles) {
-      const relPath = relative(input.webhooksDir, webhookFile);
-      const destPath = join(extDir, "webhooks", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(webhookFile, destPath);
     }
 
     // Write compiled webhook bundles
