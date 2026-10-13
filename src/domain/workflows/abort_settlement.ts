@@ -96,7 +96,8 @@ export function shouldStepRun(step: Step, jobRun: JobRun): boolean {
  * Fails the job's steps still `running` with `error` (by default
  * {@link CANCELLED_STEP_ERROR}) and reports whether there were any. A level of
  * several steps does not wait for them once the abort fires, so their
- * generators end without recording an outcome.
+ * generators end without recording an outcome. Each is marked
+ * {@link StepRun.stoppedByAbort}.
  */
 export function failAbandonedSteps(
   jobRun: JobRun,
@@ -105,7 +106,7 @@ export function failAbandonedSteps(
   let failed = false;
   for (const step of jobRun.steps) {
     if (step.status === "running") {
-      step.fail(error);
+      step.failStoppedByAbort(error);
       failed = true;
     }
   }

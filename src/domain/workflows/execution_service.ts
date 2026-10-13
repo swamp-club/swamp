@@ -1052,6 +1052,24 @@ function abandonedByAbort(stepRun: StepRun, options: StepOptions): boolean {
 }
 
 /**
+ * Fails a step whose work was in flight. With the run's abort fired, the
+ * abort stopped it, so the step is marked `stoppedByAbort`: serve's shutdown
+ * then interrupts it as unknown rather than leave it failed, where no
+ * recovery reopens it (swamp-club#3369).
+ */
+function failInFlightStep(
+  stepRun: StepRun,
+  error: string,
+  options: StepOptions,
+): void {
+  if (options.signal?.aborted) {
+    stepRun.failStoppedByAbort(error);
+  } else {
+    stepRun.fail(error);
+  }
+}
+
+/**
  * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
  * until the stream ends so the run can wait for it (see
  * {@link awaitNestedRuns}).
@@ -6466,7 +6484,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       const isAllowed = !!step.allowFailure;
       if (isAllowed) {
         stepRun.markAllowedFailure();
@@ -7048,7 +7066,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
@@ -7113,7 +7131,13 @@ export class WorkflowExecutionService {
         (childRun?.status === "cancelled"
           ? `Nested workflow "${task.workflowIdOrName}" was cancelled.`
           : `Nested workflow "${task.workflowIdOrName}" failed.`);
-      stepRun.fail(errorMessage);
+      // A child that failed on its own is no work the abort stopped, even
+      // when the abort fired before the parent read its end.
+      if (childRun?.status === "failed") {
+        stepRun.fail(errorMessage);
+      } else {
+        failInFlightStep(stepRun, errorMessage, options);
+      }
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
