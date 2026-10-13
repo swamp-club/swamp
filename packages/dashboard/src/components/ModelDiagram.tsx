@@ -286,7 +286,7 @@ function Frame(
     <>
       <title>
         {ext.inferred
-          ? `${ext.name}\nInferred from the model type; serve did not report an extension`
+          ? `${ext.name}\nInferred from the behavior type; serve did not report an extension`
           : frameLabel(ext)}
       </title>
       <rect
@@ -361,7 +361,7 @@ function DiagramSvg(
       height={layout.height}
       style={{ maxWidth: layout.width }}
       role="group"
-      aria-label={`Diagram of model ${spec.model.name}`}
+      aria-label={`Diagram of behavior ${spec.model.name}`}
       aria-describedby={describedBy}
       data-orientation={orientation}
     >

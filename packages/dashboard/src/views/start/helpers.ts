@@ -311,7 +311,7 @@ export function launchedLabel(
 }
 
 /**
- * What the workspace holds, as "2 models, 1 workflow", or "Nothing built
+ * What the workspace holds, as "2 behaviors, 1 workflow", or "Nothing built
  * yet" when both are zero. Null when the server didn't say.
  */
 export function contentsLabel(
@@ -322,7 +322,7 @@ export function contentsLabel(
   if (models === 0 && workflows === 0) return "Nothing built yet";
   const count = (n: number, unit: string) =>
     `${n} ${unit}${n === 1 ? "" : "s"}`;
-  return `${count(models, "model")}, ${count(workflows, "workflow")}`;
+  return `${count(models, "behavior")}, ${count(workflows, "workflow")}`;
 }
 
 /**
@@ -754,7 +754,7 @@ export function isHttpsUrl(url: string): boolean {
 }
 
 /**
- * What a summary names from a workspace's contents: each model as
+ * What a summary names from a workspace's contents: each behavior as
  * "name · type" and each workflow by name, with how many more there are.
  */
 export function contentsNames(contents: StartStatus["contents"]): {

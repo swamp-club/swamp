@@ -76,7 +76,7 @@ export function Extensions() {
         )}
         {state === "empty" && (
           <EmptyState title="No extensions installed">
-            Extensions add model types, vaults and datastores to this repo.
+            Extensions add behavior types, vaults and datastores to this repo.
             Install one with <code>swamp extension pull @collective/name</code>.
           </EmptyState>
         )}

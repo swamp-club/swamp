@@ -151,15 +151,15 @@ export function ModelDetail({ modelName, onBack }: ModelDetailProps) {
           <div className="panel">
             <EmptyState
               title={errorInfo?.code === "not_found"
-                ? `Model "${modelName}" was not found`
-                : "Couldn't load this model"}
+                ? `Behavior "${modelName}" was not found`
+                : "Couldn't load this behavior"}
               action={
                 <span className="model-error-actions">
                   <button type="button" className="btn-sm" onClick={refetch}>
                     Retry
                   </button>
                   <button type="button" className="btn-sm" onClick={onBack}>
-                    Back to models
+                    Back to behaviors
                   </button>
                 </span>
               }
@@ -351,7 +351,7 @@ export function ModelExecutions(
         ? (
           <EmptyState title={emptyTitle}>
             {lastUsed
-              ? `This model last ran ${
+              ? `This behavior last ran ${
                 formatRelativeTime(lastUsed)
               }. Widen the time range to see it.`
               : "Run one of its methods, directly or from a workflow, and it shows up here."}

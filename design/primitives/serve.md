@@ -1297,19 +1297,23 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   token probe of `/api/v1/health` answers 401 (a browser hides the upgrade's
   own status), or when serve comes back in a different auth mode. Views
   refetch once reconnected (`packages/dashboard/src/client/connection.ts`).
-  Navigation state is in the URL path (`/dashboard/models/<name>`,
+  Navigation state is in the URL path (`/dashboard/behaviors/<name>`,
   `/dashboard/workflows/<name>/runs/<runId>`, etc.), so views are linkable. The
   server falls back to `index.html` for any `/dashboard/` sub-path to support
-  client-side routing.
+  client-side routing. Links from before the behavior rename keep working:
+  `/dashboard/models/...` (and the `/dashboard/behaviours/...` spelling)
+  resolves to the same page, and the dashboard rewrites the address to its
+  `/dashboard/behaviors/...` form in place, keeping the query and hash. The
+  dashboard only ever builds `/dashboard/behaviors/...` links.
 
   Individual data items and reports have shareable deep links:
-  - `/dashboard/models/<model>/data/<dataName>`: the latest version.
-  - `/dashboard/models/<model>/data/<dataName>/versions/<n>`: the permalink
-    for one version. A step's output, including its method-scope reports,
-    links here through the owning behavior (`tags.modelName`), since several
-    steps in one run can write the same name.
-  - `/dashboard/models/<model>/reports/<reportName>[/variants/<variant>]`: the
-    latest report, found under the data name the report is persisted as
+  - `/dashboard/behaviors/<behavior>/data/<dataName>`: the latest version.
+  - `/dashboard/behaviors/<behavior>/data/<dataName>/versions/<n>`: the
+    permalink for one version. A step's output, including its method-scope
+    reports, links here through the owning behavior (`tags.modelName`), since
+    several steps in one run can write the same name.
+  - `/dashboard/behaviors/<behavior>/reports/<reportName>[/variants/<variant>]`:
+    the latest report, found under the data name the report is persisted as
     (`report-<sanitised name>[-<variant>]`) and checked against its tags.
   - `/dashboard/workflows/<wf>/runs/<runId>/reports/<reportName>`: a run's
     workflow-scope report, fetched at the exact artifact versions the run

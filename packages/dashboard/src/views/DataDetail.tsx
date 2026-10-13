@@ -48,6 +48,7 @@ import {
 } from "./data_target.ts";
 import { reportDataName } from "./report_name.ts";
 import { loadState } from "../client/load_state.ts";
+import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
 import {
   DataDetailSkeleton,
   VersionBadgeSkeleton,
@@ -420,7 +421,9 @@ function relabel(error: PageError | null, entity: string): PageError | null {
 function ModelCrumb({ modelName }: { modelName: string }) {
   return (
     <>
-      <RouteLink to={{ view: "models", detail: null }}>Models</RouteLink>
+      <RouteLink to={{ view: "models", detail: null }}>
+        {BEHAVIORS_LABEL}
+      </RouteLink>
       <span aria-hidden="true">›</span>
       <RouteLink to={{ view: "models", detail: { kind: "model", modelName } }}>
         {modelName}

@@ -77,6 +77,7 @@ export function resizeObserverClass(): ResizeObserverCtor | undefined {
 
 interface HistoryLike {
   pushState(state: unknown, unused: string, url: string): void;
+  replaceState(state: unknown, unused: string, url: string): void;
 }
 
 /** The browser's History, when there is one. */

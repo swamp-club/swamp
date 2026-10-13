@@ -29,6 +29,10 @@ import { loadState } from "../client/load_state.ts";
 import { formatCount, pluralize } from "../lib/format.ts";
 import { dataRowLink } from "./artifact_links.ts";
 import { DATA_COLUMNS, DataTableSkeleton } from "./PageSkeletons.tsx";
+import {
+  ALL_BEHAVIORS_LABEL,
+  BEHAVIOR_COLUMN,
+} from "../lib/behavior_labels.ts";
 
 interface DataItem {
   name: string;
@@ -76,9 +80,9 @@ export function Data() {
           <Select
             value={modelFilter}
             onChange={handleModelChange}
-            ariaLabel="Model"
+            ariaLabel={BEHAVIOR_COLUMN}
             options={[
-              { value: "", label: "All models" },
+              { value: "", label: ALL_BEHAVIORS_LABEL },
               ...models.map((m) => ({ value: m, label: m })),
             ]}
           />
@@ -120,18 +124,18 @@ export function Data() {
                     className="btn-sm"
                     onClick={() => handleModelChange("")}
                   >
-                    Show all models
+                    Show all behaviors
                   </button>
                 }
               >
-                This model hasn't written any data yet.
+                This behavior hasn't written any data yet.
               </EmptyState>
             )
             : (
               <EmptyState title="No data yet">
-                Models write data — resources, files, reports — when their
+                Behaviors write data — resources, files, reports — when their
                 methods run, e.g.{" "}
-                <code>swamp model method run my-model create</code>.
+                <code>swamp behavior run my-model create</code>.
               </EmptyState>
             )
         )}

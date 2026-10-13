@@ -39,10 +39,17 @@ Deno.test("AppShellSkeleton: a busy layout with the visible status", () => {
 Deno.test("AppShellSkeleton: the sidebar shows its real sections", () => {
   const html = renderToStaticMarkup(<AppShellSkeleton collapsed={false} />);
   for (
-    const label of ["Automation", "Operations", "Workflows", "Extensions"]
+    const label of [
+      "Automation",
+      "Operations",
+      "Workflows",
+      "Behaviors",
+      "Extensions",
+    ]
   ) {
     assertStringIncludes(html, label);
   }
+  assert(!html.includes("Models"));
   // Chrome only: nothing to click until the dashboard is connected.
   assert(!html.includes("<a "));
   assert(!html.includes("<button"));
