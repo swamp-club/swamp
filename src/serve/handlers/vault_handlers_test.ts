@@ -1990,6 +1990,11 @@ Deno.test("handleVaultTypeSearch: lists a lazily indexed extension type under it
     version: "",
   });
   vaultTypeRegistry.setTypeLoader((loaded) => {
+    // The handler loads every lazy entry in the process-wide registry. Reject
+    // any other one so it stays lazy instead of being promoted or dropped.
+    if (loaded !== type) {
+      return Promise.reject(new Error(`not this test's type: ${loaded}`));
+    }
     vaultTypeRegistry.promoteFromLazy({
       type: loaded,
       name: "Lazy Vault",

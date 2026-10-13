@@ -103,7 +103,7 @@ export async function ensureAllVaultTypesLoaded(
       logger
         .warn`Failed to load vault type ${lazy.type} from ${lazy.sourcePath}: ${
         error instanceof Error ? error.message : String(error)
-      }`;
+      }. Run ${"swamp doctor extensions"} to inspect.`;
     }
   }
 }

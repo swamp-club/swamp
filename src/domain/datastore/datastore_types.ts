@@ -89,7 +89,7 @@ export async function ensureAllDatastoreTypesLoaded(
       logger
         .warn`Failed to load datastore type ${lazy.type} from ${lazy.sourcePath}: ${
         error instanceof Error ? error.message : String(error)
-      }`;
+      }. Run ${"swamp doctor extensions"} to inspect.`;
     }
   }
 }
