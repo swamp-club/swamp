@@ -136,7 +136,9 @@ swamp extension trust auto-trust <on|off> # Toggle membership auto-trust
 
 ### CLAUDE.md
 
-Agent instructions generated on init. Contains:
+Agent instructions generated on init. In a repo that already keeps its own rules
+in `AGENTS.md`, swamp writes them to `.claude/rules/swamp.md` instead, so Claude
+Code keeps reading `AGENTS.md`. Contains:
 
 - Skills list
 - Getting started guide

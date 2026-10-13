@@ -14,9 +14,33 @@ one version to the next.
 The repo should have a `.swamp.yaml` file at its root recording the swamp
 version it was initialized or upgraded with.
 
-Init should write a CLAUDE.md that says the repository is for building
+Init should write instructions that say the repository is for building
 automation with swamp and when to use the linked skills. The agent should try to
 use swamp for most tasks.
+
+For Claude Code those instructions go in `CLAUDE.md`, except where a `CLAUDE.md`
+would hide the repo's own `AGENTS.md`. Claude Code reads `AGENTS.md` only when
+no `CLAUDE.md` exists, so the claude tool picks its target from the repo, taking
+the first rule that matches:
+
+1. `.claude/rules/swamp.md` already exists, or `CLAUDE.md` is a symlink (Claude
+   Code's documented `CLAUDE.md -> AGENTS.md` setup): write
+   `.claude/rules/swamp.md`. Swamp never writes through a symlinked
+   `CLAUDE.md`.
+2. `CLAUDE.md` already holds swamp's managed section: keep it there. When the
+   file holds nothing else and `AGENTS.md` has the repo's own content, add an
+   `@AGENTS.md` import inside the managed section.
+3. `AGENTS.md` has the repo's own content and there is no `CLAUDE.md`: write
+   `.claude/rules/swamp.md`. Claude Code loads rules files alongside
+   `AGENTS.md`.
+4. Otherwise: write `CLAUDE.md`.
+
+The repo's own content means anything outside swamp's managed section. Swamp
+never writes its Claude instructions into `AGENTS.md` itself, because Claude
+Code before 2.1.277 (and some sessions before 2.1.281) reads only `CLAUDE.md`
+files and rules, and would lose swamp's rules. A repo whose `.gitignore`
+covers `.claude/` keeps the rules file out of version control, so teammates get
+it from their own `swamp repo upgrade`, as they already do the skills.
 
 ## Multi-tool Repos
 

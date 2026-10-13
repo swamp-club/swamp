@@ -40,6 +40,8 @@ export interface ToolConfig {
   frontmatter?: string;
   skillReferenceStyle: "name" | "path";
   gitignoreEntries?: string;
+  /** Adds an `@AGENTS.md` import to the managed instructions section. */
+  importAgentsMd?: boolean;
 }
 
 export const BUILT_IN_TOOL_NAMES: readonly string[] = [
@@ -197,6 +199,60 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         skillReferenceStyle: "path",
       };
   }
+}
+
+/** Swamp's Claude rules file when the repo keeps its own rules in AGENTS.md. */
+export const CLAUDE_RULES_FILE = ".claude/rules/swamp.md";
+
+/** What the claude tool needs to know about a repo's instruction files. */
+export interface ClaudeInstructionsState {
+  /** `.claude/rules/swamp.md` exists. */
+  rulesFileExists: boolean;
+  /** Root `CLAUDE.md` exists. */
+  claudeMdExists: boolean;
+  /** Root `CLAUDE.md` is a symlink (e.g. to `AGENTS.md`); never write through it. */
+  claudeMdIsSymlink: boolean;
+  /** Root `CLAUDE.md` carries swamp's managed section (marked or legacy). */
+  claudeMdHasSwampSection: boolean;
+  /** Root `CLAUDE.md` has content outside swamp's managed section. */
+  claudeMdHasUserContent: boolean;
+  /** Root `AGENTS.md` has content outside swamp's managed section. */
+  agentsMdHasUserContent: boolean;
+}
+
+/**
+ * Picks where the claude tool writes swamp's instructions. Claude Code reads
+ * `AGENTS.md` only when no `CLAUDE.md` exists, so swamp never creates a
+ * `CLAUDE.md` next to a repo's own `AGENTS.md`, and never writes through a
+ * symlinked `CLAUDE.md`: it writes a rules file, which Claude Code loads
+ * alongside `AGENTS.md`. A repo keeps whichever target it already has, so
+ * upgrades never move swamp's section between files.
+ */
+export function claudeToolConfigFor(
+  state: ClaudeInstructionsState,
+): ToolConfig {
+  const config = builtInToolConfig("claude");
+  const rulesFile: ToolConfig = {
+    ...config,
+    instructionsFile: CLAUDE_RULES_FILE,
+    instructionsMode: "owned",
+  };
+  if (state.rulesFileExists || state.claudeMdIsSymlink) {
+    return rulesFile;
+  }
+  if (state.claudeMdHasSwampSection) {
+    // A CLAUDE.md that holds only swamp's section hides the repo's AGENTS.md
+    // from Claude Code, so import it.
+    return {
+      ...config,
+      importAgentsMd: state.agentsMdHasUserContent &&
+        !state.claudeMdHasUserContent,
+    };
+  }
+  if (state.agentsMdHasUserContent && !state.claudeMdExists) {
+    return rulesFile;
+  }
+  return config;
 }
 
 export function customToolConfig(def: CustomToolDefinition): ToolConfig {
