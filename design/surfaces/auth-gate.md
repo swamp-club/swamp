@@ -164,13 +164,13 @@ the swamp first admitted on the proof, and a daemon's grandchildren are judged
 against the daemon's start rather than the nested run in between.
 
 The proof is never the `SWAMP_SIGNIN_TOKEN` one: the token is a CI secret, and
-handing its contents down under another name would undo the stripping. In CI
-the first gated run of a job checks its token live and caches the fresh proof,
-so later runs have a file proof to hand down. A run with no such proof (one
-that passed offline on its signin token alone, or offline and fail-open)
-clears any pass it inherited and hands nothing down. The shell model lets this
-one variable through to its children, next to `SWAMP_LOCK_HOLDER_PID`. The
-value is fixed for the life of the process, because the gate runs once.
+handing its contents down under another name would undo the stripping. In CI the
+first gated run of a job checks its token live and caches the fresh proof, so
+later runs have a file proof to hand down. A run with no such proof (one that
+passed offline on its signin token alone, or offline and fail-open) clears any
+pass it inherited and hands nothing down. The shell behavior lets this one
+variable through to its children, next to `SWAMP_LOCK_HOLDER_PID`. The value is
+fixed for the life of the process, because the gate runs once.
 
 A swamp with no credential accepts the pass when all three checks hold:
 

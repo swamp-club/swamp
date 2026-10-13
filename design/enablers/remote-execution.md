@@ -48,23 +48,23 @@ Three properties drove the design:
 
 ## Ubiquitous language
 
-| Term                     | Meaning                                                                                                                                                                                                                                         |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Orchestrator**         | The control-plane websocket server and data-plane HTTP/2 endpoint. Owns DAG and run state, the datastore, vaults, the catalog, definitions, extension bundles, locks, the scheduler, token issuance and audit.                                   |
-| **Worker**               | A disposable swamp process that connects to the orchestrator, enrolls, and runs dispatched steps with a remote `MethodContext`.                                                                                                                 |
-| **Executor**             | Where a dispatch runs: the **local loopback** (in-process on the orchestrator, no socket) or a **remote worker**. Methods run in-process either way.                                                                                            |
-| **Enrollment**           | The first-connect handshake: redeem the token, bind it to the worker instance UUID, exchange version and labels, issue a session credential, admit the worker to the pool.                                                                      |
-| **Enrollment token**     | A named, time-boxed credential that enrolls one or more workers (`maxEnrollments`), then re-authenticates each bound instance for its lifetime. A built-in model.                                                                              |
-| **Session credential**   | Short-lived credential issued at enrollment. Authenticates the worker's HTTP/2 data-plane requests.                                                                                                                                             |
-| **Dispatch**             | The orchestrator → worker request to run one `ExecutionRequest`. The unit of fan-out.                                                                                                                                                           |
-| **Capability**           | A side-effecting function a method reaches through its context, proxied to the orchestrator. A fixed, closed set.                                                                                                                              |
-| **Step lease**           | The orchestrator's record that a step is in flight on a worker. A built-in model.                                                                                                                                                               |
-| **Environment snapshot** | The orchestrator's full process environment, shipped with each dispatch and kept in worker memory only while the step runs.                                                                                                                    |
-| **Spool file**           | The worker-local file behind `getFilePath()` on a remote executor. Uploaded to the orchestrator as one streamed `POST` on `finalize()`.                                                                                                         |
-| **Fleet probe**          | Built-in model (`swamp/fleet-probe`). Its one `verify` method tests every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`. |
-| **Probe marker**         | A dispatch-level string (`probeMarker` on `DispatchParams`) merged into the method's args. Confirms dispatch metadata arrives intact. Sent in `DispatchParams`, not the environment snapshot, which denylists `SWAMP_*` variables.              |
-| **Verify-on-enroll**     | Opt-in orchestrator flag (`--verify-on-enroll`). Sends the fleet probe to each enrolling worker before it can be scheduled. Workers that fail get `unverified` status and are not scheduled.                                                    |
-| **Unverified**           | Worker status after the enrollment probe fails. Shown in `swamp worker list`; excluded from label/platform scheduling.                                                                                                                         |
+| Term                     | Meaning                                                                                                                                                                                                                                                                                               |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Orchestrator**         | The control-plane websocket server and data-plane HTTP/2 endpoint. Owns DAG and run state, the datastore, vaults, the catalog, definitions, extension bundles, locks, the scheduler, token issuance and audit.                                                                                        |
+| **Worker**               | A disposable swamp process that connects to the orchestrator, enrolls, and runs dispatched steps with a remote `MethodContext`.                                                                                                                                                                       |
+| **Executor**             | Where a dispatch runs: the **local loopback** (in-process on the orchestrator, no socket) or a **remote worker**. Methods run in-process either way.                                                                                                                                                  |
+| **Enrollment**           | The first-connect handshake: redeem the token, bind it to the worker instance UUID, exchange version and labels, issue a session credential, admit the worker to the pool.                                                                                                                            |
+| **Enrollment token**     | A named, time-boxed credential that enrolls one or more workers (`maxEnrollments`), then re-authenticates each bound instance for its lifetime. A built-in behavior.                                                                                                                                  |
+| **Session credential**   | Short-lived credential issued at enrollment. Authenticates the worker's HTTP/2 data-plane requests.                                                                                                                                                                                                   |
+| **Dispatch**             | The orchestrator → worker request to run one `ExecutionRequest`. The unit of fan-out.                                                                                                                                                                                                                 |
+| **Capability**           | A side-effecting function a method reaches through its context, proxied to the orchestrator. A fixed, closed set.                                                                                                                                                                                     |
+| **Step lease**           | The orchestrator's record that a step is in flight on a worker. A built-in behavior.                                                                                                                                                                                                                  |
+| **Environment snapshot** | The orchestrator's full process environment, shipped with each dispatch and kept in worker memory only while the step runs.                                                                                                                                                                           |
+| **Spool file**           | The worker-local file behind `getFilePath()` on a remote executor. Uploaded to the orchestrator as one streamed `POST` on `finalize()`.                                                                                                                                                               |
+| **Fleet probe**          | Built-in behavior (`swamp/fleet-probe`). Its one `verify` method tests every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`. |
+| **Probe marker**         | A dispatch-level string (`probeMarker` on `DispatchParams`) merged into the method's args. Confirms dispatch metadata arrives intact. Sent in `DispatchParams`, not the environment snapshot, which denylists `SWAMP_*` variables.                                                                    |
+| **Verify-on-enroll**     | Opt-in orchestrator flag (`--verify-on-enroll`). Sends the fleet probe to each enrolling worker before it can be scheduled. Workers that fail get `unverified` status and are not scheduled.                                                                                                          |
+| **Unverified**           | Worker status after the enrollment probe fails. Shown in `swamp worker list`; excluded from label/platform scheduling.                                                                                                                                                                                |
 
 For an unverified worker, the failure reason is only in the `--json` record
 (`src/presentation/output/worker_output.ts`). A step that pins a `target:` by
@@ -72,7 +72,7 @@ name bypasses the scheduling filter (`eligibleWorkers` in
 `src/domain/remote/scheduler.ts`).
 
 The worker pool, token lifecycle and step leases are **stored as swamp data**
-by built-in models, written the way any method writes output (see
+by built-in behaviors, written the way any method writes output (see
 [Worker state is swamp data](#worker-state-is-swamp-data)). "Executor" means
 where a dispatch runs. It is not the in-process services
 (`DefaultMethodExecutionService`, `WorkflowExecutionService`) that run inside
@@ -201,8 +201,8 @@ stderr or logs.
 
 With `--auth-mode token`, the server checks the upgrade token by a read-only
 lookup of its `swamp/server-token` lifecycle record and vault secret, using the
-model's shared timing-safe validation. It does not call `redeem`, create a
-model run, or update `lastUsedAt`. It accepts the token via
+behavior's shared timing-safe validation. It does not call `redeem`, create a
+behavior run, or update `lastUsedAt`. It accepts the token via
 `Authorization: Bearer`, the `Sec-WebSocket-Protocol` subprotocol, or a
 `?token=` query parameter, in that priority order; the CLI uses the
 `Authorization` header. Unauthenticated connections get HTTP 401.
@@ -426,9 +426,8 @@ Isolation and environment used to come from `docker` and custom drivers. They
 now come from **how a worker is deployed**: a container for container
 isolation, a GPU host for GPU access, a locked-down VM for a strong sandbox.
 Labels describe the deployment and the scheduler matches on them. The only
-behavior lost
-is isolating locally on one host without a worker. Running a local
-containerized worker beside the orchestrator brings it back.
+capability lost is isolating locally on one host without a worker. Running a
+local containerized worker beside the orchestrator brings it back.
 
 ## Enrollment
 
@@ -496,14 +495,14 @@ provisioning_. Each token is:
   survives a broken control socket and a process restart or reboot: the
   worker returns as the same pool member without a new token.
 
-The token is a built-in **enrollment-token** model whose instances are swamp
+The token is a built-in **enrollment-token** behavior whose instances are swamp
 data. Its states are `unused → enrolled → expired`, plus `revoked` from any
 non-terminal state via `swamp worker token revoke`. The `unused → enrolled`
 transition appends a binding (`machineId` + `enrolledAt`) to `bindings`. The
 datastore has no compare-and-swap (concurrent saves to one item become
 successive versions), so the **orchestrator process serializes all token and
 lease transitions in memory**, including concurrent enrollment attempts. It is
-the only writer of these models, and enrollment for a given token is a
+the only writer of these behaviors, and enrollment for a given token is a
 critical section. (If orchestrators ever scale out, the future primitive is a
 conditional save that rejects unless `latest` matches an expected version.) The
 CLI:
@@ -567,20 +566,20 @@ to the machine, not the process.
 ## Worker state is swamp data
 
 The orchestrator does not keep the worker pool, token lifecycle or step leases
-in a private in-memory registry. **Built-in models** store them as **swamp
+in a private in-memory registry. **Built-in behaviors** store them as **swamp
 data**, through the same datastore and catalog as any method's output:
 
-- a **worker** model: one artifact per enrolled worker, with name,
+- a **worker** behavior: one artifact per enrolled worker, with name,
   `instanceUuid`, labels, platform/arch, resource limits, connection status and
   current load. Definitions are named `worker-<name>` because tokens and
   workers share one definition-name namespace; the pool-addressable `name`
   inside the data has no prefix.
-- an **enrollment-token** model: the token lifecycle above.
-- a **step-lease** model: which step is in flight on which worker.
-- a **pending-dispatch** model (`swamp/pending-dispatch`): queued steps waiting
-  for a matching worker, with states
-  `waiting → dispatched | timed_out | cancelled | orphaned`.
-- a **fleet-probe** model (`swamp/fleet-probe`): the probe described in the
+- an **enrollment-token** behavior: the token lifecycle above.
+- a **step-lease** behavior: which step is in flight on which worker.
+- a **pending-dispatch** behavior (`swamp/pending-dispatch`): queued steps
+  waiting for a matching worker, with states `waiting → dispatched | timed_out |
+  cancelled | orphaned`.
+- a **fleet-probe** behavior (`swamp/fleet-probe`): the probe described in the
   table above, used by `swamp worker verify` and `--verify-on-enroll`.
 
 They ship with swamp and register at startup like its other built-ins. Because
@@ -597,7 +596,7 @@ worker state is ordinary data:
   worker's full enroll → busy → idle → expire history can be queried for audit
   and debugging.
 - **Reports and the CLI already work.** `swamp data query`, reports and any CEL
-  helper read worker state like any model output. No separate "pool status"
+  helper read worker state like any behavior output. No separate "pool status"
   surface is needed.
 
 The scheduler reads and writes this data as its source of truth, so there is no
@@ -606,7 +605,7 @@ second store to drift out of sync.
 The cost is churn. Every busy/idle flip and lease change is a new version, and
 `swamp data gc` is manual and never removes a `lifetime: "infinite"` record
 (it only trims each record's version history). So the built-in
-models **declare retention up front**: bounded `garbageCollection` version
+behaviors **declare retention up front**: bounded `garbageCollection` version
 counts (worker 20; token, lease, pending-dispatch 10; fleet-probe 1), with
 `lifetime: "infinite"` on all but the fleet probe
 (`src/domain/models/worker/*_model.ts`).
@@ -617,7 +616,7 @@ has two independent parts, so a failure in one never skips the other:
 
 - **Workers and tokens.** It prunes worker records disconnected for longer than
   the grace period, then removes their stale bindings from enrollment tokens
-  with the `prune_bindings` model method. `swamp worker prune` is the CLI
+  with the `prune_bindings` method. `swamp worker prune` is the CLI
   equivalent.
 - **Step leases and pending dispatches.** It deletes every ended record — a
   lease that is `completed`, `failed` or `expired`, a dispatch that is
@@ -634,7 +633,7 @@ deleted record before its push (see the sync gate in
 
 ### Boot reconciliation
 
-When `swamp serve` starts, it sweeps the three bookkeeping models for records
+When `swamp serve` starts, it sweeps the three bookkeeping behaviors for records
 left stale by a crash or unclean shutdown:
 
 - **Step leases** in `active` state → `expired` (the worker is gone; no step is
@@ -644,7 +643,7 @@ left stale by a crash or unclean shutdown:
 - **Workers** not in `disconnected` status → `disconnected` (no live WebSocket
   session backs them).
 
-The sweep runs through the model-method runner (`createWorkerModelRunDeps` +
+The sweep runs through the method runner (`createWorkerModelRunDeps` +
 `modelMethodRun` with `skipAllReports`), so transitions go through the
 transition tail rather than direct datastore writes, keeping the sole-writer
 invariant. A failed transition logs a warning and startup continues; one
@@ -704,22 +703,22 @@ verbs (`RemoteMethod.capability.*` in `src/domain/remote/protocol.ts`, served by
 `src/serve/capability_service.ts`) plus the data-plane routes
 (`src/serve/data_plane.ts`):
 
-| Operation          | Backed by                                                                                                                | Transport | Notes                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------ |
-| `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`                                       | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes    |
-| `queryData`        | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading                                    | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
-| `listVersions`     | `repo.listVersions`                                                                                                      | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing     |
-| `deleteData`       | `repo.delete`, `repo.removeLatestMarker`                                                                                 | ws        | Used by lifecycle/GC-aware methods                                                               |
-| `resolveSecret`    | `vaultService.get` / `getAnnotation`                                                                                     | ws        | Authorized per step: denylist + allowlist (below)                                                |
-| `putSecret`        | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                                                                | ws        | Denylist only (below)                                                                            |
-| `readDefinition`   | `definitionRepository.findByName`                                                                                        | ws        | Lazy-load; no cache. A control-plane type reads as not found                                     |
-| `readOutput`       | `outputRepository` execution-history reads                                                                               | ws        | Optional context member. A control-plane type reads as empty                                     |
-| `resolveModel`     | `findDefinitionByIdOrName` over the definition repository                                                                | ws        | Workflow step model resolution. Skips control-plane definitions, so one cannot shadow a model    |
-| resource write     | `POST /data/resource` → `writeResource`                                                                                  | h2        | Durable immediately                                                                              |
-| resource delete    | `DELETE /data/resource`                                                                                                  | h2        |                                                                                                  |
-| file write         | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize`                                    | h2        | `writeLine` is durable per request (live logs)                                                   |
-| extension assets   | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`                                                  | h2        | Cacheable by fingerprint                                                                         |
-| `log` / `event`    | run-event stream                                                                                                         | ws        | `rpc.stream` frames; flows to client and the run log (below)                                     |
+| Operation        | Backed by                                                                             | Transport | Notes                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
+| `getData`        | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`    | ws + h2   | ws resolves `latest`→version; `GET /data/{type}/{modelId}/{dataName}/{version}` streams bytes                     |
+| `queryData`      | `dataQueryService` / `context.queryData` / `context.readModelData`, attribute loading | ws        | CEL predicate over the catalog; always live. Control-plane records excluded (below). `select` projection rejected |
+| `listVersions`   | `repo.listVersions`                                                                   | ws        | Version history for one item. No dispatch-scope assertion; control-plane types list nothing                       |
+| `deleteData`     | `repo.delete`, `repo.removeLatestMarker`                                              | ws        | Used by lifecycle/GC-aware methods                                                                                |
+| `resolveSecret`  | `vaultService.get` / `getAnnotation`                                                  | ws        | Authorized per step: denylist + allowlist (below)                                                                 |
+| `putSecret`      | `vaultService.put` / `putAnnotation` / `deleteAnnotation`                             | ws        | Denylist only (below)                                                                                             |
+| `readDefinition` | `definitionRepository.findByName`                                                     | ws        | Lazy-load; no cache. A control-plane type reads as not found                                                      |
+| `readOutput`     | `outputRepository` execution-history reads                                            | ws        | Optional context member. A control-plane type reads as empty                                                      |
+| `resolveModel`   | `findDefinitionByIdOrName` over the definition repository                             | ws        | Workflow step behavior resolution. Skips control-plane definitions, so one cannot shadow a behavior               |
+| resource write   | `POST /data/resource` → `writeResource`                                               | h2        | Durable immediately                                                                                               |
+| resource delete  | `DELETE /data/resource`                                                               | h2        |                                                                                                                   |
+| file write       | `POST /data/writers` (open) → `/content` (stream + finalize) or `/line` + `/finalize` | h2        | `writeLine` is durable per request (live logs)                                                                    |
+| extension assets | `GET /bundle/{fingerprint}`, `GET /bundle/{fingerprint}/file/{relPath}`               | h2        | Cacheable by fingerprint                                                                                          |
+| `log` / `event`  | run-event stream                                                                      | ws        | `rpc.stream` frames; flows to client and the run log (below)                                                      |
 
 The orchestrator writes a step's output to its run log, wherever the step ran.
 A worker's method logger has no run log to write to, so each line travels as an
@@ -763,7 +762,7 @@ the run's `RunVaultAccess` when the step is dispatched, as it captures trace
 headers, and `CapabilityService` enters it for both `resolveSecret` branches
 (value and annotation) and for `putSecret` (put, `putAnnotation`,
 `deleteAnnotation`); the data plane writes that dispatch's sensitive fields
-inside it. Worker model code is therefore held to the same rule as in-process
+inside it. Worker behavior code is therefore held to the same rule as in-process
 code: the triggering principal's vault grants and the workflow's `vaults:`
 list. Decisions read the current policy, so a revocation applies to later
 calls of a dispatch already running. The data plane builds its vault service
@@ -791,13 +790,12 @@ The remaining context members do not proxy:
   Workers have no repository checkout, so reading repo contents through it is
   unsupported remotely. A method that needs repo files runs on the loopback
   executor, or on a worker deployed with a checkout and labeled to match.
-- **Local compute stays local.** Subprocesses (`Deno.Command`, used by the
-  shell model) and outbound network calls run on the worker, which is what remote
+- **Local compute stays local.** Subprocesses (`Deno.Command`, used by the shell
+  behavior) and outbound network calls run on the worker, which is what remote
   execution is for. Their credentials and environment come from the shipped
-  environment (below) or vault-resolved inputs.
-  `cloudControlClientFactory` is `undefined` on a worker
-  (`src/worker/remote_method_context.ts`); a method that needs it runs on the
-  orchestrator.
+  environment (below) or vault-resolved inputs. `cloudControlClientFactory` is
+  `undefined` on a worker (`src/worker/remote_method_context.ts`); a method that
+  needs it runs on the orchestrator.
 - **`createCelEnvironment`** is the local extension environment (above), with
   no data-access leaves.
 - **Not available on a worker.** `context.runModel()`,
@@ -840,7 +838,7 @@ fixed in code and versioned with the `protocolVersion`, so both sides agree on
 it.
 
 This is also how ambient credentials reach a worker. Cloud SDKs built by
-extension code, CLIs run by the shell model, and anything else that
+extension code, CLIs run by the shell behavior, and anything else that
 authenticates from the environment work on a worker as on the orchestrator
 host. `env.*` runtime expressions are unaffected: like `vault.get(...)`, they
 already resolve on the orchestrator at dispatch time. The snapshot covers the
@@ -864,13 +862,13 @@ global to serve, not per token or per label.
 
 The layers above protect the orchestrator→worker and worker→dispatch-runner
 boundaries. A third protects the **method→child** boundary. When the shell
-model (`command/shell`) or extension code spawns an external subprocess, the
+behavior (`command/shell`) or extension code spawns an external subprocess, the
 child must not inherit swamp's own auth tokens (`SWAMP_SERVER_TOKEN`,
 `SWAMP_API_KEY`, etc.) from the host process. An external tool (an LLM CLI, a
 cloud SDK, kubectl) with these tokens in its `/proc/<pid>/environ` could leak
 them.
 
-The shell model builds the child's environment with `createSafeMethodEnv`
+The shell behavior builds the child's environment with `createSafeMethodEnv`
 (`src/domain/remote/environment_snapshot.ts`): a copy of the host env with
 every `SWAMP_*` variable removed (case-insensitive prefix match). That includes
 `SWAMP_API_KEY_FILE`, so a child cannot find the key file through it.
@@ -880,8 +878,9 @@ re-inherit the parent's `SWAMP_*` vars behind the filter. A per-variable
 allowlist on `createSafeMethodEnv` lets a method pass specific vars through
 when a child needs them.
 
-The shell model passes `NESTED_SWAMP_ENV_VARS`: the variables a nested `swamp`
-in a shell step needs from the swamp that started it. None is a credential.
+The shell behavior passes `NESTED_SWAMP_ENV_VARS`: the variables a nested
+`swamp` in a shell step needs from the swamp that started it. None is a
+credential.
 
 - `SWAMP_NESTED_GATE_PASS` lets the nested swamp pass the auth gate without a
   key ([auth gate](../surfaces/auth-gate.md#nested-runs)). It carries a signed
@@ -890,7 +889,7 @@ in a shell step needs from the swamp that started it. None is a credential.
   from a live ancestor started before the proof expired. It does expose the
   proof's identity metadata (`sub`, `org`, `fpr`) to the child.
 - `SWAMP_LOCK_HOLDER_PID`, `SWAMP_LOCK_ANCESTOR_PIDS` and
-  `SWAMP_LOCK_HOLDER_TOKENS` let the nested swamp skip the per-model locks
+  `SWAMP_LOCK_HOLDER_TOKENS` let the nested swamp skip the per-behavior locks
   that its parent and every swamp above it hold for the run that started it
   ([datastores](datastores.md), "Parent-Process Lock Awareness").
 
@@ -922,7 +921,7 @@ credentials (`SWAMP_WORKER_TOKEN`, `SWAMP_SERVER_TOKEN`,
 `SWAMP_ORCHESTRATOR_URL`) before the child starts. The runner does not need
 them: it gets its data-plane credential in `RunnerBootstrapParams` over stdio.
 
-The orchestrator holds a step's per-model lock while the worker runs it. A
+The orchestrator holds a step's per-behavior lock while the worker runs it. A
 dispatch made under a lock carries an optional `lockHolder` in
 `DispatchParams`: the orchestrator's pid, its hostname and the lock-file
 nonces of the locks held for that step. The snapshot cannot carry this, since
@@ -973,7 +972,7 @@ the same name: 5 s, for the serve run-cancel endpoint.)
 **Crash isolation**: a runner crash (non-zero exit or stdio channel close)
 fails only that dispatch. The worker stays enrolled and takes the next one.
 
-Phase 4a shipped at capacity 1: the same behavior as the earlier in-process
+Phase 4a shipped at capacity 1: the same results as the earlier in-process
 path, plus crash isolation and clean environment handling.
 
 ### Concurrent dispatch (phase 4b)
@@ -992,13 +991,13 @@ the slot and the reservation is gone. A worker with a free slot therefore
 takes a step that arrives while its other dispatches are running.
 
 **Per-dispatch credentials**: each runner has its own credential from
-`SessionCredentialService.issueForDispatch(workerId, dispatchId)`, separate
-from the control-channel credential (above). The service refreshes it
-internally: a timer slides the expiry forward every 2/3 TTL, so it stays valid
-for the whole dispatch however long it runs. The string does not change, so the
-runner needs no notice. Credentials are revoked when the dispatch completes.
-The capability bridge overrides `dispatchId` in every RPC verb so the
-`CapabilityService` can find the right dispatch for model-type scope isolation.
+`SessionCredentialService.issueForDispatch(workerId, dispatchId)`, separate from
+the control-channel credential (above). The service refreshes it internally: a
+timer slides the expiry forward every 2/3 TTL, so it stays valid for the whole
+dispatch however long it runs. The string does not change, so the runner needs
+no notice. Credentials are revoked when the dispatch completes. The capability
+bridge overrides `dispatchId` in every RPC verb so the `CapabilityService` can
+find the right dispatch for behavior-type scope isolation.
 
 **Idle semantics**: a worker is "idle" when `activeDispatchIds.length === 0`.
 The idle timeout starts only when all slots are empty. `maxDispatches` counts
@@ -1030,8 +1029,8 @@ has fetched, so a bundle ships at most once per worker per version. This
 mirrors the versioned-handle data cache: code and data both cache by content or
 version identity and travel over the same h2 data plane.
 
-Built-in models ship **no bundle**. The dispatch carries a `builtin:<type>`
-sentinel, and the worker resolves the model from its own binary's registry.
+Built-in behaviors ship **no bundle**. The dispatch carries a `builtin:<type>`
+sentinel, and the worker resolves the behavior from its own binary's registry.
 Orchestrator and worker are expected to run the same version (enrollment checks
 only `protocolVersion`), so a sentinel for a type the worker does not know is a
 loud error that the binaries disagree.
@@ -1076,10 +1075,10 @@ the version directory, metadata, content, `latest` marker and catalog entry
 before the `await` resolves. Nothing is buffered to commit at the end, and
 `method_execution_service.ts` relies on that: it collects handles for data
 written before a throw. So a method that writes and then
-throws (e.g. a code-review `verdict=FAIL`, the issue-lifecycle model) leaves
+throws (e.g. a code-review `verdict=FAIL`, the issue-lifecycle behavior) leaves
 its data visible.
 
-For the proxy model, a `persistResource` / `persistFile` is an HTTP/2 `POST`
+For the proxy behavior, a `persistResource` / `persistFile` is an HTTP/2 `POST`
 that completes only once `repo.save()` has persisted at the orchestrator. There
 is no staging layer to build. A worker that writes 3 of 5 outputs then dies
 leaves 3 durable writes, as a local process crash does today.
@@ -1095,7 +1094,7 @@ Two `DataWriter` modes need their own remote shape:
   it is a **worker-local spool file** that `finalize()` uploads as one streamed
   `POST`. For this mode only, durability moves from write time to finalize
   time. A worker that dies mid-spool leaves no write rather than a partial
-  file, the safer of the two divergences. Local behavior is unchanged.
+  file, the safer of the two divergences. Local runs are unchanged.
 
 ### Data is versioned-immutable, not content-addressed
 
@@ -1177,14 +1176,14 @@ semantics and needs almost no new code:
   Schema validation in the writer is warn-only today (it emits a
   `schema_validation_warning` event), so spec names, not schemas, scope writes.
   The orchestrator persists a worker's `POST` through that same writer, so a
-  worker can only write specs its model declares, with no new authorization
+  worker can only write specs its behavior declares, with no new authorization
   layer.
-- **Reads are dispatch-scoped.** `getData` is refused for a model type outside
-  the active dispatch's scope (`#assertDispatchScope` in
+- **Reads are dispatch-scoped.** `getData` is refused for a behavior type
+  outside the active dispatch's scope (`#assertDispatchScope` in
   `src/serve/capability_service.ts`). `queryData` caps predicate length and
-  post-filters results, rejecting outright any query that touches
-  access-control or infrastructure model data. `listVersions` is the one verb
-  with no scope assertion.
+  post-filters results, rejecting outright any query that touches access-control
+  or infrastructure behavior data. `listVersions` is the one verb with no scope
+  assertion.
 
 ## Scheduling, fan-out, and provisioning
 
@@ -1285,15 +1284,15 @@ work.
 Launching worker hosts is a swamp workflow, not a custom provider plugin. This
 is why it matters that worker state lives in swamp data. There are two pieces:
 
-- **Token minting is a built-in model.** Its `mint` method records the
+- **Token minting is a built-in behavior.** Its `mint` method records the
   enrollment-token data and writes the token secret into a vault, returning a
   vault reference (not the secret). A provisioning workflow calls it and passes
   the reference downstream.
-- **Worker-launch models are ordinary user extensions**, such as a model
+- **Worker-launch behaviors are ordinary user extensions**, such as a behavior
   wrapping a k8s Job or a cloud VM API. It reads the token with a
   `${{ vault.get(...) }}` expression and boots the swamp binary with the token
   and orchestrator URL. The worker then connects back. swamp ships the
-  mechanism; cloud and k8s integrations are written as extension models.
+  mechanism; cloud and k8s integrations are written as extension behaviors.
 
 The token's plaintext lives only in the vault, so it never lands in stored
 workflow run data. A provisioning workflow can `data.query` the pool, decide how
@@ -1424,8 +1423,8 @@ credentials and extensions onto workers:
   data-origin flag) and its method args with the sentinels intact
   (`unresolvedMethodArgs`). A worker that receives both rebuilds the bag
   (`VaultSecretBag.fromEntries`) as `context.vaultSecrets` and builds the step
-  from the unresolved args, so the method execution service resolves them on
-  the worker exactly as a local run does: extension models get plaintext args,
+  from the unresolved args, so the method execution service resolves them on the
+  worker exactly as a local run does: extension behaviors get plaintext args,
   and a `command/shell` step gets `vault.get()` and sensitive data values as
   `__SWAMP_VAULT_N` environment variables, never in its `sh -c` argv. Both
   fields are optional, so the protocol version is unchanged: a worker that
@@ -1484,28 +1483,28 @@ credentials and extensions onto workers:
 
 ## What is reused vs. new
 
-| Concern                           | Status                                                                                                                                       |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Control protocol + multiplexing   | **Reuse** `src/serve/protocol.ts`, `connection.ts`, `serializer.ts`                                                                          |
-| Serializable execution envelope   | **Reuse** `ExecutionRequest` / `ExecutionResult` (the envelope never carried driver fields)                                                  |
-| Extension bundle + fingerprint    | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on a miss; co-located assets ship the same way (see below) |
-| Checks and reports pipeline       | **Reuse** at the orchestrator: checks skipped for remote steps; reports run after the execution seam                                        |
-| Pure injectable operations        | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                                                                                  |
-| Worker/token/lease persistence    | **Reuse** the datastore + catalog: built-in models, not a private registry                                                                   |
-| Out-of-process secret resolution  | **Reuse** the resolve-before-dispatch pattern, plus the step's secret bag so the worker delivers values as a local run does                 |
-| Run-event serialization           | **Reuse** `serializeEvent()`; worker → orchestrator events ride `rpc.stream` frames                                                          |
-| Driver abstraction                | **Remove** `ExecutionDriver`, raw/docker/custom drivers, registry, `driver:` fields                                                          |
-| Role split (server ≠ executor)    | **New**: request-dispatch handling moves to the worker side; two handler registries                                                          |
-| Enrollment handshake              | **New**: token redemption, machine binding, label exchange, session-credential issue                                                         |
-| Built-in worker-management models | **New**: `worker`, `enrollment-token`, `step-lease`; `swamp worker token` + mint model                                                       |
-| Remote `MethodContext` adapters   | **New**: proxy implementations of the repository/vault/data-writer ports                                                                     |
-| Capability protocol verbs         | **New**: nine `capability.*` verbs over ws (metadata) plus the h2 data-plane routes (bytes)                                                  |
-| Environment shipping              | **New**: per-dispatch orchestrator env snapshot, worker-memory only                                                                          |
-| Spool + append write modes        | **New**: worker-local spool for `getFilePath`; `POST /data/writers/{id}/line` for `writeLine`                                                |
-| HTTP/2 data plane + auth          | **New**: worker-initiated bulk transfer; bearer-token auth, existing spec-write enforcement                                                   |
-| Label scheduler + direct target   | **New**: data-backed pool, label/platform matching, target by name/uuid; step-level `target:`/`labels:`/`platform:` YAML fields             |
-| Lease + reconnection + failure    | **New**: grace window, full re-dispatch of no-write steps after a drop, write-then-fail                                                      |
-| `swamp worker connect` command    | **New**: the CLI command a worker runs to connect                                                                                            |
+| Concern                              | Status                                                                                                                                       |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control protocol + multiplexing      | **Reuse** `src/serve/protocol.ts`, `connection.ts`, `serializer.ts`                                                                          |
+| Serializable execution envelope      | **Reuse** `ExecutionRequest` / `ExecutionResult` (the envelope never carried driver fields)                                                  |
+| Extension bundle + fingerprint       | **Reuse** `bundleSourceFactory` + inline `sha256Hex` fingerprint; fetched over h2 on a miss; co-located assets ship the same way (see below) |
+| Checks and reports pipeline          | **Reuse** at the orchestrator: checks skipped for remote steps; reports run after the execution seam                                         |
+| Pure injectable operations           | **Reuse** libswamp `*Deps` + `MethodContext` injection seam                                                                                  |
+| Worker/token/lease persistence       | **Reuse** the datastore + catalog: built-in behaviors, not a private registry                                                                |
+| Out-of-process secret resolution     | **Reuse** the resolve-before-dispatch pattern, plus the step's secret bag so the worker delivers values as a local run does                  |
+| Run-event serialization              | **Reuse** `serializeEvent()`; worker → orchestrator events ride `rpc.stream` frames                                                          |
+| Driver abstraction                   | **Remove** `ExecutionDriver`, raw/docker/custom drivers, registry, `driver:` fields                                                          |
+| Role split (server ≠ executor)       | **New**: request-dispatch handling moves to the worker side; two handler registries                                                          |
+| Enrollment handshake                 | **New**: token redemption, machine binding, label exchange, session-credential issue                                                         |
+| Built-in worker-management behaviors | **New**: `worker`, `enrollment-token`, `step-lease`; `swamp worker token` + mint behavior                                                    |
+| Remote `MethodContext` adapters      | **New**: proxy implementations of the repository/vault/data-writer ports                                                                     |
+| Capability protocol verbs            | **New**: nine `capability.*` verbs over ws (metadata) plus the h2 data-plane routes (bytes)                                                  |
+| Environment shipping                 | **New**: per-dispatch orchestrator env snapshot, worker-memory only                                                                          |
+| Spool + append write modes           | **New**: worker-local spool for `getFilePath`; `POST /data/writers/{id}/line` for `writeLine`                                                |
+| HTTP/2 data plane + auth             | **New**: worker-initiated bulk transfer; bearer-token auth, existing spec-write enforcement                                                  |
+| Label scheduler + direct target      | **New**: data-backed pool, label/platform matching, target by name/uuid; step-level `target:`/`labels:`/`platform:` YAML fields              |
+| Lease + reconnection + failure       | **New**: grace window, full re-dispatch of no-write steps after a drop, write-then-fail                                                      |
+| `swamp worker connect` command       | **New**: the CLI command a worker runs to connect                                                                                            |
 
 Report bundles do not ship: `reportBundleFingerprints` is always `[]`
 (`src/serve/dispatch_service.ts`).
@@ -1514,10 +1513,10 @@ Report bundles do not ship: `reportBundleFingerprints` is always `[]`
 
 In scope:
 
-- Enrollment over `wss://` with a named, time-boxed token that binds one or
-  more machines. Each machine reconnects as `{token, machineId}` for the
-  token's lifetime. `swamp worker token` commands and a mint model that writes
-  the token to a vault.
+- Enrollment over `wss://` with a named, time-boxed token that binds one or more
+  machines. Each machine reconnects as `{token, machineId}` for the token's
+  lifetime. `swamp worker token` commands and a mint behavior that writes the
+  token to a vault.
 - No drivers: isolation is a worker deployment property; the loopback executor
   covers single-host.
 - One dispatch runner process per dispatch, for crash isolation and a clean
@@ -1537,9 +1536,9 @@ In scope:
   data-backed pool; step-level `target:`/`labels:`/`platform:` fields; `forEach`
   fan-out within the existing level-parallel loop.
 - Reconnection grace window; a drop after a write fails the run.
-- The mint model and connect contract, so host launching is a swamp workflow
-  (mint model → vault → launch model → worker connects), bootstrapped on the
-  loopback executor.
+- The mint behavior and connect contract, so host launching is a swamp workflow
+  (mint behavior → vault → launch behavior → worker connects), bootstrapped on
+  the loopback executor.
 
 Non-goals for v1:
 
@@ -1547,7 +1546,7 @@ Non-goals for v1:
   orchestrator. Revisit only if that limit becomes a problem.
 - **Data-locality scheduler affinity.** Worker affinity (`affinity: true`)
   gives explicit co-location instead.
-- **Shipping cloud/k8s launch integrations.** Launch models are user-written
+- **Shipping cloud/k8s launch integrations.** Launch behaviors are user-written
   extensions.
 
 ## Known limits
@@ -1628,7 +1627,7 @@ the extension trust list.
 4. Queries `catalog.findBySourcePathPrefix(sourcePrefix)` for type rows
 5. Re-bundles any source whose fingerprint changed, writing the new bundle
    file and recording the fingerprint with `catalog.updateSourceFingerprint()`
-6. For each type across all five kinds (model, vault, datastore, report,
+6. For each type across all five kinds (behavior, vault, datastore, report,
    webhook):
    - `invalidateType()` removes it from the registry's loaded and lazy maps
    - `registerLazy()` re-adds it with the updated `source_fingerprint`
@@ -1644,7 +1643,7 @@ SIGHUP and the config poller then run the extension discoverer
 types the steps above did not register. Before reading, bundling or importing
 a source, it skips any source that has a catalog row of that kind whose type
 is already registered: step 6 has just re-registered exactly those. Only
-sources without such a row, and model add-on (`extension`) files, take the
+sources without such a row, and behavior add-on (`extension`) files, take the
 full load. A reload with nothing new therefore does no bundle I/O in the
 discovery pass.
 

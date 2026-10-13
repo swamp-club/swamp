@@ -43,21 +43,21 @@ stored as `metadata.yaml` and validated by `DataMetadataSchema`
 (`src/domain/data/data_record.ts`) from the mappers in
 `src/domain/data/data_record_mapper.ts`.
 
-| Field                    | Meaning                                                                                                                                  | Source                                                   |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `type` / `modelId`       | Owning model type (directory-normalised) and definition UUID; part of the path, not of `metadata.yaml`                                   | `unified_data_repository.ts` `getDataNameDir`            |
-| `name`                   | Instance name. No `..`, `/`, `\`, NUL; `latest` is reserved (any case)                                                                   | `data_metadata.ts`; `data.ts` `isReservedDataName`       |
-| `id`                     | UUID shared by every version of one name                                                                                                 | `data_id.ts`                                             |
-| `version`                | Positive integer from 1, allocated by `mkdir` claim                                                                                      | `unified_data_repository.ts` `atomicAllocateVersionDir`  |
-| `namespace`              | Which repo wrote it in a shared datastore; `""` in solo mode. Catalog column `namespace`, `ns` in CEL                                    | `namespace.ts`; `catalog_store.ts`                       |
-| `contentType`            | MIME type; always `application/json` for resources                                                                                       | `data_writer.ts` `createResourceWriter`                  |
-| `lifetime`               | `Nm/h/d/w/mo/y`, `ephemeral`, `infinite`, `job`, `workflow`; zero durations become `workflow`                                            | `data_metadata.ts` `LifetimeSchema`, `normalizeLifetime` |
-| `garbageCollection`      | Keep N versions (integer) or versions younger than a duration                                                                            | `data_metadata.ts` `GarbageCollectionSchema`             |
-| `streaming`              | Line-oriented file written incrementally                                                                                                 | `data_writer.ts` `writeLine`                             |
-| `tags`                   | String map; must contain `type`. Writers add `specName` and `modelName`                                                                  | `data_metadata.ts`; `data_writer.ts`                     |
-| `ownerDefinition`        | `ownerType` (`model-method`, `workflow-step`, `manual`) + `ownerRef` (the model id); workflow provenance (below); legacy `definitionHash` | `data_metadata.ts` `OwnerDefinitionSchema`               |
-| `size`, `checksum`       | Byte length and SHA-256 of `raw`                                                                                                         | `unified_data_repository.ts` `computeChecksum`           |
-| `lifecycle`, `renamedTo` | `deleted` marks a tombstone; `renamedTo` makes it a forwarding tombstone                                                                 | `data.ts` `withDeletionMarker`, `withRenameMarker`       |
+| Field                    | Meaning                                                                                                                                      | Source                                                   |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `type` / `modelId`       | Owning behavior type (directory-normalised) and definition UUID; part of the path, not of `metadata.yaml`                                    | `unified_data_repository.ts` `getDataNameDir`            |
+| `name`                   | Instance name. No `..`, `/`, `\`, NUL; `latest` is reserved (any case)                                                                       | `data_metadata.ts`; `data.ts` `isReservedDataName`       |
+| `id`                     | UUID shared by every version of one name                                                                                                     | `data_id.ts`                                             |
+| `version`                | Positive integer from 1, allocated by `mkdir` claim                                                                                          | `unified_data_repository.ts` `atomicAllocateVersionDir`  |
+| `namespace`              | Which repo wrote it in a shared datastore; `""` in solo mode. Catalog column `namespace`, `ns` in CEL                                        | `namespace.ts`; `catalog_store.ts`                       |
+| `contentType`            | MIME type; always `application/json` for resources                                                                                           | `data_writer.ts` `createResourceWriter`                  |
+| `lifetime`               | `Nm/h/d/w/mo/y`, `ephemeral`, `infinite`, `job`, `workflow`; zero durations become `workflow`                                                | `data_metadata.ts` `LifetimeSchema`, `normalizeLifetime` |
+| `garbageCollection`      | Keep N versions (integer) or versions younger than a duration                                                                                | `data_metadata.ts` `GarbageCollectionSchema`             |
+| `streaming`              | Line-oriented file written incrementally                                                                                                     | `data_writer.ts` `writeLine`                             |
+| `tags`                   | String map; must contain `type`. Writers add `specName` and `modelName`                                                                      | `data_metadata.ts`; `data_writer.ts`                     |
+| `ownerDefinition`        | `ownerType` (`model-method`, `workflow-step`, `manual`) + `ownerRef` (the behavior id); workflow provenance (below); legacy `definitionHash` | `data_metadata.ts` `OwnerDefinitionSchema`               |
+| `size`, `checksum`       | Byte length and SHA-256 of `raw`                                                                                                             | `unified_data_repository.ts` `computeChecksum`           |
+| `lifecycle`, `renamedTo` | `deleted` marks a tombstone; `renamedTo` makes it a forwarding tombstone                                                                     | `data.ts` `withDeletionMarker`, `withRenameMarker`       |
 
 Workflow provenance is `workflowId`, `workflowRunId`, `workflowName`,
 `jobName`, `stepName` and `source`. The optional `definitionHash` is kept only
@@ -69,7 +69,7 @@ for data already on disk.
 `type: report` ([reports.md](../enablers/reports.md#data-persistence)).
 `swamp data list --type` still accepts `log` and `data`, but no first-party
 writer emits them; the old log type became `files` with `streaming: true`
-([models.md §Files](./models.md#files)).
+([behaviors.md §Files](./behaviors.md#files)).
 
 **Vary dimensions.** A definition or workflow step can declare `vary` on an
 output spec (`src/domain/models/data_output_override.ts`). The runtime turns the
@@ -103,7 +103,7 @@ read with
 ## Writing data
 
 Methods write through two `MethodContext` functions
-(`src/domain/models/model.ts`), bound to the running model by
+(`src/domain/models/model.ts`), bound to the running behavior by
 `src/domain/models/data_writer.ts`:
 
 - `writeResource(specName, name, data, overrides?)` checks `data` against the
@@ -132,13 +132,13 @@ is durable once `await` returns. Nothing is held back to commit at the end, so a
 method that writes and then throws keeps its writes
 ([remote-execution.md](../enablers/remote-execution.md#writes-are-immediately-durable-not-staged)).
 
-**`rollbackOnFailure`.** A method definition can opt into all-or-nothing
-writes. Writers then use `saveDeferred` / `finalizeVersionDeferred`: version
-directory and metadata are written, but the `latest` marker is untouched and the
-catalog row has `is_latest=0`. On success `advanceLatestMarkers` flips them; on
-failure `rollbackVersions` removes the directories and rows
-(`unified_data_repository.ts`;
-[models.md §Write Atomicity](./models.md#write-atomicity-rollbackonfailure)).
+**`rollbackOnFailure`.** A method definition can opt into all-or-nothing writes.
+Writers then use `saveDeferred` / `finalizeVersionDeferred`: version directory
+and metadata are written, but the `latest` marker is untouched and the catalog
+row has `is_latest=0`. On success `advanceLatestMarkers` flips them; on failure
+`rollbackVersions` removes the directories and rows
+(`unified_data_repository.ts`; [behaviors.md §Write
+Atomicity](./behaviors.md#write-atomicity-rollbackonfailure)).
 
 **Tags** are resolved in a fixed order (`data_writer.ts`): the `type`
 auto-tag, the definition's `tags`, the spec's default tags, per-call
@@ -156,7 +156,7 @@ vault and replaces it in the payload with
 derived `type/modelId/method/spec/instance/field.path`. The vault is
 `field.vaultName ?? spec.vaultName ?? default vault ?? first user vault`.
 `modelRequiresVault()` (`data_writer.ts`) tells callers up front whether a
-model has such a spec. With no vault configured, the write fails rather than
+behavior has such a spec. With no vault configured, the write fails rather than
 saving the secret. The whole serialised payload then passes through the
 run's `SecretRedactor`, which also scrubs log output
 (`src/domain/secrets/secret_redactor.ts`). On read, `resolveVaultRefsInData`
@@ -177,27 +177,27 @@ removes every version.
   `attributes` is the parsed JSON for resources. `content` is the parsed object
   for `application/json`, and the raw text for other text types (`text/*`,
   `application/yaml`, `application/x-yaml`; `content_type.ts`,
-  `data_record_mapper.ts` `parseContent`). Model names may be qualified as
+  `data_record_mapper.ts` `parseContent`). Behavior names may be qualified as
   `ns:model`, or `*:model` for every namespace, except in `data.findByTag`,
   which always reads the caller's own namespace
   ([data-query.md](../enablers/data-query.md)).
 - **In a method**: `context.readModelData(modelName, specName?)`,
-  `context.readResource(instanceName, version?)` (the model's own resource, with
-  vault references resolved) and `context.queryData(predicate, select?)`
+  `context.readResource(instanceName, version?)` (the behavior's own resource,
+  with vault references resolved) and `context.queryData(predicate, select?)`
   (`model.ts`). `DataAccessService` backs them
   (`src/domain/data/data_access_service.ts`). With a catalog, it scopes the
   predicate to the caller's namespace unless the name has one. The `modelName`
-  tag records the name at write time, so for an own-namespace name it also
-  reads the resolved definition's data by type and id, and data written before
-  the instance was renamed is still returned (swamp-club#3011). A model reading
+  tag records the name at write time, so for an own-namespace name it also reads
+  the resolved definition's data by type and id, and data written before the
+  instance was renamed is still returned (swamp-club#3011). A behavior reading
   its own name uses its own identity, with no definition lookup. The CEL
   accessors `data.latest()`, `data.version()`, `data.listVersions()` and
   `data.findBySpec()` read by identity the same way (swamp-club#3029; see
-  [expressions.md](../enablers/expressions.md)). Without a
-  catalog, it walks the filesystem, and if the definition's UUID changed it
-  finds data written under the old UUID: first by `modelName` tag, then, only
-  when the type has a single definition, by that definition. This "orphan
-  recovery" is a read-time convenience, never a delete.
+  [expressions.md](../enablers/expressions.md)). Without a catalog, it walks the
+  filesystem, and if the definition's UUID changed it finds data written under
+  the old UUID: first by `modelName` tag, then, only when the type has a single
+  definition, by that definition. This "orphan recovery" is a read-time
+  convenience, never a delete.
 - **CLI**: `swamp data query '<predicate>' [--select] [--limit]` is the read
   path, e.g. `model("<m>") && name == "<n>"` with `--select content` for
   one item's content, or `workflowRunId`, `jobName` and `stepName` to pick one
@@ -229,14 +229,14 @@ write, and back only when the current latest is deleted or collected (`delete`
 and `collectGarbage` recompute it from the remaining directories). These remove
 versions:
 
-| Mechanism                       | Removes                                                                                  | Source                                                                         |
-| ------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Mechanism                       | Removes                                                                                                                                                | Source                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | Write-time cap (`autoGc: true`) | On each save, and when a deferred write is promoted, versions beyond an **integer** `garbageCollection` cap — for direct runs and workflow steps alike | `unified_data_repository.ts` `pruneExcessVersions`; `.swamp.yaml` `autoGc`     |
-| Post-run GC (`autoGc: true`)    | After each `model method run`: the model's `collectGarbage` plus lifetime expiry of its names | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
-| `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC              | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
-| `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a model                     | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
-| `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                 | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
-| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records and their run snapshots; never `data/`       | `src/domain/data/run_lifecycle_service.ts`                                     |
+| Post-run GC (`autoGc: true`)    | After each `model method run`: the behavior's `collectGarbage` plus lifetime expiry of its names                                                       | `src/libswamp/models/run.ts`; `src/libswamp/data/gc.ts` `autoGc`               |
+| `swamp data gc`                 | Phase 1: whole names whose `lifetime` expired. Phase 2: per-name version GC                                                                            | `src/domain/data/data_lifecycle_service.ts` `deleteExpiredData`                |
+| `swamp data delete`             | One version, one name, `--prefix` many names, or `--all` for a behavior                                                                                | `src/domain/data/data_delete_service.ts`; `src/libswamp/data/delete.ts`        |
+| `swamp data prune`              | Every name under a `(type, modelId)` whose definition no longer resolves                                                                               | `data_lifecycle_service.ts` `deleteOrphanedData`; `src/libswamp/data/prune.ts` |
+| `swamp run gc`                  | Old `outputs/` and `workflow-runs/` records and their run snapshots; never `data/`                                                                     | `src/domain/data/run_lifecycle_service.ts`                                     |
 
 Post-run GC applies both count and duration caps; its failures warn and never
 fail the run. `swamp data gc` phase 2 collects by count or duration.

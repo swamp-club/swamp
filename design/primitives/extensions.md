@@ -5,11 +5,11 @@ last-verified: 2026-09-16 @ 03224b68
 
 # Extensions
 
-An extension is a package of models, workflows, vaults, datastores, reports and
-skills that others can pull from a registry into their repositories.
+An extension is a package of behaviors, workflows, vaults, datastores, reports
+and skills that others can pull from a registry into their repositories.
 
-Four kinds have a runtime type registry and loader: models, vaults, datastores
-and reports (`src/cli/mod.ts` wires only these four).
+Four kinds have a runtime type registry and loader: behaviors, vaults,
+datastores and reports (`src/cli/mod.ts` wires only these four).
 
 ## Name
 
@@ -18,8 +18,8 @@ group related extensions. All parts are lowercase letters, digits, hyphens and
 underscores. The pattern is `@[a-z0-9_-]+/[a-z0-9_-]+(/[a-z0-9_-]+)*`.
 
 The collectives `@swamp` and `@si` are reserved for built-in extensions, so
-external authors cannot use them. This is enforced on model types, not when the
-manifest is parsed (`RESERVED_COLLECTIVES` in
+external authors cannot use them. This is enforced on behavior types, not when
+the manifest is parsed (`RESERVED_COLLECTIVES` in
 `src/domain/models/model_type.ts`).
 
 You cannot use another person's name in the extensions you publish.
@@ -30,8 +30,8 @@ Examples: `@keeb/ssh`, `@acme/deploy`, `@myorg/aws-helpers`, `@swamp/aws/ec2`,
 ## Version
 
 Extensions use **CalVer** `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`), the same
-scheme as models (see [models](./models.md)). The micro counter allows several
-versions a day and resets each new date.
+scheme as behaviors (see [behaviors](./behaviors.md)). The micro counter allows
+several versions a day and resets each new date.
 
 Each name+version pair must be unique in the registry, across every release
 channel. On a push conflict an interactive push says which channel the version
@@ -72,8 +72,8 @@ The effective intent is stored in the packaged manifest and the package cache
 key. Private intent is sent on both initiation and confirmation. Public or
 default intent omits the wire field, since the registry accepts only explicit
 private. Preview and dry-run show the requested `visibility` as `public`,
-`private` or `default` (registry decides); public is labelled as registry-default
-behavior. Dry-run does not establish the applied visibility; private intent adds
+`private` or `default` (registry decides); public is labelled as the registry
+default. Dry-run does not establish the applied visibility; private intent adds
 the private-entitlement registry check described below. Successful output
 reports the actual `public`/`private` visibility from the confirmation response.
 Explicit private requests require a private confirmation and never fall back to
@@ -273,12 +273,12 @@ the next CalVer version.
 `swamp extension info @name` always shows the latest stable, rc and beta
 versions that exist. No flag is needed.
 
-It also shows content metadata for the latest version: model types, extensions
-(foreign-type grafts), workflows, vaults, datastores, reports and skills. By
-default models show the type name and method names, and extensions show the
-target type and grafted method names. `--verbose` adds each method's arguments
-and descriptions. JSON output (`--json`) includes the full `contentMetadata`
-object.
+It also shows content metadata for the latest version: behavior types,
+extensions (foreign-type grafts), workflows, vaults, datastores, reports and
+skills. By default behaviors show the type name and method names, and extensions
+show the target type and grafted method names. `--verbose` adds each method's
+arguments and descriptions. JSON output (`--json`) includes the full
+`contentMetadata` object.
 
 ### Promotion
 
@@ -438,7 +438,7 @@ Registry API endpoints are `POST /api/v1/extensions/{name}/deprecate` (body:
 body). The extension info view returns `deprecatedAt`, `deprecatedByUserId`,
 `deprecationReason` and `supersededBy`.
 
-### Cache and registry behavior
+### Cache and registry
 
 Both commands share a 24-hour on-disk cache at
 `.swamp/extension-update-checks.json`. The TTL matches `CHECK_INTERVAL_MS` in
@@ -514,7 +514,7 @@ check rejects, since it refuses any tar entry containing `..` or starting with
   repeat the typed directory prefix, because the archive already puts each entry
   under its typed directory: write `models: ["project.ts"]`, not
   `models: ["models/project.ts"]`.
-- `models`: relative paths to TypeScript model files (e.g.,
+- `models`: relative paths to TypeScript behavior files (e.g.,
   `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
 - `workflows`: relative paths to YAML workflow files. Resolved via `paths.base`.
 - `vaults`, `datastores`, `reports`: relative paths to TypeScript vault,
@@ -525,11 +525,11 @@ check rejects, since it refuses any tar entry containing `..` or starting with
 - `repository`: URL of the source repository (e.g.,
   `"https://github.com/org/repo"`).
 - `releaseNotes`: free-form notes for this version (max 5000 characters).
-- `include`: relative paths to files copied into the archive next to models but
-  not bundled, such as helper scripts run as a `Deno.Command` subprocess rather
-  than imported. Resolved via `paths.base`.
-- `additionalFiles`: relative paths to non-model files (README, config, etc.).
-  Always resolved relative to the manifest's own directory.
+- `include`: relative paths to files copied into the archive next to behaviors
+  but not bundled, such as helper scripts run as a `Deno.Command` subprocess
+  rather than imported. Resolved via `paths.base`.
+- `additionalFiles`: relative paths to non-behavior files (README, config,
+  etc.). Always resolved relative to the manifest's own directory.
 - `platforms`: supported platform identifiers (e.g.,
   `["darwin-aarch64", "linux-x86_64"]`). Informational only; shown during pull.
 - `labels`: categorization labels (e.g., `["aws", "kubernetes"]`), at most
@@ -571,7 +571,7 @@ push:
 - **`typedDir` (default)**: typed entries resolve relative to their configured
   directory from the repo marker (`modelsDir`, `vaultsDir`, etc., or environment
   overrides like `SWAMP_MODELS_DIR`). `additionalFiles` resolves relative to the
-  manifest's own directory. This is the original behavior, kept by every
+  manifest's own directory. This is the original rule, kept by every
   manifest without `paths.base`.
 - **`manifest`**: every typed entry and `additionalFiles` resolve relative to
   the manifest's own directory. Use it when each extension has its own
@@ -637,11 +637,11 @@ extension.tar.gz
 └── extension/
     ├── manifest.yaml
     ├── quality.yaml          # Declared acceptances and the generated declaration, when present
-    ├── models/              # Source TypeScript model files
+    ├── models/              # Source TypeScript behavior files
     │   └── ssh/
     │       ├── connection.ts
     │       └── helpers.ts
-    ├── bundles/              # Compiled model JavaScript bundles
+    ├── bundles/              # Compiled behavior JavaScript bundles
     │   └── ssh/
     │       └── connection.js
     ├── workflows/            # YAML workflow files
@@ -656,7 +656,7 @@ extension.tar.gz
     └── files/                # Additional files
 ```
 
-### Models
+### Behaviors
 
 Source TypeScript files keep their paths relative to the active base: the
 configured `modelsDir` under `paths.base: typedDir`, or the manifest's directory
@@ -678,7 +678,7 @@ subprocess) cause no failures.
 
 ### Bundles
 
-Each model entry point is compiled with `deno bundle`, with zod externalized.
+Each behavior entry point is compiled with `deno bundle`, with zod externalized.
 All other non-local specifiers (`npm:`, `jsr:`, `https:`) are resolved and
 inlined, so they work in the compiled binary, where only swamp's own embedded
 dependency graph exists. Zod stays external so extensions share swamp's zod
@@ -723,7 +723,7 @@ them.
 | **`deno.json` found**                     | `--config <deno.json>`                                   | `--config <deno.json>` | Import map governs resolution; project lint/fmt rules apply (`extension fmt` too)                                |
 | **`package.json` found, bare specifiers** | `--node-modules-dir=auto`, `cwd` set to package.json dir | `--no-config`          | Deno auto-detects package.json; `node_modules/` must exist from `npm install` or `deno install`                  |
 | **`package.json` found, `npm:` imports**  | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Package.json is ignored (extension doesn't need it)                                                              |
-| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default behavior                                                                                                 |
+| **No config found**                       | `--no-lock --node-modules-dir=none`                      | `--no-config`          | Default                                                                                                          |
 
 Every lint of extension code (push, `extension quality`, `extension fmt`)
 passes `--rules-exclude=no-import-prefix`: with a project config Deno's
@@ -789,8 +789,8 @@ during `repo init` or in tests), loaders fall back to the local `.swamp/` path.
 
 ### Vaults, Datastores, Reports, and Webhooks
 
-Vault, datastore, report and webhook entry points are bundled like models. Each
-gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
+Vault, datastore, report and webhook entry points are bundled like behaviors.
+Each gets a compiled `.js` file in its `-bundles/` directory (`vault-bundles/`,
 `datastore-bundles/`, `report-bundles/`, `webhook-bundles/`). Local imports are
 followed recursively within the directory. The install-time `KIND_DIRS` array
 covers `["models", "vaults", "datastores", "reports", "webhooks"]`.
@@ -810,7 +810,7 @@ Each bundle's export is validated against a Zod schema:
 
 ### Collective Validation
 
-Push checks that all content (model types, vault types, workflow names,
+Push checks that all content (behavior types, vault types, workflow names,
 datastore types, report names, webhook types) uses the extension name's
 collective, so an extension cannot register types under another collective.
 
@@ -845,7 +845,7 @@ Push rejects:
 
 ### Runtime access
 
-Model method `execute` functions and report functions get a context with an
+Method `execute` functions and report functions get a context with an
 `extensionFile(relPath)` helper. It turns a relative `additionalFiles` path into
 an absolute path, whether the extension was added with
 `swamp extension source add` (relative to the manifest) or pulled from the
@@ -869,14 +869,14 @@ export const model = {
 ```
 
 The helper throws a typed `UserError` if the path is unsafe (contains `..` or
-starts with `/`), the file is missing, or the model was not shipped via an
+starts with `/`), the file is missing, or the behavior was not shipped via an
 extension manifest. For a missing file, pulled archives get a re-publish hint;
 source-mode callers get the absolute path and a pointer to the manifest entry.
 
 ## Import Resolution
 
 When packaging, the CLI follows local TypeScript imports from each entry point
-(model, vault, datastore or report). It follows relative `import`/`export`
+(behavior, vault, datastore or report). It follows relative `import`/`export`
 statements (e.g., `./helpers.ts`, `../shared.ts`) transitively and includes
 every file reached inside that kind's directory boundary. Non-local imports
 (`npm:`, `jsr:`, `https:`) are skipped here; `deno bundle` inlines them at
@@ -935,11 +935,11 @@ loader warns that it chose between them, naming both extensions and the
 ### Extension Member Collisions
 
 Several `export const extension` files can add a member (a method, check or
-resource spec) with the same name to one model type. Only one of them is
+resource spec) with the same name to one behavior type. Only one of them is
 registered, and the winner does not depend on catalog order or on which attach
 path ran (swamp-club#2562):
 
-1. A member the base model defines always wins.
+1. A member the base behavior defines always wins.
 2. Between extensions, a non-pulled source (local or source-mounted) beats a
    pulled one. A source is pulled when its path is under
    `<repo>/.swamp/pulled-extensions/` or `<repo>/.swamp/config/pulled-extensions/`
@@ -947,7 +947,7 @@ path ran (swamp-club#2562):
 3. Within one tier, the lexicographically smaller canonical path wins, the same
    tie-break as I2.
 
-The model kind adapter records which extension contributed each member, along
+The behavior kind adapter records which extension contributed each member, along
 with the definition it contributed. When a higher-ranked extension attaches
 later, whether through a stale rescan, an auto-install, or serve reload,
 `ModelRegistry.applyExtensionMembers` replaces the lower-ranked member in one
@@ -977,7 +977,7 @@ The static extractor only reads a declaration that sits in code. An
 comment is test-fixture text, not a type claim. The scanner also recognises
 regex literals, so a backtick or `/*` inside one does not hide the code after
 it. This matters for pulled and source-mounted directories, which walk
-`_test.ts` files on purpose so a model named `docker_image_test.ts` still
+`_test.ts` files on purpose so a behavior named `docker_image_test.ts` still
 loads. Before this rule, two fixtures naming one type produced two catalog rows
 with no extension identity. Every later catalog save, such as an unrelated
 `swamp extension pull`, then failed I-Repo-1 (swamp-club#2876).
@@ -1042,8 +1042,8 @@ SWAMP_EXTENSIONS_DIR=~/repo/trees/feature-branch \
 
 ### What `--extensions-dir` controls
 
-- Local extension source scanning for all 4 kinds (models, vaults, datastores,
-  reports)
+- Local extension source scanning for all 4 kinds (behaviors, vaults,
+  datastores, reports)
 - The extensions root that `extension push`, `quality` and `fmt` resolve a
   manifest's typed entries, workflows and skills from: swamp appends the
   configured typed directory (`extensions/models` by default) to it, so the
@@ -1088,7 +1088,7 @@ additively, so an existing manifest never packages a different set of files:
 3. Otherwise probe every typed entry under both bases. An entry present under
    both at different real paths is an error naming both paths and the flag.
    If any entry resolves under the repo dir, the repo dir stays the root
-   (today's behaviour). Only a manifest that resolves nothing under the repo
+   (as today). Only a manifest that resolves nothing under the repo
    dir moves to the inferred root.
 
 The `deno.json` / `package.json` walk up from the manifest stops at the repo
@@ -1099,8 +1099,8 @@ above the tree the manifest belongs to.
 This is what lets `swamp extension push ~/sc/swamp-extensions/kubernetes` work
 from any swamp repo, and lets a monorepo of sub-directory extensions push each
 one from its root, while a repo that also keeps a copy of a sub-directory's
-model at `<repo>/extensions/models/` fails loudly instead of silently packaging
-the repo copy.
+behavior at `<repo>/extensions/models/` fails loudly instead of silently
+packaging the repo copy.
 
 Every not-found error from the resolver prints the path or paths it looked in
 and ends with the fix: `--extensions-dir <dir>` naming the directory that
@@ -1113,7 +1113,7 @@ next to the manifest, the error says so.
 - Extension catalog (`_extension_catalog.db`)
 - Bundle cache (`.swamp/bundles/`)
 - Pulled extensions (`.swamp/pulled-extensions/`)
-- Model definitions (`models/<type>/<id>.yaml`)
+- Behavior definitions (`models/<type>/<id>.yaml`)
 - Lockfiles and secrets
 
 ### Validation
@@ -1235,12 +1235,12 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   warning for each directive that matches nothing, and the acceptances with
   their reasons. `testing-completeness` is accepted per file first, then
   the remaining findings collapse to one per extension carrying the files.
-- **Uncatalogued models** (`modelCatalogGap` in
+- **Uncatalogued behaviors** (`modelCatalogGap` in
   `src/domain/extensions/model_catalog_gap.ts`): the push content metadata
-  reads a model's `type` and `version` as string literals from a plain
+  reads a behavior's `type` and `version` as string literals from a plain
   `export const model = { ... }` object and silently leaves out any entry
   point where either is unreadable, so the registry ships the bundle but lists
-  no model type. `modelCatalogGap` says why, built on the same extractors and
+  no behavior type. `modelCatalogGap` says why, built on the same extractors and
   property-tested to agree with them, and `runQualityFindings` reports one
   file-scoped `uncatalogued-model` warning per such entry point. It is not
   acceptable. Like any unaccepted warning it prompts an interactive push, but
@@ -1310,15 +1310,15 @@ pulled automatically.
 
 ### Workflow Dependency Resolution
 
-During push, the CLI also finds the models a workflow references. It parses
+During push, the CLI also finds the behaviors a workflow references. It parses
 workflow YAML for `model_method` and `workflow` step tasks and looks up the
-model source files. Only user-collective models (types starting with `@`) are
-bundled; built-in models are skipped.
+behavior source files. Only user-collective behaviors (types starting with `@`)
+are bundled; built-in behaviors are skipped.
 
 ## Automatic Resolution
 
 Extensions from trusted collectives resolve on first use, without a manual
-`extension pull`. When swamp meets an unknown model type from a trusted
+`extension pull`. When swamp meets an unknown behavior type from a trusted
 collective, it searches the registry, installs the extension, hot-loads it and
 carries on.
 
@@ -1400,10 +1400,10 @@ writes the entry, which then pins later resolves.
    candidate; stripping more would leave a bare collective.
 3. **Search fallback**: otherwise, search the type's collective and take the
    highest-ranked of the top 5 results whose latest version's published metadata
-   lists the type among its models, vaults, datastores or webhooks. Search ranks
-   by words, so an unchecked hit can be unrelated (a made-up type once installed
-   `@swamp/gcp/realtimebidding`). When no result lists the type, resolution
-   reports not-found and installs nothing (swamp-club#3246).
+   lists the type among its behaviors, vaults, datastores or webhooks. Search
+   ranks by words, so an unchecked hit can be unrelated (a made-up type once
+   installed `@swamp/gcp/realtimebidding`). When no result lists the type,
+   resolution reports not-found and installs nothing (swamp-club#3246).
 
 ### Safety: never overwrite on-disk extensions
 
@@ -1472,7 +1472,7 @@ take over the user-WIP path from issue #121. Only source files in
 
 ### Hot-Loading
 
-After installing, swamp re-runs model and vault discovery with
+After installing, swamp re-runs behavior and vault discovery with
 `skipAlreadyRegistered`, so only the new types load and types from startup are
 not registered twice.
 
@@ -1490,13 +1490,13 @@ skipped, preventing infinite loops.
 ### Architecture
 
 `ExtensionAutoResolver` is a domain service with port interfaces. CLI-layer
-adapters implement registry access, extension installation and model/vault
+adapters implement registry access, extension installation and behavior/vault
 discovery.
 
 ### Output
 
 Auto-resolution always prints status: searching, installing, and a confirmation
-with the number of models loaded.
+with the number of behaviors loaded.
 
 ## Safety
 
@@ -1598,7 +1598,7 @@ still installs.
 
 ## Runtime Permissions
 
-Extension model methods run inside the host Deno process (via
+Extension methods run inside the host Deno process (via
 `InProcessExecutor`) and share the permissions compiled into the binary. The
 binary uses individually scoped flags, not `--allow-all`, to keep privileges
 minimal and avoid auto-granting future Deno permission categories:
@@ -1721,7 +1721,7 @@ Push has three phases:
 ## Upstream Extensions Tracking
 
 On pull, the extension's metadata and extracted file list are recorded in
-`upstream_extensions.json`. By default it lives in the models directory
+`upstream_extensions.json`. By default it lives in the behaviors directory
 (`<modelsDir>/upstream_extensions.json`). Repos on managed config keep it at
 the datastore's resolved config base: `<path>/config` for a filesystem
 datastore, the cache's `config/` for S3 or GCS, with the namespace in front of
@@ -1973,9 +1973,9 @@ Sibling extensions from one collective (e.g. `@swamp/aws/ec2` and
 `_lib/`, boilerplate like `README.md` and `LICENSE.txt`, and chance matches like
 `cluster.ts`. In a type-first (flat) layout these collide on extraction. The
 second pull either fails with `ConflictError` or, with `--force`, silently
-overwrites the first. The silent overwrite is the dangerous case. Model bundles
-import `_lib/*` helpers transitively, so swapping `_lib/aws.ts` between ec2 and
-eks gives wrong runtime behavior with no type or load error.
+overwrites the first. The silent overwrite is the dangerous case. Behavior
+bundles import `_lib/*` helpers transitively, so swapping `_lib/aws.ts` between
+ec2 and eks gives wrong runtime results with no type or load error.
 
 In the extension-first layout, each extension's files live in their own subtree
 keyed on its scoped name, so this cannot happen. The registry already uses the
@@ -1995,8 +1995,8 @@ advisory. The header documents it; it is not a security boundary.
 ### Bundle cache isolation
 
 `bundleNamespace(baseDir, repoDir)` hashes its input relative path. Each
-extension has its own models dir, so each hash is unique and each extension gets
-its own namespace under `.swamp/bundles/…` with no extra logic. In
+extension has its own behaviors dir, so each hash is unique and each extension
+gets its own namespace under `.swamp/bundles/…` with no extra logic. In
 datastore-backed repos where `bundles/` is tiered to S3 (see
 `DEFAULT_DATASTORE_SUBDIRS`), team members' bundle caches stay separate per
 extension.
@@ -2425,7 +2425,7 @@ stale row never crashes a command (swamp-club#2490):
 - **Type-load guard.** `loadSingleType` checks that a row's source exists before
   importing its bundle, whether or not the bundle exists. A row whose source is
   gone is deleted, and the next row claiming the type is tried. With none left,
-  the registry reports the type as not found. The model adapter filters
+  the registry reports the type as not found. The behavior adapter filters
   extension rows the same way. Every kind registry drops a lazy entry that its
   loader did not promote.
 - **Conflict settle.** A rebundle never writes a type that a higher-ranked row
@@ -2791,13 +2791,14 @@ free of infrastructure.
 **Repair safety:** repair never touches Indexed and Bundled rows.
 
 **Member collisions and warning categories:** after the registries load, doctor
-loads every model type that an extension row targets, so extensions attach and
-collisions resolve. The report's `memberCollisions` array lists each collision
-with its winner (null when a base-model member wins) and its losers. Each
-warning keeps the category it was raised with (`TypeExtractionFailed`,
-`MemberCollision`, or `ExtensionAttachFailed`). Both are advisory and never
-change `overallStatus`. The CLI and the serve admin handler build these through
-the same helpers, `toDoctorWarnings` and `extensionMemberDoctorDeps`.
+loads every behavior type that an extension row targets, so extensions attach
+and collisions resolve. The report's `memberCollisions` array lists each
+collision with its winner (null when a base-behavior member wins) and its
+losers. Each warning keeps the category it was raised with
+(`TypeExtractionFailed`, `MemberCollision`, or `ExtensionAttachFailed`). Both
+are advisory and never change `overallStatus`. The CLI and the serve admin
+handler build these through the same helpers, `toDoctorWarnings` and
+`extensionMemberDoctorDeps`.
 
 ## Lazy Per-Bundle Loading
 
@@ -2813,19 +2814,19 @@ indexes every known bundle type. Each row stores the normalized type
 extensions, the base type it targets (`extends_type`)
 (`src/infrastructure/persistence/extension_catalog_store.ts`). The content
 fingerprint decides freshness; `source_mtime` is kept only for observability.
-The catalog sits at the `.swamp` root because all registry types (models,
+The catalog sits at the `.swamp` root because all registry types (behaviors,
 vaults, datastores, reports) share it. It is independent of the data catalog
 (`_catalog.db`) used for data queries.
 
 A `kind` column (`model`, `extension`, `vault`, `datastore`, `report`) lets one
-catalog serve every registry type. The model, vault, datastore and report
+catalog serve every registry type. The behavior, vault, datastore and report
 registries all register lazy entries from it (`registerLazy` in each registry).
 The per-kind `populated:<kind>` marker in `bundle_meta` records whether a kind
 has been fully indexed.
 
 **Loading Flow**:
 
-1. On the first `ensureLoaded()` call, the model registry's loader runs
+1. On the first `ensureLoaded()` call, the behavior registry's loader runs
    `buildIndex()`, which:
    - Checks the catalog's `populated` flag.
    - If populated: scans source directories and computes a sha-256 content
@@ -2843,7 +2844,7 @@ has been fully indexed.
      sentinel instead of throwing. A stable broken state then gives a stable
      fingerprint, and the entry is not marked permanently stale (#208). Fixing
      the dep turns the sentinel back into a real hash and triggers a rebundle.
-     All four kinds (models, vaults, datastores, reports) share this, since
+     All four kinds (behaviors, vaults, datastores, reports) share this, since
      they share the freshness service.
 
      Likewise, a source can bundle and import cleanly but fail schema
@@ -2857,7 +2858,7 @@ has been fully indexed.
      and moves the row back to `Indexed`. This covers only the steady-state
      `rebundleAndUpdateCatalog` hot path. The cold-start parses (initial
      `loadModels` Pass 1, the by-name `loadSingleType`, and the
-     extension-attach predicate) keep their existing failure behavior, as they
+     extension-attach predicate) keep their existing failure handling, as they
      are outside the read-only steady-state loop.
    - **Fingerprint preservation on build failure (issue #265).** When
      `bundleWithCache` returns the cached `.js` instead of a fresh bundle
@@ -2895,7 +2896,7 @@ has been fully indexed.
    - If not populated (first run or DB deleted): bundles every source file
      without importing it into V8 (`load()` with `indexOnly: true`), fills the
      catalog from source extraction and registers lazy entries. This avoids OOM
-     in repos with thousands of model definitions: bundles stay on disk until
+     in repos with thousands of behavior definitions: bundles stay on disk until
      `ensureTypeLoaded()` imports them. Schema validation errors wait until the
      type is first used, as in warm start.
 
@@ -2912,14 +2913,13 @@ has been fully indexed.
    extension attacher once per type per process instead
    (`ModelRegistry.setExtensionAttacher`, wired by the CLI to
    `attachPendingExtensionsForType`). Control-plane types are never extended:
-   `ModelRegistry.extend` and `applyExtensionMembers` refuse them, and the model
-   adapter fails an add-on that targets one with `Cannot extend control-plane
-   model type`, on every attach path.
-   If the attacher itself fails (for example the catalog is unreadable), the
-   failure is logged and retried on the next call, and the base type stays
-   usable without its add-ons. A single add-on that fails to import is skipped
-   and logged, and is retried by the next attach pass: a hot reload, a new
-   attacher or a new process (swamp-club#2846).
+   `ModelRegistry.extend` and `applyExtensionMembers` refuse them, and the
+   behavior adapter fails an add-on that targets one with `Cannot extend
+   control-plane model type`, on every attach path. If the attacher itself fails
+   (for example the catalog is unreadable), the failure is logged and retried on
+   the next call, and the base type stays usable without its add-ons. A single
+   add-on that fails to import is skipped and logged, and is retried by the next
+   attach pass: a hot reload, a new attacher or a new process (swamp-club#2846).
 
 4. Concurrent callers for the same type share one load promise (per-type
    memoization). `ensureTypeLoaded` also awaits a pending load promise when the

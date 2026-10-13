@@ -6,10 +6,10 @@ last-verified: 2026-08-28 @ 3d5955a9
 # Architecture
 
 Swamp is an AI-native automation tool. An agent or a person describes an
-external system as a **model** and runs its methods to produce versioned
+external system as a **behavior** and runs its methods to produce versioned
 **data**. Methods are wired together into **workflows**, credentials live in
-**vaults**, and model types are packaged as **extensions**. A team that wants to
-share all of this runs a long-lived **serve** instance.
+**vaults**, and behavior types are packaged as **extensions**. A team that wants
+to share all of this runs a long-lived **serve** instance.
 
 Those six are the primitives. Every other subsystem exists to make one of them
 work. This page walks through them in order and links to the doc that owns each
@@ -17,11 +17,11 @@ part. See [README.md](./README.md) for the rule and the index.
 
 ## The story, top down
 
-**It starts with a model.** A model has two parts. The _type_ is TypeScript that
-talks to something: a shell, AWS, any API. The _definition_ is a YAML file in
-`models/` that sets up the type with arguments, inputs and tags. Running a
-method on a definition is the basic unit of work in swamp. →
-[primitives/models.md](./primitives/models.md). Its enablers are
+**It starts with a behavior.** A behavior has two parts. The _type_ is
+TypeScript that talks to something: a shell, AWS, any API. The _definition_ is a
+YAML file in `models/` that sets up the type with arguments, inputs and tags.
+Running a method on a definition is the basic unit of work in swamp. →
+[primitives/behaviors.md](./primitives/behaviors.md). Its enablers are
 [expressions](./enablers/expressions.md) (the `${{ }}` CEL syntax any definition
 can use) and [inputs](./enablers/inputs.md) (JSON-Schema parameters and how
 `--input` reaches them).
@@ -53,7 +53,7 @@ type marks `sensitive` are moved into a vault when written. →
 [doctor-secrets](./enablers/doctor-secrets.md) and
 [doctor-vaults](./enablers/doctor-vaults.md).
 
-**Types are shared as extensions.** An extension packages model types, plus
+**Types are shared as extensions.** An extension packages behavior types, plus
 vault, datastore and report providers, under a `@collective/name` with a CalVer
 version. Extensions are published to the swamp-club registry and pulled into
 each repo at `.swamp/pulled-extensions/`, or `.swamp/config/pulled-extensions/`

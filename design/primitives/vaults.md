@@ -5,8 +5,8 @@ last-verified: 2026-09-15 @ uncommitted
 
 # swamp vaults
 
-A swamp vault stores secrets that workflows and models use through named vault
-configurations. It puts one interface over different secret management
+A swamp vault stores secrets that workflows and behaviors use through named
+vault configurations. It puts one interface over different secret management
 systems.
 
 ## Architecture
@@ -175,7 +175,7 @@ same way as for annotations.
 The value is stale when `Date.now() - lastRefreshedAt.getTime() >= ttlMs`. Both
 sides are UTC, so the local timezone plays no part.
 
-### Refresh-on-Read Behavior
+### Refresh on Read
 
 When `VaultService.get()` is called with refresh options configured:
 
@@ -434,7 +434,7 @@ For an existing vault, run `swamp vault edit my-vault` and add
 (`src/domain/vaults/vault_service.ts`); `auditReads` only controls whether reads
 are recorded. This covers CLI commands (`vault put`, `vault delete`,
 `vault annotate`, `vault read-secret`, `vault inspect`, `vault migrate`),
-expression evaluation, model method execution, serve/WebSocket and token
+expression evaluation, method execution, serve/WebSocket and token
 operations.
 
 ### Audit Entry Fields
@@ -502,7 +502,7 @@ access. Surfacing or normalizing provider-native logs is a separate feature.
 
 ## Sensitive Field Marking (Implemented)
 
-Model schemas mark fields as sensitive with Zod's `.meta()` method. When a
+Behavior schemas mark fields as sensitive with Zod's `.meta()` method. When a
 method runs, sensitive output fields go to a vault and are replaced with vault
 reference expressions before saving.
 
@@ -549,8 +549,8 @@ resources: {
 
 ### Vault Key Naming
 
-Generated vault keys are built from the model type, ID, method name, spec name,
-instance name and field path. They then pass through `sanitizeVaultKey()`
+Generated vault keys are built from the behavior type, ID, method name, spec
+name, instance name and field path. They then pass through `sanitizeVaultKey()`
 (`src/domain/models/data_writer.ts`): `@` is removed, `/` and `\` become `-`,
 `..` collapses to `.`, and NUL bytes are stripped:
 
@@ -579,7 +579,7 @@ ${{ vault.get('vault-name', 'vault-key') }}
 
 ### Shell Quoting
 
-In `command/shell` model `run:` fields, vault expressions compile to
+In `command/shell` behavior `run:` fields, vault expressions compile to
 environment-variable references: `${__SWAMP_VAULT_N}` on POSIX and
 `$env:__SWAMP_VAULT_N` on native Windows PowerShell. Single quotes stop
 expansion in both shells, so a single-quoted vault expression silently yields
@@ -648,8 +648,8 @@ The vault for a sensitive field is chosen in this order:
 
 ### Definition-Level Vault Override
 
-Model definition YAML can choose the vault for a resource's sensitive fields in
-the existing `resources` block:
+Behavior definition YAML can choose the vault for a resource's sensitive fields
+in the existing `resources` block:
 
 ```yaml
 resources:
@@ -693,7 +693,7 @@ therefore warns (`local_default_vault`) when `defaultVault` names a
 `local_encryption` vault, since other machines sharing the datastore cannot
 read what it holds.
 
-### Processing Behavior
+### Processing
 
 - Values are snapshotted before processing, so several sensitive fields do
   not contaminate each other.
@@ -813,7 +813,7 @@ arguments. For a sensitive argument field, the framework:
 1. Registers every resolved value of the field with `SecretRedactor` before the
    method runs, which scrubs them from the per-run log file.
 2. Applies the redactor when writing result resource attributes, so the values
-   are scrubbed even if the extension model writes them there.
+   are scrubbed even if the extension behavior writes them there.
 3. Shows the field as `"***"` in the generated method summary reports (Markdown
    and JSON).
 
@@ -837,7 +837,7 @@ String and string-array values are both supported. For arrays, each element is
 registered with the redactor on its own, so any element found in log output is
 scrubbed.
 
-### Behavior Comparison
+### Comparison by Location
 
 | Location | Output schema `sensitive: true` | Argument schema `sensitive: true` |
 | -------- | ------------------------------- | --------------------------------- |
@@ -974,7 +974,7 @@ Implementation: `src/domain/vaults/run_vault_access.ts`,
 - Secrets resolved via `vault.get()` are redacted from stdout/stderr, log files
   and saved data artifacts.
 - The `SecretRedactor` replaces secret values with `***`.
-- The redactor is passed through `MethodContext`, so every model
+- The redactor is passed through `MethodContext`, so every behavior
   implementation can use it.
 - Expression evaluation errors do not expose secret values.
 

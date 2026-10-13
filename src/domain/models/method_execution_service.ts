@@ -323,7 +323,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       ) as Record<string, unknown>
       : definition.globalArguments;
 
-    // Merge global args as fallback under per-method args (per design/primitives/models.md:
+    // Merge global args as fallback under per-method args (per design/primitives/behaviors.md:
     // "at execution time receives the merged set of global arguments and
     // per-method arguments"). Per-method arguments take precedence.
     // Exclude global args with unresolved ${{ ... }} expressions (recursively,

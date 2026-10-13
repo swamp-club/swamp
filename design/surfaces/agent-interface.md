@@ -198,8 +198,8 @@ ignored by local-copy detection.
 These files stay in the project because their content is specific to the repo:
 
 - **Instructions files**: `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/swamp.mdc`,
-  `.kiro/steering/swamp-rules.md`. They describe the repo's models, extensions
-  and purpose.
+  `.kiro/steering/swamp-rules.md`. They describe the repo's behaviors,
+  extensions and purpose.
 - **Settings/hooks**: `.claude/settings.local.json`, `.cursor/hooks.json`,
   `.kiro/hooks/`, `.kiro/agents/`, `.kiro/settings/cli.json`,
   `.opencode/plugins/`, `.amp/plugins/` (the Amp plugin that asks before

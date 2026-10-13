@@ -1,14 +1,14 @@
 ---
 audience: maintainer, operator
-enables: [models, workflows]
+enables: [behaviors, workflows]
 last-verified: 2026-09-16 @ uncommitted
 ---
 
 # Expressions
 
-Model definitions and workflows are YAML files that can contain Google CEL
+Behavior definitions and workflows are YAML files that can contain Google CEL
 expressions. After parsing, swamp evaluates each expression and injects its
-result into the final data structure. Expressions reference models by name,
+result into the final data structure. Expressions reference behaviors by name,
 read their definitions or data, and transform the result in place (string
 manipulation, concatenating array members, etc).
 
@@ -26,8 +26,8 @@ Swamp has three CEL surfaces:
    extension baseline does not have it.
 2. **Extension-author-facing**: `createExtensionCelEnvironment()` is the same
    factory without the swamp-internal namespace types. `MethodContext` exposes
-   it as `ctx.createCelEnvironment()`, so extension model methods can evaluate
-   their own CEL over data the model already holds (e.g. selector predicates
+   it as `ctx.createCelEnvironment()`, so extension methods can evaluate
+   their own CEL over data the behavior already holds (e.g. selector predicates
    over a fleet of hosts). Extensions register their own functions, types, and
    operators on the returned Environment; registrations on one instance do not
    affect any other. Guide:
@@ -50,7 +50,7 @@ All three share the arithmetic overloads from `registerArithmeticOverloads()`
 (bigint/double mixes), so arithmetic evaluates the same on every surface. They
 differ in which variables and receiver methods are visible.
 
-## Model Data
+## Behavior Data
 
 The `model` namespace is keyed by both definition name and definition id
 (`context.model[name]` and `context.model[id]`). It exposes
@@ -58,7 +58,7 @@ The `model` namespace is keyed by both definition name and definition id
 (`src/domain/expressions/expression_evaluation_service.ts`; `ModelData` in
 `src/domain/expressions/model_resolver.ts`).
 
-Control-plane models (`CONTROL_PLANE_MODEL_TYPES`: grants, groups, server and
+Control-plane behaviors (`CONTROL_PLANE_MODEL_TYPES`: grants, groups, server and
 enrollment tokens, workers, leases, dispatches, fleet probes) are left out of
 `model` and are never returned by any `data.*` function: the data namespace
 passes them to `DataQueryService` as `excludeModelTypes`, which drops them
@@ -91,7 +91,7 @@ globalArguments:
   message: ${{ model.foo.definition.globalArguments.message }}
 ```
 
-Or the same model's data output:
+Or the same behavior's data output:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
@@ -109,21 +109,21 @@ a projection, tag filters beyond a single key, or history beyond a single
 version. [data-query.md](./data-query.md) covers the primitive, the full field
 set, and the shortcut mapping table.
 
-`self` refers to your own model (`id`, `name`, `version`, `tags`,
-`globalArguments`). Inside a forEach step it also carries the iteration
-variable and `self._index`, the zero-based iteration index in the order the
-iterations run (array order, or object entry order). The index gives each
-iteration a slug-safe identifier, such as a per-iteration model name, when the
-item is not one. It follows position, not the item, so names built from it
-should be scoped to a run. An iteration variable named `_index` shadows it.
+`self` refers to your own behavior (`id`, `name`, `version`, `tags`,
+`globalArguments`). Inside a forEach step it also carries the iteration variable
+and `self._index`, the zero-based iteration index in the order the iterations
+run (array order, or object entry order). The index gives each iteration a
+slug-safe identifier, such as a per-iteration behavior name, when the item is
+not one. It follows position, not the item, so names built from it should be
+scoped to a run. An iteration variable named `_index` shadows it.
 
-A model can also be referenced by its uuid instead of its name. There is no
+A behavior can also be referenced by its uuid instead of its name. There is no
 `workflow.*` namespace; workflows are not addressable from expressions.
 
 ## Workers Namespace
 
 The `workers` namespace has helpers for querying workers eligible for dispatch.
-It is available wherever `data.*` is: model globalArguments, workflow step
+It is available wherever `data.*` is: behavior globalArguments, workflow step
 inputs, and forEach.in expressions.
 
 ### `workers.connected()`
@@ -155,10 +155,10 @@ that queue until `queueTimeout` expires.
 
 ## Input Access
 
-Model and workflow definitions can declare inputs (variables/parameters) as
+Behavior and workflow definitions can declare inputs (variables/parameters) as
 JsonSchema. CEL expressions read them.
 
-**Model Inputs:** Within a model definition:
+**Behavior Inputs:** Within a behavior definition:
 
 ```yaml
 globalArguments:
@@ -172,8 +172,8 @@ globalArguments:
   message: ${{ inputs.someWorkflowParameter }}
 ```
 
-Another model's declared inputs schema is visible as
-`model.foo.definition.inputs`. Input values are not readable across models or
+Another behavior's declared inputs schema is visible as
+`model.foo.definition.inputs`. Input values are not readable across behaviors or
 workflows.
 
 Inputs can be required or optional (set in JsonSchema). They give dynamic
@@ -206,9 +206,9 @@ upstream steps.
 | Field                  | Type                     | Description                                    |
 | ---------------------- | ------------------------ | ---------------------------------------------- |
 | `steps.<name>.status`  | string                   | Step status (`succeeded`, `failed`, `skipped`) |
-| `steps.<name>.outputs` | `Record<string,unknown>` | Resource attributes from model method steps    |
+| `steps.<name>.outputs` | `Record<string,unknown>` | Resource attributes from method steps          |
 
-Only completed steps are visible. A model method step's outputs are the
+Only completed steps are visible. A method step's outputs are the
 attributes of every JSON resource it wrote, merged into one flat record in
 write order; on a name clash the later one wins. For one specific instance, use
 `data.latest("<model>", "<instance>")`. Non-JSON resources and file outputs add
@@ -217,16 +217,16 @@ nothing, and steps with no resource attributes have no outputs.
 The run record never stores output values. Resource attributes are stripped so
 its size doesn't depend on the data steps write. A live run takes outputs from
 each step's full output before stripping. A resumed run, a parent reading a
-child run, and `swamp workflow history get --json` /
-`swamp workflow history outputs` load them from the datastore through the
-run's resource references. These reads are best-effort: ephemeral-lifetime
-data, garbage-collected versions and an uncached remote datastore yield no
-outputs. A run and its resume resolve sensitive fields from their vault
-references, as `data.latest` does; history shows them as stored. A resolved
-sensitive value is plaintext inside expressions but reaches a step's executing
-arguments as a sentinel and is written to disk as its vault reference; see
-[Values Read Through Expressions](../primitives/vaults.md#values-read-through-expressions). Over
-`swamp serve`, history includes only outputs of models the caller may read as
+child run, and `swamp workflow history get --json` / `swamp workflow history
+outputs` load them from the datastore through the run's resource references.
+These reads are best-effort: ephemeral-lifetime data, garbage-collected versions
+and an uncached remote datastore yield no outputs. A run and its resume resolve
+sensitive fields from their vault references, as `data.latest` does; history
+shows them as stored. A resolved sensitive value is plaintext inside expressions
+but reaches a step's executing arguments as a sentinel and is written to disk as
+its vault reference; see [Values Read Through
+Expressions](../primitives/vaults.md#values-read-through-expressions). Over
+`swamp serve`, history includes only outputs of behaviors the caller may read as
 data.
 
 The `steps` namespace exists only once the run does. Like `run.*`, expressions
@@ -235,7 +235,7 @@ time. Evaluating them at run start would fail the whole run with
 `Unknown variable: steps`.
 
 Outputs cross one level of workflow nesting. When a parent step invokes a child
-workflow, the outputs of the child's succeeded model method steps are available
+workflow, the outputs of the child's succeeded method steps are available
 as `steps.<parent-step>.outputs.<child-step>.<attr>`. The parent step records
 the child's workflow and run ids, not the values. Multi-level nesting
 (grandchild workflows) does not propagate outputs.
@@ -301,22 +301,21 @@ latest local on-disk state, with no cache of their own to go stale. The
 `model.*.resource` and `model.*.file` patterns are **deprecated** and will be
 removed in a future release.
 
-Data carries a `modelName` tag that records the model's name at write time and
-is not updated when a model instance is renamed (same id, new name). So for a
-name with no namespace prefix, `data.latest()`, `data.version()`,
+Data carries a `modelName` tag that records the behavior's name at write time
+and is not updated when a behavior instance is renamed (same id, new name). So
+for a name with no namespace prefix, `data.latest()`, `data.version()`,
 `data.listVersions()` and `data.findBySpec()` match the tag and also read the
 data of the definition with that name by type and id, and data written before
 the rename is still returned (swamp-club#3029). Namespaced (`ns:`) and wildcard
-(`*:`) names match the tag only. `data.listVersions()` is synchronous, so in
-the lightweight context — used when an expression reads no `model.*` or
-`file.*` namespace — it relies on async evaluation having resolved the
-definition first. That covers a model name written as a literal. A name
-computed at runtime, or a call on the synchronous evaluation path, matches the
-tag only there.
+(`*:`) names match the tag only. `data.listVersions()` is synchronous, so in the
+lightweight context — used when an expression reads no `model.*` or `file.*`
+namespace — it relies on async evaluation having resolved the definition first.
+That covers a behavior name written as a literal. A name computed at runtime, or
+a call on the synchronous evaluation path, matches the tag only there.
 
 ### data.latest(modelName, dataName)
 
-Returns the latest version of a model's data artifact:
+Returns the latest version of a behavior's data artifact:
 
 ```yaml
 globalArguments:
@@ -442,9 +441,9 @@ a missing result is a bug that should fail loudly.
 
 ### data.findBySpec(modelName, specName)
 
-Returns all of a model's data records that match an output spec name. Close
+Returns all of a behavior's data records that match an output spec name. Close
 to `data.query('modelName == "..." && specName == "..."')`, but it also finds
-data written before the model instance was renamed (see above). Often used in
+data written before the behavior instance was renamed (see above). Often used in
 `task.inputs` or `forEach.in` to iterate over variable-length output.
 
 ```yaml
@@ -462,12 +461,12 @@ data written before the model instance was renamed (see above). Often used in
 ```
 
 During forEach expansion, `self.*` resolves in any task field: the step
-`name`, model targets (`modelIdOrName`, `modelName`, `methodName`), workflow
+`name`, behavior targets (`modelIdOrName`, `modelName`, `methodName`), workflow
 targets (`workflowIdOrName`), `inputs`, and shell `args`. So a forEach step can
 pick a different target per iteration:
 
 ```yaml
-# Fan out across region-specific model instances:
+# Fan out across region-specific behavior instances:
 - name: summary-${{ self.region }}
   forEach:
     item: region
@@ -501,21 +500,21 @@ Results are not run-scoped: `findBySpec` returns every matching record in
 the catalog. To scope to the current run, add a `workflowRunId` predicate via
 `data.query()`.
 
-If different workflow steps invoke the same model and write the same
+If different workflow steps invoke the same behavior and write the same
 spec/instance name, each step's output is a distinct record with its own latest
 version. Step A's latest and step B's latest are both returned, and the older
 one reports `isLatest: false`. `data.query()`, `data.latest()` and
-`context.readModelData()` return only the newest. A standalone model-method
+`context.readModelData()` return only the newest. A standalone method-run
 write to the same data name demotes all prior step outputs.
 
 ### data.findByTag(tagKey, tagValue)
 
-Returns all data records, across all models, with a matching tag. Shortcut for
-`data.query('tags.key == "value"')`. Not run-scoped: it always returns all
+Returns all data records, across all behaviors, with a matching tag. Shortcut
+for `data.query('tags.key == "value"')`. Not run-scoped: it always returns all
 matching data globally.
 
 ```yaml
-# Find all data tagged with env=prod across all models:
+# Find all data tagged with env=prod across all behaviors:
 inputs:
   prodData: ${{ data.findByTag("env", "prod") }}
 ```
@@ -526,11 +525,11 @@ inputs:
 [data-query.md](./data-query.md)) and an optional `select` projection:
 
 ```yaml
-# Every failed resource for a model tagged with env=prod:
+# Every failed resource for a behavior tagged with env=prod:
 inputs:
   failures: ${{ data.query('modelName == "scanner" && dataType == "resource" && tags.env == "prod" && attributes.status == "failed"') }}
 
-# Project specific fields out of every result across all models:
+# Project specific fields out of every result across all behaviors:
 inputs:
   manifest: ${{ data.query('tags.role == "manifest"', '{"name": name, "version": version, "at": createdAt}') }}
 ```
@@ -596,7 +595,7 @@ at run start.
 
 ## Definition Evaluation
 
-The CLI and workflow paths share one pass over a model definition
+The CLI and workflow paths share one pass over a behavior definition
 (`evaluateDefinitionExpressions`, `src/domain/expressions/`). Vault, `env`, and
 deferred references are left for the runtime pass.
 
@@ -624,7 +623,7 @@ Text is classified only after evaluation fails, so a misclassification can
 never stop an expression that evaluates. Two kinds of failure are left in place
 without being recorded. The first is text that is not valid CEL, which is prose.
 The second is CEL written for another templating system, such as a GitHub
-Actions file a shell model writes. An expression counts as swamp's only when
+Actions file a shell behavior writes. An expression counts as swamp's only when
 every free root identifier is a swamp namespace bound in this evaluation, and
 every `inputs.X` names an input the definition declares
 (`isSwampExpression`). So `${{ github.sha }}` is not swamp's, and neither is
@@ -673,8 +672,8 @@ some field is unresolved, since it cannot check an incomplete object.
 
 Many services have template languages of their own. Datadog, Grafana,
 Prometheus, Handlebars, Go templates, Argo Workflows, Jinja and Terraform use
-`{{ ... }}` or `${ ... }`. A model that talks to one of them holds that text in
-its arguments, and swamp passes it to the method unchanged. Only `${{ ... }}`
+`{{ ... }}` or `${ ... }`. A behavior that talks to one of them holds that text
+in its arguments, and swamp passes it to the method unchanged. Only `${{ ... }}`
 is swamp's syntax.
 
 Validation looks for text that resembles a swamp expression with its syntax
@@ -682,7 +681,7 @@ slightly wrong: `{{ ... }}` with no leading `$`, and `${ ... }` with a single
 brace (`scanTemplateSyntax`, `src/domain/models/template_syntax_scan.ts`). This
 runs in `swamp model validate` and in the validation a workflow step runs before
 its method. It reads authored text, never evaluated values. A workflow step that
-runs a model type directly (`modelType`, `modelName` and inline `globalArgs`)
+runs a behavior type directly (`modelType`, `modelName` and inline `globalArgs`)
 validates a definition built from its arguments after the workflow evaluator
 substituted them, so there the scan reads the step's arguments as written in the
 workflow instead, key by key (`templateScanGlobalArguments`,
@@ -783,7 +782,7 @@ It passes shell text the same way (`${{ literal('${HOME}') }}`), and a literal
 `${{` (`${{ literal('${{') }}`). A plain quoted string evaluates the same, but
 `literal()` states the intent, and its argument is exempt from reference
 detection. The string argument of a bare `literal('...')` call is never read as
-a reference: it raises no env-var warning, adds no model dependency or vault
+a reference: it raises no env-var warning, adds no behavior dependency or vault
 allowlist entry, and causes no deferred-binding read (`maskLiteralCalls`,
 `src/domain/expressions/cel_string_lexer.ts`). A non-string argument, as in
 `literal(inputs.x)`, is still a real reference. Validation accepts an
@@ -828,15 +827,15 @@ them classifies as swamp's and fails:
   Ansible's `{{ lookup('env', 'HOME') }}`
 
 The error names the ways out. The value can pass the text through with
-`literal()`, which passes validation and evaluates to the literal text:
-`${{ literal('{{env.name}}') }}` for `{{ ... }}`, or
-`${{ literal('${data.aws_ami.ubuntu.id}') }}` for `${ ... }`. Or the model type
+`literal()`, which passes validation and evaluates to the literal text: `${{
+literal('{{env.name}}') }}` for `{{ ... }}`, or `${{
+literal('${data.aws_ami.ubuntu.id}') }}` for `${ ... }`. Or the behavior type
 can declare the field as foreign template text (below). CEL string
 concatenation, as in `${{ "{" + "{env.name}" + "}" }}`, still works, but
 `literal()` is the recommended form: it reads as the text it produces, and its
 argument is exempt from reference detection. Both work the same in a workflow
-step that runs a model type directly, since the scan reads the step's authored
-arguments there (above).
+step that runs a behavior type directly, since the scan reads the step's
+authored arguments there (above).
 
 The definition such a step saves in `.swamp/auto-definitions/` holds the
 evaluated values, not the `literal()` call. Storing the authored text instead
@@ -852,9 +851,9 @@ auto-definition by name can still report the braces. When it reports anything,
 it adds an `Auto-definition` warning saying that swamp wrote the definition from
 a run's evaluated arguments, that its findings may be text evaluation produced
 rather than mistakes, and that any change belongs in the workflow step or
-command that wrote it. Validating all models skips auto-definitions.
+command that wrote it. Validating all behaviors skips auto-definitions.
 
-**Declaring a field.** A model type marks a global or method argument that
+**Declaring a field.** A behavior type marks a global or method argument that
 holds another service's template syntax with `.meta({ foreignTemplate: true })`
 on its Zod schema (`extractForeignTemplateFields`,
 `src/domain/models/foreign_template_fields.ts`). Validation skips the field and
@@ -873,13 +872,13 @@ and through `optional`, `nullable` and `default` wrappers, but not through
 system, such as GitHub Actions `${{ github.sha }}`, is judged the way the
 runtime guard on global arguments judges it (`isForeignExpression`, above), so
 validation never passes text that the run then refuses. It is classified before
-the model, self and env reference checks, whose extractors would otherwise read
-`github.event.model.foo` as a model reference. Foreign text joins the
-`Template syntax passed through` warning, and a declared field silences it
-there too. The `Global arguments` schema check keeps foreign text in, as the
-run does, rather than skipping the check. Two cases still fail: text whose
-first name is one of the repo's models (`${{ my-vpc.VpcId }}` is a missing
-`model.` prefix), and text that CEL cannot parse.
+the model, self and env reference checks, whose extractors would otherwise
+read `github.event.model.foo` as a model reference. Foreign text joins the
+`Template syntax passed through` warning, and a declared field silences it there
+too. The `Global arguments` schema check keeps foreign text in, as the run does,
+rather than skipping the check. Two cases still fail: text whose first name is
+one of the repo's behaviors (`${{ my-vpc.VpcId }}` is a missing `model.`
+prefix), and text that CEL cannot parse.
 
 ## Sensitive Data
 
@@ -937,10 +936,10 @@ passes walk that same tree:
 Without provenance, text that entered the tree only as data content would be
 evaluated as if the author wrote it. A `vault.get()` or `env` reference would
 resolve a secret directly. Other CEL, such as a `data.latest()` call on another
-model's sensitive field, would read one through the evaluation context.
+behavior's sensitive field, would read one through the evaluation context.
 
 **A pass that runs after substitution evaluates an expression only if its raw
-text was written in the workflow or model definition source.**
+text was written in the workflow or behavior definition source.**
 Expression syntax that arrives as data content is inert. It stays literal text
 and a warning naming the path is logged.
 
@@ -948,13 +947,13 @@ and a warning naming the path is logged.
 before any CEL evaluation runs. The sets from every author-written source
 feeding a run are unioned:
 
-| Source                    | Collected from                                                              |
-| ------------------------- | --------------------------------------------------------------------------- |
-| Model definition          | the definition on disk, in both the normal and `--last-evaluated` paths     |
-| Workflow                  | the workflow YAML on disk, before evaluation, at fresh-run and resume seams |
-| Model-run `--input` flags | operator-typed values, on `swamp model ... method run` only                 |
-| Parent workflow           | the parent's set, unioned into a nested child run's set                     |
-| Evaluated caches          | the set persisted with each evaluated definition and evaluated workflow     |
+| Source                     | Collected from                                                              |
+| -------------------------- | --------------------------------------------------------------------------- |
+| Behavior definition        | the definition on disk, in both the normal and `--last-evaluated` paths     |
+| Workflow                   | the workflow YAML on disk, before evaluation, at fresh-run and resume seams |
+| Method-run `--input` flags | operator-typed values, on `swamp model ... method run` only                 |
+| Parent workflow            | the parent's set, unioned into a nested child run's set                     |
+| Evaluated caches           | the set persisted with each evaluated definition and evaluated workflow     |
 
 Evaluated caches carry their own set because `--last-evaluated` runs the
 cached tree without the evaluator. If the source changed since, the current
@@ -998,14 +997,14 @@ Runs and evaluated caches persist these scoped records alongside provenance.
 They do not capture the process environment, service objects, or resolved
 vault secrets. Execution rebuilds service-backed namespaces and resolves vault
 values through the secret bag. Scope metadata is optional: older artifacts keep
-their existing provenance behavior, and missing parent bindings are never
+their existing provenance handling, and missing parent bindings are never
 rebuilt from child inputs.
 
 The parameter carrying the set is required and typed `ReadonlySet<string> |
 "unrestricted"`, so the compiler forces every caller of these passes to state
 whether its input is author-written. `"unrestricted"` is only for callers that
-applied no substitution, such as model validation on definitions read straight
-from the repository.
+applied no substitution, such as behavior validation on definitions read
+straight from the repository.
 
 The env classifier also treats any bare `env` identifier (dotted,
 bracket-index or passed as a value) as a runtime reference. No form of env
@@ -1038,7 +1037,7 @@ exactly as expression extraction reports it, so a caller-chosen key can never
 collide with a nested path or an array index.
 
 The gate is strictly narrower than the raw-text rule: it never evaluates an
-occurrence that rule refuses. The only behaviour it changes is refusing
+occurrence that rule refuses. The only thing it changes is refusing
 expression text that sits inside data. Substitution stays keyed on raw text, so
 authored copies of an evaluated expression at other paths still receive the
 run-start value, as they always have. The one exception is an occurrence inside
@@ -1046,7 +1045,7 @@ a data range, which is skipped.
 
 **Value provenance.** CEL context bindings carry the same maps, so an authored
 expression that travels as a value keeps its standing. Examples are a
-`vault.get(...)` passed through model-run `--input`, a step input, a runtime
+`vault.get(...)` passed through method-run `--input`, a step input, a runtime
 global copied through `self.globalArguments`, and a parent's deferred reference.
 Data provenance travels with values the same way. The splicing expression
 decides the provenance of what it splices:
@@ -1067,7 +1066,7 @@ Authored namespaces are an allow-list:
 - `model.NAME.definition`.
 - Deferred-reference bindings.
 
-Every other namespace is data: `data.*`, model resources and files, step
+Every other namespace is data: `data.*`, behavior resources and files, step
 outputs, forEach items, `run.tags`, `workers`, execution errors, and file
 contents. Every stored definition, from any swamp version, is authored. That is
 sound because direct execution refuses to persist a global argument whose
@@ -1090,7 +1089,7 @@ are authored at their new positions.
 parameter is required, and `integration/expression_provenance_rules_test.ts`
 fails on a production save passing `undefined` or an empty map, and on any
 caller of the raw-text gate other than `partitionAuthoredAt`. In memory, a
-binding with no map is authored, which is the behaviour before this rule.
+binding with no map is authored, which is how it worked before this rule.
 Data is marked where it enters `inputs`, `self` or `run`: workflow caller
 inputs, spliced step inputs, routed direct-execution globals, forEach items,
 child inputs, and `--literal-inputs`. A transform that rewrites a value holding
@@ -1162,13 +1161,13 @@ steps, use workflow inputs or an extension method.
 
 ### Shell Safety
 
-When vault secrets appear in the `run` field of a `command/shell` model, the
-shell model passes them as environment variables instead of embedding them
+When vault secrets appear in the `run` field of a `command/shell` behavior, the
+shell behavior passes them as environment variables instead of embedding them
 in the command string. This prevents all shell metacharacter injection: the
 shell never parses secret content as syntax.
 
 CEL evaluation replaces vault secrets with unique sentinel tokens. At the shell
-model boundary, each sentinel becomes a double-quoted environment variable
+behavior boundary, each sentinel becomes a double-quoted environment variable
 reference (`"${__SWAMP_VAULT_N}"` on POSIX, `"$env:__SWAMP_VAULT_N"` on native
 Windows PowerShell), and the raw values go through the process environment.
 Shell variable expansion happens after command parsing, so metacharacters in a
@@ -1191,7 +1190,7 @@ As a result:
 - `!` in a secret does not trigger bash history expansion.
 - All current and future shell metacharacters are handled; there is no
   character blocklist.
-- Non-shell contexts (extension models, API calls) get the exact raw secret
+- Non-shell contexts (extension behaviors, API calls) get the exact raw secret
   values, with no escaping artifacts.
 
 ## Environment Variables
@@ -1210,8 +1209,8 @@ globalArguments:
 ### Security Warning
 
 > **Warning:** Values read via `env` are not redacted or filtered. An
-> environment variable used as a model attribute is stored on disk in the
-> datastore `data/` directory (default `.swamp/data/`) as model output data,
+> environment variable used as a behavior attribute is stored on disk in the
+> datastore `data/` directory (default `.swamp/data/`) as behavior output data,
 > and is visible in `swamp data query` output. This includes sensitive variables
 > present at runtime (e.g. `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, database
 > passwords).
@@ -1220,7 +1219,7 @@ globalArguments:
 
 For API keys, tokens, passwords, and other secrets, always use `vault.get()`
 instead of `env`. Vault values are fetched at runtime and are never persisted in
-model output data.
+behavior output data.
 
 **Wrong: the secret is stored on disk in the datastore `data/` directory:**
 
@@ -1241,16 +1240,16 @@ See [Sensitive Data](#sensitive-data) for more on vaults.
 ### Over `swamp serve`
 
 Expressions sent to serve are evaluated in the server process, so `env` is the
-server's environment and `data.*` can reach any model. Serve authorizes
+server's environment and `data.*` can reach any behavior. Serve authorizes
 expression text against the principal who supplies it: a writer may only add
 references to data they may read, and `env` in run inputs needs `write` on the
-model, so put `env` references in the definition rather than in `--input`.
+behavior, so put `env` references in the definition rather than in `--input`.
 `evaluate` and `validate` never resolve `env`. See
 [Expression references](./access-control.md#expression-references).
 
 ## Extensibility
 
-Extension model methods extend CEL through `ctx.createCelEnvironment()`
+Extension methods extend CEL through `ctx.createCelEnvironment()`
 (surface 2 above), registering their own functions, types, and operators on an
 isolated environment. There is no repo-level way to register custom CEL
 functions in the internal evaluator. Its one swamp-defined function is

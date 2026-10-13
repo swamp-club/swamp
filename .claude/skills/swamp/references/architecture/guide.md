@@ -14,7 +14,7 @@ guides instead.
 What does the user need?
 │
 ├── Automate a single external action (API call, CLI command, resource sync)
-│   └── Model — see design/primitives/models.md
+│   └── Model — see design/primitives/behaviors.md
 │       ├── Existing type covers it? → swamp model type search / extension search
 │       └── No type? → Extension model or command/shell (ad-hoc only)
 │
@@ -69,7 +69,7 @@ architecture decisions:
 
 - `design/architecture.md` — top-level architecture overview (purpose, storage,
   models, workflows)
-- `design/primitives/models.md` — model type system, IDs, versions, methods,
+- `design/primitives/behaviors.md` — model type system, IDs, versions, methods,
   data
 - `design/primitives/workflows.md` — workflow definitions, jobs, steps, task
   variants
