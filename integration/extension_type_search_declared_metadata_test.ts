@@ -110,6 +110,7 @@ interface TypeListing {
 }
 
 interface KindUnderTest {
+  listFunction: string;
   subdir: string;
   adapter: KindAdapter;
   source: (type: string) => string;
@@ -126,6 +127,7 @@ interface KindUnderTest {
 
 const KINDS: Record<string, KindUnderTest> = {
   vault: {
+    listFunction: "listVaultTypes",
     subdir: "vaults",
     adapter: vaultKindAdapter,
     source: VAULT_SOURCE,
@@ -138,6 +140,7 @@ const KINDS: Record<string, KindUnderTest> = {
     list: () => listVaultTypes(),
   },
   datastore: {
+    listFunction: "listDatastoreTypes",
     subdir: "datastores",
     adapter: datastoreKindAdapter,
     source: DATASTORE_SOURCE,
@@ -151,8 +154,8 @@ const KINDS: Record<string, KindUnderTest> = {
   },
 };
 
-for (const [kind, k] of Object.entries(KINDS)) {
-  Deno.test(`${kind} type search lists a cold-indexed extension type as declared without importing it, on a first and a second index`, async () => {
+for (const k of Object.values(KINDS)) {
+  Deno.test(`${k.listFunction}: lists a cold-indexed extension type as declared without importing it, on a first and a second index`, async () => {
     const repoDir = await Deno.makeTempDir({ prefix: "swamp_3365_" });
     const sourceDir = join(repoDir, "extensions", k.subdir);
     await ensureDir(join(repoDir, ".swamp"));

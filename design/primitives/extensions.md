@@ -3006,8 +3006,9 @@ has been fully indexed.
    read both from the entry's source text (`listVaultTypes`,
    `listDatastoreTypes`, using the extractors `extension push` uses) and
    still import nothing: a listing must not run extension code, which can
-   exit, hang or print at import. A field the source computes falls back to
-   the type id or the catalog description.
+   exit, hang or print at import. A name the source computes falls back to
+   the type id; a computed description falls back to the catalog's for a
+   vault and to empty for a datastore.
 
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports

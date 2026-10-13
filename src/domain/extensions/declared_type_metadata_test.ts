@@ -194,3 +194,73 @@ export const datastore = {
     { name: "", description: "" },
   );
 });
+
+function vaultWith(fields: string): string {
+  return `
+export const vault = {
+  type: "@test/mock-vault",
+${fields}
+  createProvider: () => ({}),
+};
+`;
+}
+
+async function declared(fields: string) {
+  return await readDeclaredTypeMetadata(
+    entry,
+    extractVaultFromSource,
+    reads(vaultWith(fields)),
+  );
+}
+
+Deno.test("readDeclaredTypeMetadata: joins string literals concatenated with +", async () => {
+  assertEquals(
+    await declared(`  name: 'Split ' + "Name",
+  description: "Long description " +
+    "continued " +
+    \`to the end\`,`),
+    {
+      name: "Split Name",
+      description: "Long description continued to the end",
+    },
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: decodes escape sequences", async () => {
+  assertEquals(
+    await declared(
+      String.raw`  name: "Says \"hi\"",
+  description: 'It\'s a tab:\t café \x41 \u{1F600} back\\slash',`,
+    ),
+    {
+      name: 'Says "hi"',
+      description: "It's a tab:\t café A \u{1F600} back\\slash",
+    },
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: a template with a substitution is computed", async () => {
+  assertEquals(
+    await declared(
+      "  name: `Vault for ${region}`,\n  description: `Stores ${kind} secrets`,",
+    ),
+    { name: "", description: "" },
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: a literal joined to an expression is computed", async () => {
+  assertEquals(
+    await declared(`  name: "Foo" + suffix,
+  description: "Prefix ".concat(rest),`),
+    { name: "", description: "" },
+  );
+});
+
+Deno.test("readDeclaredTypeMetadata: a plain template literal is a constant string", async () => {
+  assertEquals(
+    await declared(
+      "  name: `Plain Template`,\n  description: `costs $5 {flat}`,",
+    ),
+    { name: "Plain Template", description: "costs $5 {flat}" },
+  );
+});

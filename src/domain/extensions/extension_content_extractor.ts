@@ -524,17 +524,85 @@ export function extractVaultFromSource(
 }
 
 /**
- * The top-level entries of an object literal body whose value starts with a
- * string literal, by key.
+ * The top-level entries of an object literal body whose whole value is a
+ * constant string, by key. A value that only starts with a string literal,
+ * such as `"Foo" + suffix` or a template with a substitution, is computed
+ * and is left out.
  */
 function topLevelStringValues(body: string): Map<string, string> {
   const values = new Map<string, string>();
   for (const entry of extractTopLevelEntries(body)) {
-    if (entry.value !== undefined && !values.has(entry.key)) {
-      values.set(entry.key, entry.value);
-    }
+    if (entry.raw === undefined || values.has(entry.key)) continue;
+    const value = evaluateStringExpression(entry.raw);
+    if (value !== undefined) values.set(entry.key, value);
   }
   return values;
+}
+
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  b: "\b",
+  f: "\f",
+  v: "\v",
+  "0": "\0",
+  "\n": "",
+};
+
+/**
+ * The value of `expression` when it is one string literal or several joined
+ * with `+`, with escape sequences decoded. Undefined for anything else.
+ */
+function evaluateStringExpression(expression: string): string | undefined {
+  let result = "";
+  let i = 0;
+  const skipSpace = () => {
+    while (i < expression.length && /\s/.test(expression[i])) i++;
+  };
+  while (true) {
+    skipSpace();
+    const quote = expression[i];
+    if (quote !== '"' && quote !== "'" && quote !== "`") return undefined;
+    i++;
+    while (true) {
+      if (i >= expression.length) return undefined;
+      const c = expression[i];
+      if (c === quote) break;
+      if (c === "\n" && quote !== "`") return undefined;
+      if (quote === "`" && c === "$" && expression[i + 1] === "{") {
+        return undefined;
+      }
+      if (c !== "\\") {
+        result += c;
+        i++;
+        continue;
+      }
+      const escaped = expression[i + 1];
+      if (escaped === undefined) return undefined;
+      const hex = escaped === "x"
+        ? /^[0-9a-fA-F]{2}/.exec(expression.slice(i + 2))?.[0]
+        : escaped === "u"
+        ? /^(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]{1,6}\})/.exec(
+          expression.slice(i + 2),
+        )?.[0]
+        : undefined;
+      if (hex !== undefined) {
+        const codePoint = parseInt(hex.replace(/[{}]/g, ""), 16);
+        if (codePoint > 0x10ffff) return undefined;
+        result += String.fromCodePoint(codePoint);
+        i += 2 + hex.length;
+        continue;
+      }
+      result += SIMPLE_ESCAPES[escaped] ?? escaped;
+      i += 2;
+    }
+    i++;
+    skipSpace();
+    if (i >= expression.length) return result;
+    if (expression[i] !== "+") return undefined;
+    i++;
+  }
 }
 
 /**
@@ -696,6 +764,8 @@ interface TopLevelEntry {
   key: string;
   body?: string;
   value?: string;
+  /** Source text of a value that starts with a string literal, up to its comma. */
+  raw?: string;
 }
 
 const TOP_LEVEL_KEY =
@@ -796,11 +866,17 @@ function extractTopLevelEntries(block: string): TopLevelEntry[] {
     LEADING_STRING_LITERAL.lastIndex = i;
     const literal = LEADING_STRING_LITERAL.exec(block);
     if (literal) {
-      entries.push({ key, value: literal[1] ?? literal[2] ?? literal[3] });
+      const valueStart = i;
       i = LEADING_STRING_LITERAL.lastIndex;
-    } else {
-      entries.push({ key });
+      skipValue();
+      entries.push({
+        key,
+        value: literal[1] ?? literal[2] ?? literal[3],
+        raw: block.slice(valueStart, i).replace(/,\s*$/, ""),
+      });
+      continue;
     }
+    entries.push({ key });
     skipValue();
   }
 
