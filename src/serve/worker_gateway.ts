@@ -180,6 +180,10 @@ interface WorkerEntry {
   capacity: number;
   activeDispatchIds: string[];
   verifyFailureReason?: string;
+  /** An enrollment verification is running for this entry. */
+  verifying?: boolean;
+  /** Another verification was asked for while one was running. */
+  verifyAgain?: boolean;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Fires at the token's `expiresAt` to disconnect the worker. */
   expiryTimer?: ReturnType<typeof setTimeout>;
@@ -481,6 +485,10 @@ export class WorkerGateway {
    * worker is unknown, busy, disconnected, unverified or draining, or when
    * the control socket drops mid-dispatch (the caller owns grace-window
    * failure semantics — see DispatchService).
+   *
+   * A dispatch moves a worker between idle and busy only. An unverified
+   * worker takes a probe without leaving `unverified`: the enrollment
+   * verification alone promotes it (swamp-club#3388).
    */
   async dispatch(
     name: string,
@@ -519,8 +527,15 @@ export class WorkerGateway {
       },
     );
     const dispatchStart = performance.now();
+    const channelAtStart = entry.channel;
     entry.activeDispatchIds.push(params.dispatchId);
-    entry.status = "busy";
+    // An unverified worker is only ever sent a probe, and the probe's result
+    // has not been judged yet: it holds a slot but stays unverified, so the
+    // scheduler never sees it idle in between (swamp-club#3388).
+    const unverified = entry.status === "unverified";
+    if (!unverified) {
+      entry.status = "busy";
+    }
     // The slot is taken from here on, so everything below runs under the
     // finally that gives it back: a dispatch that fails before it reaches
     // the worker must not keep the slot (swamp-club#3294).
@@ -529,17 +544,19 @@ export class WorkerGateway {
       // its reservation here, and an await in between would count the
       // dispatch twice.
       options?.onRegistered?.();
-      await this.#recordTransition(() =>
-        this.#runModelMethod({
-          typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(name),
-          methodName: "set_status",
-          inputs: {
-            status: "busy",
-            activeDispatchIds: [...entry.activeDispatchIds],
-          },
-        })
-      );
+      if (!unverified) {
+        await this.#recordTransition(() =>
+          this.#runModelMethod({
+            typeArg: WORKER_MODEL_TYPE.normalized,
+            definitionName: workerDefinitionName(name),
+            methodName: "set_status",
+            inputs: {
+              status: "busy",
+              activeDispatchIds: [...entry.activeDispatchIds],
+            },
+          })
+        );
+      }
 
       const dispatchCredential = this.#sessions.issueForDispatch(
         name,
@@ -547,7 +564,7 @@ export class WorkerGateway {
       );
 
       // The worker may have been removed (token revoked or expired) or
-      // dropped while the busy status was recorded.
+      // dropped while the dispatch was being registered.
       const channel = entry.channel;
       if (channel === null || channel.closed) {
         throw new ChannelClosedError(
@@ -585,13 +602,15 @@ export class WorkerGateway {
       );
       this.#sessions.revokeDispatch(name, params.dispatchId);
       const currentStatus = entry.status as string;
+      // Neither status is left by a dispatch ending: a draining worker is on
+      // its way out, and an unverified one waits on its enrollment probe.
+      const settled = currentStatus === "draining" ||
+        currentStatus === "unverified";
       if (entry.channel === null || entry.channel.closed) {
-        if (
-          currentStatus !== "draining" && entry.activeDispatchIds.length === 0
-        ) {
+        if (!settled && entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
         }
-      } else if (currentStatus !== "draining") {
+      } else if (!settled) {
         if (entry.activeDispatchIds.length === 0) {
           entry.status = "idle";
           await this.#recordTransition(() =>
@@ -629,6 +648,18 @@ export class WorkerGateway {
           });
         }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
+      }
+      // A reconnect under verify-on-enroll turns the worker unverified while
+      // dispatches sent on its old socket still hold its slots, so its
+      // enrollment probe can be refused for want of one. When the last of
+      // them ends, probe again: nothing else would (swamp-club#3388).
+      if (
+        currentStatus === "unverified" && channelAtStart !== entry.channel &&
+        entry.activeDispatchIds.length === 0 &&
+        entry.channel !== null && !entry.channel.closed &&
+        this.#options.verifyWorker
+      ) {
+        this.#startEnrollmentVerify(name);
       }
     }
   }
@@ -841,15 +872,7 @@ export class WorkerGateway {
       });
 
       if (this.#options.verifyOnEnroll && this.#options.verifyWorker) {
-        this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
-          logger.error(
-            "Enrollment verify failed unexpectedly for {worker}: {error}",
-            {
-              worker: workerName,
-              error: e instanceof Error ? e.message : String(e),
-            },
-          );
-        });
+        this.#startEnrollmentVerify(workerName);
       } else {
         const snap = this.#snapshot(entry);
         this.#options.onWorkerEnrolled?.(snap);
@@ -1074,6 +1097,40 @@ export class WorkerGateway {
     }
   }
 
+  /**
+   * Run the enrollment probe without holding up the caller. One runs at a
+   * time per worker: a request made while one is running is remembered and
+   * honoured when it finishes, if the worker is still unverified by then.
+   */
+  #startEnrollmentVerify(workerName: string): void {
+    const entry = this.#workers.get(workerName);
+    if (!entry) return;
+    if (entry.verifying) {
+      entry.verifyAgain = true;
+      return;
+    }
+    entry.verifying = true;
+    this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+      logger.error(
+        "Enrollment verify failed unexpectedly for {worker}: {error}",
+        {
+          worker: workerName,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      );
+    }).finally(() => {
+      entry.verifying = false;
+      if (!entry.verifyAgain) return;
+      entry.verifyAgain = false;
+      if (
+        this.#workers.get(workerName) === entry &&
+        entry.status === "unverified" && entry.channel !== null
+      ) {
+        this.#startEnrollmentVerify(workerName);
+      }
+    });
+  }
+
   async #runEnrollmentVerify(workerName: string): Promise<void> {
     const verifyWorker = this.#options.verifyWorker!;
     try {
@@ -1105,6 +1162,7 @@ export class WorkerGateway {
             methodName: "set_status",
             inputs: {
               status: "unverified",
+              activeDispatchIds: [...entry.activeDispatchIds],
               verifyFailureReason: probeResult.failureReason,
             },
           });
@@ -1126,6 +1184,7 @@ export class WorkerGateway {
           methodName: "set_status",
           inputs: {
             status: "unverified",
+            activeDispatchIds: [...entry.activeDispatchIds],
             verifyFailureReason: reason,
           },
         });
