@@ -560,6 +560,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         tagOverrides: context.tagOverrides,
         dataOutputOverrides: context.dataOutputOverrides,
         workflowName: context.tagOverrides?.workflow,
+        workflowRunId: context.tagOverrides?.workflowRunId,
         jobName: context.tagOverrides?.job,
         stepName: context.tagOverrides?.step,
         signal: context.signal,

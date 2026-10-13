@@ -673,6 +673,7 @@ export class DispatchService {
       modelId: request.modelId,
       methodName: request.methodName,
       workflowName: request.workflowName,
+      workflowRunId: request.workflowRunId,
       jobName: request.jobName,
       stepName: request.stepName,
     });

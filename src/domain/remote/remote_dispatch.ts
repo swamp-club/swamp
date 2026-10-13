@@ -63,6 +63,8 @@ export interface RemoteStepRequest {
   tagOverrides?: Record<string, string>;
   dataOutputOverrides?: DataOutputOverride[];
   workflowName?: string;
+  /** The workflow run this step belongs to, recorded on its step lease. */
+  workflowRunId?: string;
   jobName?: string;
   stepName?: string;
   signal?: AbortSignal;

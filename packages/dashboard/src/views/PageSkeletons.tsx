@@ -231,11 +231,14 @@ export const CLUSTER_COLUMNS: SkeletonColumn[] = [
   { header: "Workers", cell: 24 },
 ];
 
-export const WORKER_COLUMNS: SkeletonColumn[] = [
-  { header: "Worker", cell: 140 },
-  { header: "Status", cell: "pill" },
-  { header: "Active Dispatches", cell: 24 },
-];
+/** The rows of System's worker summary; the full map is the Workers view. */
+export const WORKER_SUMMARY_KEYS = [
+  "Idle",
+  "Busy",
+  "Unverified",
+  "Draining",
+  "Slots in use",
+] as const;
 
 /** The rows the Deployment panel always shows, before component health. */
 export const DEPLOYMENT_KEYS = ["Mode", "Instances", "Workers", "Uptime"];

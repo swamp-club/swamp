@@ -198,6 +198,7 @@ const CATEGORIES: Record<string, Category> = {
   "worker.list": "access",
   "worker.prune": "access",
   "worker.queue.list": "access",
+  "worker.lease.list": "access",
   "worker.token.create": "access",
   "worker.token.list": "access",
   "worker.token.revoke": "access",

@@ -68,6 +68,8 @@ export const StepLeaseSchema = z.object({
   modelId: z.string(),
   methodName: z.string(),
   workflowName: z.string().optional(),
+  /** The workflow run the step belongs to, when dispatched from a run. */
+  workflowRunId: z.string().optional(),
   jobName: z.string().optional(),
   stepName: z.string().optional(),
   state: LeaseStateSchema,
@@ -103,6 +105,7 @@ const AcquireArgsSchema = z.object({
   modelId: z.string(),
   methodName: z.string(),
   workflowName: z.string().optional(),
+  workflowRunId: z.string().optional(),
   jobName: z.string().optional(),
   stepName: z.string().optional(),
 });

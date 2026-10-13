@@ -81,6 +81,8 @@ export type WorkerTokenListEvent =
 /** One enrolled worker in the list. */
 export interface WorkerListItem {
   name: string;
+  /** Enrollment token that admitted this worker; a fleet shares one token. */
+  tokenName: string;
   status: WorkerStatus;
   labels: Record<string, string>;
   platform: string;
@@ -90,6 +92,8 @@ export interface WorkerListItem {
   lastSeenAt: string;
   capacity: number;
   activeDispatchIds: string[];
+  /** When the worker disconnected; present only while its status is `disconnected`. */
+  disconnectedAt?: string;
 }
 
 /** Data payload for the worker list completed event. */
@@ -102,6 +106,12 @@ export interface WorkerListData {
 /** Options for the worker list query. */
 export interface WorkerListOptions {
   includeDisconnected?: boolean;
+  /**
+   * Also keep disconnected workers whose `disconnectedAt` is no older than
+   * this many milliseconds. Ignored when `includeDisconnected` is set; a
+   * disconnected worker without `disconnectedAt` is never kept by the window.
+   */
+  disconnectedWithinMs?: number;
 }
 
 export type WorkerListEvent =
@@ -212,7 +222,8 @@ export async function* workerTokenList(
  * Lists workers known to the pool, sorted by name.
  *
  * By default disconnected workers are excluded from the results.
- * Pass `{ includeDisconnected: true }` to include them.
+ * Pass `{ includeDisconnected: true }` to include them all, or
+ * `{ disconnectedWithinMs }` to keep only those that disconnected recently.
  */
 export async function* workerList(
   _ctx: LibSwampContext,
@@ -236,6 +247,7 @@ export async function* workerList(
           const state = parsed.data;
           allWorkers.push({
             name: state.name,
+            tokenName: state.tokenName,
             status: state.status,
             labels: state.labels,
             platform: state.platform,
@@ -245,14 +257,27 @@ export async function* workerList(
             lastSeenAt: state.lastSeenAt,
             capacity: state.capacity ?? 1,
             activeDispatchIds: state.activeDispatchIds ?? [],
+            // A reconnected worker can carry a stale disconnectedAt; only a
+            // disconnected one reports it.
+            ...(state.status === "disconnected" &&
+                state.disconnectedAt !== undefined
+              ? { disconnectedAt: state.disconnectedAt }
+              : {}),
           });
         }
         allWorkers.sort((a, b) => a.name.localeCompare(b.name));
 
         const includeDisconnected = options?.includeDisconnected ?? false;
+        const windowMs = options?.disconnectedWithinMs;
+        const nowMs = (deps.now ?? Date.now)();
+        const keepDisconnected = (w: WorkerListItem): boolean =>
+          windowMs !== undefined && w.disconnectedAt !== undefined &&
+          nowMs - Date.parse(w.disconnectedAt) <= windowMs;
         const workers = includeDisconnected
           ? allWorkers
-          : allWorkers.filter((w) => w.status !== "disconnected");
+          : allWorkers.filter((w) =>
+            w.status !== "disconnected" || keepDisconnected(w)
+          );
         const filteredDisconnectedCount = allWorkers.length - workers.length;
 
         yield {

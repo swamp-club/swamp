@@ -29,4 +29,5 @@ export type View =
   | "data"
   | "vaults"
   | "extensions"
+  | "workers"
   | "system";

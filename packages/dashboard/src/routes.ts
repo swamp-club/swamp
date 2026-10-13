@@ -71,6 +71,7 @@ const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
   data: "data",
   vaults: "vaults",
   extensions: "extensions",
+  workers: "workers",
   system: "system",
 };
 

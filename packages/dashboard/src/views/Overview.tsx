@@ -36,6 +36,9 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadError } from "../components/LoadError";
 import { Skeleton, SkeletonList } from "../components/Skeleton";
 import { loadState } from "../client/load_state.ts";
+import { WorkersPill } from "../components/WorkersPill.tsx";
+import { type FleetWorker, workerSummary } from "../lib/host_map_model.ts";
+import { useCoalescedRefetch } from "../client/useFleetData.ts";
 import { useRunSummary } from "../client/run_summary.ts";
 import { useKeepPrevious } from "../client/useKeepPrevious.ts";
 import { useTimeBounds, useTimeRange } from "../client/time_range.ts";
@@ -182,11 +185,22 @@ export function Overview(
     [decide],
   );
 
+  // Admin-only: a token that cannot list workers just gets no pill.
+  const workersReq = useRequest<{ data?: { workers?: FleetWorker[] } }>(
+    "worker.list",
+  );
+  useCoalescedRefetch(health?.workers, workersReq.refetch);
+  const listedWorkers = workersReq.data?.data?.workers ?? [];
+  const workersSummary = listedWorkers.length > 0
+    ? workerSummary(listedWorkers)
+    : null;
+
   return (
     <>
       <div className="page-header">
         <h1>Dashboard</h1>
         <div className="header-right">
+          {workersSummary && <WorkersPill summary={workersSummary} />}
           {health && (
             <div className="health-pill">
               <span className="health-dot" />

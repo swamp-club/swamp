@@ -32,7 +32,10 @@ disconnects the worker and rejects re-enrollment. Pass a stable `--cache-dir` to
 keep the machine identity across restarts — the default temp cache directory
 yields a fresh identity (and thus needs a fresh token) per process. Manage
 tokens with `swamp worker token list` and `swamp worker token revoke <name>`;
-inspect the pool with `swamp worker list`.
+inspect the pool with `swamp worker list`, or visually in the dashboard's
+Workers view (`/dashboard/workers` on a serve started with `--dashboard`):
+workers grouped by label, per-slot lease state, and a selector box that shows
+where a step's placement would land.
 
 ## Placing steps on workers
 

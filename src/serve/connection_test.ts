@@ -122,6 +122,48 @@ Deno.test("validateServerRequest accepts a valid workflow.run request", () => {
   assertEquals(typeof result, "object");
 });
 
+Deno.test("validateServerRequest bounds the worker.lease.list payload", () => {
+  const ok = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-1",
+    payload: { dispatchIds: [crypto.randomUUID()], endedWithinMs: 10_000 },
+  });
+  assertEquals(typeof ok, "object");
+  const tooMany = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-2",
+    payload: { dispatchIds: Array.from({ length: 2001 }, (_, i) => `d-${i}`) },
+  });
+  assertEquals(typeof tooMany, "string");
+  const badId = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-3",
+    payload: { dispatchIds: ['x" || true || "'] },
+  });
+  assertEquals(typeof badId, "string");
+  const longWindow = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-4",
+    payload: { endedWithinMs: 300_001 },
+  });
+  assertEquals(typeof longWindow, "string");
+});
+
+Deno.test("validateServerRequest caps worker.list disconnectedWithinMs at 24h", () => {
+  const ok = validateServerRequest({
+    type: "worker.list",
+    id: "req-1",
+    payload: { disconnectedWithinMs: 7_200_000 },
+  });
+  assertEquals(typeof ok, "object");
+  const tooLong = validateServerRequest({
+    type: "worker.list",
+    id: "req-2",
+    payload: { disconnectedWithinMs: 86_400_001 },
+  });
+  assertEquals(typeof tooLong, "string");
+});
+
 Deno.test("validateServerRequest keeps allowRename on model.edit and workflow.edit", () => {
   const model = validateServerRequest({
     type: "model.edit",
