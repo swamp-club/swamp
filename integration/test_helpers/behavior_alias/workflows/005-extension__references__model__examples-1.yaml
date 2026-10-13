@@ -1,0 +1,35 @@
+# Extracted from .claude/skills/swamp/references/extension/references/model/examples.md (block 1)
+id: 00000000-0000-4000-8000-000000000005
+# workflows/sync-all/workflow.yaml
+name: sync-all
+version: 1
+jobs:
+  - name: sync
+    steps:
+      - name: sync-vpc
+        task:
+          type: model_method
+          modelIdOrName: web-vpc
+          methodName: sync
+
+      - name: sync-droplet-1
+        task:
+          type: model_method
+          modelIdOrName: web-droplet
+          methodName: sync
+          inputs:
+            name: web-1
+
+      - name: sync-droplet-2
+        task:
+          type: model_method
+          modelIdOrName: web-droplet
+          methodName: sync
+          inputs:
+            name: web-2
+
+      - name: sync-lb
+        task:
+          type: model_method
+          modelIdOrName: web-lb
+          methodName: sync

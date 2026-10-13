@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ACTION_LIST } from "../../domain/access/action.ts";
+import { canonicalResourceSelectorString } from "../../domain/access/resource_selector.ts";
 import {
   CA_CERT_DESCRIPTION,
   CA_CERT_FLAG,
@@ -103,6 +104,12 @@ export const accessCanICommand = new Command()
         .filter((c: string) => c.length > 0)
       : undefined;
 
+    // Sent in the canonical spelling, so a server that predates the behavior
+    // spelling of a selector (swamp-club#3334) still reads it.
+    const resource = options.on
+      ? canonicalResourceSelectorString(options.on as string)
+      : undefined;
+
     const token = await resolveServerTokenFromOptions(
       server,
       options,
@@ -117,7 +124,7 @@ export const accessCanICommand = new Command()
         type: "access.can-i",
         payload: {
           ...(options.action ? { action: options.action as string } : {}),
-          ...(options.on ? { resource: options.on as string } : {}),
+          ...(resource ? { resource } : {}),
           ...(collectives ? { collectives } : {}),
           ...(options.method ? { method: options.method as string } : {}),
         },
@@ -126,11 +133,11 @@ export const accessCanICommand = new Command()
 
     const result: AccessCanIResult = {
       ...response,
-      ...(options.action && options.on
+      ...(options.action && resource
         ? {
           query: {
             action: options.action as string,
-            resource: options.on as string,
+            resource,
             ...(options.method ? { method: options.method as string } : {}),
           },
         }

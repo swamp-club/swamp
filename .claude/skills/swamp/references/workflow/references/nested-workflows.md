@@ -58,8 +58,8 @@ jobs:
           item: ep
           in: ${{ inputs.episodes }}
         task:
-          type: model_method
-          modelIdOrName: transmission
+          type: behavior
+          behavior: transmission
           methodName: add
           inputs:
             uri: ${{ self.ep.magnet }}
@@ -107,8 +107,8 @@ jobs:
     steps:
       - name: dispatch
         task:
-          type: model_method
-          modelIdOrName: notification-sender
+          type: behavior
+          behavior: notification-sender
           methodName: send
           inputs:
             channel: ${{ inputs.channel }}
@@ -132,8 +132,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -219,8 +219,8 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
   - name: tag
     dependsOn:

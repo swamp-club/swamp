@@ -1,0 +1,21 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 12)
+id: 00000000-0000-4000-8000-000000000034
+name: corpus-34
+jobs:
+  - name: deploy-all
+    steps:
+      - name: deploy-${{ self.env }}
+        forEach:
+          item: env
+          in: ${{ inputs.environments }}
+        guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+          inputs:
+            environment: ${{ self.env }}
+        dataOutputOverrides:
+          - specName: result
+            vary:
+              - environment

@@ -1,0 +1,48 @@
+# Extracted from .claude/skills/swamp/references/behavior/references/scenarios.md (block 14)
+id: 00000000-0000-4000-8000-000000000002
+name: delete-subnets
+version: 1
+jobs:
+  - name: delete-subnets
+    description: Delete all 4 subnets
+    steps:
+      - name: delete-public-a
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: delete
+          inputs:
+            instanceName: public-a
+            cidrBlock: "10.0.1.0/24"
+            availabilityZone: us-east-1a
+            identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
+      - name: delete-public-b
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: delete
+          inputs:
+            instanceName: public-b
+            cidrBlock: "10.0.2.0/24"
+            availabilityZone: us-east-1b
+            identifier: ${{ data.latest("prod-subnet", "public-b").attributes.SubnetId }}
+      - name: delete-private-a
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: delete
+          inputs:
+            instanceName: private-a
+            cidrBlock: "10.0.3.0/24"
+            availabilityZone: us-east-1a
+            identifier: ${{ data.latest("prod-subnet", "private-a").attributes.SubnetId }}
+      - name: delete-private-b
+        task:
+          type: model_method
+          modelIdOrName: prod-subnet
+          methodName: delete
+          inputs:
+            instanceName: private-b
+            cidrBlock: "10.0.4.0/24"
+            availabilityZone: us-east-1b
+            identifier: ${{ data.latest("prod-subnet", "private-b").attributes.SubnetId }}

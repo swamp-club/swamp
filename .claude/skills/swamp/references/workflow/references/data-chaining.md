@@ -29,14 +29,14 @@ jobs:
       - name: lookup-ami
         description: Find latest Amazon Linux 2 AMI
         task:
-          type: model_method
-          modelIdOrName: latest-ami
+          type: behavior
+          behavior: latest-ami
           methodName: execute
       - name: create-instance
         description: Create EC2 instance using looked-up AMI
         task:
-          type: model_method
-          modelIdOrName: my-instance
+          type: behavior
+          behavior: my-instance
           methodName: create
 ```
 
@@ -171,13 +171,13 @@ step, keyed by step name — no behavior or instance name needed.
 ```yaml
 - name: write_record # command/shell writes a `result` resource
   task:
-    type: model_method
-    modelIdOrName: writer
+    type: behavior
+    behavior: writer
     methodName: execute
 - name: use_it
   task:
-    type: model_method
-    modelIdOrName: reader
+    type: behavior
+    behavior: reader
     methodName: execute
     inputs:
       msg: ${{ steps.write_record.outputs.stdout }}
@@ -227,13 +227,13 @@ jobs:
     steps:
       - name: find-vpc
         task:
-          type: model_method
-          modelIdOrName: vpc-lookup
+          type: behavior
+          behavior: vpc-lookup
           methodName: execute
       - name: find-subnet
         task:
-          type: model_method
-          modelIdOrName: subnet-lookup
+          type: behavior
+          behavior: subnet-lookup
           methodName: execute
   - name: provision
     description: Create resources using lookup results
@@ -244,13 +244,13 @@ jobs:
     steps:
       - name: create-security-group
         task:
-          type: model_method
-          modelIdOrName: app-security-group
+          type: behavior
+          behavior: app-security-group
           methodName: create
       - name: create-instance
         task:
-          type: model_method
-          modelIdOrName: app-server
+          type: behavior
+          behavior: app-server
           methodName: create
 ```
 
@@ -333,8 +333,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: scanner
+      type: behavior
+      behavior: scanner
       methodName: execute
       inputs:
         environment: ${{ self.env }}
@@ -356,8 +356,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: reporter
+      type: behavior
+      behavior: reporter
       methodName: summarize
       inputs:
         environment: ${{ self.env }}
@@ -390,8 +390,8 @@ steps:
   - name: lookup-ami
     guard: ${{ data.latest("ami-lookup", "result") }}
     task:
-      type: model_method
-      modelIdOrName: ami-lookup
+      type: behavior
+      behavior: ami-lookup
       methodName: execute
   - name: create-instance
     guard: ${{ data.latest("my-instance", "resource") }}
@@ -400,8 +400,8 @@ steps:
         condition:
           type: completed
     task:
-      type: model_method
-      modelIdOrName: my-instance
+      type: behavior
+      behavior: my-instance
       methodName: create
 ```
 
@@ -422,8 +422,8 @@ steps:
       ${{ data.latest("deploy-service", "result").attributes.version
           == inputs.version }}
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         version: ${{ inputs.version }}
@@ -441,8 +441,8 @@ steps:
       ${{ model.method("vpc-lookup", "execute",
           {"vpcName": inputs.vpcName}).stdout }}
     task:
-      type: model_method
-      modelIdOrName: networking-vpc
+      type: behavior
+      behavior: networking-vpc
       methodName: create
 ```
 
@@ -471,13 +471,13 @@ jobs:
     steps:
       - name: delete-public-route-table
         task:
-          type: model_method
-          modelIdOrName: public-route-table
+          type: behavior
+          behavior: public-route-table
           methodName: delete
       - name: delete-private-route-table
         task:
-          type: model_method
-          modelIdOrName: private-route-table
+          type: behavior
+          behavior: private-route-table
           methodName: delete
     dependsOn: []
 
@@ -486,18 +486,18 @@ jobs:
     steps:
       - name: delete-public-subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: delete
       - name: delete-private-subnet
         task:
-          type: model_method
-          modelIdOrName: private-subnet
+          type: behavior
+          behavior: private-subnet
           methodName: delete
       - name: delete-igw
         task:
-          type: model_method
-          modelIdOrName: networking-igw
+          type: behavior
+          behavior: networking-igw
           methodName: delete
     dependsOn:
       - job: delete-route-tables
@@ -509,8 +509,8 @@ jobs:
     steps:
       - name: delete-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: delete
     dependsOn:
       - job: delete-subnets-and-igw
@@ -558,8 +558,8 @@ jobs:
     steps:
       - name: update-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: update
     dependsOn: []
 
@@ -568,13 +568,13 @@ jobs:
     steps:
       - name: update-public-subnet
         task:
-          type: model_method
-          modelIdOrName: public-subnet
+          type: behavior
+          behavior: public-subnet
           methodName: update
       - name: update-private-subnet
         task:
-          type: model_method
-          modelIdOrName: private-subnet
+          type: behavior
+          behavior: private-subnet
           methodName: update
     dependsOn:
       - job: update-vpc
@@ -586,13 +586,13 @@ jobs:
     steps:
       - name: update-public-route-table
         task:
-          type: model_method
-          modelIdOrName: public-route-table
+          type: behavior
+          behavior: public-route-table
           methodName: update
       - name: update-private-route-table
         task:
-          type: model_method
-          modelIdOrName: private-route-table
+          type: behavior
+          behavior: private-route-table
           methodName: update
     dependsOn:
       - job: update-subnets-and-igw
@@ -620,8 +620,8 @@ For a complete walkthrough, see the
 
 ### Calling One Behavior Multiple Times
 
-Steps within a job run in parallel. Each step calls the same `modelIdOrName`
-with different inputs.
+Steps within a job run in parallel. Each step calls the same `behavior` with
+different inputs.
 
 > **Lock contention:** Steps targeting the **same behavior** serialize on the
 > per-behavior lock — they won't actually run in parallel. For true parallelism,
@@ -637,8 +637,8 @@ jobs:
     steps:
       - name: create-public-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-a
@@ -646,8 +646,8 @@ jobs:
             availabilityZone: us-east-1a
       - name: create-public-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-b
@@ -674,8 +674,8 @@ jobs:
     steps:
       - name: create-public-rt
         task:
-          type: model_method
-          modelIdOrName: prod-route-table
+          type: behavior
+          behavior: prod-route-table
           methodName: create
           inputs:
             instanceName: public-rt
@@ -699,8 +699,8 @@ actually tries to access an unresolved value.
 # WRONG: No instanceName, so the system can't resolve which data instance to use
 - name: delete-public-a
   task:
-    type: model_method
-    modelIdOrName: prod-subnet
+    type: behavior
+    behavior: prod-subnet
     methodName: delete
     inputs:
       identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
@@ -712,8 +712,8 @@ actually tries to access an unresolved value.
 # CORRECT: instanceName resolves the name globalArgument and keys the data instance
 - name: delete-public-a
   task:
-    type: model_method
-    modelIdOrName: prod-subnet
+    type: behavior
+    behavior: prod-subnet
     methodName: delete
     inputs:
       instanceName: public-a

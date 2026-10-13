@@ -23,8 +23,8 @@ jobs:
           item: env
           in: ${{ inputs.environments }}
         task:
-          type: model_method
-          modelIdOrName: my-service
+          type: behavior
+          behavior: my-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -53,8 +53,8 @@ jobs:
           item: tag
           in: ${{ inputs.tags }}
         task:
-          type: model_method
-          modelIdOrName: tag-manager
+          type: behavior
+          behavior: tag-manager
           methodName: apply
           inputs:
             key: ${{ self.tag.key }}
@@ -69,7 +69,7 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 ### Dynamic Targeting
 
 During forEach expansion, `self.*` expressions resolve in **any** task field —
-the step `name`, behavior targets (`modelIdOrName`, `modelName`, `methodName`),
+the step `name`, behavior targets (`behavior`, `behaviorName`, `methodName`),
 workflow targets (`workflowIdOrName`), `inputs`, and shell `args` — so each
 iteration can pick a different target:
 
@@ -80,8 +80,8 @@ steps:
       item: region
       in: ${{ inputs.regions }}
     task:
-      type: model_method
-      modelIdOrName: aws-alarms-${{ self.region }}
+      type: behavior
+      behavior: aws-alarms-${{ self.region }}
       methodName: get_summary
       inputs:
         historyHours: 24
@@ -131,8 +131,8 @@ steps:
       item: file
       in: ${{ data.latest('repo', 'diff').attributes.files }}
     task:
-      type: model_method
-      modelIdOrName: processor-${{ run.id }}-${{ self._index }}
+      type: behavior
+      behavior: processor-${{ run.id }}-${{ self._index }}
       methodName: run
       inputs:
         path: ${{ self.file }}
@@ -159,8 +159,8 @@ jobs:
           item: instance
           in: ${{ data.findBySpec("my-factory", "instance") }}
         task:
-          type: model_method
-          modelIdOrName: processor
+          type: behavior
+          behavior: processor
           methodName: run
           inputs:
             target: ${{ self.instance.name }}
@@ -192,8 +192,8 @@ steps:
       in: ${{ inputs.environments }}
     guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         environment: ${{ self.env }}
@@ -220,8 +220,8 @@ steps:
       in: ${{ inputs.targets }}
     concurrency: 3
     task:
-      type: model_method
-      modelIdOrName: api-client
+      type: behavior
+      behavior: api-client
       methodName: call
       inputs:
         target: ${{ self.target }}
@@ -245,8 +245,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: my-service
+      type: behavior
+      behavior: my-service
       methodName: deploy
       inputs:
         environment: ${{ self.env }}
@@ -265,8 +265,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: health-checker
+      type: behavior
+      behavior: health-checker
       methodName: check
       inputs:
         environment: ${{ self.env }}
@@ -292,8 +292,8 @@ When a step calls a method, pass inputs to the behavior:
 steps:
   - name: create-resource
     task:
-      type: model_method
-      modelIdOrName: my-model
+      type: behavior
+      behavior: my-model
       methodName: create
       inputs:
         environment: ${{ inputs.environment }}
@@ -301,7 +301,7 @@ steps:
           replicas: ${{ inputs.replicas }}
 ```
 
-The `inputs` field on `model_method` tasks passes values to the behavior's input
+The `inputs` field on `behavior` tasks passes values to the behavior's input
 schema, enabling dynamic configuration at workflow runtime.
 
 ## Expressions in Workflows
@@ -345,8 +345,8 @@ concurrently:
 steps:
   - name: process
     task:
-      type: model_method
-      modelIdOrName: my-processor
+      type: behavior
+      behavior: my-processor
       methodName: run
       inputs:
         outputKey: "result-${{ run.id }}"

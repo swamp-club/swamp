@@ -1,0 +1,13 @@
+# Extracted from .claude/skills/swamp/references/workflow/reference.md (block 2)
+id: 00000000-0000-4000-8000-000000000010
+name: anime-downloader
+trigger:
+  schedule: "0 3,12 * * *"
+jobs:
+  - name: download
+    steps:
+      - name: fetch
+        task:
+          type: model_method
+          modelIdOrName: downloader
+          methodName: execute

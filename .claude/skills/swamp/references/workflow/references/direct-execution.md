@@ -1,15 +1,16 @@
 # Direct Type Execution in Workflows
 
-The default way to call methods from workflows. Use `modelType` + `modelName` to
-drive inputs dynamically without managing definition YAML files.
+The default way to call methods from workflows. Use `behaviorType` +
+`behaviorName` to drive inputs dynamically without managing definition YAML
+files.
 
 ## Syntax
 
 ```yaml
 task:
-  type: model_method
-  modelType: "@test/greeter"
-  modelName: my-greeter
+  type: behavior
+  behaviorType: "@test/greeter"
+  behaviorName: my-greeter
   methodName: greet
   inputs:
     greeting: Hello
@@ -18,9 +19,9 @@ task:
 
 ## Rules
 
-- `modelIdOrName` and `modelType` are **mutually exclusive** — the schema
-  rejects YAML with both.
-- `modelType` requires `modelName` to name the auto-created definition.
+- `behavior` and `behaviorType` are **mutually exclusive** — the schema rejects
+  YAML with both.
+- `behaviorType` requires `behaviorName` to name the auto-created definition.
 - Auto-created definitions are stored in `.swamp/auto-definitions/` and exist
   for data ownership boundaries. They are not visible in `swamp behavior search`
   or `swamp behavior list` (by design). Use `swamp behavior get <name>` to
@@ -41,9 +42,9 @@ distinct configuration:
 - name: deploy-${{self.env.name}}
   forEach: { item: env, in: "${{ inputs.environments }}" }
   task:
-    type: model_method
-    modelType: "@myorg/deployer"
-    modelName: "deployer-${{ self.env.name }}"
+    type: behavior
+    behaviorType: "@myorg/deployer"
+    behaviorName: "deployer-${{ self.env.name }}"
     methodName: deploy
     globalArgs:
       region: ${{ self.env.region }}
@@ -54,28 +55,28 @@ distinct configuration:
 
 ## forEach Support
 
-`modelName` supports template expressions for per-iteration definitions:
+`behaviorName` supports template expressions for per-iteration definitions:
 
 ```yaml
 - name: greet-${{self.person}}
   forEach: { item: person, in: "${{ inputs.people }}" }
   task:
-    type: model_method
-    modelType: "@test/greeter"
-    modelName: greeter-for-all
+    type: behavior
+    behaviorType: "@test/greeter"
+    behaviorName: greeter-for-all
     methodName: greet
     inputs:
       greeting: Hello
       name: ${{ self.person }}
 ```
 
-Use a fixed `modelName` (like `greeter-for-all`) to share one definition across
-all iterations, or a template `modelName` for per-iteration definitions.
+Use a fixed `behaviorName` (like `greeter-for-all`) to share one definition
+across all iterations, or a template `behaviorName` for per-iteration
+definitions.
 
-## When to Use `modelIdOrName` Instead
+## When to Use `behavior` Instead
 
-Use `modelIdOrName` only when the definition needs persistent, managed
-configuration:
+Use `behavior` only when the definition needs persistent, managed configuration:
 
 - CEL expressions in global arguments (vault refs, cross-behavior data refs)
 - Version-controlled definition files committed to the repo

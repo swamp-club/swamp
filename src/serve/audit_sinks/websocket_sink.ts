@@ -24,6 +24,10 @@ import type {
   AuditOutcome,
 } from "../../domain/serve_audit/audit_event.ts";
 import type { AuditSink } from "../../domain/serve_audit/audit_sink.ts";
+import {
+  canonicalAuditAction,
+  canonicalAuditResourceKind,
+} from "../../domain/serve_audit/behavior_spelling.ts";
 
 const logger = getSwampLogger(["serve", "audit", "websocket-sink"]);
 
@@ -39,6 +43,25 @@ export interface AuditSubscription {
   readonly id: string;
   readonly socket: WebSocket;
   readonly filter: AuditSubscriptionFilter;
+}
+
+/**
+ * The filter with its actions and resource kind in the stored spelling, so a
+ * behavior-spelled subscription receives the model-spelled events
+ * (swamp-club#3334).
+ */
+function canonicalSubscriptionFilter(
+  filter: AuditSubscriptionFilter,
+): AuditSubscriptionFilter {
+  return {
+    ...filter,
+    ...(filter.actions
+      ? { actions: filter.actions.map(canonicalAuditAction) }
+      : {}),
+    ...(filter.resourceKind !== undefined
+      ? { resourceKind: canonicalAuditResourceKind(filter.resourceKind) }
+      : {}),
+  };
 }
 
 function matchesFilter(
@@ -84,7 +107,10 @@ export class WebSocketSink implements AuditSink {
   readonly #subscriptions = new Map<string, AuditSubscription>();
 
   subscribe(subscription: AuditSubscription): void {
-    this.#subscriptions.set(subscription.id, subscription);
+    this.#subscriptions.set(subscription.id, {
+      ...subscription,
+      filter: canonicalSubscriptionFilter(subscription.filter),
+    });
     logger.info(
       "Audit subscription {id} registered, {count} active",
       { id: subscription.id, count: this.#subscriptions.size },

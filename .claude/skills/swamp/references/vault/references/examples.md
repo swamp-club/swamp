@@ -148,8 +148,8 @@ jobs:
     steps:
       - name: deploy-service
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
 ```
 
@@ -217,8 +217,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
         env:
           DB_PASSWORD: ${{ vault.get(my-hcv, db-password) }}
@@ -434,8 +434,8 @@ jobs:
     steps:
       - name: push-new-secret
         task:
-          type: model_method
-          modelIdOrName: secret-updater
+          type: behavior
+          behavior: secret-updater
           methodName: update
           inputs:
             key: ${{ inputs.secretKey }}

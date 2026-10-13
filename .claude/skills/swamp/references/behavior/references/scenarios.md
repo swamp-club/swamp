@@ -415,20 +415,20 @@ jobs:
       - name: deploy-dev
         condition: ${{ inputs.environment == "dev" }}
         task:
-          type: model_method
-          modelIdOrName: api-client-dev
+          type: behavior
+          behavior: api-client-dev
           methodName: deploy
       - name: deploy-staging
         condition: ${{ inputs.environment == "staging" }}
         task:
-          type: model_method
-          modelIdOrName: api-client-staging
+          type: behavior
+          behavior: api-client-staging
           methodName: deploy
       - name: deploy-prod
         condition: ${{ inputs.environment == "production" }}
         task:
-          type: model_method
-          modelIdOrName: api-client-prod
+          type: behavior
+          behavior: api-client-prod
           methodName: deploy
 ```
 
@@ -551,8 +551,8 @@ jobs:
     steps:
       - name: create-public-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-a
@@ -560,8 +560,8 @@ jobs:
             availabilityZone: us-east-1a
       - name: create-public-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: public-b
@@ -569,8 +569,8 @@ jobs:
             availabilityZone: us-east-1b
       - name: create-private-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: private-a
@@ -578,8 +578,8 @@ jobs:
             availabilityZone: us-east-1a
       - name: create-private-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: create
           inputs:
             instanceName: private-b
@@ -609,8 +609,8 @@ jobs:
     steps:
       - name: delete-public-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: delete
           inputs:
             instanceName: public-a
@@ -619,8 +619,8 @@ jobs:
             identifier: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}
       - name: delete-public-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: delete
           inputs:
             instanceName: public-b
@@ -629,8 +629,8 @@ jobs:
             identifier: ${{ data.latest("prod-subnet", "public-b").attributes.SubnetId }}
       - name: delete-private-a
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: delete
           inputs:
             instanceName: private-a
@@ -639,8 +639,8 @@ jobs:
             identifier: ${{ data.latest("prod-subnet", "private-a").attributes.SubnetId }}
       - name: delete-private-b
         task:
-          type: model_method
-          modelIdOrName: prod-subnet
+          type: behavior
+          behavior: prod-subnet
           methodName: delete
           inputs:
             instanceName: private-b

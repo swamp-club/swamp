@@ -20,8 +20,8 @@ releasing, the lock expires after the TTL.
 ## Workflow Step Locking
 
 Workflow steps acquire per-behavior locks individually — the workflow does not
-hold all locks upfront. Each `model_method` step acquires its target behavior's
-lock before execution and releases it after the step completes. This means:
+hold all locks upfront. Each `behavior` step acquires its target behavior's lock
+before execution and releases it after the step completes. This means:
 
 - Parallel steps on **different behaviors** lock independently and run
   concurrently

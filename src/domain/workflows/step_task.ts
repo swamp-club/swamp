@@ -30,6 +30,11 @@ import {
   unenforcedSchemaKeywords,
   WAIT_KEY_FORM,
 } from "./signal_wait.ts";
+import {
+  BEHAVIOR_STEP_TASK_FIELDS,
+  BEHAVIOR_STEP_TASK_TYPE,
+  MODEL_STEP_TASK_TYPE,
+} from "../terminology/behavior_aliases.ts";
 
 const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}\s*$/s;
 
@@ -51,16 +56,36 @@ export type AssertSeverity = z.infer<typeof AssertSeveritySchema>;
  * - A CEL predicate assertion (`type: "assert"`)
  * - A wait for a JSON signal (`type: "wait_for_signal"`)
  */
+/** The `model_method` step task, as stored. */
+export const ModelMethodTaskRawSchema = z.object({
+  type: z.literal("model_method"),
+  modelIdOrName: z.string().min(1).optional(),
+  modelType: z.string().min(1).optional(),
+  modelName: z.string().min(1).optional(),
+  methodName: z.string().min(1),
+  inputs: recordOrExpression,
+  globalArgs: recordOrExpression,
+});
+
+/**
+ * The behavior spelling of the `model_method` step task (swamp-club#3334),
+ * for documentation only: `swamp workflow schema` lists it beside the
+ * `model_method` variant. Parsing never produces it —
+ * {@link normalizeBehaviorTask} rewrites a behavior-spelled task to
+ * `model_method` before the task schema sees it.
+ */
+export const BehaviorTaskDocSchema = z.object({
+  type: z.literal("behavior"),
+  behavior: z.string().min(1).optional(),
+  behaviorType: z.string().min(1).optional(),
+  behaviorName: z.string().min(1).optional(),
+  methodName: z.string().min(1),
+  inputs: recordOrExpression,
+  globalArgs: recordOrExpression,
+});
+
 const StepTaskRawSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("model_method"),
-    modelIdOrName: z.string().min(1).optional(),
-    modelType: z.string().min(1).optional(),
-    modelName: z.string().min(1).optional(),
-    methodName: z.string().min(1),
-    inputs: recordOrExpression,
-    globalArgs: recordOrExpression,
-  }),
+  ModelMethodTaskRawSchema,
   z.object({
     type: z.literal("workflow"),
     workflowIdOrName: z.string().min(1),
@@ -97,12 +122,88 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const MODEL_SPECIFIC_KEYS: readonly string[] = Object.values(
+  BEHAVIOR_STEP_TASK_FIELDS,
+);
+
+function presentKeys(
+  d: Record<string, unknown>,
+  keys: readonly string[],
+): string[] {
+  return keys.filter((key) => key in d && d[key] !== undefined);
+}
+
+/**
+ * Rewrites a behavior-spelled step task to its stored `model_method` form
+ * (swamp-club#3334): `type: behavior` becomes `type: model_method`, and
+ * `behavior`, `behaviorType` and `behaviorName` become `modelIdOrName`,
+ * `modelType` and `modelName`. Key order is kept, so the parsed task, and the
+ * file swamp writes back, are the same as for the model spelling.
+ *
+ * A task that mixes the two spellings is refused: the task schema strips
+ * unknown keys, so a stray field would otherwise be silently dropped. The
+ * reference checks are run here in the behavior spelling so their errors use
+ * the words the author wrote. Any other value is returned unchanged.
+ */
+export function normalizeBehaviorTask(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const d = raw as Record<string, unknown>;
+  // A model_method task is left exactly as before: its object schema has
+  // always dropped keys it does not declare, so a stray behavior key in an
+  // existing file keeps parsing (no regression). Only the new spelling
+  // refuses a mix.
+  if (d.type !== BEHAVIOR_STEP_TASK_TYPE) return raw;
+  const stray = presentKeys(d, MODEL_SPECIFIC_KEYS);
+  if (stray.length > 0) {
+    throw new Error(
+      `A behavior step task cannot use ${stray.join(", ")}. ` +
+        `Use behavior, or behaviorType + behaviorName, with type: behavior; ` +
+        `or modelIdOrName, or modelType + modelName, with type: model_method.`,
+    );
+  }
+  const hasExisting = !!d.behavior;
+  const hasDirect = !!d.behaviorType;
+  if (hasExisting && hasDirect) {
+    throw new Error(
+      `Step task has both behavior and behaviorType. ` +
+        `Use either behavior (existing definition) or behaviorType + behaviorName (direct type execution), not both.`,
+    );
+  }
+  if (!hasExisting && !hasDirect) {
+    throw new Error(
+      `Step task requires either behavior or behaviorType + behaviorName.`,
+    );
+  }
+  if (hasDirect && !d.behaviorName) {
+    throw new Error(
+      `behaviorType requires behaviorName to name the auto-created definition.`,
+    );
+  }
+  if ("globalArgs" in d && d.globalArgs && !hasDirect) {
+    throw new Error(
+      `globalArgs is only valid with direct type execution (behaviorType + behaviorName). ` +
+        `For existing definitions, set global arguments in the definition YAML instead.`,
+    );
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(d)) {
+    if (key === "type") out.type = MODEL_STEP_TASK_TYPE;
+    else if (key in BEHAVIOR_STEP_TASK_FIELDS) {
+      out[BEHAVIOR_STEP_TASK_FIELDS[key]] = value;
+    } else if (!MODEL_SPECIFIC_KEYS.includes(key)) out[key] = value;
+  }
+  return out;
+}
+
 /**
  * Zod schema for step tasks with backward compatibility preprocessing.
  *
+ * - The behavior spelling is rewritten to `model_method` first
+ *   ({@link normalizeBehaviorTask}), so every consumer sees one form
  * - `type: "shell"` throws an actionable error
  */
-export const StepTaskSchema = z.preprocess((data) => {
+export const StepTaskSchema = z.preprocess((input) => {
+  const data = normalizeBehaviorTask(input);
   if (data && typeof data === "object" && "type" in data) {
     const d = data as Record<string, unknown>;
     if (d.type === "shell") {

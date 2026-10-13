@@ -20,7 +20,7 @@ What does the user need?
 │
 ├── Orchestrate multiple actions in sequence or parallel
 │   └── Workflow — see design/primitives/workflows.md
-│       ├── Steps are all behavior methods? → workflow with model_method steps
+│       ├── Steps are all behavior methods? → workflow with behavior steps
 │       ├── Mix of behaviors and scripts? → workflow with mixed step types
 │       └── Need to nest workflows? → see references/workflow/references/nested-workflows.md
 │

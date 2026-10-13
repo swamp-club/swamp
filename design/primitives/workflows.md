@@ -21,38 +21,38 @@ that hit rate-limited APIs.
 
 ## Step Task Variants
 
-A `model_method` step task has two mutually exclusive variants.
+A `behavior` step task has two mutually exclusive variants.
 
-### Existing Definition (`modelIdOrName`)
+### Existing Definition (`behavior`)
 
 Refers to an existing definition by name or ID:
 
 ```yaml
 task:
-  type: model_method
-  modelIdOrName: my-vpc
+  type: behavior
+  behavior: my-vpc
   methodName: create
   inputs:
     cidr: "10.0.0.0/16"
 ```
 
-### Direct Type Execution (`modelType` + `modelName`)
+### Direct Type Execution (`behaviorType` + `behaviorName`)
 
 Creates the definition if it doesn't exist. The type's schemas decide which
 inputs are global arguments and which are method arguments:
 
 ```yaml
 task:
-  type: model_method
-  modelType: "@swamp/aws/ec2/vpc"
-  modelName: my-vpc
+  type: behavior
+  behaviorType: "@swamp/aws/ec2/vpc"
+  behaviorName: my-vpc
   methodName: create
   inputs:
     region: us-east-1
     cidr: "10.0.0.0/16"
 ```
 
-A step cannot have both `modelIdOrName` and `modelType`. Auto-created
+A step cannot have both `behavior` and `behaviorType`. Auto-created
 definitions are stored in `.swamp/auto-definitions/`.
 
 The optional `globalArgs` field passes global arguments directly and skips
@@ -60,9 +60,9 @@ schema-based input routing. When it is set, `inputs` are method arguments only:
 
 ```yaml
 task:
-  type: model_method
-  modelType: "@myorg/deployer"
-  modelName: my-deployer
+  type: behavior
+  behaviorType: "@myorg/deployer"
+  behaviorName: my-deployer
   methodName: deploy
   globalArgs:
     region: us-east-1
@@ -71,7 +71,7 @@ task:
 ```
 
 `globalArgs` is valid only with direct type execution. The schema rejects it
-for `modelIdOrName` tasks.
+for `behavior` tasks that name an existing definition.
 
 `inputs` and `globalArgs` each accept a literal YAML record or a single CEL
 expression that evaluates to a record at runtime:
@@ -112,6 +112,20 @@ its step runs, not at run start, if it reads `data.*` or `steps.*` or its step
 has a `guard`. It then sees records that earlier steps in the same run wrote.
 See "Task-target deferral" in
 [../enablers/expressions.md](../enablers/expressions.md).
+
+### Model spelling
+
+`type: behavior` is the preferred spelling of `type: model_method`
+(swamp-club#3334). The fields map one to one: `behavior` is `modelIdOrName`,
+`behaviorType` is `modelType` and `behaviorName` is `modelName`. The other
+fields are the same. Swamp converts a `type: behavior` task to `model_method`
+when it reads the workflow. A task that mixes the two spellings is refused.
+
+The model spelling is the stored form and stays accepted. `swamp workflow
+edit`, and anything else that saves a workflow, writes each step back as
+`model_method`, so older swamp releases can read the file. A file written by
+hand in the behavior spelling needs a swamp release that accepts it. The
+examples outside the two variants above use the model spelling.
 
 ### Manual Approval (`manual_approval`)
 

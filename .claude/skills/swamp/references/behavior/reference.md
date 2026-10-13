@@ -16,8 +16,9 @@ output, exit codes and audit action):
 | `swamp behavior type describe\|search`            | `swamp model type describe\|search`                                                      |
 
 Stored names keep `model`: the `models/` directory, JSON keys and error codes
-(`modelName`, `model_not_found`), workflow step fields (`modelIdOrName`), and
-the CEL `model.<name>` / `model("<name>")` references.
+(`modelName`, `model_not_found`), the workflow step fields swamp writes
+(`model_method`, `modelIdOrName`; a `type: behavior` step is read as this form),
+and the CEL `model.<name>` / `model("<name>")` references.
 
 ## Repository Structure
 

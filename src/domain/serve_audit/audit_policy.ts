@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AuditCategory } from "./audit_event.ts";
+import { canonicalAuditAction } from "./behavior_spelling.ts";
 
 export type AuditLevel = "none" | "metadata" | "request" | "requestResponse";
 
@@ -54,6 +55,12 @@ export function classifyTier(
 
 export class AuditPolicy {
   readonly #rules: readonly AuditPolicyRule[];
+  /**
+   * The rules as matched: each action in the stored spelling, so a
+   * behavior-spelled rule matches the model-spelled events (swamp-club#3334).
+   * `rules` keeps the rules as configured.
+   */
+  readonly #matchRules: readonly AuditPolicyRule[];
   readonly #defaultLevel: AuditLevel;
 
   constructor(
@@ -61,6 +68,11 @@ export class AuditPolicy {
     defaultLevel: AuditLevel = "metadata",
   ) {
     this.#rules = rules;
+    this.#matchRules = rules.map((rule) =>
+      rule.action === undefined
+        ? rule
+        : { ...rule, action: canonicalAuditAction(rule.action) }
+    );
     this.#defaultLevel = defaultLevel;
   }
 
@@ -74,7 +86,7 @@ export class AuditPolicy {
 
   evaluate(category: AuditCategory, action: string): AuditLevel {
     const tier = classifyTier(action, category);
-    for (const rule of this.#rules) {
+    for (const rule of this.#matchRules) {
       if (rule.category !== undefined && rule.category !== category) continue;
       if (rule.action !== undefined && rule.action !== action) continue;
       if (rule.tier !== undefined && rule.tier !== tier) continue;
@@ -85,7 +97,7 @@ export class AuditPolicy {
 
   shouldHmac(category: AuditCategory, action: string): boolean {
     const tier = classifyTier(action, category);
-    for (const rule of this.#rules) {
+    for (const rule of this.#matchRules) {
       if (rule.category !== undefined && rule.category !== category) continue;
       if (rule.action !== undefined && rule.action !== action) continue;
       if (rule.tier !== undefined && rule.tier !== tier) continue;

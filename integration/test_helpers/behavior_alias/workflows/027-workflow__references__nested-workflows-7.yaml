@@ -1,0 +1,22 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/nested-workflows.md (block 7)
+id: 00000000-0000-4000-8000-000000000027
+name: corpus-27
+# create-networking workflow (parent)
+jobs:
+  - name: create
+    steps:
+      - name: create-vpc
+        task:
+          type: model_method
+          modelIdOrName: networking-vpc
+          methodName: create
+  - name: tag
+    dependsOn:
+      - job: create
+        condition:
+          type: succeeded
+    steps:
+      - name: tag-resources
+        task:
+          type: workflow
+          workflowIdOrName: tag-networking

@@ -1,0 +1,34 @@
+# Extracted from .claude/skills/swamp/references/vault/references/examples.md (block 13)
+id: 00000000-0000-4000-8000-000000000008
+# workflows/rotate-secrets/workflow.yaml
+name: rotate-secrets
+version: 1
+description: Push a rotated secret to its consumer and redeploy services
+inputs:
+  properties:
+    vaultName:
+      type: string
+    secretKey:
+      type: string
+  required: ["vaultName", "secretKey"]
+jobs:
+  - name: update-secret
+    steps:
+      - name: push-new-secret
+        task:
+          type: model_method
+          modelIdOrName: secret-updater
+          methodName: update
+          inputs:
+            key: ${{ inputs.secretKey }}
+            value: ${{ vault.get(inputs.vaultName, inputs.secretKey) }}
+  - name: redeploy
+    dependsOn:
+      - job: update-secret
+        condition:
+          type: succeeded
+    steps:
+      - name: deploy-services
+        task:
+          type: workflow
+          workflowIdOrName: deploy-all-services
