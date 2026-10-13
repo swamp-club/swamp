@@ -849,6 +849,11 @@ It lives at `{namespace}/.namespace.json` in the remote (extension backends) or
   its first commit (swamp-club#3301). `createNamespaceListDeps` builds the
   listing for the CLI and serve alike.
 
+A manifest that is not valid JSON, lacks string `namespace` and `repoId`
+fields, or has a `registeredAt` that is not a string, is never skipped: namespace commands refuse with an error naming the
+file (swamp-club#3319). Skipping it would let `datastore setup` treat a
+namespace whose owner cannot be read as unclaimed.
+
 For extension datastores, `DatastoreProvider.registerNamespace()` and
 `DatastoreProvider.listNamespaces()` manage manifests through the remote API
 (S3 PUT/GET, or GCS). After the remote write, swamp core also writes the
