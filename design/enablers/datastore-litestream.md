@@ -1,7 +1,7 @@
 ---
 audience: maintainer
 enables: [data]
-last-verified: 2026-10-13 @ dcc3099c
+last-verified: 2026-10-13 @ 35be0b9d
 ---
 
 # Datastore: Litestream Replication
@@ -31,16 +31,22 @@ and the `_control/` records this layout sits beside.
 2. **Talk to it through its control socket.** `POST /sync {"wait": true}` is how
    the outbox learns that a commit has reached the bucket (see
    [Knowing a commit is replicated](#knowing-a-commit-is-replicated)).
-3. **One sidecar per writer process.** In solo mode a write command starts one,
-   forces a sync before it exits, and stops it. This is the starting point; see
-   [Short-lived processes](#short-lived-processes-q8). In team mode the serve
-   leader keeps one running for as long as it holds the lease.
+3. **One sidecar per datastore writer, kept alive between commands.** In solo
+   mode a write command reuses an idle sidecar, or starts one, and forces a
+   sync before it exits; the sidecar exits after an idle timeout. A sidecar per
+   command was the starting point, and Phase 4A replaced it (see
+   [Phase 4A](#phase-4a-replication-cost-on-a-bucket-model-swamp-club3357)).
+   In team mode the serve leader keeps one running for as long as it holds the
+   lease.
 4. **`commits.db` keeps SQLite's default checkpointing and never forces a
    checkpoint.** Do not copy `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)`
    pattern.
-5. **One replica path per writer fence.** `<prefix>/_litestream/<fence>/`.
-   Litestream 0.5 has no generations, and a second writer on the same path
-   corrupts the replica.
+5. **One replica path per writer lineage.** `<prefix>/_litestream/<fence>/`,
+   named by the fence at which the lineage's replication began: in solo mode
+   one checkout's run of commands, not each command's own fence (see
+   [What changes for Phase 4D and 4E](#what-changes-for-phase-4d-and-4e)); in
+   team mode the serve leader's fence. Litestream 0.5 has no generations, and
+   a second writer on the same path corrupts the replica.
 6. **Windows: a supported target, gated on an upstream fix.** Litestream 0.5.16
    and 0.5.17 cannot replicate on Windows (litestream#1542, fixed on main by
    #1548, not yet released). Deno has no AF_UNIX client on Windows, so swamp
@@ -269,7 +275,10 @@ nothing stops two writers sharing a path.
   fence id comes from the leader lease in team mode and the writer lease in solo
   mode (swamp-club#3359; `datastores.md`, **v3 writer lease**). Restore reads the current fence from that record, then restores
   `_litestream/<fence>/`. Paths left by older fences are garbage-collected after
-  the next fence's first confirmed sync.
+  the next fence's first confirmed sync. In solo mode the path's fence is the
+  one at which the checkout's replication lineage began, so consecutive
+  commands share it
+  ([What changes for Phase 4D and 4E](#what-changes-for-phase-4d-and-4e)).
 - A zombie's confirmations on its old path count for nothing. **A leader must
   check it still holds its fence before it acknowledges outbox entries.**
 - A node that already has an older copy gets no incremental catch-up from
@@ -319,20 +328,364 @@ trees. The reasons are in `datastores.md` under "v3 commit store".
 Most CLI commands live for seconds, so the question is whether each write
 command runs its own sidecar or a longer-lived process owns replication.
 
-- **Per command** costs 17–30 ms per write command on Linux and macOS arm64, 103
-  ms on macOS Intel and 110–150 ms on Windows, measured against local emulators.
+- **Per command** (Phase 3 measurement) costs 17–30 ms per write command on
+  Linux and macOS arm64, 103 ms on macOS Intel and 110–150 ms on Windows,
+  measured against local emulators.
   With 30 ms RTT the cost rises to about 197 ms, because every command opens new
   connections.
 - **Long-lived** brings a forced sync down to about 44 ms at 30 ms RTT, since
   connections stay warm. But something has to own the process between commands,
   detect when it's gone, and stop it.
-- **Start per command.** It needs no daemon, and the crash results show it is
-  safe. Read-only commands never start a sidecar. Revisit with real-bucket
-  numbers. If the gap is near what the RTT proxy shows (about 150 ms per write
-  command), add a sidecar that stays alive for a short idle period behind the
-  same pidfile and socket. Commands would reuse it, and it would exit after an
-  idle timeout.
+- **Superseded by Phase 4A:** use an idle sidecar. This record first chose a
+  sidecar per command, to be revisited with real-bucket numbers. The bucket
+  model showed that a per-command sidecar never compacts, so restores slow
+  down with every command, and that it pays for new connections and
+  credentials each time. Read-only commands still never start a sidecar.
 - Serve doesn't have this problem: the leader is long-lived anyway.
+
+## Phase 4A: replication cost on a bucket model (swamp-club#3357)
+
+Phase 4 needed real-bucket numbers before it chose how solo mode runs
+Litestream. **These figures come from a bucket model, not real buckets.** The
+issue asked for real S3 and GCS buckets and said emulator numbers don't count.
+Its author, the maintainer who filed it (stack72), directed this spike to use
+emulators instead, on 2026-10-13 after triage in the swamp-club#3357 lifecycle,
+and the approved plan (version 2) was built on that. The model is ministack (S3)
+and fake-gcs-server 1.56.1 (GCS) behind a proxy that adds latency, handshakes, a
+bandwidth cap and delayed credentials. MinIO could not be pulled. Request, byte
+and connection counts do not depend on the emulator, so they carry over to real
+buckets as they are, and the choice below rests on them. The times depend on the
+model. [Real-bucket check](#real-bucket-check) lists what has to be confirmed
+before Phase 4E.
+
+**The choice for Phase 4D: an idle sidecar, not one per command.** A per-command
+sidecar never runs Litestream's compaction or retention, which live inside the
+sidecar process. A day of 250 per-command commands left 252 objects, and
+restoring them took 18 s at 20 ms round trip and 121 s at 150 ms, against 1.1 s
+and 5.7 s once compacted. It also pays new connections and credentials on every
+command. An idle sidecar adds 24–283 ms to a write command. The prototype's
+per-command sidecar also re-uploaded a snapshot of `commits.db` on every command
+(311 MB of replica for a 4 MB database). That was a teardown-order bug, found
+and fixed here: [Teardown order](#teardown-order-the-per-command-re-snapshot).
+**Waiting for replication is acceptable:** with an idle sidecar, a small v3
+write that waits is 2–11 times faster than the v2 push it replaces, and every
+write in the table is faster (1.9–14 times).
+
+### The model
+
+- **Proxy** (`spike/bucket_proxy.ts`). Each request costs one round trip, and
+  each new client connection costs two more, standing in for TCP and TLS 1.3. A
+  bandwidth cap is shared per direction. The proxy reads a whole request body
+  before it forwards it and refuses a short one, as a real bucket does. A first
+  version streamed bodies on, so an upload a stopping sidecar abandoned landed
+  as a truncated object and broke a restore. Those runs were thrown away.
+- **Profiles.** Near S3: 20 ms round trip, 200 Mbit/s. Far S3: 150 ms, 100
+  Mbit/s. Near GCS: 20 ms, 200 Mbit/s. Zero: no latency, no cap.
+- **Credentials.** S3 credentials come from a fake container-credentials
+  endpoint, delayed by 0 ms (static keys), 50 ms (instance or workload identity)
+  or 600 ms (an SSO refresh). Every fresh client really resolves them through
+  it. fake-gcs needs no auth, so GCS rows carry no credential cost. On a real
+  bucket, add the ADC token fetch: a request to the metadata server on Google
+  Cloud, or an OAuth token refresh over a new TLS connection for user
+  credentials, once per sidecar. It is not modelled, and the real-bucket check
+  measures it.
+- **Prototype.** Branch `spike/3357-litestream-buckets`, cut from main at
+  `34b275cb` and later rebased onto main with the fenced writer lease
+  (swamp-club#3359), for the teardown-order and replica-path runs.
+  `SWAMP_SPIKE_LITESTREAM=percommand` starts a sidecar when the command takes
+  the v3 writer lock. At teardown it forces one `/sync {"wait": true}` after the
+  closing compaction and before the lock is released, then stops the sidecar.
+  `idle` reuses a sidecar found through a pidfile and its socket. The Q1–Q5 runs
+  used this original teardown order; see
+  [Teardown order](#teardown-order-the-per-command-re-snapshot). It runs on a
+  filesystem-v3 datastore, whose chunks stay on local disk. Phase 4 uploads
+  chunks through `storage/1` before the commit, so the large-output rows add a
+  measured upload of the same chunk bytes through the proxy, eight at a time, in
+  series before the sync.
+- Litestream 0.5.17, Apple M-series, macOS. Median and p95, nearest rank. The
+  first run of each series (Litestream's first snapshot) is left out of the
+  medians. Machine load from other sessions was checked before each series. One
+  noisy GCS series was rerun, and the noisy one is kept as `superseded-*`.
+
+### Forced sync (Q1)
+
+One commit, then `/sync` with `wait`; 30 runs each. **Cold** spawns a sidecar,
+waits for its socket, writes, syncs and stops it, as a per-command sidecar does.
+**Warm** syncs on a sidecar that is already running. Times in ms, p50 / p95.
+
+| Profile, credentials | Cold, whole | Warm sync | Cold requests | Warm requests |
+| -------------------- | ----------- | --------- | ------------- | ------------- |
+| S3, zero             | 42 / 52     | 15 / 26   | 7 on 2 conns  | 1 on 0        |
+| GCS, zero            | 31 / 33     | 18 / 21   | 7 on 2        | 1 on 0        |
+| S3 near, static      | 144 / 150   | 36 / 37   | 7 on 2        | 1 on 0        |
+| S3 near, identity    | 187 / 190   | 36 / 38   | 7 on 2        | 1 on 0        |
+| S3 near, SSO         | 736 / 739   | 40 / 47   | 7 on 2        | 1 on 0        |
+| S3 far, static       | 802 / 814   | 170 / 179 | 7 on 2        | 1 on 0        |
+| S3 far, identity     | 858 / 872   | 174 / 250 | 7 on 2        | 1 on 0        |
+| S3 far, SSO          | 1721 / 2037 | 172 / 185 | 11–12 on 3    | 1 on 0        |
+| GCS near             | 167 / 182   | 50 / 57   | 7 on 2        | 1 on 0        |
+
+- A cold sync is six LISTs and one PUT over two new connections, plus one
+  credential resolution. A warm one is a single PUT on a pooled connection.
+- A burst of 50 commits with one sync costs at most about 20 ms more than one
+  commit at p50, so one sync per command is enough.
+- The zero rows match swamp-club#3234's emulator figures (11–15 ms sync), which
+  calibrates the model.
+- Far S3 with SSO retried requests (11–12 instead of 7), and a stopping sidecar
+  abandoned two uploads mid-body. Every series restored correctly from its
+  replica afterwards.
+
+### Whole write commands (Q2)
+
+`model method run` writing about 1 KB, `data delete`, and a run writing about 10
+MB, which is 20 MB of chunks (the log and the stdout resource). 20 runs each,
+variants interleaved. "Floor" is the v3 command with no replication. v2 is
+today's `@swamp/s3-datastore` or `@swamp/gcs-datastore` push, through the same
+proxy and credentials. swamp-uat#496's baseline ran at zero latency, so it is
+not comparable and v2 was rerun here. ms, p50.
+
+| Profile, credentials | Op        | v3 floor | v3 per command | v3 idle sidecar | v2 push |
+| -------------------- | --------- | -------- | -------------- | --------------- | ------- |
+| S3 near, static      | small     | 676      | 832            | 713             | 1642    |
+|                      | delete    | 501      | 645            | 542             | 1507    |
+|                      | 10 MB (1) | 1630     | 1768           | 1682            | 3599    |
+| S3 near, SSO         | small     | 677      | 1362           | 725             | 4654    |
+|                      | delete    | 510      | 1340           | 534             | 4524    |
+|                      | 10 MB     | 1625     | 2200           | 1665            | 6604    |
+| S3 far, static       | small     | 546      | 1417           | 829             | 6406    |
+|                      | delete    | 471      | 1329           | 657             | 5950    |
+|                      | 10 MB     | 2577     | 3451           | 2774            | 10049   |
+| S3 far, SSO          | small     | 663      | 2338           | 855             | 9383    |
+|                      | delete    | 475      | 2319           | 658             | 8975    |
+|                      | 10 MB     | 2579     | 4238           | 2764            | 13045   |
+| GCS near (no auth)   | small     | 555      | 752            | 632             | 1246    |
+|                      | delete    | 475      | 668            | 530             | 1092    |
+|                      | 10 MB     | 1641     | 1799           | 1690            | 3129    |
+
+(1) v3 10 MB rows include the measured chunk upload: about 0.93 s on near
+profiles and 1.9 s on far S3.
+
+- **Per-command rows use the original teardown order,** so each one also
+  uploaded a snapshot of about 230 KB. With the fixed order that upload goes
+  away, which saves about 10 ms at 200 Mbit/s and 20 ms at 100 Mbit/s. The
+  per-command rows are otherwise unchanged by the fix.
+- **The cost of waiting.** Over the floor, across the small, delete and 10 MB
+  rows, an idle sidecar adds 24–52 ms on near S3, 49–77 ms on GCS and 183–283 ms
+  on far S3. A per-command sidecar adds 138–830 ms near, 158–197 ms on GCS and
+  858–1844 ms far, mostly new connections and credentials.
+- **Against v2.** v2 makes 45–53 requests on 19–23 new connections per small
+  write, and its S3 client resolves credentials five times per command. That is
+  why SSO costs v2 3–4 s. Every v3 variant is faster than v2 on every row. With
+  an idle sidecar a small write is 2.0–2.3 times faster near (6.4 times with
+  SSO) and 7.7–11 times faster far. The wait replaces the push, and it is
+  cheaper.
+- **The floor varies between configurations** (546–677 ms for a small write)
+  because it touches no network: the difference is machine load and run order,
+  not the profile. Variants are interleaved inside each configuration, so
+  compare them along a row, not down the floor column.
+- p95 stayed within 10 % of p50 except where machine load hit every variant at
+  once (the near SSO floor p95 is 1189 ms). Raw p95s are in the results.
+
+### Teardown order: the per-command re-snapshot
+
+As first built, a per-command sidecar uploaded about 248 KB for a 1 KB write,
+against 18 KB on an idle sidecar. Litestream's debug log gave the reason at each
+start: `wal truncated by another process`, `wal overwritten by another process`
+or `wal header salt reset`.
+
+**The cause, traced.** `spike/exp_wal_trace.ts` records the `commits.db-wal`
+header at every step of a write command. Every command started with no WAL file,
+and the WAL disappeared when the commit store closed. The prototype stopped the
+sidecar first, so swamp held the last connection to `commits.db` when it closed
+it. SQLite then checkpointed and deleted the WAL, and the next command's sidecar
+could not continue from the position it had saved.
+
+- Moving the sync after the stores close did not help either. Litestream opens
+  the database lazily, about a second after it starts (see
+  [Shutdown and crash](#shutdown-and-crash-q5)). A sub-second command closes its
+  stores before the sidecar has opened `commits.db` at all.
+- A synthetic writer that closed after a forced sync never reproduced it,
+  because the sync had made the sidecar open the database first
+  (`spike/probe_wal_salt.ts`).
+
+**The fix: sync, close the stores, then stop the sidecar.** The forced sync
+makes Litestream open `commits.db`. The stores then close while it still holds
+the database, so swamp's close is not the last one and the WAL survives. Only
+then does the sidecar stop. With that order, 8 of 8 commands logged no snapshot,
+and each L0 file held only that command's change (15–19 KB). The WAL kept one
+salt across commands and grew until a normal checkpoint.
+
+**Replica growth (Q4)** over a typical day of 200 model runs and 50 deletes, one
+commit each, with SQLite's default checkpointing:
+
+| Sidecar                                   | `commits.db` | Replica at end | 330 s later         |
+| ----------------------------------------- | ------------ | -------------- | ------------------- |
+| Per command, original order, 250 commands | 4.0 MB       | 311 MB         | 311 MB, 250 objects |
+| Per command, fixed order, 250 commands    | 4.0 MB       | 4.2 MB         | 4.2 MB, 252 objects |
+| Idle, 250 commands                        | 4.0 MB       | 7.9 MB         | 5.1 MB, 11 objects  |
+| Idle, heavy day of 1250 commands          | 20 MB        | 30.6 MB        | 27.3 MB, 37 objects |
+
+- With the fixed order a per-command replica grows linearly, 16.7 KB per commit.
+  It still never compacts: one L0 object per command, kept until something
+  long-lived compacts them.
+- **What no compaction costs.** Restoring that 252-object replica took 18.4 s on
+  near S3 and 121 s on far S3, in 283 requests. A long-lived sidecar started
+  later on the same database compacted it to 4 objects in about six minutes, and
+  the restore then took 1.1 s and 5.7 s in 32 requests. 5 of 5 restores passed
+  the integrity check on each profile, before and after. So a takeover or a
+  first clone slows down with every command since the last compaction.
+- On an idle sidecar growth is linear, 24.5–31.6 KB per commit, and compaction
+  brings the replica to 1.3–1.4 times the database. Its first restart after an
+  idle timeout uploaded a 1.2 MB snapshot of a 2 MB database
+  (`exp_idle_restart.ts`); later restarts did not. That run used the original
+  order, and the sidecar was the last connection when it exited, so 4D should
+  check it again with the fixed order.
+
+### Restore (Q3)
+
+`litestream restore` to a fresh path, then `PRAGMA integrity_check` and a
+row-for-row count. Every restore passed: 20 of 20 at 1 MB and 100 MB, 10 of 10
+at 1 GB. p50.
+
+| Profile  | 1 MB  | 100 MB | 1 GB  | Requests | Follow lag, 200 ms poll | Follow lag, 1 s poll |
+| -------- | ----- | ------ | ----- | -------- | ----------------------- | -------------------- |
+| S3 near  | 1.1 s | 6.8 s  | 59 s  | 32–41    | 66 ms (p95 276)         | 863 ms               |
+| S3 far   | 5.5 s | 16.0 s | 116 s | 32–44    | 1482 ms                 | 733 ms               |
+| GCS near | 0.8 s | 6.4 s  | 58 s  | 21–24    | 250 ms                  | 847 ms               |
+
+- A small restore costs about 32 round trips one after another, so it costs 5.5
+  s at 150 ms. A takeover or a first clone pays that before it can write.
+- Large restores follow the bandwidth cap: 1 GB at 200 Mbit/s is 43 s of
+  transfer.
+- Follow lag is measured from the leader's acknowledged sync. At 150 ms a poll
+  takes longer than 200 ms, so the 200 ms interval lagged more than the 1 s
+  default. Pick the interval from the round trip, not below it.
+- fake-gcs answers a resumable upload with a location that points straight at
+  the emulator, so in the runs above GCS uploads over 16 MB (the Go client's
+  chunk size) bypassed the proxy. The proxy now rewrites that location back
+  through itself. A 100 MB GCS initial sync then took 9.4 s, against 10.1 s on
+  near S3; the restore times above were downloads and always went through the
+  proxy.
+
+### The idle sidecar (Q5)
+
+- **Connection reuse.** After an idle gap of 1–130 s, a warm forced sync on far
+  S3 opened no new connection. It took about 170 ms after gaps of 1–15 s, 233 ms
+  after 30 s, 334 ms after 60 s and about 500 ms after 100–130 s.
+- **When the server drops idle connections.** With the proxy closing keep-alive
+  connections idle for more than 20 s, 1 of 15 syncs after gaps of 5–60 s had to
+  reconnect. Litestream's own background work (L0 retention every 15 s) keeps
+  the pooled connection in use. A warm sync after a gap of 25 s or more took
+  324–359 ms p50 (one reconnect: 474 ms), against 802 ms cold. How long real
+  endpoints keep idle connections is still on the
+  [Real-bucket check](#real-bucket-check).
+- **Finding a sidecar.** The pidfile and a `GET /info` on the socket found a
+  live sidecar every time. A SIGKILLed sidecar left a dead socket file, and a
+  pidfile could name an unrelated live pid. In both cases the probe failed and
+  the command started a new sidecar.
+- **A frozen sidecar hangs the command.** SIGSTOP the sidecar: its socket still
+  accepts connections, nothing answers, and the next command hung until it was
+  killed at 20 s. The probe needs a deadline. After the deadline, the command
+  kills the process the pidfile names, once its argv shows it is this database's
+  sidecar, and starts a new one. Two sidecars must never share a replica path.
+- **Two writers at once.** The v3 writer lock serialises the start, so only one
+  sidecar ran. The fenced writer lease that replaced the lock (swamp-club#3359)
+  serialises the start the same way. It does not keep the replica path; see
+  [What changes for Phase 4D and 4E](#what-changes-for-phase-4d-and-4e).
+- **Sleep and wake,** approximated with SIGSTOP and SIGCONT on the sidecar, its
+  watcher and the proxy, with the pidfile aged past the timeout. The idle exit
+  fired on wake, and the next command started a new sidecar and succeeded. Real
+  system sleep was not run. **The idle exit can race a command.** The
+  prototype's watcher exits on the pidfile's age alone, so it can stop
+  Litestream during a command that has just reused it. The command touches the
+  pidfile before probing, which narrows the window but does not close it. 4D
+  needs an exit that cannot overlap a command: for example, each command holds a
+  shared lock while it uses the sidecar, and the sidecar exits only once it can
+  take that lock exclusively after the timeout.
+- **The idle timeout.** Make it at least Litestream's L0 retention (5 min), so
+  compaction and retention run between bursts. Keep it short enough that a stale
+  sidecar does not outlive a working session. **Five minutes** is the starting
+  point.
+
+### What changes for Phase 4D and 4E
+
+- **4D: an idle sidecar for solo mode,** behind a pidfile and a short socket
+  path, with a five-minute idle timeout. A probe with a deadline. Stale-sidecar
+  takeover by verified pid. Read-only commands still never start one.
+- **4D: an idle exit that cannot overlap a command.** Each command holds a
+  shared lock while it uses the sidecar, and the sidecar exits only once it can
+  take that lock exclusively after the idle timeout.
+- **4D: key the replica path by lineage, not by fence.** Under the fenced writer
+  lease (swamp-club#3359) every CLI write command takes a new fence, so
+  `_litestream/<fence>/` gives each command a new replica path and a full
+  snapshot. So the path is keyed by the fence at which this copy's replication
+  began. The lineage continues while the fence just before a command's own was
+  this copy's, so no other writer took the lease in between; otherwise it
+  restarts at the command's fence. The prototype records the last fence when it
+  takes the lease, so a command that crashed is continued by its successor.
+  Litestream takes its replica path from its config at start, so a running
+  sidecar on the old path is stopped and replaced when the lineage changes.
+  Prototyped on main with the lease (`spike/exp_lineage.ts`, file replica, fixed
+  teardown order), over 11 commits: 6 commands, 2 by another writer, 2 more, a
+  command SIGKILLed after it took the lease, and 1 more:
+
+  | Replica path              | Paths | Files | Bytes   | Decisions                                       |
+  | ------------------------- | ----- | ----- | ------- | ----------------------------------------------- |
+  | per fence, per command    | 10    | 57    | 1.50 MB | a new path, with a full snapshot, every command |
+  | per lineage, per command  | 2     | 18    | 0.59 MB | continue ×5, restart at fence 9, continue ×3    |
+  | per lineage, idle sidecar | 2     | 24    | 0.62 MB | the same; the sidecar was replaced at fence 9   |
+
+  The newest path restored every commit (11 of 11) with an intact database in
+  each case. The crashed command's successor continued the lineage. The old path
+  keeps its last state for garbage collection after the new path's first
+  confirmed sync. Two effects came from the filesystem prototype, where both
+  writers share one `commits.db`: the idle sidecar's old path also picked up the
+  other writer's two commits before it was replaced, and the SIGKILLed command's
+  sidecar kept running as an orphan. On a bucket datastore each copy has its own
+  `commits.db`, and the pidfile guard covers orphans.
+- **4D: close `commits.db` while the sidecar holds it.** The teardown order is
+  sync, close the stores, then stop or release the sidecar. A sidecar that is
+  gone, or has not opened the database yet, when swamp closes it costs a full
+  snapshot on the next start. Check the idle sidecar's first restart after a
+  timeout with this order.
+- **4D: credentials** resolve once per sidecar. Keep the sidecar alive across
+  commands so SSO and identity costs are paid once per session, not once per
+  write.
+- **4E: v3 on S3 and GCS** costs less than v2's push even before tuning. Large
+  outputs are dominated by the chunk upload, which `storage/1` owns. Restore
+  costs about 32 round trips before any download, which the takeover and
+  first-clone budgets have to allow for.
+- **4E: GCS.** The record's earlier finding stands: a custom `apiEndpoint` has
+  no Litestream equivalent. Test GCS uploads over 16 MB against a real bucket
+  too: the model covers them only since the proxy started rewriting fake-gcs's
+  upload location.
+
+**When the choice reverses.** The re-snapshot no longer counts against per
+command: the fixed teardown order removes it. Per command would win only if both
+of these hold:
+
+1. Something else compacts the replica often enough, for example a sidecar that
+   serve or a scheduled job runs, so a takeover never restores thousands of L0
+   objects (modelled: 252 objects took 18–121 s, compacted 1.1–5.7 s).
+2. A real-bucket run shows a cold forced sync under 250 ms at p95 on near S3
+   with users' real credential chains (modelled: 190 ms with identity, 739 ms
+   with SSO).
+
+The idle sidecar stands even if real endpoints drop idle connections quickly:
+its background requests kept the connection in use under a 20 s drop, and
+credentials and compaction still favour it.
+
+### Real-bucket check
+
+Before Phase 4E ships, on a test account and never on production data:
+
+- a cold forced sync and a warm one on near S3 (static keys, an SSO profile, and
+  instance or workload identity), on far S3, and on GCS with ADC;
+- how long real endpoints keep an idle pooled connection, which sets how much of
+  the warm figure an idle sidecar keeps;
+- what ADC adds to a cold GCS sync, which the model leaves out;
+- GCS uploads over 16 MB;
+- the reversal figures above.
 
 ## Upgrades
 
@@ -436,20 +789,29 @@ macOS.
   close that window.
 - **Size.** Downloading keeps release binaries unchanged; embedding would
   have added 10–12 % to each.
-- **Real-bucket latency** is unmeasured. The emulator-plus-RTT figures put a
-  per-command forced sync at about 165 ms against a long-lived 44 ms. Measure
-  against real S3 and GCS before choosing per-command or long-lived for solo
-  mode.
+- **Real-bucket latency** is modelled, not measured: Phase 4A ran on emulators
+  behind a latency, handshake, bandwidth and credential model. The
+  [Real-bucket check](#real-bucket-check) has to run before Phase 4E.
+- **Teardown order** (Phase 4A). If swamp closes `commits.db` after its
+  sidecar has stopped, or before the sidecar has opened it, the next sidecar
+  uploads a full snapshot. Sync, close the stores, then stop the sidecar.
 - **GCS `apiEndpoint`** has no Litestream equivalent.
 
 ## Changes to the Phase 4, 5 and 7 plans
 
-- **Phase 4 entry criterion.** Before Phase 4 picks per-command or idle-sidecar
-  replication, measure a forced sync and a whole write command against real S3
-  and GCS.
+- **Phase 4 entry criterion.** Met on a bucket model by Phase 4A, which chose
+  an idle sidecar. The [Real-bucket check](#real-bucket-check) runs before
+  Phase 4E.
 - **Phase 4 (embedded datastore service):**
-  - sidecar lifecycle per write command: start, forced `/sync wait`, stop;
-  - pidfile guard against orphans, and a short socket path;
+  - an idle sidecar: a write command reuses or starts it, forces `/sync wait`
+    before it exits, and the sidecar exits after a five-minute idle timeout
+    that cannot overlap a command;
+  - a pidfile and a short socket path; a probe with a deadline, and takeover
+    of a frozen or stale sidecar by verified pid;
+  - a replica path keyed by the checkout's replication lineage, not by each
+    command's fence;
+  - teardown order: sync, close the stores, then stop or release the sidecar
+    (Phase 4A);
   - SHA-256 check on download and on every start (built: swamp-club#3358);
   - `commits.db` keeps SQLite's default checkpointing and never forces one;
   - the outbox rule above;
@@ -471,10 +833,36 @@ macOS.
 
 ## Reproducing
 
-The prototype is on branch `spike/3234-litestream` and will never be merged.
-`spike/README.md` maps each script to a question, and `spike/results/` holds the
-raw JSON lines quoted above. CI results come from the `Spike 3234 Litestream`
-workflow on that branch (run ids below).
+Phase 4A's scripts and raw results are on branch
+`spike/3357-litestream-buckets` (`a751f727`), which will never be merged.
+`spike/README.md` there lists each script, and the JSON lines are in
+`spike/results/3357/`:
+
+```sh
+# On that branch: LITESTREAM_BIN as below, ministack on :47357 and fake-gcs on
+# :47358 with bucket lsbucket, and SWAMP_BIN=<repo>/swamp from deno run compile.
+cd spike
+deno run -A exp_bucket_sync.ts s3-far sso 30                  # Q1 <profile> <creds> <runs>
+deno run -A exp_command.ts s3-near static 20                  # Q2
+deno run -A exp_restore.ts s3-near static 1,100,1000 20 10    # Q3
+GROWTH_MODE=idle deno run -A exp_growth.ts typical-idle 200 50 # Q4
+deno run -A exp_idle.ts gaps s3-far 1,5,15,30,60,100,130 3    # Q5
+deno run -A exp_idle.ts faults s3-near
+deno run -A exp_idle_restart.ts 100 3
+IDLE_DROP_MS=20000 deno run -A exp_idle.ts gaps s3-far 5,15,25,40,60 3
+deno run -A exp_wal_trace.ts default 5             # teardown order, as first built
+deno run -A exp_wal_trace.ts sync-close-stop 8     # the fixed order
+GROWTH_MODE=percommand GROWTH_ORDER=sync-close-stop \
+  deno run -A exp_growth.ts typical-percommand-sync-close-stop 200 50
+deno run -A exp_restore_objects.ts <growth-run>/ds/commits.db <replica-path> 5
+deno run -A exp_lineage.ts                          # replica path per fence or lineage
+```
+
+The Phase 3 prototype is on branch `spike/3234-litestream` and will never be
+merged. On that branch, the Phase 3 `spike/README.md` maps each script to a
+question, and `spike/results/` holds the raw JSON lines quoted in the Phase 3
+sections. CI results come from the `Spike 3234 Litestream` workflow on that
+branch (run ids below).
 
 ```sh
 # Litestream release used for darwin/linux figures (checksums verified):
