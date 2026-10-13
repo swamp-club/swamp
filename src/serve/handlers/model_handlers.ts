@@ -123,6 +123,7 @@ import type {
 import {
   type DefinitionLookupResult,
   findDefinitionByIdOrName,
+  findDefinitionsByIdGlobal,
 } from "../../domain/models/model_lookup.ts";
 import type { AccessResource } from "../../domain/access/access_decision_service.ts";
 import type { Action } from "../../domain/access/action.ts";
@@ -1934,11 +1935,9 @@ export async function handleModelOutputSearch(
         };
         const byName = await definitionRepo.findByNameGlobal(idOrName);
         if (byName) add(byName.definition, byName.type);
-        const byId = definitionRepo.findAllByIdGlobal
-          ? await definitionRepo.findAllByIdGlobal(createDefinitionId(idOrName))
-          : (await definitionRepo.findAllGlobal()).filter((d) =>
-            d.definition.id === idOrName
-          );
+        // Returns [] for a non-UUID name without scanning every
+        // definition — a plain `model` filter never pays for the id scan.
+        const byId = await findDefinitionsByIdGlobal(definitionRepo, idOrName);
         for (const { definition, type } of byId) add(definition, type);
         return [...found.values()];
       },
@@ -1972,7 +1971,7 @@ export async function handleModelOutputSearch(
           result = e.data;
         },
         error: (e) => {
-          throw new Error(e.error.message);
+          throw new LibSwampStreamError(e.error);
         },
       },
     );
@@ -2009,7 +2008,13 @@ export async function handleModelOutputSearch(
     });
   } catch (error) {
     const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "model_output_search_failed", message);
+    sendError(
+      socket,
+      requestId,
+      "model_output_search_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 

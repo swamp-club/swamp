@@ -195,9 +195,8 @@ export function truncate(text: string, max: number): string {
 
 /**
  * The boxes a group shows and how many are folded away. A group over the
- * cap shows `max - 1` boxes plus the toggle, so a collapsed group never
- * takes more room than `max` boxes; one that only exceeds it by one shows
- * everything, since "+1 more" would save nothing.
+ * cap shows `max - 1` boxes plus a "+N more" toggle in the `max`th slot,
+ * so a collapsed group never takes more room than `max` boxes.
  */
 export function visibleNodes(
   nodes: readonly DiagramNode[],

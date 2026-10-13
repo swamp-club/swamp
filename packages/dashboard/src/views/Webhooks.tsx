@@ -255,7 +255,9 @@ export function Webhooks(
                 </button>
               }
             >
-              No route or workflow matches “{query}”.
+              {query
+                ? <>No route or workflow matches &ldquo;{query}&rdquo;.</>
+                : "Nothing matches the current search and filters."}
             </EmptyState>
           )
           : (

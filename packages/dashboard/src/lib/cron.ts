@@ -180,13 +180,22 @@ function parseField(raw: string, spec: FieldSpec): Set<number> {
       }
       lo = parseValue(a, spec);
       hi = parseValue(b, spec);
+      // A weekday range's upper bound named "SUN" means the following
+      // Sunday (7), not the week's first day (0) — croner rewrites a
+      // trailing "-sun" to "-7" the same way, so "MON-SUN" is the whole
+      // week and "SAT-SUN" is the weekend, not a backwards range.
+      if (spec === WEEKDAY && hi === 0 && lo > 0 && b.toUpperCase() === "SUN") {
+        hi = 7;
+      }
       if (lo > hi) {
         throw new CronError(`Range "${range}" runs backwards`);
       }
     } else {
       lo = parseValue(range, spec);
-      // "5/15" means every 15 from 5 to the field's end.
-      hi = stepText !== undefined ? spec.max : lo;
+      // "5/15" means every 15 from 5 to the field's end. Croner stops
+      // stepping the weekday field at 6 (Saturday) even though a literal
+      // 7 is still accepted as an alias for Sunday elsewhere.
+      hi = stepText !== undefined ? (spec.max === 7 ? 6 : spec.max) : lo;
     }
     for (let v = lo; v <= hi; v += step) values.add(v);
   }

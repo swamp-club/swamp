@@ -152,6 +152,35 @@ Deno.test("parseCron: expands lists, ranges, steps and names", () => {
   assertEquals(parsed.schedule.hasSeconds, false);
 });
 
+Deno.test("parseCron: a weekday range ending in SUN wraps to the full week", () => {
+  // Croner rewrites a trailing "-sun" to "-7", so these are forward
+  // ranges, not backwards ones.
+  const wholeWeek = parseCron("0 9 * * MON-SUN");
+  assert(wholeWeek.ok);
+  if (!wholeWeek.ok) return;
+  assertEquals(wholeWeek.schedule.weekdays, [0, 1, 2, 3, 4, 5, 6]);
+
+  const weekend = parseCron("0 9 * * SAT-SUN");
+  assert(weekend.ok);
+  if (!weekend.ok) return;
+  assertEquals(weekend.schedule.weekdays, [0, 6]);
+
+  // SUN-SUN and SUN-SAT are unaffected: the upper bound isn't past Sunday.
+  const sunOnly = parseCron("0 9 * * SUN-SUN");
+  assert(sunOnly.ok);
+  if (!sunOnly.ok) return;
+  assertEquals(sunOnly.schedule.weekdays, [0]);
+});
+
+Deno.test("parseCron: a stepped weekday expression stops at Saturday", () => {
+  // Croner stops stepping the weekday field at 6, even though a literal 7
+  // is still accepted elsewhere as an alias for Sunday.
+  const parsed = parseCron("0 9 * * 1/2");
+  assert(parsed.ok);
+  if (!parsed.ok) return;
+  assertEquals(parsed.schedule.weekdays, [1, 3, 5]);
+});
+
 Deno.test("parseCron: every preset parses and has a description", () => {
   for (const preset of CRON_PRESETS) {
     assert(parseCron(preset.expression).ok, preset.expression);
