@@ -632,6 +632,30 @@ not swamp's in a definition that declares no `version` input, but a declared
 input with no value is. Both kinds keep passing through to the method as
 literal text.
 
+A `vault.get` argument is read the way the resolver reads it, not the way CEL
+would. The resolver rewrites `vault.get(vaultName, secretKey)` before CEL sees
+it, so no argument reaches a method as text. An unquoted argument with no `.` is
+used verbatim as a literal name: `t` and `KEY` in `${{ vault.get(t, KEY) }}` are
+names, not free identifiers, and the expression is swamp's. An unquoted argument
+holding a `.` is evaluated as CEL. `inputs.vaultName` keeps its roots and is
+judged like any other reference. One that reads nothing swamp provides, such as
+`db.password` or `github.repo`, fails that evaluation rather than passing
+through, so it does not make the expression another system's: `swamp model
+validate` reports it as an `Expression paths` error that says to quote the name
+(`unresolvableVaultArguments`). The resolver, the classifier and the vault
+reference extractor all decide literal versus evaluated through
+`isDynamicVaultArgument`
+(`src/domain/expressions/vault_reference_extractor.ts`).
+
+An expression that reads the `vault` namespace is never another templating
+system's text, whatever else it reads. The runtime pass resolves every such
+expression and then evaluates it, so `${{ vault.get(t, KEY) + github.sha }}`
+fails on `github` rather than reaching the method as written
+(`isForeignExpression`). `swamp model validate` reports the other root as an
+`Expression paths` error (`foreignRootsBesideVault`), and the global-argument
+guards keep the value guarded. `isSwampExpression` is unchanged: it still
+answers whether every root is swamp's.
+
 The guard on global arguments has no single evaluation in view: it runs after
 the pass, possibly on a remote worker that never saw the definition's `inputs`.
 The Proxy on `context.globalArgs`, the schema check and argument merge that skip
@@ -1153,6 +1177,12 @@ access to vault configurations. In remote execution (serve dispatch), the
 `hasDynamicRefs` flag on the `VaultExtractionResult` bypasses the per-dispatch
 secret allowlist, while `DENIED_VAULT_NAMES` / `DENIED_SECRET_KEY_PREFIXES`
 still block infrastructure secrets.
+
+A reference is dynamic only when an argument is evaluated: an unquoted argument
+holding a `.`. `vault.get(prod, API_KEY)` names its vault and key as plainly as
+the quoted form, so it is a static reference. It enters the per-dispatch
+allowlist and is checked against a workflow's `vaults:` list by `swamp workflow
+validate`.
 
 **Known limitation:** `vault.get(self.item.vaultName, self.item.key)` inside a
 `forEach` step cannot resolve, because the forEach iteration context is not

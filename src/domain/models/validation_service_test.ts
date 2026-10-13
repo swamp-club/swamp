@@ -2964,3 +2964,252 @@ Deno.test("validateModel: checks arguments as written when an upgrade would conv
   );
   assertEquals(seen, { port: "${{ inputs.port }}" });
 });
+
+Deno.test("validateModel: a bare-token vault.get raises no passed-through warning (swamp-club#3360)", async () => {
+  for (
+    const message of [
+      "${{ vault.get(t, KEY) }}",
+      "pre-${{ vault.get(t, KEY) }}",
+      "${{ vault.get(my-vault, API_KEY) }}",
+      '${{ vault.get("t", "KEY") }}',
+      "${{ vault.get(`t`, `KEY`) }}",
+      "${{ vault.get(`t`, `KEY`) + '-x' }}",
+    ]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(expressionPaths?.passed, true, message);
+    assertEquals(warnings, [], message);
+  }
+});
+
+Deno.test("validateModel: another templating system's text beside a bare-token vault.get still warns (swamp-club#3360)", async () => {
+  const { warnings } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    methods: {
+      write: {
+        arguments: { message: "${{ vault.get(t, KEY) }} ${{ github.sha }}" },
+      },
+    },
+  });
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].templates, [
+    { path: "methods.write.arguments.message", text: "${{ github.sha }}" },
+  ]);
+});
+
+Deno.test("validateModel: Global arguments skips a field holding a bare-token vault.get, as it does the quoted form (swamp-club#3360)", async () => {
+  const model: ModelDefinition = defineModel({
+    type: ModelType.create("test/vault-bare-global"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ port: z.number() }),
+    methods: {
+      write: {
+        description: "Write test",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  for (
+    const port of [
+      "${{ vault.get(t, PORT) }}",
+      '${{ vault.get("t", "PORT") }}',
+    ]
+  ) {
+    const { results, warnings } = await new DefaultModelValidationService()
+      .validateModel(
+        Definition.create({
+          name: "test-definition",
+          globalArguments: { port },
+        }),
+        model,
+      );
+    assertEquals(
+      results.find((r) => r.name === "Global arguments")?.passed,
+      true,
+      port,
+    );
+    assertEquals(
+      warnings.filter((w) => w.name === FOREIGN_TEMPLATE_WARNING_NAME),
+      [],
+      port,
+    );
+  }
+});
+
+Deno.test("validateModel: a vault.get followed or wrapped by more CEL passes Expression paths (swamp-club#3360)", async () => {
+  for (
+    const message of [
+      '${{ vault.get(t, KEY) + "-x" }}',
+      '${{ vault.get("t", "KEY") + "-x" }}',
+      '${{ vault.get(t, KEY) == "a" ? "b" : "c" }}',
+      "${{ int(vault.get(t, PORT)) }}",
+      "${{ int(vault.get('t', 'PORT')) }}",
+      '${{ "x" + vault.get(t, KEY) }}',
+      "${{ vault.get(t, KEY).size() }}",
+    ]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(expressionPaths?.error, undefined, message);
+    assertEquals(expressionPaths?.passed, true, message);
+    assertEquals(warnings, [], message);
+  }
+});
+
+Deno.test("validateModel: a vault.get beside text that is not valid CEL still fails Expression paths", async () => {
+  const { expressionPaths } = await validateWith(testExprModel, {
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    methods: {
+      write: { arguments: { message: "${{ vault.get(t, KEY) + }}" } },
+    },
+  });
+  assertEquals(expressionPaths?.passed, false);
+});
+
+Deno.test("validateModel: a dotted bare vault.get argument that reads nothing swamp provides is an error, not a passed-through warning (swamp-club#3360)", async () => {
+  for (
+    const [message, arg] of [
+      ["${{ vault.get(t, db.password) }}", "db.password"],
+      ["${{ vault.get(github.repo, KEY) }}", "github.repo"],
+      ["${{ vault.get(t.x, KEY) }}", "t.x"],
+    ]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(warnings, [], message);
+    assertEquals(expressionPaths?.passed, false, message);
+    const entries = expressionPaths?.expressionErrors ?? [];
+    assertEquals(entries.length, 1, message);
+    assertStringIncludes(entries[0].error, `vault.get argument "${arg}"`);
+    assertStringIncludes(entries[0].suggestion ?? "", `'${arg}'`);
+  }
+});
+
+Deno.test("validateModel: a dotted bare vault.get argument over swamp's namespaces or quoted passes (swamp-club#3360)", async () => {
+  for (
+    const message of [
+      "${{ vault.get(self.name, KEY) }}",
+      "${{ vault.get(t, 'db.password') }}",
+    ]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(expressionPaths?.error, undefined, message);
+    assertEquals(warnings, [], message);
+  }
+});
+
+Deno.test("validateModel: Global arguments does not schema-check the raw text of a vault.get with an unresolvable dotted argument (swamp-club#3360)", async () => {
+  const model: ModelDefinition = defineModel({
+    type: ModelType.create("test/vault-dotted-global"),
+    version: "2026.02.09.1",
+    globalArguments: z.object({ port: z.number() }),
+    methods: {
+      write: {
+        description: "Write test",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  });
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { port: "${{ vault.get(t, db.port) }}" },
+  });
+  const { results, warnings } = await new DefaultModelValidationService()
+    .validateModel(
+      definition,
+      model,
+      createMockDefinitionRepo([
+        { name: definition.name, type: model.type.normalized, definition },
+      ]),
+    );
+  assertEquals(
+    results.find((r) => r.name === "Global arguments")?.passed,
+    true,
+  );
+  const paths = results.find((r) => r.name === "Expression paths");
+  assertEquals(paths?.passed, false);
+  assertStringIncludes(paths?.error ?? "", 'vault.get argument "db.port"');
+  assertEquals(warnings, []);
+});
+
+Deno.test("validateModel: Expression paths still accepts every expression that is one vault.get call end to end", async () => {
+  // Forms the check accepted before swamp-club#3360 and must keep accepting,
+  // whether or not the classifier can parse them.
+  for (
+    const message of [
+      "${{ vault.get(`t`, `KEY`) }}",
+      "${{ vault.get( 't' , 'KEY' ) }}",
+      "${{ vault.get('t') }}",
+      "${{ vault.get(t, KEY).size() }}",
+    ]
+  ) {
+    const { expressionPaths } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(expressionPaths?.error, undefined, message);
+  }
+});
+
+Deno.test("validateModel: a root swamp does not provide beside a vault read is an error, not a passed-through warning (swamp-club#3360)", async () => {
+  for (
+    const message of [
+      "${{ vault.get(t, KEY) + github.sha }}",
+      "${{ vault.get('t', 'KEY') + github.sha }}",
+      "${{ github.sha + vault.get(t, KEY) }}",
+    ]
+  ) {
+    const { expressionPaths, warnings } = await validateWith(testExprModel, {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: { write: { arguments: { message } } },
+    });
+    assertEquals(warnings, [], message);
+    assertEquals(expressionPaths?.passed, false, message);
+    const entries = expressionPaths?.expressionErrors ?? [];
+    assertEquals(entries.length, 1, message);
+    assertStringIncludes(entries[0].error, "reads vault");
+    assertStringIncludes(entries[0].error, '"github"');
+    assertStringIncludes(entries[0].suggestion ?? "", "literal()");
+  }
+});
+
+Deno.test("validateModel: a model name missing its prefix beside a vault read keeps the model-prefix error (swamp-club#3360)", async () => {
+  const { expressionPaths } = await validateWith(
+    testExprModel,
+    {
+      name: "test-definition",
+      globalArguments: { message: "hello" },
+      methods: {
+        write: {
+          arguments: { message: "${{ my-vpc.VpcId + vault.get(t, KEY) }}" },
+        },
+      },
+    },
+    [myVpc],
+  );
+  assertEquals(expressionPaths?.passed, false);
+  assertEquals(
+    (expressionPaths?.error ?? "").includes("reads vault"),
+    false,
+  );
+});

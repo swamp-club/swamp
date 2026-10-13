@@ -2461,10 +2461,11 @@ step's sensitive outputs are stored in (field `vaultName`, the step's
 user vault). A mutating method whose outputs would land in an unlisted vault is
 refused before it runs.
 
-`swamp workflow validate` reports a static `vault.get` name in the workflow's
-own steps or inputs that is not listed, and each sensitive-output target vault
-of a method step that is not listed. Dynamic names and `vault.get` inside
-behavior definitions are caught only at run time.
+`swamp workflow validate` reports a static `vault.get` name (quoted, or an
+unquoted name with no `.`) in the workflow's own steps or inputs that is not
+listed, and each sensitive-output target vault of a method step that is not
+listed. Dynamic names and `vault.get` inside behavior definitions are caught
+only at run time.
 
 The workflow schema is strict, so a release older than the field rejects a
 workflow file that sets `vaults:`. Upgrade every machine and serve replica that
