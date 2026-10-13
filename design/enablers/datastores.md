@@ -2394,6 +2394,10 @@ that.
   replicates the WAL, and `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)` made
   the replica 11 times larger (`datastore-litestream.md`). A fitness rule
   refuses `wal_checkpoint` and `wal_autocheckpoint` in v3 code.
+- Solo mode keeps one idle Litestream sidecar across write commands. A
+  sidecar per command re-snapshots `commits.db` on every start and never
+  compacts, so its replica grew to 311 MB for a 4 MB database over a day of
+  commands (Phase 4A in `datastore-litestream.md`).
 - One connection per store, and one writing process per file.
 
 **One `commits.db` per datastore.** Namespaces share one database, keyed by a
