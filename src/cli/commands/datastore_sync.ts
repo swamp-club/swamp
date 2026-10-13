@@ -31,6 +31,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import {
+  peekRepoDatastoreEngine,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
@@ -136,14 +137,19 @@ export const datastoreSyncCommand = new Command()
       : "sync" as const;
 
     // Pull-only mode uses read-only init (no lock). Push and default
-    // modes use skipImplicitSync — see RequireRepoOptions JSDoc.
-    const { repoDir, datastoreResolver } = mode === "pull"
+    // modes use skipImplicitSync — see RequireRepoOptions JSDoc. A v3
+    // datastore is never sync-capable, so it is refused below whatever the
+    // mode: open it read-only, so the refusal takes no writer lease and
+    // leaves the datastore as it was (swamp-club#3359).
+    const repoDirOption = resolveRepoDir(options.repoDir);
+    const engine = await peekRepoDatastoreEngine(repoDirOption);
+    const { repoDir, datastoreResolver } = mode === "pull" || engine === "v3"
       ? await requireInitializedRepoReadOnly({
-        repoDir: resolveRepoDir(options.repoDir),
+        repoDir: repoDirOption,
         outputMode: cliCtx.outputMode,
       })
       : await requireInitializedRepo({
-        repoDir: resolveRepoDir(options.repoDir),
+        repoDir: repoDirOption,
         outputMode: cliCtx.outputMode,
         skipImplicitSync: true,
       });

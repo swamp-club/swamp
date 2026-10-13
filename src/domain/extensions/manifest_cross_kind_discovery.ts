@@ -155,7 +155,10 @@ async function extractManifestCrossKinds(
 
     const kinds: ExtensionKind[] = [];
     for (const kind of MANIFEST_KIND_KEYS) {
-      const entries = obj[kind];
+      // `behaviors:` is the behavior spelling of `models:` (swamp-club#3338).
+      const entries = kind === "models" && obj.models === undefined
+        ? obj.behaviors
+        : obj[kind];
       if (Array.isArray(entries) && entries.length > 0) {
         kinds.push(kind);
       }

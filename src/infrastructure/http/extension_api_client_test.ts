@@ -1700,3 +1700,59 @@ for (const status of [401, 403, 409, 422, 400]) {
     assertFalse(err instanceof RegistryUnavailableError);
   });
 }
+
+Deno.test("ExtensionApiClient.searchExtensions sends licensed=true only when asked", async () => {
+  const urls: string[] = [];
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    urls.push(req.url);
+    return Response.json({
+      extensions: [],
+      meta: { total: 0, page: 1, perPage: 20 },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    await client.searchExtensions({ q: "aws", licensed: true });
+    await client.searchExtensions({ q: "aws" });
+    assertEquals(new URL(urls[0]).searchParams.get("licensed"), "true");
+    assertEquals(new URL(urls[1]).searchParams.has("licensed"), false);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.getLatestVersionDetail carries the version's license, cleaned for printing", async () => {
+  const bodies = [
+    { license: "Apache-2.0\u001b[31m" },
+    { license: null },
+    {},
+  ];
+  let call = 0;
+  const server = Deno.serve(
+    { port: 0, onListen: () => {} },
+    () =>
+      Response.json({
+        latestVersionDetail: {
+          version: "2026.10.01.1",
+          publishedAt: "",
+          ...bodies[call++],
+        },
+      }),
+  );
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    assertEquals(
+      (await client.getLatestVersionDetail("@a/b"))?.license,
+      "Apache-2.0 [31m",
+    );
+    assertEquals((await client.getLatestVersionDetail("@a/b"))?.license, null);
+    const absent = await client.getLatestVersionDetail("@a/b");
+    assertEquals(absent !== null && "license" in absent, false);
+  } finally {
+    await server.shutdown();
+  }
+});

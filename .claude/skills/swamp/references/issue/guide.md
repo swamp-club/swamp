@@ -22,8 +22,8 @@ type to `security` to restrict visibility, but cannot change it back from
 Before filing any report (bug, feature, or security), classify where the issue
 lives:
 
-1. **Swamp's own CLI/binary behavior** — file against swamp itself with no
-   `--extension` flag.
+1. **Swamp's own CLI/binary** — file against swamp itself with no `--extension`
+   flag.
 2. **A third-party published extension you don't control** — file with
    `--extension <name>` to route it to that extension's publisher.
 3. **An extension you (or the human you're working with) are actively developing

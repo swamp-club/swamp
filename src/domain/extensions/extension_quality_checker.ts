@@ -731,8 +731,9 @@ export async function checkVersionBumpWithoutUpgrade(
       output: `${basename(file)}: model has version "${modelVersion}" but no ` +
         `upgrades array. Existing instances will not auto-migrate to this ` +
         `version. Add an upgrades entry (even a no-op) — see ` +
-        `references/model/upgrades.md. If this model is new and has never ` +
-        `been published, pass --skip-upgrade-check to acknowledge.`,
+        `references/extension/references/model/upgrades.md. If this model ` +
+        `is new and has never been published, pass --skip-upgrade-check ` +
+        `to acknowledge.`,
     });
   }
 

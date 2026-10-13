@@ -1,0 +1,23 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/expressions-and-foreach.md (block 1)
+id: 00000000-0000-4000-8000-000000000019
+name: corpus-19
+inputs:
+  properties:
+    environments:
+      type: array
+      items: { type: string }
+      minItems: 1
+
+jobs:
+  - name: deploy-all
+    steps:
+      - name: deploy-${{self.env}}
+        forEach:
+          item: env
+          in: ${{ inputs.environments }}
+        task:
+          type: model_method
+          modelIdOrName: my-service
+          methodName: deploy
+          inputs:
+            environment: ${{ self.env }}

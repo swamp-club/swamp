@@ -1,0 +1,26 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 9)
+id: 00000000-0000-4000-8000-000000000031
+# workflows/notify-team/workflow.yaml
+name: notify-team
+description: Send team notification
+version: 1
+inputs:
+  properties:
+    channel:
+      type: string
+      enum: ["slack", "email"]
+      default: "slack"
+    message:
+      type: string
+  required: ["message"]
+jobs:
+  - name: send
+    steps:
+      - name: dispatch
+        task:
+          type: model_method
+          modelIdOrName: notification-sender
+          methodName: send
+          inputs:
+            channel: ${{ inputs.channel }}
+            message: ${{ inputs.message }}

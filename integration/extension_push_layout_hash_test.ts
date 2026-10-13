@@ -36,6 +36,9 @@ import { computePackageCacheHash } from "../src/domain/extensions/extension_pack
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
+import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
+
+const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 
 const logger = getLogger(["test"]);
 
@@ -97,6 +100,7 @@ async function hashFrom(
     repoContext,
     logger,
     extensionsDir,
+    moduleGraphReader: graphReader,
   });
   assertEquals(resolved.modelEntryPoints.length, 1);
   assertEquals(resolved.workflowFiles.length, 1);

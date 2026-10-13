@@ -26,14 +26,17 @@ import {
 import {
   createDatastoreLock,
   createModelLock,
+  requireInitializedRepoReadOnly,
   resolveDatastoreForRepo,
 } from "../repo_context.ts";
+import { resolveCustomProvider } from "../../infrastructure/persistence/datastore_global_lock.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { UserError } from "../../domain/errors.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createDatastoreLockReleaseDeps,
   createDatastoreLockStatusDeps,
+  type CustomModelLockSource,
   datastoreLockRelease,
   datastoreLockStatus,
   parseModelSpec,
@@ -65,8 +68,9 @@ const datastoreLockStatusCommand = new Command()
       "status",
     ]);
 
+    const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig: config, engine } = await resolveDatastoreForRepo(
-      resolveRepoDir(options.repoDir),
+      repoDir,
     );
 
     // A v3 datastore's lock that matters across processes is its writer
@@ -74,7 +78,32 @@ const datastoreLockStatusCommand = new Command()
     const lock = engine === "v3" && !isCustomDatastoreConfig(config)
       ? v3WriterLockHandle(config.path)
       : await createDatastoreLock(config);
-    const deps = createDatastoreLockStatusDeps(lock, config);
+
+    // A bucket has no lock files to walk, so each model's lock is built the
+    // way acquireModelLocks builds it and inspected (swamp-club#3372).
+    let customModelLocks: CustomModelLockSource | undefined;
+    if (isCustomDatastoreConfig(config)) {
+      const provider = await resolveCustomProvider(config);
+      // Under managedConfig the definitions live in the datastore; pull them
+      // so a model another clone created since the last sync is listed.
+      const { repoContext } = await requireInitializedRepoReadOnly({
+        repoDir,
+        outputMode: cliCtx.outputMode,
+        pull: true,
+      });
+      const definitionRepo = repoContext.definitionRepo;
+      customModelLocks = {
+        listModels: async () =>
+          (definitionRepo.findAllIncludingAutoGlobal
+            ? await definitionRepo.findAllIncludingAutoGlobal()
+            : await definitionRepo.findAllGlobal()).map((
+              { definition, type },
+            ) => ({ modelType: type.normalized, modelId: definition.id })),
+        createLock: (lockKey) =>
+          provider.createLock(config.datastorePath, { lockKey }),
+      };
+    }
+    const deps = createDatastoreLockStatusDeps(lock, config, customModelLocks);
 
     const isFilesystem = !isCustomDatastoreConfig(config) &&
       config.type === "filesystem";

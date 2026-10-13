@@ -259,6 +259,26 @@ export interface PendingSignalRecords {
   removePendingRecordsOfWorkflow(workflowId: string): Promise<void>;
 }
 
+/**
+ * A wait took its key's pending signal (swamp-club#3213). It names the
+ * signal by its receipt and never carries the payload.
+ */
+export interface PendingSignalTaken {
+  readonly waitId: string;
+  readonly workflowId: string;
+  readonly runId: string;
+  readonly key: string;
+  readonly receiptId: string;
+}
+
+/**
+ * Told of each take made through a store. A store cannot say whose create
+ * of an outcome landed, and every reader builds the same outcome from one
+ * pending signal, so two readers that take at the same moment are both
+ * told: a listener hears of a take at least once.
+ */
+export type PendingSignalTakenListener = (taken: PendingSignalTaken) => void;
+
 /** A wait that can be given its key's pending signal. */
 export interface EarlyWaitRef extends WaitRef {
   key: string;
@@ -295,6 +315,23 @@ export function heldUntil(pending: PendingSignal): Date {
 }
 
 /**
+ * True when `pending` is in a slot the wait reads and was received no
+ * earlier than the wait allows and no later than its deadline. `wait` is the
+ * wait itself or the claim of its key: both keep `early` and the deadline, so
+ * a signaller that finds only the claim decides this part as the step will
+ * (swamp-club#3307). {@link pendingOutcome} decides the rest.
+ */
+export function isReceivedForWait(
+  pending: Pick<PendingSignal, "slot" | "receivedAt">,
+  wait: { early: WaitEarly; deadline: string },
+): boolean {
+  if (!earlySlots(wait.early).includes(pending.slot)) return false;
+  const received = new Date(pending.receivedAt).getTime();
+  return received >= new Date(wait.early.from).getTime() &&
+    received <= new Date(wait.deadline).getTime();
+}
+
+/**
  * The outcome a pending signal gives a wait, or undefined when it does not
  * apply. Decided from stored facts alone, so every reader reaches the same
  * answer whenever it looks: the record names the wait's workflow and key in a
@@ -314,12 +351,7 @@ export function pendingOutcome(
     pending.authorizedFor !== undefined &&
     pending.authorizedFor !== ref.workflowName
   ) return undefined;
-  if (!earlySlots(ref.early).includes(pending.slot)) return undefined;
-  const received = new Date(pending.receivedAt).getTime();
-  if (
-    received < new Date(ref.early.from).getTime() ||
-    received > new Date(ref.deadline).getTime()
-  ) return undefined;
+  if (!isReceivedForWait(pending, ref)) return undefined;
   const validation = SignalWait.fromData({
     kind: "signal",
     id: ref.waitId,
@@ -348,18 +380,16 @@ export function pendingOutcome(
 }
 
 /**
- * Gives a wait the pending signal of its key, if one applies, by creating
- * the wait's outcome, and returns the outcome that is stored: `absent` when
- * no pending signal applies and nothing settled the wait. The wait's own
+ * The outcome the pending signal of a wait's key would give it, or undefined
+ * when none applies. Reads only (swamp-club#3309): for a caller that asks
+ * whether a wait already has its signal without settling it. The wait's own
  * slot is read first. A slot whose highest record cannot be read gives
  * nothing.
  */
-export async function takePendingSignal(
-  store: Pick<PendingSignalRecords, "highestPendingRecord"> & {
-    settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
-  },
+export async function applicablePendingOutcome(
+  store: Pick<PendingSignalRecords, "highestPendingRecord">,
   ref: EarlyWaitRef,
-): Promise<StoredWaitRecord<WaitOutcome>> {
+): Promise<AcceptedWaitOutcome | undefined> {
   for (const slot of earlySlots(ref.early)) {
     const highest = await store.highestPendingRecord({
       workflowId: ref.workflowId,
@@ -370,7 +400,45 @@ export async function takePendingSignal(
       continue;
     }
     const outcome = pendingOutcome(highest.record, ref);
-    if (outcome) return await store.settle(outcome);
+    if (outcome) return outcome;
   }
-  return { kind: "absent" };
+  return undefined;
+}
+
+/**
+ * Gives a wait the pending signal of its key, if one applies, by creating
+ * the wait's outcome, and returns the outcome that is stored: `absent` when
+ * no pending signal applies and nothing settled the wait. Which signal
+ * applies is decided by {@link applicablePendingOutcome}. A store with a
+ * `pendingTaken` listener is told of the take.
+ */
+export async function takePendingSignal(
+  store: Pick<PendingSignalRecords, "highestPendingRecord"> & {
+    settle(outcome: WaitOutcome): Promise<StoredWaitRecord<WaitOutcome>>;
+    pendingTaken?: PendingSignalTakenListener;
+  },
+  ref: EarlyWaitRef,
+): Promise<StoredWaitRecord<WaitOutcome>> {
+  const outcome = await applicablePendingOutcome(store, ref);
+  if (!outcome) return { kind: "absent" };
+  const stored = await store.settle(outcome);
+  if (
+    store.pendingTaken && stored.kind === "found" &&
+    stored.record.kind === "accepted" &&
+    stored.record.receipt.id === outcome.receipt.id
+  ) {
+    // The signal is taken whatever the listener does with the news.
+    try {
+      store.pendingTaken({
+        waitId: ref.waitId,
+        workflowId: ref.workflowId,
+        runId: ref.runId,
+        key: ref.key,
+        receiptId: outcome.receipt.id,
+      });
+    } catch {
+      // Nothing to undo: the outcome is stored.
+    }
+  }
+  return stored;
 }

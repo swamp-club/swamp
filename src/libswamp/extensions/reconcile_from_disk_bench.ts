@@ -122,6 +122,7 @@ Deno.bench(
         catalog,
         lockfileRepository,
         repoRoot: repoDir,
+        mountedSourceDirs: [],
       });
       const service = new ReconcileFromDiskService({
         denoRuntime: testDenoRuntime,
@@ -164,6 +165,7 @@ Deno.bench(
         catalog,
         lockfileRepository,
         repoRoot: repoDir,
+        mountedSourceDirs: [],
       });
       const service = new ReconcileFromDiskService({
         denoRuntime: testDenoRuntime,

@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
+import { isCatalogFileName } from "../../domain/datastore/datastore_config.ts";
 import { isStagingEntryName } from "../../domain/extensions/install_journal.ts";
-import type { MergeDirResult } from "../../libswamp/datastores/namespace_migrate.ts";
+import type {
+  DirContents,
+  MergeDirResult,
+} from "../../libswamp/datastores/namespace_migrate.ts";
 
 export async function findFileCollisions(
   source: string,
@@ -33,6 +37,8 @@ export async function findFileCollisions(
   ): Promise<void> => {
     for await (const entry of Deno.readDir(src)) {
       if (isStagingEntryName(entry.name)) continue;
+      // The catalog is repo-local, never merged (swamp-club#3316).
+      if (!relPrefix && isCatalogFileName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
@@ -76,6 +82,8 @@ export async function mergeDirInto(
       // Install staging stays where its journal says it is, for crash
       // recovery (swamp-club#2723).
       if (isStagingEntryName(entry.name)) continue;
+      // The catalog is repo-local and stays where it is (swamp-club#3316).
+      if (!relPrefix && isCatalogFileName(entry.name)) continue;
       const srcPath = join(src, entry.name);
       const dstPath = join(dst, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
@@ -120,6 +128,60 @@ export async function mergeDirInto(
     // Best-effort cleanup
   }
   return { moved, skipped: skippedPaths.length, skippedPaths };
+}
+
+/** Counts a directory's top-level catalog files and its other entries. */
+export async function dirContents(dir: string): Promise<DirContents> {
+  let catalogFiles = 0;
+  let otherEntries = 0;
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (isCatalogFileName(entry.name)) catalogFiles++;
+      else otherEntries++;
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return { catalogFiles, otherEntries };
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Deletes the catalog files at the top level of `dir`, then `dir` itself if
+ * that leaves it empty, and returns the number of files deleted. Does nothing
+ * when `dir` is `liveCatalogDir`, the directory holding the catalog in use.
+ */
+export async function removeCatalogFiles(
+  dir: string,
+  liveCatalogDir: string,
+): Promise<number> {
+  if (await canonicalPath(dir) === await canonicalPath(liveCatalogDir)) {
+    return 0;
+  }
+  let removed = 0;
+  let remaining = 0;
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (isCatalogFileName(entry.name) && !entry.isDirectory) {
+        await Deno.remove(join(dir, entry.name));
+        removed++;
+      } else {
+        remaining++;
+      }
+    }
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return removed;
+    throw error;
+  }
+  if (removed > 0 && remaining === 0) await Deno.remove(dir);
+  return removed;
 }
 
 export async function dirHasFiles(dir: string): Promise<boolean> {

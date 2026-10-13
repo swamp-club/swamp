@@ -112,6 +112,11 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
   }),
   description: z.string().optional(),
+  // Checked against SPDX only by the license gate in quality and push, so
+  // reading an installed extension never depends on the vendored id lists.
+  license: z.string().trim().min(1, {
+    message: "License must be an SPDX expression, e.g. MIT",
+  }).optional(),
   visibility: PublishVisibilitySchema,
   repository: z.string().url().refine(
     // deno-lint-ignore no-control-regex
@@ -124,6 +129,9 @@ const ExtensionManifestSchemaV1 = z.object({
   paths: PathsConfigSchema.optional(),
   workflows: z.array(safePathString).optional(),
   models: z.array(safePathString).optional(),
+  // The behavior spelling of `models` (swamp-club#3338); merged into
+  // `models` on parse.
+  behaviors: z.array(safePathString).optional(),
   vaults: z.array(safePathString).optional(),
   drivers: z.array(safePathString).optional(),
   datastores: z.array(safePathString).optional(),
@@ -146,6 +154,8 @@ const ExtensionManifestSchemaV1 = z.object({
 }).refine(
   (data) =>
     (data.models && data.models.length > 0) ||
+    (data.models === undefined && data.behaviors !== undefined &&
+      data.behaviors.length > 0) ||
     (data.workflows && data.workflows.length > 0) ||
     (data.vaults && data.vaults.length > 0) ||
     (data.datastores && data.datastores.length > 0) ||
@@ -164,11 +174,23 @@ export interface ExtensionManifest {
   name: string;
   version: string;
   description: string | undefined;
+  /** Declared SPDX license expression, as written (trimmed). */
+  license?: string;
   visibility?: PublishVisibility;
   repository: string | undefined;
   paths: { base: PathsBase };
   workflows: string[];
+  /**
+   * The model entry points, from `models:` or from its behavior spelling
+   * `behaviors:` (swamp-club#3338). A pushed manifest always lists them
+   * under `models:`.
+   */
   models: string[];
+  /**
+   * Set when the author listed the model entry points under `behaviors:`:
+   * they then resolve from the behaviors directory. Absent for `models:`.
+   */
+  modelsKey?: "behaviors";
   vaults: string[];
   datastores: string[];
   reports: string[];
@@ -222,6 +244,13 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     );
   }
 
+  // A manifest that sets `models:` reads exactly as it always has. Before
+  // `behaviors:` existed, a stray `behaviors:` key beside it was dropped, so
+  // it still is: the behavior spelling is read only when `models:` is absent.
+  const behaviors = result.data.models === undefined
+    ? result.data.behaviors
+    : undefined;
+
   if (result.data.drivers && result.data.drivers.length > 0) {
     logger
       .warn`The 'drivers' field in extension manifests is deprecated and will be removed in a future version. Driver entries are ignored.`;
@@ -232,11 +261,13 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     name: result.data.name,
     version: result.data.version,
     description: result.data.description,
+    ...(result.data.license ? { license: result.data.license } : {}),
     ...(result.data.visibility ? { visibility: result.data.visibility } : {}),
     repository: result.data.repository,
     paths: { base: result.data.paths?.base ?? "typedDir" },
     workflows: result.data.workflows ?? [],
-    models: result.data.models ?? [],
+    models: result.data.models ?? behaviors ?? [],
+    ...(behaviors !== undefined ? { modelsKey: "behaviors" as const } : {}),
     vaults: result.data.vaults ?? [],
     datastores: result.data.datastores ?? [],
     reports: result.data.reports ?? [],

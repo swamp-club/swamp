@@ -1,0 +1,48 @@
+# Extracted from .claude/skills/swamp/references/workflow/reference.md (block 26)
+id: 00000000-0000-4000-8000-000000000012
+name: provision-and-verify
+description: Create infrastructure and assert expected state
+version: 1
+jobs:
+  - name: provision
+    steps:
+      - name: create-vpc
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: create-vpc
+          methodName: execute
+  - name: verify
+    dependsOn:
+      - job: provision
+        condition:
+          type: succeeded
+    steps:
+      - name: describe-vpc
+        task:
+          type: model_method
+          modelType: "command/shell"
+          modelName: describe-vpc
+          methodName: execute
+      - name: cidr-correct
+        dependsOn:
+          - step: describe-vpc
+            condition:
+              type: succeeded
+        task:
+          type: assert
+          expr: >-
+            data.latest("describe-vpc", "result").attributes.stdout.contains("10.0.0.0/16")
+          message: "VPC CIDR is not 10.0.0.0/16"
+          severity: high
+      - name: has-tags
+        dependsOn:
+          - step: describe-vpc
+            condition:
+              type: succeeded
+        task:
+          type: assert
+          expr: >-
+            data.latest("describe-vpc", "result").attributes.stdout.contains("env=production")
+          message: "VPC is missing env=production tag"
+          severity: medium

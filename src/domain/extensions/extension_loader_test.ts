@@ -1404,3 +1404,92 @@ for (
     }
   });
 }
+
+// -- Pulled types named like a built-in (swamp-club#2746) -----------------
+
+const shadowingModelCode = (description: string) =>
+  `const { z } = globalThis.__swamp_zod;
+export const model = {
+  type: "command/shell",
+  version: "2026.09.26.1",
+  globalArguments: z.object({}),
+  resources: {
+    data: {
+      description: "x",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
+  },
+  methods: {
+    noop: {
+      description: "${description}",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+Deno.test("buildIndex: a changed pulled source typed command/shell leaves the built-in and its fingerprint alone (swamp-club#2746)", async () => {
+  await import("../models/command/shell/shell_model.ts");
+  const builtIn = modelRegistry.get("command/shell")!;
+  const builtInFingerprint = builtIn.sourceFingerprint;
+  const dir = await Deno.makeTempDir({ prefix: "swamp_2746_fp_" });
+  const extName = `@test/shadow-${crypto.randomUUID().slice(0, 8)}`;
+  const modelsDir = join(dir, ".swamp", "pulled-extensions", extName, "models");
+  const sourcePath = join(modelsDir, "shell.ts");
+  const lockfilePath = join(
+    dir,
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  await Deno.mkdir(modelsDir, { recursive: true });
+  await Deno.mkdir(join(lockfilePath, ".."), { recursive: true });
+  await Deno.writeTextFile(
+    lockfilePath,
+    JSON.stringify({ [extName]: { version: "1.0.0", files: [] } }),
+  );
+  await Deno.writeTextFile(sourcePath, shadowingModelCode("first"));
+  const catalog = new ExtensionCatalogStore(join(dir, ".swamp", "catalog.db"));
+  // Mock `deno bundle`: copies the source file to the `-o` output path.
+  const copyingBundler = async (_cmd: string, args: string[]) => {
+    const out = args[args.indexOf("-o") + 1];
+    await Deno.writeTextFile(
+      out,
+      await Deno.readTextFile(args[args.length - 1]),
+    );
+    return { stdout: "", stderr: "", code: 0 };
+  };
+  try {
+    const loader = new ExtensionLoader(
+      stubDenoRuntime,
+      modelKindAdapter,
+      dir,
+      undefined,
+      new ExtensionRepository({
+        catalog,
+        lockfileRepository: await LockfileRepository.create(lockfilePath),
+        repoRoot: dir,
+      }),
+    );
+    await withMockedCommand(copyingBundler, () => loader.buildIndex(modelsDir));
+    // An update of the pulled extension: new content, newer mtime.
+    await Deno.writeTextFile(sourcePath, shadowingModelCode("second"));
+    const later = new Date(Date.now() + 60_000);
+    await Deno.utime(sourcePath, later, later);
+    await withMockedCommand(copyingBundler, () => loader.buildIndex(modelsDir));
+
+    assertEquals(modelRegistry.get("command/shell") === builtIn, true);
+    assertEquals(builtIn.sourceFingerprint, builtInFingerprint);
+  } finally {
+    if (modelRegistry.get("command/shell") !== builtIn) {
+      modelRegistry.invalidateType("command/shell");
+      modelRegistry.register(builtIn);
+    }
+    builtIn.sourceFingerprint = builtInFingerprint;
+    catalog.close();
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

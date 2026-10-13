@@ -35,6 +35,9 @@ import {
   type ExtensionPushPrepareDeps,
   type ExtensionPushPrepareInput,
 } from "../src/libswamp/extensions/push.ts";
+import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
+
+const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 
 const logger = getLogger(["test"]);
 
@@ -142,6 +145,7 @@ for (const variant of variants) {
         manifestPath,
         repoContext: stubRepoContext,
         logger,
+        moduleGraphReader: graphReader,
       });
 
       const input: ExtensionPushPrepareInput = {
@@ -169,6 +173,8 @@ for (const variant of variants) {
         includeFilePaths: resolved.includeFilePaths,
         additionalFilePaths: resolved.additionalFilePaths,
         binaryFilePaths: resolved.binaryFilePaths,
+        dataFilesByKind: resolved.dataFilesByKind,
+        sourcePlan: resolved.sourcePlan,
         dryRun: true,
         registryChecks: "skip",
       };

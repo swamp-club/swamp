@@ -65,6 +65,8 @@ export interface WriteEntryOptions {
   filesChecksum?: string;
   serverUrl?: string;
   channel?: string;
+  /** Release channel the registry lists the version on, when known. */
+  publishedChannel?: string;
   /** Preserve the original pulledAt timestamp (e.g. lockfile-restore flows). */
   pulledAt?: string;
 }
@@ -196,6 +198,9 @@ export class LockfileRepository {
           : {}),
         ...(options?.serverUrl ? { serverUrl: options.serverUrl } : {}),
         ...(options?.channel ? { channel: options.channel } : {}),
+        ...(options?.publishedChannel
+          ? { publishedChannel: options.publishedChannel }
+          : {}),
       };
       await atomicWriteTextFile(
         this.lockfilePath,

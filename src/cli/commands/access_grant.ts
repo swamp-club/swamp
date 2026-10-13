@@ -58,6 +58,7 @@ import {
   parseResourceFlag,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
+import { canonicalResourceSelectorString } from "../../domain/access/resource_selector.ts";
 import type { ModelMethodRunEvent } from "../../libswamp/models/run.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import {
@@ -425,7 +426,11 @@ const accessGrantListCommand = new Command()
           type: "access.grant.list",
           payload: {
             subject: options.subject as string | undefined,
-            resource: options.on as string | undefined,
+            // The canonical spelling, so a server that predates the behavior
+            // spelling of a selector (swamp-club#3334) still reads it.
+            resource: options.on !== undefined
+              ? canonicalResourceSelectorString(options.on as string)
+              : undefined,
           },
         },
       );

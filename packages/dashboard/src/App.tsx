@@ -17,13 +17,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { SwampProvider, useSwamp } from "./client/SwampProvider";
 import { useAuditStream } from "./client/useAuditStream";
+import { auditEnabled } from "./client/audit_state.ts";
 import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { pendingApprovals } from "./client/approvals";
 import { Logo } from "./components/Logo";
+import { localToken, PAGE_WORKSPACE } from "./client/workspace_path.ts";
+import {
+  AppShellSkeleton,
+  connectingLabel,
+} from "./components/AppShellSkeleton.tsx";
 import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
 import {
   MOBILE_MEDIA_QUERY,
@@ -32,6 +46,8 @@ import {
   SIDEBAR_COLLAPSED_KEY,
 } from "./components/sidebar_state.ts";
 import { useRouter } from "./hooks/useRouter";
+import { TimeRangeProvider } from "./client/time_range.ts";
+import { TimeRangePicker } from "./components/TimeRangePicker.tsx";
 import { Login } from "./views/Login";
 import { Overview } from "./views/Overview";
 import { Workflows } from "./views/Workflows";
@@ -40,6 +56,7 @@ import { Executions } from "./views/Executions";
 import { Models } from "./views/Models";
 import { ModelDetail } from "./views/ModelDetail";
 import { System } from "./views/System";
+import { Workers } from "./views/Workers";
 import { Schedules } from "./views/Schedules";
 import { Webhooks } from "./views/Webhooks";
 import { Approvals } from "./views/Approvals";
@@ -49,9 +66,52 @@ import { Extensions } from "./views/Extensions";
 import { Activity } from "./views/Activity";
 import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
-import { buildPath } from "./routes.ts";
+import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
+import { WebhookDetail } from "./views/WebhookDetail.tsx";
+import {
+  SchedulesLocalState,
+  WebhooksLocalState,
+} from "./views/ServeOnlyStates.tsx";
+import type { CopyFn } from "./views/AuditStates.tsx";
+import { copyText } from "./components/clipboard.ts";
+import { buildPath, isStartPath } from "./routes.ts";
+import "./styles/shell.css";
+
+// Views whose content is runs over time, which the dashboard-wide time
+// range scopes; the shell shows the picker above them.
+const TIMED_VIEWS: ReadonlySet<View> = new Set<View>([
+  "overview",
+  "workflows",
+  "executions",
+  "schedules",
+  "webhooks",
+  "approvals",
+  "models",
+]);
+// Details whose content follows the time range. A run page doesn't: it is
+// one run, and its recent-runs strip deliberately ignores the range.
+const TIMED_DETAILS = new Set(["workflow", "model", "schedule", "webhook"]);
+
+// Only `swamp start` serves the start page, so it loads as its own chunk.
+const Start = lazy(() =>
+  import("./views/start/Start").then((m) => ({ default: m.Start }))
+);
 
 export function App() {
+  // The `swamp start` page talks only to its own loopback server, so it
+  // must never mount the serve provider, its auth probe or its socket.
+  if (isStartPath(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="loading">Loading...</div>}>
+        <Start />
+      </Suspense>
+    );
+  }
+  // A workspace page needs the token `swamp start` or `swamp dashboard`
+  // handed it; without one every request would be refused.
+  if (PAGE_WORKSPACE !== null && localToken() === null) {
+    return <LocalTokenMissing />;
+  }
   return (
     <SwampProvider>
       <AppShell />
@@ -59,11 +119,26 @@ export function App() {
   );
 }
 
+/** A local dashboard page opened without its token (a pasted link, say). */
+function LocalTokenMissing() {
+  return (
+    <div className="login-container">
+      <div className="login-card" role="status">
+        <p>
+          This dashboard is only available from <code>swamp start</code> or{" "}
+          <code>swamp dashboard</code>. Open it from the link they print.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function AppShell() {
-  const { connected, token, authMode, sessionReady, logout } = useSwamp();
+  const { connected, token, authMode, sessionReady, logout, local } =
+    useSwamp();
 
   if (authMode === null || !sessionReady) {
-    return <div className="loading">Connecting...</div>;
+    return <AppShellSkeleton label="Connecting" />;
   }
 
   if (authMode !== "none" && token === null) {
@@ -71,13 +146,18 @@ function AppShell() {
   }
 
   if (!connected) {
-    return <div className="loading">Connecting to swamp serve...</div>;
+    return <AppShellSkeleton label={connectingLabel(local)} />;
   }
 
-  return <Dashboard onLogout={logout} />;
+  return (
+    <TimeRangeProvider>
+      <Dashboard onLogout={logout} />
+    </TimeRangeProvider>
+  );
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
+  const { local } = useSwamp();
   const {
     view,
     detail,
@@ -146,6 +226,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     return () => document.removeEventListener("keydown", handler);
   }, [drawerOpen, detail, goUp]);
 
+  const showTimeRange = detail
+    ? TIMED_DETAILS.has(detail.kind)
+    : TIMED_VIEWS.has(view);
+
   const appClass = `app${drawerOpen ? " drawer-open" : ""}${
     collapsed ? " sidebar-collapsed" : ""
   }`;
@@ -157,6 +241,8 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         onNavigate={navigateAndClose}
         health={health}
         approvalCount={approvalCount}
+        auditEnabled={auditEnabled(auditStream.status)}
+        local={local}
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
@@ -189,6 +275,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           </button>
           <Logo size="sm" />
         </div>
+        {showTimeRange && (
+          <div className="shell-topbar">
+            <TimeRangePicker />
+          </div>
+        )}
         {detail?.kind === "data" || detail?.kind === "report" ||
             detail?.kind === "runReport"
           ? (
@@ -215,6 +306,30 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               onOpenRun={openRun}
             />
           )
+          : local && (detail?.kind === "schedule" || view === "schedules")
+          ? <LocalOffPage title="Schedules" state={SchedulesLocalState} />
+          : local && (detail?.kind === "webhook" || view === "webhooks")
+          ? <LocalOffPage title="Webhooks" state={WebhooksLocalState} />
+          : detail?.kind === "schedule"
+          ? (
+            <ScheduleDetail
+              key={detail.workflowName}
+              workflowName={detail.workflowName}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
+            />
+          )
+          : detail?.kind === "webhook"
+          ? (
+            <WebhookDetail
+              key={detail.route}
+              route={detail.route}
+              health={health}
+              denied={healthDenied}
+              onBack={closeDetail}
+            />
+          )
           : detail?.kind === "model"
           ? (
             <ModelDetail
@@ -233,9 +348,11 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 />
               )}
               {view === "workflows" && (
-                <Workflows onOpenWorkflow={openWorkflow} />
+                <Workflows health={health} onOpenWorkflow={openWorkflow} />
               )}
-              {view === "executions" && <Executions onOpenRun={openRun} />}
+              {view === "executions" && (
+                <Executions health={health} onOpenRun={openRun} />
+              )}
               {view === "models" && <Models onOpenModel={openModel} />}
               {view === "schedules" && (
                 <Schedules health={health} denied={healthDenied} />
@@ -253,6 +370,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               {view === "data" && <Data />}
               {view === "vaults" && <Vaults />}
               {view === "extensions" && <Extensions />}
+              {view === "workers" && <Workers health={health} />}
               {view === "system" && (
                 <System health={health} denied={healthDenied} />
               )}
@@ -277,4 +395,24 @@ function writeCollapsed(value: boolean): void {
   } catch {
     // Storage blocked: the preference lasts for this page load only.
   }
+}
+
+/**
+ * A page the local dashboard can't serve (no `swamp serve` behind it): its
+ * title and what turning it on would give, like Activity's audit-off page.
+ */
+function LocalOffPage(
+  { title, state: State }: {
+    title: string;
+    state: (props: { copy: CopyFn }) => ReactNode;
+  },
+) {
+  return (
+    <>
+      <div className="page-header">
+        <h1>{title}</h1>
+      </div>
+      <State copy={copyText} />
+    </>
+  );
 }

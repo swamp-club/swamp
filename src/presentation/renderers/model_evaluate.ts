@@ -28,8 +28,15 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNoun,
+} from "../command_surface.ts";
 
 class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
+  constructor(private readonly surface: CommandSurface) {}
+
   handlers(): EventHandlers<ModelEvaluateEvent> {
     return {
       evaluating: () => {},
@@ -49,7 +56,8 @@ class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
   private renderSingle(item: ModelEvaluateItemData): void {
     const logger = getSwampLogger(["model", "evaluate"]);
 
-    logger.info("Evaluated model definition: {name} ({type})", {
+    const noun = surfaceNoun(this.surface);
+    logger.info(`Evaluated ${noun} definition: {name} ({type})`, {
       name: item.name,
       type: item.type,
     });
@@ -68,7 +76,8 @@ class LogModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
   private renderAll(data: ModelEvaluateAllData): void {
     const logger = getSwampLogger(["model", "evaluate"]);
 
-    logger.info("Evaluated {evaluated} of {total} model definitions", {
+    const noun = surfaceNoun(this.surface);
+    logger.info(`Evaluated {evaluated} of {total} ${noun} definitions`, {
       evaluated: data.evaluated,
       total: data.total,
     });
@@ -105,11 +114,12 @@ class JsonModelEvaluateRenderer implements Renderer<ModelEvaluateEvent> {
 
 export function createModelEvaluateRenderer(
   mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Renderer<ModelEvaluateEvent> {
   switch (mode) {
     case "json":
       return new JsonModelEvaluateRenderer();
     case "log":
-      return new LogModelEvaluateRenderer();
+      return new LogModelEvaluateRenderer(surface);
   }
 }

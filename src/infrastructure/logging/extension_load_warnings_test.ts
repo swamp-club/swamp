@@ -194,3 +194,18 @@ Deno.test("resetExtensionLoadWarnings: clears dedupe and hint state", () => {
   // Two warning lines + two hint lines.
   assertEquals(cap.lines.length, 4);
 });
+
+Deno.test("emitExtensionLoadWarning: a model file in extensions/behaviors/ gets the behaviors hint", () => {
+  resetExtensionLoadWarnings();
+  const cap = makeCapture();
+
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/repo/extensions/behaviors/bad.ts", error: "x" },
+    { writer: cap.writer },
+  );
+
+  assertStringIncludes(
+    cap.lines[1],
+    "extensions/behaviors/ is auto-discovered",
+  );
+});

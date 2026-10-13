@@ -36,6 +36,8 @@ import {
 } from "../expressions/expression_parser.ts";
 import { extractVaultReferences } from "../expressions/vault_reference_extractor.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
+import { FOREIGN_TEMPLATE_WARNING_NAME } from "../models/validation_service.ts";
+import { findForeignTaskText } from "./expression_evaluators.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -221,13 +223,74 @@ export class DefaultWorkflowValidationService
       results.push(result);
     }
 
+    // 16. Another templating system's ${{ }} text in step tasks
+    for (const result of this.validateForeignTaskText(workflow)) {
+      results.push(result);
+    }
+
     return results;
   }
 
   /**
+   * Another templating system's `${{ ... }}` text, such as GitHub Actions
+   * `${{ github.sha }}`. Nested in a step's task inputs or global arguments
+   * it reaches the method as literal text, so it only warns. Where a task
+   * names what it runs, or as a whole-field record expression, a run fails
+   * on it.
+   *
+   * In step arguments that holds only for the known foreign roots. Text
+   * reading any other root (`nonexistent.variable`, `input.region`) fails
+   * here, as a run fails on it with "Unknown variable" (swamp-club#3400).
+   * The check is static, so it also fails a root in a branch a run would
+   * never evaluate.
+   */
+  private validateForeignTaskText(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const { arguments: passed, unlisted, unresolvable } = findForeignTaskText(
+      workflow,
+    );
+    return [
+      ...passed.map(({ jobName, stepName, path, text }) =>
+        WorkflowValidationResult.warning(
+          `${FOREIGN_TEMPLATE_WARNING_NAME} in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}, which is not a swamp expression and is passed to the method unchanged. ` +
+            `If you meant a swamp expression, reference one of swamp's namespaces (model, self, inputs, env, vault, data)`,
+        )
+      ),
+      ...unlisted.map(({ jobName, stepName, path, text, roots, misspelt }) =>
+        WorkflowValidationResult.fail(
+          `Task expressions in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}: ${
+            roots.map((root) => `'${root}'`).join(", ")
+          } ${
+            roots.length === 1
+              ? "is not a swamp namespace or a known templating root"
+              : "are not swamp namespaces or known templating roots"
+          }, so a run fails with "Unknown variable". ` +
+            (misspelt ? `Did you mean '${misspelt.namespace}'? ` : "") +
+            // literal() output is refused in a direct step's globalArgs
+            // until swamp-club#3389 lands.
+            (path.startsWith("globalArgs")
+              ? `If it is another templating system's text, pass it as a step input written with literal() instead of a global argument`
+              : `If it is another templating system's text, write it with literal()`),
+        )
+      ),
+      ...unresolvable.map(({ jobName, stepName, path, text }) =>
+        WorkflowValidationResult.fail(
+          `Task expressions in job '${jobName}' step '${stepName}'`,
+          `${path} holds ${text}, which is not a swamp expression. ` +
+            `Another templating system's text is only passed through inside a step's inputs or globalArgs`,
+        )
+      ),
+    ];
+  }
+
+  /**
    * With a `vaults:` list, reports each vault the workflow statically uses
-   * but does not list: a quoted `vault.get` in its own steps or inputs, and
-   * each sensitive-output target vault of a mutating model-method step. The
+   * but does not list: a `vault.get` whose vault name is quoted or an
+   * unquoted literal name in its own steps or inputs, and each
+   * sensitive-output target vault of a mutating model-method step. The
    * run-time check is the guarantee for dynamic names and for `vault.get`
    * inside model definitions.
    */

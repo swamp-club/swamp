@@ -27,6 +27,7 @@ import {
 } from "../../infrastructure/persistence/installed_entries.ts";
 import { resolvePulledExtensionsRoot } from "../../infrastructure/persistence/paths.ts";
 import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import { readPublishedChannel } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { isVersionConstraint } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -38,7 +39,14 @@ export interface ExtensionListEntry {
   version: string;
   pulledAt: string;
   files: string[];
+  /** The channel the install follows; absent means stable. */
   channel?: string;
+  /**
+   * The channel the registry listed the installed version on when it was
+   * pulled, when recorded. Differs from `channel` when an exact version
+   * was pulled from another channel.
+   */
+  publishedChannel?: string;
   /**
    * The version in the extension's on-disk manifest, present only when it
    * differs from the lockfile's pinned `version`: the loaded code is not
@@ -170,12 +178,14 @@ export async function* extensionList(
           const onDisk = !entry.version || isVersionConstraint(entry.version)
             ? null
             : deps.readOnDiskVersion?.(name) ?? null;
+          const publishedChannel = readPublishedChannel(entry);
           return {
             name,
             version: entry.version,
             pulledAt: entry.pulledAt ?? "",
             files: entry.files ?? [],
             ...(entry.channel ? { channel: entry.channel } : {}),
+            ...(publishedChannel ? { publishedChannel } : {}),
             ...(onDisk && onDisk !== entry.version
               ? { onDiskVersion: onDisk }
               : {}),

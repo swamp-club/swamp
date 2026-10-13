@@ -47,8 +47,8 @@ actions to swamp workflow runs.
 
 - **`swamp audit`**: shows the merged timeline. With `--server` it sends
   `audit.timeline` to `swamp serve`, which needs `admin` on `access:audit`. Its
-  command lines can name models, workflows and vaults, so a model `read` grant
-  is not enough.
+  command lines can name behaviors, workflows and vaults, so a behavior `read`
+  grant is not enough.
 
 - **`swamp doctor audit`**: a preflight check that the audit integration works.
   See [`audit-doctor.md`](./audit-doctor.md).
@@ -82,6 +82,23 @@ and the opt-in 3.0 engine load: the 2.x `toolsSettings` with the 3.0
 also runs workspace `.kiro/hooks/*.json` files, so under that engine a shell
 call can be recorded twice. Dropping the profile's hook would lose audit on
 the 2.x default, so the duplicate is accepted.
+
+The OpenCode plugin serves OpenCode 1 and OpenCode 2 from one file. It keeps
+the original named export `SwampAudit` (a factory returning
+`tool.execute.before`/`tool.execute.after` hooks that match the `bash` tool),
+and adds a default export object with `id`, `server` (the same factory) and
+`setup(ctx)`. OpenCode 1.3.4 and later use `default.server` and ignore the
+other exports. OpenCode 2 requires a default object with `id` and `setup`,
+ignores named exports, and names the tool `shell`: `setup` registers
+`ctx.tool.hook("execute.after", ...)`, which receives the command in
+`event.input`. Both paths send the same payload to
+`swamp audit record --from-hook --tool opencode`, so `normalizeOpenCode` does
+not distinguish them. The imports are type-only, so the file needs no OpenCode
+package at runtime. OpenCode 1 builds before 1.3.4 call every export as a
+function, which no file OpenCode 2 accepts can satisfy: on 1.0 to 1.2.10 the
+default object crashes the run, and on 1.2.11 to 1.3.3 it records but OpenCode
+reports a plugin load error. The supported range is therefore OpenCode 1.3.4 or
+later, and OpenCode 2.
 
 Upgrade migrates Kiro repos scaffolded by earlier versions: it deletes swamp's
 `swamp-audit.kiro.hook`, and removes copies of the audit hook (post-tool

@@ -21,8 +21,13 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import type { View } from "../types.ts";
 import { buildPath, isPlainLeftClick } from "../routes.ts";
+import { BEHAVIORS_LABEL } from "../lib/behavior_labels.ts";
+import { formatCompactCount, formatDuration } from "../lib/format.ts";
 import { Logo } from "./Logo";
 import { ThemeToggle } from "./ThemeToggle";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import { operationsOff, showsLogout } from "./sidebar_state.ts";
+import { PAGE_WORKSPACE } from "../client/workspace_path.ts";
 
 export type { View };
 
@@ -47,6 +52,8 @@ const ICONS: Record<string, string> = {
     '<rect x="4" y="2" width="10" height="14" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M9 2v5M9 11v5M4 9h3M11 9h3"/>',
   activity: '<path d="M2 9h4l2-5 3 10 2-5h3"/><circle cx="15" cy="9" r="1.5"/>',
   extensions: '<path d="M3 5h12M3 9h12M3 13h8"/>',
+  workers:
+    '<rect x="1.5" y="1.5" width="9" height="9" rx="1.5"/><rect x="12" y="1.5" width="4.5" height="4.5" rx="1"/><rect x="12" y="7.5" width="4.5" height="3" rx="1"/><rect x="1.5" y="12" width="4.5" height="4.5" rx="1"/><rect x="7.5" y="12" width="9" height="4.5" rx="1"/>',
   system:
     '<path d="M9 2a7 7 0 110 14A7 7 0 019 2z"/><path d="M12 9a3 3 0 01-6 0 3 3 0 016 0z"/><path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4"/>',
 };
@@ -57,15 +64,30 @@ interface NavItemProps {
   active: boolean;
   onClick: (view: View) => void;
   badge?: number;
+  /** What the badge counts, read after it: "3 pending". */
+  badgeLabel?: string;
+  /**
+   * Fades the item and tags it with a short hint ("Off") while keeping it
+   * clickable; `off.description` is its accessible description.
+   */
+  off?: { hint: string; description: string };
 }
 
-function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
+function NavItem(
+  { label, view, active, onClick, badge, badgeLabel, off }: NavItemProps,
+) {
   const iconSvg = ICONS[view] ?? "";
+  const describedBy = off ? `nav-${view}-off` : undefined;
   return (
     <a
       href={buildPath({ view, detail: null })}
-      className={`nav-item${active ? " active" : ""}`}
+      className={`nav-item${active ? " active" : ""}${
+        off ? " nav-item-off" : ""
+      }`}
       aria-current={active ? "page" : undefined}
+      aria-describedby={describedBy}
+      title={off?.description}
+      data-tooltip={off ? `${label} — ${off.description}` : undefined}
       onClick={(e) => {
         if (!isPlainLeftClick(e)) return;
         e.preventDefault();
@@ -110,13 +132,47 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
         stroke="currentColor"
         strokeWidth="1.5"
         aria-hidden="true"
-        style={{ flexShrink: 0, opacity: active ? 1 : 0.7 }}
+        style={{
+          flexShrink: 0,
+          opacity: off ? (active ? 0.6 : 0.4) : active ? 1 : 0.7,
+        }}
         dangerouslySetInnerHTML={{ __html: iconSvg }}
       />
-      <span className="nav-label">{label}</span>
+      <span
+        className="nav-label"
+        style={off ? { opacity: active ? 0.7 : 0.5 } : undefined}
+      >
+        {label}
+      </span>
+      {off && (
+        <>
+          <span
+            className="nav-off"
+            aria-hidden="true"
+            style={{
+              marginLeft: "auto",
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: "0.6rem",
+              fontWeight: 500,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              padding: "1px 6px",
+              borderRadius: 4,
+              border: "1px solid currentColor",
+              opacity: 0.45,
+            }}
+          >
+            {off.hint}
+          </span>
+          <span id={describedBy} className="visually-hidden">
+            {off.description}
+          </span>
+        </>
+      )}
       {badge !== undefined && badge > 0 && (
         <span
           className="nav-badge"
+          aria-hidden="true"
           style={{
             marginLeft: "auto",
             fontFamily: "'JetBrains Mono', monospace",
@@ -125,10 +181,17 @@ function NavItem({ label, view, active, onClick, badge }: NavItemProps) {
             padding: "1px 7px",
             borderRadius: 10,
             background: "var(--sidebar-accent)",
-            color: "#000",
+            color: "var(--sidebar-bg)",
           }}
         >
-          {badge}
+          {formatCompactCount(badge)}
+        </span>
+      )}
+      {badge !== undefined && badge > 0 && (
+        <span className="visually-hidden">
+          {`, ${formatCompactCount(badge)}${
+            badgeLabel ? ` ${badgeLabel}` : ""
+          }`}
         </span>
       )}
     </a>
@@ -148,7 +211,8 @@ interface RailTooltip {
  */
 function tooltipFor(e: MouseEvent<HTMLElement>): RailTooltip | null {
   const item = (e.target as HTMLElement).closest<HTMLElement>(".nav-item");
-  const label = item?.querySelector(".nav-label")?.textContent;
+  const label = item?.dataset.tooltip ??
+    item?.querySelector(".nav-label")?.textContent;
   if (!item || !label) return null;
   const rect = item.getBoundingClientRect();
   return { label, top: rect.top + rect.height / 2, left: rect.right + 10 };
@@ -159,6 +223,13 @@ interface SidebarProps {
   onNavigate: (view: View) => void;
   health: HealthSnapshot | null;
   approvalCount: number;
+  /** False once serve said it runs without an audit log. */
+  auditEnabled?: boolean;
+  /**
+   * True on the local dashboard: no serve behind it, so schedules and
+   * webhooks are off and there is no login to leave.
+   */
+  local?: boolean;
   onLogout: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -171,6 +242,8 @@ export function Sidebar({
   onNavigate,
   health,
   approvalCount,
+  auditEnabled = true,
+  local = false,
   onLogout,
   collapsed,
   onToggleCollapsed,
@@ -178,6 +251,7 @@ export function Sidebar({
   onCloseDrawer,
 }: SidebarProps) {
   const [tooltip, setTooltip] = useState<RailTooltip | null>(null);
+  const off = operationsOff({ auditEnabled, local });
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   // Drop a tooltip measured before the rail was toggled.
@@ -267,6 +341,10 @@ export function Sidebar({
         </button>
       </div>
 
+      {PAGE_WORKSPACE !== null && !collapsed && (
+        <WorkspaceSwitcher current={PAGE_WORKSPACE} />
+      )}
+
       <div style={{ padding: "0 8px", marginBottom: 24 }}>
         <SectionLabel text="Overview" />
         <NavItem
@@ -292,7 +370,7 @@ export function Sidebar({
           onClick={onNavigate}
         />
         <NavItem
-          label="Models"
+          label={BEHAVIORS_LABEL}
           view="models"
           active={activeView === "models"}
           onClick={onNavigate}
@@ -306,12 +384,14 @@ export function Sidebar({
           view="schedules"
           active={activeView === "schedules"}
           onClick={onNavigate}
+          off={off.schedules}
         />
         <NavItem
           label="Webhooks"
           view="webhooks"
           active={activeView === "webhooks"}
           onClick={onNavigate}
+          off={off.webhooks}
         />
         <NavItem
           label="Approvals"
@@ -319,12 +399,14 @@ export function Sidebar({
           active={activeView === "approvals"}
           onClick={onNavigate}
           badge={approvalCount > 0 ? approvalCount : undefined}
+          badgeLabel="pending"
         />
         <NavItem
           label="Activity"
           view="activity"
           active={activeView === "activity"}
           onClick={onNavigate}
+          off={off.activity}
         />
       </div>
 
@@ -346,6 +428,12 @@ export function Sidebar({
           label="Extensions"
           view="extensions"
           active={activeView === "extensions"}
+          onClick={onNavigate}
+        />
+        <NavItem
+          label="Workers"
+          view="workers"
+          active={activeView === "workers"}
           onClick={onNavigate}
         />
         <NavItem
@@ -403,48 +491,51 @@ export function Sidebar({
               }}
             >
               {health.instanceId.slice(0, 8)} &middot;{" "}
-              {formatUptime(health.uptimeMs)}
+              {formatDuration(health.uptimeMs)} uptime
             </div>
           </>
         )}
-        <button
-          type="button"
-          className="sidebar-logout"
-          onClick={onLogout}
-          aria-label="Logout"
-          title="Logout"
-          style={{
-            marginTop: 12,
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            padding: "6px 0",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 5,
-            background: "transparent",
-            color: "var(--sidebar-text)",
-            fontSize: "0.75rem",
-            cursor: "pointer",
-            fontFamily: "inherit",
-          }}
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            style={{ flexShrink: 0 }}
+        {/* The local dashboard has no login to leave. */}
+        {showsLogout(local) && (
+          <button
+            type="button"
+            className="sidebar-logout"
+            onClick={onLogout}
+            aria-label="Logout"
+            title="Logout"
+            style={{
+              marginTop: 12,
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              padding: "6px 0",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 5,
+              background: "transparent",
+              color: "var(--sidebar-text)",
+              fontSize: "0.75rem",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
           >
-            <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
-          </svg>
-          <span className="sidebar-logout-text">Logout</span>
-        </button>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0 }}
+            >
+              <path d="M6 2H3v12h3M10 5l3 3-3 3M13 8H6" />
+            </svg>
+            <span className="sidebar-logout-text">Logout</span>
+          </button>
+        )}
       </div>
       {collapsed && tooltip && (
         <div
@@ -477,11 +568,4 @@ function SectionLabel({ text }: { text: string }) {
       {text}
     </div>
   );
-}
-
-function formatUptime(ms: number): string {
-  const hours = Math.floor(ms / 3600000);
-  const minutes = Math.floor((ms % 3600000) / 60000);
-  if (hours > 0) return `${hours}h ${minutes}m uptime`;
-  return `${minutes}m uptime`;
 }

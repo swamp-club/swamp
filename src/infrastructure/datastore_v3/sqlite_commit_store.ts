@@ -84,6 +84,8 @@ import {
   CommitRejectedError,
   Partition,
 } from "../../domain/datastore_v3/partition.ts";
+import { WriterFencedError } from "../../domain/datastore_v3/writer_lease.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { PartitionKey } from "../../domain/datastore_v3/partition_key.ts";
 
 /**
@@ -273,7 +275,20 @@ const MIGRATIONS: readonly string[] = [
   DROP TABLE chunk_refs;
   ALTER TABLE chunk_ref_counts RENAME TO chunk_refs;
   `,
+  // 3 → 4: the store-wide writer fence (swamp-club#3359), the highest fence
+  // any writer of this datastore has taken. A commit naming a lower fence,
+  // or none once it is set, is refused whatever partition it is for. A
+  // Phase 3 store keeps its unfenced history; the first fence starts it.
+  `
+  CREATE TABLE IF NOT EXISTS writer_fence (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    fence INTEGER NOT NULL
+  ) STRICT;
+  `,
 ];
+
+/** Error code for a `commits.db` written by a newer swamp. */
+export const COMMIT_STORE_SCHEMA_NEWER_CODE = "datastore_v3_schema_newer";
 
 /** The schema version this store writes. */
 export const COMMIT_STORE_SCHEMA_VERSION = MIGRATIONS.length;
@@ -319,7 +334,7 @@ interface CommitRow {
 /**
  * The SQLite {@link CommitStore}. One instance holds one connection, which is
  * the process's only writer to the file: a second writing process is a bug
- * that the solo writer lock prevents. Appends are serialized in the process,
+ * that the writer lease prevents. Appends are serialized in the process,
  * and their asynchronous parts (rebuilding a partition) never run inside a
  * transaction.
  *
@@ -350,6 +365,8 @@ export class SqliteCommitStore implements CommitStore {
   readonly #selectRefPage: StatementSync;
   readonly #selectPoint: StatementSync;
   readonly #selectCompactedSeq: StatementSync;
+  readonly #selectWriterFence: StatementSync;
+  readonly #upsertWriterFence: StatementSync;
   /** The compacted base's tables (swamp-club#3258). */
   readonly #base: SqliteCompactedBase;
 
@@ -413,6 +430,13 @@ export class SqliteCommitStore implements CommitStore {
     this.#selectCompactedSeq = db.prepare(
       "SELECT seq FROM compacted_partitions WHERE namespace = ? AND partition = ?",
     );
+    this.#selectWriterFence = db.prepare(
+      "SELECT fence FROM writer_fence WHERE id = 1",
+    );
+    this.#upsertWriterFence = db.prepare(
+      "INSERT INTO writer_fence (id, fence) VALUES (1, ?) " +
+        "ON CONFLICT (id) DO UPDATE SET fence = excluded.fence",
+    );
     this.#base = new SqliteCompactedBase(db);
   }
 
@@ -440,6 +464,66 @@ export class SqliteCommitStore implements CommitStore {
   /** How many rebuilt partitions the store holds; for tests and diagnostics. */
   get cachedPartitionCount(): number {
     return this.#cache.size;
+  }
+
+  /**
+   * The highest writer fence this store has seen (swamp-club#3359), or
+   * undefined while no fenced writer has written it.
+   */
+  writerFence(): number | undefined {
+    this.#assertOpen();
+    return this.#storedWriterFence();
+  }
+
+  /**
+   * Records that the writer holding `fence` has taken over: from now on a
+   * commit naming a lower fence, or none, is refused. Runs in its own write
+   * transaction, queued behind appends in flight.
+   *
+   * @throws WriterFencedError when the store has seen a higher fence
+   */
+  raiseWriterFence(fence: number): Promise<void> {
+    if (this.#closed) return Promise.reject(closedError());
+    if (!Number.isSafeInteger(fence) || fence < 1) {
+      return Promise.reject(
+        new Error(`A writer fence must be an integer from 1: ${fence}`),
+      );
+    }
+    const run = this.#queue.then(() => {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        this.#checkWriterFence(fence);
+        const stored = this.#storedWriterFence();
+        if (stored === undefined || fence > stored) {
+          this.#upsertWriterFence.run(fence);
+        }
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        rollbackQuietly(this.#db);
+        throw error;
+      }
+    });
+    this.#queue = run.catch(() => {});
+    return run;
+  }
+
+  #storedWriterFence(): number | undefined {
+    return (this.#selectWriterFence.get() as { fence: number } | undefined)
+      ?.fence;
+  }
+
+  /**
+   * Inside a write transaction: refuses a writer whose fence is below the
+   * store's, or that has none once the store has one. What keeps a writer
+   * that lost its lease from landing anything, on every partition at once.
+   * Only {@link raiseWriterFence} moves the store's fence.
+   */
+  #checkWriterFence(fence: number | undefined): void {
+    const stored = this.#storedWriterFence();
+    if (stored === undefined) return;
+    if (fence === undefined || fence < stored) {
+      throw new WriterFencedError(fence, stored);
+    }
   }
 
   append(commit: Commit): Promise<CommitStoreAppendResult> {
@@ -520,6 +604,12 @@ export class SqliteCommitStore implements CommitStore {
     }
 
     const applied = partition.append(commit);
+    if (applied.kind === "appended") {
+      // After the partition's own rules, so their refusal is the one a
+      // commit they refuse reports. The partition has taken the commit by
+      // now: a refusal here drops it from the cache.
+      this.#checkWriterFence(commit.fence);
+    }
     if (applied.kind === "duplicate") {
       const row = this.#selectTxnSeq.get(
         namespace,
@@ -931,6 +1021,9 @@ export class SqliteCommitStore implements CommitStore {
             "The compaction point moved during compaction: another process is writing the store",
           );
         }
+        // Compaction is the writer's: one that lost its lease, or holds none
+        // once the store has a fence, stops here.
+        this.#checkWriterFence(options.fence);
         this.#base.begin(now);
         rows.forEach((row, i) => {
           foldCommit(this.#base, commits[i], row.cursor, MATERIALISED_SUBDIRS);
@@ -1052,8 +1145,11 @@ function migrate(db: DatabaseSync): void {
       .user_version;
   const check = (version: number) => {
     if (version > COMMIT_STORE_SCHEMA_VERSION) {
-      throw new Error(
-        `commits.db is at schema version ${version}, newer than this swamp's ${COMMIT_STORE_SCHEMA_VERSION}: upgrade swamp`,
+      throw new UserError(
+        `commits.db is at schema version ${version}, newer than this swamp's ${COMMIT_STORE_SCHEMA_VERSION}: upgrade swamp. ` +
+          "A newer swamp has written this v3 datastore, and this one cannot " +
+          "read or write it. Nothing was changed.",
+        COMMIT_STORE_SCHEMA_NEWER_CODE,
       );
     }
   };

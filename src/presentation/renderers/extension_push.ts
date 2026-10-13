@@ -44,6 +44,7 @@ import {
 } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
+import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/extensions/push.ts";
 import {
@@ -122,6 +123,8 @@ export interface ExtensionPushHandlerOptions {
 export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderResolved(data: ExtensionPushResolvedData): void;
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void;
+  /** A declared license that is not valid SPDX: a warning, never a block. */
+  renderLicenseWarning(warning: ManifestLicenseWarning): void;
   renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void;
   renderReviewRuleWarnings(warnings: ReviewFinding[]): void;
   renderReviewRuleErrors(errors: ReviewFinding[]): void;
@@ -265,6 +268,11 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
         `Requested visibility: ${requestedVisibilityLabel(data.visibility)}`,
       ),
     );
+    if (data.license !== null) {
+      this.logger.info`License: ${data.license}`;
+    } else {
+      this.logger.info("License: none declared");
+    }
     if (data.description) {
       const description = data.description;
       this.labelled(
@@ -364,6 +372,10 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     if (data.dependencies.length > 0) {
       this.logger.info`Dependencies: ${data.dependencies.join(", ")}`;
     }
+  }
+
+  renderLicenseWarning(warning: ManifestLicenseWarning): void {
+    this.logger.warn`${warning.message}`;
   }
 
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
@@ -654,6 +666,10 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
       webhooks: data.webhooks.map((w) => ({ ...w, fileName: abs(w.fileName) })),
       additionalFiles: data.additionalFiles.map(abs),
     };
+  }
+
+  renderLicenseWarning(warning: ManifestLicenseWarning): void {
+    this.warn("license", [warning]);
   }
 
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {

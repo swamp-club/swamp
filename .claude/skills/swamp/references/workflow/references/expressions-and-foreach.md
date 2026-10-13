@@ -23,8 +23,8 @@ jobs:
           item: env
           in: ${{ inputs.environments }}
         task:
-          type: model_method
-          modelIdOrName: my-service
+          type: behavior
+          behavior: my-service
           methodName: deploy
           inputs:
             environment: ${{ self.env }}
@@ -53,8 +53,8 @@ jobs:
           item: tag
           in: ${{ inputs.tags }}
         task:
-          type: model_method
-          modelIdOrName: tag-manager
+          type: behavior
+          behavior: tag-manager
           methodName: apply
           inputs:
             key: ${{ self.tag.key }}
@@ -69,7 +69,7 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 ### Dynamic Targeting
 
 During forEach expansion, `self.*` expressions resolve in **any** task field —
-the step `name`, model targets (`modelIdOrName`, `modelName`, `methodName`),
+the step `name`, behavior targets (`behavior`, `behaviorName`, `methodName`),
 workflow targets (`workflowIdOrName`), `inputs`, and shell `args` — so each
 iteration can pick a different target:
 
@@ -80,8 +80,8 @@ steps:
       item: region
       in: ${{ inputs.regions }}
     task:
-      type: model_method
-      modelIdOrName: aws-alarms-${{ self.region }}
+      type: behavior
+      behavior: aws-alarms-${{ self.region }}
       methodName: get_summary
       inputs:
         historyHours: 24
@@ -122,7 +122,7 @@ expansion — they resolve at their own runtime/execution stage.
 `self._index` exists only inside a forEach step. It counts iterations in the
 order they run: array order, or the order object entries are iterated. It gives
 each iteration a slug-safe identifier when the item itself is not one, such as a
-file path, so each iteration can target its own model:
+file path, so each iteration can target its own behavior:
 
 ```yaml
 steps:
@@ -131,8 +131,8 @@ steps:
       item: file
       in: ${{ data.latest('repo', 'diff').attributes.files }}
     task:
-      type: model_method
-      modelIdOrName: processor-${{ run.id }}-${{ self._index }}
+      type: behavior
+      behavior: processor-${{ run.id }}-${{ self._index }}
       methodName: run
       inputs:
         path: ${{ self.file }}
@@ -140,14 +140,15 @@ steps:
 
 In CEL string concatenation, convert it with `string(self._index)`. An item
 named `_index` shadows the index. The index follows position, not the item, so
-reordering `forEach.in` gives an item a different index; scope index-based model
-names to the run (as `run.id` does above) rather than reusing them across runs.
+reordering `forEach.in` gives an item a different index; scope index-based
+behavior names to the run (as `run.id` does above) rather than reusing them
+across runs.
 
 ### forEach.in with Data Helpers
 
 `forEach.in` awaits async CEL expressions during expansion, so it accepts data
 helpers directly. A common pattern is iterating over every instance produced by
-a factory model:
+a factory behavior:
 
 ```yaml
 jobs:
@@ -158,8 +159,8 @@ jobs:
           item: instance
           in: ${{ data.findBySpec("my-factory", "instance") }}
         task:
-          type: model_method
-          modelIdOrName: processor
+          type: behavior
+          behavior: processor
           methodName: run
           inputs:
             target: ${{ self.instance.name }}
@@ -191,8 +192,8 @@ steps:
       in: ${{ inputs.environments }}
     guard: ${{ data.latest("deploy-service", "result", [self.env]) }}
     task:
-      type: model_method
-      modelIdOrName: deploy-service
+      type: behavior
+      behavior: deploy-service
       methodName: deploy
       inputs:
         environment: ${{ self.env }}
@@ -219,8 +220,8 @@ steps:
       in: ${{ inputs.targets }}
     concurrency: 3
     task:
-      type: model_method
-      modelIdOrName: api-client
+      type: behavior
+      behavior: api-client
       methodName: call
       inputs:
         target: ${{ self.target }}
@@ -244,8 +245,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: my-service
+      type: behavior
+      behavior: my-service
       methodName: deploy
       inputs:
         environment: ${{ self.env }}
@@ -264,8 +265,8 @@ steps:
       item: env
       in: ${{ inputs.environments }}
     task:
-      type: model_method
-      modelIdOrName: health-checker
+      type: behavior
+      behavior: health-checker
       methodName: check
       inputs:
         environment: ${{ self.env }}
@@ -285,14 +286,14 @@ each iteration its own versioned storage and `latest` symlink.
 
 ## Step Task Inputs
 
-When a step calls a model method, pass inputs to the model:
+When a step calls a method, pass inputs to the behavior:
 
 ```yaml
 steps:
   - name: create-resource
     task:
-      type: model_method
-      modelIdOrName: my-model
+      type: behavior
+      behavior: my-model
       methodName: create
       inputs:
         environment: ${{ inputs.environment }}
@@ -300,14 +301,15 @@ steps:
           replicas: ${{ inputs.replicas }}
 ```
 
-The `inputs` field on `model_method` tasks passes values to the model's input
+The `inputs` field on `behavior` tasks passes values to the behavior's input
 schema, enabling dynamic configuration at workflow runtime.
 
 ## Expressions in Workflows
 
-Model inputs can contain CEL expressions using `${{ <expression> }}` syntax. To
-keep another service's template text literal in the same value, pass it through
-with `literal()`: `${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
+Behavior inputs can contain CEL expressions using `${{ <expression> }}` syntax.
+To keep another service's template text literal in the same value, pass it
+through with `literal()`:
+`${{ inputs.env }} alert on ${{ literal('{{host.name}}') }}`.
 
 ### Environment Variables
 
@@ -343,8 +345,8 @@ concurrently:
 steps:
   - name: process
     task:
-      type: model_method
-      modelIdOrName: my-processor
+      type: behavior
+      behavior: my-processor
       methodName: run
       inputs:
         outputKey: "result-${{ run.id }}"
@@ -423,6 +425,6 @@ workflowOutputs: ${{ data.findByTag("workflow", "my-deploy") }}
 # Find data from a specific step
 stepData: ${{ data.findByTag("step", "build.compile") }}
 
-# Find all instances from a factory model's output spec
+# Find all instances from a factory behavior's output spec
 subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
 ```

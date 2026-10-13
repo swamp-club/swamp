@@ -38,6 +38,9 @@ import { UserError } from "../src/domain/errors.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import { createRepoInitDeps, repoInit } from "../src/libswamp/repo/init.ts";
+import { DenoInfoModuleGraphReader } from "../src/infrastructure/runtime/deno_info_module_graph_reader.ts";
+
+const graphReader = new DenoInfoModuleGraphReader(Deno.execPath());
 
 const logger = getLogger(["test"]);
 
@@ -117,6 +120,7 @@ for (const { field, entry, expected } of cases) {
             repoContext,
             logger,
             extensionsDir: undefined,
+            moduleGraphReader: graphReader,
           }),
         UserError,
       );

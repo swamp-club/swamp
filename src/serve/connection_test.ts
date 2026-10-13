@@ -39,6 +39,7 @@ import {
   setConnectionLoginIdentity,
 } from "./handlers/shared.ts";
 import type { ConnectionContext } from "./connection.ts";
+import type { ServerRequest } from "./protocol.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { UserError } from "../domain/errors.ts";
 import { WorkflowSchemaError } from "../domain/workflows/workflow_schema_error.ts";
@@ -119,6 +120,48 @@ Deno.test("validateServerRequest accepts a valid workflow.run request", () => {
   };
   const result = validateServerRequest(input);
   assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest bounds the worker.lease.list payload", () => {
+  const ok = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-1",
+    payload: { dispatchIds: [crypto.randomUUID()], endedWithinMs: 10_000 },
+  });
+  assertEquals(typeof ok, "object");
+  const tooMany = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-2",
+    payload: { dispatchIds: Array.from({ length: 2001 }, (_, i) => `d-${i}`) },
+  });
+  assertEquals(typeof tooMany, "string");
+  const badId = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-3",
+    payload: { dispatchIds: ['x" || true || "'] },
+  });
+  assertEquals(typeof badId, "string");
+  const longWindow = validateServerRequest({
+    type: "worker.lease.list",
+    id: "req-4",
+    payload: { endedWithinMs: 300_001 },
+  });
+  assertEquals(typeof longWindow, "string");
+});
+
+Deno.test("validateServerRequest caps worker.list disconnectedWithinMs at 24h", () => {
+  const ok = validateServerRequest({
+    type: "worker.list",
+    id: "req-1",
+    payload: { disconnectedWithinMs: 7_200_000 },
+  });
+  assertEquals(typeof ok, "object");
+  const tooLong = validateServerRequest({
+    type: "worker.list",
+    id: "req-2",
+    payload: { disconnectedWithinMs: 86_400_001 },
+  });
+  assertEquals(typeof tooLong, "string");
 });
 
 Deno.test("validateServerRequest keeps allowRename on model.edit and workflow.edit", () => {
@@ -221,6 +264,80 @@ for (const type of ["workflow.search", "workflow.run.search"]) {
   });
 }
 
+Deno.test("validateServerRequest keeps workflow.search offset and limit for the handler", () => {
+  const validated = validateServerRequest({
+    type: "workflow.search",
+    id: "page-2",
+    payload: { limit: 50, offset: 50 },
+  });
+  assertEquals(typeof validated, "object");
+  assertEquals(
+    (validated as Extract<ServerRequest, { type: "workflow.search" }>)
+      .payload,
+    { limit: 50, offset: 50 },
+  );
+});
+
+Deno.test("validateServerRequest keeps the workflow.run.search window, workflows and trigger source", () => {
+  const payload = {
+    since: "2026-10-01T00:00:00Z",
+    until: "2026-10-02T00:00:00Z",
+    workflows: ["deploy", "test"],
+    triggerSource: "schedule",
+  };
+  const validated = validateServerRequest({
+    type: "workflow.run.search",
+    id: "run-filters",
+    payload,
+  });
+  assertEquals(
+    (validated as Extract<ServerRequest, { type: "workflow.run.search" }>)
+      .payload,
+    payload,
+  );
+});
+
+Deno.test("validateServerRequest accepts workflow.run.summary with or without a payload", () => {
+  assertEquals(
+    typeof validateServerRequest({ type: "workflow.run.summary", id: "s-1" }),
+    "object",
+  );
+  const payload = {
+    since: "2026-10-01T00:00:00Z",
+    until: "2026-10-02T00:00:00Z",
+    workflows: ["deploy"],
+    triggerSource: "api",
+    recentLimit: 500,
+    timeline: true,
+  };
+  const validated = validateServerRequest({
+    type: "workflow.run.summary",
+    id: "s-2",
+    payload,
+  });
+  assertEquals(
+    (validated as Extract<ServerRequest, { type: "workflow.run.summary" }>)
+      .payload,
+    payload,
+  );
+  for (
+    const bad of [
+      { timeline: "yes" },
+      { workflows: "deploy" },
+      { recentLimit: "5" },
+    ]
+  ) {
+    assertEquals(
+      typeof validateServerRequest({
+        type: "workflow.run.summary",
+        id: "s-bad",
+        payload: bad,
+      }),
+      "string",
+    );
+  }
+});
+
 Deno.test("validateServerRequest rejects unknown type", () => {
   const input = { type: "unknown.type", id: "req-4" };
   const result = validateServerRequest(input);
@@ -261,7 +378,8 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
     });
     assertEquals(typeof sent, "object");
   }
-  // A key address may say the client reads a pending reply.
+  // A key address may say the client reads a pending reply, and an accepted
+  // one.
   const flagged = validateServerRequest({
     type: "workflow.signal",
     id: "req-1",
@@ -270,12 +388,19 @@ Deno.test("validateServerRequest: a workflow.signal with no message says the pay
       key: "release-verdict",
       payload: {},
       acceptsPending: true,
+      acceptsReceipt: true,
     },
   });
   assertEquals(
     typeof flagged === "object" &&
       (flagged as { payload: { acceptsPending?: boolean } }).payload
         .acceptsPending,
+    true,
+  );
+  assertEquals(
+    typeof flagged === "object" &&
+      (flagged as { payload: { acceptsReceipt?: boolean } }).payload
+        .acceptsReceipt,
     true,
   );
   // Either address may carry an idempotency key, in the form of one.

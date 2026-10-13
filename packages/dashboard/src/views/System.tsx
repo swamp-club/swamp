@@ -17,18 +17,33 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReactNode } from "react";
 import type { HealthSnapshot } from "../client/useHealthStream";
 import { healthViewState } from "../client/health_state";
 import { HealthUnavailable } from "../components/HealthUnavailable";
 import { useRequest } from "../client/useRequest";
+import { useSwamp } from "../client/SwampProvider";
 import { extractArray, extractObject } from "../client/extract";
 import { StatusPill } from "../components/StatusPill";
 import { serveConfigRows } from "./serve_config_rows";
+import { EmptyState } from "../components/EmptyState";
+import { LoadError } from "../components/LoadError";
+import { Skeleton } from "../components/Skeleton";
+import { loadState } from "../client/load_state.ts";
+import {
+  CLUSTER_COLUMNS,
+  DeploymentPanelSkeleton,
+  KeyValuePanelSkeleton,
+  SERVE_CONFIG_KEYS,
+  TablePanelSkeleton,
+  WORKER_SUMMARY_KEYS,
+} from "./PageSkeletons.tsx";
+import { RouteLink } from "../components/RouteLink.tsx";
 
 interface ClusterInstance {
   instanceId: string;
   hostname: string;
-  startedAt: string;
+  startedAt: string | null;
   lastHeartbeatAt: string;
   status: string;
   address?: string;
@@ -46,26 +61,37 @@ interface WorkerInfo {
   name: string;
   status: string;
   activeDispatchIds: string[];
+  capacity?: number;
 }
 
 export function System(
   { health, denied }: { health: HealthSnapshot | null; denied: boolean },
 ) {
   const healthState = healthViewState(health, denied);
-  const { data: clusterData } = useRequest("cluster.instances");
-  const { data: configData } = useRequest("serve.config");
-  const { data: workersData } = useRequest("worker.list");
-  const { data: datastoreData } = useRequest("datastore.status");
+  const clusterReq = useRequest("cluster.instances");
+  const { local } = useSwamp();
+  // The local dashboard has no serve, so no serve configuration to show.
+  const configReq = useRequest("serve.config", undefined, { enabled: !local });
+  const workersReq = useRequest("worker.list");
+  const datastoreReq = useRequest("datastore.status");
+  const datastoreData = datastoreReq.data;
 
-  const instances = extractArray<ClusterInstance>(clusterData);
-  const configRows = serveConfigRows(configData);
-  const workers = extractArray<WorkerInfo>(workersData);
+  const instances = extractArray<ClusterInstance>(clusterReq.data);
+  const configRows = serveConfigRows(configReq.data);
+  const workers = extractArray<WorkerInfo>(workersReq.data);
+  const clusterState = loadState(clusterReq, () => instances.length === 0);
+  const workersState = loadState(workersReq, () => workers.length === 0);
+  const datastoreState = loadState(datastoreReq, () => false);
+  const configState = loadState(configReq, () => configRows === null);
 
   return (
     <>
       <div className="page-header">
         <h1>System</h1>
         <div className="header-right">
+          {healthState === "loading" && (
+            <Skeleton width={96} height={26} radius={20} />
+          )}
           {health && (
             <div className="health-pill">
               <span className="health-dot" />
@@ -79,7 +105,22 @@ export function System(
         </div>
       </div>
 
-      {instances.length > 0 && (
+      {clusterState === "loading" && (
+        <TablePanelSkeleton
+          title="Cluster Instances"
+          columns={CLUSTER_COLUMNS}
+          rows={1}
+          label="Loading cluster instances"
+        />
+      )}
+      {clusterState === "error" && (
+        <LoadError
+          subject="cluster instances"
+          message={clusterReq.error}
+          onRetry={clusterReq.refetch}
+        />
+      )}
+      {clusterState === "ready" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <div className="panel-header">
             <div className="panel-title">
@@ -91,13 +132,9 @@ export function System(
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Instance</th>
-                  <th>Status</th>
-                  <th>Uptime</th>
-                  <th>Active Runs</th>
-                  <th>Throughput</th>
-                  <th>P95 Latency</th>
-                  <th>Workers</th>
+                  {CLUSTER_COLUMNS.map((c) => (
+                    <th key={c.header}>{c.header}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -146,41 +183,66 @@ export function System(
         </div>
       )}
 
-      {workers.length > 0 && (
+      {workersState === "loading" && (
+        <div style={{ marginBottom: 14 }}>
+          <KeyValuePanelSkeleton
+            title="Workers"
+            keys={WORKER_SUMMARY_KEYS}
+            label="Loading workers"
+          />
+        </div>
+      )}
+      {workersState === "error" && (
+        <LoadError
+          subject="workers"
+          message={workersReq.error}
+          onRetry={workersReq.refetch}
+        />
+      )}
+      {workersState === "empty" && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <div className="panel-header">
+            <div className="panel-title">
+              Workers <span className="panel-count">0</span>
+            </div>
+          </div>
+          <EmptyState title="No remote workers">
+            Steps run on this serve. Workers that join with{" "}
+            <code>swamp worker connect</code> show here with their dispatches.
+          </EmptyState>
+        </div>
+      )}
+      {workersState === "ready" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <div className="panel-header">
             <div className="panel-title">
               Workers <span className="panel-count">{workers.length}</span>
             </div>
+            <RouteLink to={{ view: "workers", detail: null }}>
+              Open the worker map
+            </RouteLink>
           </div>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Worker</th>
-                  <th>Status</th>
-                  <th>Active Dispatches</th>
-                </tr>
-              </thead>
-              <tbody>
-                {workers.map((w) => (
-                  <tr key={w.name}>
-                    <td style={{ fontWeight: 500 }}>{w.name}</td>
-                    <td>
-                      <StatusPill status={w.status} />
-                    </td>
-                    <td className="mono" style={{ fontSize: "0.75rem" }}>
-                      {w.activeDispatchIds?.length ?? 0}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{ padding: 0 }}>
+            {WORKER_SUMMARY_KEYS.map((key) => (
+              <div
+                className="sys-row"
+                style={{ padding: "8px 18px" }}
+                key={key}
+              >
+                <span className="sys-key">{key}</span>
+                <span className="sys-val mono">
+                  {key === "Slots in use"
+                    ? slotSummary(workers)
+                    : workers.filter((w) => w.status === key.toLowerCase())
+                      .length}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
-      {healthState !== "ready" && (
+      {healthState === "denied" && (
         <div className="panel" style={{ marginBottom: 14 }}>
           <HealthUnavailable
             state={healthState}
@@ -191,6 +253,7 @@ export function System(
 
       {/* Deployment + Datastore side by side */}
       <div className="panels-grid" style={{ marginBottom: 14 }}>
+        {healthState === "loading" && <DeploymentPanelSkeleton />}
         {health && (
           <div className="panel">
             <div className="panel-header">
@@ -271,7 +334,27 @@ export function System(
           </div>
         )}
 
-        {datastoreData && (
+        {datastoreState === "loading" && (
+          <KeyValuePanelSkeleton
+            title="Datastore"
+            rows={5}
+            label="Loading datastore status"
+          />
+        )}
+        {datastoreState === "error" && (
+          <div className="panel">
+            <div className="panel-header">
+              <div className="panel-title">Datastore</div>
+            </div>
+            <LoadError
+              subject="datastore status"
+              message={datastoreReq.error}
+              onRetry={datastoreReq.refetch}
+              inset
+            />
+          </div>
+        )}
+        {datastoreState === "ready" && datastoreData && (
           <div className="panel">
             <div className="panel-header">
               <div className="panel-title">Datastore</div>
@@ -328,7 +411,7 @@ export function System(
                             ? <span className="sys-val ok">enabled</span>
                             : val === false
                             ? "disabled"
-                            : String(val)}
+                            : withPathBreaks(String(val))}
                         </span>
                       </div>
                     )}
@@ -340,6 +423,20 @@ export function System(
       </div>
 
       {/* Serve Configuration */}
+      {!local && configState === "loading" && (
+        <KeyValuePanelSkeleton
+          title="Serve Configuration"
+          keys={SERVE_CONFIG_KEYS}
+          label="Loading serve configuration"
+        />
+      )}
+      {!local && configState === "error" && (
+        <LoadError
+          subject="serve configuration"
+          message={configReq.error}
+          onRetry={configReq.refetch}
+        />
+      )}
       {configRows && (
         <div className="panel">
           <div className="panel-header">
@@ -365,10 +462,33 @@ export function System(
   );
 }
 
-function formatUptime(startedAt: string): string {
+function slotSummary(workers: readonly WorkerInfo[]): string {
+  let used = 0;
+  let total = 0;
+  for (const w of workers) {
+    if (w.status !== "idle" && w.status !== "busy") continue;
+    used += w.activeDispatchIds?.length ?? 0;
+    total += w.capacity ?? 1;
+  }
+  return `${used}/${total}`;
+}
+
+function formatUptime(startedAt: string | null): string {
+  if (!startedAt) return "—";
   const ms = Date.now() - new Date(startedAt).getTime();
+  if (!Number.isFinite(ms)) return "—";
   const hours = Math.floor(ms / 3600000);
   const minutes = Math.floor((ms % 3600000) / 60000);
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+/**
+ * Lets a long path wrap after its separators rather than mid-name: a
+ * break opportunity follows each `/` and `-`.
+ */
+export function withPathBreaks(text: string): ReactNode[] {
+  return text.split(/(?<=[/-])/).flatMap((part, i) =>
+    i === 0 ? [part] : [<wbr key={i} />, part]
+  );
 }

@@ -66,6 +66,7 @@ import {
 } from "../../domain/workflows/early_signal.ts";
 import {
   heldUntil,
+  isReceivedForWait,
   type PendingSignal,
 } from "../../domain/workflows/pending_signal.ts";
 import { earlySlots } from "../../domain/workflows/signal_wait.ts";
@@ -106,9 +107,11 @@ export interface WorkflowSignalData {
   /** The command that resumes the run. */
   resumeCommand: string;
   /**
-   * True when the step took the signal as it opened its wait
-   * (swamp-club#3212): it succeeded inside its run, and no resume is needed
-   * to apply the signal.
+   * True when a wait took the signal from where it was held
+   * (swamp-club#3212). A step that took it as it opened its wait succeeded
+   * inside its run, and no resume applies the signal. A wait that was open
+   * already was given it by another reader, and `awaitingResume` says whether
+   * its run can be resumed (swamp-club#3307).
    */
   taken?: true;
   /**
@@ -1147,7 +1150,7 @@ function pendingAnswer(
 /**
  * The answer for a signal a wait took with nobody left to deliver it to:
  * the step took it as it opened its wait, or it is the signal a retry
- * repeats. The wait's run went on from there and may have ended by now, with
+ * repeats. The wait's run may have gone on from there and ended by now, with
  * the registration gone, so the claim says where the signal landed. The
  * caller is authorized against that wait, as against any.
  */
@@ -1157,9 +1160,7 @@ async function landedAnswer(
   workflow: Workflow,
   claim: WaitKeyClaim,
   receipt: SignalReceipt,
-  how:
-    | { taken: true }
-    | { duplicate: true; store: SignalWaitStore },
+  how: { store: SignalWaitStore } & ({ taken: true } | { duplicate: true }),
 ): Promise<{ error: SwampError } | { data: WorkflowSignalData }> {
   const place: WaitPlace = {
     workflowId: workflow.id,
@@ -1191,9 +1192,11 @@ async function landedAnswer(
       key: input.key,
       ...place,
       signal: receipt,
-      // A step that took the signal succeeded inside its run; no resume
-      // applies it. A signal delivered to an open wait may still need one.
-      awaitingResume: "taken" in how ? false : run !== null &&
+      // A step that took the signal on opening its wait succeeded inside
+      // its run, and no resume applies it. A wait that was already open may
+      // have been given the signal by another reader, and its run is
+      // suspended still: the run says which (swamp-club#3307).
+      awaitingResume: run !== null &&
         (await decideContinuation(run, how.store)).kind === "resumable",
       runRecordAvailable: run !== null,
       resumeCommand: resumeCommandFor(place),
@@ -1315,7 +1318,23 @@ async function arriveEarly(
         record && claim.early !== undefined &&
         earlySlots(claim.early).includes(record.slot) &&
         (await store.findRegistration(claim.waitId)).kind === "absent"
-      ) return pendingAnswer(input, workflow, record);
+      ) {
+        // Unless the signal is older than that wait allows: every reader
+        // then leaves it where it is, so it is not answered as held
+        // (swamp-club#3307). The wait's workflow name and schema cannot be
+        // read before it is registered, and are not judged here.
+        if (isReceivedForWait(record, { ...claim, early: claim.early })) {
+          return pendingAnswer(input, workflow, record);
+        }
+        return {
+          error: refused(
+            "no_open_wait",
+            `The signal for ${named} was not delivered: it arrived too long before the wait that is opening for a step to take it. Send it again once the wait is open. Run "${
+              waitsCommandOf(input)
+            }" for the waits that are open.`,
+          ),
+        };
+      }
       // Otherwise the wait is signalled as any open wait is. One whose
       // claim reads this signal's slot takes the stored signal first.
       return await deliverToHolder(
@@ -1343,7 +1362,7 @@ async function arriveEarly(
         workflow,
         arrival.claim,
         { ...receiptOfPending(arrival.record), waitId: arrival.claim.waitId },
-        { taken: true },
+        { taken: true, store },
       );
   }
 }

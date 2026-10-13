@@ -34,26 +34,45 @@ export async function findPublishedVersion(
   client: Pick<ExtensionApiClient, "listVersions">,
   name: string,
   version: string,
-  apiKey: string,
+  apiKey?: string,
 ): Promise<PublishedVersion | null> {
+  const found = await findPublishedVersions(client, name, [version], apiKey);
+  return found.get(version) ?? null;
+}
+
+/**
+ * Finds several published versions of an extension in one scan of its
+ * versions list, stopping once every one is found. A version no channel
+ * carries is absent from the returned map. Pull asks for the installed and
+ * the incoming version together.
+ */
+export async function findPublishedVersions(
+  client: Pick<ExtensionApiClient, "listVersions">,
+  name: string,
+  versions: readonly string[],
+  apiKey?: string,
+): Promise<Map<string, PublishedVersion>> {
+  const wanted = new Set(versions);
+  const found = new Map<string, PublishedVersion>();
   // A version is unique per extension across channels, so every channel
   // is asked and the first match on any of them answers.
-  for (let page = 1; page <= VERSIONS_MAX_PAGES; page++) {
+  for (let page = 1; page <= VERSIONS_MAX_PAGES && wanted.size > 0; page++) {
     const listed = await client.listVersions(name, {
       channel: ALL_RELEASE_CHANNELS,
       perPage: VERSIONS_PAGE_SIZE,
       page,
     }, apiKey);
-    const match = listed.versions.find((v) => v.version === version);
-    if (match) {
+    for (const match of listed.versions) {
+      if (!wanted.has(match.version)) continue;
+      wanted.delete(match.version);
       // A yanked version still answers: its number stays taken.
-      return {
+      found.set(match.version, {
         version: match.version,
         channel: match.channel,
         ...(match.yankedAt
           ? { yank: { reason: match.yankReason ?? null } }
           : {}),
-      };
+      });
     }
     // A short page is the last page; so is reaching the total. A
     // response without usable paging metadata is not paged further.
@@ -64,8 +83,8 @@ export async function findPublishedVersion(
       listed.versions.length === 0 || !Number.isFinite(seen) ||
       listed.versions.length < perPage || seen >= total
     ) {
-      return null;
+      break;
     }
   }
-  return null;
+  return found;
 }

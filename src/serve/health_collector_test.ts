@@ -190,7 +190,12 @@ Deno.test("HealthCollector: reports each schedule's queue state", async () => {
   assertEquals(Object.keys(snapshot.scheduling).sort(), [
     "enabled",
     "schedules",
+    "timeZone",
   ]);
+  assertEquals(
+    snapshot.scheduling.timeZone,
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
 });
 
 Deno.test("HealthCollector: includes webhook endpoints", async () => {

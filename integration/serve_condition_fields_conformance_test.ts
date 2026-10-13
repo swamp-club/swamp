@@ -132,6 +132,7 @@ const CATEGORIES: Record<string, Category> = {
   "workflow.waits": "collection",
   "workflow.history.search": "collection",
   "workflow.run.search": "collection",
+  "workflow.run.summary": "collection",
   "report.search": "collection",
   "report.get": "collection",
   "vault.audit-trail": "collection",
@@ -197,6 +198,7 @@ const CATEGORIES: Record<string, Category> = {
   "worker.list": "access",
   "worker.prune": "access",
   "worker.queue.list": "access",
+  "worker.lease.list": "access",
   "worker.token.create": "access",
   "worker.token.list": "access",
   "worker.token.revoke": "access",
@@ -315,6 +317,7 @@ Deno.test("serve condition-fields conformance: collections leave out tag-denied 
         ["workflow.search", {}, "dev-flow"],
         ["workflow.history.search", {}, "dev-flow"],
         ["workflow.run.search", {}, "dev-flow"],
+        ["workflow.run.summary", {}, "dev-flow"],
       ] as const
     ) {
       const label = `${type} ${JSON.stringify(payload)}`;

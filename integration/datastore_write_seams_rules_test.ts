@@ -590,6 +590,9 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
   "src/libswamp/reports/search.ts: createReportSearchDeps: YamlWorkflowRepository",
   // Built directly in src/libswamp/repo/.
   "src/libswamp/repo/init.ts: createRepoInitDeps: YamlVaultConfigRepository",
+  // swamp start's summary lists a workspace's models and workflows by name.
+  "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
+  "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
   // Built directly in src/libswamp/vaults/.
   "src/libswamp/vaults/annotate.ts: createVaultAnnotateDeps: YamlVaultConfigRepository",
   "src/libswamp/vaults/audit_trail.ts: createVaultAuditTrailDeps: JsonlVaultAuditRepository",
@@ -633,6 +636,9 @@ const PINNED_REPO_CONSTRUCTIONS: readonly string[] = [
 
 const PINNED_UNHOOKED_WRITERS: readonly string[] = [
   // Read only: these repositories never write.
+  // swamp start's summary only lists a workspace's models and workflows.
+  "src/libswamp/start/start.ts: listContents: YamlDefinitionRepository",
+  "src/libswamp/start/start.ts: listContents: YamlWorkflowRepository",
   "src/cli/commands/workflow_approvals.ts: workflowApprovalsCommand: YamlEvaluatedWorkflowRepository",
   // Read a run's evaluated snapshot to settle a cancelled run against it.
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand: YamlEvaluatedWorkflowRepository",
@@ -864,12 +870,12 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   "src/cli/commands/data_rename.ts: dataRenameCommand",
   "src/cli/commands/datastore_compact.ts: datastoreCompactCommand",
   "src/cli/commands/datastore_config_migrate.ts: datastoreConfigMigrateCommand",
-  "src/cli/commands/model_create.ts: modelCreateCommand",
-  "src/cli/commands/model_delete.ts: modelDeleteCommand",
-  "src/cli/commands/model_edit.ts: modelEditCommand",
-  "src/cli/commands/model_evaluate.ts: modelEvaluateCommand (x2)",
+  "src/cli/commands/model_create.ts: createModelCreateCommand",
+  "src/cli/commands/model_delete.ts: createModelDeleteCommand",
+  "src/cli/commands/model_edit.ts: createModelEditCommand",
+  "src/cli/commands/model_evaluate.ts: createModelEvaluateCommand (x2)",
   "src/cli/commands/model_method_run.ts: createModelMethodRunCommand",
-  "src/cli/commands/model_validate.ts: modelValidateCommand",
+  "src/cli/commands/model_validate.ts: createModelValidateCommand",
   "src/cli/commands/run_gc.ts: runGcCommand",
   "src/cli/commands/vault_create.ts: vaultCreateCommand",
   "src/cli/commands/vault_edit.ts: vaultEditCommand",
@@ -886,7 +892,7 @@ const PINNED_CLI_ROOT_UNIT_COMMANDS: readonly string[] = [
   // Commands that push nothing, in a root with no push, so their saves
   // stage into it rather than through signalChange's hook fallback
   // (swamp-club#3056).
-  "src/cli/commands/model_cancel.ts: modelCancelCommand (x2)",
+  "src/cli/commands/model_cancel.ts: createModelCancelCommand (x2)",
   "src/cli/commands/run.ts: runDoctorCommand",
   "src/cli/commands/workflow_cancel.ts: workflowCancelCommand (x2)",
   "src/cli/commands/workflow_recover.ts: workflowRecoverCommand",
@@ -1562,6 +1568,10 @@ const PINNED_ENGINE_READERS: readonly string[] = [
   // namespace manifests, so its commits.db names the namespaces
   // (swamp-club#3301).
   "src/libswamp/datastores/namespace_list.ts: createNamespaceListDeps",
+  // Commands v3 refuses choose a read-only open before they open, so the
+  // refusal takes no writer lease and changes nothing (swamp-club#3359):
+  // `datastore sync` and `datastore migrate-index`.
+  "src/cli/repo_context.ts: peekRepoDatastoreEngine",
   // Run-record artifacts resolve through resolveRunArtifact on v3.
   "src/libswamp/data/run_artifact_check.ts: v3RunArtifactCheck",
   "src/libswamp/models/output_data.ts: createModelOutputDataDeps",

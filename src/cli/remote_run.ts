@@ -337,12 +337,42 @@ function withForwardedLocks<P extends { lockHolderTokens?: string }>(
 }
 
 export function runWorkflowOverServer(
-  options: ServerRunOptions & { payload: WorkflowRunPayload },
+  options: ServerRunOptions & {
+    payload: WorkflowRunPayload;
+    /**
+     * Stop listening once the server has started the run: the stream ends
+     * after the run's own `started` event and the socket closes without a
+     * `cancel`, so the run carries on in the server (swamp-club#1090). The
+     * request forwards no locks. Forwarding tells the server the run stays
+     * under the step that holds them, and a detached run outlives that step.
+     */
+    detach?: boolean;
+  },
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  if (options.detach) {
+    return untilRunStarted(streamServerRun(options, {
+      type: "workflow.run",
+      payload: options.payload,
+    }));
+  }
   return streamServerRun(options, {
     type: "workflow.run",
     payload: withForwardedLocks(options.payload),
   });
+}
+
+/**
+ * Yields a run's events up to and including its own `started` event, then
+ * stops. A nested workflow's `started` carries `parentRunId` and does not end
+ * it.
+ */
+async function* untilRunStarted(
+  stream: AsyncIterable<{ kind: string; [key: string]: unknown }>,
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  for await (const event of stream) {
+    yield event;
+    if (event.kind === "started" && !("parentRunId" in event)) return;
+  }
 }
 
 export function runModelMethodOverServer(
@@ -1499,14 +1529,20 @@ async function* streamServerRun(
     let receivedEvents = false;
     try {
       const stream = singleConnectionStream(options, currentRequest, state);
-      while (true) {
-        const result = await stream.next();
-        if (result.done) {
-          outcome = result.value;
-          break;
+      try {
+        while (true) {
+          const result = await stream.next();
+          if (result.done) {
+            outcome = result.value;
+            break;
+          }
+          receivedEvents = true;
+          yield result.value;
         }
-        receivedEvents = true;
-        yield result.value;
+      } finally {
+        // A consumer that stops early ends this generator at the yield above;
+        // the connection is closed with it rather than left open.
+        await stream.return({ kind: "done" });
       }
     } catch (err) {
       if (err instanceof UserError && lastCloseDetail && !receivedEvents) {

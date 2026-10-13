@@ -3,7 +3,7 @@
 ## Table of Contents
 
 - [Multi-Vault Setup](#multi-vault-setup)
-- [Using Vaults in Models](#using-vaults-in-models)
+- [Using Vaults in Behaviors](#using-vaults-in-behaviors)
 - [Using Vaults in Workflows](#using-vaults-in-workflows)
 - [Using User-Defined Vaults](#using-user-defined-vaults)
 - [Migration Patterns](#migration-patterns)
@@ -86,7 +86,7 @@ op read "op://prod/api-key/credential" | swamp vault put prod-secrets API_KEY --
 op read "op://prod/db-password/credential" | swamp vault put prod-secrets DB_PASSWORD --json
 ```
 
-## Using Vaults in Models
+## Using Vaults in Behaviors
 
 ### Basic Secret Reference
 
@@ -148,12 +148,12 @@ jobs:
     steps:
       - name: deploy-service
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
 ```
 
-The model referenced by the workflow uses vault secrets:
+The behavior referenced by the workflow uses vault secrets:
 
 ```yaml
 # models/deploy-service/input.yaml (for dev)
@@ -165,9 +165,9 @@ globalArguments:
   environment: dev
 ```
 
-### Environment-Specific Model Instances
+### Environment-Specific Behavior Instances
 
-Create model instances per environment, each using the appropriate vault:
+Create behavior instances per environment, each using the appropriate vault:
 
 ```yaml
 # models/deploy-service-dev/input.yaml
@@ -217,8 +217,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
         env:
           DB_PASSWORD: ${{ vault.get(my-hcv, db-password) }}
@@ -236,7 +236,7 @@ swamp vault create @hashicorp/vault prod-hcv \
   --config '{"address": "https://vault.prod.internal:8200", "path_prefix": "prod"}' --json
 ```
 
-Reference both in models:
+Reference both in behaviors:
 
 ```yaml
 globalArguments:
@@ -276,9 +276,9 @@ swamp vault read-secret prod-secrets API_KEY --json
 swamp vault put prod-secrets-aws API_KEY=<copied-value> --json
 ```
 
-**Step 3: Update model references**
+**Step 3: Update behavior references**
 
-Update models to use the new vault name:
+Update behaviors to use the new vault name:
 
 ```yaml
 # Before
@@ -288,10 +288,10 @@ apiKey: ${{ vault.get("prod-secrets", "API_KEY") }}
 apiKey: ${{ vault.get("prod-secrets-aws", "API_KEY") }}
 ```
 
-**Step 4: Validate models**
+**Step 4: Validate behaviors**
 
 ```bash
-swamp model validate --json
+swamp behavior validate --json
 ```
 
 **Step 5: Test in staging first**
@@ -329,13 +329,13 @@ swamp vault list-keys db-secrets --json
 
 **Step 3: Update references**
 
-Search for vault references in models:
+Search for vault references in behaviors:
 
 ```bash
 grep -r "vault.get" models/
 ```
 
-Update each model to use `app-secrets`.
+Update each behavior to use `app-secrets`.
 
 ## Rotation Patterns
 
@@ -391,15 +391,15 @@ require a web console to regenerate), rotate manually:
 swamp vault put prod-secrets API_KEY=new-key-value --json
 ```
 
-**Step 3: Re-evaluate affected models**
+**Step 3: Re-evaluate affected behaviors**
 
 ```bash
-# Find models using this vault
+# Find behaviors using this vault
 grep -r "prod-secrets" models/
 
 # Re-evaluate them
-swamp model evaluate model-1 --json
-swamp model evaluate model-2 --json
+swamp behavior evaluate model-1 --json
+swamp behavior evaluate model-2 --json
 ```
 
 **Step 4: Re-run workflows if needed**
@@ -434,8 +434,8 @@ jobs:
     steps:
       - name: push-new-secret
         task:
-          type: model_method
-          modelIdOrName: secret-updater
+          type: behavior
+          behavior: secret-updater
           methodName: update
           inputs:
             key: ${{ inputs.secretKey }}

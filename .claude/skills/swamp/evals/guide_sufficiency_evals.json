@@ -1,25 +1,25 @@
 [
   {
     "query": "Search for model types that handle payments",
-    "guide": "model",
+    "guide": "behavior",
     "answerable_from_guide": true,
     "note": "Quick Reference table has the search command"
   },
   {
     "query": "Run the validate method on my model",
-    "guide": "model",
+    "guide": "behavior",
     "answerable_from_guide": true,
     "note": "Quick Reference table has method run and validate commands"
   },
   {
     "query": "What is the output shape of swamp model create?",
-    "guide": "model",
+    "guide": "behavior",
     "answerable_from_guide": false,
     "note": "Output shapes for create are in reference.md"
   },
   {
     "query": "How do I set up definition-level check selection with require and skip?",
-    "guide": "model",
+    "guide": "behavior",
     "answerable_from_guide": false,
     "note": "Check selection details are in reference.md"
   },

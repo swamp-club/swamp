@@ -21,11 +21,16 @@ import { assertEquals } from "@std/assert";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   containsSwampExpression,
+  failedOnForeignRoot,
+  foreignRootsBesideVault,
   isForeignExpression,
   isSwampExpression,
+  misspeltSwampNamespace,
   parsesAsCel,
   readsSwampBinding,
   type SwampScope,
+  unlistedForeignRoots,
+  unresolvableVaultArguments,
   WIDEST_SWAMP_SCOPE,
 } from "./swamp_namespaces.ts";
 
@@ -269,4 +274,262 @@ Deno.test("parsesAsCel: false for text that is not CEL", () => {
   ) {
     assertEquals(parsesAsCel(cel), false, cel);
   }
+});
+
+Deno.test("isSwampExpression: a bare-token vault.get argument is a literal name, as the resolver reads it (swamp-club#3360)", () => {
+  for (
+    const cel of [
+      "vault.get(t, KEY)",
+      "vault.get(my-vault, API_KEY)",
+      "vault.get('t', KEY)",
+      'vault.get(t, "KEY")',
+      "vault.get( t , KEY )",
+      '"pre-" + vault.get(t, KEY)',
+      "vault.get(a, b) + vault.get(c, d)",
+      "vault.get(my/vault, a@b)",
+      "vault.get(`t`, `KEY`)",
+      "vault.get(`my vault`, KEY) + '-x'",
+    ]
+  ) {
+    assertEquals(isSwampExpression(cel, WIDEST_SWAMP_SCOPE), true, cel);
+    assertEquals(isForeignExpression(cel), false, cel);
+    assertEquals(readsSwampBinding(cel), true, cel);
+    assertEquals(containsSwampExpression("${{ " + cel + " }}"), true, cel);
+  }
+});
+
+Deno.test("isSwampExpression: a dotted bare vault.get argument is CEL and keeps its roots", () => {
+  assertEquals(
+    isSwampExpression("vault.get(inputs.v, inputs.k)", WIDEST_SWAMP_SCOPE),
+    true,
+  );
+  // The scope declares cfg, and no input named v.
+  const scope: SwampScope = {
+    isBound: () => true,
+    declaredInputs: cliScope.declaredInputs,
+  };
+  assertEquals(isSwampExpression("vault.get(inputs.v, KEY)", scope), false);
+  assertEquals(isSwampExpression("vault.get(inputs.cfg, KEY)", scope), true);
+});
+
+Deno.test("isForeignExpression: a dotted bare vault.get argument that reads nothing swamp provides is not another system's text", () => {
+  // The resolver evaluates it and fails; nothing passes through.
+  for (
+    const cel of [
+      "vault.get(t, db.password)",
+      "vault.get(github.repo, KEY)",
+      "vault.get(t.x, a.b)",
+      "vault.get(t, db..x)",
+    ]
+  ) {
+    assertEquals(isForeignExpression(cel), false, cel);
+    assertEquals(isSwampExpression(cel, WIDEST_SWAMP_SCOPE), true, cel);
+    assertEquals(containsSwampExpression("${{ " + cel + " }}"), true, cel);
+  }
+});
+
+Deno.test("unresolvableVaultArguments: names dotted bare arguments that read nothing swamp provides", () => {
+  assertEquals(unresolvableVaultArguments("vault.get(t, db.password)"), [
+    "db.password",
+  ]);
+  assertEquals(unresolvableVaultArguments("vault.get(t.x, github.repo)"), [
+    "t.x",
+    "github.repo",
+  ]);
+  for (
+    const cel of [
+      "vault.get(t, KEY)",
+      "vault.get('t', 'db.password')",
+      "vault.get(inputs.v, self.name)",
+      "vault.get(t, model.my-vpc.resource.vpc.main.attributes.key)",
+      "literal('vault.get(t, db.password)')",
+      "github.sha",
+    ]
+  ) {
+    assertEquals(unresolvableVaultArguments(cel), [], cel);
+  }
+});
+
+Deno.test("isForeignExpression: never true for text that reads vault, whatever else it reads (swamp-club#3360)", () => {
+  // The runtime pass resolves and evaluates every such expression, so it
+  // fails on the other root instead of passing through.
+  for (
+    const cel of [
+      "vault.get(t, KEY) + github.sha",
+      "vault.get('t', 'KEY') + github.sha",
+      "github.sha + vault.get(t, KEY)",
+      "vault.get('t') + github.sha",
+      "cel.bind(v, vault, github.sha)",
+    ]
+  ) {
+    assertEquals(isForeignExpression(cel), false, cel);
+    assertEquals(containsSwampExpression("${{ " + cel + " }}"), true, cel);
+    // The every-root rule is unchanged: it is not all swamp's.
+    assertEquals(isSwampExpression(cel, WIDEST_SWAMP_SCOPE), false, cel);
+  }
+  // vault reached through a member, or named only in text, is not the
+  // namespace.
+  assertEquals(isForeignExpression("github.vault.get(t, KEY)"), true);
+  assertEquals(isForeignExpression("github.sha + 'vault.get(t, KEY)'"), true);
+  assertEquals(isForeignExpression("t + KEY"), true);
+});
+
+Deno.test("foreignRootsBesideVault: names the roots swamp does not provide in an expression that reads vault", () => {
+  assertEquals(foreignRootsBesideVault("vault.get(t, KEY) + github.sha"), [
+    "github",
+  ]);
+  assertEquals(
+    foreignRootsBesideVault("matrix.os + vault.get('t', 'KEY') + github.sha"),
+    ["matrix", "github"],
+  );
+  for (
+    const cel of [
+      "vault.get(t, KEY)",
+      "vault.get(t, KEY) + self.name + inputs.region",
+      "vault.get(t, db.password)",
+      "github.sha",
+      "vault.get(t, KEY) +",
+    ]
+  ) {
+    assertEquals(foreignRootsBesideVault(cel), [], cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: names the namespace a root nearly spells", () => {
+  const cases: [string, string, string][] = [
+    ["input.region", "input", "inputs"],
+    ["modle.vpc.resource", "modle", "model"],
+    ["vualt.get('v', 'k')", "vualt", "vault"],
+    ["step.build.outputs.sha", "step", "steps"],
+    ["envs.HOME", "envs", "env"],
+    ["self.h + input.region", "input", "inputs"],
+  ];
+  for (const [cel, root, namespace] of cases) {
+    assertEquals(misspeltSwampNamespace(cel), { root, namespace }, cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: undefined for swamp's own roots, other systems' roots and text that does not parse", () => {
+  const cases = [
+    "inputs.region",
+    "self.h + steps.build.outputs.sha",
+    // The known foreign roots.
+    "github.sha",
+    "gitea.sha",
+    "forgejo.sha",
+    "jobs.build.result",
+    "matrix.os",
+    "secrets.TOKEN",
+    "vars.REGION",
+    "needs.build.outputs.sha",
+    "runner.os",
+    "job.status",
+    "strategy.fail-fast",
+    // Ordinary words near a namespace.
+    "event.name",
+    "ref.name",
+    "node.name",
+    "stats.count",
+    "date.year",
+    '"unclosed',
+  ];
+  for (const cel of cases) {
+    assertEquals(misspeltSwampNamespace(cel), undefined, cel);
+  }
+});
+
+Deno.test("misspeltSwampNamespace: names an ordinary word one slip from a namespace", () => {
+  // Such a root fails in a step argument either way, so the hint is safe.
+  assertEquals(misspeltSwampNamespace("mode.name"), {
+    root: "mode",
+    namespace: "model",
+  });
+  assertEquals(misspeltSwampNamespace("files.changed"), {
+    root: "files",
+    namespace: "file",
+  });
+});
+
+Deno.test("unlistedForeignRoots: names each root that is neither swamp's nor a known foreign one", () => {
+  const cases: [string, string[]][] = [
+    ["nonexistent.variable", ["nonexistent"]],
+    ["input.region", ["input"]],
+    ["github.sha + nonexistent.x", ["nonexistent"]],
+    ["true ? github.sha : other.x + another.y", ["other", "another"]],
+    ["self.h + missing.x", ["missing"]],
+    // Subtraction written out is still two references.
+    ["matrix.count - offset.x", ["offset"]],
+    ["inputs.node-version", ["version"]],
+    // A vault.get argument holding a `.` is not read as a root.
+    ["vault.get(t, db.password)", []],
+    // Bound by a macro, so not a free root.
+    ["[1, 2].map(x, x + 1)", []],
+  ];
+  for (const [cel, roots] of cases) {
+    assertEquals(unlistedForeignRoots(cel), roots, cel);
+  }
+});
+
+Deno.test("unlistedForeignRoots: empty for swamp's roots, known foreign roots and text that does not parse", () => {
+  const cases = [
+    "inputs.region",
+    "self.h + steps.build.outputs.sha",
+    "github.sha",
+    "gitea.sha",
+    "forgejo.sha",
+    "matrix.os",
+    "secrets.TOKEN",
+    "vars.REGION",
+    "needs.build.outputs.sha",
+    "runner.os",
+    "job.status",
+    "jobs.build.result",
+    "strategy.fail-fast",
+    "inputs.version + github.sha",
+    // A hyphen in a name on a known foreign root is part of the name.
+    "matrix.node-version",
+    "needs.build-app.outputs.image-tag",
+    "self.h + matrix.node-version",
+    "literal('${{ nonexistent.variable }}')",
+    // Swamp's own reference to a deferred expression.
+    "__swamp_deferred_c48b0da2_33b3_4727_9c85_6370d730c8c3",
+    '"unclosed',
+  ];
+  for (const cel of cases) {
+    assertEquals(unlistedForeignRoots(cel), [], cel);
+  }
+});
+
+Deno.test("failedOnForeignRoot: true only for an unknown variable that is a known foreign root", () => {
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: nonexistent")),
+    false,
+  );
+  assertEquals(
+    failedOnForeignRoot(
+      new Error(
+        "Unknown variable: __swamp_deferred_c48b0da2_33b3_4727_9c85_6370d730c8c3",
+      ),
+    ),
+    true,
+  );
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: github")),
+    true,
+  );
+  // Found through the cause chain of a wrapping error.
+  assertEquals(
+    failedOnForeignRoot(
+      new Error("Invalid expression", {
+        cause: new Error("Unknown variable: matrix"),
+      }),
+    ),
+    true,
+  );
+  assertEquals(
+    failedOnForeignRoot(new Error("Unknown variable: inputs")),
+    false,
+  );
+  assertEquals(failedOnForeignRoot(new Error("datastore unreachable")), false);
+  assertEquals(failedOnForeignRoot("Unknown variable: github"), false);
 });

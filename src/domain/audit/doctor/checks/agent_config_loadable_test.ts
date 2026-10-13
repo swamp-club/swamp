@@ -255,12 +255,31 @@ Deno.test("agentConfigLoadable: opencode passes when plugin file references swam
     await ensureDir(join(path, ".."));
     await Deno.writeTextFile(
       path,
-      `Bun.spawn(["swamp", "audit", "record", "--from-hook", "--tool", "opencode"], ...)`,
+      `Bun.spawn(["swamp", "audit", "record", "--from-hook", "--tool", "opencode"], ...)
+export default { id: "swamp.audit", server: SwampAudit, async setup(ctx) {} };`,
     );
     const result = await agentConfigLoadableCheck.run(
       makeCtx(repo, "opencode"),
     );
     assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: opencode fails on a plugin written before OpenCode 2 support", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".opencode/plugins/swamp-audit.ts");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(
+      path,
+      `export const SwampAudit = async ({ directory }) => ({});
+Bun.spawn(["swamp", "audit", "record", "--from-hook", "--tool", "opencode"], ...)`,
+    );
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "opencode"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "predates OpenCode 2");
+    assertStringIncludes(result.hint ?? "", "OpenCode 1.3.4");
   });
 });
 

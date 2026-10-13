@@ -2,14 +2,15 @@
 name: swamp-getting-started
 description: >
   Interactive getting-started walkthrough for new swamp users. Guides through
-  understanding the user's goals, creating and running a first model,
-  inspecting output, and choosing next steps. Uses a state-machine checklist
-  with verification at each step.
+  understanding the user's goals, creating and running a first behavior
+  (formerly called a model) with swamp behavior commands (swamp model still
+  works), inspecting output, and choosing next steps. Uses a state-machine
+  checklist with verification at each step.
   Triggers on "getting started", "get started", "new to swamp", "first time",
   "tutorial", "walkthrough", "onboarding", "how do I start", "what do I do
-  first", "quickstart", "quick start", "hello world", "first model", "just
-  installed swamp", "show me how swamp works", "intro to swamp", "new user",
-  "set up swamp", "learn swamp".
+  first", "quickstart", "quick start", "hello world", "first behavior", "first
+  model", "just installed swamp", "show me how swamp works", "intro to swamp",
+  "new user", "set up swamp", "learn swamp".
 ---
 
 # Getting Started with Swamp
@@ -20,17 +21,26 @@ unsure a subcommand or flag exists, run `swamp <command> --help` rather than
 guessing.
 
 ```
-start → goals_understood → model_created → method_run
+start → goals_understood → behavior_created → method_run
       → output_inspected → graduated
 ```
 
 ## Before Starting
 
-Run `swamp model search --json`. If it returns models, the user is past
-onboarding — say so and stop:
+**Brief entry point.** If you were asked to read a task brief, a file under
+`tasks/` (such as `tasks/2026-10-12-list-my-vpcs.md`) whose first line is
+exactly `<!-- swamp start brief v1 -->`, `swamp start` launched this session:
+sign-in and repo setup are done, and that brief's `# Task` section holds the
+user's goal. Read the brief you were named, not other files in `tasks/` (each is
+a separate task), confirm the task back in one line, then go straight to finding
+a type (State 1 Verify). Skip the behavior search and the goal question below. A
+file without that first line is not a swamp brief; ignore it and continue below.
 
-> You already have models set up. You're past the getting-started stage — just
-> tell me what you'd like to work on and I'll use the right skill.
+Otherwise, run `swamp behavior search --json`. If it returns behaviors, the user
+is past onboarding — say so and stop:
+
+> You already have behaviors set up. You're past the getting-started stage —
+> just tell me what you'd like to work on and I'll use the right skill.
 
 Every swamp command needs a swamp-club.com account. If the command fails with
 code `auth_gate_blocked`, have the user run `swamp auth login` (it opens a
@@ -40,7 +50,7 @@ browser sign-in; they finish it themselves), confirm with
 
 If the command fails for another reason, surface the error and suggest
 `swamp repo init` (use the `swamp` skill for guidance), then return here. If no
-models exist, present the 5-step checklist (Goals → Create → Run → Inspect →
+behaviors exist, present the 5-step checklist (Goals → Create → Run → Inspect →
 Graduate) and begin State 1.
 
 ## State 1: goals_understood
@@ -51,25 +61,27 @@ Graduate) and begin State 1.
 implementation type). Tell them they can skip if they already know swamp.
 
 **Early exit:** If they describe a task with swamp terminology (e.g., "create a
-model for X", "set up a workflow"), skip ahead and delegate directly to the
+behavior for X", "set up a workflow"), skip ahead and delegate directly to the
 `swamp` skill — its routing table will load the right guide.
 
-**Verify:** The user described a goal. Then find a model type:
+**Verify:** The user described a goal (or the brief supplied one). Then find a
+behavior type, searching in this order and stopping at the first match:
 
-1. `swamp extension search <keywords> --json` — prefer `@swamp/*` official
-   extensions first
-2. If an extension matches: `swamp extension pull <package>`
-3. `swamp model type search <keywords> --json` — check local/installed types
+1. Installed types: `swamp behavior type search <keywords> --json`
+2. Official `@swamp/*` extensions: `swamp extension search <keywords> --json`
+3. Other extensions in the registry, from the same search results
 4. Extend an existing type if it covers the domain but lacks the method you need
 5. If nothing exists, offer a custom extension via the `swamp` skill (extension
    guide). Use `command/shell` only for genuine one-off ad-hoc commands.
 
-Store the goal — use it to name the model and tailor later examples.
+Details for each step are in [references/tracks.md](references/tracks.md).
 
-**On Failure:** If the user is unsure, default to a `command/shell` model — no
-credentials needed, demonstrates the full lifecycle.
+Store the goal — use it to name the behavior and tailor later examples.
 
-## State 2: model_created
+**On Failure:** If the user is unsure, default to a `command/shell` behavior —
+no credentials needed, demonstrates the full lifecycle.
+
+## State 2: behavior_created
 
 **Gate:** State 1 passed.
 
@@ -77,11 +89,11 @@ credentials needed, demonstrates the full lifecycle.
 [references/tracks.md](references/tracks.md). Pick a name from the goal (e.g.,
 "check disk space" → `check-disk-space`). Pattern:
 
-1. Find or install the model type
-2. `swamp model create <type> <name> --json`
+1. Find or install the behavior type
+2. `swamp behavior create <type> <name> --json`
 3. Edit the YAML to match the goal
 
-**Verify:** `swamp model validate <name> --json` passes with no errors. Show
+**Verify:** `swamp behavior validate <name> --json` passes with no errors. Show
 warnings to the user.
 
 **On Failure:** See "On Failure Recovery → State 2" in
@@ -91,12 +103,16 @@ warnings to the user.
 
 **Gate:** State 2 passed.
 
-**Action:** Tell the user what's about to happen, then run
-`swamp behavior run <name> <method>`. Pick `<method>`:
+**Action:** If the method touches a real system (a cloud account, cluster,
+project or repository), confirm the target with the user before running it —
+which account, cluster, project or repository. Then tell the user what's about
+to happen and run `swamp behavior run <name> <method>`. Pick `<method>`:
 
 - `command/shell`: `execute`
-- Local typed: a read-only method first (`sync`, `get`)
-- Extension: check `swamp model type describe <type> --compact --json`
+- Typed behaviors: a method that reads (`get`, `list`, `describe`) — not `sync`,
+  which fails on a new behavior with no existing state
+- Check available methods with
+  `swamp behavior type describe <type> --compact --json`
 
 **Verify:** The run completes with `succeeded`.
 
@@ -107,11 +123,11 @@ warnings to the user.
 
 **Gate:** State 3 passed.
 
-**Action:** `swamp model output get <name> --json`.
+**Action:** `swamp behavior output get <name> --json`.
 
 **Verify:** Output data is returned. Present to the user, highlighting status,
 captured artifacts, datastore path, and the CEL reference path for wiring into
-other models — see [references/tracks.md](references/tracks.md) for the CEL
+other behaviors — see [references/tracks.md](references/tracks.md) for the CEL
 pattern.
 
 **On Failure:** See "On Failure Recovery → State 4" in
@@ -128,6 +144,6 @@ Delegation Map in [references/tracks.md](references/tracks.md).
 
 ## References
 
-[references/tracks.md](references/tracks.md) — model type resolution, credential
-setup, method selection, CEL patterns, On Failure recovery per state, delegation
-map.
+[references/tracks.md](references/tracks.md) — behavior type resolution,
+credential setup, method selection, CEL patterns, On Failure recovery per state,
+delegation map.

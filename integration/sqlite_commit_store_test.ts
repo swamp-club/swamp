@@ -34,11 +34,13 @@ import type { Commit } from "../src/domain/datastore_v3/commit.ts";
 import { CommitStoreCorruptError } from "../src/domain/datastore_v3/commit_store.ts";
 import { leaseOp } from "../src/domain/datastore_v3/op.ts";
 import { CommitRejectedError } from "../src/domain/datastore_v3/partition.ts";
+import { WriterFencedError } from "../src/domain/datastore_v3/writer_lease.ts";
 import {
   type PartitionKey,
   partitionOf,
 } from "../src/domain/datastore_v3/partition_key.ts";
 import { BlobRef } from "../src/domain/datastore_v3/blob_ref.ts";
+import { UserError } from "../src/domain/errors.ts";
 import {
   blobPut,
   deleteVersion,
@@ -426,8 +428,9 @@ Deno.test("SqliteCommitStore: refuses a database from a newer schema", async () 
     } catch (caught) {
       error = caught;
     }
-    assert(error instanceof Error);
+    assert(error instanceof UserError);
     assertStringIncludes(error.message, "newer than this swamp's");
+    assertEquals(error.code, "datastore_v3_schema_newer");
   });
 });
 
@@ -935,5 +938,146 @@ Deno.test("SqliteCommitStore: migrating a schema-1 database skips a damaged comm
     } finally {
       await reopened.close();
     }
+  });
+});
+
+// --- The store-wide writer fence (swamp-club#3359) ---
+
+Deno.test("SqliteCommitStore: a raised writer fence refuses lower-fenced and unfenced commits on every partition", async () => {
+  await withStore(async (store) => {
+    assertEquals(store.writerFence(), undefined);
+    // No fence yet: an unfenced commit lands, as on a Phase 3 datastore.
+    assertEquals(
+      (await store.append(await save(1, { fence: undefined }))).kind,
+      "appended",
+    );
+    await store.raiseWriterFence(2);
+    assertEquals(store.writerFence(), 2);
+
+    const unfenced = await assertRejects(
+      async () => await store.append(await save(2, { fence: undefined })),
+      WriterFencedError,
+    );
+    assertEquals(unfenced.code, "datastore_v3_writer_fenced");
+    await assertRejects(
+      async () => await store.append(await save(2, { fence: 1 })),
+      WriterFencedError,
+    );
+    // A partition the current writer never wrote is fenced too.
+    await assertRejects(
+      () =>
+        store.append(
+          modelCommit(1, [leaseOp({ holder: "zombie", fence: 1 })], {
+            partition: otherPartition(),
+            fence: 1,
+            txnId: "zombie-1",
+          }),
+        ),
+      WriterFencedError,
+    );
+
+    // The refusals left the partition as it was: seq 2 is still free.
+    assertEquals(
+      (await store.append(await save(2, { fence: 2 }))).kind,
+      "appended",
+    );
+    assertEquals((await store.head("", modelPartition())).seq, 2);
+    assertEquals((await store.head("", otherPartition())).seq, 0);
+  });
+});
+
+Deno.test("SqliteCommitStore: only a raise moves the writer fence, and a lower raise is refused", async () => {
+  await withStore(async (store) => {
+    await store.raiseWriterFence(1);
+    await store.append(await save(1, { fence: 3 }));
+    assertEquals(store.writerFence(), 1, "a commit never raises it");
+    await store.raiseWriterFence(3);
+    assertEquals(store.writerFence(), 3);
+    await assertRejects(() => store.raiseWriterFence(2), WriterFencedError);
+    // Raising to the same fence again is a no-op.
+    await store.raiseWriterFence(3);
+    assertEquals(store.writerFence(), 3);
+  });
+});
+
+Deno.test("SqliteCommitStore: the writer fence survives a reopen", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    const store = SqliteCommitStore.open(path);
+    await store.raiseWriterFence(5);
+    await store.close();
+    const reopened = SqliteCommitStore.open(path);
+    try {
+      assertEquals(reopened.writerFence(), 5);
+      await assertRejects(
+        async () => await reopened.append(await save(1, { fence: 4 })),
+        WriterFencedError,
+      );
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: a Phase 3 commits.db keeps its unfenced history, and its first fence starts fencing", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "commits.db");
+    // A schema 3 store with unfenced commits, as Phase 3 wrote it.
+    const phase3 = SqliteCommitStore.open(path);
+    await phase3.append(await save(1, { fence: undefined }));
+    await phase3.append(await save(2, { fence: undefined }));
+    await phase3.close();
+    const db = new DatabaseSync(path);
+    db.exec("DROP TABLE writer_fence");
+    db.exec("PRAGMA user_version=3");
+    db.close();
+
+    const store = SqliteCommitStore.open(path);
+    try {
+      assertEquals(store.writerFence(), undefined);
+      assertEquals((await store.head("", modelPartition())).seq, 2);
+      await store.raiseWriterFence(1);
+      assertEquals(
+        (await store.append(await save(3, { fence: 1 }))).kind,
+        "appended",
+      );
+      // A partition that never saw a fence still refuses an unfenced commit:
+      // the store has one.
+      await assertRejects(
+        () =>
+          store.append(
+            modelCommit(1, [leaseOp({ holder: "old", fence: 1 })], {
+              partition: otherPartition(),
+              fence: undefined,
+              txnId: "unfenced-1",
+            }),
+          ),
+        WriterFencedError,
+      );
+      const changes = await store.changesSince(0, 10);
+      assertEquals(changes.map((change) => change.commit.fence), [
+        undefined,
+        undefined,
+        1,
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+Deno.test("SqliteCommitStore: a compaction by a writer whose fence is below the store's is refused", async () => {
+  await withStore(async (store) => {
+    for (let seq = 1; seq <= 3; seq++) {
+      await store.append(await save(seq, { fence: 2 }));
+    }
+    await store.raiseWriterFence(3);
+    await assertRejects(
+      () => store.compactHistory(2, { fence: 2 }),
+      WriterFencedError,
+    );
+    await assertRejects(() => store.compactHistory(2), WriterFencedError);
+    const report = await store.compactHistory(2, { fence: 3 });
+    assertEquals(report.compacted, 2);
   });
 });

@@ -286,6 +286,22 @@ export function rewriteZodImports(js: string, origin?: string): string {
   return parts.join("");
 }
 
+/**
+ * The flags that make a deno subcommand resolve modules the way the bundler
+ * does: the project's deno.json, or its package.json and node_modules (run
+ * with `cwd` at the package.json directory), or no project at all. Shared
+ * with the module graph read, so push packages the modules it bundles.
+ */
+export function denoProjectArgs(
+  options?: { denoConfigPath?: string; packageJsonDir?: string },
+): string[] {
+  return options?.denoConfigPath
+    ? ["--config", options.denoConfigPath]
+    : options?.packageJsonDir
+    ? ["--node-modules-dir=auto"]
+    : ["--no-lock", "--node-modules-dir=none"];
+}
+
 /** Options for controlling bundle output. */
 export interface BundleOptions {
   /**
@@ -771,11 +787,7 @@ export async function bundleExtension(
     // package.json via cwd and initializes node_modules/.deno/ if needed (this
     // makes it work with both `npm install` and `deno install`).
     // Otherwise, use --no-lock for the default no-project behavior.
-    const args = options?.denoConfigPath
-      ? ["bundle", "--config", options.denoConfigPath]
-      : options?.packageJsonDir
-      ? ["bundle", "--node-modules-dir=auto"]
-      : ["bundle", "--no-lock", "--node-modules-dir=none"];
+    const args = ["bundle", ...denoProjectArgs(options)];
 
     // Externalize zod by default so in-process extensions share the
     // host's zod instance (required for `instanceof` schema checks).

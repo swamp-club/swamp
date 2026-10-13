@@ -1,6 +1,6 @@
 # Workflow Execution Semantics
 
-## Blocking Behavior
+## Blocking
 
 `swamp workflow run` blocks the calling process until the run reaches a terminal
 or suspended state:
@@ -12,17 +12,39 @@ or suspended state:
   `wait_for_signal` step is waiting for a signal; the CLI exits and the run can
   be resumed later with `swamp workflow resume`
 
-There is no async, detached, or fire-and-forget mode. If you need non-blocking
-execution, run the workflow through `swamp serve` (which processes runs
-asynchronously via its WebSocket protocol) or use a shell backgrounding
-mechanism (`&`, `nohup`).
+A local run has no detached mode. A run submitted to `swamp serve` can be
+detached: `--detach` returns once the server has started the run and leaves it
+running there.
+
+```bash
+swamp workflow run deploy-pipeline --server ws://localhost:9090 --detach --json
+# {"runId": "...", "workflowName": "deploy-pipeline", "status": "running", "detached": true}
+swamp workflow history get <run-id> --server ws://localhost:9090
+```
+
+- Exit code 0 means the run started, not that it succeeded. A request refused
+  before it starts (unknown workflow, invalid inputs,
+  `Too many concurrent
+  runs`) exits non-zero.
+- `--detach` requires `--server` and cannot be combined with `--timeout` or
+  `--junit`.
+- A detached run started from inside a step does not share that step's behavior
+  lock. If it needs the same behavior, it waits until the step ends.
+- Runs started through a server never supersede one another, even with the same
+  inputs. Each detached run that reaches a gate stays suspended until it is
+  approved, rejected or cancelled, so resolve or cancel the ones no longer
+  wanted (`swamp workflow cancel --run <run-id> --server <url>`).
 
 ## Webhook Delivery
 
-When `swamp serve` receives a webhook, it fires the matching workflow
-synchronously within the HTTP request handler. Webhook deliveries are processed
-sequentially (FIFO) per endpoint — a second delivery to the same endpoint waits
-for the first run to complete or suspend before starting.
+`swamp serve` answers a verified webhook as queued and runs its workflow from a
+single queue shared by every endpoint. Deliveries run one at a time, in arrival
+order: a delivery waits until every run queued ahead of it, on any endpoint,
+completes or suspends.
+
+A webhook workflow that starts long work should hand it off instead of waiting
+for it: run the long workflow with `--server --detach`, keep the returned
+`runId`, and return.
 
 ## Suspension and Resume
 
@@ -141,8 +163,8 @@ follows this sequence:
    expression context, including `self.*` for forEach steps, `inputs.*`,
    `data.*`, and `run.*`. The `data` namespace is shared across all steps —
    `data.latest()` results are cached per-coordinate, and the cache is
-   invalidated when a model method step writes data, so subsequent steps (and
-   their guards) see fresh values.
+   invalidated when a method step writes data, so subsequent steps (and their
+   guards) see fresh values.
 3. **Guard evaluation** — if the step declares a `guard` expression, it is
    evaluated. A truthy result skips the step with reason `"guarded"` (already
    done). A falsy result proceeds to execution. A CEL error fails the step.
@@ -150,8 +172,8 @@ follows this sequence:
 4. **Placement resolution** — effective placement is computed by merging
    workflow → job → step placement fields (child wins). If placement is active,
    the step dispatches to a matching worker; otherwise it runs locally.
-5. **Task execution** — the step's task runs (model method, nested workflow,
-   manual approval, or assert).
+5. **Task execution** — the step's task runs (method, nested workflow, manual
+   approval, or assert).
 
 Guard evaluation happens after dependency checks but before task execution. This
 means a guarded step still respects its dependency graph — it won't evaluate the

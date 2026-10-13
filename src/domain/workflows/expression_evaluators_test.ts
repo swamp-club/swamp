@@ -22,6 +22,7 @@ import {
   collectWorkflowAuthoredExpressions,
   createTaskTargetDeferral,
   DefinitionExpressionEvaluator,
+  findForeignTaskText,
   WorkflowExpressionEvaluator,
 } from "./expression_evaluators.ts";
 import { Workflow } from "./workflow.ts";
@@ -362,6 +363,338 @@ Deno.test("WorkflowExpressionEvaluator: STRICT — per-expression eval error pro
     Error,
     "forced eval failure",
   );
+});
+
+// Another templating system's text in step arguments (swamp-club#2528).
+
+function foreignWorkflow(task: StepTask, description?: string): Workflow {
+  return Workflow.create({
+    name: "foreign",
+    ...(description ? { description } : {}),
+    jobs: [
+      Job.create({
+        name: "build",
+        steps: [Step.create({ name: "emit", task })],
+      }),
+    ],
+  });
+}
+
+Deno.test("WorkflowExpressionEvaluator: leaves another templating system's text in step arguments raw", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const workflow = foreignWorkflow(
+    StepTask.directExecution(
+      "command/shell",
+      "emit-model",
+      "execute",
+      { note: "ref ${{ github.ref }}", region: "${{ inputs.region }}" },
+      { env: { SHA: "${{ github.sha }}" }, list: ["${{ matrix.os }}"] },
+    ),
+  );
+  const result = await evaluator.evaluate(
+    workflow,
+    { ...emptyContext(), inputs: { region: "eu" } },
+    "unrestricted",
+  );
+  const task = result.workflow.jobs[0].steps[0].task.data as {
+    inputs: Record<string, unknown>;
+    globalArgs: Record<string, unknown>;
+  };
+  assertEquals(task.inputs, { note: "ref ${{ github.ref }}", region: "eu" });
+  assertEquals(task.globalArgs, {
+    env: { SHA: "${{ github.sha }}" },
+    list: ["${{ matrix.os }}"],
+  });
+  assertEquals(result.expressionsEvaluated, 1);
+  assertEquals(result.foreignTaskArguments, [
+    {
+      jobName: "build",
+      stepName: "emit",
+      path: "inputs.note",
+      text: "${{ github.ref }}",
+    },
+    {
+      jobName: "build",
+      stepName: "emit",
+      path: "globalArgs.env.SHA",
+      text: "${{ github.sha }}",
+    },
+    {
+      jobName: "build",
+      stepName: "emit",
+      path: "globalArgs.list[0]",
+      text: "${{ matrix.os }}",
+    },
+  ]);
+  // The text is still the author's: nothing was spliced over it as data.
+  assertEquals(
+    result.provenance.hasDataAtOrBelow(
+      "jobs[0].steps[0].task.globalArgs.env.SHA",
+    ),
+    false,
+  );
+});
+
+Deno.test("WorkflowExpressionEvaluator: reports another templating system's text deferred to step time", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const result = await evaluator.evaluate(
+    foreignWorkflow(
+      StepTask.model("m", "run", {
+        os: "${{ self.h + matrix.os }}",
+        sha: "${{ has(steps.first.outputs) ? github.sha : 'n' }}",
+        // Deferred, but swamp's own: nothing to report.
+        host: "${{ self.h }}",
+      }),
+    ),
+    emptyContext(),
+    "unrestricted",
+  );
+  assertEquals(result.expressionsEvaluated, 0);
+  assertEquals(result.foreignTaskArguments, [
+    {
+      jobName: "build",
+      stepName: "emit",
+      path: "inputs.os",
+      text: "${{ self.h + matrix.os }}",
+      deferred: true,
+    },
+    {
+      jobName: "build",
+      stepName: "emit",
+      path: "inputs.sha",
+      text: "${{ has(steps.first.outputs) ? github.sha : 'n' }}",
+      deferred: true,
+    },
+  ]);
+});
+
+Deno.test("WorkflowExpressionEvaluator: an error other than the unknown foreign root still throws", async () => {
+  // The expression mentions a foreign root, but that is not why it failed.
+  const forced = new WorkflowExpressionEvaluator(new ThrowingEvaluator());
+  await assertRejects(
+    () =>
+      forced.evaluate(
+        foreignWorkflow(
+          StepTask.model("m", "run", { sha: "${{ github.sha }}" }),
+        ),
+        emptyContext(),
+        "unrestricted",
+      ),
+    Error,
+    "forced eval failure",
+  );
+  // The swamp side of a mixed expression fails first.
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  await assertRejects(
+    () =>
+      evaluator.evaluate(
+        foreignWorkflow(
+          StepTask.model("m", "run", {
+            dir:
+              "${{ inputs.cache.dir != '' ? inputs.cache.dir : github.workspace }}",
+          }),
+        ),
+        { ...emptyContext(), inputs: {} },
+        "unrestricted",
+      ),
+    Error,
+  );
+});
+
+Deno.test("WorkflowExpressionEvaluator: a failed swamp expression in step arguments still throws", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  for (
+    const text of ["${{ inputs.region }}", "${{ inputs.count + 1 }}"]
+  ) {
+    await assertRejects(
+      () =>
+        evaluator.evaluate(
+          foreignWorkflow(StepTask.model("m", "run", { region: text })),
+          emptyContext(),
+          "unrestricted",
+        ),
+      Error,
+    );
+  }
+});
+
+Deno.test("WorkflowExpressionEvaluator: another templating system's text outside step arguments still throws", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const rejected = [
+    // What the step runs.
+    foreignWorkflow(StepTask.model("${{ github.repository }}", "run")),
+    foreignWorkflow(StepTask.model("m", "${{ github.job }}")),
+    // A whole-field record expression.
+    foreignWorkflow(
+      StepTask.fromData({
+        type: "model_method",
+        modelIdOrName: "m",
+        methodName: "run",
+        inputs: "${{ github.event }}",
+      }),
+    ),
+    // Outside any task.
+    foreignWorkflow(StepTask.model("m", "run"), "${{ github.sha }}"),
+    // The same text in an argument and in the target fails on the target.
+    foreignWorkflow(
+      StepTask.model("${{ github.sha }}", "run", { sha: "${{ github.sha }}" }),
+    ),
+  ];
+  for (const workflow of rejected) {
+    await assertRejects(
+      () => evaluator.evaluate(workflow, emptyContext(), "unrestricted"),
+      Error,
+      "github",
+    );
+  }
+});
+
+// Only known foreign roots pass through step arguments (swamp-club#3400).
+
+Deno.test("WorkflowExpressionEvaluator: an unlisted root in step arguments throws Unknown variable", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const cases: [StepTask, string][] = [
+    [
+      StepTask.model("m", "run", { run: "echo ${{ nonexistent.variable }}" }),
+      "Unknown variable: nonexistent",
+    ],
+    [
+      StepTask.model("m", "run", { region: "${{ input.region }}" }),
+      "Unknown variable: input",
+    ],
+    [
+      StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+        env: { REGION: "${{ nonexistent.region }}" },
+      }),
+      "Unknown variable: nonexistent",
+    ],
+    // CEL stops at the known root, yet the unlisted one beside it still
+    // fails the run, and is the one the error names.
+    [
+      StepTask.model("m", "run", { sha: "${{ github.sha + nonexistent.x }}" }),
+      "Unknown variable: nonexistent",
+    ],
+  ];
+  for (const [task, message] of cases) {
+    await assertRejects(
+      () =>
+        evaluator.evaluate(
+          foreignWorkflow(task),
+          emptyContext(),
+          "unrestricted",
+        ),
+      Error,
+      message,
+    );
+  }
+});
+
+Deno.test("WorkflowExpressionEvaluator: an unlisted root in a branch that is not evaluated does not fail the run", async () => {
+  // Validate fails this text; it reads the roots as written.
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const result = await evaluator.evaluate(
+    foreignWorkflow(
+      StepTask.model("m", "run", {
+        sha: "${{ true ? 'x' : nonexistent.variable }}",
+      }),
+    ),
+    emptyContext(),
+    "unrestricted",
+  );
+  const task = result.workflow.jobs[0].steps[0].task.data as {
+    inputs: Record<string, unknown>;
+  };
+  assertEquals(task.inputs, { sha: "x" });
+});
+
+Deno.test("WorkflowExpressionEvaluator: literal() around an unlisted root in step inputs evaluates to the text", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const result = await evaluator.evaluate(
+    foreignWorkflow(
+      StepTask.model("m", "run", {
+        run: "${{ literal('${{ nonexistent.variable }}') }}",
+      }),
+    ),
+    emptyContext(),
+    "unrestricted",
+  );
+  const task = result.workflow.jobs[0].steps[0].task.data as {
+    inputs: Record<string, unknown>;
+  };
+  assertEquals(task.inputs, { run: "${{ nonexistent.variable }}" });
+  assertEquals(result.foreignTaskArguments, []);
+});
+
+Deno.test("WorkflowExpressionEvaluator: does not report deferred text that reads an unlisted root", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const result = await evaluator.evaluate(
+    foreignWorkflow(
+      StepTask.model("m", "run", {
+        // Fails when the step runs, so it is not passed through.
+        os: "${{ self.h + nonexistent.os }}",
+        sha: "${{ self.h + github.sha }}",
+      }),
+    ),
+    emptyContext(),
+    "unrestricted",
+  );
+  assertEquals(result.foreignTaskArguments, [{
+    jobName: "build",
+    stepName: "emit",
+    path: "inputs.sha",
+    text: "${{ self.h + github.sha }}",
+    deferred: true,
+  }]);
+});
+
+Deno.test("findForeignTaskText: separates step arguments from what a run must resolve", () => {
+  const workflow = foreignWorkflow(
+    StepTask.fromData({
+      type: "model_method",
+      modelIdOrName: "${{ github.repository }}",
+      methodName: "run",
+      inputs: {
+        sha: "${{ github.sha }}",
+        // Swamp's own namespaces are never foreign, bound or not.
+        version: "${{ inputs.version }}",
+        out: "${{ steps.build.outputs.sha }}",
+        // Neither swamp's nor a known foreign root.
+        run: "${{ nonexistent.variable }}",
+        region: "${{ github.ref + input.region }}",
+      },
+    }),
+  );
+  assertEquals(findForeignTaskText(workflow), {
+    arguments: [{
+      jobName: "build",
+      stepName: "emit",
+      path: "inputs.sha",
+      text: "${{ github.sha }}",
+    }],
+    unlisted: [
+      {
+        jobName: "build",
+        stepName: "emit",
+        path: "inputs.run",
+        text: "${{ nonexistent.variable }}",
+        roots: ["nonexistent"],
+      },
+      {
+        jobName: "build",
+        stepName: "emit",
+        path: "inputs.region",
+        text: "${{ github.ref + input.region }}",
+        roots: ["input"],
+        misspelt: { root: "input", namespace: "inputs" },
+      },
+    ],
+    unresolvable: [{
+      jobName: "build",
+      stepName: "emit",
+      path: "modelIdOrName",
+      text: "${{ github.repository }}",
+    }],
+  });
 });
 
 // ---------------------------------------------------------------------------

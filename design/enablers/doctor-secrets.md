@@ -1,14 +1,14 @@
 ---
 audience: maintainer
-enables: [models]
+enables: [behaviors]
 last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Doctor Secrets — cleartext sensitive-argument scan
 
-`swamp doctor secrets` is a read-only check. It reports model definitions whose
-`sensitive: true` global arguments hold a **cleartext literal** instead of a
-`vault.get(...)` expression. Each finding includes fix steps, in log and JSON
+`swamp doctor secrets` is a read-only check. It reports behavior definitions
+whose `sensitive: true` global arguments hold a **cleartext literal** instead of
+a `vault.get(...)` expression. Each finding includes fix steps, in log and JSON
 output. It exits non-zero when any leak is found, so CI can gate on it.
 
 ## Why it exists
@@ -57,7 +57,7 @@ print as concrete commands.
 
 ## Best-effort residual
 
-The scan resolves each definition's type schema through the model registry to
+The scan resolves each definition's type schema through the behavior registry to
 find sensitive global args. If a type cannot be resolved (e.g. an extension not
 installed locally), the definition is reported as **unresolved**: an advisory
 warning, not a silent skip.
@@ -127,5 +127,5 @@ sees object-nested fields only (swamp-club#3038).
 
 ## Out of scope
 
-Only model definitions are scanned. Guarding datastore sync at write time
+Only behavior definitions are scanned. Guarding datastore sync at write time
 and covering workflow-definition global arguments are deliberately excluded.

@@ -53,6 +53,39 @@ Deno.test("parseExtensionManifest: visibility is optional and accepts public or 
   }
 });
 
+Deno.test("parseExtensionManifest: license is optional, trimmed, and not checked against SPDX", () => {
+  const base = {
+    manifestVersion: 1,
+    name: "@myuser/licensed-ext",
+    version: "2026.10.12.1",
+    models: ["model.ts"],
+  };
+  assertEquals(
+    parseExtensionManifest(JSON.stringify(base)).license,
+    undefined,
+  );
+  assertEquals(
+    parseExtensionManifest(JSON.stringify({ ...base, license: " MIT " }))
+      .license,
+    "MIT",
+  );
+  // Reading a manifest never depends on the vendored SPDX lists; the
+  // license gate in quality and push judges the expression.
+  assertEquals(
+    parseExtensionManifest(
+      JSON.stringify({ ...base, license: "Some-Future-License-9.0" }),
+    ).license,
+    "Some-Future-License-9.0",
+  );
+  for (const license of ["", "   ", 7, true, [], {}]) {
+    assertThrows(
+      () => parseExtensionManifest(JSON.stringify({ ...base, license })),
+      Error,
+      "license",
+    );
+  }
+});
+
 Deno.test("resolvePublishVisibility: CLI then manifest then registry default", () => {
   assertEquals(resolvePublishVisibility(undefined), undefined);
   assertEquals(resolvePublishVisibility("private"), "private");

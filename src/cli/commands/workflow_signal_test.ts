@@ -35,6 +35,7 @@ import {
   parseSignalPayload,
   remoteSignalPayload,
   remoteSignalUserError,
+  renderAcceptedSignalResult,
   renderPendingSignalResult,
   renderRemoteSignalResult,
   renderSignalResult,
@@ -165,7 +166,7 @@ Deno.test("renderRemoteSignalResult: a reply with only the receipt says a resume
     renderRemoteSignalResult(hintTestContext(), data, "http://swamp.test")
   );
   assertEquals(lines, [
-    "The signal takes effect when the run is next resumed, by someone who may resume it.",
+    "If the run is suspended at this wait, the signal takes effect when it is next resumed, by someone who may resume it.",
   ]);
   assertEquals(
     captureStdout(() =>
@@ -285,12 +286,14 @@ Deno.test("remoteSignalPayload: a wait ID is sent lower-cased, and a workflow an
   );
   assertEquals(
     remoteSignalPayload({ workflow: "@acme/release", key: "verdict" }, 7),
-    // A key address says this client reads a pending reply.
+    // A key address says this client reads a pending reply and an accepted
+    // one.
     {
       workflow: "@acme/release",
       key: "verdict",
       payload: 7,
       acceptsPending: true,
+      acceptsReceipt: true,
     },
   );
 });
@@ -535,16 +538,71 @@ Deno.test("renderPendingSignalResult: json mode prints the receipt and until whe
   assertEquals(JSON.parse(remote[0]), { signal, heldUntil, pending: true });
 });
 
-Deno.test("renderSignalResult: a signal a step took on opening its wait suggests no resume", () => {
+Deno.test("renderAcceptedSignalResult: log mode says the signal was accepted and not whether a step was waiting", () => {
+  const { signal } = HELD;
   const lines = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext(), { signal })
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0], "does not tell this token");
+  assertEquals(lines[0].includes("resume"), false);
+  const duplicate = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext(), { signal, duplicate: true })
+  );
+  assertEquals(duplicate.length, 1);
+  assertStringIncludes(duplicate[0], signal.receivedAt);
+  assertEquals(
+    captureStdout(() =>
+      renderAcceptedSignalResult(hintTestContext({ verbosity: "quiet" }), {
+        signal,
+      })
+    ),
+    [],
+  );
+});
+
+Deno.test("renderAcceptedSignalResult: json mode prints the receipt and that it was accepted", () => {
+  const { signal } = HELD;
+  const lines = captureStdout(() =>
+    renderAcceptedSignalResult(hintTestContext({ outputMode: "json" }), {
+      signal,
+    })
+  );
+  assertEquals(lines.length, 1);
+  assertEquals(JSON.parse(lines[0]), { signal, accepted: true });
+});
+
+Deno.test("renderSignalResult: a signal a wait took suggests a resume only when its run can be resumed", () => {
+  const resume = `swamp workflow resume release --run ${RUN_ID}`;
+  const lines = (overrides: Partial<WorkflowSignalData>) =>
+    captureStdout(() =>
+      renderSignalResult(
+        hintTestContext(),
+        signalled({ taken: true, ...overrides }),
+      )
+    );
+  assertEquals(lines({ awaitingResume: false }), [
+    "The step took the signal, and its run has nothing to resume: it went on without waiting, or it still waits on something else.",
+  ]);
+  // Another reader gave the signal to a wait whose run is suspended.
+  assertEquals(lines({ awaitingResume: true }), [
+    `The step's wait took the signal while its run was suspended. swamp serve resumes the run by itself where auto-resume applies. Otherwise: ${resume}`,
+  ]);
+  assertEquals(
+    lines({ awaitingResume: false, runRecordAvailable: false }),
+    [
+      `The step's wait took the signal. This host has no copy of the run, so it cannot tell whether the run went on by itself. Check with "swamp workflow waits", and if the run is suspended resume it where it is: ${resume}`,
+    ],
+  );
+  // JSON carries both facts, for a caller that decides by itself.
+  const json = captureStdout(() =>
     renderSignalResult(
-      hintTestContext(),
-      signalled({ awaitingResume: false, taken: true }),
+      hintTestContext({ outputMode: "json" }),
+      signalled({ taken: true, awaitingResume: true }),
     )
   );
-  assertEquals(lines, [
-    "The step took the signal as it opened its wait, and its run went on without waiting.",
-  ]);
+  assertEquals(JSON.parse(json[0]).taken, true);
+  assertEquals(JSON.parse(json[0]).awaitingResume, true);
 });
 
 Deno.test("parseIdempotencyKey: passes a key in the form of one, and none; refuses any other", () => {
@@ -571,6 +629,7 @@ Deno.test("remoteSignalPayload: an idempotency key is sent with either address, 
       key: "verdict",
       payload: {},
       acceptsPending: true,
+      acceptsReceipt: true,
       idempotencyKey: "order-1",
     },
   );

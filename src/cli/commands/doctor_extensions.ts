@@ -79,6 +79,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { webhookTypeRegistry } from "../../domain/webhooks/webhook_type_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { resolveMountedSourceDirs } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { createDoctorExtensionsRenderer } from "../../presentation/renderers/doctor_extensions.ts";
@@ -304,6 +305,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
 
   try {
     const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    const mountedSourceDirs = await resolveMountedSourceDirs(repoDir);
     let reconcileTransitions: readonly ReconcileTransition[] = [];
     if (!rescanSkipped) {
       try {
@@ -315,6 +317,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
           lockfileRepository: reconcileLockfileRepo,
           repoRoot: repoDir,
           localManifestIdentity,
+          mountedSourceDirs,
         });
         rescanRepo.invalidateAll();
         const denoRuntime = new EmbeddedDenoRuntime();
@@ -453,6 +456,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                 lockfileRepository: aggLockfileRepo,
                 repoRoot: repoDir,
                 localManifestIdentity: localIdentity,
+                mountedSourceDirs,
               });
               const extensions = repo.loadAll();
               return buildAggregateState({ extensions, repoDir });
@@ -494,6 +498,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                   catalog: sharedCatalog,
                   lockfileRepository: repairLockfileRepo,
                   repoRoot: repoDir,
+                  mountedSourceDirs,
                 });
                 const repullExtension = async (
                   name: string,
@@ -510,6 +515,7 @@ export const doctorExtensionsCommand = withRemoteOptions(
                       lockfileRepository: pullLockfileRepo,
                       repoRoot: repoDir,
                       localManifestIdentity: readLocalManifestIdentity(repoDir),
+                      mountedSourceDirs,
                     });
                     const deps = await createExtensionPullDeps(
                       serverUrl,

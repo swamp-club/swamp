@@ -69,8 +69,8 @@ by extension-installed skills.
 ## Skill Reference Style
 
 All built-in tools use `skillReferenceStyle: "name"`. Generated instructions
-files (CLAUDE.md, AGENTS.md, `.cursor/rules/swamp.mdc`,
-`.kiro/steering/swamp-rules.md`) name skills (e.g. "use the `swamp` skill")
+files (CLAUDE.md or `.claude/rules/swamp.md`, AGENTS.md,
+`.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`) name skills (e.g. "use the `swamp` skill")
 rather than give a project path. This is required because skills are global,
 so a project path would not exist after init.
 
@@ -111,9 +111,11 @@ with Enter-to-accept.
 3. Register the built-in global directories in
    `~/.config/swamp/builtin-tool-skill-dirs.json` and `~/`-prefixed custom
    directories in `custom-tool-skill-dirs.json`.
-4. Write instructions files to the repo (CLAUDE.md, AGENTS.md,
-   `.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`). These stay per
-   repo because they refer to repo-specific context.
+4. Write instructions files to the repo (CLAUDE.md or
+   `.claude/rules/swamp.md`, AGENTS.md, `.cursor/rules/swamp.mdc`,
+   `.kiro/steering/swamp-rules.md`). These stay per repo because they refer to
+   repo-specific context. Which file the claude tool writes is set out in
+   `design/surfaces/repo.md`.
 5. Write tool-specific settings/hooks to the repo.
 6. Do **not** copy skills into repo tool directories for built-in tools.
 
@@ -197,9 +199,9 @@ ignored by local-copy detection.
 
 These files stay in the project because their content is specific to the repo:
 
-- **Instructions files**: `CLAUDE.md`, `AGENTS.md`, `.cursor/rules/swamp.mdc`,
-  `.kiro/steering/swamp-rules.md`. They describe the repo's models, extensions
-  and purpose.
+- **Instructions files**: `CLAUDE.md` or `.claude/rules/swamp.md`, `AGENTS.md`,
+  `.cursor/rules/swamp.mdc`, `.kiro/steering/swamp-rules.md`. They describe the repo's behaviors,
+  extensions and purpose.
 - **Settings/hooks**: `.claude/settings.local.json`, `.cursor/hooks.json`,
   `.kiro/hooks/`, `.kiro/agents/`, `.kiro/settings/cli.json`,
   `.opencode/plugins/`, `.amp/plugins/` (the Amp plugin that asks before

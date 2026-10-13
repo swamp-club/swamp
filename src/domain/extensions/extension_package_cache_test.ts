@@ -138,6 +138,26 @@ Deno.test("computePackageCacheHash: explicit visibility invalidates cache while 
   }
 });
 
+Deno.test("computePackageCacheHash: a declared license joins the hash", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const input = await makeHashInput(tmp);
+    const omitted = await computePackageCacheHash(input);
+    const mit = await computePackageCacheHash({
+      ...input,
+      manifest: { ...input.manifest, license: "MIT" },
+    });
+    const apache = await computePackageCacheHash({
+      ...input,
+      manifest: { ...input.manifest, license: "Apache-2.0" },
+    });
+    assertNotEquals(mit, omitted);
+    assertNotEquals(mit, apache);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("computePackageCacheHash: file content change invalidates hash", async () => {
   const tmp = await Deno.makeTempDir();
   try {

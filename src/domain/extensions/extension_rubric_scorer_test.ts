@@ -45,6 +45,7 @@ function makeManifest(
     name: "@example/test",
     version: "2026.01.01.0",
     description: "A test extension",
+    license: "MIT",
     repository: "https://github.com/example/test",
     paths: { base: "typedDir" },
     workflows: [],
@@ -389,11 +390,11 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
   };
 }
 
-Deno.test("composeScore: perfect extension earns 12/12 client-confirmed (100%)", () => {
+Deno.test("composeScore: perfect extension earns 13/13 client-confirmed (100%)", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  assertEquals(score.earnedPoints, 12);
-  assertEquals(score.maxEarnablePoints, 14);
-  assertEquals(score.maxClientEarnablePoints, 12);
+  assertEquals(score.earnedPoints, 13);
+  assertEquals(score.maxEarnablePoints, 15);
+  assertEquals(score.maxClientEarnablePoints, 13);
   assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
@@ -452,13 +453,43 @@ Deno.test("composeScore: empty platforms is universal (platform factor earned)",
   assertEquals(factor.earnedPoints, 2);
 });
 
-Deno.test("composeScore: missing LICENSE file misses has-license", () => {
+Deno.test("composeScore: missing LICENSE file misses license-file only", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
+  const byId = new Map(score.factors.map((f) => [f.id, f]));
+  assertEquals(byId.get("license-file")?.status, "missing");
+  assertEquals(byId.get("license-file")?.label, "LICENSE file included");
+  assertEquals(byId.get("has-license")?.status, "earned");
+});
+
+Deno.test("composeScore: has-license is earned only by a valid SPDX license:", () => {
+  const cases: Array<[string | undefined, string]> = [
+    ["MIT", "earned"],
+    ["MIT OR Apache-2.0", "earned"],
+    ["GPL-2.0-only WITH Classpath-exception-2.0", "earned"],
+    [undefined, "missing"],
+    ["Not-A-License", "missing"],
+    ["LicenseRef-Mine", "missing"],
+    ["AGPL-3.0-only WITH AdditionRef-Swamp-Extension-Exception", "missing"],
+  ];
+  for (const [license, status] of cases) {
+    const score = composeScore(factorsAllEarned(), makeManifest({ license }));
+    const f = score.factors.find((f) => f.id === "has-license")!;
+    assertEquals(f.status, status, String(license));
+    assertEquals(f.label, "License declared");
+  }
+});
+
+Deno.test("composeScore: has-license remediation asks for an SPDX expression", () => {
+  const score = composeScore(
+    factorsAllEarned(),
+    makeManifest({ license: undefined }),
+  );
   const f = score.factors.find((f) => f.id === "has-license")!;
-  assertEquals(f.status, "missing");
+  assertStringIncludes(f.remediation ?? "", "license: MIT");
+  assertStringIncludes(f.remediation ?? "", "Only SPDX identifiers count");
 });
 
 Deno.test("composeScore: has-readme remediation names the archive path and bare-basename rule", () => {
@@ -473,12 +504,12 @@ Deno.test("composeScore: has-readme remediation names the archive path and bare-
   assertStringIncludes(remediation, "bare basename");
 });
 
-Deno.test("composeScore: has-license remediation names the archive path and bare-basename rule", () => {
+Deno.test("composeScore: license-file remediation names the archive path and bare-basename rule", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  const f = score.factors.find((f) => f.id === "has-license")!;
+  const f = score.factors.find((f) => f.id === "license-file")!;
   assertEquals(f.status, "missing");
   const remediation = f.remediation ?? "";
   assertStringIncludes(remediation, "extension/files/");
@@ -545,19 +576,20 @@ Deno.test("composeScore: factor IDs and order match server", () => {
     "description",
     "platforms",
     "has-license",
+    "license-file",
     "repository-verified",
     "dependency-trust",
   ]);
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 11/12 client-earnable = 91.67 → floor = 91
+  // 12/13 client-earnable = 92.3 → floor = 92
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 11);
-  assertEquals(score.percentage, 91);
+  assertEquals(score.earnedPoints, 12);
+  assertEquals(score.percentage, 92);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -857,15 +889,16 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
     },
     makeManifest({
       description: "",
+      license: undefined,
       repository: undefined,
       platforms: [],
     }),
   );
   // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
   assertEquals(score.earnedPoints, 3);
-  assertEquals(score.percentage, Math.floor((3 * 100) / 14));
+  assertEquals(score.percentage, Math.floor((3 * 100) / 15));
   assertEquals(score.rubricVersion, 3);
-  assertEquals(score.factors.length, 10);
+  assertEquals(score.factors.length, 11);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
   assertEquals(byId.get("platforms")?.status, "earned");
   assertEquals(byId.get("platforms")?.earnedPoints, 2);
@@ -878,21 +911,21 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
 
 Deno.test("[parity] composeScore: perfect score hits 100% with repository-verified provisional", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 12/12 client-earnable (repo-verified is provisional, excluded from total)
-  assertEquals(score.earnedPoints, 12);
-  assertEquals(score.maxClientEarnablePoints, 12);
+  // 13/13 client-earnable (repo-verified is provisional, excluded from total)
+  assertEquals(score.earnedPoints, 13);
+  assertEquals(score.maxClientEarnablePoints, 13);
   assertEquals(score.provisionalPoints, 2);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
 
-Deno.test("[parity] composeScore: percentage floors (11/12 → 91)", () => {
+Deno.test("[parity] composeScore: percentage floors (12/13 → 92)", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 11);
-  assertEquals(score.percentage, 91);
+  assertEquals(score.earnedPoints, 12);
+  assertEquals(score.percentage, 92);
 });
 
 Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
@@ -1048,4 +1081,26 @@ Deno.test("scoreExtensionTarball: omits imports when importMap is undefined", as
   assert(capturedConfig !== undefined, "runDeno should have been called");
   assertEquals(capturedConfig!.nodeModulesDir, "auto");
   assertEquals(capturedConfig!.imports, undefined);
+});
+
+Deno.test("scoreExtensionTarball: an empty LICENSE file does not earn license-file", async () => {
+  for (
+    const [content, status] of [["MIT License", "earned"], ["", "missing"]]
+  ) {
+    const deps = fakeScoreDeps({
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/lic'\n",
+      "models/mod.ts": "export const s = 1;",
+      "README.md": "# Test",
+      "LICENSE": content,
+    });
+    const score = await scoreExtensionTarball(
+      new Uint8Array(0),
+      makeManifest({ models: ["mod.ts"] }),
+      deps,
+    );
+    assertEquals(
+      score.factors.find((f) => f.id === "license-file")?.status,
+      status,
+    );
+  }
 });

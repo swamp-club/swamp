@@ -1,0 +1,19 @@
+# Extracted from .claude/skills/swamp/references/vault/references/examples.md (block 5)
+id: 00000000-0000-4000-8000-000000000007
+# workflows/deploy-app/workflow.yaml
+name: deploy-app
+version: 1
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+  required: ["environment"]
+jobs:
+  - name: deploy
+    steps:
+      - name: deploy-service
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy

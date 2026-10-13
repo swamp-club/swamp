@@ -17,12 +17,60 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { useState } from "react";
+import { type MouseEvent, useCallback, useMemo, useState } from "react";
 import { useRequest } from "../client/useRequest";
 import { extractArray, extractTotal } from "../client/extract";
+import type { HealthSnapshot } from "../client/useHealthStream";
+import { useWorkflowCatalog } from "../client/useWorkflowCatalog";
+import { useKeepPrevious } from "../client/useKeepPrevious";
+import {
+  type RunSummaryQuery,
+  summariesByName,
+  useRunSummary,
+} from "../client/run_summary";
+import {
+  describeTimeRange,
+  type TimeRange,
+  useTimeRange,
+} from "../client/time_range";
+import { useQueryList } from "../client/useQueryState";
 import { StatusPill } from "../components/StatusPill";
 import { TriggerBadge } from "../components/TriggerBadge";
 import { Pager } from "../components/Pager";
+import { RouteLink } from "../components/RouteLink";
+import { RunHistoryBar } from "../components/RunHistoryBar";
+import { type Stat, StatPills } from "../components/StatPills";
+import { EmptyState } from "../components/EmptyState";
+import { FilterBar, useWorkflowFilter } from "../components/FilterBar";
+import { FailureLink } from "../components/FailureLink";
+import {
+  type SkeletonColumn,
+  SkeletonPills,
+  SkeletonRunHistory,
+  SkeletonTable,
+} from "../components/Skeleton";
+import { EMPTY_FILTER, isFilterActive } from "../lib/workflow_facets";
+import {
+  isRunSource,
+  isRunStatus,
+  RUN_SOURCE_LABELS,
+  RUN_SOURCES,
+  RUN_STATUSES,
+  runSearchPayload,
+  runSearchWindow,
+  splitWorkflowFilter,
+  statusCounts,
+  totalsOfWorkflows,
+  workflowNamesForFilter,
+} from "../lib/run_filters";
+import {
+  formatAbsoluteTime,
+  formatCount,
+  formatDuration,
+  formatRelativeTime,
+  formatShortDateTime,
+} from "../lib/format";
+import "../styles/executions.css";
 
 interface RunItem {
   runId: string;
@@ -35,172 +83,487 @@ interface RunItem {
 }
 
 interface ExecutionsProps {
+  /** Serve's live health snapshot: schedules and webhooks for the filters. */
+  health?: HealthSnapshot | null;
   onOpenRun?: (workflowName: string, runId?: string) => void;
 }
 
 const PAGE_SIZE = 25;
+const HISTORY_SLOTS = 12;
 
-export function Executions({ onOpenRun }: ExecutionsProps) {
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
-  const [page, setPage] = useState(0);
+const COLUMNS: SkeletonColumn[] = [
+  { header: "Run", cell: "mono" },
+  { header: "Workflow" },
+  { header: "Status", cell: "pill" },
+  { header: "Started by", cell: 56 },
+  { header: "Recent runs", cell: "strip" },
+  { header: "Duration", cell: 48 },
+  { header: "Steps", cell: 32 },
+  { header: "Started", cell: 96 },
+];
 
-  const payload: Record<string, unknown> = {
-    limit: PAGE_SIZE,
-    offset: page * PAGE_SIZE,
+const STATUS_LABELS: Record<(typeof RUN_STATUSES)[number], string> = {
+  succeeded: "Succeeded",
+  failed: "Failed",
+  running: "Running",
+  suspended: "Suspended",
+  cancelled: "Cancelled",
+};
+
+/** "in the last 7 days", "of all time", "between Oct 3 and Oct 9". */
+function rangePhrase(range: TimeRange): string {
+  if (range.kind === "preset" && range.preset === "all") return "yet";
+  const text = describeTimeRange(range);
+  return range.kind === "preset"
+    ? `in the ${text.toLowerCase()}`
+    : `between ${text.replace(" – ", " and ")}`;
+}
+
+export function Executions({ health, onOpenRun }: ExecutionsProps) {
+  const catalog = useWorkflowCatalog(health ?? null);
+  const [filter, setFilter] = useWorkflowFilter();
+  const [rawStatuses, setStatuses] = useQueryList("status");
+  const [rawSources, setSources] = useQueryList("source");
+  const statuses = useMemo(
+    () => rawStatuses.filter(isRunStatus),
+    [rawStatuses],
+  );
+  const sources = useMemo(
+    () => rawSources.filter(isRunSource),
+    [rawSources],
+  );
+  const { range } = useTimeRange();
+  const searchWindow = runSearchWindow(range);
+
+  // Runs are paged on the server, so the workflow filter becomes the exact
+  // workflow names it selects. Until the catalog is in, a filter cannot be
+  // resolved and nothing is requested.
+  const workflowFilterActive = isFilterActive(filter);
+  const resolvingFilter = workflowFilterActive && catalog.loading;
+  const workflowNames = useMemo(
+    () =>
+      resolvingFilter
+        ? null
+        : workflowNamesForFilter(catalog.workflows, filter, catalog.facetsOf),
+    [resolvingFilter, catalog.workflows, catalog.facetsOf, filter],
+  );
+  const matchesNoWorkflow = workflowNames !== null &&
+    workflowNames.length === 0;
+  // Past serve's cap on a `workflows` filter, rows are filtered here.
+  const { server: serverNames, local: localNames } = useMemo(
+    () => splitWorkflowFilter(workflowNames),
+    [workflowNames],
+  );
+  const enabled = !resolvingFilter && !matchesNoWorkflow;
+
+  // Any change to what is listed starts again at the first page. Keyed on
+  // the chosen range, not its resolved bounds, which move every minute.
+  const filterKey = JSON.stringify([workflowNames, statuses, sources, range]);
+  const [paging, setPaging] = useState({ key: filterKey, page: 0 });
+  const page = paging.key === filterKey ? paging.page : 0;
+  const setPage = useCallback(
+    (next: number) => setPaging({ key: filterKey, page: next }),
+    [filterKey],
+  );
+
+  const search = useRequest(
+    "workflow.run.search",
+    runSearchPayload({
+      page,
+      pageSize: PAGE_SIZE,
+      statuses,
+      sources,
+      workflows: serverNames,
+      since: searchWindow.since,
+      until: searchWindow.until,
+    }),
+    { enabled },
+  );
+  // A new page or filter keeps the rows on screen (dimmed) until the
+  // reply lands, instead of flashing an empty table.
+  const shown = useKeepPrevious(search.data, !enabled);
+  const pageRuns = extractArray<RunItem>(shown);
+  const runs = useMemo(
+    () =>
+      localNames
+        ? pageRuns.filter((r) => localNames.has(r.workflowName))
+        : pageRuns,
+    [pageRuns, localNames],
+  );
+  const total = extractTotal(shown) ?? pageRuns.length;
+  const refreshing = search.loading && shown !== null;
+
+  // Totals for the header and the status counts: every status, the same
+  // workflows, source and time range.
+  const totalsQuery: RunSummaryQuery = {};
+  if (serverNames !== null) totalsQuery.workflows = [...serverNames];
+  if (sources.length > 0) totalsQuery.triggerSources = [...sources];
+  const totalsRequest = useRunSummary(totalsQuery, { enabled });
+  const summary = useKeepPrevious(totalsRequest.summary, !enabled);
+  const totals = summary
+    ? localNames
+      ? totalsOfWorkflows(summary.workflows, localNames)
+      : summary.totals
+    : null;
+
+  // Recent runs of the workflows on this page, one strip per row.
+  const pageWorkflows = useMemo(
+    () => [...new Set(runs.map((r) => r.workflowName))].sort(),
+    [runs],
+  );
+  const historyRequest = useRunSummary(
+    { workflows: pageWorkflows, recentLimit: HISTORY_SLOTS },
+    { enabled: pageWorkflows.length > 0 },
+  );
+  const history = summariesByName(useKeepPrevious(historyRequest.summary));
+  // A serve without the run summary has no strips to show: drop the column.
+  const showHistory = !historyRequest.error;
+  const columns = showHistory
+    ? COLUMNS
+    : COLUMNS.filter((c) => c.header !== "Recent runs");
+
+  // The seam for live updates: a stream of run events can call this (or
+  // splice rows in) once serve pushes new executions.
+  const refreshAll = useCallback(() => {
+    search.refetch();
+    totalsRequest.refetch();
+    historyRequest.refetch();
+  }, [search.refetch, totalsRequest.refetch, historyRequest.refetch]);
+
+  const anyFilter = workflowFilterActive || statuses.length > 0 ||
+    sources.length > 0;
+  const clearAll = () => {
+    setFilter(EMPTY_FILTER);
+    setStatuses([]);
+    setSources([]);
   };
-  if (statusFilter) payload.status = statusFilter;
 
-  const { data } = useRequest("workflow.run.search", payload);
-  const runs = extractArray<RunItem>(data);
-  const total = extractTotal(data) ?? runs.length;
+  const stats: Stat[] | null = totals
+    ? [
+      {
+        label: "executions",
+        value: formatCount(totals.runs),
+      },
+      {
+        label: "passed",
+        value: formatCount(totals.succeeded),
+        tone: "success",
+      },
+      {
+        label: "failed",
+        value: formatCount(totals.failed),
+        tone: totals.failed > 0 ? "danger" : "neutral",
+      },
+      {
+        label: "running",
+        value: formatCount(totals.running),
+        tone: totals.running > 0 ? "running" : "neutral",
+      },
+      {
+        label: "total time",
+        value: formatDuration(totals.durationMs),
+        title: "Summed duration of finished runs",
+      },
+    ]
+    : null;
 
-  const statuses = [
-    "",
-    "succeeded",
-    "failed",
-    "running",
-    "suspended",
-    "cancelled",
-  ];
-
-  const handleStatusChange = (s: string | undefined) => {
-    setStatusFilter(s);
-    setPage(0);
+  const openRow = (e: MouseEvent<HTMLTableRowElement>, run: RunItem) => {
+    // Links and buttons in the row handle their own clicks; a click on
+    // selected text is a selection, not a navigation.
+    if ((e.target as Element).closest("a, button")) return;
+    if (globalThis.getSelection?.()?.toString()) return;
+    onOpenRun?.(run.workflowName, run.runId);
   };
 
-  return (
-    <>
-      <div className="page-header">
-        <h1>Executions</h1>
-        <div className="header-right">
-          <span
-            className="mono"
-            style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
-          >
-            {total} total
-          </span>
-          <div className="time-range">
-            {statuses.map((s) => (
-              <button
-                type="button"
-                key={s}
-                className={(statusFilter ?? "") === s ? "active" : ""}
-                onClick={() => handleStatusChange(s || undefined)}
-              >
-                {s || "All"}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Run ID</th>
-                <th>Workflow</th>
-                <th>Status</th>
-                <th>Trigger</th>
-                <th>Duration</th>
-                <th>Steps</th>
-                <th>Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
+  let body;
+  if (search.error && shown === null) {
+    body = (
+      <EmptyState
+        title="Couldn't load executions"
+        action={
+          <button type="button" className="btn-sm" onClick={refreshAll}>
+            Try again
+          </button>
+        }
+      >
+        {search.error}
+      </EmptyState>
+    );
+  } else if (matchesNoWorkflow) {
+    body = (
+      <EmptyState
+        title="No workflows match these filters"
+        action={
+          <button type="button" className="btn-sm" onClick={clearAll}>
+            Clear filters
+          </button>
+        }
+      >
+        Executions are listed for the workflows the search and filters select.
+      </EmptyState>
+    );
+  } else if (shown === null) {
+    body = (
+      <SkeletonTable
+        columns={COLUMNS}
+        rows={PAGE_SIZE / 2}
+        label="Loading executions"
+      />
+    );
+  } else if (runs.length === 0 && pageRuns.length > 0) {
+    body = (
+      <EmptyState title="No matching executions on this page">
+        This filter selects too many workflows to send to serve, so it is
+        applied to each page of runs here. Try the next page, or narrow the
+        filter.
+      </EmptyState>
+    );
+  } else if (runs.length === 0) {
+    body = anyFilter
+      ? (
+        <EmptyState
+          title="No executions match these filters"
+          action={
+            <button type="button" className="btn-sm" onClick={clearAll}>
+              Clear filters
+            </button>
+          }
+        >
+          Nothing ran {rangePhrase(range)}{" "}
+          that matches. Widen the time range or clear the filters.
+        </EmptyState>
+      )
+      : (
+        <EmptyState title={`No executions ${rangePhrase(range)}`}>
+          Runs appear here as workflows start — on a schedule, from a webhook,
+          or by hand.
+        </EmptyState>
+      );
+  } else {
+    body = (
+      <div
+        className={`table-wrap exec-table${refreshing ? " is-stale" : ""}`}
+        aria-busy={refreshing}
+      >
+        <table className="data-table">
+          <thead>
+            <tr>
+              {columns.map((c) => (
+                <th key={c.header} scope="col">{c.header}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((run) => {
+              const recent = history.get(run.workflowName)?.recent;
+              return (
                 <tr
                   key={run.runId}
-                  onClick={() => onOpenRun?.(run.workflowName, run.runId)}
-                  style={{ cursor: "pointer" }}
+                  className="exec-row"
+                  onClick={(e) => openRow(e, run)}
                 >
                   <td>
-                    <span
-                      className="mono"
-                      style={{ fontSize: "0.75rem", color: "var(--accent)" }}
+                    <RouteLink
+                      className="mono exec-run-link"
+                      title={`Run ${run.runId}`}
+                      to={{
+                        view: "workflows",
+                        detail: {
+                          kind: "run",
+                          workflowName: run.workflowName,
+                          runId: run.runId,
+                        },
+                      }}
                     >
                       {run.runId.slice(0, 8)}
-                    </span>
+                    </RouteLink>
                   </td>
-                  <td style={{ fontWeight: 500 }}>{run.workflowName}</td>
+                  <td className="exec-workflow">
+                    <RouteLink
+                      className="exec-workflow-link"
+                      title={run.workflowName}
+                      to={{
+                        view: "workflows",
+                        detail: {
+                          kind: "workflow",
+                          workflowName: run.workflowName,
+                        },
+                      }}
+                    >
+                      {run.workflowName}
+                    </RouteLink>
+                  </td>
                   <td>
-                    <StatusPill status={run.status} />
+                    <span className="exec-status">
+                      <StatusPill status={run.status} />
+                      {run.status === "failed" && (
+                        <FailureLink
+                          workflowName={run.workflowName}
+                          runId={run.runId}
+                        />
+                      )}
+                    </span>
                   </td>
                   <td>
                     <TriggerBadge trigger={run.triggerSource} />
                   </td>
-                  <td
-                    className="mono"
-                    style={{ fontSize: "0.78rem", color: "var(--text-2)" }}
-                  >
+                  {showHistory && (
+                    <td className="exec-history">
+                      {recent
+                        ? (
+                          <RunHistoryBar
+                            runs={recent}
+                            workflowName={run.workflowName}
+                            slots={HISTORY_SLOTS}
+                            height={12}
+                            currentRunId={run.runId}
+                            noun={`runs of ${run.workflowName}`}
+                          />
+                        )
+                        : historyRequest.loading
+                        ? (
+                          <SkeletonRunHistory
+                            slots={HISTORY_SLOTS}
+                            height={12}
+                          />
+                        )
+                        : null}
+                    </td>
+                  )}
+                  <td className="mono exec-num">
                     {formatDuration(run.duration)}
                   </td>
-                  <td
-                    className="mono"
-                    style={{ fontSize: "0.75rem", color: "var(--text-3)" }}
-                  >
+                  <td className="mono exec-num exec-muted">
                     {run.stepProgress
                       ? `${run.stepProgress.completed}/${run.stepProgress.total}`
                       : "—"}
                   </td>
-                  <td
-                    style={{ fontSize: "0.78rem", color: "var(--text-3)" }}
-                    title={new Date(run.startedAt).toISOString()}
-                  >
-                    {formatAbsoluteTime(run.startedAt)}
-                    {" · "}
-                    {formatRelativeTime(run.startedAt)}
+                  <td>
+                    <time
+                      className="exec-time"
+                      dateTime={run.startedAt}
+                      title={formatAbsoluteTime(run.startedAt)}
+                    >
+                      <span>{formatRelativeTime(run.startedAt)}</span>
+                      <span className="exec-muted">
+                        {formatShortDateTime(run.startedAt)}
+                      </span>
+                    </time>
                   </td>
                 </tr>
-              ))}
-              {runs.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={7}
-                    style={{
-                      textAlign: "center",
-                      color: "var(--text-3)",
-                      padding: 32,
-                    }}
-                  >
-                    No executions found
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <Pager
-          page={page}
-          pageSize={PAGE_SIZE}
-          total={total}
-          onPageChange={setPage}
-        />
+              );
+            })}
+          </tbody>
+        </table>
       </div>
-    </>
+    );
+  }
+
+  const statusTotals = statusCounts(totals);
+  return (
+    <div className="executions-page">
+      <div className="page-header">
+        <h1>Executions</h1>
+        <div className="header-right">
+          {stats
+            ? <StatPills stats={stats} label="Executions summary" />
+            : totalsRequest.loading || resolvingFilter
+            ? <SkeletonPills count={5} />
+            : shown !== null && (
+              // A serve without the run summary still reports the total.
+              <StatPills
+                stats={[{ label: "executions", value: formatCount(total) }]}
+                label="Executions summary"
+              />
+            )}
+        </div>
+      </div>
+
+      <FilterBar
+        filter={filter}
+        onChange={setFilter}
+        prefixes={catalog.prefixes}
+        webhooks={catalog.webhookRoutes}
+        placeholder="Search workflows or filter by status, trigger, prefix…"
+        shown={workflowNames?.length}
+        total={catalog.workflows.length}
+        noun="workflows"
+        extraFacets={[
+          {
+            key: "status",
+            label: "Status",
+            description: "How the run ended, or that it's still going",
+            values: RUN_STATUSES.map((st) => ({
+              value: st,
+              label: STATUS_LABELS[st],
+              hint: statusTotals ? formatCount(statusTotals[st]) : undefined,
+            })),
+            selected: statuses,
+            onSelect: setStatuses,
+          },
+          {
+            key: "started",
+            label: "Started by",
+            description: "What started the run: schedule, webhook, API or CLI",
+            values: RUN_SOURCES.map((src) => ({
+              value: src,
+              label: RUN_SOURCE_LABELS[src],
+            })),
+            selected: sources,
+            onSelect: setSources,
+          },
+        ]}
+      />
+
+      <div className="panel">
+        <div className="exec-toolbar">
+          <div className="exec-toolbar-right">
+            {refreshing && (
+              <span className="exec-updating" role="status">
+                Updating…
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn-sm exec-refresh"
+              onClick={refreshAll}
+              disabled={!enabled || search.loading}
+              aria-label="Refresh executions"
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+                <path d="M13.5 2.5v3h-3" />
+              </svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+        {refreshing && <div className="exec-progress" aria-hidden="true" />}
+        {body}
+        {localNames && pageRuns.length > 0 && (
+          <p className="exec-local-note">
+            Filtered on this page: the filter selects more than 1,000 workflows,
+            so pages may hold fewer rows.
+          </p>
+        )}
+        {pageRuns.length > 0 && !matchesNoWorkflow && (
+          <Pager
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={total}
+            onPageChange={setPage}
+          />
+        )}
+      </div>
+    </div>
   );
-}
-
-function formatDuration(ms: number | undefined): string {
-  if (ms === undefined) return "—";
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  const rem = secs % 60;
-  return `${mins}m ${rem.toString().padStart(2, "0")}s`;
-}
-
-function formatAbsoluteTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC");
-}
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
 }

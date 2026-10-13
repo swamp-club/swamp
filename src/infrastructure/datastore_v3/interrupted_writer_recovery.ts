@@ -222,7 +222,9 @@ export async function recoverInterruptedWriter(
   }
   let release: (() => Promise<void>) | undefined;
   try {
-    release = await tryAcquireV3WriterLock(handle.datastorePath);
+    release = await tryAcquireV3WriterLock(handle.datastorePath, {
+      fenceStore: handle.commitStore,
+    });
   } catch (error) {
     logger
       .debug`Not recovering ${repoDir}: the v3 writer lock could not be taken: ${error}`;

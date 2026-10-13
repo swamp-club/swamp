@@ -24,6 +24,7 @@ import type {
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { parseDuration } from "../data/search.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
 import { workflowDeclaresInputs } from "../../domain/workflows/workflow.ts";
 
@@ -122,19 +123,113 @@ export interface WorkflowRunSearchDeps {
  */
 export interface WorkflowRunSearchInput {
   query?: string;
+  /**
+   * Keeps runs started at or after this time: a duration back from now
+   * (`1h`, `7d`) or an ISO timestamp.
+   */
   since?: string;
+  /**
+   * Keeps runs started before this time (exclusive): a duration back from
+   * now or an ISO timestamp.
+   */
+  until?: string;
+  /**
+   * Keeps runs with this status, ignoring case. `failed` also keeps
+   * interrupted runs and `running` also keeps pending ones, matching the run
+   * summary's counts.
+   */
   status?: string;
+  /** Keeps runs of the workflow with this name, ignoring case. */
   workflow?: string;
+  /**
+   * Keeps runs of any of these workflows, by exact name. An empty list
+   * filters nothing.
+   */
+  workflows?: string[];
+  /** Keeps runs with this trigger source (`schedule`, `api`…), ignoring case. */
+  triggerSource?: string;
+  /**
+   * Keeps runs with any of these statuses (each matched like `status`). An
+   * empty list filters nothing; with `status` both must hold.
+   */
+  statuses?: string[];
+  /**
+   * Keeps runs with any of these trigger sources, ignoring case. An empty
+   * list filters nothing; with `triggerSource` both must hold.
+   */
+  triggerSources?: string[];
   tags?: Record<string, string>;
   inputs?: Record<string, string>;
   limit?: number;
 }
 
 /**
+ * Resolves a run time bound to epoch milliseconds: a swamp duration (`1h`,
+ * `7d`) counts back from `now`, anything else must parse as an ISO
+ * timestamp.
+ */
+export function parseRunTimeBound(value: string, now: number): number {
+  if (/^\d+(mo|y|h|m|d|w)$/.test(value)) return now - parseDuration(value);
+  const ms = /^\d{4}-\d{2}-\d{2}/.test(value) ? Date.parse(value) : NaN;
+  if (Number.isNaN(ms)) {
+    throw new UserError(
+      `Invalid time: "${value}". Expected a duration like 1h, 7d, 1mo or an ISO timestamp`,
+    );
+  }
+  return ms;
+}
+
+/** The status groups the run summary counts runs in. */
+export type RunStatusBucket =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "running"
+  | "suspended";
+
+/**
+ * The bucket a run status counts in, or undefined for a status this
+ * version does not know. `interrupted` (a run that ended without settling)
+ * counts as failed; `pending` (accepted, not yet started) as running.
+ */
+export function runStatusBucket(status: string): RunStatusBucket | undefined {
+  switch (status) {
+    case "succeeded":
+      return "succeeded";
+    case "failed":
+    case "interrupted":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "running":
+    case "pending":
+      return "running";
+    case "suspended":
+      return "suspended";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether a run's status matches a lower-cased status filter. A bucket name
+ * matches every status in that bucket (`failed` also matches `interrupted`,
+ * `running` also matches `pending`), so a filtered search agrees with the
+ * run summary's counts; any other filter matches the status exactly.
+ */
+function runStatusMatches(status: string, filter: string): boolean {
+  const actual = status.toLowerCase();
+  if (actual === filter) return true;
+  return (filter === "failed" || filter === "running") &&
+    runStatusBucket(actual) === filter;
+}
+
+/**
  * Searches workflow runs across all workflows.
  *
  * Fetches all workflows, then all runs for each workflow.
- * Applies filters (since, status, workflow, tags, limit) and sorts
+ * Applies filters (since, until, status, workflow, workflows, trigger
+ * source, tags, inputs, query, limit) and sorts
  * by startedAt descending (most recent first).
  */
 export async function* workflowRunSearch(
@@ -253,24 +348,61 @@ export async function* workflowRunSearch(
       });
 
       // Apply filters
+      const now = Date.now();
       if (input.since) {
-        const durationMs = parseDuration(input.since);
-        const cutoff = Date.now() - durationMs;
+        const cutoff = parseRunTimeBound(input.since, now);
         results = results.filter((r) => {
           if (!r.startedAt) return false;
           return new Date(r.startedAt).getTime() >= cutoff;
         });
       }
 
+      if (input.until) {
+        const end = parseRunTimeBound(input.until, now);
+        results = results.filter((r) => {
+          if (!r.startedAt) return false;
+          return new Date(r.startedAt).getTime() < end;
+        });
+      }
+
       if (input.status) {
         const status = input.status.toLowerCase();
-        results = results.filter((r) => r.status.toLowerCase() === status);
+        results = results.filter((r) => runStatusMatches(r.status, status));
       }
 
       if (input.workflow) {
         const name = input.workflow.toLowerCase();
         results = results.filter(
           (r) => r.workflowName.toLowerCase() === name,
+        );
+      }
+
+      if (input.workflows && input.workflows.length > 0) {
+        const names = new Set(input.workflows);
+        results = results.filter((r) => names.has(r.workflowName));
+      }
+
+      if (input.triggerSource) {
+        const source = input.triggerSource.toLowerCase();
+        results = results.filter((r) =>
+          r.triggerSource?.toLowerCase() === source
+        );
+      }
+
+      if (input.statuses && input.statuses.length > 0) {
+        const wanted = input.statuses.map((s) => s.toLowerCase());
+        results = results.filter((r) =>
+          wanted.some((s) => runStatusMatches(r.status, s))
+        );
+      }
+
+      if (input.triggerSources && input.triggerSources.length > 0) {
+        const wanted = new Set(
+          input.triggerSources.map((s) => s.toLowerCase()),
+        );
+        results = results.filter((r) =>
+          r.triggerSource !== undefined &&
+          wanted.has(r.triggerSource.toLowerCase())
         );
       }
 

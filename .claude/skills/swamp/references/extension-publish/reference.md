@@ -39,13 +39,13 @@ Confirm `manifest.yaml` exists and is structurally valid.
 **Gate:** State 2 passed (authenticated).
 
 **Action:** Read `manifest.yaml` and validate the 4 required checks documented
-in [references/publishing.md](references/publishing.md#manifest-validation)
+in [references/publishing.md](references/publishing.md#manifest-schema-v1)
 (`manifestVersion`, `name` format, content arrays, file paths).
 
 **Verify:** All 4 checks pass.
 
 **On Failure:** Report which checks failed. See
-[references/publishing.md](references/publishing.md#manifest-validation) for the
+[references/publishing.md](references/publishing.md#manifest-schema-v1) for the
 checklist and common fixes.
 
 ## State 4: collective_verified
@@ -77,7 +77,7 @@ swamp extension version --manifest manifest.yaml --json
 ```
 
 **Verify:** The command succeeds and returns a `nextVersion` field. Update
-`manifest.yaml` with this version. If the model source file also contains a
+`manifest.yaml` with this version. If the behavior source file also contains a
 `version` field, update it to match.
 
 **On Failure:** If `currentPublished` is `null`, use `nextVersion` as-is (first
@@ -172,7 +172,7 @@ registry. See
 [private publication](references/publishing.md#private-publication) for
 precedence and registry requirements.
 
-Optional `--visibility public` selects registry-default behavior and overrides a
+Optional `--visibility public` selects the registry default and overrides a
 private manifest. Keep the same choice in State 8; it preserves existing
 extension visibility rather than converting an already-private extension to
 public.
@@ -312,6 +312,9 @@ swamp extension search query --channel beta --channel rc --json
 
 The lockfile records the channel preference so subsequent `pull` and `outdated`
 checks use it automatically.
+
+`swamp extension search --licensed` lists only extensions that declare a
+license.
 
 ### Channel fields in extension info
 

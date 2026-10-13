@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { View } from "./types.ts";
+import { dashboardBaseFor, PAGE_WORKSPACE } from "./client/workspace_path.ts";
 
-const BASE = "/dashboard";
+// `/dashboard`, or `/dashboard/w/<workspace>` on the local dashboard.
+const BASE = dashboardBaseFor(PAGE_WORKSPACE);
 
 /**
  * The detail a URL addresses. Model-scoped kinds (`data`, `report`) and the
@@ -44,6 +46,8 @@ export type DetailView =
     runId: string;
     reportName: string;
   }
+  | { kind: "schedule"; workflowName: string }
+  | { kind: "webhook"; route: string }
   | null;
 
 export interface RouteState {
@@ -51,20 +55,64 @@ export interface RouteState {
   detail: DetailView;
 }
 
-const VIEWS: ReadonlySet<string> = new Set<View>([
-  "overview",
-  "workflows",
-  "executions",
-  "models",
-  "schedules",
-  "webhooks",
-  "approvals",
-  "activity",
-  "data",
-  "vaults",
-  "extensions",
-  "system",
-]);
+/**
+ * The URL segment of each list view. The view id stays `models` (code,
+ * not product language); its pages live under `behaviors`, the product
+ * term. Every link the dashboard builds goes through this map.
+ */
+const VIEW_SEGMENTS: Readonly<Record<Exclude<View, "overview">, string>> = {
+  workflows: "workflows",
+  executions: "executions",
+  models: "behaviors",
+  schedules: "schedules",
+  webhooks: "webhooks",
+  approvals: "approvals",
+  activity: "activity",
+  data: "data",
+  vaults: "vaults",
+  extensions: "extensions",
+  workers: "workers",
+  system: "system",
+};
+
+/**
+ * Old spellings of a view's segment that still resolve, so links shared
+ * before a rename keep working forever.
+ */
+const LEGACY_SEGMENTS: Readonly<Record<string, Exclude<View, "overview">>> = {
+  models: "models",
+  behaviours: "models",
+};
+
+/** Every segment that names a list view, current and legacy. */
+const SEGMENT_VIEWS = new Map<string, View>(Object.entries(LEGACY_SEGMENTS));
+for (const [view, segment] of Object.entries(VIEW_SEGMENTS)) {
+  SEGMENT_VIEWS.set(segment, view as View);
+}
+
+const BEHAVIORS = `${BASE}/${VIEW_SEGMENTS.models}`;
+
+/**
+ * The canonical path for a link that uses an old segment for the behaviors
+ * view (`/dashboard/models/...` or `/dashboard/behaviours/...`), or null
+ * when the path needs no rewrite. Only the leading segment changes; the
+ * rest of the raw path is kept byte for byte, so encoded names survive.
+ */
+export function legacyRedirectPath(pathname: string): string | null {
+  if (!pathname.startsWith(`${BASE}/`)) return null;
+  const rest = pathname.slice(BASE.length);
+  const match = /^\/(models|behaviours)(?=\/|$)/.exec(rest);
+  return match ? `${BEHAVIORS}${rest.slice(match[0].length)}` : null;
+}
+
+/**
+ * True for the `swamp start` page. It is served by `swamp start`'s own
+ * loopback server, not by `swamp serve`, so the app renders it before any
+ * serve connection, auth probe or sidebar is set up.
+ */
+export function isStartPath(pathname: string): boolean {
+  return pathname === "/dashboard/start" || pathname === "/dashboard/start/";
+}
 
 /**
  * Percent-encodes one path segment. `@` stays readable (it is legal in a
@@ -115,7 +163,9 @@ export function parseRoute(pathname: string): RouteState {
 
   const [first, name, section, item, sub, subItem] = segments;
 
-  if (first === "models" && name !== undefined) {
+  const firstView = SEGMENT_VIEWS.get(first);
+
+  if (firstView === "models" && name !== undefined) {
     if (section === "data" && item !== undefined) {
       const version = sub === "versions" ? parseVersion(subItem) : undefined;
       return {
@@ -169,8 +219,20 @@ export function parseRoute(pathname: string): RouteState {
     };
   }
 
-  if (VIEWS.has(first)) {
-    return { view: first as View, detail: null };
+  if (first === "schedules" && name !== undefined) {
+    return {
+      view: "schedules",
+      detail: { kind: "schedule", workflowName: name },
+    };
+  }
+
+  // A webhook's route is one segment: its slashes are encoded as `%2F`.
+  if (first === "webhooks" && name !== undefined) {
+    return { view: "webhooks", detail: { kind: "webhook", route: name } };
+  }
+
+  if (firstView !== undefined) {
+    return { view: firstView, detail: null };
   }
 
   return { view: "overview", detail: null };
@@ -179,7 +241,7 @@ export function parseRoute(pathname: string): RouteState {
 function detailPath(detail: NonNullable<DetailView>): string {
   switch (detail.kind) {
     case "model":
-      return `${BASE}/models/${encodeSegment(detail.modelName)}`;
+      return `${BEHAVIORS}/${encodeSegment(detail.modelName)}`;
     case "workflow":
       return `${BASE}/workflows/${encodeSegment(detail.workflowName)}`;
     case "run": {
@@ -189,7 +251,7 @@ function detailPath(detail: NonNullable<DetailView>): string {
         : base;
     }
     case "data": {
-      const base = `${BASE}/models/${encodeSegment(detail.modelName)}/data/${
+      const base = `${BEHAVIORS}/${encodeSegment(detail.modelName)}/data/${
         encodeSegment(detail.dataName)
       }`;
       return detail.version !== undefined
@@ -197,7 +259,7 @@ function detailPath(detail: NonNullable<DetailView>): string {
         : base;
     }
     case "report": {
-      const base = `${BASE}/models/${encodeSegment(detail.modelName)}/reports/${
+      const base = `${BEHAVIORS}/${encodeSegment(detail.modelName)}/reports/${
         encodeSegment(detail.reportName)
       }`;
       return detail.variant !== undefined
@@ -208,13 +270,17 @@ function detailPath(detail: NonNullable<DetailView>): string {
       return `${BASE}/workflows/${encodeSegment(detail.workflowName)}/runs/${
         encodeSegment(detail.runId)
       }/reports/${encodeSegment(detail.reportName)}`;
+    case "schedule":
+      return `${BASE}/schedules/${encodeSegment(detail.workflowName)}`;
+    case "webhook":
+      return `${BASE}/webhooks/${encodeSegment(detail.route)}`;
   }
 }
 
 export function buildPath(state: RouteState): string {
   if (state.detail) return detailPath(state.detail);
   if (state.view === "overview") return BASE;
-  return `${BASE}/${state.view}`;
+  return `${BASE}/${VIEW_SEGMENTS[state.view]}`;
 }
 
 /** The sidebar view a detail belongs to. */
@@ -228,6 +294,10 @@ export function viewForDetail(detail: NonNullable<DetailView>): View {
     case "run":
     case "runReport":
       return "workflows";
+    case "schedule":
+      return "schedules";
+    case "webhook":
+      return "webhooks";
   }
 }
 

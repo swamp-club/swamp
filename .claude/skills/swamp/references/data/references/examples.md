@@ -3,8 +3,8 @@
 ## Table of Contents
 
 - [CEL Expression Quick Reference](#cel-expression-quick-reference)
-- [CEL Path Patterns by Model Type](#cel-path-patterns-by-model-type)
-- [Cross-Model Data References](#cross-model-data-references)
+- [CEL Path Patterns by Behavior Type](#cel-path-patterns-by-behavior-type)
+- [Cross-Behavior Data References](#cross-behavior-data-references)
 - [Data Discovery Patterns](#data-discovery-patterns)
 - [Version Management](#version-management)
 - [Rename Scenarios](#rename-scenarios)
@@ -13,34 +13,34 @@
 
 ## CEL Expression Quick Reference
 
-| Expression Pattern                                           | Description                                 |
-| ------------------------------------------------------------ | ------------------------------------------- |
-| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-model resource reference (DEPRECATED) |
-| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)           |
-| `model.<name>.file.<spec>.<instance>.path`                   | File path reference (DEPRECATED)            |
-| `data.latest("<model>", "<name>").path`                      | Local path of the stored file               |
-| `self.name`                                                  | Current model's name                        |
-| `inputs.<name>`                                              | Workflow or model runtime input             |
-| `env.<VAR_NAME>`                                             | Environment variable                        |
-| `vault.get("<vault-name>", "<key>")`                         | Vault secret                                |
-| `data.version("<model>", "<name>", <version>)`               | Specific version of data                    |
-| `data.latest("<model>", "<name>")`                           | Latest version (sees current-run writes)    |
-| `data.findByTag("<key>", "<value>")`                         | Find data by tag                            |
-| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec              |
+| Expression Pattern                                           | Description                                    |
+| ------------------------------------------------------------ | ---------------------------------------------- |
+| `model.<name>.resource.<spec>.<instance>.attributes.<field>` | Cross-behavior resource reference (DEPRECATED) |
+| `model.<name>.resource.result.result.attributes.stdout`      | command/shell stdout (DEPRECATED)              |
+| `model.<name>.file.<spec>.<instance>.path`                   | File path reference (DEPRECATED)               |
+| `data.latest("<model>", "<name>").path`                      | Local path of the stored file                  |
+| `self.name`                                                  | Current behavior's name                        |
+| `inputs.<name>`                                              | Workflow or behavior runtime input             |
+| `env.<VAR_NAME>`                                             | Environment variable                           |
+| `vault.get("<vault-name>", "<key>")`                         | Vault secret                                   |
+| `data.version("<model>", "<name>", <version>)`               | Specific version of data                       |
+| `data.latest("<model>", "<name>")`                           | Latest version (sees current-run writes)       |
+| `data.findByTag("<key>", "<value>")`                         | Find data by tag                               |
+| `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec                 |
 
-## CEL Path Patterns by Model Type
+## CEL Path Patterns by Behavior Type
 
-| Model Type      | CEL Path                                                             | Notes                              |
-| --------------- | -------------------------------------------------------------------- | ---------------------------------- |
-| `command/shell` | `model.<name>.resource.result.result.attributes.stdout`              | Built-in uses `result` for both    |
-| `@user/custom`  | `model.<name>.resource.<spec>.<instance>.attributes.<field>`         | You choose both names              |
-| Factory models  | `model.<name>.resource.<spec>.<dynamic-instance>.attributes.<field>` | Instance varies (e.g., `vpc-1234`) |
+| Behavior Type     | CEL Path                                                             | Notes                              |
+| ----------------- | -------------------------------------------------------------------- | ---------------------------------- |
+| `command/shell`   | `model.<name>.resource.result.result.attributes.stdout`              | Built-in uses `result` for both    |
+| `@user/custom`    | `model.<name>.resource.<spec>.<instance>.attributes.<field>`         | You choose both names              |
+| Factory behaviors | `model.<name>.resource.<spec>.<dynamic-instance>.attributes.<field>` | Instance varies (e.g., `vpc-1234`) |
 
-## Cross-Model Data References
+## Cross-Behavior Data References
 
 ### Use the `data.*` namespace
 
-Reference cross-model data with the `data.*` namespace. `data.query()` is the
+Reference cross-behavior data with the `data.*` namespace. `data.query()` is the
 underlying primitive; the shortcut helpers (`data.latest`, `data.version`,
 `data.findByTag`, `data.findBySpec`, `data.listVersions`) read more clearly when
 your intent matches a shortcut — prefer them when they fit and reach for
@@ -58,7 +58,7 @@ globalArguments:
   vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
   subnetId: ${{ data.latest("public-subnet", "primary").attributes.SubnetId }}
 
-# For command/shell models, the output spec is always named "result"
+# For command/shell behaviors, the output spec is always named "result"
 globalArguments:
   imageId: ${{ data.latest("ami-lookup", "result").attributes.stdout }}
 ```
@@ -91,13 +91,13 @@ workflowData: ${{ data.findByTag("workflow", "deploy-workflow") }}
 prodResources: ${{ data.findByTag("env", "production") }}
 ```
 
-### Find Factory Model Instances
+### Find Factory Behavior Instances
 
-Factory models produce multiple instances from a single output spec. Use
+Factory behaviors produce multiple instances from a single output spec. Use
 `data.findBySpec()` to discover all instances:
 
 ```yaml
-# Get all subnets discovered by a scanner model
+# Get all subnets discovered by a scanner behavior
 subnets: ${{ data.findBySpec("subnet-scanner", "subnet") }}
 
 # Iterate over discovered instances in forEach
@@ -109,8 +109,8 @@ jobs:
           item: subnet
           in: ${{ data.findBySpec("subnet-scanner", "subnet") }}
         task:
-          type: model_method
-          modelIdOrName: subnet-tagger
+          type: behavior
+          behavior: subnet-tagger
           methodName: tag
           inputs:
             subnetId: ${{ self.subnet.attributes.subnetId }}
@@ -119,10 +119,10 @@ jobs:
 ### Access Specific Named Instance
 
 ```yaml
-# Known instance name from factory model
+# Known instance name from factory behavior
 subnetA: ${{ data.latest("subnet-scanner", "subnet-aaa").attributes.cidr }}
 
-# Single-instance model — use descriptive instance name
+# Single-instance behavior — use descriptive instance name
 vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 ```
 
@@ -131,7 +131,7 @@ vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 ### Get Specific Version
 
 ```yaml
-# Get version 2 of a model's data
+# Get version 2 of a behavior's data
 previousState: ${{ data.version("my-model", "state", 2).attributes.value }}
 
 # Use in rollback workflow
@@ -140,8 +140,8 @@ jobs:
     steps:
       - name: restore-config
         task:
-          type: model_method
-          modelIdOrName: config-restore
+          type: behavior
+          behavior: config-restore
           methodName: restore
           inputs:
             config: ${{ data.version("app-config", "config", 1).attributes }}
@@ -167,8 +167,8 @@ jobs:
       - name: check-versions
         condition: ${{ size(data.listVersions("app-config", "config")) > 1 }}
         task:
-          type: model_method
-          modelIdOrName: app-config
+          type: behavior
+          behavior: app-config
           methodName: rollback
 ```
 
@@ -184,7 +184,7 @@ swamp data rename my-vpc web-vpc dev-web-vpc
 # Renamed "web-vpc" -> "dev-web-vpc" for my-vpc (aws/vpc)
 # Version 3 copied as v1 under new name
 # Old name "web-vpc" now forwards to "dev-web-vpc"
-# WARNING: Any workflows or models that produce data under "web-vpc"
+# WARNING: Any workflows or behaviors that produce data under "web-vpc"
 #          will overwrite the forward reference. Update them to use
 #          "dev-web-vpc" instead.
 ```
@@ -205,7 +205,7 @@ swamp data versions my-vpc web-vpc --json
 
 ### After Rename: Update References
 
-After renaming, update workflows and model inputs to use the new name:
+After renaming, update workflows and behavior inputs to use the new name:
 
 ```yaml
 # Before rename
@@ -218,8 +218,8 @@ globalArguments:
 ```
 
 The old expression still works via forward reference, but updating is
-recommended to avoid surprises if the model re-runs and overwrites the forward
-reference.
+recommended to avoid surprises if the behavior re-runs and overwrites the
+forward reference.
 
 ## Garbage Collection Scenarios
 
@@ -238,7 +238,7 @@ swamp data gc --dry-run --json
 
 ### Configure Version Retention
 
-In your model's resource spec:
+In your behavior's resource spec:
 
 ```typescript
 resources: {
@@ -259,7 +259,7 @@ resources: {
 
 ### GC Policy Reference
 
-| Lifetime    | GC Setting | Behavior                                      |
+| Lifetime    | GC Setting | Effect                                        |
 | ----------- | ---------- | --------------------------------------------- |
 | `infinite`  | 10         | Keep forever, but only last 10 versions       |
 | `7d`        | 5          | Delete after 7 days, keep last 5 versions     |
@@ -279,8 +279,8 @@ jobs:
           workflowIdOrName: delete-all-resources
       - name: run-gc
         task:
-          type: model_method
-          modelIdOrName: gc-runner
+          type: behavior
+          behavior: gc-runner
           methodName: gc
 ```
 
@@ -309,8 +309,8 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
   - name: tag
     dependsOn:
@@ -325,7 +325,7 @@ jobs:
 ```
 
 ```yaml
-# Model used by sub-workflow (tag-networking)
+# Behavior used by sub-workflow (tag-networking)
 name: tag-vpc
 globalArguments:
   resourceId: ${{ model.networking-vpc.resource.vpc.main.attributes.VpcId }}

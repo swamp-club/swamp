@@ -78,6 +78,8 @@ import { serveCommand } from "./commands/serve.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
+import { startCommand } from "./commands/start.ts";
+import { dashboardCommand } from "./commands/dashboard.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -102,6 +104,7 @@ import { ExtensionRepository } from "../infrastructure/persistence/extension_rep
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { createLocalModelRefresher } from "../domain/extensions/local_model_refresh.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
@@ -244,6 +247,7 @@ import {
 import {
   collectDirsForKind,
   expandSourcePaths,
+  flattenSourceKindDirs,
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
@@ -259,7 +263,11 @@ import "../domain/models/models.ts";
 
 // Import and re-export — the canonical definitions live in
 // separate files to avoid circular imports through mod.ts.
-import { resolveModelsDir } from "./resolve_models_dir.ts";
+import {
+  existingBehaviorsDir,
+  resolveBehaviorsDir,
+  resolveModelsDir,
+} from "./resolve_models_dir.ts";
 export { resolveModelsDir };
 import {
   ensureManagedConfigBase,
@@ -382,6 +390,8 @@ const NON_REPO_COMMANDS = new Set([
   "telemetry",
   "issue",
   "quest",
+  // Manages its own home workspace by path; never runs a model.
+  "start",
 ]);
 
 /**
@@ -545,6 +555,7 @@ export async function configureStartupExtensions(
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
   const sourceWebhooksDirs = collectDirsForKind(resolvedSources, "webhooks");
+  const mountedSourceDirs = flattenSourceKindDirs(resolvedSources);
 
   const resolveAbsoluteKindDir = (
     resolveDir: (m: RepoMarkerData | null) => string,
@@ -553,8 +564,17 @@ export async function configureStartupExtensions(
     return isAbsolute(dir) ? dir : resolve(effectiveExtDir, dir);
   };
 
+  const behaviorsDir = resolveBehaviorsDir(marker);
   const kindDirs = new Map<ExtensionKind, string[]>([
-    ["models", [resolveAbsoluteKindDir(resolveModelsDir), ...sourceModelsDirs]],
+    ["models", [
+      resolveAbsoluteKindDir(resolveModelsDir),
+      // The behavior-spelled sibling of the default models directory
+      // (swamp-club#3338); discovery skips it when it does not exist.
+      ...(behaviorsDir === undefined
+        ? []
+        : [resolve(effectiveExtDir, behaviorsDir)]),
+      ...sourceModelsDirs,
+    ]],
     ["vaults", [resolveAbsoluteKindDir(resolveVaultsDir), ...sourceVaultsDirs]],
     [
       "datastores",
@@ -609,6 +629,7 @@ export async function configureStartupExtensions(
         ),
         repoRoot: repoDir,
         localManifestIdentity,
+        mountedSourceDirs,
       });
       datastoreTypeRegistry.setLoader(() =>
         loadUserDatastores(
@@ -679,6 +700,7 @@ export async function configureStartupExtensions(
               lockfileRepository,
               repoRoot: repoDir,
               localManifestIdentity,
+              mountedSourceDirs,
             }),
           }),
         );
@@ -1006,6 +1028,7 @@ export function configureExtensionAutoResolver(
   outputMode: "log" | "json",
   identity: ClientIdentity = {},
   managedLockfilePath?: string,
+  mountedSourceDirs: readonly string[] = [],
 ): void {
   const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length === 0 || !marker) {
@@ -1057,6 +1080,7 @@ export function configureExtensionAutoResolver(
             {},
           ),
           repoRoot: repoDir,
+          mountedSourceDirs,
         }),
       }),
       output: createAutoResolveOutputAdapter(outputMode),
@@ -1220,10 +1244,16 @@ async function loadUserModels(
     // pulledDirs is one entry per installed extension — the loader walks
     // each extension's subtree independently so file-name collisions across
     // sibling extensions can't bleed into each other.
+    // extensions/behaviors/ loads beside extensions/models/ at the same
+    // local tier while the models directory is the default
+    // (swamp-club#3338). Passed only when it exists, so a repo without one
+    // keeps its catalog's source-dirs fingerprint.
+    const behaviorsDir = await existingBehaviorsDir(extBase, marker);
     const result = await loader.buildIndex(
       absoluteModelsDir,
       {
         additionalDirs: [...sourceDirs, ...pulledDirs],
+        ...(behaviorsDir ? { localDirs: [behaviorsDir] } : {}),
         indexOnly: true,
       },
     );
@@ -1236,6 +1266,39 @@ async function loadUserModels(
     // catalog.
     modelRegistry.setExtensionAttacher((type) =>
       loader.attachPendingExtensionsForType(type)
+    );
+    // For long-lived processes (swamp serve) to pick up edited local
+    // models (swamp-club#3284). The behaviors dir and the pulled dirs are
+    // resolved again on each pass: the scan drops catalog rows of every
+    // source it does not see, so it must walk the same dirs a fresh index
+    // would. The behaviors dir is watched even before it exists, so
+    // creating it counts as an edit.
+    const behaviorsCandidate = resolveBehaviorsDir(marker);
+    modelRegistry.setSourceRefresher(
+      createLocalModelRefresher(
+        loader,
+        absoluteModelsDir,
+        [
+          ...(behaviorsCandidate ? [resolve(extBase, behaviorsCandidate)] : []),
+          ...sourceDirs,
+        ],
+        async () => {
+          const behaviors = await existingBehaviorsDir(extBase, marker);
+          return {
+            localDirs: behaviors ? [behaviors] : [],
+            additionalDirs: [
+              ...sourceDirs,
+              ...await enumeratePulledExtensionDirs(
+                lockfilePath,
+                repoDir,
+                "models",
+                undefined,
+                localLockfilePath,
+              ),
+            ],
+          };
+        },
+      ),
     );
 
     for (const failure of result.failed) {
@@ -2033,7 +2096,9 @@ export function registerCommands(cli: AnyCommand): void {
     .command("serve", serveCommand)
     .command("agent", agentCommand)
     .command("worker", workerCommand)
-    .command("quest", questCommand);
+    .command("quest", questCommand)
+    .command("start", startCommand)
+    .command("dashboard", dashboardCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
@@ -2594,6 +2659,7 @@ async function runInvocation(
       getOutputModeFromArgs(args),
       autoResolverIdentity,
       resolveAutoResolverLockfilePath(repoDir, marker),
+      flattenSourceKindDirs(resolvedSources),
     );
   }
 

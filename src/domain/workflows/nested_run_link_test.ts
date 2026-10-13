@@ -529,6 +529,46 @@ Deno.test("NestedRunLink.describeWait: with a wait store, the signal action carr
   assertEquals(pending.action.deadline, wait.deadline.toISOString());
 });
 
+Deno.test("NestedRunLink.describeWait: a child whose wait holds an applicable pending signal is resumed, not signalled (swamp-club#3309)", async () => {
+  const now = new Date();
+  const { parent, child, deps } = signalWaitPair(now, 3600);
+  const review = child.getJob("child-job")!.getStep("review")!;
+  const opened = review.signalWait!;
+  // The same wait as a step with a key and acceptEarly holds it.
+  const from = new Date(now.getTime() - 60_000).toISOString();
+  const wait = SignalWait.fromData({
+    ...opened.toData(),
+    key: "verdict",
+    early: { generation: 1, overRelease: false, from },
+  });
+  review.waitForSignal(wait);
+  const store = new InMemorySignalWaitStore();
+  const link = new NestedRunLink({
+    ...deps,
+    signalWaits: { supported: true, store },
+  });
+  assertEquals((await link.pendingWaits(parent))[0].action.kind, "signal");
+
+  // A signaller stored its signal and stopped before reading the key again.
+  await store.createPendingRecord({
+    kind: "pending",
+    workflowId: child.workflowId,
+    key: "verdict",
+    slot: 1,
+    number: 1,
+    receiptId: crypto.randomUUID(),
+    receivedAt: now.toISOString(),
+    submittedBy: "camera",
+    payload: {},
+    acceptEarly: 60,
+  });
+
+  const [pending] = await link.pendingWaits(parent);
+  assertEquals(pending.action.kind, "resume");
+  // Describing the wait settles nothing: the child's resume takes the signal.
+  assertEquals((await store.findOutcome(wait.id)).kind, "absent");
+});
+
 Deno.test("NestedRunLink.resolveChild: a child whose record cannot be read is unreadable, without the read error's text", async () => {
   const { parent, child, runs, deps } = linkedPair();
   runs.unreadable.add(child.id.toLowerCase());

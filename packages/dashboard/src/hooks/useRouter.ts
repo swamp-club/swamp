@@ -22,13 +22,39 @@ import type { View } from "../types.ts";
 import {
   buildPath,
   type DetailView,
+  legacyRedirectPath,
   parentOf,
   parseRoute,
   type RouteState,
   viewForDetail,
 } from "../routes.ts";
+import { browserHistory } from "../components/dom_types.ts";
 
-let currentState: RouteState = parseRoute(location.pathname);
+// `location` is absent outside a browser (deno test renders components that
+// import this module); start at the overview there.
+function currentPathname(): string {
+  return globalThis.location?.pathname ?? "/";
+}
+
+/**
+ * The route the address bar shows. A link with an old segment for the
+ * behaviors view (`/dashboard/models/...`) is rewritten in place to its
+ * canonical `/dashboard/behaviors/...` path, keeping query and hash.
+ */
+function currentRoute(): RouteState {
+  const location = globalThis.location;
+  const redirect = location ? legacyRedirectPath(location.pathname) : null;
+  if (location && redirect !== null) {
+    browserHistory()?.replaceState(
+      null,
+      "",
+      redirect + location.search + location.hash,
+    );
+  }
+  return parseRoute(currentPathname());
+}
+
+let currentState: RouteState = currentRoute();
 const listeners = new Set<() => void>();
 
 function notify() {
@@ -47,18 +73,18 @@ function getSnapshot(): RouteState {
 function pushState(next: RouteState) {
   const path = buildPath(next);
   if (path !== buildPath(currentState)) {
-    history.pushState(null, "", path);
+    browserHistory()?.pushState(null, "", path);
   }
   currentState = next;
   notify();
 }
 
 function onPopState() {
-  currentState = parseRoute(location.pathname);
+  currentState = currentRoute();
   notify();
 }
 
-addEventListener("popstate", onPopState);
+globalThis.addEventListener?.("popstate", onPopState);
 
 /**
  * Navigates in-app to a route. Links use this directly so a view deep in the

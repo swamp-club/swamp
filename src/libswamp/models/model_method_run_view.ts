@@ -67,7 +67,7 @@ export interface ModelMethodRunView {
   modelName: string;
   modelType: string;
   methodName: string;
-  status: "succeeded" | "failed";
+  status: "succeeded" | "failed" | "cancelled";
   duration?: number;
   outputId: string;
   logFile?: string;

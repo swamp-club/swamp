@@ -62,7 +62,7 @@ export type {
 // under strict mode. See the `swamp-extension-model` skill's
 // `references/typing.md` for the full rationale and worked example.
 
-export { defineModel } from "./model_definition_types.ts";
+export { defineBehavior, defineModel } from "./model_definition_types.ts";
 
 export type {
   CheckDefinition,
@@ -152,6 +152,7 @@ export type {
   StoredChunk,
   SyncCapabilities,
   SyncContext,
+  WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
 export {
@@ -177,12 +178,16 @@ export type {
 export {
   assertControlPlaneStoreConformance,
   assertDatastoreControlPlaneStoreConformance,
+  assertWritableDatastoreControlPlaneStoreConformance,
   createInMemoryControlPlaneStore,
 } from "./control_plane_conformance.ts";
 
 export type {
   ControlPlaneStoreConformanceOptions,
   DatastoreControlPlaneStoreConformanceOptions,
+  NamespacedSyncFixture,
+  WritableDatastoreControlPlaneStoreConformanceOptions,
+  WritableDatastoreControlPlaneStoreConformanceResult,
 } from "./control_plane_conformance.ts";
 
 export { assertStorageConformance } from "./storage_conformance.ts";

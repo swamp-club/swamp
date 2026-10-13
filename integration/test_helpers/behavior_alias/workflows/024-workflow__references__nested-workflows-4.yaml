@@ -1,0 +1,33 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/nested-workflows.md (block 4)
+id: 00000000-0000-4000-8000-000000000024
+name: deploy-and-notify
+description: Deploy then notify the team
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+  required: ["environment"]
+jobs:
+  - name: deploy
+    steps:
+      - name: run-deploy
+        task:
+          type: model_method
+          modelIdOrName: deploy-service
+          methodName: deploy
+          inputs:
+            environment: ${{ inputs.environment }}
+  - name: notify
+    dependsOn:
+      - job: deploy
+        condition:
+          type: succeeded
+    steps:
+      - name: send-notification
+        task:
+          type: workflow
+          workflowIdOrName: notify-team
+          inputs:
+            channel: slack
+            message: "Deployed to ${{ inputs.environment }}"

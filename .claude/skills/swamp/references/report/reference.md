@@ -3,12 +3,13 @@
 1. **Create the report file** in `extensions/reports/` — export a `report`
    object with `name`, `description`, `scope`, optional `labels`, and `execute`.
 2. **Register in manifest** — add the filename to the `reports:` list in
-   `manifest.yaml`. Verify with `swamp model get <model> --json` to confirm the
-   report appears in the resolved report set.
+   `manifest.yaml`. Verify with `swamp behavior get <model> --json` to confirm
+   the report appears in the resolved report set.
 3. **Configure in definition YAML** — add the report name to `reports.require:`
-   in the model or workflow definition if it should run beyond the model-type
-   defaults. Use `reports.skip:` to exclude reports you don't need.
-4. **Run and verify** — execute a model method, then use
+   in the behavior or workflow definition if it should run beyond the
+   behavior-type defaults. Use `reports.skip:` to exclude reports you don't
+   need.
+4. **Run and verify** — execute a method, then use
    `swamp report get <report-name> --model <model>` to confirm the report
    produces valid markdown and JSON output without errors.
 5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
@@ -24,7 +25,8 @@ and testing.
 
 Reports are selected at three levels, most general to most specific:
 
-1. **Model-type defaults** — `reports: [...]` on the model definition.
+1. **Behavior-type defaults** — `reports: [...]` on the behavior type
+   (`ModelDefinition`).
 2. **Definition YAML** — `reports.require` adds, `reports.skip` removes.
 3. **Workflow YAML** — workflow-scope reports plus per-run overrides.
 
@@ -44,6 +46,7 @@ field:
 manifestVersion: 1
 name: "@myorg/reports"
 version: "2026.03.01.1"
+license: MIT
 description: "Cost and compliance reports"
 reports:
   - cost_report.ts
@@ -56,7 +59,7 @@ allowing a push.
 
 ## CLI Flags
 
-### model method run / workflow run
+### behavior run / workflow run
 
 | Flag                          | Description                                   |
 | ----------------------------- | --------------------------------------------- |
@@ -68,14 +71,14 @@ allowing a push.
 
 ### report search
 
-Browse stored report results across all models and workflows. Pass an optional
-`[query]` argument for a case-insensitive substring match; the flags below are
-exact matches.
+Browse stored report results across all behaviors and workflows. Pass an
+optional `[query]` argument for a case-insensitive substring match; the flags
+below are exact matches.
 
 | Flag                | Description                                            |
 | ------------------- | ------------------------------------------------------ |
 | `[query]`           | Substring match on report name, data name, or variant  |
-| `--model <name>`    | Filter to a specific model                             |
+| `--model <name>`    | Filter to a specific behavior                          |
 | `--workflow <name>` | Filter to a specific workflow                          |
 | `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`) |
 | `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost`)  |
@@ -85,7 +88,7 @@ exact matches.
 
 | Flag                      | Description                                            |
 | ------------------------- | ------------------------------------------------------ |
-| `--model <name>`          | Scope to a specific model                              |
+| `--model <name>`          | Scope to a specific behavior                           |
 | `--workflow <name>`       | Scope to a specific workflow                           |
 | `--version <version>`     | Get specific version (default: latest)                 |
 | `--variant <variant>`     | Select a specific forEach variant                      |
@@ -122,15 +125,15 @@ combine. Env vars: `SWAMP_REPORT_MAX_WIDTH`, `SWAMP_REPORT_MAX_COL_WIDTH`.
 
 ## When to Use Other Skills
 
-| Need                       | Use Skill               |
-| -------------------------- | ----------------------- |
-| Work with models           | `swamp-model`           |
-| Create/run workflows       | `swamp-workflow`        |
-| Create report extensions   | `swamp-extension`       |
-| Create custom model types  | `swamp-extension`       |
-| Manage model data          | `swamp-data`            |
-| Repository structure       | `swamp-repo`            |
-| Understand swamp internals | `swamp-troubleshooting` |
+| Need                         | Use Skill               |
+| ---------------------------- | ----------------------- |
+| Work with behaviors          | `swamp-model`           |
+| Create/run workflows         | `swamp-workflow`        |
+| Create report extensions     | `swamp-extension`       |
+| Create custom behavior types | `swamp-extension`       |
+| Manage behavior data         | `swamp-data`            |
+| Repository structure         | `swamp-repo`            |
+| Understand swamp internals   | `swamp-troubleshooting` |
 
 ## References
 

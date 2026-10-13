@@ -276,7 +276,7 @@ async function withQualityFixture(
 
 Deno.test("extensionQuality: fresh run yields packaging → scoring → completed with the full score envelope", async () => {
   await withQualityFixture(CLEAN_MODEL_SOURCE, async (repoDir, cacheRoot) => {
-    const manifest = makeManifest();
+    const manifest = makeManifest({ license: "MIT" });
     const input = makeQualityInput(repoDir, manifest);
     const deps = makeQualityDeps(cacheRoot);
 
@@ -296,10 +296,10 @@ Deno.test("extensionQuality: fresh run yields packaging → scoring → complete
     // repository URL is structurally verifiable (provisional factor).
     const score = data.score;
     assertEquals(score.rubricVersion, RUBRIC_VERSION);
-    assertEquals(score.factors.length, 10);
-    assertEquals(score.earnedPoints, 12);
-    assertEquals(score.maxEarnablePoints, 14);
-    assertEquals(score.maxClientEarnablePoints, 12);
+    assertEquals(score.factors.length, 11);
+    assertEquals(score.earnedPoints, 13);
+    assertEquals(score.maxEarnablePoints, 15);
+    assertEquals(score.maxClientEarnablePoints, 13);
     assertEquals(score.provisionalPoints, 2);
     assertEquals(score.percentage, 100);
     assertEquals(score.allPassed, true);
@@ -910,4 +910,40 @@ Deno.test("extensionQuality: a cache entry from another swamp version is a miss,
     assertEquals(eventKinds(events), ["packaging", "scoring", "completed"]);
     assertEquals(fmtLintRuns, 2, "a cold run checks fmt/lint again");
   });
+});
+
+Deno.test("extensionQuality: a declared license is reported, and a non-SPDX one warns without failing a gate", async () => {
+  for (
+    const [license, warned] of [
+      [undefined, false],
+      ["MIT", false],
+      ["LicenseRef-Mine", true],
+    ] as const
+  ) {
+    await withQualityFixture(
+      CLEAN_MODEL_SOURCE,
+      async (repoDir, cacheRoot) => {
+        const manifest = makeManifest({ license });
+        const data = completedData(
+          await collect(
+            extensionQuality(
+              ctx,
+              makeQualityDeps(cacheRoot),
+              makeQualityInput(repoDir, manifest),
+            ),
+          ),
+        );
+        assertEquals(data.license, license ?? null);
+        assertEquals(
+          data.licenseWarning?.reason,
+          warned ? "custom-ref" : undefined,
+        );
+        assertEquals(data.gateFailures, []);
+        assertEquals(
+          data.score.factors.find((f) => f.id === "has-license")?.status,
+          license === "MIT" ? "earned" : "missing",
+        );
+      },
+    );
+  }
 });

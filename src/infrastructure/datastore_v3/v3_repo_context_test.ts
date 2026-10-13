@@ -41,7 +41,15 @@ import {
   V3MaintenanceTimer,
   v3RepositoryFactoryConfig,
 } from "./v3_repo_context.ts";
-import { holdsV3WriterLock, V3_WRITER_LOCK_KEY } from "./v3_writer_lock.ts";
+import {
+  holdsV3WriterLock,
+  V3_LEGACY_WRITER_LOCK_KEY,
+  V3WriterBusyError,
+  v3WriterFence,
+} from "./v3_writer_lock.ts";
+import { FileLock } from "../persistence/file_lock.ts";
+import { DatabaseSync } from "node:sqlite";
+import { plantV3WriterLease } from "./v3_writer_lock_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-v3-context-" });
@@ -162,21 +170,10 @@ Deno.test("v3RepositoryFactoryConfig: a reader in the checkout another process w
     await initializeV3Datastore(datastorePath, "test");
     const repoDir = join(dir, "repo");
     await Deno.mkdir(repoDir);
-    // Another process on this host holds the writer lock for this checkout.
+    // Another process on this host holds the writer lease for this checkout.
     // A live process that is not this one.
     const otherPid = Deno.ppid;
-    await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
-    await Deno.writeTextFile(
-      join(datastorePath, V3_WRITER_LOCK_KEY),
-      JSON.stringify({
-        holder: "other",
-        hostname: Deno.hostname(),
-        pid: otherPid,
-        acquiredAt: new Date().toISOString(),
-        ttlMs: 60_000,
-        nonce: crypto.randomUUID(),
-      }),
-    );
+    await plantV3WriterLease(datastorePath, { pid: otherPid });
     await Deno.writeTextFile(
       join(datastorePath, "_control", "writer.checkout.json"),
       JSON.stringify({
@@ -241,20 +238,9 @@ Deno.test("v3RepositoryFactoryConfig: a reader catches up when the recorded writ
     await initializeV3Datastore(datastorePath, "test");
     const repoDir = join(dir, "repo");
     await Deno.mkdir(repoDir);
-    // A writer on this host that was killed: its lock is within its TTL.
+    // A writer on this host that was killed: its lease is within its TTL.
     const otherPid = 99_999_999;
-    await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
-    await Deno.writeTextFile(
-      join(datastorePath, V3_WRITER_LOCK_KEY),
-      JSON.stringify({
-        holder: "other",
-        hostname: Deno.hostname(),
-        pid: otherPid,
-        acquiredAt: new Date().toISOString(),
-        ttlMs: 60_000,
-        nonce: crypto.randomUUID(),
-      }),
-    );
+    await plantV3WriterLease(datastorePath, { pid: otherPid });
     await Deno.writeTextFile(
       join(datastorePath, "_control", "writer.checkout.json"),
       JSON.stringify({
@@ -353,18 +339,7 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
     await Deno.symlink(realRepo, linkedRepo, { type: "dir" });
     // A live process that is not this one.
     const otherPid = Deno.ppid;
-    await Deno.mkdir(join(datastorePath, "_control"), { recursive: true });
-    await Deno.writeTextFile(
-      join(datastorePath, V3_WRITER_LOCK_KEY),
-      JSON.stringify({
-        holder: "other",
-        hostname: Deno.hostname(),
-        pid: otherPid,
-        acquiredAt: new Date().toISOString(),
-        ttlMs: 60_000,
-        nonce: crypto.randomUUID(),
-      }),
-    );
+    await plantV3WriterLease(datastorePath, { pid: otherPid });
     await Deno.writeTextFile(
       join(datastorePath, "_control", "writer.checkout.json"),
       JSON.stringify({
@@ -383,6 +358,46 @@ Deno.test("v3RepositoryFactoryConfig: a reader reaching the writer's checkout th
         .then(() => true, () => false),
       false,
     );
+  });
+});
+
+Deno.test("holdV3Writer: a live Phase 3 writer refuses the lease before commits.db is migrated", async () => {
+  await withTempDir(async (dir) => {
+    const datastorePath = join(dir, "datastore");
+    await initializeV3Datastore(datastorePath, "test");
+    const db = new DatabaseSync(join(datastorePath, "commits.db"));
+    db.exec("DROP TABLE writer_fence");
+    db.exec("PRAGMA user_version=3");
+    db.close();
+    const legacy = new FileLock(datastorePath, {
+      lockKey: V3_LEGACY_WRITER_LOCK_KEY,
+    });
+    await legacy.acquire();
+    try {
+      await assertRejects(
+        () =>
+          holdV3Writer(
+            { type: "filesystem", path: datastorePath },
+            join(dir, "repo"),
+          ),
+        V3WriterBusyError,
+      );
+    } finally {
+      await legacy.release();
+      await closeV3Datastores();
+    }
+    // The Phase 3 writer can still open its commits.db.
+    const check = new DatabaseSync(join(datastorePath, "commits.db"));
+    try {
+      assertEquals(
+        (check.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }).user_version,
+        3,
+      );
+    } finally {
+      check.close();
+    }
   });
 });
 
@@ -412,7 +427,12 @@ async function commitOneDefinition(
   datastorePath: string,
   writerRepo: string,
 ): Promise<void> {
-  const writer = openV3Datastore({ repoDir: writerRepo, datastorePath });
+  const writer = openV3Datastore({
+    repoDir: writerRepo,
+    datastorePath,
+    // This process's commits name its lease's fence.
+    writerFence: () => v3WriterFence(datastorePath),
+  });
   try {
     const engine = writer.engineFor(() => Promise.resolve(), () => {
       throw new Error("no run repository needed");

@@ -28,6 +28,7 @@ import {
   handleWorkflowEdit,
   handleWorkflowHistoryGet,
   handleWorkflowRunSearch,
+  handleWorkflowRunSummary,
   handleWorkflowSearch,
   WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
 } from "./workflow_handlers.ts";
@@ -193,7 +194,8 @@ function readGrant(id: string, pattern: string): Grant {
 }
 
 /**
- * Five workflows, wf-0 (newest runs) … wf-4, `runsPerWorkflow` runs each;
+ * `workflowCount` (default five) workflows, wf-0 (newest runs) … wf-4,
+ * `runsPerWorkflow` runs each;
  * wf-i has i + 1 steps.
  * With `grants` the context enforces token-mode authorization; without,
  * mode none.
@@ -201,8 +203,9 @@ function readGrant(id: string, pattern: string): Grant {
 function makeSearchCtx(
   grants?: Grant[],
   runsPerWorkflow = 1,
+  workflowCount = 5,
 ): ConnectionContext {
-  const workflows = [0, 1, 2, 3, 4].map((i) => ({
+  const workflows = Array.from({ length: workflowCount }, (_, i) => ({
     id: crypto.randomUUID(),
     name: `wf-${i}`,
     jobs: [{ steps: Array.from({ length: i + 1 }, () => ({})) }],
@@ -353,6 +356,159 @@ Deno.test("handleWorkflowRunSearch: applies the default limit when none is sent"
     WORKFLOW_RUN_SEARCH_DEFAULT_LIMIT,
   );
   assertEquals(frames[0].payload?.total, 505);
+});
+
+Deno.test("handleWorkflowSearch: page two of fifty starts at the fifty-first workflow", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowSearch(
+    socket,
+    makeSearchCtx(undefined, 1, 120),
+    "req-page-2",
+    new AbortController(),
+    null,
+    { limit: 50, offset: 50 },
+  );
+
+  assertEquals(frames.length, 1);
+  const page = names(frames[0], "name");
+  assertEquals(page.length, 50);
+  assertEquals(page[0], "wf-50");
+  assertEquals(page[49], "wf-99");
+  assertEquals(frames[0].payload?.total, 120);
+});
+
+Deno.test("handleWorkflowRunSearch: workflows, until and triggerSource filter before paging", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    socket,
+    makeSearchCtx(undefined, 3),
+    "req-run-filters",
+    new AbortController(),
+    null,
+    {
+      workflows: ["wf-1", "wf-3", "wf-4"],
+      // wf-4's runs start on 2026-01-06, before this bound; wf-1's after.
+      until: "2026-01-09T00:00:00Z",
+      limit: 2,
+    },
+  );
+
+  assertEquals(names(frames[0], "workflowName"), ["wf-3", "wf-3"]);
+  assertEquals(frames[0].payload?.total, 6);
+
+  const sourced = makeSearchSocket();
+  await handleWorkflowRunSearch(
+    sourced.socket,
+    makeSearchCtx(),
+    "req-run-source",
+    new AbortController(),
+    null,
+    { triggerSource: "schedule" },
+  );
+  assertEquals(sourced.frames[0].payload?.total, 0);
+});
+
+interface SummaryFrame {
+  type: string;
+  payload?: {
+    data: {
+      totals: Record<string, number>;
+      workflows: Array<{ workflowName: string; runs: number; recent: [] }>;
+      timeline?: Array<{ start: string; runs: number }>;
+    };
+  };
+  error?: { code: string; details?: { reason?: string } };
+}
+
+Deno.test("handleWorkflowRunSummary: counts every run per workflow, with a timeline", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSummary(
+    socket,
+    makeSearchCtx(undefined, 3),
+    "req-summary",
+    new AbortController(),
+    null,
+    { timeline: true, recentLimit: 2 },
+  );
+
+  const frame = frames[0] as unknown as SummaryFrame;
+  assertEquals(frame.type, "workflow.run.summary");
+  const data = frame.payload!.data;
+  assertEquals(data.totals.runs, 15);
+  assertEquals(data.totals.succeeded, 15);
+  assertEquals(data.totals.workflows, 5);
+  assertEquals(data.workflows.map((w) => w.workflowName), [
+    "wf-0",
+    "wf-1",
+    "wf-2",
+    "wf-3",
+    "wf-4",
+  ]);
+  assertEquals(data.workflows.map((w) => w.recent.length), [2, 2, 2, 2, 2]);
+  assertEquals(data.timeline?.reduce((n, b) => n + b.runs, 0), 15);
+});
+
+Deno.test("handleWorkflowRunSummary: unreadable workflows never reach totals or the timeline", async () => {
+  const { socket, frames } = makeSearchSocket();
+  const ctx = makeSearchCtx(
+    [readGrant("g1", "wf-1"), readGrant("g3", "wf-3")],
+    2,
+  );
+  await handleWorkflowRunSummary(
+    socket,
+    ctx,
+    "req-summary-auth",
+    new AbortController(),
+    searchPrincipal,
+    { timeline: true },
+  );
+
+  const data = (frames[0] as unknown as SummaryFrame).payload!.data;
+  assertEquals(data.totals.runs, 4);
+  assertEquals(data.totals.workflows, 2);
+  assertEquals(data.workflows.map((w) => w.workflowName), ["wf-1", "wf-3"]);
+  assertEquals(data.timeline?.map((b) => b.start), [
+    "2026-01-07T00:00:00.000Z",
+    "2026-01-09T00:00:00.000Z",
+  ]);
+});
+
+Deno.test("handleWorkflowRunSummary: since, until and workflows narrow the counts", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSummary(
+    socket,
+    makeSearchCtx(),
+    "req-summary-window",
+    new AbortController(),
+    null,
+    {
+      since: "2026-01-07T00:00:00Z",
+      until: "2026-01-10T00:00:00Z",
+      workflows: ["wf-0", "wf-1", "wf-4"],
+    },
+  );
+
+  const data = (frames[0] as unknown as SummaryFrame).payload!.data;
+  // wf-0 starts on the exclusive until bound; wf-4 is before since.
+  assertEquals(data.workflows.map((w) => w.workflowName), ["wf-1"]);
+  assertEquals(data.totals.runs, 1);
+  assertEquals(data.timeline, undefined);
+});
+
+Deno.test("handleWorkflowRunSummary: an unreadable time is refused as validation_failed", async () => {
+  const { socket, frames } = makeSearchSocket();
+  await handleWorkflowRunSummary(
+    socket,
+    makeSearchCtx(),
+    "req-summary-bad",
+    new AbortController(),
+    null,
+    { since: "whenever" },
+  );
+
+  const frame = frames[0] as unknown as SummaryFrame;
+  assertEquals(frame.error?.code, "workflow_run_summary_failed");
+  assertEquals(frame.error?.details?.reason, "validation_failed");
 });
 
 // --- workflow.history.get step outputs ---

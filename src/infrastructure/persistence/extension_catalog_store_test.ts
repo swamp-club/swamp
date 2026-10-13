@@ -2339,6 +2339,119 @@ Deno.test("pruneUnreachableSources: preserves rows in protectedPaths even if out
   store.close();
 });
 
+Deno.test("pruneUnreachableSources: keeps rows of live sources under a mounted dir (swamp-club#2563)", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const mounted = "/mnt/shared/extensions/models/live.ts";
+  const mountedMissing = "/mnt/shared/extensions/models/deleted.ts";
+  const besideMount = "/mnt/shared/extensions/models-other/x.ts";
+  const copiedRepo = "/old/repo/extensions/models/local.ts";
+  for (
+    const [path, type] of [
+      [mounted, "@test/live"],
+      [mountedMissing, "@test/deleted"],
+      [besideMount, "@test/beside"],
+      [copiedRepo, "@test/copied"],
+    ]
+  ) {
+    store.upsert(makeRow({ source_path: path, type_normalized: type }));
+  }
+
+  const pruned = store.pruneUnreachableSources(repoRoot, undefined, {
+    dirs: [canonicalizePath("/mnt/shared/extensions/models")],
+    sourceExists: (p) => p !== mountedMissing,
+  });
+
+  assertEquals(pruned.sort(), [besideMount, copiedRepo, mountedMissing].sort());
+  assertEquals(store.findAll().map((r) => r.source_path), [mounted]);
+
+  store.close();
+});
+
+// ── settleMountedTypeConflicts ──────────────────────────────────────
+
+Deno.test("settleMountedTypeConflicts: a local row wins over a mounted row", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const local = join(repoRoot, "extensions", "models", "local.ts");
+  const mounted = "/mnt/shared/extensions/models/probe.ts";
+  store.upsert(makeRow({ source_path: mounted, type_normalized: "@t/probe" }));
+  store.upsert(makeRow({ source_path: local, type_normalized: "@t/probe" }));
+
+  const conflicts = store.settleMountedTypeConflicts(repoRoot, [
+    canonicalizePath("/mnt/shared/extensions/models"),
+  ]);
+
+  assertEquals(conflicts.length, 1);
+  assertEquals(conflicts[0].winner.source_path, local);
+  assertEquals(conflicts[0].loser.source_path, mounted);
+  assertEquals(store.findBySourcePath(local)?.type_normalized, "@t/probe");
+  assertEquals(store.findBySourcePath(mounted)?.type_normalized, "");
+
+  store.close();
+});
+
+Deno.test("settleMountedTypeConflicts: the earlier mount wins, whatever the path order", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const first = "/z/extensions/models/probe.ts";
+  const second = "/a/extensions/models/probe.ts";
+  store.upsert(makeRow({ source_path: second, type_normalized: "@t/probe" }));
+  store.upsert(makeRow({ source_path: first, type_normalized: "@t/probe" }));
+
+  store.settleMountedTypeConflicts(repoRoot, [
+    canonicalizePath("/z/extensions/models"),
+    canonicalizePath("/a/extensions/models"),
+  ]);
+
+  assertEquals(store.findBySourcePath(first)?.type_normalized, "@t/probe");
+  assertEquals(store.findBySourcePath(second)?.type_normalized, "");
+
+  store.close();
+});
+
+Deno.test("settleMountedTypeConflicts: leaves pulled rows, local-vs-local and repos without mounts alone", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const mounted = "/mnt/shared/extensions/models/probe.ts";
+  const pulled = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@t",
+    "probe",
+    "models",
+    "probe.ts",
+  );
+  const localA = join(repoRoot, "extensions", "models", "a.ts");
+  const localB = join(repoRoot, "extensions", "models", "b.ts");
+  store.upsert(makeRow({ source_path: mounted, type_normalized: "@t/probe" }));
+  store.upsert(makeRow({ source_path: pulled, type_normalized: "@t/probe" }));
+  store.upsert(makeRow({ source_path: localA, type_normalized: "@t/dup" }));
+  store.upsert(makeRow({ source_path: localB, type_normalized: "@t/dup" }));
+
+  assertEquals(store.settleMountedTypeConflicts(repoRoot, []), []);
+  assertEquals(
+    store.settleMountedTypeConflicts(repoRoot, [
+      canonicalizePath("/mnt/shared/extensions/models"),
+    ]),
+    [],
+  );
+  for (const row of store.findAll()) {
+    assertEquals(row.type_normalized.length > 0, true, row.source_path);
+  }
+
+  store.close();
+});
+
 // ── resolveOriginConflicts ──────────────────────────────────────────
 
 Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {

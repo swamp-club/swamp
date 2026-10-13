@@ -1184,3 +1184,31 @@ Deno.test("extractTypeFromSource: reads the real model after a string fixture", 
   assertEquals(result?.version, "2026.01.01.0");
   assertEquals(result?.kind, "model");
 });
+
+Deno.test("modelKindAdapter.updateSourceFingerprint: leaves a built-in type's fingerprint alone (swamp-club#2746)", async () => {
+  await import("../models/command/shell/shell_model.ts");
+  const builtIn = modelRegistry.get("command/shell")!;
+  const original = builtIn.sourceFingerprint;
+  try {
+    modelKindAdapter.updateSourceFingerprint!(
+      "command/shell",
+      "fp-of-a-pulled-source",
+    );
+
+    assertEquals(builtIn.sourceFingerprint, original);
+  } finally {
+    builtIn.sourceFingerprint = original;
+  }
+});
+
+Deno.test("modelKindAdapter.updateSourceFingerprint: updates an extension type's fingerprint (swamp-club#2746)", () => {
+  const type = `@test/fp-${crypto.randomUUID()}`;
+  registerTestModel(type, { run: true });
+  try {
+    modelKindAdapter.updateSourceFingerprint!(type, "fp-new");
+
+    assertEquals(modelRegistry.get(type)?.sourceFingerprint, "fp-new");
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});

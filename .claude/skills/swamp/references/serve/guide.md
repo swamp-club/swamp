@@ -44,10 +44,16 @@ means denied.
 | Subjects   | `user:<id>`, `group:<name>`, `idp-group:<collective>`, `service:scheduler`, `service:webhook` |
 | Effects    | `allow`, `deny` (deny wins)                                                                   |
 | Actions    | `run`, `read`, `write`, `approve`, `signal`, `admin`                                          |
-| Resources  | `workflow:@acme/*`, `model:hello`, `data:*`, `vault:prod-*`, `access:*`                       |
+| Resources  | `workflow:@acme/*`, `behavior:hello`, `data:*`, `vault:prod-*`, `access:*`                    |
 | Conditions | CEL expressions via `--when 'tags.env == "staging"'`                                          |
 
 Admin on `access:*` implies all actions (superuser).
+
+`behavior:<pattern>` and `model:<pattern>` are the same selector; grants are
+stored as `model:`. Audit filters likewise accept `behavior.*` actions (e.g.
+`swamp audit log --action behavior.method.run`) and `behavior:` resources, and
+match the stored `model.*` / `model:` events. A `behaviour:` selector is
+refused.
 
 Scheduled runs act as `service:scheduler` and webhook runs as `service:webhook`
 (recorded as the run's `initiatedBy`). Both may `run` any workflow unless a deny
@@ -104,6 +110,7 @@ Approvals page lists open, signalled and expired waits.
 | ----------- | -------------------------------------------------------------- |
 | 200         | Delivered; the body carries the receipt                        |
 | 202, by key | Held for a wait not yet open (`status: pending`, `heldUntil`)  |
+| 202, by key | `status: accepted`: receipt only, to a token without `read`    |
 | 404         | No such wait, or the token may not signal it (same answer)     |
 | 404, by key | Unknown workflow, undeclared key, or not allowed (same)        |
 | 409, by key | `no_open_wait`; compare `lastWait.settledAt` with your attempt |
@@ -175,7 +182,7 @@ grants:
   - subjects: [user:alice, user:bob]
     effect: allow
     actions: [read, run]
-    resources: [workflow:*, model:*]
+    resources: [workflow:*, behavior:*]
 ```
 
 Apply with `swamp access reload --server wss://...`. Reload validates all files
@@ -327,19 +334,19 @@ attribute statements).
 # Admin explain mode — see why a subject is allowed or denied
 swamp access check --subject user:alice --action run --on workflow:@acme/deploy
 
-# Deny by type: `--on model:<type>` matches models of that type under any name
-swamp access grant create --subject user:alice --deny write --on model:command/shell
-swamp access check --subject user:alice --action write --on model:team-x-probe  # DENY if team-x-probe is command/shell
+# Deny by type: `--on behavior:<type>` matches behaviors of that type under any name
+swamp access grant create --subject user:alice --deny write --on behavior:command/shell
+swamp access check --subject user:alice --action write --on behavior:team-x-probe  # DENY if team-x-probe is command/shell
 
 # User self-service — check your own permissions
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://...
 ```
 
-A local `access check` resolves a concrete model, data or workflow name from the
-repo (its stored type and tags), as serve does. `--field key=value` overrides a
-resolved field to simulate a resource or tag that does not exist yet. Settings a
-server is started with, such as `--restricted-model-types`, are only reflected
-with `--server`.
+A local `access check` resolves a concrete behavior, data or workflow name from
+the repo (its stored type and tags), as serve does. `--field key=value`
+overrides a resolved field to simulate a resource or tag that does not exist
+yet. Settings a server is started with, such as `--restricted-model-types`, are
+only reflected with `--server`.
 
 ## Token Management
 

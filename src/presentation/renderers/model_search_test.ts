@@ -26,6 +26,7 @@ import type {
 import {
   createModelSearchRenderer,
   type ModelPreviewFetcher,
+  modelSearchPickerLabels,
 } from "./model_search.tsx";
 
 Deno.test("JsonModelSearchRenderer: single match returns envelope shape", async () => {
@@ -235,4 +236,19 @@ Deno.test("JsonModelSearchRenderer: gracefully handles fetchPreview failure", as
   assertEquals(parsed.results[0].name, "broken-model");
   assertEquals(parsed.results[0].methods, undefined);
   assertEquals(parsed.results[0].globalArgumentsSchema, undefined);
+});
+
+Deno.test("modelSearchPickerLabels: the legacy picker keeps its labels and default title", () => {
+  // No commandName, so the picker titles itself "models search" as before.
+  assertEquals(modelSearchPickerLabels("model"), {
+    itemLabel: "models",
+    commandName: undefined,
+  });
+});
+
+Deno.test("modelSearchPickerLabels: the behavior picker lists behaviors under behavior search", () => {
+  assertEquals(modelSearchPickerLabels("behavior"), {
+    itemLabel: "behaviors",
+    commandName: "behavior search",
+  });
 });

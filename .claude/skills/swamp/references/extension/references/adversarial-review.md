@@ -6,14 +6,14 @@ dimension below **before running smoke tests or unit tests**. Present findings
 to the user before proceeding.
 
 This is step 4 of the Development Workflow in
-[../guide.md](../guide.md#shared-development-workflow) and gates steps 5 (smoke
-test) and 6 (unit tests).
+[../reference.md](../reference.md#shared-development-workflow) and gates steps 5
+(smoke test) and 6 (unit tests).
 
 ## When to Run
 
 - After writing new extension code, **before** smoke tests or unit tests
   (workflow step 4 — see the
-  [Adversarial Review Gate](../guide.md#adversarial-review-gate))
+  [Adversarial Review Gate](../reference.md#adversarial-review-gate))
 - After revising code in response to smoke test failures (review only changed
   dimensions)
 - Before publishing with `swamp extension push`
@@ -114,7 +114,7 @@ For every spec that multiple methods can write to:
 2. Verify each method writes data conforming to the same schema shape.
 3. Verify instance names don't collide across methods writing incompatible data.
 
-This reinforces the "Instance names" dimension under Models — the mechanical
+This reinforces the "Instance names" dimension under Behaviors — the mechanical
 check here is to explicitly enumerate and compare, not rely on a judgment call.
 
 ### 4. Schema Field Coverage
@@ -162,7 +162,7 @@ that makes no external HTTP calls — note the omission explicitly).
 - API Contracts: PASS
 - Resource Management: PASS
 
-**Models** (type-specific)
+**Behaviors** (type-specific)
 
 - Schema strictness: PASS
 - Lifetime & GC: PASS
@@ -180,7 +180,7 @@ continue). Do not proceed to step 5 until the user has acknowledged the report.
 
 ## Universal Dimensions
 
-These apply to **all** extension types (models, vaults, datastores).
+These apply to **all** extension types (behaviors, vaults, datastores).
 
 ### 1. Credentials & Secrets
 
@@ -207,7 +207,7 @@ These apply to **all** extension types (models, vaults, datastores).
 - Use appropriate levels:
   - `debug` — internal state, intermediate values
   - `info` — user-visible progress, state transitions
-  - `warning` — recoverable issues, degraded behavior
+  - `warning` — recoverable issues, degraded operation
   - `error` — failures that stop the operation
 - **Never log sensitive data** — API keys, tokens, passwords, secret values must
   not appear in log messages or structured properties.
@@ -284,13 +284,13 @@ These apply to **all** extension types (models, vaults, datastores).
 
 ## Type-Specific Dimensions
 
-### Models
+### Behaviors
 
 - **Schema strictness**: Zod schemas should use `z.object({...})` without
   `.passthrough()` — passthrough prevents CEL expression validation.
 - **Lifetime & GC**: Every resource/file spec should have `lifetime` and
   `garbageCollection` configured appropriately.
-- **CRUD completeness**: CRUD lifecycle models should have create, update,
+- **CRUD completeness**: CRUD lifecycle behaviors should have create, update,
   delete, and sync methods.
 - **Pre-flight checks**: Mutating methods should have pre-flight checks with
   labels (e.g., `"policy"`, `"live"`) for selective skipping.
@@ -298,7 +298,7 @@ These apply to **all** extension types (models, vaults, datastores).
   execution.
 - **Data access**: Use `readResource` (not direct `dataRepository` access) for
   reading back stored state in update/delete/sync methods.
-- **Version upgrades**: When bumping the model `version`, always add an
+- **Version upgrades**: When bumping the behavior `version`, always add an
   `upgrades` entry with migration logic.
 
 ### Vaults

@@ -31,7 +31,13 @@ import {
   containsRuntimeExpression,
   containsVaultExpression,
   ExpressionEvaluationService,
+  partitionAuthored,
+  partitionAuthoredAt,
 } from "./expression_evaluation_service.ts";
+import { extractExpressions } from "./expression_parser.ts";
+import { ProvenanceMap } from "./provenance_map.ts";
+import { configure, type LogRecord, reset } from "@logtape/logtape";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { withMockedEnv } from "../../infrastructure/persistence/path_test_helpers.ts";
 import type { ExpressionContext } from "./model_resolver.ts";
 import { deferredExpressionReference } from "./deferred_expression.ts";
@@ -1363,6 +1369,91 @@ Deno.test("evaluateData: resolves an authored expression and refuses an injected
   });
 });
 
+Deno.test("evaluateDataTracked: passes another templating system's text through only when asked (swamp-club#2528)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = { sha: "${{ github.sha }}", region: "${{ inputs.region }}" };
+    const context = { model: {}, env: {}, inputs: { region: "eu" } };
+
+    const result = await service.evaluateDataTracked(
+      data,
+      ProvenanceMap.authored(),
+      context,
+      "unrestricted",
+      "passThrough",
+    );
+    assertEquals(result.data, { sha: "${{ github.sha }}", region: "eu" });
+
+    // The default is strict, as for placement and every other caller.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          data,
+          ProvenanceMap.authored(),
+          context,
+          "unrestricted",
+        ),
+      Error,
+      "Unknown variable: github",
+    );
+    // So does a foreign expression that fails on its swamp side.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          {
+            dir:
+              "${{ inputs.cache.dir != '' ? inputs.cache.dir : github.workspace }}",
+          },
+          ProvenanceMap.authored(),
+          { model: {}, env: {}, inputs: {} },
+          "unrestricted",
+          "passThrough",
+        ),
+      Error,
+    );
+    // A failed swamp expression throws either way.
+    await assertRejects(
+      () =>
+        service.evaluateDataTracked(
+          { region: "${{ inputs.region }}" },
+          ProvenanceMap.authored(),
+          { model: {}, env: {}, inputs: {} },
+          "unrestricted",
+          "passThrough",
+        ),
+      Error,
+    );
+  });
+});
+
+Deno.test("evaluateDataTracked: an unlisted root fails even when asked to pass through (swamp-club#3400)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const cases: [string, string][] = [
+      ["${{ nonexistent.variable }}", "Unknown variable: nonexistent"],
+      // CEL stops at the known root; the unlisted one still fails it, and
+      // is the one the error names.
+      ["${{ github.sha + nonexistent.x }}", "Unknown variable: nonexistent"],
+    ];
+    for (const [text, message] of cases) {
+      await assertRejects(
+        () =>
+          service.evaluateDataTracked(
+            { run: text },
+            ProvenanceMap.authored(),
+            { model: {}, env: {}, inputs: {} },
+            "unrestricted",
+            "passThrough",
+          ),
+        Error,
+        message,
+      );
+    }
+  });
+});
+
 Deno.test("evaluateData: unrestricted evaluates everything", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -1733,4 +1824,71 @@ Deno.test("resolveRuntimeExpressionsInDefinition: sanitizes mixed runtime expres
     // self.globalArguments is bound to the real value, not the sentinel.
     assertEquals(args.len, `/tmp/test-home-mixed:${SENSITIVE.length}`);
   });
+});
+
+// ============================================================================
+// Rejected-expression warnings quote the raw text verbatim (swamp-club#3321)
+// ============================================================================
+
+/** Runs `fn` with the expression warnings captured, as messages. */
+async function capturingExpressionWarnings(
+  fn: () => void,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "expressions"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+const BRACED_RAWS = [
+  "${{ env.HOME }}",
+  "${{ {'k': 'v'}.k }}",
+];
+
+Deno.test("partitionAuthored: the refusal warning quotes the raw expression verbatim (swamp-club#3321)", async () => {
+  for (const raw of BRACED_RAWS) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthored(extractExpressions({ run: raw }), new Set()),
+        [],
+      );
+    });
+    assertEquals(messages.length, 1);
+    assertStringIncludes(messages[0], "at run:");
+    assertEquals(messages[0].endsWith(`Raw: ${raw}`), true, messages[0]);
+  }
+});
+
+Deno.test("partitionAuthoredAt: the data-content warning quotes the raw expression verbatim (swamp-club#3321)", async () => {
+  for (const raw of BRACED_RAWS) {
+    const messages = await capturingExpressionWarnings(() => {
+      assertEquals(
+        partitionAuthoredAt(
+          extractExpressions({ run: raw }),
+          new Set([raw]),
+          ProvenanceMap.data(),
+        ),
+        [],
+      );
+    });
+    assertEquals(messages.length, 1);
+    assertStringIncludes(messages[0], "at run:");
+    assertEquals(messages[0].endsWith(`Raw: ${raw}`), true, messages[0]);
+  }
 });

@@ -2,15 +2,15 @@
 
 ```
 my-swamp-repo/
-├── models/                  # Model definitions (YAML)
+├── models/                  # Behavior definitions (YAML)
 ├── workflows/               # Workflow definitions (YAML)
 ├── vaults/                  # Vault configurations (YAML)
 ├── extensions/              # Custom extensions
-│   ├── models/              # TypeScript model definitions
+│   ├── models/              # TypeScript behavior types (behaviors/ also loads)
 │   ├── vaults/              # TypeScript vault implementations
 │   └── datastores/          # TypeScript datastore implementations
 ├── .swamp/                  # Runtime data (datastore)
-│   ├── data/                # Versioned model data
+│   ├── data/                # Versioned behavior data
 │   ├── outputs/             # Method execution outputs
 │   ├── workflow-runs/       # Workflow execution records
 │   └── ...                  # Other runtime artifacts
@@ -124,9 +124,13 @@ Use `swamp agent list` to see the current mode for each custom tool.
 **What gets created:**
 
 - `.swamp/` directory structure for internal storage
-- `extensions/models/` directory for custom model types
+- `extensions/models/` directory for custom behavior types (swamp also loads
+  `extensions/behaviors/` if you create it)
 - `.swamp.yaml` configuration file with version metadata
-- `CLAUDE.md` with agent instructions and skill references
+- `CLAUDE.md` with agent instructions and skill references (with
+  `--tool claude`; in a repo that already keeps its own rules in `AGENTS.md`,
+  swamp writes `.claude/rules/swamp.md` instead, so Claude Code still reads
+  `AGENTS.md`)
 - `.gitignore` entries for `.swamp/` and `.swamp-sources.yaml`
 
 ### Verify the audit integration
@@ -187,7 +191,7 @@ naming pulled extensions that need to be re-installed for the new tool.
 
 Legacy extension layouts are automatically migrated during upgrade. See
 [references/troubleshooting.md](references/troubleshooting.md) for details on
-legacy layout migration behavior.
+legacy layout migration.
 
 ## Start Web Interface
 
@@ -209,7 +213,7 @@ swamp repo webapp ./my-automation --json
 
 ## Datastores
 
-Runtime data (model data, workflow runs, outputs, audit logs) is stored in a
+Runtime data (behavior data, workflow runs, outputs, audit logs) is stored in a
 configurable **datastore**. By default, this is the local `.swamp/` directory.
 
 ### Checking Status
@@ -277,7 +281,7 @@ swamp datastore setup extension @swamp/s3-datastore \
 Verifies the backend, migrates local data to the remote, hydrates the local
 cache, and updates `.swamp.yaml`. Subsequent commands automatically sync. See
 [references/troubleshooting.md](references/troubleshooting.md) for
-`--skip-migration` behavior and edge cases.
+`--skip-migration` and edge cases.
 
 ### Migrating Between Datastores
 
@@ -332,7 +336,7 @@ For custom datastore implementations, see the `swamp-extension` skill.
 ### Config Value Interpolation
 
 String values in the datastore `config` object support `${{ }}` expression
-interpolation, using the same delimiter syntax as model and workflow
+interpolation, using the same delimiter syntax as behavior and workflow
 definitions. Expressions are resolved during config resolution, before schema
 validation and provider creation.
 
@@ -364,7 +368,7 @@ work (native `local_encryption` and extension providers like `@swamp/aws-sm`).
 **Limitations:**
 
 - Only `env.*` and `vault.get()` are supported — the full CEL evaluation context
-  (model references, data lookups) is not available at this bootstrap phase.
+  (behavior references, data lookups) is not available at this bootstrap phase.
 - Vault expressions are not supported when `managedConfig: true` — managed
   config stores vault configurations in the datastore tier, creating a circular
   dependency. Use environment variable expressions instead.
@@ -422,7 +426,7 @@ sources:
   1. **Repo root**: a directory with `extensions/<kind>/` subdirectories. Most
      common — matches how published extensions are structured.
   2. **Direct content**: a directory whose files declare extension exports
-     (`export const model = …`, `export const vault = …`, etc.) or workflow
+     (`export const behavior = …`, `export const vault = …`, etc.) or workflow
      YAML. Useful when you want to point at a single-kind development tree or at
      an `extensions/<kind>/` directory directly. When both layouts exist in the
      same directory, the repo-root layout wins — the direct-content files at the
@@ -462,7 +466,7 @@ swamp extension source list --json  # Confirm the new source appears
 
 ### Load Order
 
-1. **Local extensions** (`extensions/models/`, etc.)
+1. **Local extensions** (`extensions/models/`, `extensions/behaviors/`, etc.)
 2. **Source extensions** (from `.swamp-sources.yaml`, in order listed)
 3. **Pulled extensions** (`.swamp/pulled-extensions/`)
 
@@ -472,15 +476,15 @@ pointing at your local development copy — your local version loads instead.
 
 ## When to Use Other Skills
 
-| Need                            | Use Skill               |
-| ------------------------------- | ----------------------- |
-| Create/run models               | `swamp-model`           |
-| Create/run workflows            | `swamp-workflow`        |
-| Manage secrets                  | `swamp-vault`           |
-| Manage model data               | `swamp-data`            |
-| Create custom TypeScript models | `swamp-extension`       |
-| Create custom datastores        | `swamp-extension`       |
-| Understand swamp internals      | `swamp-troubleshooting` |
+| Need                               | Use Skill               |
+| ---------------------------------- | ----------------------- |
+| Create/run behaviors               | `swamp-model`           |
+| Create/run workflows               | `swamp-workflow`        |
+| Manage secrets                     | `swamp-vault`           |
+| Manage behavior data               | `swamp-data`            |
+| Create custom TypeScript behaviors | `swamp-extension`       |
+| Create custom datastores           | `swamp-extension`       |
+| Understand swamp internals         | `swamp-troubleshooting` |
 
 ## References
 
@@ -496,7 +500,7 @@ pointing at your local development copy — your local version loads instead.
   [references/troubleshooting.md](references/troubleshooting.md) for config
   problems and recovery procedures
 - **Repository design**: See `design/surfaces/repo.md` in the swamp source repo
-- **Model structure**: See `design/primitives/models.md` in the swamp source
-  repo
+- **Behavior structure**: See `design/primitives/behaviors.md` in the swamp
+  source repo
 - **Datastore design**: See `design/enablers/datastores.md` in the swamp source
   repo

@@ -1,0 +1,36 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/data-chaining.md (block 6)
+id: 00000000-0000-4000-8000-000000000014
+name: full-stack-provision
+description: Provision complete infrastructure with dynamic lookups
+version: 1
+jobs:
+  - name: lookup
+    description: Look up existing infrastructure
+    steps:
+      - name: find-vpc
+        task:
+          type: model_method
+          modelIdOrName: vpc-lookup
+          methodName: execute
+      - name: find-subnet
+        task:
+          type: model_method
+          modelIdOrName: subnet-lookup
+          methodName: execute
+  - name: provision
+    description: Create resources using lookup results
+    dependsOn:
+      - job: lookup
+        condition:
+          type: succeeded
+    steps:
+      - name: create-security-group
+        task:
+          type: model_method
+          modelIdOrName: app-security-group
+          methodName: create
+      - name: create-instance
+        task:
+          type: model_method
+          modelIdOrName: app-server
+          methodName: create

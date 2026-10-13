@@ -223,6 +223,14 @@ Deno.test("DispatchService: dispatches a step and completes its lease", async ()
   assertEquals(h.dispatches.forWorker("w1"), []);
 });
 
+Deno.test("DispatchService: the step lease records the workflow run it serves", async () => {
+  const h = createHarness();
+  await h.service.executeRemote(stepRequest({ workflowRunId: "run-9" }));
+  const acquire = h.transitions.find((t) => t.methodName === "acquire");
+  assertEquals(acquire?.inputs.workflowRunId, "run-9");
+  assertEquals(acquire?.inputs.workflowName, "wf");
+});
+
 Deno.test("DispatchService: extension bundles register by content fingerprint", async () => {
   const h = createHarness();
   const extensionDef: ModelDefinition = {

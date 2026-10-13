@@ -17,7 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { waitFor } from "@swamp-club/swamp-testing";
 import { z } from "zod";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
@@ -504,6 +505,57 @@ Deno.test("defineModel is idempotent when called with same model", () => {
 
   assertEquals(result1, model);
   assertEquals(result2, model);
+});
+
+Deno.test("defineModel: marks the type it registers as built in (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./model.ts");
+  const type = `test/define-model-built-in-${crypto.randomUUID()}`;
+  try {
+    defineModel(createTestModel(type));
+
+    assertEquals(modelRegistry.isBuiltIn(type), true);
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("defineModel: leaves a type registered by another path unmarked (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./model.ts");
+  const type = `test/define-model-preregistered-${crypto.randomUUID()}`;
+  try {
+    modelRegistry.register(createTestModel(type));
+    defineModel(createTestModel(type));
+
+    assertEquals(modelRegistry.isBuiltIn(type), false);
+  } finally {
+    modelRegistry.invalidateType(type);
+  }
+});
+
+Deno.test("ModelRegistry.isBuiltIn: false for a type added with register (swamp-club#2746)", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("@test/extension-type"));
+
+  assertEquals(registry.isBuiltIn("@test/extension-type"), false);
+});
+
+Deno.test("ModelRegistry.isBuiltIn: the mark survives invalidateType and matches any spelling (swamp-club#2746)", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("command/shell"));
+  registry.markBuiltIn("command/shell");
+
+  registry.invalidateType("command/shell");
+
+  assertEquals(registry.isBuiltIn("command/shell"), true);
+  assertEquals(registry.isBuiltIn("Command/Shell"), true);
+  assertEquals(registry.isBuiltIn(ModelType.create("command/shell")), true);
+});
+
+Deno.test("modelRegistry: every type the built-in barrel registers is marked built in (swamp-club#2746)", async () => {
+  const { modelRegistry } = await import("./models.ts");
+  for (const type of ["command/shell", "swamp/grant", "swamp/worker"]) {
+    assertEquals(modelRegistry.isBuiltIn(type), true, type);
+  }
 });
 
 // ModelRegistry.extend() tests
@@ -1635,4 +1687,64 @@ Deno.test("ModelRegistry.invalidateType: re-register and reload after invalidati
   });
   await registry.ensureTypeLoaded("@myorg/echo");
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
+});
+
+Deno.test("ModelRegistry.refreshSources: does nothing without a refresher", async () => {
+  await new ModelRegistry().refreshSources();
+});
+
+Deno.test("ModelRegistry.refreshSources: a call during a pass waits for a new pass, shared by its peers", async () => {
+  const registry = new ModelRegistry();
+  const starts: number[] = [];
+  const releases: Array<() => void> = [];
+  registry.setSourceRefresher(() => {
+    starts.push(starts.length + 1);
+    return new Promise<void>((resolve) => releases.push(resolve));
+  });
+
+  const first = registry.refreshSources();
+  assertEquals(starts.length, 1);
+  // Edits made now must not be judged by the pass already running.
+  const second = registry.refreshSources();
+  const third = registry.refreshSources();
+  assertEquals(starts.length, 1);
+
+  releases[0]();
+  await first;
+  await waitFor(() => starts.length === 2, "the second pass");
+  releases[1]();
+  await Promise.all([second, third]);
+  assertEquals(starts.length, 2);
+});
+
+Deno.test("ModelRegistry.refreshSources: a failed pass rejects its callers and does not block the next", async () => {
+  const registry = new ModelRegistry();
+  let calls = 0;
+  registry.setSourceRefresher(() => {
+    calls++;
+    return calls === 1
+      ? Promise.reject(new Error("scan failed"))
+      : Promise.resolve();
+  });
+
+  await assertRejects(() => registry.refreshSources(), Error, "scan failed");
+  await registry.refreshSources();
+  assertEquals(calls, 2);
+});
+
+Deno.test("ModelRegistry.refreshSources: each pass runs through the given schedule", async () => {
+  const registry = new ModelRegistry();
+  const order: string[] = [];
+  registry.setSourceRefresher(() => {
+    order.push("pass");
+    return Promise.resolve();
+  });
+
+  await registry.refreshSources(async (pass) => {
+    order.push("lock");
+    await pass();
+    order.push("unlock");
+  });
+
+  assertEquals(order, ["lock", "pass", "unlock"]);
 });

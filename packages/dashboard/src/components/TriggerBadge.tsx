@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+/** @jsxRuntime automatic */
+/** @jsxImportSource react */
 const TRIGGER_STYLES: Record<string, { bg: string; color: string }> = {
   schedule: { bg: "var(--info-bg)", color: "var(--info)" },
   webhook: { bg: "var(--running-bg)", color: "var(--running)" },

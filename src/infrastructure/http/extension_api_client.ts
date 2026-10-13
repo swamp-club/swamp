@@ -64,6 +64,8 @@ export interface PushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
+  /** The declared SPDX license expression; omitted when none is declared. */
+  license?: string;
   /** The registry only accepts explicit private intent; public is omitted. */
   visibility?: "private";
 }
@@ -166,6 +168,8 @@ export interface LatestVersionDetail {
   version: string;
   publishedAt: string;
   channel?: string;
+  /** The version's declared license; undefined when the registry omits it. */
+  license?: string | null;
   contentMetadata: ExtensionContentMetadata | null;
 }
 
@@ -226,6 +230,8 @@ export interface ExtensionSearchParams {
   sort?: "relevance" | "new" | "updated" | "name";
   perPage?: number;
   page?: number;
+  /** Only extensions that declare a license (registry default: all). */
+  licensed?: boolean;
 }
 
 /** A single extension entry in search results. */
@@ -394,6 +400,10 @@ export class ExtensionApiClient {
       version: detail.version,
       publishedAt: detail.publishedAt ?? "",
       channel: detail.channel,
+      ...("license" in detail
+        // Printed by `extension info`, so cleaned where it enters.
+        ? { license: registryReason(detail.license) }
+        : {}),
       contentMetadata: {
         models: detail.models ?? [],
         extensions: detail.extensions ?? [],
@@ -520,6 +530,7 @@ export class ExtensionApiClient {
     for (const l of params.label ?? []) qs.append("label", l);
     for (const ct of params.contentType ?? []) qs.append("contentType", ct);
     for (const ch of params.channel ?? []) qs.append("channel", ch);
+    if (params.licensed) qs.set("licensed", "true");
 
     const query = qs.toString();
     const path = `/api/v1/extensions/search${query ? `?${query}` : ""}`;

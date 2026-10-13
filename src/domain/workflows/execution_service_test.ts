@@ -19,6 +19,7 @@
 
 import type { ModelDefinition } from "../models/model.ts";
 import {
+  ModelLockLostError,
   UnpublishedDataVersionError,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
@@ -3055,6 +3056,69 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
     // Verify uniqueness — the set size equals the array length
     assertEquals(new Set(stepNames).size, stepNames.length);
   });
+});
+
+// --- forEach iterations run in list order (swamp-club#3318) ---
+
+/** Runs one forEach step over `items` one at a time; returns its step order. */
+async function forEachRunOrder(
+  stepName: string,
+  items: unknown[],
+): Promise<string[]> {
+  let order: string[] = [];
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "foreach-list-order",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: stepName,
+              task: StepTask.model("test-model", "run"),
+              forEach: { item: "op", in: "${{ inputs.ops }}" },
+              concurrency: 1,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const run = await service.execute(workflow.name, {
+      inputs: { ops: items },
+    });
+    assertEquals(run.status, "succeeded");
+    order = executor.executedSteps.map((s) => s.split("/")[1]);
+  });
+  return order;
+}
+
+Deno.test("execute: forEach iterations run in list order past ten items", async () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ id: i }));
+  assertEquals(
+    await forEachRunOrder("operate", items),
+    items.map((_, i) => `operate-${i}`),
+  );
+});
+
+Deno.test("execute: named forEach iterations run in list order, not name order", async () => {
+  assertEquals(
+    await forEachRunOrder("deploy-${{ self.op }}", ["prod", "dev", "staging"]),
+    ["deploy-prod", "deploy-dev", "deploy-staging"],
+  );
 });
 
 // --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
@@ -13970,9 +14034,11 @@ Deno.test("resume: queued forEach iterations run after serve shutdown and recove
     assertEquals(executor.count("main/build-b"), 1);
     assertEquals(executor.count("main/build-c"), 1);
     assertEquals(executor.count("main/rollback"), 1);
-    // build-a was cancelled while it ran, so the run fails and can be retried.
-    assertEquals(resumed.status, "failed");
-    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["build-a"]);
+    // build-a was stopped while it ran, so the interrupt left it unknown and
+    // the recovery ran it again (swamp-club#3369).
+    assertEquals(main.getStep("build-a")!.status, "succeeded");
+    assertEquals(executor.count("main/build-a"), 2);
+    assertEquals(resumed.status, "succeeded");
   });
 });
 
@@ -14138,8 +14204,11 @@ Deno.test("resume: a step queued when a crash hit cleanup runs after server_cras
     assertEquals(resumed.getJob("main")!.getStep("b")!.status, "succeeded");
     assertEquals(executor.count("main/b"), 1);
     assertEquals(executor.count("main/notify"), 2);
-    assertEquals(resumed.status, "failed");
-    assertEquals(resumed.failedSteps().map((s) => s.stepName), ["a"]);
+    // `a` was stopped while it ran, so the interrupt left it unknown and the
+    // recovery ran it again (swamp-club#3369).
+    assertEquals(resumed.getJob("main")!.getStep("a")!.status, "succeeded");
+    assertEquals(executor.count("main/a"), 2);
+    assertEquals(resumed.status, "succeeded");
   });
 });
 
@@ -20203,4 +20272,92 @@ Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions ca
   const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
 
   assertEquals(error, UNPUBLISHED);
+});
+
+const LOCK_LOST = new ModelLockLostError([{
+  modelType: "test/x",
+  modelId: "m",
+}]);
+
+Deno.test("DefaultStepExecutor: a failed step keeps its own error when its lock was lost before the push (swamp-club#3373)", async () => {
+  const lock = recordingLockHook(LOCK_LOST);
+  const { error } = await runStepUnderLockHook(
+    () => lock.hook,
+    "execute",
+    () => Promise.reject(new Error("the method's own failure")),
+  );
+
+  assert(error instanceof Error);
+  assertStringIncludes(error.message, "the method's own failure");
+});
+
+Deno.test("DefaultStepExecutor: a step that succeeded fails when its lock was lost before the push (swamp-club#3373)", async () => {
+  const lock = recordingLockHook(LOCK_LOST);
+  const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
+
+  assertEquals(error, LOCK_LOST);
+});
+
+Deno.test("run: the run is recorded by the time started is yielded (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    let recordedAtStarted: string | undefined;
+    let startedRunId: string | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "started") {
+        startedRunId = event.runId;
+        const recorded = await runRepo.findById(
+          workflow.id,
+          event.runId as WorkflowRunId,
+        );
+        recordedAtStarted = recorded?.id;
+      }
+    }
+
+    assertEquals(typeof startedRunId, "string");
+    assertEquals(recordedAtStarted, startedRunId);
+  });
+});
+
+Deno.test("run: a first save that fails yields no started event (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SpyWorkflowRunRepository();
+    runRepo.allowSaves = 0;
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const kinds: string[] = [];
+    await assertRejects(
+      async () => {
+        for await (const event of service.run(workflow.name)) {
+          kinds.push(event.kind);
+        }
+      },
+      Error,
+      "datastore unavailable",
+    );
+
+    assertEquals(kinds.includes("started"), false);
+  });
 });

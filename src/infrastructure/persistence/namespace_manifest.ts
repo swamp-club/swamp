@@ -19,6 +19,7 @@
 
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 
 const MANIFEST_FILENAME = ".namespace.json";
 
@@ -58,13 +59,51 @@ export async function readNamespaceManifest(
   namespace: string,
 ): Promise<NamespaceManifest | null> {
   const path = namespaceManifestPath(datastorePath, namespace);
+  let content: string;
   try {
-    const content = await Deno.readTextFile(path);
-    return JSON.parse(content) as NamespaceManifest;
+    content = await Deno.readTextFile(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return null;
     throw error;
   }
+
+  // A hand-edited or corrupt manifest is a handled refusal, not a crash
+  // (swamp-club#3319). Only a missing file means "not registered".
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw unreadableManifestError(path, "it is not valid JSON");
+  }
+  if (!isNamespaceManifest(parsed)) {
+    throw unreadableManifestError(
+      path,
+      "it must be a JSON object with string namespace and repoId fields " +
+        "(and a string registeredAt, if present)",
+    );
+  }
+  return parsed;
+}
+
+function isNamespaceManifest(value: unknown): value is NamespaceManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.namespace === "string" &&
+    typeof record.repoId === "string" &&
+    (record.registeredAt === undefined ||
+      typeof record.registeredAt === "string");
+}
+
+function unreadableManifestError(path: string, reason: string): UserError {
+  return markErrorPaths(
+    new UserError(
+      `Cannot read namespace manifest ${path}: ${reason}. ` +
+        `Fix the file, or remove it to unregister the namespace.`,
+    ),
+    [path],
+  );
 }
 
 export async function removeNamespaceManifest(

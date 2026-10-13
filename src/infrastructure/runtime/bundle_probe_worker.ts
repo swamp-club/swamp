@@ -28,9 +28,10 @@ import type {
   BundleProbeRequest,
   BundleProbeResult,
 } from "../../domain/extensions/bundle_prober.ts";
-import type {
-  KindAdapter,
-  LoaderKind,
+import {
+  type KindAdapter,
+  type LoaderKind,
+  primaryExport,
 } from "../../domain/extensions/kind_adapter.ts";
 
 /**
@@ -136,7 +137,7 @@ async function probe(request: BundleProbeRequest): Promise<BundleProbeResult> {
     };
   }
 
-  const primary = module[adapter.primaryExportKey];
+  const primary = primaryExport(module, adapter);
   if (primary) {
     const parsed = adapter.validatePrimaryExport(primary);
     if (!parsed.success) {

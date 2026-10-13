@@ -215,12 +215,7 @@ const PINNED: ReadonlyArray<
   {
     file: "src/cli/resolve_extension_files.ts",
     reason: "files, entry points or warnings of one extension package",
-    calls: [
-      "allDatastoreFiles.push(...datastoreImportResult.resolvedFiles)",
-      "allReportFiles.push(...reportImportResult.resolvedFiles)",
-      "allVaultFiles.push(...vaultImportResult.resolvedFiles)",
-      "allWebhookFiles.push(...webhookImportResult.resolvedFiles)",
-    ],
+    calls: [],
   },
   {
     file: "src/domain/access/grant_file.ts",
@@ -470,7 +465,7 @@ const PINNED: ReadonlyArray<
     calls: [
       "Math.max(...exts.map((ext) => ext.latestVersion ? ext.latestVersion.length + 1 : 1))",
       "Math.max(...exts.map((ext) => ext.name.length))",
-      'Math.max(...exts.map((ext) => { const tag = ext.channel && ext.channel !== "stable" ? ` [${ext.chann…',
+      "Math.max(...exts.map((ext) => ext.version.length + 1 + channelTag(ext).length))",
     ],
   },
   {

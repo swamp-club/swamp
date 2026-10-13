@@ -60,7 +60,7 @@ import {
 import { createDatastoreSyncDeps } from "../src/libswamp/datastores/sync.ts";
 import { collect } from "../src/libswamp/testing.ts";
 import { readDatastoreFormatMarker } from "../src/infrastructure/persistence/datastore_format_marker_reader.ts";
-import { FileLock } from "../src/infrastructure/persistence/file_lock.ts";
+import { plantV3WriterLease } from "../src/infrastructure/datastore_v3/v3_writer_lock_test_helpers.ts";
 import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { runInRootUnitOfWork } from "../src/infrastructure/persistence/repo_unit_of_work.ts";
 import { swampPath } from "../src/infrastructure/persistence/paths.ts";
@@ -74,7 +74,6 @@ import {
   v3DatastoreFor,
 } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
-  V3_WRITER_LOCK_KEY,
   V3WriterBusyError,
 } from "../src/infrastructure/datastore_v3/v3_writer_lock.ts";
 import { saveData, saveModel } from "./serve_request_harness.ts";
@@ -128,11 +127,12 @@ function errorOf(events: DatastoreSetupEvent[]): string | undefined {
   return error?.kind === "error" ? error.error.message : undefined;
 }
 
-/** What another process holding the writer lock looks like to this one. */
-async function holdWriterLockElsewhere(datastorePath: string) {
-  const lock = new FileLock(datastorePath, { lockKey: V3_WRITER_LOCK_KEY });
-  await lock.acquire();
-  return lock;
+/**
+ * What another live process holding the writer lease looks like to this
+ * one: a fence held by this process's pid, which is alive.
+ */
+function holdWriterLockElsewhere(datastorePath: string) {
+  return plantV3WriterLease(datastorePath, { pid: Deno.pid });
 }
 
 Deno.test("v3 opt-in: setup writes the marker first, then commits.db and _blobs, and the repo opens as v3", async () => {
@@ -780,7 +780,7 @@ Deno.test("v3 opt-in: a read-only context refuses any change staged through it",
   });
 });
 
-Deno.test("v3 opt-in: datastore lock status and release act on the writer lock", async () => {
+Deno.test("v3 opt-in: datastore lock status and release act on the writer lease", async () => {
   await withV3RowRepos({}, async (repos, datastorePath) => {
     await withMockedEnv(UNSET_ENV, async () => {
       const json = ["--repo-dir", repos.repoB, "--json"];
@@ -791,12 +791,18 @@ Deno.test("v3 opt-in: datastore lock status and release act on the writer lock",
       );
       assertEquals(held.held, true);
       assertEquals(held.info.pid, Deno.pid);
+      assertEquals(typeof held.info.fence, "number");
       await runCli({
         args: ["datastore", "lock", "release", "--force", ...json],
       });
-      await assertRejects(
-        () => Deno.stat(join(datastorePath, "_control", "writer.lock")),
-        Deno.errors.NotFound,
+      // The fence is marked released, never deleted, so it is never reused.
+      await Deno.stat(
+        join(
+          datastorePath,
+          "_control",
+          "writer",
+          `released-${String(held.info.fence).padStart(12, "0")}`,
+        ),
       );
       const released = JSON.parse(
         (await runCli({ args: ["datastore", "lock", "status", ...json] }))

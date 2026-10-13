@@ -26,6 +26,7 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { createLibSwampContext } from "../context.ts";
+import { kindDirectorySourcePlan } from "./push_test_helpers.ts";
 import {
   extensionPushPrepare,
   type ExtensionPushPrepareDeps,
@@ -156,7 +157,7 @@ Deno.test(
           "README.md",
         ],
       });
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -188,6 +189,10 @@ Deno.test(
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();
@@ -262,7 +267,7 @@ Deno.test(
         additionalFiles: ["README.md"],
       });
 
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -291,6 +296,10 @@ Deno.test(
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();
@@ -367,7 +376,7 @@ Deno.test(
         skills: ["my-skill"],
       });
 
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -397,6 +406,10 @@ Deno.test(
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();
@@ -449,7 +462,7 @@ Deno.test(
         binaries: ["bin/helper"],
         additionalFiles: [],
       });
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -476,6 +489,10 @@ Deno.test(
         binaryFilePaths: [join(src, "bin", "helper")],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();
@@ -528,7 +545,7 @@ Deno.test(
         workflows: ["extensions/workflows/deploy.yaml"],
       });
 
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -555,6 +572,10 @@ Deno.test(
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();
@@ -610,7 +631,7 @@ Deno.test(
 
       // modelsDir = manifestDir (paths.base=manifest), so the archive
       // will place the file at models/models/project.ts (doubled).
-      const input: ExtensionPushPrepareInput = {
+      const base: Omit<ExtensionPushPrepareInput, "sourcePlan"> = {
         manifest,
         repoDir: src,
         manifestDir: src,
@@ -637,6 +658,10 @@ Deno.test(
         binaryFilePaths: [],
         dryRun: true,
         registryChecks: "skip",
+      };
+      const input: ExtensionPushPrepareInput = {
+        ...base,
+        sourcePlan: kindDirectorySourcePlan(base),
       };
 
       const ctx = createLibSwampContext();

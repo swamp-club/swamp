@@ -223,6 +223,30 @@ export interface DatastoreControlPlaneStore {
 }
 
 /**
+ * A {@link DatastoreControlPlaneStore} that can also write, at the same
+ * datastore-wide `_control/` root. The v3 writer lease keeps its records
+ * (`writer/`) here. Keys are relative to `_control/` at the datastore root;
+ * writing binds no namespace and never touches `<namespace>/_control/`.
+ * `assertWritableDatastoreControlPlaneStoreConformance` checks an
+ * implementation.
+ */
+export interface WritableDatastoreControlPlaneStore
+  extends DatastoreControlPlaneStore {
+  /** Writes the record at `_control/<key>`, replacing any record there. */
+  put(key: string, data: Uint8Array): Promise<void>;
+  /**
+   * Creates the record only if none is there; returns false, leaving the
+   * existing record unchanged, when one is. Of concurrent creates of one
+   * key, exactly one returns true.
+   */
+  putIfAbsent(key: string, data: Uint8Array): Promise<boolean>;
+  /** Removes the record; a missing record is no error. */
+  delete(key: string): Promise<void>;
+  /** The keys under `_control/<prefix>`, relative to `_control/`. */
+  list(prefix: string): Promise<string[]>;
+}
+
+/**
  * Factory interface for user-defined datastores.
  *
  * Extension authors implement this interface to create custom datastore backends.
@@ -252,7 +276,8 @@ export interface DatastoreProvider {
    * it must be cheap: no sync service, no namespace binding and no request
    * until `get`, and a `get` should be one request with no credentials
    * preflight. Optional; without it swamp reads the format marker through a
-   * fresh sync service's `controlPlaneStore()`.
+   * fresh sync service's `controlPlaneStore()`. A v3-capable datastore
+   * returns a {@link WritableDatastoreControlPlaneStore}.
    */
   datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
   /**

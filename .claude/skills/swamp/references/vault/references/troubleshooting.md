@@ -227,8 +227,8 @@ on `access:*` plus `write` on the name.
 
 3. Test retrieval manually (won't display value, but confirms access):
    ```bash
-   # Use the swamp/lets-get-sensitive model to test
-   swamp model create swamp/lets-get-sensitive test-get --json
+   # Use the swamp/lets-get-sensitive behavior to test
+   swamp behavior create swamp/lets-get-sensitive test-get --json
    # Edit to set operation: get, vaultName, secretKey
    swamp behavior run test-get get
    ```

@@ -55,6 +55,10 @@ function renderLockStatusLog(data: DatastoreLockStatusData): void {
     `  TTL:      ${info.ttlMs}ms`,
     `  Backend:  ${data.datastoreType}`,
   ];
+  if (info.fence !== undefined) {
+    // A v3 datastore's writer lease (swamp-club#3359).
+    lines.push(`  Fence:    ${info.fence}`);
+  }
   if (data.lockScope) {
     lines.push(`  Scope:    ${data.lockScope}`);
   }

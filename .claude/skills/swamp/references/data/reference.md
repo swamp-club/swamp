@@ -5,7 +5,7 @@ projection. See [references/fields.md](references/fields.md) for all filterable
 fields and CEL operators.
 
 ```bash
-# By model
+# By behavior
 swamp data query 'modelName == "my-model"'
 
 # By type and tags
@@ -34,9 +34,9 @@ included. Unlike `data get --json` it has no `ownerDefinition`,
 `garbageCollection`, `checksum`, `contentPath`, or `contentEncoding`. With
 `--select`, a match whose projection fails prints `null`.
 
-## List Model Data
+## List Behavior Data
 
-View all data items for a model, grouped by tag type. Shortcut for
+View all data items for a behavior, grouped by tag type. Shortcut for
 `swamp data query 'modelName == "<model>"'`.
 
 ```bash
@@ -69,9 +69,9 @@ swamp data query 'model("my-model") && name == "state"' --select 'content.status
 swamp data query 'model("my-model") && name == "execution-log"' --json
 ```
 
-`model("my-model")` takes a model name or definition id and resolves it as
-`data get` does, so it finds the data after a model rename. An unknown model is
-an error, as in `data get`.
+`model("my-model")` takes a behavior name or definition id and resolves it as
+`data get` does, so it finds the data after a behavior rename. An unknown
+behavior is an error, as in `data get`.
 
 **Output shape:** `--json` returns
 `{"results": [...], "total": N, "limited":
@@ -110,7 +110,7 @@ condition with the type, adding the other text types when they should match:
 
 ## Workflow-Scoped Data Access
 
-List or read data produced by a workflow run instead of specifying a model.
+List or read data produced by a workflow run instead of specifying a behavior.
 
 ```bash
 # List all data from the latest run of a workflow (shows each item's job/step)
@@ -160,7 +160,7 @@ transparently resolves to the new name.
 **When to rename:**
 
 - Refactoring naming conventions (e.g., `web-vpc` → `dev-web-vpc`)
-- Reorganizing data after a model's purpose evolves
+- Reorganizing data after a behavior's purpose evolves
 - Fixing typos in data names without losing history
 
 **Rename workflow:**
@@ -187,7 +187,7 @@ transparently resolves to the new name.
 3. Future latest lookups of `old-name` transparently resolve to `new-name`
 4. Historical versions of `old-name` stay on disk but leave the query catalog
 
-**Forward reference behavior:**
+**Forward references:**
 
 - `swamp data query 'model("m") && name == "old-name"'` → returns `new-name` (up
   to 5 renames deep). Only a latest read with an exact `name == "..."` term
@@ -200,13 +200,13 @@ transparently resolves to the new name.
 - `model.<name>.resource.<spec>.<old-name>` → resolves to new name in
   expressions
 
-**Important:** After renaming, update any workflows or models that produce data
-under the old name. If a model re-runs and writes to the old name, it will
-overwrite the forward reference.
+**Important:** After renaming, update any workflows or behaviors that produce
+data under the old name. If a behavior re-runs and writes to the old name, it
+will overwrite the forward reference.
 
 ## Delete Data
 
-Permanently remove a data artifact from a model. The artifact identity is the
+Permanently remove a data artifact from a behavior. The artifact identity is the
 `(model, name)` pair — `swamp data delete` operates on that pair, not on
 individual versions, unless `--version` is given.
 
@@ -228,7 +228,7 @@ individual versions, unless `--version` is given.
 
 **Errors are loud, not silent:**
 
-- Missing model → `Model not found: <ref>`
+- Missing behavior → `Model not found: <ref>`
 - Missing artifact → `No data named "<name>" exists for model <model>`
 - Missing version →
   `Version <V> does not exist for "<name>" (available
@@ -280,13 +280,13 @@ output shape.
 
 ## Accessing Data in Expressions
 
-CEL expressions access model data in workflows and model inputs. Functions,
-examples, and key rules are in
+CEL expressions access behavior data in workflows and behavior inputs.
+Functions, examples, and key rules are in
 [references/expressions.md](references/expressions.md).
 
 ## Data Ownership
 
-Data is owned by the creating model — see
+Data is owned by the creating behavior — see
 [references/data-ownership.md](references/data-ownership.md) for owner fields,
 validation rules, and viewing ownership.
 
@@ -309,8 +309,8 @@ Data is stored in the `.swamp/data/` directory:
 
 | Need                       | Use Skill                       |
 | -------------------------- | ------------------------------- |
-| Create/run models          | `swamp-model`                   |
-| View model outputs         | `swamp-model` (output commands) |
+| Create/run behaviors       | `swamp-model`                   |
+| View behavior outputs      | `swamp-model` (output commands) |
 | Create/run workflows       | `swamp-workflow`                |
 | Repository structure       | `swamp-repo`                    |
 | Manage secrets             | `swamp-vault`                   |

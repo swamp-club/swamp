@@ -1340,6 +1340,281 @@ Deno.test("reconcileRemoteInterruptedRuns: works without workflowRunRepo (existi
   assertEquals(h.completed.length, 1);
 });
 
+function yamlRunRepo(
+  runs: Array<{ id: string; instanceId: string }>,
+): {
+  repo: ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+  interrupted: string[];
+  scans: () => number;
+} {
+  const interrupted: string[] = [];
+  let scans = 0;
+  const repo = {
+    findGlobalByStatus: () => {
+      scans++;
+      return Promise.resolve(runs.map((r) => ({
+        run: {
+          ...r,
+          status: "running",
+          interruptOrphaned: () => {
+            interrupted.push(r.id);
+          },
+        },
+        workflowId: "wf-1",
+      })));
+    },
+    save: () => Promise.resolve(),
+  } as unknown as ReconcileRemoteInterruptedRunsDeps["workflowRunRepo"];
+  return { repo, interrupted, scans: () => scans };
+}
+
+const DEAD_PID = 999_999;
+const deadPidLiveness = {
+  hostname: "this-host",
+  isDead: (pid: number) => pid === DEAD_PID,
+};
+
+Deno.test("reconcileRemoteInterruptedRuns: interrupts local runs of an instance a peer already reaped", async () => {
+  // The peer deleted the dead instance's heartbeat; only its own remains.
+  const h = createReconcileHarness(
+    { "peer": makeHeartbeat("peer", { stale: false }) },
+    [makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: DEAD_PID,
+    })],
+  );
+  h.deps.ownerLiveness = deadPidLiveness;
+  const yaml = yamlRunRepo([
+    { id: "yaml-old", instanceId: "old-self" },
+    { id: "yaml-peer", instanceId: "peer" },
+  ]);
+  h.deps.workflowRunRepo = yaml.repo;
+
+  const reaped = await reconcileRemoteInterruptedRuns(h.deps);
+
+  assertEquals(reaped, 2);
+  assertEquals(h.completed, [{
+    runId: "run-1",
+    status: "interrupted",
+    reason: "remote_instance_dead",
+  }]);
+  assertEquals(yaml.interrupted, ["yaml-old"]);
+  // Nothing was claimed, so the store is left as it was.
+  assertEquals(h.controlPlaneStore.deleted, []);
+  assertEquals(
+    await h.controlPlaneStore.list("claims/"),
+    [],
+  );
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: interrupts a gone instance's runs when the store holds no heartbeats", async () => {
+  const h = createReconcileHarness({}, [
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: DEAD_PID,
+    }),
+  ]);
+  h.deps.ownerLiveness = deadPidLiveness;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(h.completed.map((c) => c.runId), ["run-1"]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: leaves a heartbeat-less instance whose pid is alive on this host", async () => {
+  const h = createReconcileHarness({}, [
+    makeActiveRunData({
+      instanceId: "sibling",
+      hostname: "this-host",
+      pid: DEAD_PID - 1,
+    }),
+  ]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  h.deps.selfPid = 1;
+  const yaml = yamlRunRepo([{ id: "yaml-sibling", instanceId: "sibling" }]);
+  h.deps.workflowRunRepo = yaml.repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 0);
+  assertEquals(h.completed.length, 0);
+  // With nothing claimed and nothing gone, the run records are not scanned.
+  assertEquals(yaml.scans(), 0);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a heartbeat-less row owned on another host is reaped only past the stale ttl", async () => {
+  const row = (ageMs: number) =>
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "elsewhere",
+      hostname: "other-host",
+      heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+  const young = createReconcileHarness({}, [row(0)]);
+  young.deps.ownerLiveness = deadPidLiveness;
+  young.deps.staleTtlMs = 60_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(young.deps), 0);
+
+  const old = createReconcileHarness({}, [row(120_000)]);
+  old.deps.ownerLiveness = deadPidLiveness;
+  old.deps.staleTtlMs = 60_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(old.deps), 1);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a small stale ttl does not shorten the wait for a row owned on another host", async () => {
+  const row = (ageMs: number) =>
+    makeActiveRunData({
+      instanceId: "elsewhere",
+      hostname: "other-host",
+      heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+  // Between two refreshes of a live owner's row.
+  const live = createReconcileHarness({}, [row(45_000)]);
+  live.deps.ownerLiveness = deadPidLiveness;
+  live.deps.staleTtlMs = 2_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(live.deps), 0);
+
+  const missed = createReconcileHarness({}, [row(120_000)]);
+  missed.deps.ownerLiveness = deadPidLiveness;
+  missed.deps.staleTtlMs = 2_000;
+  assertEquals(await reconcileRemoteInterruptedRuns(missed.deps), 1);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a previous instance's row carrying this process's pid is reaped only once it is stale", async () => {
+  // A restarted container and a live sibling container are both pid 7.
+  const row = (ageMs: number) =>
+    makeActiveRunData({
+      id: "run-1",
+      instanceId: "old-self",
+      hostname: "this-host",
+      pid: 7,
+      heartbeatAt: new Date(Date.now() - ageMs).toISOString(),
+    });
+
+  const fresh = createReconcileHarness({}, [row(0)]);
+  fresh.deps.ownerLiveness = deadPidLiveness;
+  fresh.deps.selfPid = 7;
+  assertEquals(await reconcileRemoteInterruptedRuns(fresh.deps), 0);
+  assertEquals(fresh.completed.length, 0);
+
+  const stale = createReconcileHarness({}, [row(200_000)]);
+  stale.deps.ownerLiveness = deadPidLiveness;
+  stale.deps.selfPid = 7;
+  assertEquals(await reconcileRemoteInterruptedRuns(stale.deps), 1);
+  assertEquals(stale.completed.map((c) => c.runId), ["run-1"]);
+});
+
+function methodRow(id: string): ActiveRunData {
+  return makeActiveRunData({
+    id,
+    runKind: "model_method",
+    modelType: "command/shell",
+    methodName: "execute",
+    workflowName: null,
+    instanceId: "old-self",
+    hostname: "this-host",
+    pid: DEAD_PID,
+  });
+}
+
+function methodOutputs(
+  running: string[],
+  opts: { failSave?: boolean } = {},
+): {
+  repo: NonNullable<ReconcileRemoteInterruptedRunsDeps["outputRepo"]>;
+  cancelled: Array<{ id: string; reason?: string }>;
+} {
+  const cancelled: Array<{ id: string; reason?: string }> = [];
+  const repo = {
+    findByIds: (_type: unknown, _method: string, ids: Set<string>) =>
+      Promise.resolve(
+        new Map(
+          running.filter((id) => ids.has(id)).map((id) => [id, {
+            status: "running",
+            pid: DEAD_PID,
+            markCancelled: (reason?: string) => {
+              cancelled.push({ id, reason });
+            },
+          }]),
+        ),
+      ),
+    save: () =>
+      opts.failSave
+        ? Promise.reject(new Error("save failed"))
+        : Promise.resolve(),
+  } as unknown as NonNullable<ReconcileRemoteInterruptedRunsDeps["outputRepo"]>;
+  return { repo, cancelled };
+}
+
+Deno.test("reconcileRemoteInterruptedRuns: cancels a gone instance's method-run output before settling its row", async () => {
+  const h = createReconcileHarness({}, [methodRow("step-1")]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  const outputs = methodOutputs(["step-1"]);
+  h.deps.outputRepo = outputs.repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(outputs.cancelled.map((c) => c.id), ["step-1"]);
+  assertStringIncludes(outputs.cancelled[0].reason ?? "", "instance");
+  assertEquals(h.completed, [{
+    runId: "step-1",
+    status: "interrupted",
+    reason: "remote_instance_dead",
+  }]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: cancels the method-run outputs of a claimed stale instance too", async () => {
+  const h = createReconcileHarness(
+    { "old-self": makeHeartbeat("old-self", { stale: true }) },
+    [methodRow("step-1")],
+  );
+  h.deps.ownerLiveness = deadPidLiveness;
+  const outputs = methodOutputs(["step-1"]);
+  h.deps.outputRepo = outputs.repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(outputs.cancelled.map((c) => c.id), ["step-1"]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a method-run row whose output could not be cancelled is left unsettled", async () => {
+  const h = createReconcileHarness({}, [methodRow("step-1")]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  h.deps.outputRepo = methodOutputs(["step-1"], { failSave: true }).repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  // No reason: a reason would settle the row and hide the running output.
+  assertEquals(h.completed, [{
+    runId: "step-1",
+    status: "interrupted",
+    reason: undefined,
+  }]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: without an output repository a method-run row is left unsettled", async () => {
+  const h = createReconcileHarness({}, [methodRow("step-1")]);
+  h.deps.ownerLiveness = deadPidLiveness;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(h.completed, [{
+    runId: "step-1",
+    status: "interrupted",
+    reason: undefined,
+  }]);
+});
+
+Deno.test("reconcileRemoteInterruptedRuns: a method-run row with no running output is settled", async () => {
+  const h = createReconcileHarness({}, [methodRow("step-1")]);
+  h.deps.ownerLiveness = deadPidLiveness;
+  const outputs = methodOutputs([]);
+  h.deps.outputRepo = outputs.repo;
+
+  assertEquals(await reconcileRemoteInterruptedRuns(h.deps), 1);
+  assertEquals(outputs.cancelled, []);
+  assertEquals(h.completed[0].reason, "remote_instance_dead");
+});
+
 // ── cleanupExpiredClaims tests ─────────────────────────────────────────
 
 Deno.test("cleanupExpiredClaims: deletes expired claims", async () => {

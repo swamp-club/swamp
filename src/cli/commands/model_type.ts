@@ -19,15 +19,67 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import { typeDescribeCommand } from "./type_describe.ts";
-import { typeSearchCommand } from "./type_search.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  subcommandSyntax,
+} from "./command_syntax.ts";
+import {
+  createTypeDescribeCommand,
+  typeDescribeCommand,
+} from "./type_describe.ts";
+import { createTypeSearchCommand, typeSearchCommand } from "./type_search.ts";
+
+/** The subcommands of `model type`, in registration order. */
+export interface ModelTypeChildren {
+  readonly describe: ReturnType<typeof createTypeDescribeCommand>;
+  readonly search: ReturnType<typeof createTypeSearchCommand>;
+}
+
+/** The legacy spelling: `swamp model type`. */
+export const MODEL_TYPE_SYNTAX: CommandSyntax = {
+  invocation: "swamp model type",
+  surface: "model",
+};
+
+/** The preferred spelling: `swamp behavior type`. */
+export const BEHAVIOR_TYPE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior type",
+  surface: "behavior",
+};
 
 /**
- * Parent command for model type operations.
+ * Builds the parent command for model type operations for one CLI surface.
+ * Children not passed are built fresh from `syntax`; Cliffy reparents a
+ * command attached under a second parent, so two surfaces must never share
+ * an instance.
  */
-export const modelTypeCommand = new Command()
-  .name("type")
-  .description("Inspect model types")
-  .action(groupCommandAction)
-  .command("describe", typeDescribeCommand)
-  .command("search", typeSearchCommand);
+export function createModelTypeCommand(
+  syntax: CommandSyntax,
+  children: Partial<ModelTypeChildren> = {},
+) {
+  const command = new Command()
+    .name("type")
+    .description(`Inspect ${syntax.surface} types`)
+    .action(groupCommandAction)
+    .command(
+      "describe",
+      children.describe ??
+        createTypeDescribeCommand(subcommandSyntax(syntax, "describe")),
+    )
+    .command(
+      "search",
+      children.search ??
+        createTypeSearchCommand(subcommandSyntax(syntax, "search")),
+    );
+  return recordDefiningModule(command, import.meta.url);
+}
+
+/**
+ * Parent command for model type operations. Its subcommands keep their
+ * legacy example text (`swamp type …`), so they are passed in.
+ */
+export const modelTypeCommand = createModelTypeCommand(MODEL_TYPE_SYNTAX, {
+  describe: typeDescribeCommand,
+  search: typeSearchCommand,
+});

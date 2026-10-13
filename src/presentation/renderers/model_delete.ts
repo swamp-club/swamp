@@ -23,8 +23,15 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNoun,
+} from "../command_surface.ts";
 
 class LogModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
+  constructor(private readonly surface: CommandSurface) {}
+
   handlers(): EventHandlers<ModelDeleteEvent> {
     const logger = getSwampLogger(["model", "delete"]);
     return {
@@ -36,7 +43,7 @@ class LogModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
             { count: e.data.expiredDataAutoCollected },
           );
         }
-        logger.info("Deleted model: {name} ({type})", {
+        logger.info(`Deleted ${surfaceNoun(this.surface)}: {name} ({type})`, {
           name: e.data.name,
           type: e.data.type,
         });
@@ -77,12 +84,13 @@ class JsonModelDeleteRenderer implements Renderer<ModelDeleteEvent> {
 
 export function createModelDeleteRenderer(
   mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Renderer<ModelDeleteEvent> {
   switch (mode) {
     case "json":
       return new JsonModelDeleteRenderer();
     case "log":
-      return new LogModelDeleteRenderer();
+      return new LogModelDeleteRenderer(surface);
   }
 }
 

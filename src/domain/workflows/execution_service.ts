@@ -168,8 +168,8 @@ import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import {
   type HydrateFileHook,
+  isUnpublishedDataError,
   type MarkDirtyHook,
-  UnpublishedDataVersionError,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
@@ -254,6 +254,7 @@ import {
 import {
   collectWorkflowAuthoredExpressions,
   DefinitionExpressionEvaluator,
+  type ForeignTaskArgument,
   type SanitizedTaskOverlay,
   StepProvenanceOverlay,
   type WorkflowEvaluationResult,
@@ -289,6 +290,10 @@ import {
   type FailedExpressions,
 } from "../expressions/unresolved_expression_guard.ts";
 import { errorPaths, UserError } from "../errors.ts";
+import {
+  isForeignExpression,
+  unlistedForeignRootError,
+} from "../expressions/swamp_namespaces.ts";
 import {
   getRunLogger,
   getSwampLogger,
@@ -620,6 +625,57 @@ async function resolveScalarExpression(
     );
   }
   return String(resolved);
+}
+
+/**
+ * Warns about each step argument that reaches its method holding another
+ * templating system's `${{ ... }}` text (swamp-club#2528). It covers text
+ * deferred past run start too (one reading `self.*` or `steps.*`), which the
+ * step-time passes leave raw without a report of their own.
+ */
+function warnForeignTaskArguments(
+  workflowName: string,
+  foreign: readonly ForeignTaskArgument[],
+): void {
+  const logger = getSwampLogger(["swamp", "expressions"]);
+  for (const { jobName, stepName, path, text, deferred } of foreign) {
+    if (deferred) {
+      logger
+        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text`;
+    } else {
+      logger
+        .warn`Template syntax passed through in workflow ${workflowName}, job ${jobName}, step ${stepName}: ${path} holds ${text}, which is not a swamp expression, so the step receives it as literal text`;
+    }
+  }
+}
+
+/**
+ * Fails a direct step whose authored arguments still hold `${{ ... }}` text
+ * reading a root that is neither a swamp namespace nor a known foreign one
+ * (swamp-club#3400). Run-start evaluation fails such text itself; this
+ * covers text it deferred to step time (one that also reads `self.*`). A
+ * direct step's global arguments, and the inputs routed to them, are
+ * evaluated with its definition, under the looser rule for definitions, and
+ * would pass through. Expression text that arrived as data, such as the
+ * result of `literal()`, is not the author's expression and is left to the
+ * checks on persisting the definition.
+ */
+function assertNoUnlistedForeignArguments(
+  field: "inputs" | "globalArgs",
+  args: unknown,
+  provenance: ProvenanceMap,
+): void {
+  for (const expr of extractExpressions(args)) {
+    const inData = expr.start === undefined || expr.end === undefined
+      ? provenance.hasDataAtOrBelow(expr.path)
+      : provenance.overlapsData(expr.path, expr.start, expr.end);
+    if (inData || !isForeignExpression(expr.celExpression)) continue;
+    const unlisted = unlistedForeignRootError(
+      expr.celExpression,
+      `${field}.${expr.path}`,
+    );
+    if (unlisted) throw unlisted;
+  }
 }
 
 /** True when a step of `workflow` waits for a signal. */
@@ -1052,6 +1108,24 @@ function abandonedByAbort(stepRun: StepRun, options: StepOptions): boolean {
 }
 
 /**
+ * Fails a step whose work was in flight. With the run's abort fired, the
+ * abort stopped it, so the step is marked `stoppedByAbort`: serve's shutdown
+ * then interrupts it as unknown rather than leave it failed, where no
+ * recovery reopens it (swamp-club#3369).
+ */
+function failInFlightStep(
+  stepRun: StepRun,
+  error: string,
+  options: StepOptions,
+): void {
+  if (options.signal?.aborted) {
+    stepRun.failStoppedByAbort(error);
+  } else {
+    stepRun.fail(error);
+  }
+}
+
+/**
  * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
  * until the stream ends so the run can wait for it (see
  * {@link awaitNestedRuns}).
@@ -1266,8 +1340,9 @@ export type DirectTypeResolver = (
 
 /**
  * Runs a step lock's flush with what the step wrote. A step that already
- * failed keeps its own error: a version its flush could not publish is
- * logged instead (swamp-club#3146). Any other flush error is thrown.
+ * failed keeps its own error: a version its flush could not publish, or
+ * refused to push after losing its lock, is logged instead (swamp-club#3146,
+ * swamp-club#3373). Any other flush error is thrown.
  */
 async function flushStepLock(
   flush: (written?: readonly WrittenVersion[]) => Promise<void>,
@@ -1278,7 +1353,7 @@ async function flushStepLock(
   try {
     await flush(written);
   } catch (error) {
-    if (!stepFailed || !(error instanceof UnpublishedDataVersionError)) {
+    if (!stepFailed || !isUnpublishedDataError(error)) {
       throw error;
     }
     logger.error("{message}", { message: error.message });
@@ -1869,6 +1944,13 @@ export class DefaultStepExecutor implements StepExecutor {
       const { modelType: typeArg, modelName, methodName } = task;
       task = { ...task, ...inlined.data };
       authoredForDirect = inlined.authored;
+      for (const field of ["inputs", "globalArgs"] as const) {
+        assertNoUnlistedForeignArguments(
+          field,
+          task[field],
+          taskArgs.rawProvenance.subtree(field),
+        );
+      }
 
       const result = await resolver(
         typeArg,
@@ -2176,6 +2258,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ctx.expressionContext,
           authoredExpressions,
           stepSecretBag,
+          "passThrough",
         );
       } else if (task.inputs) {
         stepInputs = stepInputPair(taskArgs);
@@ -2222,6 +2305,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ctx.expressionContext,
           authoredExpressions,
           stepSecretBag,
+          "passThrough",
         );
       }
 
@@ -3818,6 +3902,11 @@ export class WorkflowExecutionService {
         wfSetupSpan.end();
       }
 
+      // Saved before `started` is yielded, so the event's run id always names
+      // a recorded run: a client that stops listening at `started` (`swamp
+      // workflow run --detach`) can read the run at once (swamp-club#1090).
+      await this.saveRun(workflow.id, run);
+
       yield {
         kind: "started",
         runId: run.id,
@@ -3832,8 +3921,6 @@ export class WorkflowExecutionService {
           dependsOn: job.getDependencyNames(),
         })),
       };
-
-      await this.saveRun(workflow.id, run);
 
       if (this.runTracker) {
         const tracker = this.runTracker;
@@ -4681,6 +4768,7 @@ export class WorkflowExecutionService {
         expressionContext,
         authoredExpressions,
       );
+      warnForeignTaskArguments(workflow.name, evaluated.foreignTaskArguments);
       const resolvedWorkflow = evaluated.workflow;
       const sanitizedTasks = evaluated.sanitizedTasks;
       const stepProvenance = evaluated.stepProvenance;
@@ -5125,11 +5213,15 @@ export class WorkflowExecutionService {
         for (const node of stepNodes) {
           const expanded = expandedStepsMap.get(node.name);
           if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step
-            for (const exp of expanded) {
+            // Create nodes for each expanded step, grouped under the forEach
+            // step so its iterations run in list order (swamp-club#3318)
+            for (const [index, exp] of expanded.entries()) {
               effectiveNodes.push({
                 name: exp.expandedName,
                 weight: node.weight,
+                group: exp.forEachVar.name !== ""
+                  ? { key: node.name, index }
+                  : undefined,
                 // Map dependencies to all expanded step names
                 dependencies: node.dependencies.flatMap((dep) => {
                   const depExpanded = expandedStepsMap!.get(dep);
@@ -6458,7 +6550,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       const isAllowed = !!step.allowFailure;
       if (isAllowed) {
         stepRun.markAllowedFailure();
@@ -6882,6 +6974,7 @@ export class WorkflowExecutionService {
         inputsProvenance,
         expressionContext,
         options.authoredExpressions,
+        "passThrough",
       );
       evaluatedInputs = tracked.data as Record<string, unknown>;
       inputsProvenance = tracked.provenance;
@@ -7040,7 +7133,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
@@ -7105,7 +7198,13 @@ export class WorkflowExecutionService {
         (childRun?.status === "cancelled"
           ? `Nested workflow "${task.workflowIdOrName}" was cancelled.`
           : `Nested workflow "${task.workflowIdOrName}" failed.`);
-      stepRun.fail(errorMessage);
+      // A child that failed on its own is no work the abort stopped, even
+      // when the abort fired before the parent read its end.
+      if (childRun?.status === "failed") {
+        stepRun.fail(errorMessage);
+      } else {
+        failInFlightStep(stepRun, errorMessage, options);
+      }
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
@@ -8051,6 +8150,7 @@ export class WorkflowExecutionService {
         result.expressionsEvaluated,
       );
       evalSpan.setStatus({ code: SpanStatusCode.OK });
+      warnForeignTaskArguments(workflow.name, result.foreignTaskArguments);
       return result;
     } catch (error) {
       evalSpan.setStatus({

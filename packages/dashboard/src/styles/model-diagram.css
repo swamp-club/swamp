@@ -1,0 +1,377 @@
+/* Model diagram: inputs → model → outputs and reports. Theme tokens only. */
+
+.model-diagram {
+  container-type: inline-size;
+  container-name: model-diagram;
+}
+
+.md-canvas {
+  display: flex;
+  justify-content: center;
+  padding: 8px 4px 4px;
+}
+
+.md-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.md-svg.md-v {
+  display: none;
+}
+
+@container model-diagram (max-width: 760px) {
+  .md-svg.md-h {
+    display: none;
+  }
+  .md-svg.md-v {
+    display: block;
+    max-width: 400px !important;
+  }
+}
+
+/* Group colors: one hue per side of the model. */
+.md-group-arguments {
+  --md-hue: var(--info);
+}
+.md-group-methods {
+  --md-hue: var(--running);
+}
+.md-group-outputs {
+  --md-hue: var(--accent);
+}
+.md-group-reports {
+  --md-hue: var(--warning);
+}
+
+/* Connectors */
+.md-edge {
+  fill: none;
+  stroke: var(--md-hue, var(--border));
+  stroke-width: 1.5;
+  stroke-opacity: 0.5;
+  stroke-linecap: round;
+  transition: stroke-opacity 0.15s, stroke-width 0.15s;
+}
+
+.md-edge.md-group-reports {
+  stroke-dasharray: 5 4;
+}
+
+.md-edge.is-muted {
+  stroke: var(--border);
+  stroke-opacity: 1;
+  stroke-dasharray: 2 4;
+}
+
+.md-svg.has-active .md-edge {
+  stroke-opacity: 0.18;
+}
+
+.md-svg.has-active .md-edge.is-active {
+  stroke-opacity: 1;
+  stroke-width: 2;
+}
+
+/* Boxes */
+.md-box {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1;
+  transition: stroke 0.15s, fill 0.15s;
+}
+
+.md-glyph {
+  stroke: var(--md-hue, var(--text-3));
+}
+
+.md-label {
+  font-size: 12px;
+  font-weight: 500;
+  fill: var(--text-1);
+}
+
+.md-detail {
+  font-size: 10.5px;
+  fill: var(--text-3);
+}
+
+.md-node.is-active .md-box {
+  stroke: var(--md-hue, var(--border));
+}
+
+.md-link {
+  cursor: pointer;
+  outline: none;
+}
+
+.md-link:hover .md-box {
+  fill: var(--surface-hover);
+  stroke: var(--md-hue, var(--accent));
+}
+
+.md-link:hover .md-label {
+  text-decoration: underline;
+  text-decoration-color: var(--text-3);
+}
+
+.md-link:focus-visible .md-box,
+.md-link:focus-visible .md-frame-box {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.md-kind-placeholder .md-box {
+  fill: transparent;
+  stroke-dasharray: 3 3;
+}
+
+.md-kind-placeholder .md-glyph {
+  stroke: var(--text-3);
+}
+
+.md-kind-placeholder .md-label {
+  fill: var(--text-3);
+  font-weight: 400;
+  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+}
+
+/* Headings */
+.md-heading {
+  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  fill: var(--text-2);
+}
+
+.md-heading-count {
+  fill: var(--text-3);
+  font-weight: 500;
+}
+
+/* "+N more" / "Show fewer" */
+.md-toggle {
+  cursor: pointer;
+  outline: none;
+}
+
+.md-toggle rect {
+  fill: transparent;
+  stroke: var(--border);
+  stroke-dasharray: 4 3;
+  transition: fill 0.15s, stroke 0.15s;
+}
+
+.md-toggle text {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--text-2);
+}
+
+.md-toggle:hover rect {
+  fill: var(--surface-hover);
+  stroke: var(--text-3);
+}
+
+.md-toggle:focus-visible rect {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-dasharray: none;
+}
+
+/* The model */
+.md-model-box {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.md-model-band {
+  fill: var(--accent);
+}
+
+.md-model-type {
+  font-size: 11px;
+  fill: var(--text-3);
+}
+
+.md-model-name {
+  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  fill: var(--text-1);
+}
+
+.md-model-summary {
+  font-size: 10.5px;
+  fill: var(--text-3);
+}
+
+.md-chip rect {
+  fill: var(--surface-inset);
+}
+
+.md-chip text {
+  font-size: 10px;
+  font-weight: 500;
+  fill: var(--text-2);
+}
+
+.md-chip.tone-warning rect {
+  fill: var(--warning-bg);
+}
+
+.md-chip.tone-warning text {
+  fill: var(--warning);
+}
+
+/* The extension frame */
+.md-frame-box {
+  fill: var(--accent-subtle);
+  stroke: var(--accent);
+  stroke-opacity: 0.35;
+  stroke-width: 1;
+}
+
+.md-frame.is-inferred .md-frame-box {
+  fill: transparent;
+  stroke: var(--text-3);
+  stroke-opacity: 0.6;
+  stroke-dasharray: 5 4;
+}
+
+.md-frame-glyph {
+  stroke: var(--accent);
+}
+
+.md-frame.is-inferred .md-frame-glyph {
+  stroke: var(--text-3);
+}
+
+.md-frame-label {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--text-2);
+}
+
+.md-frame.md-link:hover .md-frame-label {
+  text-decoration: underline;
+}
+
+/* Legend */
+.md-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 16px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0 16px 14px;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+
+.md-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.md-legend .md-kind-argument {
+  --md-hue: var(--info);
+}
+.md-legend .md-kind-method {
+  --md-hue: var(--running);
+}
+.md-legend .md-kind-resource,
+.md-legend .md-kind-file,
+.md-legend .md-kind-data {
+  --md-hue: var(--accent);
+}
+.md-legend .md-kind-report {
+  --md-hue: var(--warning);
+}
+
+.md-legend svg {
+  color: var(--md-hue);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-edge,
+  .md-box,
+  .md-toggle rect {
+    transition: none;
+  }
+}
+
+/* Diagram placeholder while the model loads */
+.mds {
+  display: grid;
+  grid-template-columns: minmax(0, 224px) minmax(0, 280px) minmax(0, 224px);
+  justify-content: center;
+  align-items: center;
+  gap: 48px;
+  padding: 24px 16px 28px;
+}
+
+.mds-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mds-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.mds-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.mds-model {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+}
+
+.mds-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 108px;
+  padding: 18px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+@container model-diagram (max-width: 760px) {
+  .mds {
+    grid-template-columns: minmax(0, 440px);
+    gap: 20px;
+  }
+}
+
+@media (max-width: 768px) {
+  .mds {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+}

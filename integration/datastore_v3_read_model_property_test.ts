@@ -24,9 +24,15 @@
  * partition) the read model's files, live-record index and catalog must
  * match the reference model's present records and live versions. A second
  * read model replaying from cursor 0 must reach the same state.
+ *
+ * Pages hold one to three commits, and a catch-up can crash at its first
+ * page's barrier (swamp-club#3337), losing a file that page wrote, as a power
+ * loss would; the catch-up after it must repair the checkout. A step can
+ * also reboot: one file written since the last reboot is lost or torn, and
+ * the first catch-up in the new boot must repair it.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ReadModelIncompleteError } from "../src/domain/datastore_v3/read_model.ts";
 import { join } from "@std/path";
 import fc from "fast-check";
@@ -44,6 +50,7 @@ import {
 } from "../src/domain/datastore_v3/v3_test_helpers.ts";
 import type { SqliteReadModel } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
 import { READ_MODEL_STATE_FILE } from "../src/infrastructure/datastore_v3/sqlite_read_model.ts";
+import { DurableWriteBatch } from "../src/infrastructure/datastore_v3/atomic_stream_write.ts";
 import {
   catalogV3Path,
   readCatalog,
@@ -59,7 +66,64 @@ const arbCatchUp = fc.constantFrom(
   "none" as const,
   "store" as const,
   "partition" as const,
+  "crash-truncate" as const,
+  "crash-delete" as const,
+  "reboot-truncate" as const,
+  "reboot-delete" as const,
 );
+
+/**
+ * A batch that records what it writes and, while `control.armed`, fails its
+ * barrier once before syncing anything.
+ */
+class CrashingBatch extends DurableWriteBatch {
+  constructor(
+    readonly control: {
+      armed: boolean;
+      written: string[];
+      sinceReboot: string[];
+    },
+  ) {
+    // Unsynced, as the read model's own page batches are.
+    super({ sync: false });
+    control.written = [];
+  }
+  override async write(
+    path: string,
+    content: Uint8Array | ReadableStream<Uint8Array>,
+    signal: AbortSignal,
+    options?: { readonly absentDirectories?: readonly string[] },
+  ): Promise<void> {
+    await super.write(path, content, signal, options);
+    this.control.written.push(path);
+    this.control.sinceReboot.push(path);
+  }
+  override async barrier(): Promise<void> {
+    if (this.control.armed) {
+      this.control.armed = false;
+      throw new Error("injected crash before the barrier");
+    }
+    await super.barrier();
+  }
+}
+
+/** Loses one file the crashed page wrote: emptied or gone. */
+async function loseWrite(
+  written: readonly string[],
+  how: "truncate" | "delete",
+): Promise<void> {
+  for (const path of written) {
+    try {
+      if (!(await Deno.stat(path)).isFile) continue;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+    if (how === "truncate") await Deno.truncate(path, 0);
+    else await Deno.remove(path);
+    return;
+  }
+}
 
 async function assertMatchesModel(
   env: V3Env,
@@ -109,12 +173,23 @@ Deno.test("read model: matches the partition reference model after every catch-u
         minLength: 1,
         maxLength: 15,
       }),
-      async (steps) => {
+      fc.integer({ min: 1, max: 3 }),
+      async (steps, pageSize) => {
         await withV3Env(async (env) => {
           let model = emptyModel();
           let txn = 0;
           let complete = false;
-          const readModel = env.openReadModel({ pageSize: 2 });
+          const control = {
+            armed: false,
+            written: [] as string[],
+            sinceReboot: [] as string[],
+          };
+          let boot = 0;
+          const readModel = env.openReadModel({
+            pageSize,
+            writeBatch: () => new CrashingBatch(control),
+            bootIdentity: () => Promise.resolve(`boot-id:${boot}`),
+          });
           try {
             for (const [command, catchUp] of steps) {
               const ops: Op[] = [];
@@ -138,6 +213,35 @@ Deno.test("read model: matches the partition reference model after every catch-u
               if (catchUp === "none") continue;
               const signal = AbortSignal.timeout(30_000);
               if (catchUp === "store") {
+                await readModel.catchUp(signal);
+                complete = true;
+              } else if (catchUp.startsWith("reboot")) {
+                await readModel.catchUp(signal);
+                await loseWrite(
+                  control.sinceReboot,
+                  catchUp === "reboot-truncate" ? "truncate" : "delete",
+                );
+                boot++;
+                control.sinceReboot = [];
+                await readModel.catchUp(signal);
+                complete = true;
+              } else if (catchUp !== "partition") {
+                // A catch-up with nothing to apply has no page, so no barrier.
+                control.armed = true;
+                const crashed = await readModel.catchUp(signal).then(
+                  () => false,
+                  (error) => {
+                    assertStringIncludes(String(error), "injected crash");
+                    return true;
+                  },
+                );
+                control.armed = false;
+                if (crashed) {
+                  await loseWrite(
+                    control.written,
+                    catchUp === "crash-truncate" ? "truncate" : "delete",
+                  );
+                }
                 await readModel.catchUp(signal);
                 complete = true;
               } else {

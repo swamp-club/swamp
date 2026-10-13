@@ -89,6 +89,11 @@ import {
   workflowRunSearch,
   type WorkflowRunSearchDeps,
 } from "../../libswamp/workflows/run_search.ts";
+import {
+  workflowRunSummary,
+  type WorkflowRunSummaryData,
+  type WorkflowRunSummaryDeps,
+} from "../../libswamp/workflows/run_summary.ts";
 import { workflowSchema } from "../../libswamp/workflows/schema.ts";
 import { workflowsDirFor } from "../../libswamp/workflows/broken_workflow.ts";
 import {
@@ -123,6 +128,7 @@ import type {
   WorkflowResumePayload,
   WorkflowRunPayload,
   WorkflowRunSearchPayload,
+  WorkflowRunSummaryPayload,
   WorkflowSchemaPayload,
   WorkflowSearchPayload,
   WorkflowSignalPayload,
@@ -1287,8 +1293,13 @@ export async function handleWorkflowRunSearch(
       workflowRunSearch(libCtx, deps, {
         query: payload?.query,
         since: payload?.since,
+        until: payload?.until,
         status: payload?.status,
         workflow: payload?.workflow,
+        workflows: payload?.workflows,
+        triggerSource: payload?.triggerSource,
+        statuses: payload?.statuses,
+        triggerSources: payload?.triggerSources,
         tags: payload?.tags,
         inputs: payload?.inputs,
       }),
@@ -1356,6 +1367,95 @@ export async function handleWorkflowRunSearch(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_run_search_failed", message);
+  }
+}
+
+/**
+ * Counts runs per workflow, in total and optionally per hour. The counts
+ * are taken after the per-workflow read filter, as `workflow.run.search`
+ * pages after it, so an unreadable workflow never reaches totals or the
+ * timeline.
+ */
+export async function handleWorkflowRunSummary(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+  payload?: WorkflowRunSummaryPayload,
+): Promise<void> {
+  if (
+    !authorizeAnyOrReject(
+      socket,
+      requestId,
+      principal,
+      "read",
+      "workflow",
+      ctx,
+    )
+  ) return;
+
+  try {
+    const libCtx = handlerLibSwampContext(ctx);
+    const canonical = canonicalResources(ctx);
+    const deps: WorkflowRunSummaryDeps = {
+      findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
+      findAllRunsByWorkflowId: (id) =>
+        ctx.repoContext.workflowRunRepo
+          .findAllSummariesFromIndex(createWorkflowId(id)),
+      keepReadable: (runs) =>
+        filterByResources(
+          runs,
+          (run) => canonical.workflowOwners(run.workflowId, run.workflowName),
+          socket,
+          principal,
+          "read",
+          ctx,
+        ),
+    };
+
+    let data: WorkflowRunSummaryData | undefined;
+    await consumeStream(
+      workflowRunSummary(libCtx, deps, {
+        since: payload?.since,
+        until: payload?.until,
+        workflows: payload?.workflows,
+        triggerSource: payload?.triggerSource,
+        triggerSources: payload?.triggerSources,
+        recentLimit: payload?.recentLimit,
+        timeline: payload?.timeline,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          data = e.data;
+        },
+        error: (e) => {
+          throw new LibSwampStreamError(e.error);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+    if (!data) throw new Error("The run summary completed without data");
+
+    send(socket, {
+      type: "workflow.run.summary",
+      id: requestId,
+      payload: { data },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(
+      socket,
+      requestId,
+      "workflow_run_summary_failed",
+      message,
+      clientErrorDetails(error),
+    );
   }
 }
 
@@ -1610,6 +1710,8 @@ export async function handleWorkflowSignal(
         payload: payload.payload,
         // A client from before the pending reply cannot read one.
         holdEarly: payload.acceptsPending === true,
+        // Nor can one from before the accepted reply read that.
+        acceptsReceipt: payload.acceptsReceipt === true,
         ...idempotencyKeyOf(payload),
       },
     {
@@ -1656,11 +1758,29 @@ export async function handleWorkflowSignal(
         payload: { pending: result.data },
       });
       return;
+    case "accepted":
+      send(socket, {
+        type: "workflow.signal",
+        id: requestId,
+        payload: { accepted: result.data },
+      });
+      // Continues the run of a wait that took the signal, after the reply.
+      await continueAfterSignal(
+        ctx,
+        result,
+        captureDecisionSubject(socket, principal),
+      );
+      return;
     case "not_found":
       sendError(socket, requestId, "not_found", result.message);
       return;
     case "failed":
       sendError(socket, requestId, "workflow_signal_failed", result.message);
+      return;
+    case "upgrade_required":
+      sendError(socket, requestId, "workflow_signal_refused", result.message, {
+        refusal: result.status,
+      });
       return;
     case "invalid_payload":
       sendError(socket, requestId, "workflow_signal_refused", result.message, {

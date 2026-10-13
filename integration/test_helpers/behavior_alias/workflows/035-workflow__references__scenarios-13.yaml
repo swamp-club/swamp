@@ -1,0 +1,16 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/scenarios.md (block 13)
+id: 00000000-0000-4000-8000-000000000035
+name: corpus-35
+trigger:
+  schedule: "*/30 * * * *"
+jobs:
+  - name: sync
+    steps:
+      - name: fetch-data
+        guard: >-
+          ${{ model.method("api-client", "check-freshness",
+              {"maxAge": 1800}).stdout }}
+        task:
+          type: model_method
+          modelIdOrName: api-client
+          methodName: fetch

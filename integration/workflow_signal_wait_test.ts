@@ -110,6 +110,7 @@ import {
 import { supersedeSuspendedRuns } from "../src/libswamp/workflows/supersede.ts";
 import type { InputsSchema } from "../src/domain/definitions/definition.ts";
 import type { PendingSignal } from "../src/domain/workflows/pending_signal.ts";
+import { findUnsettledWait } from "../src/domain/workflows/signal_wait_cleanup.ts";
 
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -3305,6 +3306,35 @@ Deno.test("early signal: a signal stored after the step read its slot is applied
         .signal.id,
       pending.receiptId,
     );
+  });
+});
+
+Deno.test("early signal: the check workflow resume runs first lets through a wait whose signaller stopped after storing its signal (swamp-club#3309)", async () => {
+  const workflow = earlyRelease("early-resume-check");
+  await withHarness([workflow], async (h) => {
+    const run = await startRun(h, workflow);
+    const waitId = waitIdOf(run);
+    // With nothing stored the command refuses, naming the open wait.
+    assertEquals(
+      (await findUnsettledWait(h.waits, run, new Date()))?.wait.id,
+      waitId,
+    );
+    const pending = await leavePendingFor(h, workflow, run, new Date());
+
+    // This half failed before the fix: the command's check refused a wait
+    // that had its signal. It reads only; the resume below takes the signal.
+    assertEquals(await findUnsettledWait(h.waits, run, new Date()), undefined);
+    assertEquals((await h.waits.findOutcome(waitId)).kind, "absent");
+
+    await drain(h.service.resume(workflow.name, run.id));
+    const finished = await reload(h, run);
+    assertEquals(finished.status, "succeeded");
+    const output = stepOf(finished, "review").output as {
+      payload: unknown;
+      signal: { id: string };
+    };
+    assertEquals(output.payload, pending.payload);
+    assertEquals(output.signal.id, pending.receiptId);
   });
 });
 

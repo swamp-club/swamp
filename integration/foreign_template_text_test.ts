@@ -28,10 +28,15 @@
 // so the template-syntax scan must read the step's authored arguments, or
 // text that evaluation produced reads as a swamp expression missing its `$`.
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { getLogger } from "@logtape/logtape";
+import { configure, getLogger, type LogRecord, reset } from "@logtape/logtape";
 import { z } from "zod";
 
 import { DefinitionExpressionEvaluator } from "../src/domain/workflows/expression_evaluators.ts";
@@ -368,5 +373,485 @@ Deno.test("foreign template text: a direct step scans its authored global argume
       "Expression uses {{...}} instead of ${{...}}",
     );
     assertEquals(received.length, 7);
+  });
+});
+
+Deno.test("foreign template text: a workflow step's arguments pass it through to the method (swamp-club#2528)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = createRepositoryContext({ repoDir: dir });
+    const type = ModelType.create(
+      `test/workflow-foreign-${crypto.randomUUID()}`,
+    );
+    const received: unknown[] = [];
+    modelRegistry.register({
+      type,
+      version: "2026.10.13.1",
+      globalArguments: z.object({
+        message: z.string(),
+        env: z.record(z.string(), z.string()).optional(),
+      }),
+      methods: {
+        run: {
+          description: "Record the global arguments and the note argument",
+          arguments: z.object({ note: z.string().optional() }),
+          execute: (args, context) => {
+            received.push({
+              message: context.globalArgs.message,
+              sha: (context.globalArgs.env as Record<string, string>)?.SHA,
+              note: (args as { note?: string }).note,
+            });
+            return Promise.resolve({ dataHandles: [] });
+          },
+        },
+      },
+    });
+    try {
+      // A direct step: GitHub Actions text nested in its global arguments.
+      await repo.workflowRepo.save(Workflow.create({
+        name: "direct",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.directExecution(
+              type.normalized,
+              "direct-model",
+              "run",
+              undefined,
+              {
+                message: "deploy ${{ github.sha }} on ${{ matrix.os }}",
+                env: { SHA: "${{ github.sha }}" },
+              },
+            ),
+          })],
+        })],
+      }));
+      // A step on an existing definition: the text in its inputs.
+      await repo.definitionRepo.save(
+        type,
+        Definition.create({
+          name: "stored-model",
+          type: type.normalized,
+          globalArguments: { message: "plain" },
+          methods: { run: { arguments: {} } },
+        }),
+      );
+      await repo.workflowRepo.save(Workflow.create({
+        name: "stored",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.model("stored-model", "run", {
+              note: "ref ${{ github.ref }}",
+            }),
+          })],
+        })],
+      }));
+      // A nested workflow: the parent's text arrives in the child as an
+      // input value, which the child hands to its own step.
+      await repo.workflowRepo.save(Workflow.create({
+        name: "child",
+        inputs: { type: "object", properties: { note: { type: "string" } } },
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.model("stored-model", "run", {
+              note: "${{ inputs.note }}",
+            }),
+          })],
+        })],
+      }));
+      await repo.workflowRepo.save(Workflow.create({
+        name: "parent",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "call",
+            task: StepTask.workflow("child", { note: "${{ github.actor }}" }),
+          })],
+        })],
+      }));
+      // The same text where a step names what it runs is still an error.
+      await repo.workflowRepo.save(Workflow.create({
+        name: "target",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.model("${{ github.repository }}", "run"),
+          })],
+        })],
+      }));
+      const service = await executionService(repo, dir);
+
+      const direct = await service.execute("direct");
+      assertEquals(direct.status, "succeeded", JSON.stringify(direct.toData()));
+      const stored = await service.execute("stored");
+      assertEquals(stored.status, "succeeded", JSON.stringify(stored.toData()));
+      assertEquals(received, [
+        {
+          message: "deploy ${{ github.sha }} on ${{ matrix.os }}",
+          sha: "${{ github.sha }}",
+          note: undefined,
+        },
+        { message: "plain", sha: undefined, note: "ref ${{ github.ref }}" },
+      ]);
+      const parent = await service.execute("parent");
+      assertEquals(parent.status, "succeeded", JSON.stringify(parent.toData()));
+      assertEquals(received[2], {
+        message: "plain",
+        sha: undefined,
+        note: "${{ github.actor }}",
+      });
+
+      await assertRejects(
+        () => service.execute("target"),
+        Error,
+        "Unknown variable: github",
+      );
+      assertEquals(received.length, 3);
+    } finally {
+      repo.catalogStore.close();
+    }
+  });
+});
+
+/** Runs `fn` with the expression logger's warnings captured, as messages. */
+async function capturingRunWarnings(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const records: LogRecord[] = [];
+  await configure({
+    sinks: { capture: (record: LogRecord) => records.push(record) },
+    loggers: [
+      {
+        category: ["swamp", "expressions"],
+        lowestLevel: "warning",
+        sinks: ["capture"],
+      },
+      { category: ["logtape", "meta"], lowestLevel: "error", sinks: [] },
+    ],
+    reset: true,
+  });
+  try {
+    await fn();
+  } finally {
+    await reset();
+    await initializeLogging({});
+  }
+  return records.map((record) => record.message.map(String).join(""));
+}
+
+Deno.test("foreign template text: a run and its resume warn about each step argument passed through (swamp-club#2528)", async () => {
+  await withDirectRepo(async (repo, dir, type) => {
+    await repo.definitionRepo.save(
+      type,
+      Definition.create({
+        name: "stored-model",
+        type: type.normalized,
+        globalArguments: { message: "${{ inputs.note }}" },
+        inputs: { properties: { note: { type: "string" } } },
+        methods: { run: { arguments: {} } },
+      }),
+    );
+    const step = (name: string, task: StepTask) => Step.create({ name, task });
+    await repo.workflowRepo.save(Workflow.create({
+      name: "passed",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          step(
+            "capture",
+            StepTask.model("stored-model", "run", {
+              note: "${{ github.actor }}",
+            }),
+          ),
+          step("stop", StepTask.assert("false", "always fails")),
+        ],
+      })],
+    }));
+    await repo.workflowRepo.save(Workflow.create({
+      name: "clean",
+      jobs: [Job.create({
+        name: "main",
+        steps: [
+          step("capture", StepTask.model("stored-model", "run", { note: "x" })),
+        ],
+      })],
+    }));
+    const service = await executionService(repo, dir);
+    const expected =
+      "Template syntax passed through in workflow passed, job main, step capture: inputs.note holds ${{ github.actor }}, which is not a swamp expression, so the step receives it as literal text";
+
+    let failedId = "";
+    const onRun = await capturingRunWarnings(async () => {
+      const failed = await service.execute("passed");
+      assertEquals(failed.status, "failed");
+      failedId = failed.id;
+    });
+    assertEquals(onRun.filter((m) => m.includes("Template syntax")), [
+      expected,
+    ]);
+
+    const onResume = await capturingRunWarnings(async () => {
+      await collect(
+        service.resume("passed", failedId, { fromStep: "capture" }),
+      );
+    });
+    assertEquals(onResume.filter((m) => m.includes("Template syntax")), [
+      expected,
+    ]);
+
+    const onClean = await capturingRunWarnings(async () => {
+      const clean = await service.execute("clean");
+      assertEquals(clean.status, "succeeded", JSON.stringify(clean.toData()));
+    });
+    assertEquals(onClean.filter((m) => m.includes("Template syntax")), []);
+  });
+});
+
+Deno.test("foreign template text: only known foreign roots pass through step arguments (swamp-club#3400)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    await repo.definitionRepo.save(
+      type,
+      Definition.create({
+        name: "stored-model",
+        type: type.normalized,
+        globalArguments: { message: "${{ inputs.note }}" },
+        inputs: { properties: { note: { type: "string" } } },
+        methods: { run: { arguments: {} } },
+      }),
+    );
+    const stored = (name: string, note: string) =>
+      Workflow.create({
+        name,
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "capture",
+            task: StepTask.model("stored-model", "run", { note }),
+          })],
+        })],
+      });
+    // A made-up or misspelt root, in step inputs and in a direct step's
+    // global arguments. A known root beside it does not excuse it.
+    const rejected: [Workflow, string][] = [
+      [
+        stored("inputs-unlisted", "echo ${{ nonexistent.variable }}"),
+        "Unknown variable: nonexistent",
+      ],
+      [
+        stored("inputs-misspelt", "${{ input.region }}"),
+        "Unknown variable: input",
+      ],
+      [
+        directWorkflow("direct-unlisted", type, "${{ nonexistent.variable }}"),
+        "Unknown variable: nonexistent",
+      ],
+      [
+        directWorkflow("mixed", type, "${{ github.sha + nonexistent.x }}"),
+        "Unknown variable: nonexistent",
+      ],
+    ];
+    // A nested workflow's input value follows the same rule.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "child",
+      inputs: { type: "object", properties: { note: { type: "string" } } },
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          task: StepTask.model("stored-model", "run", {
+            note: "${{ inputs.note }}",
+          }),
+        })],
+      })],
+    }));
+    rejected.push([
+      Workflow.create({
+        name: "parent",
+        jobs: [Job.create({
+          name: "main",
+          steps: [Step.create({
+            name: "call",
+            task: StepTask.workflow("child", {
+              note: "${{ nonexistent.actor }}",
+            }),
+          })],
+        })],
+      }),
+      "Unknown variable: nonexistent",
+    ]);
+    const service = await executionService(repo, dir);
+    for (const [workflow, message] of rejected) {
+      await repo.workflowRepo.save(workflow);
+      // The run fails before any step starts.
+      await assertRejects(
+        () => service.execute(workflow.name),
+        Error,
+        message,
+      );
+    }
+    assertEquals(received, []);
+
+    // A known root still reaches the method, hyphenated name and all, and
+    // literal() still carries any text through step inputs.
+    const passed = [
+      stored("known", "${{ matrix.node-version }}"),
+      stored("literal", "${{ literal('${{ nonexistent.variable }}') }}"),
+    ];
+    for (const workflow of passed) {
+      await repo.workflowRepo.save(workflow);
+      const run = await service.execute(workflow.name);
+      assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+    }
+    assertEquals(received, [
+      "${{ matrix.node-version }}",
+      "${{ nonexistent.variable }}",
+    ]);
+  });
+});
+
+Deno.test("foreign template text: an unlisted root deferred past run start fails when its step runs (swamp-club#3400)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    await repo.definitionRepo.save(
+      type,
+      Definition.create({
+        name: "stored-model",
+        type: type.normalized,
+        globalArguments: { message: "${{ inputs.note }}" },
+        inputs: { properties: { note: { type: "string" } } },
+        methods: { run: { arguments: {} } },
+      }),
+    );
+    // Deferred by self.*, so only the step-time pass sees it.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "deferred-inputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          task: StepTask.model("stored-model", "run", {
+            note: "${{ self.h + nonexistent.os }}",
+          }),
+        })],
+      })],
+    }));
+    await repo.workflowRepo.save(
+      directWorkflow(
+        "deferred-direct",
+        type,
+        "${{ self.h + nonexistent.os }}",
+        {
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+        },
+      ),
+    );
+    // A direct step whose inputs carry it, with no global arguments.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "deferred-direct-inputs",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          task: StepTask.directExecution(
+            type.normalized,
+            "deferred-direct-inputs-model",
+            "run",
+            { message: "${{ self.h + nonexistent.os }}" },
+          ),
+        })],
+      })],
+    }));
+    const service = await executionService(repo, dir);
+    for (
+      const name of [
+        "deferred-inputs",
+        "deferred-direct",
+        "deferred-direct-inputs",
+      ]
+    ) {
+      const warnings = await capturingRunWarnings(async () => {
+        const run = await service.execute(name);
+        assertEquals(run.status, "failed", name);
+        assertStringIncludes(
+          JSON.stringify(run.toData()),
+          "Unknown variable: nonexistent",
+        );
+      });
+      assertEquals(warnings.filter((m) => m.includes("Template syntax")), []);
+    }
+    assertEquals(received, []);
+  });
+});
+
+Deno.test("foreign template text: outside step arguments it still fails when the step runs (swamp-club#2528)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    // Deferred past run start by self.*, so only the step-time pass sees it.
+    await repo.workflowRepo.save(Workflow.create({
+      name: "placement",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a"] }}' },
+          labels: { os: "${{ self.h + runner.os }}" },
+          task: StepTask.directExecution(
+            type.normalized,
+            "placement-model",
+            "run",
+            undefined,
+            { message: "plain" },
+          ),
+        })],
+      })],
+    }));
+    const service = await executionService(repo, dir);
+    const run = await service.execute("placement");
+    assertEquals(run.status, "failed");
+    assertStringIncludes(
+      JSON.stringify(run.toData()),
+      "Unknown variable: runner",
+    );
+    assertEquals(received, []);
+  });
+});
+
+Deno.test("foreign template text: a run warns about step arguments deferred past run start (swamp-club#2528)", async () => {
+  await withDirectRepo(async (repo, dir, type, received) => {
+    await repo.workflowRepo.save(Workflow.create({
+      name: "deferred",
+      jobs: [Job.create({
+        name: "main",
+        steps: [Step.create({
+          name: "capture",
+          forEach: { item: "h", in: '${{ ["a", "b"] }}' },
+          task: StepTask.directExecution(
+            type.normalized,
+            "deferred-model",
+            "run",
+            undefined,
+            { message: "${{ self.h + matrix.os }}" },
+          ),
+        })],
+      })],
+    }));
+    const service = await executionService(repo, dir);
+    const warnings = await capturingRunWarnings(async () => {
+      const run = await service.execute("deferred");
+      assertEquals(run.status, "succeeded", JSON.stringify(run.toData()));
+    });
+    assertEquals(received, [
+      "${{ self.h + matrix.os }}",
+      "${{ self.h + matrix.os }}",
+    ]);
+    // Once for the step as authored, not once per iteration.
+    assertEquals(warnings.filter((m) => m.includes("Template syntax")), [
+      "Template syntax passed through in workflow deferred, job main, step capture: globalArgs.message holds ${{ self.h + matrix.os }}, which reads a name swamp does not provide. Unless it evaluates when the step runs, the step receives it as literal text",
+    ]);
   });
 });

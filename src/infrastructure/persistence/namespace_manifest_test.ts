@@ -17,10 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
+import { UserError } from "../../domain/errors.ts";
 import {
   listNamespaceManifests,
+  namespaceManifestPath,
   readNamespaceManifest,
   writeNamespaceManifest,
 } from "./namespace_manifest.ts";
@@ -91,5 +98,85 @@ Deno.test("listNamespaceManifests: skips dot-prefixed directories", async () => 
 
     const manifests = await listNamespaceManifests(dir);
     assertEquals(manifests.length, 1);
+  });
+});
+
+async function writeRawManifest(
+  dir: string,
+  namespace: string,
+  content: string,
+): Promise<void> {
+  await Deno.mkdir(join(dir, namespace), { recursive: true });
+  await Deno.writeTextFile(namespaceManifestPath(dir, namespace), content);
+}
+
+Deno.test("readNamespaceManifest: refuses a manifest that is not valid JSON", async () => {
+  await withTempDir(async (dir) => {
+    await writeRawManifest(dir, "corrupt-ns", "{INVALID JSON!!!}");
+
+    const error = await assertRejects(
+      () => readNamespaceManifest(dir, "corrupt-ns"),
+      UserError,
+    );
+    assertStringIncludes(
+      error.message,
+      namespaceManifestPath(dir, "corrupt-ns"),
+    );
+  });
+});
+
+Deno.test("readNamespaceManifest: refuses a manifest without string namespace, repoId and registeredAt", async () => {
+  await withTempDir(async (dir) => {
+    for (
+      const content of [
+        "{}",
+        "[]",
+        "null",
+        '"infra"',
+        '{"namespace":1}',
+        '{"namespace":"infra","repoId":"r","registeredAt":123}',
+      ]
+    ) {
+      await writeRawManifest(dir, "bad-shape", content);
+
+      const error = await assertRejects(
+        () => readNamespaceManifest(dir, "bad-shape"),
+        UserError,
+      );
+      assertStringIncludes(
+        error.message,
+        namespaceManifestPath(dir, "bad-shape"),
+      );
+    }
+  });
+});
+
+Deno.test("readNamespaceManifest: accepts a manifest without registeredAt", async () => {
+  await withTempDir(async (dir) => {
+    await writeRawManifest(
+      dir,
+      "infra",
+      '{"namespace":"infra","repoId":"repo-1","extra":true}',
+    );
+
+    const manifest = await readNamespaceManifest(dir, "infra");
+    assertEquals(manifest?.namespace, "infra");
+    assertEquals(manifest?.repoId, "repo-1");
+  });
+});
+
+Deno.test("listNamespaceManifests: refuses when one manifest is corrupt", async () => {
+  await withTempDir(async (dir) => {
+    await writeNamespaceManifest(dir, "infra", "repo-1");
+    await writeRawManifest(dir, "corrupt-ns", "{INVALID JSON!!!}");
+
+    const error = await assertRejects(
+      () => listNamespaceManifests(dir),
+      UserError,
+    );
+    assertStringIncludes(
+      error.message,
+      namespaceManifestPath(dir, "corrupt-ns"),
+    );
   });
 });

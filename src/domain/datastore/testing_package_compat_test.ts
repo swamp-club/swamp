@@ -29,6 +29,8 @@ import type { DatastoreProvider as CanonicalDatastoreProvider } from "./datastor
 import type {
   ControlPlaneStore as CanonicalControlPlaneStore,
   DatastoreControlPlaneStore as CanonicalDatastoreControlPlaneStore,
+  WritableDatastoreControlPlaneStore
+    as CanonicalWritableDatastoreControlPlaneStore,
 } from "./control_plane_store.ts";
 import type {
   DatastoreStorage as CanonicalDatastoreStorage,
@@ -54,6 +56,8 @@ import type {
   StorageCapabilities as TestingStorageCapabilities,
   StoredChunk as TestingStoredChunk,
   SyncCapabilities as TestingSyncCapabilities,
+  WritableDatastoreControlPlaneStore
+    as TestingWritableDatastoreControlPlaneStore,
 } from "../../../packages/testing/datastore_types.ts";
 
 // DistributedLock: verify method signatures match.
@@ -188,6 +192,18 @@ function _checkControlPlaneStores(
   void [_store, _datastoreStore, _read];
 }
 
+// The writable datastore-wide store lines up in both directions, and is a
+// read-only one too.
+function _checkWritableDatastoreControlPlaneStore(
+  store: TestingWritableDatastoreControlPlaneStore,
+) {
+  const _store: CanonicalWritableDatastoreControlPlaneStore = store;
+  const _back: TestingWritableDatastoreControlPlaneStore =
+    {} as CanonicalWritableDatastoreControlPlaneStore;
+  const _readOnly: CanonicalDatastoreControlPlaneStore = store;
+  void [_store, _back, _readOnly];
+}
+
 // LockInfo: verify field types match.
 function _checkLockInfoFields(info: TestingLockInfo) {
   const _holder: string = info.holder;
@@ -217,6 +233,7 @@ Deno.test("testing package datastore types: compile-time compatibility check", (
     _checkSyncCapabilitiesFields,
     _checkDatastoreProviderFields,
     _checkControlPlaneStores,
+    _checkWritableDatastoreControlPlaneStore,
     _checkDatastoreStorage,
     _checkLockInfoFields,
   ];

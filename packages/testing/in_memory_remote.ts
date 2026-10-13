@@ -146,12 +146,12 @@
 import { dirname, join, normalize } from "@std/path";
 import type {
   ControlPlaneStore,
-  DatastoreControlPlaneStore,
   DatastoreStorage,
   DatastoreSyncOptions,
   DatastoreSyncService,
   StoredChunk,
   SyncCapabilities,
+  WritableDatastoreControlPlaneStore,
 } from "./datastore_types.ts";
 
 /**
@@ -354,12 +354,14 @@ export interface InMemoryRemote {
   /** Every recorded operation, in order. */
   ops(): readonly InMemoryRemoteOpRecord[];
   /**
-   * A provider's datastore-wide store: `get` reads `_control/<key>`
-   * whatever namespace any service has bound, binds nothing, and is listed
-   * as instance `"datastore"` by `controlPlaneReads`. Present only with
-   * `controlPlane`, as a service's `controlPlaneStore` is.
+   * A provider's writable datastore-wide store: every key is
+   * `_control/<key>` whatever namespace any service has bound, and it binds
+   * nothing. Its reads are listed as instance `"datastore"` by
+   * `controlPlaneReads`, its writes are recorded as `controlPlane` ops of
+   * instance `"datastore"`, and `failNext` with that instance reaches it.
+   * Present only with `controlPlane`, as a service's `controlPlaneStore` is.
    */
-  datastoreControlPlaneStore?(): DatastoreControlPlaneStore;
+  datastoreControlPlaneStore?(): WritableDatastoreControlPlaneStore;
   /**
    * A provider's `storage/1` chunk storage. Every call returns a handle
    * onto the same chunks; `touch` is implemented. Present only with
@@ -1332,16 +1334,83 @@ export function createInMemoryRemote(
   }
 
   /** A provider's datastore-wide store; see `InMemoryRemote`. */
-  function datastoreControlPlaneStore(): DatastoreControlPlaneStore {
+  function datastoreControlPlaneStore(): WritableDatastoreControlPlaneStore {
+    const instance = "datastore";
+    const reach = (): void => {
+      checkReachable("controlPlane", instance);
+    };
     return {
       get(key, readOptions) {
         try {
           const fullKey = controlKey(undefined, key);
-          reads.push({ instance: "datastore", key: fullKey });
+          reads.push({ instance, key: fullKey });
           readOptions?.signal?.throwIfAborted();
-          checkReachable("controlPlane", "datastore");
+          reach();
           const bytes = controlRecords.get(fullKey);
           return Promise.resolve(bytes ? bytes.slice() : null);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+      put(key, data) {
+        try {
+          reach();
+          const fullKey = controlKey(undefined, key);
+          controlRecords.set(fullKey, data.slice());
+          record({
+            instance,
+            op: "controlPlane",
+            paths: [fullKey],
+            deleted: [],
+          });
+          return Promise.resolve();
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+      putIfAbsent(key, data) {
+        try {
+          reach();
+          const fullKey = controlKey(undefined, key);
+          if (controlRecords.has(fullKey)) return Promise.resolve(false);
+          controlRecords.set(fullKey, data.slice());
+          record({
+            instance,
+            op: "controlPlane",
+            paths: [fullKey],
+            deleted: [],
+          });
+          return Promise.resolve(true);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+      delete(key) {
+        try {
+          reach();
+          const fullKey = controlKey(undefined, key);
+          controlRecords.delete(fullKey);
+          record({
+            instance,
+            op: "controlPlane",
+            paths: [],
+            deleted: [fullKey],
+          });
+          return Promise.resolve();
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+      list(prefix) {
+        try {
+          reach();
+          const base = controlKey(undefined, "");
+          return Promise.resolve(
+            [...controlRecords.keys()]
+              .filter((k) => k.startsWith(base + prefix))
+              .map((k) => k.slice(base.length))
+              .sort(),
+          );
         } catch (error) {
           return Promise.reject(error);
         }

@@ -237,7 +237,7 @@ Deno.test("pageError: maps serve errors to what the reader is told", () => {
       reason: "not_found",
       entityType: "Model",
     }, true),
-    { kind: "not-found", entity: "Model" },
+    { kind: "not-found", entity: "Behavior" },
   );
   assertEquals(
     pageError("x", {
@@ -255,6 +255,20 @@ Deno.test("pageError: maps serve errors to what the reader is told", () => {
     kind: "failed",
     message: "WebSocket closed",
   });
+});
+
+Deno.test("pageError: relabels serve's Model as Behavior without changing the payload", () => {
+  const info = {
+    code: "data_get_failed",
+    reason: "not_found",
+    entityType: "Model",
+  };
+  assertEquals(pageError("x", info, false), {
+    kind: "not-found",
+    entity: "Behavior",
+  });
+  // Display only: the protocol value serve sent stays "Model".
+  assertEquals(info.entityType, "Model");
 });
 
 Deno.test("contentBytes: decodes base64 and encodes text", () => {

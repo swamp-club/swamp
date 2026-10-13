@@ -1,0 +1,437 @@
+/* Worker host map (components/HostMap.tsx, views/Workers.tsx). */
+
+.hm-frame {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.hm-svg {
+  display: block;
+  width: 100%;
+  min-width: 320px;
+}
+
+.hm-svg:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.hm-cell-bg {
+  fill: var(--surface-inset);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.hm-cell-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  fill: var(--text-1);
+}
+
+.hm-cell-count {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  fill: var(--text-2);
+}
+
+.hm-bar {
+  shape-rendering: crispEdges;
+}
+
+.hm-bar.hm-s-unverified {
+  fill: var(--info);
+}
+.hm-bar.hm-s-idle {
+  fill: var(--tile-idle);
+}
+.hm-bar.hm-s-busy {
+  fill: var(--success);
+}
+.hm-bar.hm-s-draining {
+  fill: var(--warning);
+}
+.hm-bar.hm-s-disconnected {
+  fill: var(--danger);
+}
+
+.hm-node {
+  cursor: pointer;
+}
+
+.hm-core {
+  stroke-width: 1.5;
+}
+
+.hm-s-idle .hm-core {
+  fill: var(--tile-idle);
+}
+/* A busy worker is outlined green; its leased slot cells carry the fill. */
+.hm-s-busy .hm-core {
+  fill: var(--tile-idle);
+  stroke: var(--success);
+  stroke-width: 2;
+}
+.hm-s-draining .hm-core {
+  fill: var(--tile-idle);
+  stroke: var(--warning);
+  stroke-width: 2;
+}
+.hm-s-disconnected .hm-core {
+  fill: var(--tile-idle);
+  stroke: var(--danger);
+  stroke-width: 2;
+}
+.hm-s-unverified .hm-core {
+  fill: var(--info-bg);
+  stroke: var(--info);
+  stroke-dasharray: 3 2.5;
+}
+
+.hm-halo {
+  fill: none;
+  stroke: var(--success);
+  stroke-width: 1.5;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.hm-s-busy .hm-halo {
+  opacity: 0.55;
+}
+
+.hm-slot {
+  transition: fill 0.25s ease;
+}
+
+.hm-slot-free {
+  fill: rgba(0, 0, 0, 0.18);
+}
+.hm-slot-active {
+  fill: var(--success);
+}
+.hm-slot-completed {
+  fill: var(--success);
+  opacity: 0.4;
+}
+.hm-slot-failed {
+  fill: var(--danger);
+  stroke: rgba(255, 255, 255, 0.9);
+  stroke-width: 1;
+}
+.hm-slot-expired {
+  fill: var(--warning);
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 1;
+}
+
+.hm-ring {
+  fill: none;
+  stroke: var(--text-1);
+  stroke-width: 1.5;
+  opacity: 0;
+}
+
+.hm-selected .hm-ring {
+  opacity: 1;
+}
+.hm-svg:focus-visible .hm-active .hm-ring {
+  opacity: 1;
+  stroke: var(--info);
+  stroke-dasharray: 2 2;
+}
+
+.hm-dim {
+  opacity: 0.14;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .hm-s-busy .hm-halo {
+    animation: hm-ping 1.8s ease-out infinite;
+  }
+  .hm-s-unverified .hm-core {
+    animation: hm-march 1.2s linear infinite;
+  }
+}
+
+@keyframes hm-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+@keyframes hm-march {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+
+/* ── Workers view chrome ─────────────────────────────────────────────── */
+
+.fleet-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.fleet-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.fleet-field-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.fleet-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.fleet-seg button {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.fleet-seg button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text-1);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.fleet-input {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  width: 260px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-inset);
+  color: var(--text-1);
+}
+
+.fleet-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-inset);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.fleet-chip[aria-pressed="false"] {
+  opacity: 0.45;
+}
+
+.fleet-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.fleet-swatch.hm-s-unverified {
+  background: var(--info);
+}
+.fleet-swatch.hm-s-idle {
+  background: var(--tile-idle);
+}
+.fleet-swatch.hm-s-busy {
+  background: var(--tile-idle);
+  box-shadow: inset 0 0 0 1.5px var(--success);
+}
+.fleet-swatch.hm-s-draining {
+  background: var(--tile-idle);
+  box-shadow: inset 0 0 0 1.5px var(--warning);
+}
+.fleet-swatch.hm-s-disconnected {
+  background: var(--tile-idle);
+  box-shadow: inset 0 0 0 1.5px var(--danger);
+}
+.fleet-swatch.hm-slot-free {
+  background: var(--tile-idle);
+}
+.fleet-swatch.hm-slot-active {
+  background: var(--success);
+}
+.fleet-swatch.hm-slot-completed {
+  background: var(--success);
+  opacity: 0.4;
+}
+.fleet-swatch.hm-slot-failed {
+  background: var(--danger);
+}
+.fleet-swatch.hm-slot-expired {
+  background: var(--warning);
+}
+
+.fleet-ttl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-inset);
+}
+
+.fleet-ttl button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.fleet-ttl output {
+  min-width: 48px;
+  text-align: center;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12.5px;
+}
+
+.fleet-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.fleet-stats strong {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.fleet-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.fleet-key span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.fleet-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.fleet-map {
+  flex: 999 1 560px;
+  min-width: 0;
+}
+
+.fleet-detail {
+  flex: 1 1 280px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fleet-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.fleet-detail-row > span:first-child {
+  color: var(--text-3);
+}
+
+.fleet-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.fleet-label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--text-2);
+}
+
+.fleet-slot-row {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 11.5px;
+}
+
+.fleet-slot-row .fleet-swatch {
+  width: 10px;
+  height: 10px;
+}
+
+.fleet-slot-what {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-slot-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.fleet-slot-link:hover,
+.fleet-slot-link:focus-visible {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+
+.fleet-slot-when {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-3);
+}

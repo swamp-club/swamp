@@ -200,7 +200,11 @@ export async function healthSnapshotFor(
     ...snapshot,
     activeRuns: activeRuns.map((run) => ({ ...run, principalId: null })),
     workers: [],
-    scheduling: { ...snapshot.scheduling, schedules },
+    // The scheduler's time zone is a deployment detail: only a reader who
+    // sees a schedule gets it, to read that schedule's fire times.
+    scheduling: schedules.length > 0
+      ? { ...snapshot.scheduling, schedules }
+      : { enabled: snapshot.scheduling.enabled, schedules },
     webhooks,
     components: [],
   };

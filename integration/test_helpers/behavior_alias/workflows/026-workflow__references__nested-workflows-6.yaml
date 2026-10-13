@@ -1,0 +1,15 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/nested-workflows.md (block 6)
+id: 00000000-0000-4000-8000-000000000026
+name: corpus-26
+jobs:
+  - name: apply-wave
+    steps:
+      - name: apply-${{ self.item.host }}
+        forEach:
+          item: item
+          in: ${{ inputs.items }}
+        task:
+          type: workflow
+          workflowIdOrName: ${{ self.item.implementation.workflowIdOrName }}
+          inputs:
+            host: ${{ self.item.host }}

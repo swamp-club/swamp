@@ -58,8 +58,8 @@ jobs:
           item: ep
           in: ${{ inputs.episodes }}
         task:
-          type: model_method
-          modelIdOrName: transmission
+          type: behavior
+          behavior: transmission
           methodName: add
           inputs:
             uri: ${{ self.ep.magnet }}
@@ -107,8 +107,8 @@ jobs:
     steps:
       - name: dispatch
         task:
-          type: model_method
-          modelIdOrName: notification-sender
+          type: behavior
+          behavior: notification-sender
           methodName: send
           inputs:
             channel: ${{ inputs.channel }}
@@ -132,8 +132,8 @@ jobs:
     steps:
       - name: run-deploy
         task:
-          type: model_method
-          modelIdOrName: deploy-service
+          type: behavior
+          behavior: deploy-service
           methodName: deploy
           inputs:
             environment: ${{ inputs.environment }}
@@ -205,7 +205,7 @@ the step targets `lab-capability-ssh`. The resolved target appears in
 
 ## Data Access in Sub-Workflows
 
-Sub-workflow model instances can access data produced by the parent workflow
+Sub-workflow behavior instances can access data produced by the parent workflow
 using either `model.*` or `data.latest()` expressions. Both work for
 cross-workflow data access since `type: "resource"` is preserved on
 workflow-produced data.
@@ -219,8 +219,8 @@ jobs:
     steps:
       - name: create-vpc
         task:
-          type: model_method
-          modelIdOrName: networking-vpc
+          type: behavior
+          behavior: networking-vpc
           methodName: create
   - name: tag
     dependsOn:
@@ -234,10 +234,11 @@ jobs:
           workflowIdOrName: tag-networking
 ```
 
-The `tag-networking` sub-workflow's model instances can reference the VPC data:
+The `tag-networking` sub-workflow's behavior instances can reference the VPC
+data:
 
 ```yaml
-# tag-vpc model instance (used by tag-networking workflow)
+# tag-vpc behavior instance (used by tag-networking workflow)
 name: tag-vpc
 attributes:
   region: us-east-1

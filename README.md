@@ -33,6 +33,26 @@ For CI and daemons, see the
 Then initialize a repository:
 
 ```bash
+swamp start
+```
+
+`swamp start` opens your browser. Sign in to Swamp Club if you haven't, pick a
+workspace, describe what you want automated, and choose an AI agent found on
+your machine. Swamp opens the agent in a new terminal window, already working on
+your task. Press Ctrl-C in the terminal to stop `swamp start`.
+
+New workspaces are created under `~/.swamp/workspaces/`
+(`$SWAMP_HOME/workspaces/` when `SWAMP_HOME` is set), and you can import an
+existing swamp repo where it already is. A workspace keeps every task you give
+it, each with its own brief in `tasks/`, listed newest first with when it was
+created. Coming back to a workspace lets you open any task, relaunch its agent,
+open another agent, or start a new task. `swamp start status` lists your
+workspaces and the agents on your PATH.
+
+To use swamp inside an existing project instead, initialize it as a repository
+and start your agent there:
+
+```bash
 swamp repo init                    # Claude Code (default)
 swamp repo init --tool cursor      # Cursor
 swamp repo init --tool opencode    # OpenCode

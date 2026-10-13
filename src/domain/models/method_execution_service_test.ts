@@ -4594,3 +4594,154 @@ Deno.test("executeWorkflow - a malformed remote event is not logged (swamp-club#
 
   assertEquals(logged, []);
 });
+
+// ---------- Bare-token vault.get global arguments (swamp-club#3360) ----------
+// A definition reaches these guards with a vault.get still in place when the
+// runtime pass did not resolve it. The bare-token form must be guarded exactly
+// like the quoted one.
+
+const VAULT_GET_FORMS = [
+  "${{ vault.get(t, KEY) }}",
+  '${{ vault.get("t", "KEY") }}',
+];
+
+Deno.test("execute - Proxy throws for an unresolved bare-token vault.get in globalArgs (swamp-club#3360)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-bare-vault"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          const _val = context.globalArgs.apiKey;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  for (const apiKey of VAULT_GET_FORMS) {
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { name: "my-server", apiKey },
+      methods: { run: { arguments: {} } },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await assertRejects(
+      () => service.execute(definition, model.methods.run, context),
+      Error,
+      "Unresolved expression in globalArguments.apiKey",
+      apiKey,
+    );
+  }
+});
+
+Deno.test("execute - an unresolved bare-token vault.get in globalArgs is not merged into method arguments (swamp-club#3360)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let received: Record<string, unknown> = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/merge-bare-vault"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({
+          name: z.string(),
+          apiKey: z.string().optional(),
+        }),
+        execute: (args: Record<string, unknown>) => {
+          received = args;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  for (const apiKey of VAULT_GET_FORMS) {
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { name: "my-server", apiKey },
+      methods: { run: { arguments: {} } },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.execute(definition, model.methods.run, context);
+    assertEquals(received.name, "my-server", apiKey);
+    assertEquals(received.apiKey, undefined, apiKey);
+  }
+});
+
+Deno.test("executeWorkflow - skips validation for a non-string globalArg holding an unresolved bare-token vault.get (swamp-club#3360)", async () => {
+  const service = new DefaultMethodExecutionService();
+  let receivedName = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/unresolved-bare-vault-number"),
+    version: "1",
+    globalArguments: z.object({ name: z.string(), port: z.number() }),
+    methods: {
+      update: {
+        description: "Update method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedName = context.globalArgs.name as string;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  for (const port of VAULT_GET_FORMS) {
+    receivedName = "";
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: { name: "my-server", port },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.executeWorkflow(definition, model, "update", context);
+    assertEquals(receivedName, "my-server", port);
+  }
+});
+
+Deno.test("executeWorkflow: check unresolvedMethodArgs filters a bare-token vault.get from global args (swamp-club#3360)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const captured: Record<string, unknown>[] = [];
+  const model: ModelDefinition = {
+    type: ModelType.create("test/check-filter-bare-vault"),
+    version: "1",
+    globalArguments: z.object({
+      name: z.string().optional(),
+      apiKey: z.string().optional(),
+    }),
+    methods: {
+      create: {
+        description: "Create resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures unresolvedMethodArgs",
+        appliesTo: ["create"],
+        execute: (context: MethodContext) => {
+          captured.push(context.unresolvedMethodArgs ?? {});
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  for (const apiKey of VAULT_GET_FORMS) {
+    captured.length = 0;
+    const definition = Definition.create({
+      name: "test-filter",
+      globalArguments: { name: "my-server", apiKey },
+    });
+    const { context } = createTestContext({ modelType: model.type });
+    await service.executeWorkflow(definition, model, "create", context);
+    assertEquals(captured[0]?.name, "my-server", apiKey);
+    assertEquals(captured.length, 1, apiKey);
+    assertEquals(captured[0]?.apiKey, undefined, apiKey);
+  }
+});

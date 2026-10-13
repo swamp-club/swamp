@@ -11,7 +11,7 @@ Swamp stores entities as flat files in top-level directories (`models/`,
 ```
 my-swamp-repo/
 ├── .swamp/                      # Internal data storage (source of truth)
-│   ├── definitions/             # Model definitions by normalized type
+│   ├── definitions/             # Behavior definitions by normalized type
 │   │   ├── command/
 │   │   │   └── shell/
 │   │   │       └── {name}.yaml  # (legacy: {uuid}.yaml also supported)
@@ -19,10 +19,10 @@ my-swamp-repo/
 │   │       └── my-type/
 │   │           └── {name}.yaml
 │   │
-│   ├── definitions-evaluated/   # Evaluated model definitions (expressions resolved)
+│   ├── definitions-evaluated/   # Evaluated behavior definitions (expressions resolved)
 │   │   └── (same structure as definitions/)
 │   │
-│   ├── data/                    # Model data by normalized type
+│   ├── data/                    # Behavior data by normalized type
 │   │   └── {normalized-type}/
 │   │       └── {model-id}/
 │   │           └── {data-name}/
@@ -59,7 +59,7 @@ my-swamp-repo/
 │   │           ├── .key         # Encryption key (NEVER commit)
 │   │           └── {secret-key} # Encrypted secret data
 │
-├── models/                      # Model definitions by type
+├── models/                      # Behavior definitions by type
 │   └── {normalized-type}/
 │       └── {name}.yaml          # (legacy: {uuid}.yaml also supported)
 │
@@ -71,8 +71,8 @@ my-swamp-repo/
 │       └── {vault-id}.yaml
 │
 ├── extensions/                  # Custom user extensions
-│   ├── models/                  # TypeScript model definitions
-│   │   ├── my_model.ts
+│   ├── models/                  # TypeScript behavior types (behaviors/ also loads)
+│   │   ├── my_behavior.ts
 │   │   └── aws/
 │   │       └── s3_bucket.ts     # Nested organization supported
 │   ├── vaults/                  # TypeScript vault implementations
@@ -103,7 +103,7 @@ Repository marker and metadata:
 swampVersion: "0.1.0"
 initializedAt: "2025-01-15T10:30:00Z"
 upgradedAt: "2025-01-20T14:00:00Z"
-modelsDir: "extensions/models" # optional, default shown
+modelsDir: "extensions/models" # optional, default shown; extensions/behaviors also loads while this is the default
 workflowsDir: "extensions/workflows" # optional, default shown
 vaultsDir: "extensions/vaults" # optional, default shown
 datastoresDir: "extensions/datastores" # optional, default shown
@@ -136,7 +136,9 @@ swamp extension trust auto-trust <on|off> # Toggle membership auto-trust
 
 ### CLAUDE.md
 
-Agent instructions generated on init. Contains:
+Agent instructions generated on init. In a repo that already keeps its own rules
+in `AGENTS.md`, swamp writes them to `.claude/rules/swamp.md` instead, so Claude
+Code keeps reading `AGENTS.md`. Contains:
 
 - Skills list
 - Getting started guide
@@ -144,13 +146,15 @@ Agent instructions generated on init. Contains:
 
 ### settings.local.json
 
-Claude Code permissions for swamp commands:
+Claude Code permissions for swamp commands (excerpt; each pre-approved
+`swamp behavior` command is listed next to its legacy `swamp model` twin):
 
 ```json
 {
   "permissions": {
     "allow": [
-      "Bash(swamp model:*)",
+      "Bash(swamp model get:*)",
+      "Bash(swamp behavior get:*)",
       "Bash(swamp workflow:*)",
       "Bash(swamp vault get:*)",
       "Bash(swamp vault list-keys:*)",
@@ -163,9 +167,9 @@ Claude Code permissions for swamp commands:
 
 ## Data Directory Details
 
-### Model Definitions (.swamp/definitions/)
+### Behavior Definitions (.swamp/definitions/)
 
-YAML files containing model input configuration:
+YAML files containing behavior input configuration:
 
 ```yaml
 id: 550e8400-e29b-41d4-a716-446655440000
@@ -181,11 +185,11 @@ methods:
 **Path pattern**: `.swamp/definitions/{normalized-type}/{name}.yaml`
 
 - `normalized-type`: e.g., `command/shell`, `@user/my-type`
-- `name`: model name (e.g. `my-server`); legacy files may use UUID instead
+- `name`: behavior name (e.g. `my-server`); legacy files may use UUID instead
 
-### Model Data (.swamp/data/)
+### Behavior Data (.swamp/data/)
 
-Versioned data artifacts produced by model methods:
+Versioned data artifacts produced by methods:
 
 ```
 .swamp/data/command/shell/{model-id}/result/

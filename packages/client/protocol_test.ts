@@ -177,6 +177,30 @@ const _identicalPairs: {
     client.WorkflowRunSearchPayload,
     serve.WorkflowRunSearchPayload
   >;
+  WorkflowRunSummaryPayload: Identical<
+    client.WorkflowRunSummaryPayload,
+    serve.WorkflowRunSummaryPayload
+  >;
+  WorkflowRunSummaryRecentRun: Identical<
+    client.WorkflowRunSummaryRecentRun,
+    serve.WorkflowRunSummaryRecentRun
+  >;
+  WorkflowRunSummaryWorkflow: Identical<
+    client.WorkflowRunSummaryWorkflow,
+    serve.WorkflowRunSummaryWorkflow
+  >;
+  WorkflowRunSummaryBucket: Identical<
+    client.WorkflowRunSummaryBucket,
+    serve.WorkflowRunSummaryBucket
+  >;
+  WorkflowRunSummaryData: Identical<
+    client.WorkflowRunSummaryData,
+    serve.WorkflowRunSummaryData
+  >;
+  WorkflowRunSummaryResponse: Identical<
+    client.WorkflowRunSummaryResponse,
+    serve.WorkflowRunSummaryResponse
+  >;
   WorkflowSchemaPayload: Identical<
     client.WorkflowSchemaPayload,
     serve.WorkflowSchemaPayload
@@ -346,6 +370,12 @@ const _identicalPairs: {
   WorkflowHistoryLogsPayload: true,
   WorkflowHistorySearchPayload: true,
   WorkflowRunSearchPayload: true,
+  WorkflowRunSummaryPayload: true,
+  WorkflowRunSummaryRecentRun: true,
+  WorkflowRunSummaryWorkflow: true,
+  WorkflowRunSummaryBucket: true,
+  WorkflowRunSummaryData: true,
+  WorkflowRunSummaryResponse: true,
   WorkflowSchemaPayload: true,
   WorkflowResumePayload: true,
   WorkflowApprovePayload: true,

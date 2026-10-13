@@ -85,7 +85,7 @@ import {
   type RegistryChecksMode,
   signedInCheck,
 } from "../../domain/extensions/extension_publish_checks.ts";
-import { UserError } from "../../domain/errors.ts";
+import { markErrorPaths, UserError } from "../../domain/errors.ts";
 import { keyFingerprint } from "../../domain/auth/auth_credentials.ts";
 
 // ── Data types ────────────────────────────────────────────────────────
@@ -138,6 +138,8 @@ export interface ExtensionPushResolvedData {
   version: string;
   /** Requested intent, not a prediction of registry authorization or defaults. */
   visibility: PublishVisibility | "default";
+  /** The declared SPDX license expression, or null when none is declared. */
+  license: string | null;
   description: string | undefined;
   repository: string | undefined;
   releaseNotes: string | undefined;
@@ -195,6 +197,13 @@ export interface ExtensionPushPrepareInput {
    */
   manifestDir: string;
   modelsDir: string;
+  /**
+   * The behaviors directory the model entry points resolved from when the
+   * manifest lists them under `behaviors:` (swamp-club#3338). Files under
+   * it are packed at `models/<path from it>`, exactly as files under
+   * `modelsDir` are packed at `models/<path from modelsDir>`.
+   */
+  behaviorsDir?: string;
   allModelFiles: string[];
   modelEntryPoints: string[];
   vaultsDir: string;
@@ -215,6 +224,22 @@ export interface ExtensionPushPrepareInput {
   includeFilePaths: string[];
   additionalFilePaths: string[];
   binaryFilePaths: string[];
+  /**
+   * Local data modules (JSON, text or bytes imports) each kind reaches:
+   * packaged and safety-scanned, never sent to fmt, lint or review rules.
+   */
+  dataFilesByKind?: Partial<Record<SourceArchiveKind, string[]>>;
+  /**
+   * The archive's source copy: where every local module goes and which of
+   * its imports are rewritten there (swamp-club#3376).
+   */
+  sourcePlan: SourceArchivePlan;
+  /**
+   * Local modules an entry point imports that do not exist. Reported as
+   * compilation errors at the bundle step, where the bundler used to
+   * report them.
+   */
+  missingModules?: MissingLocalModule[];
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -301,6 +326,11 @@ export interface ExtensionPushPrepared {
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
   reviewRulesResult: ReviewRulesResult;
+  /**
+   * Set when the manifest declares a license that is not a valid SPDX
+   * expression. A license is optional, so this never blocks a push.
+   */
+  licenseWarning: ManifestLicenseWarning | undefined;
   /** The `quality.yaml` sidecar beside the manifest, when one exists. */
   sidecar: { path: string; value: QualitySidecar } | undefined;
   /**
@@ -483,6 +513,8 @@ export interface ExtensionPushMetadata {
   releaseNotes?: string;
   binaries?: string[];
   channel?: string;
+  /** The declared SPDX license expression; omitted when none is declared. */
+  license?: string;
   /** Public/default selection is represented by omission on the wire. */
   visibility?: "private";
   contentMetadata?: ExtensionContentMetadata;
@@ -547,6 +579,7 @@ import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extension
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { remediationFor } from "../../domain/extensions/extension_rule_catalog.ts";
+import { declaresExport } from "../../domain/extensions/export_declaration.ts";
 import {
   type ModelCatalogGap,
   modelCatalogGap,
@@ -559,6 +592,12 @@ import {
   qualitySidecarPath,
   sidecarDirectives,
 } from "../../domain/extensions/extension_quality_sidecar.ts";
+import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
+import {
+  applySpecifierRewrites,
+  type SourceArchiveKind,
+  type SourceArchivePlan,
+} from "../../domain/extensions/source_archive_plan.ts";
 import {
   type AcceptanceDirective,
   type AcceptanceSource,
@@ -577,6 +616,10 @@ import type {
   ExtensionAcceptances,
 } from "../../domain/extensions/extension_content.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import {
+  type ManifestLicenseWarning,
+  manifestLicenseWarning,
+} from "../../domain/licensing/manifest_license_policy.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
   type ApiCallRecorder,
@@ -987,8 +1030,16 @@ export async function extensionPushPrepare(
   // 3. Extract content metadata
   let contentMetadata: ExtensionContentMetadata | undefined;
   try {
+    // Entry points under the behaviors directory are read from it, so
+    // each `fileName` is the entry point's path inside the archive's
+    // models/ (swamp-club#3338).
+    const behaviorEntryPoints = input.modelEntryPoints.filter((f) =>
+      modelsArchiveBase(input, f) !== input.modelsDir
+    );
     contentMetadata = await deps.extractContentMetadata(
-      input.modelEntryPoints,
+      behaviorEntryPoints.length > 0
+        ? input.modelEntryPoints.filter((f) => !behaviorEntryPoints.includes(f))
+        : input.modelEntryPoints,
       input.modelsDir,
       input.workflowFiles,
       input.allVaultFiles,
@@ -1000,6 +1051,29 @@ export async function extensionPushPrepare(
       input.allWebhookFiles,
       input.webhooksDir,
     );
+    if (behaviorEntryPoints.length > 0) {
+      const fromBehaviors = await deps.extractContentMetadata(
+        behaviorEntryPoints,
+        input.behaviorsDir!,
+        [],
+        [],
+        "",
+        [],
+        "",
+        [],
+        "",
+        [],
+        "",
+      );
+      contentMetadata = {
+        ...contentMetadata,
+        models: [...contentMetadata.models, ...fromBehaviors.models],
+        extensions: [
+          ...contentMetadata.extensions,
+          ...fromBehaviors.extensions,
+        ],
+      };
+    }
     ctx.logger
       .debug`Extracted content metadata: ${contentMetadata.models.length} models, ${contentMetadata.workflows.length} workflows, ${contentMetadata.vaults.length} vaults, ${contentMetadata.datastores.length} datastores, ${contentMetadata.reports.length} reports, ${contentMetadata.webhooks.length} webhooks`;
   } catch {
@@ -1075,6 +1149,7 @@ export async function extensionPushPrepare(
   ];
   const allFiles = [
     ...qualityFiles,
+    ...Object.values(input.dataFilesByKind ?? {}).flat(),
     ...input.includeFilePaths,
     ...input.binaryFilePaths,
     ...(sidecar ? [sidecar.path] : []),
@@ -1236,6 +1311,21 @@ export async function extensionPushPrepare(
     );
   }
 
+  // 11a. A missing local module fails the push as a compilation error, the
+  // way the bundler reported it before push read the module graph
+  // (swamp-club#3376); models that are never bundled are covered too.
+  if (input.missingModules && input.missingModules.length > 0) {
+    throw validationFailed(
+      "Bundle compilation failed. Fix the errors above and try again.",
+      {
+        compilationErrors: input.missingModules.map((m) => ({
+          file: m.importer ?? m.path,
+          error: m.reason,
+        })),
+      },
+    );
+  }
+
   // 11. Bundle entry points + build archive — skip on cache hit, unless a
   // check rejected files: the cached archive was built before the rejection
   // and may hold them, so collect mode rebuilds without them.
@@ -1339,6 +1429,7 @@ export async function extensionPushPrepare(
     safetyWarnings: findings.safetyWarnings,
     dependencyTrustResult,
     reviewRulesResult,
+    licenseWarning: manifestLicenseWarning(input.manifest.license),
     sidecar,
     acceptances: findings.acceptances,
     commentSites: findings.commentSites,
@@ -1402,6 +1493,18 @@ function withoutFiles(
     includeFilePaths: input.includeFilePaths.filter(keep),
     additionalFilePaths: additional.map((e) => e.path),
     binaryFilePaths: binaries.map((e) => e.path),
+    ...(input.dataFilesByKind
+      ? {
+        dataFilesByKind: Object.fromEntries(
+          Object.entries(input.dataFilesByKind).map((
+            [kind, files],
+          ) => [kind, files.filter(keep)]),
+        ),
+      }
+      : {}),
+    sourcePlan: {
+      entries: input.sourcePlan.entries.filter((e) => keep(e.sourcePath)),
+    },
   };
 }
 
@@ -1523,21 +1626,75 @@ export function bareSpecifiersMessage(
  * the model export, and that the registry will not list the model although
  * it still installs and runs.
  */
-function uncataloguedModelMessage(gap: ModelCatalogGap): string {
+function uncataloguedModelMessage(
+  gap: ModelCatalogGap,
+  exportName: "model" | "behavior" = "model",
+): string {
   const cause = gap.kind === "not-plain-object"
     ? gap.annotated
       ? "Model export has a type annotation, so it is not read as a plain " +
-        "export const model = { ... } object"
-      : "Model export is not a plain export const model = { ... } object " +
-        "literal"
+        `export const ${exportName} = { ... } object`
+      : `Model export is not a plain export const ${exportName} = { ... } ` +
+        "object literal"
     : gap.missing.length === 2
     ? "Model export has neither a string-literal type nor a string-literal " +
-      "version in its export const model object"
+      `version in its export const ${exportName} object`
     : `Model export has no string-literal ${
       gap.missing[0]
-    } in its export const model object`;
+    } in its export const ${exportName} object`;
   return `${cause}, so the registry catalog will not list this model type. ` +
     "The extension still installs and the model still runs.";
+}
+
+/**
+ * The name a model entry point's export is spelled with: `behavior` when
+ * the source declares `export const behavior` and no `export const model`
+ * (swamp-club#3338), else `model`.
+ */
+function exportNameOf(source: string): "model" | "behavior" {
+  return !declaresExport(source, /export\s+const\s+model\s*[=:]/) &&
+      declaresExport(source, /export\s+const\s+behavior\s*[=:]/)
+    ? "behavior"
+    : "model";
+}
+
+/**
+ * Where the extension uses the behavior spelling (swamp-club#3338): the
+ * `behaviors:` manifest key, the behaviors directory, and entry points
+ * exporting `behavior`. Empty for a model-spelled extension.
+ */
+async function behaviorSpellingUses(
+  input: ExtensionPushPrepareInput,
+): Promise<string[]> {
+  const uses: string[] = [];
+  if (input.manifest.modelsKey === "behaviors") {
+    uses.push("the behaviors: manifest key");
+  }
+  if (
+    input.allModelFiles.some((f) =>
+      modelsArchiveBase(input, f) !== input.modelsDir
+    )
+  ) {
+    uses.push("the extensions/behaviors/ directory");
+  }
+  let behaviorExports = 0;
+  for (const file of input.modelEntryPoints) {
+    try {
+      if (exportNameOf(await Deno.readTextFile(file)) === "behavior") {
+        behaviorExports++;
+      }
+    } catch {
+      // Unreadable — the other gates report it.
+    }
+  }
+  if (behaviorExports > 0) {
+    uses.push(
+      `export const behavior in ${behaviorExports} entry point${
+        behaviorExports === 1 ? "" : "s"
+      }`,
+    );
+  }
+  return uses;
 }
 
 /**
@@ -1625,10 +1782,30 @@ export async function runQualityFindings(
         dimension: "Registry catalog",
         severity: "medium",
         file,
-        message: uncataloguedModelMessage(gap),
+        message: uncataloguedModelMessage(gap, exportNameOf(src)),
         remediation: remediationFor("uncatalogued-model"),
       });
     }
+  }
+
+  // Behavior spelling: an extension written with the behavior export,
+  // directory or manifest key loads only on this release and later, so say
+  // so once (swamp-club#3338).
+  const behaviorSpelling = await behaviorSpellingUses(input);
+  if (behaviorSpelling.length > 0) {
+    reviewRulesResult.warnings.push({
+      ruleId: "behavior-spelling",
+      dimension: "Compatibility",
+      severity: "medium",
+      file: "(extension)",
+      message:
+        `Extension uses the behavior spelling (${
+          behaviorSpelling.join(", ")
+        }). swamp clients and workers older than this release cannot load ` +
+        "it: they read only export const model, extensions/models/ and the " +
+        "models: manifest key.",
+      remediation: remediationFor("behavior-spelling"),
+    });
   }
 
   // Declared acceptances: inline directives from every packaged file with a
@@ -1774,6 +1951,62 @@ function collapseTestingCompleteness(
   ];
 }
 
+/** True when `file` is `dir` itself or lies under it. */
+function isWithin(dir: string, file: string): boolean {
+  const rel = relative(dir, file);
+  return !(rel === ".." || rel.startsWith(".." + SEPARATOR) ||
+    isAbsolute(rel));
+}
+
+/**
+ * The directory a model source or include file is packed from: the
+ * behaviors directory for a file under it, else the models directory
+ * (swamp-club#3338). The file lands at `models/<path from that directory>`,
+ * so a behavior-spelled extension's archive matches its model-spelled
+ * twin's and never holds a `models/../behaviors/` path.
+ */
+function modelsArchiveBase(
+  input: Pick<ExtensionPushPrepareInput, "modelsDir" | "behaviorsDir">,
+  file: string,
+): string {
+  return input.behaviorsDir !== undefined &&
+      input.behaviorsDir !== input.modelsDir &&
+      isWithin(input.behaviorsDir, file)
+    ? input.behaviorsDir
+    : input.modelsDir;
+}
+
+/**
+ * Refuses two model sources or include files that would be packed at the
+ * same `models/` path, one from the models directory and one from the
+ * behaviors directory (swamp-club#3338): the archive can hold only one.
+ */
+function assertDistinctModelArchivePaths(
+  input: ExtensionPushPrepareInput,
+): void {
+  if (
+    input.behaviorsDir === undefined || input.behaviorsDir === input.modelsDir
+  ) {
+    return;
+  }
+  const packed = new Map<string, string>();
+  for (const file of [...input.allModelFiles, ...input.includeFilePaths]) {
+    const archivePath = `models/${
+      relative(modelsArchiveBase(input, file), file).replaceAll("\\", "/")
+    }`;
+    const other = packed.get(archivePath);
+    if (other !== undefined && other !== file) {
+      throw validationFailed(
+        `${other} and ${file} would both be packed as ${archivePath}. ` +
+          "Files under the behaviors directory are packed under models/, " +
+          "like files under the models directory; rename or move one of them.",
+        { archivePath, files: [other, file] },
+      );
+    }
+    packed.set(archivePath, file);
+  }
+}
+
 /**
  * The path a packaged file has inside the archive, mirroring
  * {@link createArchive} exactly: additional files and binaries land at
@@ -1802,22 +2035,25 @@ function archivePathFor(
       : fwd(rel);
   };
   if (input.includeFilePaths.includes(file)) {
-    const rel = under(input.modelsDir);
+    const rel = under(modelsArchiveBase(input, file));
     return rel !== undefined ? `models/${rel}` : undefined;
   }
-  const typed: Array<[string, string[], string]> = [
-    ["models", input.allModelFiles, input.modelsDir],
-    ["vaults", input.allVaultFiles, input.vaultsDir],
-    ["datastores", input.allDatastoreFiles, input.datastoresDir],
-    ["reports", input.allReportFiles, input.reportsDir],
-    ["webhooks", input.allWebhookFiles, input.webhooksDir],
+  // A module copied into several kinds names the copy of the first kind
+  // that lists it, as before; a shared module has a single copy.
+  const planned = input.sourcePlan.entries.filter((e) => e.sourcePath === file);
+  const typed: Array<[string, string[]]> = [
+    ["models", input.allModelFiles],
+    ["vaults", input.allVaultFiles],
+    ["datastores", input.allDatastoreFiles],
+    ["reports", input.allReportFiles],
+    ["webhooks", input.allWebhookFiles],
   ];
-  for (const [kind, files, dir] of typed) {
+  for (const [kind, files] of typed) {
     if (!files.includes(file)) continue;
-    const rel = under(dir);
-    if (rel !== undefined) return `${kind}/${rel}`;
+    const inKind = planned.find((e) => e.archivePath.startsWith(`${kind}/`));
+    if (inKind) return inKind.archivePath;
   }
-  return undefined;
+  return planned[0]?.archivePath;
 }
 
 /**
@@ -1917,6 +2153,7 @@ export async function* extensionPush(
           ? { binaries: input.manifest.binaries }
           : {}),
         ...(input.channel ? { channel: input.channel } : {}),
+        ...(input.manifest.license ? { license: input.manifest.license } : {}),
         ...(requestedVisibility === "private"
           ? { visibility: requestedVisibility }
           : {}),
@@ -2099,7 +2336,7 @@ function buildResolvedData(
   const resolvedModels = input.modelEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedModelsByFile.get(
-      relative(input.modelsDir, f),
+      relative(modelsArchiveBase(input, f), f),
     );
     return {
       type: extracted?.type ?? relPath,
@@ -2170,6 +2407,7 @@ function buildResolvedData(
     name: input.manifest.name,
     version: input.manifest.version,
     visibility: input.manifest.visibility ?? "default",
+    license: input.manifest.license ?? null,
     description: input.manifest.description,
     repository: input.manifest.repository,
     releaseNotes: resolvedReleaseNotes,
@@ -2207,12 +2445,14 @@ async function bundleAndArchive(
     ? { packageJsonDir: input.packageJsonDir }
     : undefined;
 
+  assertDistinctModelArchivePaths(input);
+
   const bundles = new Map<string, string>();
   const compilationErrors: CompilationError[] = [];
 
   await bundleEntryPoints(
     input.modelEntryPoints,
-    input.modelsDir,
+    (entryPoint) => modelsArchiveBase(input, entryPoint),
     bundles,
     compilationErrors,
     deps,
@@ -2299,7 +2539,7 @@ async function bundleAndArchive(
 
 async function bundleEntryPoints(
   entryPoints: string[],
-  baseDir: string,
+  baseDir: string | ((entryPoint: string) => string),
   bundles: Map<string, string>,
   compilationErrors: CompilationError[],
   deps: ExtensionPushPrepareDeps,
@@ -2311,7 +2551,8 @@ async function bundleEntryPoints(
   label: string,
 ): Promise<void> {
   for (const entryPoint of entryPoints) {
-    const entryName = relative(baseDir, entryPoint).replace(/\.ts$/, "");
+    const base = typeof baseDir === "string" ? baseDir : baseDir(entryPoint);
+    const entryName = relative(base, entryPoint).replace(/\.ts$/, "");
     try {
       const js = await deps.bundleEntryPoint(
         entryPoint,
@@ -2370,6 +2611,7 @@ async function createArchive(
         name: input.manifest.name,
         version: input.manifest.version,
         description: input.manifest.description ?? "",
+        ...(input.manifest.license ? { license: input.manifest.license } : {}),
         ...(input.manifest.visibility
           ? { visibility: input.manifest.visibility }
           : {}),
@@ -2414,17 +2656,44 @@ async function createArchive(
       await Deno.copyFile(sidecarPath, join(extDir, QUALITY_SIDECAR_FILENAME));
     }
 
-    // Copy model source files
-    for (const modelFile of input.allModelFiles) {
-      const relPath = relative(input.modelsDir, modelFile);
-      const destPath = join(extDir, "models", relPath);
+    // Copy every local module the entry points reach to its planned path,
+    // rewriting the imports the plan names; the rest are byte for byte.
+    for (const entry of input.sourcePlan.entries) {
+      const parts = entry.archivePath.split("/");
+      if (
+        isAbsolute(entry.archivePath) || parts.includes("..") ||
+        parts.includes("")
+      ) {
+        throw markErrorPaths(
+          new Error(`Unsafe archive path: ${entry.archivePath}`),
+          [entry.archivePath, entry.sourcePath],
+        );
+      }
+      const destPath = join(extDir, ...parts);
       await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(modelFile, destPath);
+      if (entry.rewrites.length === 0) {
+        await Deno.copyFile(entry.sourcePath, destPath);
+      } else {
+        await Deno.writeTextFile(
+          destPath,
+          applySpecifierRewrites(
+            await Deno.readTextFile(entry.sourcePath),
+            entry.rewrites,
+          ),
+        );
+      }
     }
 
-    // Copy include files (alongside model sources, not bundled)
+    // Copy include files (alongside model sources, not bundled). A file the
+    // source plan already wrote keeps the plan's copy, which may carry
+    // rewritten imports.
+    const planned = new Set(
+      input.sourcePlan.entries.map((e) => `${e.sourcePath}\0${e.archivePath}`),
+    );
     for (const incFile of input.includeFilePaths) {
-      const relPath = relative(input.modelsDir, incFile);
+      const relPath = relative(modelsArchiveBase(input, incFile), incFile);
+      const archivePath = `models/${relPath.replaceAll("\\", "/")}`;
+      if (planned.has(`${incFile}\0${archivePath}`)) continue;
       const destPath = join(extDir, "models", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(incFile, destPath);
@@ -2443,27 +2712,11 @@ async function createArchive(
       await Deno.copyFile(wf.sourcePath, destPath);
     }
 
-    // Copy vault source files
-    for (const vaultFile of input.allVaultFiles) {
-      const relPath = relative(input.vaultsDir, vaultFile);
-      const destPath = join(extDir, "vaults", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(vaultFile, destPath);
-    }
-
     // Write compiled vault bundles
     for (const [entryName, js] of vaultBundles) {
       const destPath = join(extDir, "vault-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
-    }
-
-    // Copy datastore source files
-    for (const datastoreFile of input.allDatastoreFiles) {
-      const relPath = relative(input.datastoresDir, datastoreFile);
-      const destPath = join(extDir, "datastores", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(datastoreFile, destPath);
     }
 
     // Write compiled datastore bundles
@@ -2477,27 +2730,11 @@ async function createArchive(
       await Deno.writeTextFile(destPath, js);
     }
 
-    // Copy report source files
-    for (const reportFile of input.allReportFiles) {
-      const relPath = relative(input.reportsDir, reportFile);
-      const destPath = join(extDir, "reports", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(reportFile, destPath);
-    }
-
     // Write compiled report bundles
     for (const [entryName, js] of reportBundles) {
       const destPath = join(extDir, "report-bundles", `${entryName}.js`);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.writeTextFile(destPath, js);
-    }
-
-    // Copy webhook source files
-    for (const webhookFile of input.allWebhookFiles) {
-      const relPath = relative(input.webhooksDir, webhookFile);
-      const destPath = join(extDir, "webhooks", relPath);
-      await Deno.mkdir(dirname(destPath), { recursive: true });
-      await Deno.copyFile(webhookFile, destPath);
     }
 
     // Write compiled webhook bundles

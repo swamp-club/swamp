@@ -1,0 +1,18 @@
+# Extracted from .claude/skills/swamp/references/workflow/references/data-chaining.md (block 20)
+id: 00000000-0000-4000-8000-000000000018
+name: corpus-18
+jobs:
+  - name: create-route-tables
+    dependsOn:
+      - job: create-subnets
+        condition:
+          type: succeeded
+    steps:
+      - name: create-public-rt
+        task:
+          type: model_method
+          modelIdOrName: prod-route-table
+          methodName: create
+          inputs:
+            instanceName: public-rt
+            subnetId: ${{ data.latest("prod-subnet", "public-a").attributes.SubnetId }}

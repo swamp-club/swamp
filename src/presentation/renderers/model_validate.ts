@@ -36,6 +36,11 @@ import {
   type ExpressionPathError,
 } from "../../domain/models/validation_service.ts";
 import { formatAvailableKeys } from "../../domain/expressions/schema_path_validator.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+  surfaceNounPlural,
+} from "../command_surface.ts";
 
 const checkmark = "\u2713";
 const cross = "\u2717";
@@ -117,6 +122,8 @@ export interface ModelValidateRenderer extends Renderer<ModelValidateEvent> {
 class LogModelValidateRenderer implements ModelValidateRenderer {
   private _passed = true;
 
+  constructor(private readonly surface: CommandSurface) {}
+
   passed(): boolean {
     return this._passed;
   }
@@ -167,7 +174,8 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
   private renderAll(data: ModelValidateAllData): void {
     this._passed = data.passed;
     const lines: string[] = [];
-    lines.push(bold(cyan("Validating all models...")));
+    const plural = surfaceNounPlural(this.surface);
+    lines.push(bold(cyan(`Validating all ${plural}...`)));
 
     for (const model of data.models) {
       lines.push("");
@@ -183,7 +191,7 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
 
     lines.push("");
     const summaryParts = [
-      `${data.totalPassed}/${data.models.length} models passed`,
+      `${data.totalPassed}/${data.models.length} ${plural} passed`,
     ];
     if (data.totalWarnings > 0) {
       summaryParts.push(
@@ -227,11 +235,12 @@ class JsonModelValidateRenderer implements ModelValidateRenderer {
 
 export function createModelValidateRenderer(
   mode: OutputMode,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): ModelValidateRenderer {
   switch (mode) {
     case "json":
       return new JsonModelValidateRenderer();
     case "log":
-      return new LogModelValidateRenderer();
+      return new LogModelValidateRenderer(surface);
   }
 }

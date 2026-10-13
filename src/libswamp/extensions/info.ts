@@ -129,7 +129,9 @@ export async function* extensionInfo(
             description: info.description,
             repository: info.repository,
             homepageUrl: info.homepageUrl,
-            license: info.license,
+            // The latest version's declared license once the registry
+            // reports one; otherwise the extension-level setting.
+            license: versionDetail?.license ?? info.license,
             platforms: info.platforms,
             labels: info.labels,
             contentTypes: info.contentTypes,

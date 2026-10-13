@@ -1,26 +1,26 @@
-# Extension Model Examples
+# Extension Behavior Examples
 
 ## Table of Contents
 
-- [CRUD Lifecycle Model (VPC)](#crud-lifecycle-model-vpc)
+- [CRUD Lifecycle Behavior (VPC)](#crud-lifecycle-behavior-vpc)
 - [Polling to Completion](#polling-to-completion)
 - [Idempotent Creates](#idempotent-creates)
 - [Sync Method](#sync-method)
-- [Error Handling Model](#error-handling-model)
-- [Text Processor Model](#text-processor-model)
-- [Deployment Model](#deployment-model)
-- [Minimal Echo Model](#minimal-echo-model)
-- [Data Chaining Model](#data-chaining-model)
+- [Error Handling Behavior](#error-handling-behavior)
+- [Text Processor Behavior](#text-processor-behavior)
+- [Deployment Behavior](#deployment-behavior)
+- [Minimal Echo Behavior](#minimal-echo-behavior)
+- [Data Chaining Behavior](#data-chaining-behavior)
 - [Shell Command with Streamed Logging](#shell-command-with-streamed-logging)
-- [AWS Model with Pre-flight Credential Check](#aws-model-with-pre-flight-credential-check)
+- [AWS Behavior with Pre-flight Credential Check](#aws-behavior-with-pre-flight-credential-check)
 - [Using External Dependencies](#using-external-dependencies)
-- [Extending Existing Model Types](#extending-existing-model-types)
+- [Extending Existing Behavior Types](#extending-existing-behavior-types)
 - [Helper Scripts](#helper-scripts)
-- [Model with Version Upgrades](#model-with-version-upgrades)
+- [Behavior with Version Upgrades](#behavior-with-version-upgrades)
 
 ## Using External Dependencies
 
-Extension models are written in TypeScript and can import any package using
+Extension behaviors are written in TypeScript and can import any package using
 Deno's import specifiers: `npm:`, `jsr:`, or `https://` URLs. Swamp
 automatically bundles the TypeScript source and all dependencies into a single
 JavaScript file at startup — no install step required.
@@ -84,7 +84,7 @@ project configuration. All three styles produce identical bundles.
 ### Example
 
 ```typescript
-// extensions/models/text_analyzer.ts
+// extensions/behaviors/text_analyzer.ts
 import { z } from "npm:zod@4";
 import { countBy, sortBy, words } from "npm:lodash-es@4.17.21";
 
@@ -101,7 +101,7 @@ const AnalysisSchema = z.object({
   analyzedAt: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/text-analyzer",
   version: "2026.02.24.1",
   globalArguments: GlobalArgsSchema,
@@ -158,7 +158,7 @@ export const model = {
 - All `npm:` packages except `zod` are **inlined** into the bundle — they are
   resolved and included at bundle time, which ensures they work in the compiled
   binary where only swamp's own embedded dependency graph is available
-- `zod` is externalized so your model shares the same zod instance as swamp,
+- `zod` is externalized so your behavior shares the same zod instance as swamp,
   which is required for schema `instanceof` checks to work
 - Local `.ts` code and other imports are still transpiled and bundled
 - **Dynamic `import()` calls are not supported** — use static top-level imports
@@ -177,10 +177,10 @@ export const model = {
 | Local `.ts` imports                      | Yes      | Transpiled and inlined                   |
 | `await import("npm:pkg")`                | N/A      | **Not supported** — use static imports   |
 
-## CRUD Lifecycle Model (VPC)
+## CRUD Lifecycle Behavior (VPC)
 
-Models that manage real resources typically have `create`, `update`, `delete`,
-and `sync` methods. Each method follows a distinct pattern:
+Behaviors that manage real resources typically have `create`, `update`,
+`delete`, and `sync` methods. Each method follows a distinct pattern:
 
 - **`create`** — runs a command, stores the result via `writeResource()`
 - **`update`** — reads stored data to get the resource ID, modifies the
@@ -191,7 +191,7 @@ and `sync` methods. Each method follows a distinct pattern:
   get current state, writes refreshed state (or marks as `not_found`)
 
 ```typescript
-// extensions/models/vpc.ts
+// extensions/behaviors/vpc.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -205,7 +205,7 @@ const VpcSchema = z.object({
 
 type VpcData = z.infer<typeof VpcSchema>;
 
-export const model = {
+export const behavior = {
   type: "@user/vpc",
   version: "2026.02.10.1",
   globalArguments: GlobalArgsSchema,
@@ -443,17 +443,18 @@ export const model = {
 
 **Key points:**
 
-- `create` stores data via `writeResource` — makes it available to other models
-  via CEL expressions and to update/delete/sync methods via `dataRepository`
+- `create` stores data via `writeResource` — makes it available to other
+  behaviors via CEL expressions and to update/delete/sync methods via
+  `dataRepository`
 - `update` reads stored data, modifies the resource, writes updated state via
   `writeResource` (creates a new version)
-- `delete` reads stored data via `context.readResource()` to locate the model's
-  own data
+- `delete` reads stored data via `context.readResource()` to locate the
+  behavior's own data
 - `delete` returns `{ dataHandles: [] }` since no new data is produced
 - `sync` reads the stored resource ID (zero-arg — no user input needed), calls
   the live API, and writes refreshed state or a `not_found` marker for drift
   detection
-- Always check for `null` content — the model may not have been created yet
+- Always check for `null` content — the behavior may not have been created yet
 
 ## Cleaning Up Stale Data with deleteResource
 
@@ -487,23 +488,23 @@ API directly.
 
 When integrating with cloud providers or async APIs, the create/update response
 often contains provisional state (e.g., `"ip": "pending"`, `"status": "new"`).
-If other models reference attributes that aren't populated until the resource is
-ready, consider polling until fully provisioned before returning. This ensures
-`writeResource()` stores complete data, so downstream CEL expressions resolve to
-real values — not placeholders.
+If other behaviors reference attributes that aren't populated until the resource
+is ready, consider polling until fully provisioned before returning. This
+ensures `writeResource()` stores complete data, so downstream CEL expressions
+resolve to real values — not placeholders.
 
-Not every model needs polling — if the API returns complete state synchronously,
-or no other model depends on post-provisioning attributes, you can skip it. When
-building a new extension model, swamp will ask whether you want to include
-polling support.
+Not every behavior needs polling — if the API returns complete state
+synchronously, or no other behavior depends on post-provisioning attributes, you
+can skip it. When building a new extension behavior, swamp will ask whether you
+want to include polling support.
 
 ### Helpers: Retry and Poll
 
-Extract reusable helpers into a `_lib/` directory so all models for the same
+Extract reusable helpers into a `_lib/` directory so all behaviors for the same
 provider share them:
 
 ```typescript
-// extensions/models/_lib/provider.ts
+// extensions/behaviors/_lib/provider.ts
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -592,10 +593,10 @@ export async function pollUntilReady<T>(
 }
 ```
 
-### Using the Helpers in a Model
+### Using the Helpers in a Behavior
 
 ```typescript
-// extensions/models/load_balancer.ts
+// extensions/behaviors/load_balancer.ts
 import { z } from "npm:zod@4";
 import { pollUntilReady, withRetry } from "./_lib/provider.ts";
 
@@ -632,7 +633,7 @@ async function apiCall(
   return await response.json();
 }
 
-export const model = {
+export const behavior = {
   type: "@user/load-balancer",
   version: "2026.03.08.1",
   globalArguments: GlobalArgsSchema,
@@ -713,8 +714,8 @@ export const model = {
   exponential backoff + jitter
 - `pollUntilReady` handles async provisioning by checking a status endpoint
   until a terminal state is reached
-- Shared helpers in `_lib/` avoid duplicating retry/poll logic across models for
-  the same provider
+- Shared helpers in `_lib/` avoid duplicating retry/poll logic across behaviors
+  for the same provider
 - The same pattern applies to `update` and `delete` — always wait for the
   operation to finish before returning
 
@@ -724,18 +725,19 @@ When a workflow partially fails and is re-run, `create` methods execute again
 for resources that were already successfully created. For non-idempotent APIs
 (e.g., droplets, load balancers, EC2 instances), this creates duplicates.
 
-Not every model needs this — if the provider's API is naturally idempotent
-(e.g., "create tag" is a no-op if it exists), or if your model intentionally
+Not every behavior needs this — if the provider's API is naturally idempotent
+(e.g., "create tag" is a no-op if it exists), or if your behavior intentionally
 creates multiple instances, you can skip the check. When building a new
-extension model, swamp will ask whether you want to include idempotency support.
+extension behavior, swamp will ask whether you want to include idempotency
+support.
 
-**When needed, the check belongs in the model, not in swamp core**, because:
+**When needed, the check belongs in the behavior, not in swamp core**, because:
 
-- The model knows what the identifier field is called (`VpcId` vs `id` vs
+- The behavior knows what the identifier field is called (`VpcId` vs `id` vs
   `slug`)
-- The model knows how to verify existence (CloudControl GET vs REST
+- The behavior knows how to verify existence (CloudControl GET vs REST
   `/v2/droplets/{id}`)
-- The model knows whether the API is naturally idempotent (e.g., tags are,
+- The behavior knows whether the API is naturally idempotent (e.g., tags are,
   droplets aren't)
 
 A generic `skip-if-data-exists` check in swamp would be fragile — stale data
@@ -745,7 +747,7 @@ with no resource and no error.
 ### Pattern: Check Existing State Before Creating
 
 ```typescript
-// extensions/models/droplet.ts
+// extensions/behaviors/droplet.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -787,7 +789,7 @@ async function apiCall(
   return await response.json();
 }
 
-export const model = {
+export const behavior = {
   type: "@user/droplet",
   version: "2026.03.08.1",
   globalArguments: GlobalArgsSchema,
@@ -894,7 +896,7 @@ export const model = {
 
 ## Sync Method
 
-Every CRUD model should include a `sync` method for drift detection. Unlike
+Every CRUD behavior should include a `sync` method for drift detection. Unlike
 `get` (which requires the user to provide the resource ID as an argument),
 `sync` reads the ID from already-stored state, making it zero-arg. This means a
 workflow can call `sync` on every instance without knowing resource IDs up
@@ -955,9 +957,9 @@ sync: {
 },
 ```
 
-### Orchestrating Sync Across Models
+### Orchestrating Sync Across Behaviors
 
-A "drift check" across your entire stack is a workflow — one step per model
+A "drift check" across your entire stack is a workflow — one step per behavior
 calling `sync`. After running this, `swamp data list` shows the refreshed state
 for everything, including which resources came back as `not_found`.
 
@@ -1009,15 +1011,15 @@ jobs:
   `swamp data query 'modelName == "<name>" && dataType == "resource"'` to
   discover what needs syncing (see `swamp-data` skill)
 
-## Error Handling Model
+## Error Handling Behavior
 
-Models should throw when execution fails. Throw **before** writing data — failed
-executions should not persist incorrect or misleading data.
+Behaviors should throw when execution fails. Throw **before** writing data —
+failed executions should not persist incorrect or misleading data.
 
 **Pattern: check for failure first, only write data on success.**
 
 ```typescript
-// extensions/models/health_check.ts
+// extensions/behaviors/health_check.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -1032,7 +1034,7 @@ const ResultSchema = z.object({
   checkedAt: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/health-check",
   version: "2026.03.05.1",
   globalArguments: GlobalArgsSchema,
@@ -1093,10 +1095,10 @@ export const model = {
 - Use `allowFailure: true` on a workflow step to continue execution after a
   failure
 
-## Text Processor Model
+## Text Processor Behavior
 
 ```typescript
-// extensions/models/text_processor.ts
+// extensions/behaviors/text_processor.ts
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -1111,7 +1113,7 @@ const OutputSchema = z.object({
   processedAt: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/text-processor",
   version: "2026.02.09.1",
   resources: {
@@ -1164,10 +1166,10 @@ export const model = {
 };
 ```
 
-## Deployment Model
+## Deployment Behavior
 
 ```typescript
-// extensions/models/deployment.ts
+// extensions/behaviors/deployment.ts
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -1187,7 +1189,7 @@ const StateSchema = z.object({
   deployedAt: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/deployment",
   version: "2026.02.09.1",
   globalArguments: InputSchema,
@@ -1261,10 +1263,10 @@ export const model = {
 };
 ```
 
-## Minimal Echo Model
+## Minimal Echo Behavior
 
 ```typescript
-// extensions/models/echo.ts
+// extensions/behaviors/echo.ts
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({ message: z.string() });
@@ -1274,7 +1276,7 @@ const OutputSchema = z.object({
   timestamp: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/echo",
   version: "2026.02.09.1",
   globalArguments: InputSchema,
@@ -1312,13 +1314,13 @@ export const model = {
 };
 ```
 
-## Data Chaining Model
+## Data Chaining Behavior
 
-Models that produce data can be chained together using CEL expressions. The
-output from one model's resource can be referenced by another model.
+Behaviors that produce data can be chained together using CEL expressions. The
+output from one behavior's resource can be referenced by another behavior.
 
 ```typescript
-// extensions/models/config_generator.ts
+// extensions/behaviors/config_generator.ts
 import { z } from "npm:zod@4";
 
 const InputSchema = z.object({
@@ -1335,7 +1337,7 @@ const ConfigSchema = z.object({
   generatedAt: z.string(),
 });
 
-export const model = {
+export const behavior = {
   type: "@user/config-generator",
   version: "2026.02.09.1",
   globalArguments: InputSchema,
@@ -1390,20 +1392,20 @@ export const model = {
 };
 ```
 
-**Using the chained output in another model input:**
+**Using the chained output in another behavior's input:**
 
 ```yaml
-# Model input that references config-generator output
+# Behavior input that references config-generator output
 name: my-service-client
 globalArguments:
-  # Reference the generated config from another model's resource output
+  # Reference the generated config from another behavior's resource output
   endpoint: ${{ model.api-config.resource.config.config.attributes.configJson.endpoint }}
   timeout: ${{ model.api-config.resource.config.config.attributes.configJson.timeout }}
   retries: ${{ model.api-config.resource.config.config.attributes.configJson.retries }}
 ```
 
-This pattern enables dynamic configuration where one model generates values that
-are consumed by dependent models, with the workflow engine automatically
+This pattern enables dynamic configuration where one behavior generates values
+that are consumed by dependent behaviors, with the workflow engine automatically
 resolving execution order based on expression dependencies.
 
 ## Shell Command with Streamed Logging
@@ -1413,7 +1415,7 @@ streamed line-by-line through LogTape — displayed on the console and persisted
 to a `.log` file by `RunFileSink` automatically.
 
 ```typescript
-// extensions/models/system_info.ts
+// extensions/behaviors/system_info.ts
 import { z } from "npm:zod@4";
 import { executeProcess } from "../../../../src/infrastructure/process/process_executor.ts";
 
@@ -1428,7 +1430,7 @@ const OutputSchema = z.object({
   durationMs: z.number(),
 });
 
-export const model = {
+export const behavior = {
   type: "@myorg/system-info",
   version: "2026.02.09.1",
   globalArguments: InputSchema,
@@ -1485,9 +1487,9 @@ export const model = {
 };
 ```
 
-## AWS Model with Pre-flight Credential Check
+## AWS Behavior with Pre-flight Credential Check
 
-Models that call AWS APIs should validate credentials before doing real work.
+Behaviors that call AWS APIs should validate credentials before doing real work.
 This catches expired SSO sessions, missing profiles, and misconfigured
 credentials early — with an actionable error message instead of a cryptic
 failure mid-execution.
@@ -1502,7 +1504,7 @@ failure mid-execution.
   configured
 
 ```typescript
-// extensions/models/vpc.ts
+// extensions/behaviors/vpc.ts
 import { z } from "npm:zod@4";
 
 const GlobalArgsSchema = z.object({
@@ -1552,7 +1554,7 @@ async function validateCredentials(
   }
 }
 
-export const model = {
+export const behavior = {
   type: "@user/vpc",
   version: "2026.02.10.1",
   globalArguments: GlobalArgsSchema,
@@ -1608,16 +1610,16 @@ export const model = {
   shell is already available to subprocesses
 - The AWS SDK credential chain handles SSO, `credential_process`, instance
   profiles, and role assumption automatically
-- The model owns the pre-flight check logic because it is the domain expert for
-  its service — it knows what credentials it needs and what a useful error looks
-  like
+- The behavior owns the pre-flight check logic because it is the domain expert
+  for its service — it knows what credentials it needs and what a useful error
+  looks like
 
-## Extending Existing Model Types
+## Extending Existing Behavior Types
 
 ### Single Method Extension
 
 ```typescript
-// extensions/models/shell_audit.ts
+// extensions/behaviors/shell_audit.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
@@ -1642,7 +1644,7 @@ export const extension = {
           ) => Promise<{ name: string }>;
         },
       ) => {
-        // Write to a resource declared on the target model
+        // Write to a resource declared on the target behavior
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
@@ -1658,7 +1660,7 @@ export const extension = {
 ### Multiple Methods in One Extension File
 
 ```typescript
-// extensions/models/shell_extras.ts
+// extensions/behaviors/shell_extras.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
@@ -1719,11 +1721,11 @@ export const extension = {
 
 ### Extension with Custom Resources
 
-Extensions can declare their own resource specs when the target model's existing
-resources don't fit the extension's output shape:
+Extensions can declare their own resource specs when the target behavior's
+existing resources don't fit the extension's output shape:
 
 ```typescript
-// extensions/models/shell_audit_custom.ts
+// extensions/behaviors/shell_audit_custom.ts
 import { z } from "npm:zod@4";
 
 export const extension = {
@@ -1769,27 +1771,28 @@ export const extension = {
 ```
 
 Resource spec names must not conflict with specs already declared on the target
-model type. The `resources` field uses the same shape as base model definitions.
+behavior type. The `resources` field uses the same shape as base behavior
+definitions.
 
 ### Nested Directory Organization
 
-Extension and model files can live in subdirectories for organization:
+Extension and behavior files can live in subdirectories for organization:
 
 ```
-extensions/models/
+extensions/behaviors/
   aws/
-    s3_bucket.ts          # export const model (new type)
+    s3_bucket.ts          # export const behavior (new type)
     s3_audit.ts           # export const extension (extends aws s3)
   monitoring/
-    health_check.ts       # export const model (new type)
+    health_check.ts       # export const behavior (new type)
   shell_audit.ts          # export const extension (extends command/shell)
 ```
 
 ## Helper Scripts
 
-When a model needs to shell out to a helper script that has dependencies swamp
-can't bundle (e.g., native modules), use the `include` manifest field. Include
-files are shipped alongside models but never bundled.
+When a behavior needs to shell out to a helper script that has dependencies
+swamp can't bundle (e.g., native modules), use the `include` manifest field.
+Include files are shipped alongside behaviors but never bundled.
 
 ### Manifest
 
@@ -1797,19 +1800,20 @@ files are shipped alongside models but never bundled.
 manifestVersion: 1
 name: "@myorg/homekit"
 version: "2026.03.24.1"
-models:
+license: MIT
+behaviors:
   - homekit.ts
 include:
   - homekit_discover.ts
 ```
 
-### Model (shells out to helper)
+### Behavior (shells out to helper)
 
 ```typescript
-// extensions/models/homekit.ts
+// extensions/behaviors/homekit.ts
 import { z } from "npm:zod@4";
 
-export const model = {
+export const behavior = {
   type: "@myorg/homekit",
   version: "2026.03.24.1",
   globalArguments: z.object({}),
@@ -1827,7 +1831,7 @@ export const model = {
         context: { repoDir: string },
       ) => {
         const scriptPath =
-          `${context.repoDir}/extensions/models/homekit_discover.ts`;
+          `${context.repoDir}/extensions/behaviors/homekit_discover.ts`;
         const cmd = new Deno.Command("deno", {
           args: ["run", "--allow-net", scriptPath],
           stdout: "piped",
@@ -1840,11 +1844,11 @@ export const model = {
 };
 ```
 
-### Helper (not a model, not bundled)
+### Helper (not a behavior, not bundled)
 
 ```typescript
-// extensions/models/homekit_discover.ts
-// This file does NOT export const model — swamp won't try to bundle it.
+// extensions/behaviors/homekit_discover.ts
+// This file does NOT export const behavior — swamp won't try to bundle it.
 import { HAPController } from "npm:hap-controller@1.0.0";
 
 const browser = new HAPController();
@@ -1852,20 +1856,20 @@ const devices = await browser.discover();
 console.log(JSON.stringify(devices));
 ```
 
-The loader skips files that don't declare `export const model` or
-`export const extension`, so the helper is never bundled — even without the
-`include` manifest field. The `include` field is needed to ship the helper in
-the extension archive when publishing.
+The loader skips files that declare none of `export const behavior`,
+`export const model` and `export const extension`, so the helper is never
+bundled — even without the `include` manifest field. The `include` field is
+needed to ship the helper in the extension archive when publishing.
 
-## Model with Version Upgrades
+## Behavior with Version Upgrades
 
-A notifier model that evolves through three versions, demonstrating how to
+A notifier behavior that evolves through three versions, demonstrating how to
 maintain an upgrade chain for existing instances.
 
 ```typescript
 import { z } from "npm:zod@4";
 
-export const model = {
+export const behavior = {
   type: "@acme/notifier",
   version: "2026.02.09.1",
 
@@ -1888,7 +1892,7 @@ export const model = {
   },
 
   // Upgrade chain: each entry migrates from the previous version.
-  // The last toVersion must match the model's current version.
+  // The last toVersion must match the behavior's current version.
   upgrades: [
     {
       toVersion: "2025.06.01.1",

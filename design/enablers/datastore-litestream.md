@@ -1,7 +1,7 @@
 ---
 audience: maintainer
 enables: [data]
-last-verified: 2026-10-11 @ 53727e85
+last-verified: 2026-10-13 @ dcc3099c
 ---
 
 # Datastore: Litestream Replication
@@ -19,21 +19,15 @@ and the `_control/` records this layout sits beside.
 
 ## Decision
 
-> **Superseded for shipping (2026-10-11):** Litestream is not embedded with
-> `deno compile --include`. Phase 4 downloads the pinned upstream release on
-> first v3 use, checks its SHA-256 on download and before every start, and
-> caches it per version under `~/.swamp/`, with an override path for offline
-> machines. The serve Docker image includes it. Embedding is revisited at
-> Phase 7. Everything else in this record stands: the sidecar model, the
-> `/sync` rule, checkpointing, the replica path per fence, and Windows.
+> **Resolved (swamp-club#3358):** the 2026-10-11 decision to download rather
+> than embed Litestream is built, and decision 1 below now records it.
+> Embedding with `deno compile --include` would add about 38 MB to every
+> release for every user. It is revisited at Phase 7, when v3 becomes the
+> default.
 
 1. **Run the upstream `litestream` binary as a sidecar process that swamp
-   supervises.** Pin one release. Embed the binary for each target in the
-   compiled swamp binary with `deno compile --include`, the same way the
-   embedded Deno runtime is shipped (`scripts/download_deno.ts`,
-   `src/infrastructure/runtime/embedded_deno_runtime.ts`). Extract it to a
-   per-version directory under `~/.swamp/` and verify its SHA-256 before every
-   start.
+   supervises, downloaded on first v3 use.** See
+   [Obtaining the binary](#obtaining-the-binary).
 2. **Talk to it through its control socket.** `POST /sync {"wait": true}` is how
    the outbox learns that a commit has reached the bucket (see
    [Knowing a commit is replicated](#knowing-a-commit-is-replicated)).
@@ -66,12 +60,61 @@ Four options were prototyped or assessed. All measurements are in
 | **LiteFS**                                                                                           | Rejected on paper. It is a FUSE filesystem, so it is Linux-only and needs mount privileges. swamp ships to macOS and Windows and runs unprivileged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **SQLite session extension** (`createSession` / `applyChangeset`, available in Deno's `node:sqlite`) | Not chosen. Changesets are logical diffs, so swamp would have to design its own log format, ordering, snapshots and restore, which amounts to writing a replicator. It stays as the fallback if Windows can't be supported (see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
-Licensing: Litestream is Apache-2.0. Apache-2.0 §4 requires its licence, and any
-NOTICE file, to travel with the redistributed binary. The release notes aren't
-enough: ship them with the release artifacts, for example in a third-party
-notices file. Keep the upstream SHA-256 in the build script. Whether a binary
-embedded inside the compiled swamp executable counts as "an aggregate" next to
-AGPLv3 code is a legal question, **to be confirmed**.
+Licensing: Litestream is Apache-2.0. swamp's release binaries don't carry it:
+each machine fetches upstream's own release, and the cache keeps upstream's
+`LICENSE` beside the binary. The serve Docker image does redistribute it, so
+Apache-2.0 §4 applies there: the image ships upstream's `LICENSE` at
+`/usr/share/doc/litestream/LICENSE`. Upstream ships no NOTICE file.
+
+## Obtaining the binary
+
+Built in swamp-club#3358, dormant until the sidecar uses it. The code is
+`src/domain/datastore_v3/litestream_release.ts` (the rules) and
+`src/infrastructure/datastore_v3/litestream/` (the pin and the provider).
+
+- **Pinned at build time.** `litestream_pin.ts` records one version and, for
+  darwin-arm64, darwin-x86_64, linux-arm64, linux-x86_64 and windows-x86_64,
+  the SHA-256 of upstream's archive and of the binary inside it.
+  `deno run litestream-pin --version <v>` regenerates it from upstream's
+  `checksums.txt`, checking every archive against it and hashing every binary.
+  It also rewrites the Dockerfile's copy of the linux archive digests.
+  `deno run litestream-pin --check` re-derives the pin and fails on drift. The
+  same check runs as an opt-in test when `SWAMP_LITESTREAM_NETWORK_TEST` is set.
+- **Downloaded on first use** from upstream's GitHub release for that version
+  and target. The archive is read under a 128 MB cap and a 10-minute timeout
+  and hashed **before** anything is extracted. The binary is hashed again
+  after extraction. Only the binary and `LICENSE` are kept.
+- **Cached per version** at `<swamp data dir>/litestream/<version>/`
+  (`~/.swamp/` unless `SWAMP_HOME` is set), so two swamp versions on one
+  machine never share a binary.
+- **Hashed before every start.** The binary sees bucket credentials and every
+  commit, so the provider hashes it on every call, which costs about 14 ms on
+  37 MB. A version directory whose binary is missing or doesn't match is
+  refused, never replaced or run: the error names the directory to delete.
+- **Concurrent first use takes no lock.** Each process stages its download
+  in its own temp directory beside the cache and renames it into place, so N
+  racing processes each download the archive once; this happens once per
+  version. A
+  rename onto an existing directory fails on every platform, so the first
+  rename wins. The other process discards its copy and hashes the winner's.
+  Staging directories older than 10 minutes, left by a crashed process, are
+  swept on the next download.
+- **Offline and air-gapped machines.** `SWAMP_LITESTREAM_PATH` points at a
+  binary the user installed. It is hashed against the pin like any other.
+  With no network and no override, the error says what failed (network error,
+  timeout or HTTP status), the exact URL, both digests, and the two places
+  the binary can go: the cache path or `SWAMP_LITESTREAM_PATH`. On macOS it
+  says to download with `curl`, because a browser download is quarantined and
+  Gatekeeper may stop it. A binary placed in the cache by hand is made
+  executable once its hash matches; an override path is never modified.
+- **The serve Docker image** fetches the linux archive at build time
+  (`ADD --checksum`, one stage per architecture), installs
+  `/usr/local/bin/litestream` and sets `SWAMP_LITESTREAM_PATH` to it, so serve
+  never downloads at runtime. `integration/toolchain_pins_rules_test.ts` fails
+  if the Dockerfile and the pin drift apart.
+- **Windows** needs Litestream 0.5.18 or later (litestream#1542). Below it the
+  provider reports that v3 replication isn't available on Windows yet, and
+  Windows stays on v2. With 0.5.17 pinned, that is the case today.
 
 ## Measurements
 
@@ -223,8 +266,8 @@ nothing stops two writers sharing a path.
   the zombie kept writing to `fence-1/`. The new leader's first sync uploads a
   full snapshot, which costs the same as an initial sync (3.4 s per GB locally).
 - **So:** "a generation per fence" becomes **a replica path per fence**. The
-  fence id comes from the leader lease in team mode and the writer lock in solo
-  mode. Restore reads the current fence from that record, then restores
+  fence id comes from the leader lease in team mode and the writer lease in solo
+  mode (swamp-club#3359; `datastores.md`, **v3 writer lease**). Restore reads the current fence from that record, then restores
   `_litestream/<fence>/`. Paths left by older fences are garbage-collected after
   the next fence's first confirmed sync.
 - A zombie's confirmations on its old path count for nothing. **A leader must
@@ -250,11 +293,12 @@ nothing stops two writers sharing a path.
 
 **Layout.** The replica is datastore-scoped. It sits under the bucket prefix,
 beside the datastore-scoped control plane (`datastoreControlPlaneStore()`,
-swamp-club#3191), not under a namespace:
+swamp-club#3191; writable for the lease since swamp-club#3364), not under a
+namespace:
 
 ```
 <prefix>/_control/datastore-format
-<prefix>/_control/writer              solo writer lock (carries the fence)
+<prefix>/_control/writer/             solo writer lease (fence-<n>, heartbeat-<n>, released-<n>)
 <prefix>/_litestream/<fence>/<level>/<min>-<max>.ltx
 <prefix>/_blobs/<namespace>/sha256/<aa>/<sha256>   content chunks (storage/1)
 ```
@@ -292,8 +336,8 @@ command runs its own sidecar or a longer-lived process owns replication.
 
 ## Upgrades
 
-The pinned version belongs to the swamp release that embeds it. Each version
-extracts to its own directory, so two swamp versions on one machine don't fight
+The pinned version belongs to the swamp release that pins it. Each version
+caches in its own directory, so two swamp versions on one machine don't fight
 over the binary. Litestream's local state (`.commits.db-litestream/`) and the
 replica's LTX format belong to that version too. Upstream has changed the
 replica format once (0.3 generations to 0.5 LTX), and 0.5 ships a reader for 0.3
@@ -386,9 +430,12 @@ macOS.
   Deno extraction checks only a version marker. It writes atomically (temp +
   rename, `0o755`) and runs a `--version` health check, but nothing verifies the
   extracted bytes, and a file replaced under `~/.swamp/deno/` would be run. The
-  Litestream helper must verify its SHA-256 against the value embedded at build
-  time before every start. That costs 14 ms on 37 MB.
-- **Size.** +10–12 % per release binary.
+  Litestream provider hashes the binary against the pin on every resolve
+  (swamp-club#3358). Between that hash and the sidecar's start a same-user
+  process could still swap the file; the sidecar issue decides whether to
+  close that window.
+- **Size.** Downloading keeps release binaries unchanged; embedding would
+  have added 10–12 % to each.
 - **Real-bucket latency** is unmeasured. The emulator-plus-RTT figures put a
   per-command forced sync at about 165 ms against a long-lived 44 ms. Measure
   against real S3 and GCS before choosing per-command or long-lived for solo
@@ -403,7 +450,7 @@ macOS.
 - **Phase 4 (embedded datastore service):**
   - sidecar lifecycle per write command: start, forced `/sync wait`, stop;
   - pidfile guard against orphans, and a short socket path;
-  - SHA-256 check on extract and on every start;
+  - SHA-256 check on download and on every start (built: swamp-club#3358);
   - `commits.db` keeps SQLite's default checkpointing and never forces one;
   - the outbox rule above;
   - `litestream sync` as the client on Windows, and Windows gated on Litestream

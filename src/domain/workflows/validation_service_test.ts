@@ -2765,6 +2765,22 @@ Deno.test("validate: reports a static vault.get outside the workflow's vaults li
   assertEquals(failed[0].error?.includes("'roomcontrol'"), false);
 });
 
+Deno.test("validate: reports a bare-token vault.get outside the workflow's vaults list (swamp-club#3360)", async () => {
+  const results = await service.validate(vaultsListWorkflow(["roomcontrol"], {
+    a: "${{ vault.get(roomcontrol, k) }}",
+    b: "${{ vault.get(erp, k) }}",
+    c: "${{ vault.get(inputs.vault, k) }}",
+  }));
+  const failed = results.filter((r) => !r.passed);
+  assertEquals(failed.length, 1);
+  assertEquals(
+    failed[0].name,
+    "Vaults the workflow reads are in its vaults list",
+  );
+  assertEquals(failed[0].error?.includes("'erp'"), true);
+  assertEquals(failed[0].error?.includes("'roomcontrol'"), false);
+});
+
 Deno.test("validate: no vaults list reports nothing about vaults", async () => {
   const results = await service.validate(vaultsListWorkflow(undefined, {
     b: "${{ vault.get('erp', 'k') }}",
@@ -2939,5 +2955,153 @@ Deno.test("fails a wait key on a step under forEach, naming the step", async () 
       "a wait_for_signal step under forEach cannot declare a key",
     ),
     true,
+  );
+});
+
+// Another templating system's text in step tasks (swamp-club#2528).
+
+function foreignTextWorkflow(task: StepTask): Workflow {
+  return Workflow.create({
+    name: "foreign",
+    jobs: [Job.create({
+      name: "build",
+      steps: [Step.create({ name: "emit", task })],
+    })],
+  });
+}
+
+Deno.test("warns about another templating system's text in step arguments", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.directExecution("command/shell", "emit-model", "execute", {
+      region: "${{ matrix.region }}",
+    }, { env: { SHA: "${{ github.sha }}" } }),
+  ));
+  const warnings = results.filter((r) =>
+    r.name.startsWith("Template syntax passed through")
+  );
+  assertEquals(warnings.map((r) => [r.name, r.passed, r.warning]), [
+    ["Template syntax passed through in job 'build' step 'emit'", true, true],
+    ["Template syntax passed through in job 'build' step 'emit'", true, true],
+  ]);
+  assertEquals(warnings[0].error?.startsWith("inputs.region holds"), true);
+  assertEquals(
+    warnings[1].error?.startsWith("globalArgs.env.SHA holds ${{ github.sha }}"),
+    true,
+  );
+});
+
+Deno.test("fails another templating system's text where a task names what it runs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("${{ github.repository }}", "run"),
+  ));
+  const failures = results.filter((r) => !r.passed);
+  assertEquals(failures.map((r) => r.name), [
+    "Task expressions in job 'build' step 'emit'",
+  ]);
+  assertEquals(
+    failures[0].error?.startsWith(
+      "modelIdOrName holds ${{ github.repository }}",
+    ),
+    true,
+  );
+});
+
+Deno.test("reports nothing for swamp expressions in step tasks", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("${{ inputs.target }}", "run", {
+      region: "${{ inputs.region }}",
+      sha: "${{ steps.build.outputs.sha }}",
+    }),
+  ));
+  assertEquals(
+    results.filter((r) => /Template syntax|Task expressions/.test(r.name)),
+    [],
+  );
+});
+
+Deno.test("fails a root that nearly spells a swamp namespace in step arguments", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      region: "${{ input.region }}",
+      sha: "${{ github.sha }}",
+    }),
+  ));
+  const failures = results.filter((r) => !r.passed);
+  assertEquals(failures.map((r) => [r.name, r.error]), [[
+    "Task expressions in job 'build' step 'emit'",
+    "inputs.region holds ${{ input.region }}: 'input' is not a swamp namespace or a known templating root, " +
+    "so a run fails with \"Unknown variable\". Did you mean 'inputs'? " +
+    "If it is another templating system's text, write it with literal()",
+  ]]);
+  // The other system's text beside it still only warns.
+  assertEquals(
+    results.filter((r) => r.warning).map((r) => r.error?.slice(0, 16)),
+    ["inputs.sha holds"],
+  );
+});
+
+// Only known foreign roots pass through step arguments (swamp-club#3400).
+
+Deno.test("fails an unlisted root in step arguments", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      run: "echo ${{ nonexistent.variable }}",
+      both: "${{ github.sha + other.x + another.y }}",
+    }),
+  ));
+  assertEquals(
+    results.filter((r) => !r.passed).map((r) => [r.name, r.error]),
+    [
+      [
+        "Task expressions in job 'build' step 'emit'",
+        "inputs.run holds ${{ nonexistent.variable }}: 'nonexistent' is not a swamp namespace or a known templating root, " +
+        'so a run fails with "Unknown variable". ' +
+        "If it is another templating system's text, write it with literal()",
+      ],
+      [
+        "Task expressions in job 'build' step 'emit'",
+        "inputs.both holds ${{ github.sha + other.x + another.y }}: 'other', 'another' are not swamp namespaces or known templating roots, " +
+        'so a run fails with "Unknown variable". ' +
+        "If it is another templating system's text, write it with literal()",
+      ],
+    ],
+  );
+  assertEquals(results.filter((r) => r.warning), []);
+});
+
+Deno.test("fails an unlisted root in a branch a run would not evaluate", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      // Evaluates to "x" in a run, which never reads the other branch.
+      sha: "${{ true ? 'x' : nonexistent.variable }}",
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed).map((r) => r.name), [
+    "Task expressions in job 'build' step 'emit'",
+  ]);
+});
+
+Deno.test("does not suggest literal() for an unlisted root in a direct step's globalArgs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.directExecution("command/shell", "emit-model", "execute", {}, {
+      env: { REGION: "${{ nonexistent.region }}" },
+    }),
+  ));
+  assertEquals(results.filter((r) => !r.passed).map((r) => r.error), [
+    "globalArgs.env.REGION holds ${{ nonexistent.region }}: 'nonexistent' is not a swamp namespace or a known templating root, " +
+    'so a run fails with "Unknown variable". ' +
+    "If it is another templating system's text, pass it as a step input written with literal() instead of a global argument",
+  ]);
+});
+
+Deno.test("passes literal() around an unlisted root in step inputs", async () => {
+  const results = await service.validate(foreignTextWorkflow(
+    StepTask.model("m", "run", {
+      run: "${{ literal('${{ nonexistent.variable }}') }}",
+    }),
+  ));
+  assertEquals(
+    results.filter((r) => /Template syntax|Task expressions/.test(r.name)),
+    [],
   );
 });

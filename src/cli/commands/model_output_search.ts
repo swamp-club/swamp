@@ -18,6 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -168,16 +173,37 @@ export async function modelOutputSearchAction(
   ctx.logger.debug("Model output search command completed");
 }
 
-export const modelOutputSearchCommand = withRemoteOptions(
-  new Command()
-    .name("search")
-    .alias("list")
-    .description("Search for model outputs")
-    .example("Browse all outputs", "swamp model output search")
-    .example("Search by keyword", "swamp model output search deploy")
-    .arguments("[query:string]")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
-).action(modelOutputSearchAction);
+/** The preferred spelling: `swamp behavior output search`. */
+export const BEHAVIOR_OUTPUT_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior output search",
+  surface: "behavior",
+};
+
+/** The legacy spelling: `swamp model output search`. */
+export const MODEL_OUTPUT_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp model output search",
+  surface: "model",
+  preferred: `${BEHAVIOR_OUTPUT_SEARCH_SYNTAX.invocation} deploy`,
+};
+
+export function createModelOutputSearchCommand(syntax: CommandSyntax) {
+  const command = withRemoteOptions(withPreferredExample(
+    new Command()
+      .name("search")
+      .alias("list")
+      .description(`Search for ${syntax.surface} outputs`)
+      .example("Browse all outputs", syntax.invocation)
+      .example("Search by keyword", `${syntax.invocation} deploy`)
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      ),
+    syntax,
+  )).action(modelOutputSearchAction);
+  return recordDefiningModule(command, import.meta.url);
+}
+
+export const modelOutputSearchCommand = createModelOutputSearchCommand(
+  MODEL_OUTPUT_SEARCH_SYNTAX,
+);

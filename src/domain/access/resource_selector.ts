@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { normalizeModelTypeName } from "../models/control_plane_types.ts";
 import { ModelType } from "../models/model_type.ts";
+import { canonicalResourceKind } from "../terminology/behavior_aliases.ts";
 
 export const ResourceKindSchema = z.enum([
   "workflow",
@@ -38,6 +39,15 @@ export const ResourceSelectorSchema = z.object({
 
 export type ResourceSelector = z.infer<typeof ResourceSelectorSchema>;
 
+/**
+ * Parses a `<kind>:<pattern>` selector. The kind `behavior` is read as
+ * `model`, its exact synonym (swamp-club#3334), before the kind is checked:
+ * the result, and {@link resourceSelectorToString} of it, only ever carry the
+ * model kind, so a stored grant and every comparison see one spelling. Any
+ * other kind not listed in {@link ResourceKindSchema}, including `behaviour`
+ * and plurals, is refused, so a misspelled deny fails loudly rather than
+ * matching nothing (swamp-club#3130).
+ */
 export function parseResourceSelector(value: string): ResourceSelector {
   const colonIndex = value.indexOf(":");
   if (colonIndex === -1) {
@@ -45,7 +55,7 @@ export function parseResourceSelector(value: string): ResourceSelector {
       `Invalid resource selector "${value}": expected "<kind>:<pattern>" (e.g. "workflow:@acme/*")`,
     );
   }
-  const kind = value.slice(0, colonIndex);
+  const kind = canonicalResourceKind(value.slice(0, colonIndex));
   const pattern = value.slice(colonIndex + 1);
   if (pattern.length === 0) {
     throw new Error(
@@ -69,6 +79,20 @@ export function parseResourceSelector(value: string): ResourceSelector {
 
 export function resourceSelectorToString(selector: ResourceSelector): string {
   return `${selector.kind}:${selector.pattern}`;
+}
+
+/**
+ * A selector string in its canonical spelling — `behavior:x` becomes
+ * `model:x` (swamp-club#3334) — or `value` unchanged when it does not parse,
+ * so whoever parses it next reports the error as before. A valid selector
+ * already in the canonical spelling comes back byte-identical.
+ */
+export function canonicalResourceSelectorString(value: string): string {
+  try {
+    return resourceSelectorToString(parseResourceSelector(value));
+  } catch {
+    return value;
+  }
 }
 
 /**

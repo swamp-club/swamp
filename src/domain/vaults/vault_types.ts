@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { extractVaultFromSource } from "../extensions/extension_content_extractor.ts";
+import { readDeclaredTypeMetadata } from "../extensions/declared_type_metadata.ts";
 import {
   type VaultTypeInfo,
+  type VaultTypeRegistry,
   vaultTypeRegistry,
 } from "./vault_type_registry.ts";
 
@@ -74,6 +77,43 @@ export function getVaultTypes(): VaultTypeInfo[] {
       description: entry.description ?? "",
       isBuiltIn: false,
     }));
+
+  return [...loaded, ...lazy];
+}
+
+/**
+ * Lists every vault type the way it declares itself, for type search.
+ *
+ * A lazy entry carries no declared name, so {@link getVaultTypes} can only
+ * show its type id (swamp-club#3365). This reads the name and description
+ * out of the entry's source text instead of importing its bundle: a listing
+ * must not run extension code, which can exit, hang or print at import. A
+ * source that cannot be read, or that computes its name, keeps the type id.
+ */
+export async function listVaultTypes(
+  registry: VaultTypeRegistry = vaultTypeRegistry,
+  readSource?: (path: string) => Promise<string>,
+): Promise<VaultTypeInfo[]> {
+  const loaded = registry.getAll();
+  const loadedKeys = new Set(loaded.map((t) => t.type.toLowerCase()));
+
+  const lazy = await Promise.all(
+    registry.getAllLazy()
+      .filter((entry) => !loadedKeys.has(entry.type.toLowerCase()))
+      .map(async (entry) => {
+        const declared = await readDeclaredTypeMetadata(
+          entry,
+          extractVaultFromSource,
+          readSource,
+        );
+        return {
+          type: entry.type,
+          name: declared?.name || entry.type,
+          description: declared?.description || (entry.description ?? ""),
+          isBuiltIn: false,
+        };
+      }),
+  );
 
   return [...loaded, ...lazy];
 }

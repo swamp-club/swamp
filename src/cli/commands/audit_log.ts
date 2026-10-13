@@ -33,6 +33,10 @@ import {
   renderAuditLogHeader,
 } from "../../presentation/output/audit_log_output.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  canonicalAuditAction,
+  canonicalOptional,
+} from "../../domain/serve_audit/behavior_spelling.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -98,6 +102,13 @@ export const auditLogCommand = withRemoteOptions(
     options,
   );
 
+  // Sent in the stored spelling, so a server that predates the behavior
+  // spelling of an action (swamp-club#3334) still matches it.
+  const action = canonicalOptional(
+    options.action as string | undefined,
+    canonicalAuditAction,
+  );
+
   const response = await requestServerResponse<AuditQueryResponse>(
     { server, token },
     {
@@ -107,7 +118,7 @@ export const auditLogCommand = withRemoteOptions(
         until: options.until,
         principal: options.principal,
         category: options.category,
-        action: options.action,
+        action,
         outcome: options.outcome,
         limit: options.limit,
         cursor: options.cursor,
@@ -133,7 +144,7 @@ export const auditLogCommand = withRemoteOptions(
     const filter: Record<string, unknown> = {};
     if (options.category) filter.categories = [options.category];
     if (options.principal) filter.principals = [options.principal];
-    if (options.action) filter.actions = [options.action];
+    if (action) filter.actions = [action];
     if (options.outcome) filter.outcomes = [options.outcome];
 
     const stream = subscribeServerEvents(

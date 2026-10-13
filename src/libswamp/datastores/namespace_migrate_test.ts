@@ -23,6 +23,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   datastoreNamespaceMigrate,
+  INFRASTRUCTURE_FILES,
   type MergeDirResult,
   type NamespaceMigrateDeps,
   type NamespaceMigrateEvent,
@@ -40,6 +41,7 @@ function makeDeps(
     getDatastoreDirectories: () => [],
     dirExists: () => Promise.resolve(false),
     dirHasDataFiles: () => Promise.resolve(false),
+    dirContents: () => Promise.resolve({ catalogFiles: 0, otherEntries: 1 }),
     dirSize: () => Promise.resolve({ fileCount: 0, totalBytes: 0 }),
     renameDir: () => Promise.resolve(),
     mergeDirInto: (): Promise<MergeDirResult> =>
@@ -48,6 +50,7 @@ function makeDeps(
     compareFiles: () => Promise.resolve(true),
     removeFile: () => Promise.resolve(),
     ensureDir: () => Promise.resolve(),
+    removeOrphanedCatalogFiles: () => Promise.resolve(0),
     invalidateCatalog: () => {},
     markDirtyBulk: () => Promise.resolve(),
     removeNamespaceManifest: () => Promise.resolve(),
@@ -680,4 +683,213 @@ Deno.test("datastoreNamespaceMigrate: refuses a namespace equal to a configured 
   );
   assertEquals(events.length, 1);
   assertEquals(events[0].kind, "error");
+});
+
+// --- the repo-local catalog is not datastore content (swamp-club#3316) ---
+
+Deno.test("INFRASTRUCTURE_FILES: names the catalog and every SQLite sidecar", () => {
+  assertEquals([...INFRASTRUCTURE_FILES].sort(), [
+    "_catalog.db",
+    "_catalog.db-journal",
+    "_catalog.db-shm",
+    "_catalog.db-wal",
+  ]);
+});
+
+for (const reverse of [false, true]) {
+  Deno.test(`datastoreNamespaceMigrate: a source holding only the catalog is nothing to move (reverse=${reverse})`, async () => {
+    const ctx = createLibSwampContext({});
+    const source = reverse
+      ? join(DS_PATH, NAMESPACE, "data")
+      : join(DS_PATH, "data");
+    let moves = 0;
+    const deps = makeDeps({
+      dirExists: () => Promise.resolve(true),
+      dirContents: (path) =>
+        Promise.resolve(
+          path === source
+            ? { catalogFiles: 3, otherEntries: 0 }
+            : { catalogFiles: 0, otherEntries: 0 },
+        ),
+      dirHasDataFiles: () => Promise.resolve(false),
+      // The catalog would collide if the source were examined at all.
+      findFileCollisions: (src) =>
+        Promise.resolve(src === source ? ["_catalog.db"] : []),
+      compareFiles: () => Promise.resolve(false),
+      renameDir: () => {
+        moves++;
+        return Promise.resolve();
+      },
+      mergeDirInto: () => {
+        moves++;
+        return Promise.resolve({ moved: 0, skipped: 0, skippedPaths: [] });
+      },
+    });
+
+    const events = await collect<NamespaceMigrateEvent>(
+      datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse }),
+    );
+
+    const subdirs = events.flatMap((e) =>
+      e.kind === "preview" ? e.data.directories.map((d) => d.subdir) : []
+    );
+    assertEquals(subdirs.includes("data"), false);
+    assertEquals(events.some((e) => e.kind === "error"), false);
+    const progressed = events.flatMap((e) =>
+      e.kind === "progress" ? [e.data.subdir] : []
+    );
+    assertEquals(progressed.includes("data"), false);
+    assertEquals(moves, progressed.length);
+  });
+}
+
+Deno.test("datastoreNamespaceMigrate: re-run after a migration reports nothing to move", async () => {
+  const ctx = createLibSwampContext({});
+  // What a completed migration leaves behind: only the recreated catalog.
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(path === join(DS_PATH, "data")),
+    dirContents: () => Promise.resolve({ catalogFiles: 1, otherEntries: 0 }),
+  });
+
+  for (const confirm of [false, true]) {
+    const events = await collect<NamespaceMigrateEvent>(
+      datastoreNamespaceMigrate(ctx, deps, { confirm, reverse: false }),
+    );
+    assertEquals(events.map((e) => e.kind), ["preview", "completed"]);
+    if (events[0].kind === "preview") {
+      assertEquals(events[0].data.directories, []);
+    }
+  }
+});
+
+Deno.test("datastoreNamespaceMigrate: a source holding the catalog and data is merged, not renamed", async () => {
+  const ctx = createLibSwampContext({});
+  const sources = new Set([join(DS_PATH, "data"), join(DS_PATH, "outputs")]);
+  const renamed: string[] = [];
+  const merged: string[] = [];
+  const ensured: string[] = [];
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(sources.has(path)),
+    dirContents: (path) =>
+      Promise.resolve(
+        path === join(DS_PATH, "data")
+          ? { catalogFiles: 3, otherEntries: 2 }
+          : { catalogFiles: 0, otherEntries: 2 },
+      ),
+    renameDir: (source) => {
+      renamed.push(source);
+      return Promise.resolve();
+    },
+    mergeDirInto: (source) => {
+      merged.push(source);
+      return Promise.resolve({ moved: 2, skipped: 0, skippedPaths: [] });
+    },
+    ensureDir: (path) => {
+      ensured.push(path);
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  if (completed?.kind !== "completed") throw new Error("expected completed");
+  assertEquals(completed.data.migratedDirectories, ["data", "outputs"]);
+  assertEquals(merged, [join(DS_PATH, "data")]);
+  assertEquals(renamed, [join(DS_PATH, "outputs")]);
+  assertEquals(ensured.includes(join(DS_PATH, NAMESPACE, "data")), true);
+  assertEquals(ensured.includes(join(DS_PATH, NAMESPACE, "outputs")), false);
+});
+
+for (const reverse of [false, true]) {
+  Deno.test(`datastoreNamespaceMigrate: confirm removes stale catalog copies from the namespace (reverse=${reverse})`, async () => {
+    const ctx = createLibSwampContext({});
+    const source = reverse
+      ? join(DS_PATH, NAMESPACE, "outputs")
+      : join(DS_PATH, "outputs");
+    const calls: string[] = [];
+    const deps = makeDeps({
+      dirExists: (path) => Promise.resolve(path === source),
+      removeOrphanedCatalogFiles: (dir) => {
+        calls.push(dir);
+        return Promise.resolve(3);
+      },
+    });
+
+    await collect<NamespaceMigrateEvent>(
+      datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse }),
+    );
+    assertEquals(calls, [], "preview must not delete");
+
+    const events = await collect<NamespaceMigrateEvent>(
+      datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse }),
+    );
+    assertEquals(events.at(-1)?.kind, "completed");
+    assertEquals(calls, [join(DS_PATH, NAMESPACE, "data")]);
+  });
+}
+
+Deno.test("datastoreNamespaceMigrate: stale catalog copies are removed when nothing is left to move", async () => {
+  const ctx = createLibSwampContext({});
+  const calls: string[] = [];
+  const deps = makeDeps({
+    removeOrphanedCatalogFiles: (dir) => {
+      calls.push(dir);
+      return Promise.resolve(1);
+    },
+  });
+
+  await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse: false }),
+  );
+  assertEquals(calls, [], "preview must not delete");
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+  assertEquals(events.map((e) => e.kind), ["preview", "completed"]);
+  assertEquals(calls, [join(DS_PATH, NAMESPACE, "data")]);
+});
+
+Deno.test("datastoreNamespaceMigrate: a failure to remove stale catalog copies does not fail the migration", async () => {
+  const ctx = createLibSwampContext({});
+  let catalogInvalidated = false;
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(path === join(DS_PATH, "outputs")),
+    removeOrphanedCatalogFiles: () =>
+      Promise.reject(new Error("permission denied")),
+    invalidateCatalog: () => {
+      catalogInvalidated = true;
+    },
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  assertEquals(events.some((e) => e.kind === "error"), false);
+  assertEquals(events.at(-1)?.kind, "completed");
+  assertEquals(catalogInvalidated, true);
+});
+
+Deno.test("datastoreNamespaceMigrate: a failed move leaves stale catalog copies alone", async () => {
+  const ctx = createLibSwampContext({});
+  let removals = 0;
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(path === join(DS_PATH, "outputs")),
+    renameDir: () => Promise.reject(new Error("Not a directory")),
+    removeOrphanedCatalogFiles: () => {
+      removals++;
+      return Promise.resolve(0);
+    },
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  assertEquals(events.at(-1)?.kind, "error");
+  assertEquals(removals, 0);
 });

@@ -83,6 +83,7 @@ import {
   resolveSourceExtensionDirs,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import { resolveGitMainWorktreeRoot } from "../../infrastructure/persistence/git_worktree.ts";
+import { BEHAVIORS_DIR_NAME } from "../../domain/terminology/behavior_aliases.ts";
 
 const logger = getLogger(["swamp", "extensions", "reconcile"]);
 
@@ -96,6 +97,16 @@ const KIND_DIRS = [
 ] as const;
 
 type KindDir = typeof KIND_DIRS[number];
+
+/**
+ * The repo's local `extensions/<dir>/` directories and the kind each
+ * holds: every kind directory, plus `extensions/behaviors/`, the
+ * behavior-spelled sibling of `extensions/models/` (swamp-club#3338).
+ */
+const LOCAL_KIND_DIRS: ReadonlyArray<readonly [string, KindDir]> = [
+  ...KIND_DIRS.map((k) => [k, k] as const),
+  [BEHAVIORS_DIR_NAME, "models"],
+];
 
 /**
  * A single state transition produced by reconcile. Structured value —
@@ -507,8 +518,8 @@ export class ReconcileFromDiskService {
     // ignored — the top-level identity claims the entire tree.
     const subdirManifests = new Map<string, LocalManifestIdentity>();
     if (!topLevelManifest) {
-      for (const kindDir of KIND_DIRS) {
-        const kindPath = join(this.repoDir, "extensions", kindDir);
+      for (const [dirName] of LOCAL_KIND_DIRS) {
+        const kindPath = join(this.repoDir, "extensions", dirName);
         await discoverSubdirManifests(kindPath, subdirManifests);
       }
     }
@@ -548,8 +559,8 @@ export class ReconcileFromDiskService {
     }
 
     // Local extensions under extensions/<kind>/
-    for (const kindDir of KIND_DIRS) {
-      const dir = join(this.repoDir, "extensions", kindDir);
+    for (const [dirName, kindDir] of LOCAL_KIND_DIRS) {
+      const dir = join(this.repoDir, "extensions", dirName);
       const files = await collectTsFiles(dir);
       for (const absolutePath of files) {
         const ownerKey = findOwningManifest(
