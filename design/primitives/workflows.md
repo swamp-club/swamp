@@ -3156,7 +3156,11 @@ the only production caller of `WorkflowRun.endAsCancelled`;
 
 The steps a cancel settles without running them are marked `settledByAbort`.
 A cancelled run cannot be resumed, so the marker only records that the cancel
-settled them. Conditions are evaluated in dependency order against the run's
+settled them. A step that fails while it is in flight with the abort
+fired (its method was stopped, its nested run ended cancelled, or it was still
+`running` when the run settled) is marked `stoppedByAbort` instead. On a
+cancelled run that marker changes nothing either; serve's shutdown reads it
+when it interrupts the run (see [Recovery](#recovery)). Conditions are evaluated in dependency order against the run's
 own evaluated workflow snapshot, which `workflow run` saves under
 `workflows-evaluated/runs/<runId>/` when the run starts, so the evaluated job
 and step names in the run's records match. Without a snapshot (a
@@ -3593,6 +3597,27 @@ When a serve instance crashes during a run, or a run's owning process dies, the
 run is marked `interrupted` and its in-flight steps `unknown`. An `unknown` step was running at crash time, so
 its outcome is unclear: it may have completed externally without Swamp
 recording the result.
+
+**Runs a serve shutdown aborted.** Shutdown aborts the runs its drain left, so
+each has already settled itself `cancelled` by the time it is marked
+`interrupted("server_shutdown")`: the step that was in flight is `failed`, not
+`running`. `WorkflowRun.interrupt` therefore also marks `unknown` every failed
+step the abort stopped (`stoppedByAbort`), and marks its job `unknown`, so
+recovery treats it as any other in-flight step (swamp-club#3369). That covers a
+model method the abort stopped and a nested workflow step, whether its child
+was mid-step or was launched with the abort already fired. Steps and jobs the
+abort settled without starting keep `settledByAbort`, and the resume reopens
+them. A step that failed on its own before the abort stays `failed`. The
+nested run stays `cancelled`: the parent's step starts a new one when it runs
+again. Cleanup steps that ran after the abort are not run a second time.
+
+The rule is `interrupt`'s, not the shutdown's, so it holds for every interrupt:
+a run whose owner died after its abort stopped a step but before it recorded
+its cancellation (`interruptOrphaned`: the crash reaper, a dead peer
+instance, `run doctor --fix`, `workflow recover`) gets the same `unknown`
+step. That includes a step a user's `workflow cancel` stopped. Recovery is
+asked for, and an unguarded step needs `--acknowledge-unknown`, so nothing
+re-runs it unasked.
 
 **Step-boundary checkpoints:** the run is saved each time a step starts and
 each time it reaches a terminal state (succeeded, failed, skipped), not only at

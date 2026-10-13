@@ -168,8 +168,8 @@ import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import {
   type HydrateFileHook,
+  isUnpublishedDataError,
   type MarkDirtyHook,
-  UnpublishedDataVersionError,
   type WrittenVersion,
 } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
@@ -1052,6 +1052,24 @@ function abandonedByAbort(stepRun: StepRun, options: StepOptions): boolean {
 }
 
 /**
+ * Fails a step whose work was in flight. With the run's abort fired, the
+ * abort stopped it, so the step is marked `stoppedByAbort`: serve's shutdown
+ * then interrupts it as unknown rather than leave it failed, where no
+ * recovery reopens it (swamp-club#3369).
+ */
+function failInFlightStep(
+  stepRun: StepRun,
+  error: string,
+  options: StepOptions,
+): void {
+  if (options.signal?.aborted) {
+    stepRun.failStoppedByAbort(error);
+  } else {
+    stepRun.fail(error);
+  }
+}
+
+/**
  * Runs a nested workflow step's stream, holding a promise in `nestedRuns`
  * until the stream ends so the run can wait for it (see
  * {@link awaitNestedRuns}).
@@ -1266,8 +1284,9 @@ export type DirectTypeResolver = (
 
 /**
  * Runs a step lock's flush with what the step wrote. A step that already
- * failed keeps its own error: a version its flush could not publish is
- * logged instead (swamp-club#3146). Any other flush error is thrown.
+ * failed keeps its own error: a version its flush could not publish, or
+ * refused to push after losing its lock, is logged instead (swamp-club#3146,
+ * swamp-club#3373). Any other flush error is thrown.
  */
 async function flushStepLock(
   flush: (written?: readonly WrittenVersion[]) => Promise<void>,
@@ -1278,7 +1297,7 @@ async function flushStepLock(
   try {
     await flush(written);
   } catch (error) {
-    if (!stepFailed || !(error instanceof UnpublishedDataVersionError)) {
+    if (!stepFailed || !isUnpublishedDataError(error)) {
       throw error;
     }
     logger.error("{message}", { message: error.message });
@@ -6465,7 +6484,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       const isAllowed = !!step.allowFailure;
       if (isAllowed) {
         stepRun.markAllowedFailure();
@@ -7047,7 +7066,7 @@ export class WorkflowExecutionService {
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
-      stepRun.fail(errorMessage);
+      failInFlightStep(stepRun, errorMessage, options);
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }
@@ -7112,7 +7131,13 @@ export class WorkflowExecutionService {
         (childRun?.status === "cancelled"
           ? `Nested workflow "${task.workflowIdOrName}" was cancelled.`
           : `Nested workflow "${task.workflowIdOrName}" failed.`);
-      stepRun.fail(errorMessage);
+      // A child that failed on its own is no work the abort stopped, even
+      // when the abort fired before the parent read its end.
+      if (childRun?.status === "failed") {
+        stepRun.fail(errorMessage);
+      } else {
+        failInFlightStep(stepRun, errorMessage, options);
+      }
       if (allowFailure) {
         stepRun.markAllowedFailure();
       }

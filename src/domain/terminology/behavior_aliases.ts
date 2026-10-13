@@ -76,3 +76,30 @@ export function replacePrefix(
 ): string {
   return value.startsWith(from) ? to + value.slice(from.length) : value;
 }
+
+/**
+ * The extension entry-point export, behavior spelling, and its model form
+ * (swamp-club#3338). A module exports one or the other, never both.
+ */
+export const BEHAVIOR_EXPORT_NAME = "behavior";
+export const MODEL_EXPORT_NAME = "model";
+
+/**
+ * The extension source directory name, behavior spelling, and its model
+ * form. Swamp loads `extensions/behaviors/` beside `extensions/models/` only
+ * while the models directory is the default one; archives always carry the
+ * sources under `models/`.
+ */
+export const BEHAVIORS_DIR_NAME = "behaviors";
+export const MODELS_DIR_NAME = "models";
+
+/** The default models directory and its behavior-spelled sibling. */
+export const DEFAULT_MODELS_DIR = "extensions/models";
+export const DEFAULT_BEHAVIORS_DIR = "extensions/behaviors";
+
+/**
+ * The extension manifest key, behavior spelling, and its model form. A
+ * manifest uses one or the other; a pushed manifest always says `models:`.
+ */
+export const BEHAVIOR_MANIFEST_KEY = "behaviors";
+export const MODEL_MANIFEST_KEY = "models";

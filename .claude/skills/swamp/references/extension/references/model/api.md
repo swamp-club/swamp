@@ -1,6 +1,6 @@
-# Extension Model API Reference
+# Extension Behavior API Reference
 
-Detailed API documentation for extension model development.
+Detailed API documentation for extension behavior development.
 
 ## Table of Contents
 
@@ -12,7 +12,7 @@ Detailed API documentation for extension model development.
 - [DataWriter Methods](#datawriter-methods)
 - [DataHandle Structure](#datahandle-structure)
 - [Reading Stored Data](#reading-stored-data)
-- [Cross-Model Access](#cross-model-access)
+- [Cross-Behavior Access](#cross-behavior-access)
 - [Lifetime Values](#lifetime-values)
 - [Standard Tags](#standard-tags)
 - [Error Handling](#error-handling)
@@ -23,8 +23,8 @@ Detailed API documentation for extension model development.
 
 ## Resource & File Specs
 
-Models declare their data outputs using `resources` and/or `files` on the model
-export.
+Behaviors declare their data outputs using `resources` and/or `files` on the
+behavior export.
 
 ### Resource Specs
 
@@ -67,8 +67,9 @@ resources: {
 Set `sensitiveOutput: true` on the spec to treat all fields as sensitive. Set
 `vaultName` on the spec to override which vault stores the values.
 
-**Schema requirement:** If your resource will be referenced by other models via
-CEL expressions, declare the referenced properties explicitly in the Zod schema:
+**Schema requirement:** If your resource will be referenced by other behaviors
+via CEL expressions, declare the referenced properties explicitly in the Zod
+schema:
 
 ```typescript
 // Wrong — expression validator can't resolve attributes.VpcId
@@ -98,7 +99,7 @@ files: {
 
 ## Reading Bundled Assets
 
-Models shipped via an extension manifest can declare runtime assets in
+Behaviors shipped via an extension manifest can declare runtime assets in
 `additionalFiles`. These paths resolve relative to the manifest's own directory
 in both modes — no migration needed for existing manifests (default mode is
 unchanged):
@@ -140,7 +141,7 @@ Write structured JSON data:
 
 | Parameter      | Description                                                     |
 | -------------- | --------------------------------------------------------------- |
-| `specName`     | Must match a key in the model's `resources`                     |
+| `specName`     | Must match a key in the behavior's `resources`                  |
 | `instanceName` | The instance name (must be unique across all specs — see below) |
 | `data`         | JSON data to write (validated against the resource's Zod schema |
 | `overrides`    | Optional overrides (see below)                                  |
@@ -153,7 +154,7 @@ throw). The `instanceName` you pass here is used in CEL:
 disk. If two different specs use the same instance name (e.g.,
 `writeResource("summary", "bixu", ...)` and
 `writeResource("repo", "bixu", ...)`), the second write overwrites the first.
-When a model has multiple resource specs, prefix instance names with the spec
+When a behavior has multiple resource specs, prefix instance names with the spec
 name or use another strategy to ensure uniqueness across all specs within a
 method execution.
 
@@ -184,7 +185,7 @@ const handle = await context.writeResource("state", "current", {
   updatedAt: new Date().toISOString(),
 });
 
-// Factory model (use dynamic instance names)
+// Factory behavior (use dynamic instance names)
 for (const item of items) {
   await context.writeResource("item", item.id, item);
 }
@@ -232,11 +233,11 @@ Create a file writer:
 
 **Parameters:**
 
-| Parameter      | Description                              |
-| -------------- | ---------------------------------------- |
-| `specName`     | Must match a key in the model's `files`  |
-| `instanceName` | The instance name (any non-empty string) |
-| `overrides`    | Optional overrides (see below)           |
+| Parameter      | Description                                |
+| -------------- | ------------------------------------------ |
+| `specName`     | Must match a key in the behavior's `files` |
+| `instanceName` | The instance name (any non-empty string)   |
+| `overrides`    | Optional overrides (see below)             |
 
 Returns a `DataWriter` for binary/streaming content. The `instanceName` you pass
 here is the data name in CEL: `data.latest("<defName>", "<instanceName>").path`
@@ -367,24 +368,24 @@ const content = await context.dataRepository.getContent(
 // Returns Uint8Array | null
 ```
 
-**Key dataRepository methods for model authors:**
+**Key dataRepository methods for behavior authors:**
 
 | Method                                      | Returns              | Description                               |
 | ------------------------------------------- | -------------------- | ----------------------------------------- |
 | `getContent(type, modelId, dataName, ver?)` | `Uint8Array \| null` | Get raw content bytes                     |
 | `findByName(type, modelId, dataName, ver?)` | `Data \| null`       | Get data metadata (tags, version, etc)    |
-| `findAllForModel(type, modelId)`            | `Data[]`             | List all data for this model instance     |
+| `findAllForModel(type, modelId)`            | `Data[]`             | List all data for this behavior instance  |
 | `delete(type, modelId, dataName, version?)` | `void`               | Delete data (all versions if unspecified) |
 
 ---
 
-## Cross-Model Access
+## Cross-Behavior Access
 
-To read or call **another** model from a method, use these context APIs. Never
-shell out to the `swamp` CLI from a method — every subprocess reloads the
+To read or call **another** behavior from a method, use these context APIs.
+Never shell out to the `swamp` CLI from a method — every subprocess reloads the
 extensions and syncs the datastore, which can take tens of seconds per call.
 
-### readModelData — read another model's data by name
+### readModelData — read another behavior's data by name
 
 ```typescript
 const records = await context.readModelData!("my-vpc", "state");
@@ -393,13 +394,14 @@ const vpc = records[0]?.attributes as { VpcId: string } | undefined;
 
 - Signature: `(modelName: string, specName?: string) => Promise<DataRecord[]>`
 - Returns the **latest** version of each matching data item; an empty array when
-  the model has no data or does not exist.
-- Includes data written before the model instance was renamed: the read matches
-  the model's current definition as well as the name recorded on each item.
+  the behavior has no data or does not exist.
+- Includes data written before the behavior instance was renamed: the read
+  matches the behavior's current definition as well as the name recorded on each
+  item.
 - Each `DataRecord` carries the parsed JSON in `attributes`, plus `name`,
   `version`, `specName`, `modelId`, `modelType` and `tags`.
 
-### queryData — CEL query across all models
+### queryData — CEL query across all behaviors
 
 ```typescript
 const subnets = await context.queryData!(
@@ -415,7 +417,7 @@ const subnets = await context.queryData!(
 - Without `select` it returns `DataRecord[]`; with `select` it returns the
   projected values.
 
-### runModel — call another model's method
+### runModel — call another behavior's method
 
 ```typescript
 // Existing definition, by name
@@ -453,9 +455,9 @@ for (const r of [result, created]) {
   returns `{ ok: false }`.
 - The target's data belongs to the target definition, not the caller. The
   caller's vault secrets do not propagate.
-- **Authorization:** to call a model type from another extension, list that
+- **Authorization:** to call a behavior type from another extension, list that
   extension under `dependencies` in your `manifest.yaml`. Same-extension,
-  built-in and user-authored model types need no declaration.
+  built-in and user-authored behavior types need no declaration.
 - **Limits:** 10 nested levels, 100 `runModel` calls per top-level execution,
   and cycles are rejected.
 
@@ -467,7 +469,7 @@ for (const r of [result, created]) {
 | `queryData`     | Yes          | Yes — no `select`; errors if it matches access or worker records | No     |
 | `runModel`      | Yes          | No — returns `{ ok: false }`                                     | No     |
 
-To orchestrate models on workers, chain `model_method` steps in a workflow
+To orchestrate behaviors on workers, chain `model_method` steps in a workflow
 instead of calling `runModel` (see
 [remote execution](../../../workflow/references/remote-execution.md#placing-steps-on-workers)).
 
@@ -499,8 +501,8 @@ Tags are auto-applied based on the spec kind:
 
 ## Error Handling
 
-Models should throw when execution fails. Throw **before** writing data — failed
-executions should not persist incorrect or misleading data.
+Behaviors should throw when execution fails. Throw **before** writing data —
+failed executions should not persist incorrect or misleading data.
 
 **Pattern: check for failure first, only write data on success.**
 
@@ -532,7 +534,7 @@ execute: async (
 },
 ```
 
-**Workflow integration:** When a model method throws, the workflow engine
+**Workflow integration:** When a behavior method throws, the workflow engine
 automatically marks the step as failed. Use `allowFailure: true` on a workflow
 step to catch exceptions and allow continued execution of subsequent steps.
 
@@ -540,11 +542,11 @@ step to catch exceptions and allow continued execution of subsequent steps.
 
 ## Custom CEL Evaluation
 
-Model methods can evaluate Google CEL expressions against data the model already
-holds — useful for selector predicates over a fleet, filter expressions over a
-list of records, or any user-supplied predicate. `ctx.createCelEnvironment()`
-returns a fresh, isolated `cel-js` `Environment` seeded with swamp's baseline
-arithmetic-overload registrations.
+Behavior methods can evaluate Google CEL expressions against data the behavior
+already holds — useful for selector predicates over a fleet, filter expressions
+over a list of records, or any user-supplied predicate.
+`ctx.createCelEnvironment()` returns a fresh, isolated `cel-js` `Environment`
+seeded with swamp's baseline arithmetic-overload registrations.
 
 ### Basic usage
 
@@ -640,30 +642,31 @@ execute: (async (
 
 ### Context Fields Available in Methods
 
-| Field                          | Type                                                                                           | Description                                     |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `context.signal`               | `AbortSignal`                                                                                  | Cancellation signal for async operations        |
-| `context.repoDir`              | `string`                                                                                       | Repository root path                            |
-| `context.globalArgs`           | `z.infer<typeof GlobalArgsSchema>`                                                             | Validated global arguments from the definition  |
-| `context.definition`           | `{ id: string; name: string; version: string; tags: Record<string, string> }`                  | Model instance metadata                         |
-| `context.methodName`           | `string`                                                                                       | Name of the method being invoked                |
-| `context.logger`               | LogTape Logger (trace/debug/info/warning/error/fatal)                                          | Structured logging                              |
-| `context.writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` | Write structured JSON data                      |
-| `context.readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         | Read previously stored data                     |
-| `context.createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               | Create binary/streaming file writer             |
-| `context.createCelEnvironment` | `() => Environment`                                                                            | Fresh CEL environment for expression evaluation |
-| `context.readModelData`        | `(modelName: string, specName?: string) => Promise<DataRecord[]>`                              | Read another model's data by name               |
-| `context.queryData`            | `(predicate: string, select?: string) => Promise<DataRecord[] \| unknown[]>`                   | CEL query across all models' data               |
-| `context.runModel`             | `(options: RunModelOptions) => Promise<RunModelResult>`                                        | Call another model's method                     |
-| `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content                    |
-| `context.modelType`            | `string`                                                                                       | The model type string (e.g. `@myorg/my-model`)  |
-| `context.modelId`              | `string`                                                                                       | The model instance ID                           |
-| `context.traceHeaders`         | `Readonly<Record<string, string>> \| undefined`                                                | This execution's W3C trace headers              |
+| Field                          | Type                                                                                           | Description                                          |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `context.signal`               | `AbortSignal`                                                                                  | Cancellation signal for async operations             |
+| `context.repoDir`              | `string`                                                                                       | Repository root path                                 |
+| `context.globalArgs`           | `z.infer<typeof GlobalArgsSchema>`                                                             | Validated global arguments from the definition       |
+| `context.definition`           | `{ id: string; name: string; version: string; tags: Record<string, string> }`                  | Behavior instance metadata                           |
+| `context.methodName`           | `string`                                                                                       | Name of the method being invoked                     |
+| `context.logger`               | LogTape Logger (trace/debug/info/warning/error/fatal)                                          | Structured logging                                   |
+| `context.writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` | Write structured JSON data                           |
+| `context.readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         | Read previously stored data                          |
+| `context.createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               | Create binary/streaming file writer                  |
+| `context.createCelEnvironment` | `() => Environment`                                                                            | Fresh CEL environment for expression evaluation      |
+| `context.readModelData`        | `(modelName: string, specName?: string) => Promise<DataRecord[]>`                              | Read another behavior's data by name                 |
+| `context.queryData`            | `(predicate: string, select?: string) => Promise<DataRecord[] \| unknown[]>`                   | CEL query across all behaviors' data                 |
+| `context.runModel`             | `(options: RunModelOptions) => Promise<RunModelResult>`                                        | Call another behavior's method                       |
+| `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content                         |
+| `context.modelType`            | `string`                                                                                       | The behavior type string (e.g. `@myorg/my-behavior`) |
+| `context.modelId`              | `string`                                                                                       | The behavior instance ID                             |
+| `context.traceHeaders`         | `Readonly<Record<string, string>> \| undefined`                                                | This execution's W3C trace headers                   |
 
-For the cross-model APIs, see [Cross-Model Access](#cross-model-access).
-Locally, `dataRepository.getContent` and `findAllForModel` also accept a
-definition name in place of the model ID; on remote workers they need the ID, so
-prefer `readModelData` for by-name reads.
+For the cross-behavior APIs, see
+[Cross-Behavior Access](#cross-behavior-access). Locally,
+`dataRepository.getContent` and `findAllForModel` also accept a definition name
+in place of the behavior ID; on remote workers they need the ID, so prefer
+`readModelData` for by-name reads.
 
 Type only the fields your method body actually uses — don't declare the full
 interface. See [typing.md](typing.md) for the complete typing guide.
@@ -727,7 +730,7 @@ const GlobalArgsSchema = z.object({
 
 ## CheckDefinition API
 
-Pre-flight checks are defined in the model's `checks` field and run
+Pre-flight checks are defined in the behavior's `checks` field and run
 automatically before mutating methods (`create`, `update`, `delete`, `action`).
 
 ### execute Signature
@@ -746,16 +749,16 @@ execute: async (context: MethodContext): Promise<CheckResult>
 | `context.repoDir`        | Repository root path                           |
 | `context.logger`         | LogTape Logger for diagnostic output           |
 | `context.dataRepository` | For reading previously stored data             |
-| `context.modelType`      | The model type string                          |
-| `context.modelId`        | The model instance ID                          |
+| `context.modelType`      | The behavior type string                       |
+| `context.modelId`        | The behavior instance ID                       |
 
 **Important:** `context.writeResource` and `context.createFileWriter` are **NOT
 available** in check execute functions. Checks must not produce data output —
 they only inspect state and return a pass/fail result.
 
 `context.readModelData`, `context.queryData` and `context.runModel` are also
-**not available** in checks. To read another model's data from a check, use
-`context.dataRepository` with that model's definition name (see pattern 2
+**not available** in checks. To read another behavior's data from a check, use
+`context.dataRepository` with that behavior's definition name (see pattern 2
 below).
 
 ### CheckResult
@@ -780,15 +783,15 @@ execute: async (context) => {
 },
 ```
 
-**2. Cross-model validation** — read other model's stored data via
-`context.dataRepository`. The second argument accepts the other model's
+**2. Cross-behavior validation** — read other behavior's stored data via
+`context.dataRepository`. The second argument accepts the other behavior's
 definition name or its ID:
 
 ```typescript
 execute: async (context) => {
   const content = await context.dataRepository.getContent(
     "aws/vpc",
-    context.globalArgs.vpcName, // definition name of the VPC model
+    context.globalArgs.vpcName, // definition name of the VPC behavior
     "state",
   );
   if (!content) {
@@ -817,7 +820,7 @@ environments using `--skip-check-label live`.
 ### Extension Checks via modelRegistry.extend()
 
 The `modelRegistry.extend()` method accepts an optional third parameter
-`checks?: Record<string, CheckDefinition>` to add checks to an existing model
+`checks?: Record<string, CheckDefinition>` to add checks to an existing behavior
 type:
 
 ```typescript
@@ -832,13 +835,13 @@ modelRegistry.extend("aws/ec2/vpc", {}, {
 });
 ```
 
-Check names must be unique -- conflicts with existing checks on the target model
-throw an error at registration time.
+Check names must be unique -- conflicts with existing checks on the target
+behavior throw an error at registration time.
 
 ### Extension Resources via export const extension
 
-Extensions can declare new resource specs that are merged into the target model
-type. Add an optional `resources` field to the extension object:
+Extensions can declare new resource specs that are merged into the target
+behavior type. Add an optional `resources` field to the extension object:
 
 ```typescript
 export const extension = {
@@ -873,12 +876,12 @@ export const extension = {
 ```
 
 The `resources` field uses the same `Record<string, ResourceOutputSpec>` shape
-as base model definitions.
+as base behavior definitions.
 
 **Name collisions in `export const extension`.** When a method, check, or
 resource spec name is already taken on the target type, only one definition is
 registered and each loser gets a `swamp-warning` naming both files. Precedence:
-the base model's own member always wins; then a local or source-mounted
+the base behavior's own member always wins; then a local or source-mounted
 extension beats a pulled one (`.swamp/pulled-extensions/`); within one origin
 the smaller file path wins. So to override a pulled package's method, add a
 local extension with the same method name. `swamp doctor extensions` lists every
@@ -888,8 +891,8 @@ collision and its winner.
 
 ## Logging API
 
-Model methods have access to a pre-configured LogTape logger via
-`context.logger`. The logger category is set automatically based on the model
+Behavior methods have access to a pre-configured LogTape logger via
+`context.logger`. The logger category is set automatically based on the behavior
 type and method name.
 
 ### Log Levels

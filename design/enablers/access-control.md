@@ -661,10 +661,20 @@ changes.
 2. **Auto-rebuild**: the loader subscribes to `ModelCreated`, `ModelUpdated`,
    `DefinitionCreated` and `DefinitionUpdated`. When a grant or group behavior
    changes, it rebuilds after a 500 ms debounce.
-3. **Remote datastore**: with a remote datastore, an `AccessDataPoller` pulls
-   `data/swamp/grant` and `data/swamp/group` every `--datastore-poll-interval`
-   (default 30 s) and reloads on any change
-   (`src/serve/access_data_poller.ts`).
+3. **Peer changes**: an `AccessDataPoller` reloads, in either reload mode,
+   when another process changed `data/swamp/grant` or `data/swamp/group`. It
+   checks every `--datastore-poll-interval` (default 30 s)
+   (`src/serve/access_data_poller.ts`). With a remote datastore it pulls those
+   directories and reloads when the pull changed anything. On a v2 filesystem
+   datastore, where serve instances share the files and nothing is pulled, it
+   fingerprints the record directories instead
+   (`src/serve/filesystem_access_data_change_source.ts`, swamp-club#3371). Only
+   `grant-main` and `group-main` are watched, the data the loader reads. A
+   record whose new versions are all ones the instance's own `ModelUpdated`
+   events named (`dataVersions`, published by every method run) is its own
+   write and stays staged in manual mode, as a pull never returns the
+   puller's own writes. Anything else, including a local CLI write, is a peer
+   change. A v3 datastore has one writer at a time and runs no poller.
 4. **OAuth group refresh**: a `CollectiveRefreshService` re-fetches each
    logged-in user's collectives every `--group-refresh-interval` and closes
    connections whose admission lapsed

@@ -485,6 +485,58 @@ env-var suppression, and non-blocking, time-limited registry calls.
 self-update check, not extension freshness.) Per-extension warnings at the
 start of every command are ruled out.
 
+## Behavior Spelling
+
+An extension can name its behaviors with the behavior spelling
+(swamp-club#3338). Each name below is an exact synonym of its model form,
+which keeps working unchanged:
+
+| Behavior spelling        | Model form            |
+| ------------------------ | --------------------- |
+| `export const behavior`  | `export const model`  |
+| `extensions/behaviors/`  | `extensions/models/`  |
+| manifest `behaviors:`    | manifest `models:`    |
+
+- **Export.** The behavior kind adapter reads `behavior` as an alias of its
+  `model` export key (`primaryExport` in
+  `src/domain/extensions/kind_adapter.ts`). A module that exports both as
+  definitions is refused, because which one it means cannot be told. An
+  unrelated `behavior` binding that does not read as a definition is ignored,
+  so modules written before the alias load as they did.
+- **Directory.** `extensions/behaviors/` loads beside `extensions/models/`
+  only while the models directory is the default. Once `SWAMP_MODELS_DIR` or
+  `.swamp.yaml` `modelsDir` moves it, there is no behaviors directory, so a
+  repo that chose where its behaviors live never gains a second one
+  (`resolveBehaviorsDir` in
+  `src/infrastructure/persistence/resolve_models_dir.ts`). Source repos added
+  with `swamp extension source add` follow the same rule, and their behaviors
+  directory loads after their models directory. In the repo itself both
+  directories are local, so neither outranks the other: a type defined in both
+  is a duplicate-type error naming the two files.
+- **Manifest key.** `behaviors:` lists behavior entry points. They and the
+  `include` entries resolve from the behaviors directory, from the configured
+  models directory when there is none, or from the manifest's directory under
+  `paths.base: manifest`. A manifest that sets `models:` ignores `behaviors:`,
+  as it always did, so the behavior spelling is read only when `models:` is
+  absent.
+- **Push.** The archive keeps one layout. Push packs files from the behaviors
+  directory under the archive's `models/`, by their path from that directory,
+  and writes the pushed manifest with `models:`. Two files that would be
+  packed at the same `models/` path, one from each directory, fail the push
+  (`assertDistinctModelArchivePaths` in `src/libswamp/extensions/push.ts`).
+- **Compatibility warning.** A swamp client or worker older than the first
+  release with swamp-club#3338 reads only `export const model`,
+  `extensions/models/` and `models:`, so it cannot load a behavior-spelled
+  source. Push adds the `behavior-spelling` review warning (Compatibility
+  dimension) naming the spellings the extension uses. The rule is acceptable:
+  `--yes` or an extension-scoped `quality.yaml` entry acknowledges it.
+- **Unchanged.** Swamp keeps writing the model form. `swamp repo init`
+  creates `extensions/models/`, the generated agent guidance names it, and
+  pulled extensions keep their `models/` layout. `export const extension`,
+  `modelRegistry.extend` and other code names have no behavior spelling.
+  `@swamp-club/swamp-testing` exports `defineBehavior`, the same function as
+  `defineModel`, from its first release after swamp-club#3338.
+
 ## Manifest
 
 Every extension is defined by a `manifest.yaml` file that declares its contents
@@ -495,8 +547,8 @@ and how to package them.
 - `manifestVersion`: must be `1`, the only supported version.
 - `name`: scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`,
-  `webhooks` or `skills`.
+- At least one of `models` (or `behaviors`), `workflows`, `vaults`,
+  `datastores`, `reports`, `webhooks` or `skills`.
 
 ### Path Safety
 
@@ -516,6 +568,8 @@ check rejects, since it refuses any tar entry containing `..` or starting with
   `models: ["models/project.ts"]`.
 - `models`: relative paths to TypeScript behavior files (e.g.,
   `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
+- `behaviors`: the behavior spelling of `models`, ignored when `models` is set.
+  See "Behavior Spelling" above.
 - `workflows`: relative paths to YAML workflow files. Resolved via `paths.base`.
 - `vaults`, `datastores`, `reports`: relative paths to TypeScript vault,
   datastore and report files. Resolved via `paths.base`.
@@ -564,15 +618,16 @@ labels:
 
 ### Path Resolution
 
-`paths.base` picks the directory that typed-key entries (`models`, `vaults`,
-`datastores`, `reports`, `include`) and `additionalFiles` resolve against during
-push:
+`paths.base` picks the directory that typed-key entries (`models`,
+`behaviors`, `vaults`, `datastores`, `reports`, `include`) and
+`additionalFiles` resolve against during push:
 
 - **`typedDir` (default)**: typed entries resolve relative to their configured
   directory from the repo marker (`modelsDir`, `vaultsDir`, etc., or environment
-  overrides like `SWAMP_MODELS_DIR`). `additionalFiles` resolves relative to the
-  manifest's own directory. This is the original rule, kept by every
-  manifest without `paths.base`.
+  overrides like `SWAMP_MODELS_DIR`). `behaviors` entries resolve from the
+  behaviors directory (see "Behavior Spelling"). `additionalFiles` resolves
+  relative to the manifest's own directory. This is the original rule, kept by
+  every manifest without `paths.base`.
 - **`manifest`**: every typed entry and `additionalFiles` resolve relative to
   the manifest's own directory. Use it when each extension has its own
   subdirectory holding manifest, source, README and LICENSE (e.g.
@@ -660,21 +715,23 @@ extension.tar.gz
 
 Source TypeScript files keep their paths relative to the active base: the
 configured `modelsDir` under `paths.base: typedDir`, or the manifest's directory
-under `paths.base: manifest`. Local imports are followed recursively; if
-`connection.ts` imports `./helpers.ts`, both are included.
+under `paths.base: manifest`. Files from the behaviors directory are packed
+under `models/` by their path from it. Local imports are followed recursively;
+if `connection.ts` imports `./helpers.ts`, both are included.
 
 Files in `include` are also copied to `models/`, keeping their paths relative to
-the active base. They are not bundled; they are raw TypeScript meant to run as
-subprocesses or standalone utilities.
+the active base (the behaviors directory for a `behaviors:` manifest). They are
+not bundled; they are raw TypeScript meant to run as subprocesses or standalone
+utilities.
 
 ### Loader pre-check
 
 At runtime, loaders find `.ts` files in their directories and try to bundle
 each. First the loader reads the source and looks for the expected named export
-(`export const model`, `export const vault`, etc.). Files without it are skipped
-silently, with no bundling attempt and no error. This way helper scripts with
-unbundleable dependencies (e.g., native modules used via a `Deno.Command`
-subprocess) cause no failures.
+(`export const model` or `export const behavior`, `export const vault`, etc.).
+Files without it are skipped silently, with no bundling attempt and no error.
+This way helper scripts with unbundleable dependencies (e.g., native modules
+used via a `Deno.Command` subprocess) cause no failures.
 
 ### Bundles
 
@@ -1260,17 +1317,17 @@ rule-wide or file-wide acceptance of a site-scoped rule is not expressible.
   their reasons. `testing-completeness` is accepted per file first, then
   the remaining findings collapse to one per extension carrying the files.
 - **Uncatalogued behaviors** (`modelCatalogGap` in
-  `src/domain/extensions/model_catalog_gap.ts`): the push content metadata
-  reads a behavior's `type` and `version` as string literals from a plain
-  `export const model = { ... }` object and silently leaves out any entry
-  point where either is unreadable, so the registry ships the bundle but lists
-  no behavior type. `modelCatalogGap` says why, built on the same extractors and
-  property-tested to agree with them, and `runQualityFindings` reports one
-  file-scoped `uncatalogued-model` warning per such entry point. It is not
-  acceptable. Like any unaccepted warning it prompts an interactive push, but
-  it changes no extractor and no error gate: the extractors stay as they are,
-  since the version-drift and upgrade-chain checks read the same version
-  (swamp-club#2486).
+  `src/domain/extensions/model_catalog_gap.ts`): the push content metadata reads
+  a behavior's `type` and `version` as string literals from a plain `export
+  const model = { ... }` or `export const behavior = { ... }` object and
+  silently leaves out any entry point where either is unreadable, so the
+  registry ships the bundle but lists no behavior type. `modelCatalogGap` says
+  why, built on the same extractors and property-tested to agree with them, and
+  `runQualityFindings` reports one file-scoped `uncatalogued-model` warning per
+  such entry point. It is not acceptable. Like any unaccepted warning it prompts
+  an interactive push, but it changes no extractor and no error gate: the
+  extractors stay as they are, since the version-drift and upgrade-chain checks
+  read the same version (swamp-club#2486).
 - **Reporting.** The dry-run, completed and quality summaries close with
   `Accepted warnings:` and `Unresolved warnings:` (each warning neither fixed
   nor accepted, with its remediation and one line saying how to accept it).
@@ -2964,6 +3021,15 @@ has been fully indexed.
 
 2. `types()` returns both fully loaded and lazy type names, so commands like
    `model type search` import no bundles.
+
+   `vault type search` and `datastore type search` also show each type's
+   declared name and description, which a lazy entry does not carry. They
+   read both from the entry's source text (`listVaultTypes`,
+   `listDatastoreTypes`, using the extractors `extension push` uses) and
+   still import nothing: a listing must not run extension code, which can
+   exit, hang or print at import. A name the source computes falls back to
+   the type id; a computed description falls back to the catalog's for a
+   vault and to empty for a datastore.
 
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports

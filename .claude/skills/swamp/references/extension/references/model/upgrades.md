@@ -12,8 +12,8 @@
 
 ## User Prompt Workflow
 
-When bumping a model's `version`, **always prompt the user** before writing the
-upgrade. Claude cannot reliably determine whether or how the schema changed.
+When bumping a behavior's `version`, **always prompt the user** before writing
+the upgrade. Claude cannot reliably determine whether or how the schema changed.
 
 1. Run `swamp extension version @collective/name --json` to get the current
    published version (`currentPublished`) and the next version (`nextVersion`)
@@ -22,7 +22,7 @@ upgrade. Claude cannot reliably determine whether or how the schema changed.
    and what default values to use for new/changed fields
 4. If **no**: add a no-op upgrade (see below) — still required to bump
    `typeVersion` on existing instances
-5. Set the model's `version` to `nextVersion` from the CLI output
+5. Set the behavior's `version` to `nextVersion` from the CLI output
 6. Set the upgrade's `toVersion` to the same `nextVersion`
 7. The `fromVersion` baseline for the upgrade chain is `currentPublished` — this
    is the **published registry version**, not the version in the local source
@@ -33,7 +33,7 @@ upgrade. Claude cannot reliably determine whether or how the schema changed.
 Upgrades are **lazy** — they run at method execution time, not at load time:
 
 1. User runs a method on an instance with an old `typeVersion`
-2. `DefinitionUpgradeService` filters the model's `upgrades` array to entries
+2. `DefinitionUpgradeService` filters the behavior's `upgrades` array to entries
    with `toVersion > definition.typeVersion`
 3. Applicable upgrades run in order, each transforming `globalArguments`
 4. The upgraded definition is persisted with the new `typeVersion`
@@ -62,9 +62,9 @@ author meant to say something, and quietly ignoring it is worse than stopping.
 `typeVersion` advances **only** when an upgrade actually migrates the arguments,
 or when the definition is first created. Nothing else may touch it — persisting
 a definition for any other reason leaves it alone. This matters: once
-`typeVersion` reaches the model's version the upgrade service stops considering
-that instance, so advancing it without migrating would strand the instance
-permanently (swamp-club#900).
+`typeVersion` reaches the behavior's version the upgrade service stops
+considering that instance, so advancing it without migrating would strand the
+instance permanently (swamp-club#900).
 
 ## Spotting a Stranded Instance
 
@@ -72,7 +72,7 @@ permanently (swamp-club#900).
 
 - `typeVersion` — the version the instance's arguments were authored or migrated
   for
-- `currentTypeVersion` — the version of the installed model type
+- `currentTypeVersion` — the version of the installed behavior type
 - `staleness` — `current`, `upgradable`, `stranded`, `unknown`, or `invalid`
 
 `stranded` means the installed version is ahead and **no upgrade entry covers
@@ -148,11 +148,11 @@ upgrades: [
 
 ## Multi-Step Upgrade Chain
 
-A model evolving through multiple versions builds up a chain. Each entry handles
-one version transition:
+A behavior evolving through multiple versions builds up a chain. Each entry
+handles one version transition:
 
 ```typescript
-export const model = {
+export const behavior = {
   type: "acme/notifier",
   version: "2026.02.09.1",
   globalArguments: z.object({
@@ -189,14 +189,14 @@ An instance already at `2025.06.01.1` would only apply step 2.
 ## Rules
 
 - Upgrades must be ordered chronologically by `toVersion`
-- The last upgrade's `toVersion` **must** equal the model's current `version`
+- The last upgrade's `toVersion` **must** equal the behavior's current `version`
 - Upgrade functions are pure transforms (old args in, new args out)
 - Upgrades are forward-only — there is no downgrade path
 - The registry validates these rules at startup and throws on violations
 
 ## Without Upgrades
 
-If a model bumps `version` without adding an `upgrades` entry:
+If a behavior bumps `version` without adding an `upgrades` entry:
 
 - Existing instances keep their old `typeVersion` forever
 - Methods still execute if the schema is compatible (no new required fields)

@@ -2719,3 +2719,36 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "ReconcileFromDisk: a behavior-spelled model in extensions/behaviors/ is indexed as a model (swamp-club#3338)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const typeId = `@test/reconcile-behavior-${crypto.randomUUID()}`;
+        const behaviorsDir = join(repoDir, "extensions", "behaviors");
+        await ensureDir(behaviorsDir);
+        const sourcePath = join(behaviorsDir, "spelled.ts");
+        await Deno.writeTextFile(
+          sourcePath,
+          MINIMAL_MODEL_CODE(typeId).replace(
+            "export const model",
+            "export const behavior",
+          ),
+        );
+
+        const result = await new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        }).execute();
+        assertEquals(result.applied, true);
+
+        const row = catalog.findByType(typeId, "model");
+        assertEquals(row?.kind, "model");
+        assertEquals(row?.source_path, canonicalizePath(sourcePath));
+      },
+    );
+  },
+);

@@ -851,3 +851,122 @@ Deno.test("resolveMountedSourceDirs: rejects an invalid sources file", async () 
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// --- extensions/behaviors/, the behavior spelling (swamp-club#3338) -------
+
+Deno.test("resolveSourceExtensionDirs: a source's extensions/behaviors/ loads as models after its models dir", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const sourceDir = join(tmpDir, "spelled");
+    await Deno.mkdir(join(sourceDir, "extensions", "models"), {
+      recursive: true,
+    });
+    await Deno.mkdir(join(sourceDir, "extensions", "behaviors"), {
+      recursive: true,
+    });
+    const { resolved } = await resolveSourceExtensionDirs([
+      { path: sourceDir },
+    ]);
+    assertEquals(
+      resolved[0].behaviorsDir,
+      join(sourceDir, "extensions", "behaviors"),
+    );
+    assertEquals(collectDirsForKind(resolved, "models"), [
+      join(sourceDir, "extensions", "models"),
+      join(sourceDir, "extensions", "behaviors"),
+    ]);
+    assertEquals(flattenSourceKindDirs(resolved), [
+      join(sourceDir, "extensions", "models"),
+      join(sourceDir, "extensions", "behaviors"),
+    ]);
+    assertEquals(
+      await resolveExtensionKindsForSource({ path: sourceDir }, tmpDir),
+      ["models"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveSourceExtensionDirs: a source with only extensions/behaviors/ keeps the content pre-scan and still finds its behaviors", async () => {
+  // Layout detection is unchanged, so a source that already had an
+  // extensions/behaviors/ folder resolves as before (content pre-scan of the
+  // whole source); the pre-scan now recognises export const behavior.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const sourceDir = join(tmpDir, "behaviors-only");
+    await Deno.mkdir(join(sourceDir, "extensions", "behaviors"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(sourceDir, "extensions", "behaviors", "echo.ts"),
+      'export const behavior = { type: "@acme/echo", version: "2026.01.01.1", methods: {} };\n',
+    );
+    const { resolved } = await resolveSourceExtensionDirs([
+      { path: sourceDir },
+    ]);
+    assertEquals(resolved[0].behaviorsDir, undefined);
+    assertEquals(collectDirsForKind(resolved, "models"), [sourceDir]);
+    assertEquals(
+      await resolveExtensionKindsForSource({ path: sourceDir }, tmpDir),
+      ["models"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveSourceExtensionDirs: a source whose marker sets modelsDir to the default keeps its behaviors dir", async () => {
+  // Same rule as the repo itself: only a modelsDir that moves the models dir
+  // turns the behaviors dir off.
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const sourceDir = join(tmpDir, "explicit-default");
+    await Deno.mkdir(join(sourceDir, "extensions", "models"), {
+      recursive: true,
+    });
+    await Deno.mkdir(join(sourceDir, "extensions", "behaviors"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(sourceDir, ".swamp.yaml"),
+      'swampVersion: "1.0.0"\ninitializedAt: "2026-01-01"\nmodelsDir: extensions/models\n',
+    );
+    const { resolved } = await resolveSourceExtensionDirs([{
+      path: sourceDir,
+    }]);
+    assertEquals(
+      resolved[0].behaviorsDir,
+      join(sourceDir, "extensions", "behaviors"),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("resolveSourceExtensionDirs: no behaviors dir once the source's marker moves its models dir, or models is filtered out", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
+  try {
+    const sourceDir = join(tmpDir, "configured");
+    await Deno.mkdir(join(sourceDir, "custom", "models"), { recursive: true });
+    await Deno.mkdir(join(sourceDir, "extensions", "behaviors"), {
+      recursive: true,
+    });
+    await Deno.mkdir(join(sourceDir, "extensions", "vaults"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(sourceDir, ".swamp.yaml"),
+      'swampVersion: "1.0.0"\ninitializedAt: "2026-01-01"\nmodelsDir: custom/models\n',
+    );
+    const configured = await resolveSourceExtensionDirs([{ path: sourceDir }]);
+    assertEquals(configured.resolved[0].behaviorsDir, undefined);
+    await Deno.remove(join(sourceDir, ".swamp.yaml"));
+    const filtered = await resolveSourceExtensionDirs([
+      { path: sourceDir, only: ["vaults"] },
+    ]);
+    assertEquals(filtered.resolved[0].behaviorsDir, undefined);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

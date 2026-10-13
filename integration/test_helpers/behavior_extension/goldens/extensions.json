@@ -1,0 +1,739 @@
+{
+  "string-literal-type": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "ec2.ts",
+          "type": "@acme/ec2",
+          "version": "2026.03.01.1",
+          "globalArguments": [
+            {
+              "name": "region",
+              "type": "string",
+              "description": "AWS region",
+              "required": true
+            }
+          ],
+          "methods": [
+            {
+              "name": "start",
+              "description": "Start the instance",
+              "arguments": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "name": "stop",
+              "description": "Stop the instance",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "ec2.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "ec2.ts",
+          "type": "@acme/ec2",
+          "version": "2026.03.01.1",
+          "globalArguments": [
+            {
+              "name": "region",
+              "type": "string",
+              "description": "AWS region",
+              "required": true
+            }
+          ],
+          "methods": [
+            {
+              "name": "start",
+              "description": "Start the instance",
+              "arguments": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "name": "stop",
+              "description": "Stop the instance",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/ec2.js",
+        "extension/manifest.yaml",
+        "extension/models/ec2.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/string-literal-type'\nversion: 2026.05.01.1\ndescription: Fixture string-literal-type\nmodels:\n  - ec2.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/ec2.js": "7b76a1de30ddeccaacb60c65b30e47de953df15971cfbb83bc43ec62a3787a85",
+        "extension/manifest.yaml": "951a8fd926c1f26dd61f510b3e937ffd987cda49f7a1920b6dee0d0c9a3ee739",
+        "extension/models/ec2.ts": "07740fc1a50cfaa91df3fba4f243b5f8787620f199d31d79e8809a94ff410603"
+      }
+    },
+    "reviewWarnings": []
+  },
+  "modeltype-create": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "thing.ts",
+          "type": "@acme/thing",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "run",
+              "description": "Run",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "thing.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "thing.ts",
+          "type": "@acme/thing",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "run",
+              "description": "Run",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/thing.js",
+        "extension/manifest.yaml",
+        "extension/models/thing.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/modeltype-create'\nversion: 2026.05.01.1\ndescription: Fixture modeltype-create\nmodels:\n  - thing.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/thing.js": "6cb836ce24f2a839c25ab06092ea3e9ff6a67e26a2b3d0e5e610d1481069e796",
+        "extension/manifest.yaml": "d508e22003e603543309973b8521463279300a2cdf89083c248d0745206a7a3a",
+        "extension/models/thing.ts": "e11d4a8429bf9fec3259cc6da6502b81b97261dc67dbcdce29e9e5e4138cf89e"
+      }
+    },
+    "reviewWarnings": []
+  },
+  "resources-files-upgrades": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "store.ts",
+          "type": "@acme/store",
+          "version": "2026.03.02.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "run",
+              "description": "Run",
+              "arguments": []
+            }
+          ],
+          "resources": [
+            {
+              "key": "result",
+              "description": "Execution result",
+              "lifetime": "infinite"
+            }
+          ],
+          "files": [
+            {
+              "key": "log",
+              "description": "Run log",
+              "contentType": "text/plain"
+            }
+          ]
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "store.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "store.ts",
+          "type": "@acme/store",
+          "version": "2026.03.02.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "run",
+              "description": "Run",
+              "arguments": []
+            }
+          ],
+          "resources": [
+            {
+              "key": "result",
+              "description": "Execution result",
+              "lifetime": "infinite"
+            }
+          ],
+          "files": [
+            {
+              "key": "log",
+              "description": "Run log",
+              "contentType": "text/plain"
+            }
+          ]
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/store.js",
+        "extension/manifest.yaml",
+        "extension/models/store.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/resources-files-upgrades'\nversion: 2026.05.01.1\ndescription: Fixture resources-files-upgrades\nmodels:\n  - store.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/store.js": "ace9830961ec660b31f90809800c09fc9a5935f27b9670dbe64817169f41c2cd",
+        "extension/manifest.yaml": "94c7d0834073b5efc525722c48110ee68ae6c258400f03aa0f447a552bb767d8",
+        "extension/models/store.ts": "d10e6b83ef7e511021f44434289472eca5c612b575c6943c8dbe7b0cbd24375a"
+      }
+    },
+    "reviewWarnings": []
+  },
+  "quoted-keys": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "subs.ts",
+          "type": "@acme/subs",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "list-subscriptions",
+              "description": "List",
+              "arguments": []
+            },
+            {
+              "name": "get-subscription",
+              "description": "Get",
+              "arguments": [
+                {
+                  "name": "sub-id",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "subs.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "subs.ts",
+          "type": "@acme/subs",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "list-subscriptions",
+              "description": "List",
+              "arguments": []
+            },
+            {
+              "name": "get-subscription",
+              "description": "Get",
+              "arguments": [
+                {
+                  "name": "sub-id",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/subs.js",
+        "extension/manifest.yaml",
+        "extension/models/subs.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/quoted-keys'\nversion: 2026.05.01.1\ndescription: Fixture quoted-keys\nmodels:\n  - subs.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/subs.js": "8fcdb141f8fc564b41081272af6874a63cee6fb910c1622a2d2fec505134de1d",
+        "extension/manifest.yaml": "8c8d365089ca1554e1e7f7defb5aab6d764d9cbc840d1711be14bf2f5f2e5219",
+        "extension/models/subs.ts": "2dad55badc0cfbbfd632ca7d25472755069e24da5218993027cba25277c15c3d"
+      }
+    },
+    "reviewWarnings": []
+  },
+  "type-in-string-before-export": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "prompt.ts",
+          "type": "@acme/prompt",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "ask",
+              "description": "",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "prompt.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "prompt.ts",
+          "type": "@acme/prompt",
+          "version": "2026.03.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "ask",
+              "description": "",
+              "arguments": []
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/prompt.js",
+        "extension/manifest.yaml",
+        "extension/models/prompt.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/type-in-string-before-export'\nversion: 2026.05.01.1\ndescription: Fixture type-in-string-before-export\nmodels:\n  - prompt.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/prompt.js": "84f18d979fbf5531c38cd14a72feee3bec2c3d10a80290cc0f7ef59ff3c267b7",
+        "extension/manifest.yaml": "416a7530f09f368f53f218c9f367e49e8a3910de6a6e88eaedf4f013339b8182",
+        "extension/models/prompt.ts": "94891d89e79a26a9b2dea1da0dd663f59264cabc01eeb544d69f22d6e7ee2a24"
+      }
+    },
+    "reviewWarnings": []
+  },
+  "annotated-export": {
+    "extractor": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "typed.ts": {
+        "kind": "not-plain-object",
+        "annotated": true
+      }
+    },
+    "contentMetadata": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/typed.js",
+        "extension/manifest.yaml",
+        "extension/models/typed.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/annotated-export'\nversion: 2026.05.01.1\ndescription: Fixture annotated-export\nmodels:\n  - typed.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/typed.js": "a756b55e647c81d17e4bf89a67ef048b58fc451621d355d7385577938fad7a30",
+        "extension/manifest.yaml": "df2eed3daa8bc529c37467b8bbc65970b912ec875a801ef784cdd5565ac10062",
+        "extension/models/typed.ts": "45af5af9d36be57be7eb3ed0c9a1d83ca81e2337eb223e6881162f1c4bf35734"
+      }
+    },
+    "reviewWarnings": [
+      {
+        "ruleId": "uncatalogued-model",
+        "file": "extensions/models/typed.ts",
+        "message": "Model export has a type annotation, so it is not read as a plain export const model = { ... } object, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+      }
+    ]
+  },
+  "missing-version": {
+    "extractor": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "noversion.ts": {
+        "kind": "missing-literals",
+        "missing": [
+          "version"
+        ]
+      }
+    },
+    "contentMetadata": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/noversion.js",
+        "extension/manifest.yaml",
+        "extension/models/noversion.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/missing-version'\nversion: 2026.05.01.1\ndescription: Fixture missing-version\nmodels:\n  - noversion.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/noversion.js": "473ab2b63d7f76ff1b3f79cd2f2a0a221e43600b40a5d2ea0ffe3dbe26821c80",
+        "extension/manifest.yaml": "e8137e51bb1ac5d8f0629dbb0e65cbf4aafc2163c48190ee1e85b269def2d341",
+        "extension/models/noversion.ts": "bf54e0c286072344e8520f13684a8fc1d21b6463151e9fdd60ea31a97eb6315f"
+      }
+    },
+    "reviewWarnings": [
+      {
+        "ruleId": "uncatalogued-model",
+        "file": "extensions/models/noversion.ts",
+        "message": "Model export has no string-literal version in its export const model object, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+      }
+    ]
+  },
+  "wrapped-define": {
+    "extractor": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "wrapped.ts": {
+        "kind": "not-plain-object",
+        "annotated": false
+      }
+    },
+    "contentMetadata": {
+      "models": [],
+      "extensions": [],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/wrapped.js",
+        "extension/manifest.yaml",
+        "extension/models/wrapped.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/wrapped-define'\nversion: 2026.05.01.1\ndescription: Fixture wrapped-define\nmodels:\n  - wrapped.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/wrapped.js": "daef2ccd846f01626fbd632c093885520500e207c3bfc2a82ccdedf56e275a5e",
+        "extension/manifest.yaml": "67746aa84ffaf93279ad12b252738be5c00c9ab15dd06edf0721f0879dfdedf1",
+        "extension/models/wrapped.ts": "61ff9ffcdd2784a176316518aa494c4f3c100826b4b15e09c58e4fc5b0a5a06b"
+      }
+    },
+    "reviewWarnings": [
+      {
+        "ruleId": "uncatalogued-model",
+        "file": "extensions/models/wrapped.ts",
+        "message": "Model export is not a plain export const model = { ... } object literal, so the registry catalog will not list this model type. The extension still installs and the model still runs."
+      }
+    ]
+  },
+  "multi-file": {
+    "extractor": {
+      "models": [
+        {
+          "fileName": "multi/model.ts",
+          "type": "@acme/multi",
+          "version": "2026.04.01.1",
+          "globalArguments": [],
+          "methods": [],
+          "resources": [],
+          "files": []
+        },
+        {
+          "fileName": "aws/ec2/model.ts",
+          "type": "@acme/aws/ec2",
+          "version": "2026.04.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "tag",
+              "description": "Tag instances",
+              "arguments": [
+                {
+                  "name": "name",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [
+        {
+          "fileName": "multi/extend.ts",
+          "extendsType": "@acme/multi",
+          "methods": [
+            {
+              "name": "audit",
+              "description": "Audit the multi resource",
+              "arguments": []
+            }
+          ],
+          "resources": []
+        }
+      ],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "catalogGaps": {
+      "multi/model.ts": null,
+      "multi/lib/methods.ts": null,
+      "multi/lib/schemas.ts": null,
+      "multi/extend.ts": null,
+      "aws/ec2/model.ts": null,
+      "aws/ec2/tags.ts": null
+    },
+    "contentMetadata": {
+      "models": [
+        {
+          "fileName": "multi/model.ts",
+          "type": "@acme/multi",
+          "version": "2026.04.01.1",
+          "globalArguments": [],
+          "methods": [],
+          "resources": [],
+          "files": []
+        },
+        {
+          "fileName": "aws/ec2/model.ts",
+          "type": "@acme/aws/ec2",
+          "version": "2026.04.01.1",
+          "globalArguments": [],
+          "methods": [
+            {
+              "name": "tag",
+              "description": "Tag instances",
+              "arguments": [
+                {
+                  "name": "name",
+                  "type": "string",
+                  "description": "",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "resources": [],
+          "files": []
+        }
+      ],
+      "extensions": [
+        {
+          "fileName": "multi/extend.ts",
+          "extendsType": "@acme/multi",
+          "methods": [
+            {
+              "name": "audit",
+              "description": "Audit the multi resource",
+              "arguments": []
+            }
+          ],
+          "resources": []
+        }
+      ],
+      "workflows": [],
+      "vaults": [],
+      "datastores": [],
+      "reports": [],
+      "webhooks": [],
+      "skills": []
+    },
+    "archive": {
+      "files": [
+        "extension/bundles/aws/ec2/model.js",
+        "extension/bundles/multi/extend.js",
+        "extension/bundles/multi/model.js",
+        "extension/manifest.yaml",
+        "extension/models/aws/ec2/model.ts",
+        "extension/models/aws/ec2/tags.ts",
+        "extension/models/multi/data/regions.json",
+        "extension/models/multi/extend.ts",
+        "extension/models/multi/lib/methods.ts",
+        "extension/models/multi/lib/schemas.ts",
+        "extension/models/multi/model.ts"
+      ],
+      "manifest": "manifestVersion: 1\nname: '@acme/multi-file'\nversion: 2026.05.01.1\ndescription: Fixture multi-file\nmodels:\n  - multi/model.ts\n  - aws/ec2/model.ts\n  - multi/extend.ts\nworkflows: []\nvaults: []\ndatastores: []\nreports: []\ninclude:\n  - multi/data/regions.json\nadditionalFiles: []\ndependencies: []\n",
+      "sha256": {
+        "extension/bundles/aws/ec2/model.js": "d4a063ec10c76eb755263071f350af5682d28e19b6e20a046a01927346ac89af",
+        "extension/bundles/multi/extend.js": "2d598fd10eb60bde167183d84c6df6adc8132eab69d8eb8f9be17a641fa77f0e",
+        "extension/bundles/multi/model.js": "7d4ea5ece5321837f0e0d2803138282e310e32d6b36156396cc7e34c2e45dc7d",
+        "extension/manifest.yaml": "6a6ceb6d7cefb419690bc5dae38729bb91b048276bac3147797e5876b2b40540",
+        "extension/models/aws/ec2/model.ts": "e791e7a7f08510e77d9b2a4e6bb63ab01d4182952bc97d65b25ce2f9881117e0",
+        "extension/models/aws/ec2/tags.ts": "6a9aa6ce6edbb48e109e97abcbd0edad3f90446975d5b4f4a8f428740f6ffc38",
+        "extension/models/multi/data/regions.json": "8703373ec67078175b6ec3aea1cbcfbb043f07100c5ff1c0bbe005bc96f6c5aa",
+        "extension/models/multi/extend.ts": "05e2bef4cb8552169f1f19f226b1f01e7e8b792486c23dde4efb49c3e0ac456c",
+        "extension/models/multi/lib/methods.ts": "0972812243eb425d9d8a8f86e9aa145aecc04e4498aa2c9f68b4599448cbafbd",
+        "extension/models/multi/lib/schemas.ts": "f01c827baf5c77d43acc6dd1c854e1762f84ec4670bd73c8e520b9d08859d4de",
+        "extension/models/multi/model.ts": "636327702ac5641ec74eae9318a12cf860c72727262a97b519af7d821d50d7e7"
+      }
+    },
+    "reviewWarnings": []
+  }
+}

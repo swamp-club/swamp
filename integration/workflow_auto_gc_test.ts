@@ -23,9 +23,8 @@
  * Runs go through `executeWorkflowWithLocks`, the path serve's scheduler,
  * webhooks and API runs take, against a real repository whose `.swamp.yaml`
  * sets `autoGc`. The model's resource declares a cap of 3; it is written by a
- * top-level step and from a nested workflow. A `rollbackOnFailure` method
- * cannot run in a workflow yet, so promoted deferred writes are covered by
- * the repository tests.
+ * top-level step, from a nested workflow, and by a `rollbackOnFailure` method
+ * whose deferred writes are promoted when the step succeeds.
  */
 
 import { join } from "@std/path";
@@ -68,6 +67,26 @@ function registerModel(type: ModelType): void {
     methods: {
       write: {
         description: "Writes the state resource",
+        arguments: z.object({}),
+        execute: async (
+          _args: Record<string, unknown>,
+          ctx: {
+            writeResource?: (
+              spec: string,
+              name: string,
+              data: Record<string, unknown>,
+            ) => Promise<unknown>;
+          },
+        ) => {
+          await ctx.writeResource!("state", "state", {
+            run: crypto.randomUUID(),
+          });
+          return {};
+        },
+      },
+      writeAtomic: {
+        description: "Writes the state resource as a deferred write",
+        rollbackOnFailure: true,
         arguments: z.object({}),
         execute: async (
           _args: Record<string, unknown>,
@@ -172,6 +191,15 @@ const cases: Array<{
       singleStep(
         "plain",
         StepTask.directExecution(type.normalized, model, "write"),
+      ),
+    ],
+  },
+  {
+    name: "a rollbackOnFailure step",
+    workflows: (type, model) => [
+      singleStep(
+        "atomic",
+        StepTask.directExecution(type.normalized, model, "writeAtomic"),
       ),
     ],
   },

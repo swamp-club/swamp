@@ -99,6 +99,7 @@ Write in plain English:
 | [audit-doctor](./surfaces/audit-doctor.md)       | To fold into agent-interface.md                   |
 | [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
 | [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
+| [local-dashboard](./surfaces/local-dashboard.md) | The dashboard on local repos, no serve running    |
 
 ## Reading order for a new engineer
 

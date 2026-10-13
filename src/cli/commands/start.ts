@@ -26,6 +26,7 @@ import {
   createStartDeps,
   type SignedInState,
   startInspect,
+  startListWorkspaces,
   startPrepare,
 } from "../../libswamp/start/start.ts";
 import { createStartRenderer } from "../../presentation/renderers/start.ts";
@@ -54,6 +55,11 @@ import {
   startStartServer,
   type StartWorkspaceClaims,
 } from "../../serve/start/start_server.ts";
+import {
+  createWorkspaceHub,
+  spawnDashboardChild,
+} from "../../serve/local/workspace_hub.ts";
+import { resolveFixedRepo } from "../../serve/local/fixed_repo.ts";
 import {
   DASHBOARD_DIST_DIR,
   dashboardBundleExists,
@@ -146,6 +152,17 @@ function pageUrl(port: number, token: string): string {
   return `http://127.0.0.1:${port}/dashboard/start#token=${token}`;
 }
 
+/**
+ * A repo's dashboard on the local hub. The token rides in the fragment,
+ * never sent to the server in the URL; the page keeps it and offers it on
+ * every request.
+ */
+function dashboardUrl(port: number, token: string, workspace: string): string {
+  return `http://127.0.0.1:${port}/dashboard/w/${
+    encodeURIComponent(workspace)
+  }#token=${token}`;
+}
+
 async function tryOpenBrowser(url: string, enabled: boolean): Promise<boolean> {
   if (!enabled) return false;
   try {
@@ -215,6 +232,164 @@ export const startStatusCommand = new Command()
     await inspectAction(options, ["start", "status"]);
   });
 
+/**
+ * Runs the local hub: the start page and, under `/dashboard/w/<workspace>`,
+ * every workspace's dashboard. `swamp start` opens the start page;
+ * `swamp dashboard` passes its repo to land on that repo's dashboard.
+ */
+export async function runStart(
+  options: AnyOptions,
+  commandPath: string[],
+  landingRepoDir?: string,
+): Promise<void> {
+  const cliCtx = createContext(options as GlobalOptions, commandPath);
+  if (cliCtx.outputMode === "json") {
+    // JSON mode is read-only: no workspace, no server, no browser.
+    await inspectAction(options, ["start"]);
+    return;
+  }
+
+  const workspaceName = options.workspace === undefined
+    ? undefined
+    : parseWorkspaceName(options.workspace);
+  const renderer = createStartRenderer(cliCtx.outputMode);
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await buildDeps(true);
+  const openBrowserEnabled = options.browser !== false;
+
+  if (!await dashboardBundleExists(DASHBOARD_DIST_DIR)) {
+    throw new UserError(
+      "The start page isn't in this build. If you installed a release, reinstall swamp; from source, run `deno run build-dashboard`, then rebuild.",
+    );
+  }
+
+  // Sign-in is checked and reported here; the workspace is opened by the
+  // server, from --workspace below or from the page. `swamp dashboard` has
+  // no sign-in step (the auth gate passed before it ran, and its page has no
+  // login), so it says nothing about one.
+  if (landingRepoDir === undefined) {
+    await consumeStream(startPrepare(ctx, deps, {}), {
+      ...renderer.prepareHandlers(),
+      completed: () => {},
+    });
+  }
+
+  // `swamp dashboard` in a folder serves that one repo: no switcher, and
+  // nothing added to the workspace registry.
+  const fixed = landingRepoDir === undefined ? null : await resolveFixedRepo({
+    realPath: (path) => Deno.realPath(path),
+    isRepo: (path) => deps.repo.isRepo(path),
+    registered: async () => (await deps.registry.load())?.list() ?? [],
+  }, landingRepoDir);
+
+  const token = newToken();
+  let port = 0;
+  const server = startStartServer({
+    ctx,
+    deps,
+    token,
+    distDir: DASHBOARD_DIST_DIR,
+    hub: createWorkspaceHub({
+      token,
+      resolveWorkspace: async (name) => {
+        if (fixed) return name === fixed.name ? fixed.path : null;
+        let parsed: string;
+        try {
+          parsed = parseWorkspaceName(name);
+        } catch {
+          return null;
+        }
+        const entry = (await deps.registry.load())?.get(parsed);
+        return entry && await deps.repo.isRepo(entry.path) ? entry.path : null;
+      },
+      listWorkspaces: async () =>
+        fixed ? [fixed] : (await startListWorkspaces(ctx, deps, {
+          readOnly: true,
+        }))
+          .workspaces.map(({ name, path }) => ({ name, path })),
+      switchable: fixed === null,
+      spawnChild: spawnDashboardChild,
+    }),
+    claims: createWorkspaceClaims(() => ({ port, token })),
+    onWorkspaceOpened: (path, created) =>
+      renderer.workspaceOpened(path, created),
+  });
+  port = server.port;
+  try {
+    if (workspaceName !== undefined) {
+      try {
+        await server.openWorkspace(workspaceName);
+      } catch (error) {
+        if (error instanceof StartServerError) {
+          const message = error.code === "not_signed_in"
+            ? "Sign in first: run `swamp start` without --workspace to sign in from the page, or run `swamp auth login`."
+            : error.message;
+          // Keep the original error's marked paths for telemetry.
+          throw markErrorPaths(
+            new UserError(message, error.code),
+            errorPaths(error),
+          );
+        }
+        throw error;
+      }
+    }
+
+    // `swamp dashboard` lands on its repo's dashboard.
+    const url = fixed === null
+      ? pageUrl(server.port, token)
+      : dashboardUrl(server.port, token, fixed.name);
+    renderer.pageReady(
+      url,
+      await tryOpenBrowser(url, openBrowserEnabled),
+      fixed !== null,
+    );
+
+    // The exit code a signal stopped us with: 128 + the signal number.
+    let signalExitCode: number | undefined;
+    let onInterrupt!: () => void;
+    const interruptedPromise = new Promise<"interrupted">((resolve) => {
+      onInterrupt = () => resolve("interrupted");
+    });
+    const stopWith = (code: number) => () => {
+      signalExitCode ??= code;
+      onInterrupt();
+    };
+    // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
+    // here, so each gets its own exit code.
+    const shutdownHandle = registerShutdownHandler({
+      handler: stopWith(130),
+      includePosixSignals: false,
+    });
+    const posixSignals: Array<[Deno.Signal, () => void]> =
+      Deno.build.os === "windows"
+        ? []
+        : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
+    for (const [signal, listener] of posixSignals) {
+      Deno.addSignalListener(signal, listener);
+    }
+    try {
+      const end = await Promise.race([server.ended, interruptedPromise]);
+      if (end === "interrupted" || end.kind === "paused") {
+        renderer.paused(fixed !== null);
+      } else {
+        renderer.launchedEnd(end.displayName);
+      }
+    } finally {
+      shutdownHandle.dispose();
+      for (const [signal, listener] of posixSignals) {
+        try {
+          Deno.removeSignalListener(signal, listener);
+        } catch {
+          // Already removed.
+        }
+      }
+    }
+    if (signalExitCode !== undefined) Deno.exitCode = signalExitCode;
+  } finally {
+    await server.shutdown();
+  }
+}
+
 export const startCommand = new Command()
   .name("start")
   .description(
@@ -233,111 +408,6 @@ export const startCommand = new Command()
   .option("--no-browser", "Print the URL instead of opening a browser")
   .option("--workspace <name:string>", WORKSPACE_OPTION_DESCRIPTION)
   .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["start"]);
-    if (cliCtx.outputMode === "json") {
-      // JSON mode is read-only: no workspace, no server, no browser.
-      await inspectAction(options, ["start"]);
-      return;
-    }
-
-    const workspaceName = options.workspace === undefined
-      ? undefined
-      : parseWorkspaceName(options.workspace);
-    const renderer = createStartRenderer(cliCtx.outputMode);
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await buildDeps(true);
-    const openBrowserEnabled = options.browser !== false;
-
-    if (!await dashboardBundleExists(DASHBOARD_DIST_DIR)) {
-      throw new UserError(
-        "The start page isn't in this build. If you installed a release, reinstall swamp; from source, run `deno run build-dashboard`, then rebuild.",
-      );
-    }
-
-    // Sign-in is checked and reported here; the workspace is opened by the
-    // server, from --workspace below or from the page.
-    await consumeStream(startPrepare(ctx, deps, {}), {
-      ...renderer.prepareHandlers(),
-      completed: () => {},
-    });
-
-    const token = newToken();
-    let port = 0;
-    const server = startStartServer({
-      ctx,
-      deps,
-      token,
-      distDir: DASHBOARD_DIST_DIR,
-      claims: createWorkspaceClaims(() => ({ port, token })),
-      onWorkspaceOpened: (path, created) =>
-        renderer.workspaceOpened(path, created),
-    });
-    port = server.port;
-    try {
-      if (workspaceName !== undefined) {
-        try {
-          await server.openWorkspace(workspaceName);
-        } catch (error) {
-          if (error instanceof StartServerError) {
-            const message = error.code === "not_signed_in"
-              ? "Sign in first: run `swamp start` without --workspace to sign in from the page, or run `swamp auth login`."
-              : error.message;
-            // Keep the original error's marked paths for telemetry.
-            throw markErrorPaths(
-              new UserError(message, error.code),
-              errorPaths(error),
-            );
-          }
-          throw error;
-        }
-      }
-
-      const url = pageUrl(server.port, token);
-      renderer.pageReady(url, await tryOpenBrowser(url, openBrowserEnabled));
-
-      // The exit code a signal stopped us with: 128 + the signal number.
-      let signalExitCode: number | undefined;
-      let onInterrupt!: () => void;
-      const interruptedPromise = new Promise<"interrupted">((resolve) => {
-        onInterrupt = () => resolve("interrupted");
-      });
-      const stopWith = (code: number) => () => {
-        signalExitCode ??= code;
-        onInterrupt();
-      };
-      // SIGINT through the shared handler (Windows too); SIGTERM and SIGHUP
-      // here, so each gets its own exit code.
-      const shutdownHandle = registerShutdownHandler({
-        handler: stopWith(130),
-        includePosixSignals: false,
-      });
-      const posixSignals: Array<[Deno.Signal, () => void]> =
-        Deno.build.os === "windows"
-          ? []
-          : [["SIGTERM", stopWith(143)], ["SIGHUP", stopWith(129)]];
-      for (const [signal, listener] of posixSignals) {
-        Deno.addSignalListener(signal, listener);
-      }
-      try {
-        const end = await Promise.race([server.ended, interruptedPromise]);
-        if (end === "interrupted" || end.kind === "paused") {
-          renderer.paused();
-        } else {
-          renderer.launchedEnd(end.displayName);
-        }
-      } finally {
-        shutdownHandle.dispose();
-        for (const [signal, listener] of posixSignals) {
-          try {
-            Deno.removeSignalListener(signal, listener);
-          } catch {
-            // Already removed.
-          }
-        }
-      }
-      if (signalExitCode !== undefined) Deno.exitCode = signalExitCode;
-    } finally {
-      await server.shutdown();
-    }
+    await runStart(options, ["start"]);
   })
   .command("status", startStatusCommand);

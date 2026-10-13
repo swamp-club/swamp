@@ -1,7 +1,7 @@
 # Bundling Skills with Extensions
 
 Extensions can include **skills** — markdown guidance documents that teach
-agents and humans how to use the extension's models effectively within a
+agents and humans how to use the extension's behaviors effectively within a
 specific organizational context.
 
 Skills are passive — swamp never executes them. It registers metadata at install
@@ -10,15 +10,15 @@ tool's skill directory. The agent or human decides when to load and follow them.
 
 ## When to Bundle Skills
 
-Bundle skills when your extension's models support workflows that benefit from
-opinionated guidance. Common cases:
+Bundle skills when your extension's behaviors support workflows that benefit
+from opinionated guidance. Common cases:
 
-- **Workflow templates** — step-by-step processes built on top of generic models
-  (e.g., a story creation template for a Redmine model)
+- **Workflow templates** — step-by-step processes built on top of generic
+  behaviors (e.g., a story creation template for a Redmine behavior)
 - **Organizational conventions** — naming standards, approval checklists,
   security review steps
-- **Domain-specific instructions** — how to use model methods in combination for
-  a particular use case
+- **Domain-specific instructions** — how to use behavior methods in combination
+  for a particular use case
 
 A skills-only extension needs no TypeScript, no `deno.json`, no tests — just a
 manifest and markdown files.
@@ -46,7 +46,7 @@ SKILL.md must have YAML frontmatter with `name` and `description`:
 ---
 name: create-story
 description: >
-  Use when creating a Redmine story issue with the @webframp/redmine model.
+  Use when creating a Redmine story issue with the @webframp/redmine behavior.
   Triggers on "create story", "new story", "story template".
 ---
 
@@ -175,13 +175,13 @@ Skills enable a clean split between generic integrations and opinionated
 workflows:
 
 ```
-@webframp/redmine                    ← generic model, anyone can use
+@webframp/redmine                    ← generic behavior, anyone can use
 @myorg/redmine-workflow              ← org-specific skills, depends on @webframp/redmine
-@corp/redmine-security-review        ← another org's skill pack, same model
+@corp/redmine-security-review        ← another org's skill pack, same behavior
 ```
 
 Use `dependencies` in the manifest to declare that your skills-only extension
-requires a model extension.
+requires a behavior extension.
 
 ## Example: Skills-Only Extension
 

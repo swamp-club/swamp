@@ -19,4 +19,8 @@
 
 // Moved to infrastructure so libswamp can resolve lockfile paths
 // (swamp-club#2723); re-exported here for existing CLI and serve callers.
-export { resolveModelsDir } from "../infrastructure/persistence/resolve_models_dir.ts";
+export {
+  existingBehaviorsDir,
+  resolveBehaviorsDir,
+  resolveModelsDir,
+} from "../infrastructure/persistence/resolve_models_dir.ts";

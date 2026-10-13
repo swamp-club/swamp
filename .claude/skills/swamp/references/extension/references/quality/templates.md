@@ -20,8 +20,8 @@ additionalFiles:
 
 # Choose whichever field applies to your extension type.
 # Pick one — or multiple — and remove the rest.
-models:
-  - my-model.ts
+behaviors:
+  - my-behavior.ts
 # vaults:
 #   - my-vault.ts
 # datastores:
@@ -48,17 +48,17 @@ Fields to double-check before publishing:
 ## Per-extension-subdir layout — opt-in `paths.base: manifest`
 
 The template above assumes the historical layout: manifest at the repository
-root or directly inside `extensions/models/`, source files under
-`extensions/models/`, README and LICENSE alongside the manifest. **That layout
-keeps working unchanged — there is no migration required for any existing
-extension.**
+root or directly inside `extensions/models/` (or `extensions/behaviors/`),
+source files under the same directory, README and LICENSE alongside the
+manifest. **That layout keeps working unchanged — there is no migration required
+for any existing extension.**
 
 If you prefer to keep each extension self-contained in its own subdirectory
-under `extensions/models/` (manifest, source, README, LICENSE all alongside each
-other), opt in with `paths.base: manifest`. The default is unchanged in the code
-(a single ternary picks between the configured typed dir and the manifest's own
-directory), so omitting the field is the same as writing `paths.base: typedDir`
-— historical behavior. See
+under `extensions/behaviors/` (manifest, source, README, LICENSE all alongside
+each other), opt in with `paths.base: manifest`. The default is unchanged in the
+code (a single ternary picks between the configured typed dir and the manifest's
+own directory), so omitting the field is the same as writing
+`paths.base: typedDir` — the historical default. See
 [extension-publish references/publishing.md](../../../extension-publish/references/publishing.md#path-resolution--pathsbase)
 for the canonical reference.
 
@@ -72,8 +72,8 @@ repository: https://github.com/mycollective/my-extension
 paths:
   base: manifest # opt-in; remove the field to keep the historical default
 
-models:
-  - my-model.ts # resolves alongside this manifest, not under extensions/models/
+behaviors:
+  - my-behavior.ts # resolves alongside this manifest, not under extensions/behaviors/
 additionalFiles:
   - README.md # same — alongside the manifest
   - LICENSE
@@ -83,8 +83,8 @@ platforms:
 ```
 
 This shape keeps the file layout flat (manifest beside source beside README)
-without forcing directory prefixes on `models:`. It makes no difference to the
-rubric score itself — both layouts can earn full marks — but it removes the
+without forcing directory prefixes on `behaviors:`. It makes no difference to
+the rubric score itself — both layouts can earn full marks — but it removes the
 mental friction authors hit when restructuring to land README at the archive
 root.
 
@@ -110,7 +110,7 @@ swamp extension install @mycollective/my-extension
 ## Usage
 
 ```ts
-import { validate } from "./my-model.ts";
+import { validate } from "./my-behavior.ts";
 
 const input = validate({
   name: "example-input",
@@ -146,7 +146,7 @@ no private-type leaks), and the module-level doc signal for `has-readme`.
 
 import { z } from "npm:zod@4";
 
-/** Accepted input shape for this model's operations. */
+/** Accepted input shape for this behavior's operations. */
 export const argsSchema = z.object({
   name: z.string().describe("The name of the thing to process."),
   limit: z.number().int().positive().describe("Maximum items to return."),
@@ -195,11 +195,11 @@ Run from the extension's directory before invoking `swamp extension push`:
 
 ```sh
 # Verify types and catch slow-type issues.
-~/.swamp/deno/deno doc --lint models/my-model.ts
+~/.swamp/deno/deno doc --lint behaviors/my-behavior.ts
 # Exit status 0 + no output means clean.
 
 # See extracted doc structure — confirms exports are well-shaped.
-~/.swamp/deno/deno doc --json models/my-model.ts | jq '.nodes | keys'
+~/.swamp/deno/deno doc --json behaviors/my-behavior.ts | jq '.nodes | keys'
 
 # Verify formatting and standard lint.
 ~/.swamp/deno/deno fmt --check

@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { createDatastoreTestContext } from "@swamp-club/swamp-testing";
+import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
+import type { CustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { SEPARATOR } from "@std/path";
 import { assertCompletes, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -131,7 +134,7 @@ Deno.test("datastoreLockStatus: with model locks on filesystem", async () => {
   assertEquals(events[1].kind, "completed");
 });
 
-Deno.test("datastoreLockStatus: skips model lock scan for non-filesystem", async () => {
+Deno.test("datastoreLockStatus: reports model locks on a custom datastore", async () => {
   const deps = makeStatusDeps({
     scanModelLocks: () =>
       Promise.resolve([
@@ -144,21 +147,32 @@ Deno.test("datastoreLockStatus: skips model lock scan for non-filesystem", async
       ]),
   });
 
-  // Should only have the global lock status, no model locks
-  await assertCompletes<DatastoreLockStatusEvent>(
+  const events = await collect<DatastoreLockStatusEvent>(
     datastoreLockStatus(createLibSwampContext(), deps, {
-      datastoreType: "custom",
+      datastoreType: "@swamp/s3-datastore",
       isFilesystemDatastore: false,
     }),
+  );
+
+  assertEquals(events, [
+    {
+      kind: "model_lock",
+      data: {
+        held: true,
+        info: sampleLockInfo,
+        datastoreType: "@swamp/s3-datastore",
+        lockScope: "aws-ec2/my-server",
+      },
+    },
     {
       kind: "completed",
       data: {
         held: false,
         info: undefined,
-        datastoreType: "custom",
+        datastoreType: "@swamp/s3-datastore",
       },
     },
-  );
+  ]);
 });
 
 // ── Lock release tests ─────────────────────────────────────────────────
@@ -559,4 +573,182 @@ Deno.test("workflowRunLockKey: with namespace", () => {
 Deno.test("workflowRunLockKey: is not read as a per-model lock", () => {
   const rel = workflowRunLockKey(undefined, "run-1").split("/").join(SEPARATOR);
   assertEquals(parseModelLockKey(rel), null);
+});
+
+// ── Custom datastores: model locks through the provider's lock ─────────
+
+const unusedGlobalLock = {
+  inspect: () => Promise.resolve(null),
+} as unknown as DistributedLock;
+
+function customConfig(namespace?: string): CustomDatastoreConfig {
+  return {
+    type: "@swamp/s3-datastore",
+    config: {},
+    datastorePath: "/tmp/unused",
+    ...(namespace ? { namespace } : {}),
+  };
+}
+
+Deno.test("createDatastoreLockStatusDeps: reports a held model lock on a custom datastore", async () => {
+  const { provider } = createDatastoreTestContext();
+  const createLock = (lockKey: string) => provider.createLock("", { lockKey });
+
+  const holder = createLock(modelLockKey(undefined, "aws-ec2", "my-server"));
+  await holder.acquire();
+
+  const deps = createDatastoreLockStatusDeps(unusedGlobalLock, customConfig(), {
+    listModels: () =>
+      Promise.resolve([
+        { modelType: "aws-ec2", modelId: "my-server" },
+        { modelType: "aws-ec2", modelId: "idle-server" },
+      ]),
+    createLock,
+  });
+
+  const locks = await deps.scanModelLocks();
+  assertEquals(locks.length, 1);
+  assertEquals(locks[0].lockKey, "data/aws-ec2/my-server/.lock");
+  assertEquals(locks[0].modelType, "aws-ec2");
+  assertEquals(locks[0].modelId, "my-server");
+  assertEquals(locks[0].info.holder, "test-user@test-host");
+  assertEquals(locks[0].info.pid, 1234);
+
+  await holder.release();
+  assertEquals(await deps.scanModelLocks(), []);
+});
+
+Deno.test("createDatastoreLockStatusDeps: builds namespaced keys for scoped types", async () => {
+  const { provider, getLockOperations } = createDatastoreTestContext();
+  const createLock = (lockKey: string) => provider.createLock("", { lockKey });
+
+  const holder = createLock("infra/data/@scope/type/abc/.lock");
+  await holder.acquire();
+
+  const deps = createDatastoreLockStatusDeps(
+    unusedGlobalLock,
+    customConfig("infra"),
+    {
+      listModels: () =>
+        Promise.resolve([{ modelType: "@scope/type", modelId: "abc" }]),
+      createLock,
+    },
+  );
+
+  const locks = await deps.scanModelLocks();
+  assertEquals(locks.map((l) => [l.lockKey, l.modelType, l.modelId]), [
+    ["infra/data/@scope/type/abc/.lock", "@scope/type", "abc"],
+  ]);
+  assertEquals(
+    getLockOperations().filter((op) => op.method === "inspect").map((op) =>
+      op.lockKey
+    ),
+    ["infra/data/@scope/type/abc/.lock"],
+  );
+});
+
+Deno.test("createDatastoreLockStatusDeps: inspects a model listed twice once", async () => {
+  const { provider, getLockOperations } = createDatastoreTestContext();
+  const createLock = (lockKey: string) => provider.createLock("", { lockKey });
+
+  const holder = createLock(modelLockKey(undefined, "aws-ec2", "my-server"));
+  await holder.acquire();
+
+  const deps = createDatastoreLockStatusDeps(unusedGlobalLock, customConfig(), {
+    listModels: () =>
+      Promise.resolve([
+        { modelType: "aws-ec2", modelId: "my-server" },
+        { modelType: "aws-ec2", modelId: "my-server" },
+      ]),
+    createLock,
+  });
+
+  const locks = await deps.scanModelLocks();
+  assertEquals(locks.length, 1);
+  assertEquals(
+    getLockOperations().filter((op) => op.method === "inspect").length,
+    1,
+  );
+});
+
+Deno.test("createDatastoreLockStatusDeps: a failed inspect fails the scan", async () => {
+  const failing = {
+    inspect: () => Promise.reject(new Error("AccessDenied")),
+  } as unknown as DistributedLock;
+
+  const deps = createDatastoreLockStatusDeps(unusedGlobalLock, customConfig(), {
+    listModels: () =>
+      Promise.resolve([{ modelType: "aws-ec2", modelId: "my-server" }]),
+    createLock: () => failing,
+  });
+
+  await assertRejects(
+    () => deps.scanModelLocks(),
+    Error,
+    "Could not inspect the lock for aws-ec2/my-server: AccessDenied",
+  );
+});
+
+Deno.test("createDatastoreLockStatusDeps: a failed inspect stops further inspects", async () => {
+  let inspects = 0;
+  let inFlight = 0;
+  const createLock = (lockKey: string) =>
+    ({
+      async inspect() {
+        inspects++;
+        inFlight++;
+        try {
+          if (lockKey.includes("server-00")) throw new Error("AccessDenied");
+          // Still running when the failing inspect rejects.
+          for (let i = 0; i < 5; i++) await Promise.resolve();
+          return null;
+        } finally {
+          inFlight--;
+        }
+      },
+    }) as unknown as DistributedLock;
+
+  const models = Array.from({ length: 100 }, (_, i) => ({
+    modelType: "aws-ec2",
+    modelId: `server-${String(i).padStart(2, "0")}`,
+  }));
+  const deps = createDatastoreLockStatusDeps(unusedGlobalLock, customConfig(), {
+    listModels: () => Promise.resolve(models),
+    createLock,
+  });
+
+  await assertRejects(() => deps.scanModelLocks(), Error, "AccessDenied");
+  // No inspect outlives the scan, and the failure stopped the rest.
+  assertEquals(inFlight, 0);
+  assertEquals(inspects, 16);
+});
+
+Deno.test("createDatastoreLockStatusDeps: bounds concurrent inspects and sorts results", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const createLock = (lockKey: string) =>
+    ({
+      async inspect() {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight--;
+        return { ...sampleLockInfo, nonce: lockKey };
+      },
+    }) as unknown as DistributedLock;
+
+  const models = Array.from({ length: 40 }, (_, i) => ({
+    modelType: "aws-ec2",
+    modelId: `server-${String(39 - i).padStart(2, "0")}`,
+  }));
+  const deps = createDatastoreLockStatusDeps(unusedGlobalLock, customConfig(), {
+    listModels: () => Promise.resolve(models),
+    createLock,
+  });
+
+  const locks = await deps.scanModelLocks();
+  assertEquals(locks.length, 40);
+  assertEquals(locks[0].modelId, "server-00");
+  assertEquals(locks[39].modelId, "server-39");
+  assertEquals(maxInFlight, 16);
 });

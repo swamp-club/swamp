@@ -45,6 +45,13 @@ export interface SourceArchiveKindInput {
   kind: SourceArchiveKind;
   /** Absolute path of the kind's directory (its archive directory's source). */
   dir: string;
+  /**
+   * Further directories whose files the kind also packs at
+   * `<kind>/<path relative to that directory>` — the models directory of a
+   * `behaviors:` manifest (swamp-club#3338). Mirroring and `_shared/` stay
+   * relative to `dir`.
+   */
+  extraDirs?: readonly string[];
   /** Absolute paths of every local module the kind's entry points reach, entry points included. */
   modules: readonly string[];
 }
@@ -231,7 +238,7 @@ export function planSourceArchive(
     if (existing !== undefined && existing !== sourcePath) {
       throw markErrorPaths(
         new UserError(
-          `${existing} and ${sourcePath} would both be packaged as ` +
+          `${existing} and ${sourcePath} would both be packed as ` +
             `${archivePath}. Rename or move one of them so each local ` +
             `module has its own archive path.`,
         ),
@@ -246,8 +253,10 @@ export function planSourceArchive(
     inKind.set(k.kind, placed);
     for (const path of k.modules) {
       assertContained(path, input.allowedRoots, importerOf.get(path));
-      const rel = relativeForward(k.dir, path);
-      if (rel === undefined || !isInside(rel)) continue;
+      const rel = [k.dir, ...(k.extraDirs ?? [])]
+        .map((d) => relativeForward(d, path))
+        .find((r) => r !== undefined && isInside(r));
+      if (rel === undefined) continue;
       const archivePath = posixNormalize(`${k.kind}/${rel}`);
       claim(archivePath, path);
       placed.set(path, archivePath);

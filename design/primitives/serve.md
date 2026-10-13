@@ -550,10 +550,12 @@ rejected. The rules (`src/domain/vaults/token_secrets_key.ts`,
 
 **Grants.** Each request is authorized against an in-memory `PolicySnapshot`
 built from grant and group data (`src/domain/access/policy_snapshot_loader.ts`).
-With a remote datastore, an `AccessDataPoller` pulls `data/swamp/grant` and
-`data/swamp/group` every `--datastore-poll-interval` (default 30 s) and
-reloads the snapshot on any change
-(`src/serve/access_data_poller.ts`). In OAuth mode, a `CollectiveRefreshService`
+An `AccessDataPoller` reloads the snapshot when another process changed
+`data/swamp/grant` or `data/swamp/group`, checking every
+`--datastore-poll-interval` (default 30 s)
+(`src/serve/access_data_poller.ts`). With a remote datastore it pulls them; on
+a v2 filesystem datastore it fingerprints the shared directories and ignores
+the instance's own writes (swamp-club#3371). In OAuth mode, a `CollectiveRefreshService`
 re-fetches each logged-in user's collectives from the provider every
 `--group-refresh-interval`. It closes connections whose admission lapsed
 (`src/serve/collective_refresh_service.ts`). It applies a userinfo answer only
@@ -1146,7 +1148,8 @@ not be cancelled is marked `interrupted` but left unsettled.
 
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
 `--datastore-poll-interval` (default 30 s) and checks the extension lockfile. The `AccessDataPoller` pulls grants
-and groups at the same interval.
+and groups at the same interval, or on a v2 filesystem datastore checks the
+shared grant and group directories for peers' changes.
 
 **What does not replicate.** The `ActiveRunRegistry`, its event buffers, the
 worker session pool, rate-limiter buckets and the policy snapshot are
@@ -1231,7 +1234,9 @@ runs end `cancelled`) and, on a remote datastore, pushes those records under the
 shared sync gate (`interruptShutdownRuns` in `src/serve/shutdown_interrupt.ts`,
 swamp-club#3252). One 5 s deadline bounds the gate wait and the push together;
 a push that fails or misses it is logged as a warning, and the datastore keeps
-the run's last pushed status. It then deletes its heartbeat and exits. Set the pod's
+the run's last pushed status. A step the abort stopped in flight is recorded
+`unknown` on the interrupted run, so `swamp workflow recover` reopens it
+(swamp-club#3369). It then deletes its heartbeat and exits. Set the pod's
 `terminationGracePeriodSeconds` above the drain timeout plus about 10 s (the 5 s
 abort grace and the 5 s interrupt push), and
 use a `preStop` sleep so traffic leaves the Service endpoints before SIGTERM:
@@ -1334,7 +1339,10 @@ gone. After a crash, the reconciliation loop handles the dead instance once
   boot. User services (`default.target`, launchd agents) run only while the
   user is logged in. To start a user service at boot, enable systemd lingering
   (`loginctl enable-linger $USER`) or install system-wide.
-- **Dashboard.** `--dashboard` serves the Vite SPA in `packages/dashboard`
+- **Dashboard.** The same bundle also runs with no serve, on local repos: see
+  [local dashboard](../surfaces/local-dashboard.md). Serve never sends its
+  `local` flag, so everything below is unchanged by it.
+  `--dashboard` serves the Vite SPA in `packages/dashboard`
   (overview, behaviors, workflows, executions, approvals, data, vaults,
   extensions, schedules, webhooks and system views) from
   `packages/dashboard/dist`. `scripts/compile.ts` embeds it only if pre-built

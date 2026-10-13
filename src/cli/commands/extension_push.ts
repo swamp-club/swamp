@@ -410,6 +410,7 @@ export const extensionPushCommand = new Command()
       const {
         manifest: sourceManifest,
         modelsDir,
+        behaviorsDir,
         modelEntryPoints,
         allModelFiles,
         vaultsDir,
@@ -520,6 +521,7 @@ export const extensionPushCommand = new Command()
           repoDir,
           manifestDir,
           modelsDir,
+          behaviorsDir,
           allModelFiles,
           modelEntryPoints,
           vaultsDir,
@@ -672,6 +674,7 @@ export const extensionPushCommand = new Command()
                   repoDir,
                   manifestDir,
                   modelsDir,
+                  behaviorsDir,
                   allModelFiles,
                   modelEntryPoints,
                   vaultsDir,

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { serverPath, withLocalToken } from "./workspace_path.ts";
 import { useEffect, useState } from "react";
 import { useSwamp } from "./SwampProvider";
 import {
@@ -127,8 +128,11 @@ export function useHealthStream(intervalMs = 5000): HealthStream {
           headers["X-Swamp-Dashboard-Origin"] = globalThis.location.origin;
         }
 
-        const url = `/api/v1/health/stream?interval=${intervalMs}`;
-        const resp = await fetch(url, { headers, signal: abort.signal });
+        const url = serverPath(`/api/v1/health/stream?interval=${intervalMs}`);
+        const resp = await fetch(url, {
+          headers: withLocalToken(headers),
+          signal: abort.signal,
+        });
 
         const outcome = healthStreamOutcome(resp.status);
         if (outcome === "denied") {

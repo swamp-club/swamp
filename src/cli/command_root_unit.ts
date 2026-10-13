@@ -24,6 +24,7 @@
  * ended, as `ModelLockResult.flush()` released them after its push.
  */
 
+import { ModelLockLostError } from "../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -59,6 +60,10 @@ export interface CommandRootUnitOptions {
    * replaces it as a `finally` would. Without it a cleanup error is thrown
    * when `fn` resolved, and logged at warn when `fn` threw, so it never
    * hides `fn`'s error. When given, whatever it throws propagates.
+   *
+   * One push error never reaches it when `fn` resolved: a
+   * {@link ModelLockLostError} is thrown, so a command whose push was
+   * refused after its model lock was lost fails (swamp-club#3373).
    */
   onCleanupError?: (error: unknown) => void;
 }
@@ -85,12 +90,14 @@ export async function runCommandInRootUnit<T>(
 ): Promise<T> {
   const push = options.push;
   let cleanup: { error: unknown } | undefined;
+  let lockLost: ModelLockLostError | undefined;
   const flush = push === undefined
     ? undefined
     : async (outcome: RootFlushOutcome) => {
       try {
         await push(outcome);
       } catch (error) {
+        if (error instanceof ModelLockLostError) lockLost = error;
         cleanup = { error };
       }
     };
@@ -114,6 +121,15 @@ export async function runCommandInRootUnit<T>(
     } catch (error) {
       cleanup = { error };
     }
+  }
+
+  // Nothing was pushed, so a command that resolved must not exit as if its
+  // writes were published; a release error after it is only logged.
+  if (lockLost !== undefined && !("error" in outcome)) {
+    if (cleanup !== undefined && cleanup.error !== lockLost) {
+      logger.warn`Failed to release locks: ${cleanup.error}`;
+    }
+    throw lockLost;
   }
 
   if (cleanup !== undefined) {

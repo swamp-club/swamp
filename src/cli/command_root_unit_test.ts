@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import type { MarkDirtyHook } from "../domain/datastore/datastore_sync_service.ts";
+import {
+  type MarkDirtyHook,
+  ModelLockLostError,
+} from "../domain/datastore/datastore_sync_service.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { openRepoUnitOfWork } from "../infrastructure/persistence/repo_unit_of_work.ts";
 import { runCommandInRootUnit } from "./command_root_unit.ts";
@@ -186,6 +189,62 @@ Deno.test("runCommandInRootUnit: an error the cleanup handler throws propagates"
     Error,
     "unpublished",
   );
+});
+
+const LOCK_LOST = new ModelLockLostError([{ modelType: "t", modelId: "m" }]);
+
+Deno.test("runCommandInRootUnit: a push refused for a lost model lock fails a command that resolved, past the cleanup handler (swamp-club#3373)", async () => {
+  const { events, repoContext, release } = recorder();
+  const reported: unknown[] = [];
+  const error = await assertRejects(() =>
+    runCommandInRootUnit(
+      repoContext,
+      {
+        push: () => Promise.reject(LOCK_LOST),
+        release,
+        onCleanupError: (cleanupError) => reported.push(cleanupError),
+      },
+      () => Promise.resolve("done"),
+    )
+  );
+  assertEquals(error, LOCK_LOST);
+  assertEquals(events, ["release"]);
+  assertEquals(reported, []);
+});
+
+Deno.test("runCommandInRootUnit: a lost model lock still fails the command when the release fails after it (swamp-club#3373)", async () => {
+  const { repoContext, release } = recorder({ failRelease: "release failed" });
+  const error = await assertRejects(() =>
+    runCommandInRootUnit(
+      repoContext,
+      {
+        push: () => Promise.reject(LOCK_LOST),
+        release,
+        onCleanupError: () => {},
+      },
+      () => Promise.resolve(),
+    )
+  );
+  assertEquals(error, LOCK_LOST);
+});
+
+Deno.test("runCommandInRootUnit: fn's error wins over a lost model lock, which goes to the cleanup handler (swamp-club#3373)", async () => {
+  const { repoContext } = recorder();
+  const reported: unknown[] = [];
+  await assertRejects(
+    () =>
+      runCommandInRootUnit(
+        repoContext,
+        {
+          push: () => Promise.reject(LOCK_LOST),
+          onCleanupError: (cleanupError) => reported.push(cleanupError),
+        },
+        () => Promise.reject(new Error("fn failed")),
+      ),
+    Error,
+    "fn failed",
+  );
+  assertEquals(reported, [LOCK_LOST]);
 });
 
 Deno.test("runCommandInRootUnit: without a push the root still stages and nothing pushes", async () => {

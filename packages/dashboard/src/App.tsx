@@ -19,6 +19,7 @@
 
 import {
   lazy,
+  type ReactNode,
   Suspense,
   useCallback,
   useEffect,
@@ -32,7 +33,11 @@ import { useHealthStream } from "./client/useHealthStream";
 import { useRequest } from "./client/useRequest";
 import { pendingApprovals } from "./client/approvals";
 import { Logo } from "./components/Logo";
-import { AppShellSkeleton } from "./components/AppShellSkeleton.tsx";
+import { localToken, PAGE_WORKSPACE } from "./client/workspace_path.ts";
+import {
+  AppShellSkeleton,
+  connectingLabel,
+} from "./components/AppShellSkeleton.tsx";
 import { Sidebar, SIDEBAR_ID, type View } from "./components/Sidebar";
 import {
   MOBILE_MEDIA_QUERY,
@@ -62,6 +67,12 @@ import { RunDetail } from "./views/RunDetail";
 import { DataDetail } from "./views/DataDetail";
 import { ScheduleDetail } from "./views/ScheduleDetail.tsx";
 import { WebhookDetail } from "./views/WebhookDetail.tsx";
+import {
+  SchedulesLocalState,
+  WebhooksLocalState,
+} from "./views/ServeOnlyStates.tsx";
+import type { CopyFn } from "./views/AuditStates.tsx";
+import { copyText } from "./components/clipboard.ts";
 import { buildPath, isStartPath } from "./routes.ts";
 import "./styles/shell.css";
 
@@ -95,6 +106,11 @@ export function App() {
       </Suspense>
     );
   }
+  // A workspace page needs the token `swamp start` or `swamp dashboard`
+  // handed it; without one every request would be refused.
+  if (PAGE_WORKSPACE !== null && localToken() === null) {
+    return <LocalTokenMissing />;
+  }
   return (
     <SwampProvider>
       <AppShell />
@@ -102,8 +118,23 @@ export function App() {
   );
 }
 
+/** A local dashboard page opened without its token (a pasted link, say). */
+function LocalTokenMissing() {
+  return (
+    <div className="login-container">
+      <div className="login-card" role="status">
+        <p>
+          This dashboard is only available from <code>swamp start</code> or{" "}
+          <code>swamp dashboard</code>. Open it from the link they print.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function AppShell() {
-  const { connected, token, authMode, sessionReady, logout } = useSwamp();
+  const { connected, token, authMode, sessionReady, logout, local } =
+    useSwamp();
 
   if (authMode === null || !sessionReady) {
     return <AppShellSkeleton label="Connecting" />;
@@ -114,7 +145,7 @@ function AppShell() {
   }
 
   if (!connected) {
-    return <AppShellSkeleton label="Connecting to swamp serve" />;
+    return <AppShellSkeleton label={connectingLabel(local)} />;
   }
 
   return (
@@ -125,6 +156,7 @@ function AppShell() {
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
+  const { local } = useSwamp();
   const {
     view,
     detail,
@@ -209,6 +241,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         health={health}
         approvalCount={approvalCount}
         auditEnabled={auditEnabled(auditStream.status)}
+        local={local}
         onLogout={onLogout}
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
@@ -272,6 +305,10 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               onOpenRun={openRun}
             />
           )
+          : local && (detail?.kind === "schedule" || view === "schedules")
+          ? <LocalOffPage title="Schedules" state={SchedulesLocalState} />
+          : local && (detail?.kind === "webhook" || view === "webhooks")
+          ? <LocalOffPage title="Webhooks" state={WebhooksLocalState} />
           : detail?.kind === "schedule"
           ? (
             <ScheduleDetail
@@ -356,4 +393,24 @@ function writeCollapsed(value: boolean): void {
   } catch {
     // Storage blocked: the preference lasts for this page load only.
   }
+}
+
+/**
+ * A page the local dashboard can't serve (no `swamp serve` behind it): its
+ * title and what turning it on would give, like Activity's audit-off page.
+ */
+function LocalOffPage(
+  { title, state: State }: {
+    title: string;
+    state: (props: { copy: CopyFn }) => ReactNode;
+  },
+) {
+  return (
+    <>
+      <div className="page-header">
+        <h1>{title}</h1>
+      </div>
+      <State copy={copyText} />
+    </>
+  );
 }

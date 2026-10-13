@@ -106,7 +106,7 @@ import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datas
 import { parseTimerDuration } from "../duration_parser.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import {
-  UnpublishedDataVersionError,
+  isUnpublishedDataError,
   type WrittenVersion,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import {
@@ -627,7 +627,7 @@ The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment 
                     // could not publish is logged instead.
                     if (
                       !methodFailed ||
-                      !(error instanceof UnpublishedDataVersionError)
+                      !isUnpublishedDataError(error)
                     ) {
                       throw error;
                     }

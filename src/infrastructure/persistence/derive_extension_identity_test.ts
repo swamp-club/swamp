@@ -343,3 +343,45 @@ Deno.test("deriveExtensionIdentity: Windows backslash paths return null (callers
     null,
   );
 });
+
+// --- extensions/behaviors/, the behavior spelling (swamp-club#3338) -------
+
+Deno.test("deriveExtensionIdentity: local extension under extensions/behaviors/", () => {
+  assertEquals(
+    deriveExtensionIdentity("/repo/extensions/behaviors/echo.ts", "/repo"),
+    { name: "@local/repo", version: "0.0.0" },
+  );
+  assertEquals(
+    deriveExtensionIdentity(
+      "/external/src/extensions/behaviors/aws/ec2.ts",
+      "/repo",
+    ),
+    { name: "@local/repo", version: "0.0.0" },
+  );
+});
+
+Deno.test("deriveExtensionIdentity: a pulled name containing behaviors is not split there", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/pulled-extensions/@org/behaviors/tools/models/x.ts",
+      "/repo",
+    ),
+    { name: "@org/behaviors/tools", version: "" },
+  );
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/pulled-extensions/behaviors/models/x.ts",
+      "/repo",
+    ),
+    { name: "behaviors", version: "" },
+  );
+  // A pulled tree has no behaviors kind directory: without a kind segment
+  // the layout is unrecognised, as before.
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/pulled-extensions/@org/x/behaviors/y.ts",
+      "/repo",
+    ),
+    null,
+  );
+});

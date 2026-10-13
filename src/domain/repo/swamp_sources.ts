@@ -69,6 +69,11 @@ export interface ResolvedSourceDirs {
   /** The original source path (for diagnostics). */
   sourcePath: string;
   modelsDir?: string;
+  /**
+   * The source's `extensions/behaviors/`, the behavior-spelled sibling of
+   * its default models directory (swamp-club#3338). Loaded as models.
+   */
+  behaviorsDir?: string;
   vaultsDir?: string;
   datastoresDir?: string;
   reportsDir?: string;
@@ -156,7 +161,8 @@ export const EXTENSION_EXPORT_NAMES: Record<
   Exclude<ExtensionKind, "workflows">,
   readonly string[]
 > = {
-  models: ["model", "extension"],
+  // `behavior` is the other spelling of `model` (swamp-club#3338).
+  models: ["model", "behavior", "extension"],
   vaults: ["vault"],
   datastores: ["datastore"],
   reports: ["report"],

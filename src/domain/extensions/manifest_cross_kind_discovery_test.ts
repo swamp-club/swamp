@@ -280,3 +280,37 @@ Deno.test("discoverManifestCrossKindDirs: multiple manifests across dirs", async
     assertEquals(result.get("datastores"), [ext2]);
   });
 });
+
+Deno.test("discoverManifestCrossKindDirs: a behaviors: key counts as models (swamp-club#3338)", async () => {
+  await withTempDir(async (dir) => {
+    const reportsDir = join(dir, "reports");
+    const behaviorsDir = join(dir, "behaviors");
+    const extDir = join(reportsDir, "myext");
+    await writeManifest(extDir, {
+      manifestVersion: 1,
+      name: "@test/myext",
+      version: "2026.01.01.1",
+      paths: { base: "manifest" },
+      behaviors: ["thing.ts"],
+      reports: ["report.ts"],
+    });
+
+    // Under a behaviors dir already scanned as models, nothing is added.
+    const inBehaviors = join(behaviorsDir, "other");
+    await writeManifest(inBehaviors, {
+      manifestVersion: 1,
+      name: "@test/other",
+      version: "2026.01.01.1",
+      paths: { base: "manifest" },
+      behaviors: ["thing.ts"],
+    });
+
+    const kindDirs = new Map<ExtensionKind, string[]>([
+      ["models", [join(dir, "models"), behaviorsDir]],
+      ["reports", [reportsDir]],
+    ]);
+
+    const result = await discoverManifestCrossKindDirs(kindDirs);
+    assertEquals(result.get("models"), [extDir]);
+  });
+});

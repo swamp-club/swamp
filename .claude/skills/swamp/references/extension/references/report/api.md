@@ -19,7 +19,7 @@ export const report = {
 
     return {
       markdown:
-        `# Cost Report\n\n- **Model**: ${modelName}\n- **Method**: ${method}\n- **Status**: ${status}\n`,
+        `# Cost Report\n\n- **Behavior**: ${modelName}\n- **Method**: ${method}\n- **Status**: ${status}\n`,
       json: { modelName, method, status },
     };
   },
@@ -29,7 +29,8 @@ export const report = {
 ## Name Conventions
 
 Report names follow `@collective/name` (e.g. `@myorg/cost-report`,
-`@myorg/aws/cost-report`) — same convention as models, vaults, and datastores.
+`@myorg/aws/cost-report`) — same convention as behaviors, vaults, and
+datastores.
 
 ## Report Scopes
 
@@ -40,22 +41,22 @@ Report names follow `@collective/name` (e.g. `@myorg/cost-report`,
 | `workflow` | `WorkflowReportContext` | After a workflow run completes  |
 
 Reports are generic — they receive a `ReportContext` and decide at runtime how
-to handle their inputs. They don't declare which model types they support. See
-[report-types.md](report-types.md) for context field listings and full type
+to handle their inputs. They don't declare which behavior types they support.
+See [report-types.md](report-types.md) for context field listings and full type
 definitions.
 
 ## Redacting Sensitive Arguments
 
 The context provides `redactSensitiveArgs()` which replaces values marked
-`{ sensitive: true }` in the model type's Zod schema with `"***"`. Use it when
-including argument values in report output:
+`{ sensitive: true }` in the behavior type's Zod schema with `"***"`. Use it
+when including argument values in report output:
 
 ```typescript
 const globalArgs = context.redactSensitiveArgs(context.globalArgs, "global");
 const methodArgs = context.redactSensitiveArgs(context.methodArgs, "method");
 ```
 
-The helper is available on method and model scope contexts. It returns args
+The helper is available on `method` and `model` scope contexts. It returns args
 unchanged if no schema is found, so it is safe to call unconditionally.
 
 ## Reading Execution Data
@@ -99,9 +100,8 @@ patterns.
 1. **Return both markdown and json** — every report must produce both
 2. **Labels are optional** — use them for filtering (e.g., `["cost", "audit"]`)
 3. **One report per file** — export a single `report` object from each file
-4. **Use scope correctly** — method-scope for per-execution analysis,
-   model-scope for cross-method analysis, workflow-scope for multi-step
-   aggregation
+4. **Use scope correctly** — method-scope for per-execution analysis, `model`
+   scope for cross-method analysis, workflow-scope for multi-step aggregation
 5. **Redact sensitive args** — use `context.redactSensitiveArgs()` when
    including argument values in report output
 

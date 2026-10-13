@@ -1,6 +1,6 @@
 # Publishing Extensions
 
-Publish extension models, workflows, vaults, and datastores to the swamp
+Publish extension behaviors, workflows, vaults, and datastores to the swamp
 registry so others can install and use them.
 
 ## Repository Prerequisite
@@ -29,9 +29,9 @@ name: "@myorg/my-extension"
 version: "2026.02.26.1"
 description: "Optional description of the extension"
 repository: "https://github.com/myorg/my-extension"
-models:
-  - my_model.ts
-  - utils/helper_model.ts
+behaviors:
+  - my_behavior.ts
+  - utils/helper_behavior.ts
 workflows:
   - my_workflow.yaml
 additionalFiles:
@@ -57,20 +57,27 @@ dependencies:
 | `visibility`      | No       | `public` (registry default) or `private`. Optional `--visibility` overrides this field; omitting both preserves registry defaults.                       |
 | `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.        |
 | `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                      |
-| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                             |
+| `behaviors`       | No*      | Behavior file paths. Resolved via `paths.base`. `models` is the model spelling of this key; a manifest with `models` ignores `behaviors`.                |
 | `workflows`       | No*      | Workflow file paths. Resolved via `paths.base`. Under `manifest`, resolves from manifest dir first, then the extensions root and repo-root fallbacks.    |
 | `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                             |
 | `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                         |
 | `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                            |
 | `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then the extensions root, then project-local; never `~/.claude/skills`). |
-| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                             |
+| `include`         | No       | Helper TypeScript files copied alongside behaviors without bundling. Resolved via `paths.base`.                                                          |
 | `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                            |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                            |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                             |
 | `dependencies`    | No       | Other extensions this one depends on                                                                                                                     |
 
-*At least one of `models`, `workflows`, `vaults`, `datastores`, `reports`, or
-`skills` must be present with entries.
+*At least one of `behaviors` (or `models`), `workflows`, `vaults`, `datastores`,
+`reports`, or `skills` must be present with entries.
+
+`behaviors:`, `extensions/behaviors/` and `export const behavior` are the
+behavior spelling of `models:`, `extensions/models/` and `export const model`.
+Push packs the behavior files under the archive's `models/` and writes `models:`
+into the pushed manifest. See
+[Behavior and model spellings](../../extension/guide.md#behavior-and-model-spellings)
+for the compatibility rules.
 
 ### Private publication
 
@@ -125,13 +132,13 @@ Push rejects:
   are checked the same way, and `extension quality` and `extension fmt` report
   the same error as push.
 
-At runtime, models and reports receive `ctx.extensionFile(relPath)` which
+At runtime, behaviors and reports receive `ctx.extensionFile(relPath)` which
 returns the absolute path to a bundled asset. The helper works identically
 whether the extension is source-loaded or pulled, so the same code runs in both
 local development and production:
 
 ```ts
-export const model = {
+export const behavior = {
   type: "@myorg/ext/demo",
   version: "2026.04.22.1",
   methods: {
@@ -152,23 +159,31 @@ paths — hardcoding breaks smoke tests run against a source-loaded extension.
 ### Path resolution — `paths.base`
 
 This is the canonical reference for path resolution semantics across all
-extension-type skills (model, vault, datastore, report). Other skills link here.
+extension-type skills (behavior, vault, datastore, report). Other skills link
+here.
 
 > **The default is the existing path resolution. Omit `paths.base` and nothing
-> about your manifest changes — historical behavior end to end.** The
+> about your manifest changes — paths resolve exactly as before.** The
 > implementation is a single ternary: when `paths.base: manifest` is set, the
 > resolver and archive layout switch to a manifest-relative base; otherwise they
 > use the configured typed dir as before. There is no implicit detection, no
 > fallback, no "best guess" — opt in to opt in.
 
-`paths.base` selects which directory typed-key entries (`models`, `vaults`,
-`datastores`, `reports`, `include`) and `additionalFiles` resolve against during
-push. Two modes:
+`paths.base` selects which directory typed-key entries (`behaviors` or `models`,
+`vaults`, `datastores`, `reports`, `include`) and `additionalFiles` resolve
+against during push. Two modes:
 
-| Mode                 | Typed keys resolve relative to                        | `additionalFiles` resolves relative to |
-| -------------------- | ----------------------------------------------------- | -------------------------------------- |
-| `typedDir` (default) | Configured directory (`modelsDir`, `vaultsDir`, etc.) | Manifest's own directory               |
-| `manifest`           | Manifest's own directory                              | Manifest's own directory               |
+| Mode                 | Typed keys resolve relative to                                            | `additionalFiles` resolves relative to |
+| -------------------- | ------------------------------------------------------------------------- | -------------------------------------- |
+| `typedDir` (default) | Typed directory (`extensions/behaviors/`, `modelsDir`, `vaultsDir`, etc.) | Manifest's own directory               |
+| `manifest`           | Manifest's own directory                                                  | Manifest's own directory               |
+
+Under `typedDir`, `behaviors:` entries (and `include`, beside them) resolve from
+`extensions/behaviors/` while the models directory is the default
+`extensions/models/`. Once `SWAMP_MODELS_DIR` or `.swamp.yaml` `modelsDir` moves
+the models directory there is no behaviors directory, and `behaviors:` entries
+resolve from the configured models directory. `models:` entries always resolve
+from the models directory.
 
 Existing manifests without an explicit `paths.base` keep their semantics
 unchanged — every published extension on the registry today is on the `typedDir`
@@ -178,18 +193,18 @@ Pick `manifest` for **per-extension-subdir layouts**: each extension lives in
 its own subdirectory under the configured typed dir, with manifest, source,
 README, and LICENSE all alongside each other. This is the layout the quality
 rubric rewards (README and LICENSE land at the archive root via
-`additionalFiles`) without requiring directory prefixes on `models:` or other
+`additionalFiles`) without requiring directory prefixes on `behaviors:` or other
 typed entries.
 
 #### Side-by-side example
 
-Default (`paths.base: typedDir`) — manifest sits inside `modelsDir` or at a
-per-extension repo root with code under `./extensions/models/`:
+Default (`paths.base: typedDir`) — manifest sits inside the behaviors directory
+or at a per-extension repo root with code under `./extensions/behaviors/`:
 
 ```
-extensions/models/manifest.yaml          # or:    my-ext/manifest.yaml
-extensions/models/echo.ts                #        my-ext/extensions/models/echo.ts
-extensions/models/utils/helper.ts        #        my-ext/extensions/models/utils/helper.ts
+extensions/behaviors/manifest.yaml       # or:    my-ext/manifest.yaml
+extensions/behaviors/echo.ts             #        my-ext/extensions/behaviors/echo.ts
+extensions/behaviors/utils/helper.ts     #        my-ext/extensions/behaviors/utils/helper.ts
 ```
 
 ```yaml
@@ -197,7 +212,7 @@ extensions/models/utils/helper.ts        #        my-ext/extensions/models/utils
 manifestVersion: 1
 name: "@me/my-ext"
 version: "2026.04.29.1"
-models:
+behaviors:
   - echo.ts
   - utils/helper.ts
 additionalFiles:
@@ -205,13 +220,13 @@ additionalFiles:
 ```
 
 Opt-in (`paths.base: manifest`) — each extension is a self-contained directory
-under `modelsDir`:
+under the behaviors directory:
 
 ```
-extensions/models/my-ext/manifest.yaml
-extensions/models/my-ext/echo.ts
-extensions/models/my-ext/utils/helper.ts
-extensions/models/my-ext/README.md
+extensions/behaviors/my-ext/manifest.yaml
+extensions/behaviors/my-ext/echo.ts
+extensions/behaviors/my-ext/utils/helper.ts
+extensions/behaviors/my-ext/README.md
 ```
 
 ```yaml
@@ -221,7 +236,7 @@ name: "@me/my-ext"
 version: "2026.04.29.1"
 paths:
   base: manifest
-models:
+behaviors:
   - echo.ts
   - utils/helper.ts
 additionalFiles:
@@ -230,11 +245,14 @@ additionalFiles:
 
 #### What does NOT change with `paths.base: manifest`
 
-- The on-wire manifest in the archive is byte-equivalent to your source manifest
-  — no path rewriting, no normalization. WYSIWYG.
+- The on-wire manifest in the archive keeps your path strings as written — no
+  path rewriting, no normalization. Only the key changes: `behaviors:` is
+  written as `models:`.
 - The archive layout under each typed dir mirrors your manifest entries
-  verbatim: `models: [echo.ts]` lands at `extension/models/echo.ts` in the
-  archive (not at `extension/models/my-ext/echo.ts`).
+  verbatim: `behaviors: [echo.ts]` lands at `extension/models/echo.ts` in the
+  archive (not at `extension/models/my-ext/echo.ts`). Write entries without the
+  archive prefix: a `behaviors:` entry starting with `behaviors/` or `models/`
+  is refused.
 - Workflows honour `paths.base: manifest` — the manifest's own directory is
   searched first, falling back to `workflows/` and `extensions/workflows/` under
   the extensions root and the repo dir.
@@ -247,19 +265,19 @@ additionalFiles:
 #### Pushing from outside the extension directory
 
 `push`, `quality` and `fmt` accept a manifest file or an extension directory
-(`swamp extension push extensions/models/x` means
-`extensions/models/x/manifest.yaml`), relative to `--extensions-dir` when set,
-then the current directory, then the repo dir. Without `--extensions-dir`, the
-extensions root is inferred from the manifest's location (the nearest ancestor
-holding `extensions/` or `.swamp.yaml`) when nothing resolves under the repo
-dir, so a sub-directory extension in the swamp-extensions layout pushes from a
-sibling repo or from its monorepo root without flags. `--extensions-dir` names
-the directory that _contains_ `extensions/`; swamp appends `extensions/models`
-(and the other typed directories) to it, and the flag covers workflows and
-skills too. Without the flag, an entry that exists under both the repo dir and
-the inferred root is refused rather than guessed; with the flag, the flag's root
-wins. Every not-found error lists the paths it looked in and names the flag or
-`paths.base: manifest` as the fix.
+(`swamp extension push extensions/behaviors/x` means
+`extensions/behaviors/x/manifest.yaml`), relative to `--extensions-dir` when
+set, then the current directory, then the repo dir. Without `--extensions-dir`,
+the extensions root is inferred from the manifest's location (the nearest
+ancestor holding `extensions/` or `.swamp.yaml`) when nothing resolves under the
+repo dir, so a sub-directory extension in the swamp-extensions layout pushes
+from a sibling repo or from its monorepo root without flags. `--extensions-dir`
+names the directory that _contains_ `extensions/`; swamp appends
+`extensions/behaviors`, `extensions/models` (and the other typed directories) to
+it, and the flag covers workflows and skills too. Without the flag, an entry
+that exists under both the repo dir and the inferred root is refused rather than
+guessed; with the flag, the flag's root wins. Every not-found error lists the
+paths it looked in and names the flag or `paths.base: manifest` as the fix.
 
 ### Name Rules
 
@@ -324,12 +342,14 @@ so a `deno.json` needs no exclude for the `npm:`/`jsr:` form.
 - Use `include` in the manifest for helper scripts executed via `Deno.Command`
   that shouldn't be bundled
 
-See the extension model [examples](../../extension/references/model/examples.md)
-for import style examples and helper script details.
+See the extension behavior
+[examples](../../extension/references/model/examples.md) for import style
+examples and helper script details.
 
 ### How Content Maps to Manifest
 
-- `models` paths resolve relative to `extensions/models/`
+- `behaviors` paths resolve relative to `extensions/behaviors/` (`models` paths
+  relative to `extensions/models/`)
 - `vaults` paths resolve relative to `extensions/vaults/`
 - `datastores` paths resolve relative to `extensions/datastores/`
 - Only list entry-point files — every local module an entry point imports is
@@ -339,36 +359,36 @@ for import style examples and helper script details.
   `import("./x.ts")` included, even inside `try`/`catch` (the bundle would fail
   on it too)
 - Each entry-point is bundled into a standalone JS file for the registry
-- The registry catalog lists a model only when its entry point exports a plain
-  `export const model = { ... }` object with string-literal `type` and
-  `version`. A model built by a shared factory must repeat both literals after
-  the spread
+- The registry catalog lists a behavior only when its entry point exports a
+  plain `export const behavior = { ... }` (or `export const model = { ... }`)
+  object with string-literal `type` and `version`. A behavior built by a shared
+  factory must repeat both literals after the spread
   (`{ ...definition, type: "@acme/thing", version: "2026.09.25.1" }`), and the
   export takes no type annotation (put `satisfies ModelDefinition` after the
-  object instead). A model that misses this still installs and runs, but
+  object instead). A behavior that misses this still installs and runs, but
   `extension search --content-type models` and `extension info` do not list it;
   push and `extension quality` report it as `uncatalogued-model`.
 
 ## Examples
 
-### Models-only (simplest)
+### Behaviors-only (simplest)
 
 ```yaml
 manifestVersion: 1
 name: "@myorg/s3-tools"
 version: "2026.02.26.1"
-models:
+behaviors:
   - s3_bucket.ts
 ```
 
-### Models + workflows
+### Behaviors + workflows
 
 ```yaml
 manifestVersion: 1
 name: "@myorg/deploy-suite"
 version: "2026.02.26.1"
-description: "Deployment automation models and workflows"
-models:
+description: "Deployment automation behaviors and workflows"
+behaviors:
   - ec2_instance.ts
   - security_group.ts
 workflows:
@@ -377,13 +397,13 @@ additionalFiles:
   - README.md
 ```
 
-### Multi-model with dependencies
+### Multi-behavior with dependencies
 
 ```yaml
 manifestVersion: 1
 name: "@myorg/monitoring"
 version: "2026.02.26.1"
-models:
+behaviors:
   - cloudwatch_alarm.ts
   - sns_topic.ts
   - dashboard.ts
@@ -391,13 +411,13 @@ dependencies:
   - "@myorg/aws-core"
 ```
 
-### Model + report
+### Behavior + report
 
 ```yaml
 manifestVersion: 1
 name: "@myorg/ports"
 version: "2026.03.01.1"
-models:
+behaviors:
   - ports.ts
 reports:
   - port_whisperer.ts
@@ -495,13 +515,13 @@ safely at any time.
 ## Version-Drift Check
 
 An advisory (non-blocking) check that runs during `swamp extension push` and
-`--dry-run`. It compares current model versions against the last-published
+`--dry-run`. It compares current behavior versions against the last-published
 version in the registry to catch a common mistake:
 
-- **Model version bumped, manifest not** — one or more model `version` fields
-  changed compared to the published version but the manifest `version` did not.
-  The manifest version must be bumped whenever a model version changes so the
-  registry reflects that a new release is available.
+- **Behavior version bumped, manifest not** — one or more behavior `version`
+  fields changed compared to the published version but the manifest `version`
+  did not. The manifest version must be bumped whenever a behavior version
+  changes so the registry reflects that a new release is available.
 
 The check fetches the last-published version's metadata from the registry. This
 works on any machine with registry credentials — no local state is required.
@@ -523,10 +543,10 @@ too. A real drift finding has no `cause`. None of these block the push.
 The version-drift check is **not** run during `swamp extension fmt` — it
 requires registry access that the fmt command does not use.
 
-Manifest and model versions are independent — a multi-model extension can have
-each model at a different version. The check never requires model versions to
-match the manifest version. It only checks directionality: if a model version
-moved, the manifest version must also move.
+Manifest and behavior versions are independent — a multi-behavior extension can
+have each behavior at a different version. The check never requires behavior
+versions to match the manifest version. It only checks directionality: if a
+behavior version moved, the manifest version must also move.
 
 ## Push Workflow
 
@@ -564,21 +584,23 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    (private intent only: the collective's reported plan allows private
    extensions) and version exists (on any channel). A dry run reports them; a
    push stops at the first failure.
-3. **Resolve files** — collects model entry points, reads each one's module
+3. **Resolve files** — collects behavior entry points, reads each one's module
    graph with `deno info` to find every local import, resolves workflow
-   dependencies
+   dependencies. Files from `extensions/behaviors/` are packed under the
+   archive's `models/`; two files that would pack to the same `models/` path
+   fail the push ("would both be packed as").
 4. **Detect project config** — walks up from manifest directory to repo root
    looking for `deno.json` (takes priority) then `package.json`. If found and
    the extension uses bare specifiers, it is used for bundling. `deno.json` is
    also used for quality checks, by push, `extension quality` and
    `extension fmt` alike; `package.json` projects use default lint/fmt rules.
 5. **Resolve include files** — collects files from the manifest's `include`
-   field (if present). These are copied to the archive alongside model sources
-   but not bundled or quality-checked.
+   field (if present). These are copied to the archive alongside behavior
+   sources but not bundled or quality-checked.
 6. **Safety analysis** — scans all files (including `include` files) for
    disallowed patterns and limits
-7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
-   datastore, and report files (using the project's `deno.json` config if
+7. **Quality checks** — runs `deno fmt --check` and `deno lint` on behavior,
+   vault, datastore, and report files (using the project's `deno.json` config if
    present, otherwise default rules). Lint never applies `no-import-prefix`,
    which would forbid the `npm:`/`jsr:` imports swamp requires. Include files
    are excluded.
@@ -587,13 +609,15 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
    cannot resolve bare specifiers, so a warning naming each import-map
    replacement is added to the review warnings, prompting the user to confirm
    before push. It cannot be accepted. An `uncatalogued-model` warning is added
-   the same way for each model entry point the registry catalog would leave out
-   (see "How Content Maps to Manifest").
-9. **Bundle TypeScript** — compiles each entry point (models, vaults,
+   the same way for each behavior entry point the registry catalog would leave
+   out (see "How Content Maps to Manifest"). A `behavior-spelling` warning is
+   added once when the extension uses the behavior spelling (see "Warnings
+   (prompted)").
+9. **Bundle TypeScript** — compiles each entry point (behaviors, vaults,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
-10. **Version-drift check** — advisory check comparing current model versions
-    against the last-published version in the registry. Warns when a model
+10. **Version-drift check** — advisory check comparing current behavior versions
+    against the last-published version in the registry. Warns when a behavior
     version was bumped but the manifest `version` was not. When it cannot
     compare — never published, no credentials, or a failed registry lookup — it
     reports which, rather than silently skipping. See "Version-Drift Check"
@@ -605,10 +629,10 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 ## Extension Formatting
 
 Format and lint extension files before publishing. The `extension fmt` command
-resolves all TypeScript files referenced by the manifest (model entry points and
-their local imports), then runs `deno fmt` and `deno lint --fix` on them under
-the project `deno.json` that push uses (found the same way), or Deno's defaults
-when there is none, so `fmt --check` and push give the same verdict.
+resolves all TypeScript files referenced by the manifest (behavior entry points
+and their local imports), then runs `deno fmt` and `deno lint --fix` on them
+under the project `deno.json` that push uses (found the same way), or Deno's
+defaults when there is none, so `fmt --check` and push give the same verdict.
 
 ### Commands
 
@@ -625,7 +649,7 @@ swamp extension fmt manifest.yaml --repo-dir /path/to/repo --json
 
 ### What Happens During Fmt
 
-1. **Parse manifest** — reads the manifest and resolves model/workflow file
+1. **Parse manifest** — reads the manifest and resolves behavior/workflow file
    paths
 2. **Resolve files** — collects all TypeScript files (entry points + local
    imports) referenced by the manifest
@@ -681,17 +705,22 @@ One finding per offending line, so each can be accepted on its own.
 | `ipv4-address-literals` | An IPv4 literal in `.md` or `.txt` outside the documentation ranges |
 
 The review rules (`credentials-sensitive-field`, `schema-strictness`,
-`testing-completeness`), the extension-scoped `bare-specifiers` finding and the
-file-scoped `uncatalogued-model` finding are warnings too. `bare-specifiers`
-cannot be accepted: the registry cannot score the extension however it is
-justified, and the fix is to write each import's `npm:`/`jsr:` target.
-`uncatalogued-model` cannot be accepted either: it names a model entry point the
-registry catalog would not list (a type-annotated or non-object export, or no
-string-literal `type` or `version` in it), and the fix is to write those
-literals in a plain `export const model = { ... }` object.
-`testing-completeness` reports once per extension when more than one entry point
-has no sibling `_test.ts`, naming the files. The `adversarial-review-report`
-family is evidence, not a lint, and has no acceptance form.
+`testing-completeness`), the extension-scoped `bare-specifiers` and
+`behavior-spelling` findings and the file-scoped `uncatalogued-model` finding
+are warnings too. `bare-specifiers` cannot be accepted: the registry cannot
+score the extension however it is justified, and the fix is to write each
+import's `npm:`/`jsr:` target. `uncatalogued-model` cannot be accepted either:
+it names a behavior entry point the registry catalog would not list (a
+type-annotated or non-object export, or no string-literal `type` or `version` in
+it), and the fix is to write those literals in a plain
+`export const behavior = { ... }` object. `behavior-spelling` can be accepted
+(`--yes`, or a `quality.yaml` entry with no `file`): swamp clients and workers
+older than the release that added the behavior spelling cannot load the
+extension. Keep the model spelling when older clients or workers must install
+it. `testing-completeness` reports once per extension when more than one entry
+point has no sibling `_test.ts`, naming the files. The
+`adversarial-review-report` family is evidence, not a lint, and has no
+acceptance form.
 
 Error-level rule ids (`dynamic-code`, `hidden-file`, `file-type`, `symlink`,
 `file-size`, `total-size`, `file-count`, `unreadable-file`, `fmt`, `lint`,
@@ -743,7 +772,7 @@ manifests are regenerated), packaged into the archive root beside
 
 ```yaml
 version: 1
-generated: # a codegen package: accepts testing-completeness for every model
+generated: # a codegen package: accepts testing-completeness for every behavior
   by: swamp-extensions/codegen
   source: https://api.example.com/openapi.yaml
   commit: 0123abcd
@@ -796,7 +825,7 @@ to edit:
 ```json
 {
   "form": "comment",
-  "file": "/abs/ext/models/b.ts",
+  "file": "/abs/ext/behaviors/b.ts",
   "line": 9,
   "position": "line-above",
   "text": "    // swamp-quality-ignore deno-command"
@@ -872,7 +901,7 @@ swamp extension version --manifest manifest.yaml --json
 }
 ```
 
-- Use `nextVersion` as the new `version` in your model and manifest
+- Use `nextVersion` as the new `version` in your behavior and manifest
 - Use `currentPublished` as the `fromVersion` in upgrade chain entries
 - If `currentPublished` is `null`, the extension has never been published
 
@@ -884,15 +913,16 @@ swamp extension version --manifest manifest.yaml --json
 | "Not authenticated"               | Run `swamp auth login` first                                                                                                       |
 | "collective does not match"       | Manifest `name` must use `@your-username/...`                                                                                      |
 | "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                                                                      |
-| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `datastores`, or `skills` array                                                             |
-| "Model file not found"            | Check path is relative to `extensions/models/`                                                                                     |
+| "at least one model, workflow…"   | Add a `behaviors` (or `models`), `workflows`, `vaults`, `datastores`, or `skills` array                                            |
+| "Behavior file not found"         | Check path is relative to `extensions/behaviors/` ("Model file not found": `extensions/models/`)                                   |
+| "would both be packed as"         | A file under `extensions/behaviors/` and one under `extensions/models/` pack to the same archive path; rename or move one          |
 | "Workflow file not found"         | Check path is relative to `workflows/`                                                                                             |
 | "would both be packaged as"       | Two workflow entries map to one archive file name; rename one file, or move it into its own directory                              |
 | "is listed twice in the manifest" | The same workflow file appears twice in `workflows`; remove one entry                                                              |
 | "eval() or new Function()"        | Remove dynamic code at the listed `line:column` locations; rename a method called as `x.eval(...)`, or import the library from npm |
 | "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                                                                      |
 | "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                                                                          |
-| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                                                                          |
+| "Bundle compilation failed"       | Fix TypeScript errors in your behavior files                                                                                       |
 | "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason                                                     |
 | "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                                                                     |
 
@@ -900,7 +930,7 @@ swamp extension version --manifest manifest.yaml --json
 
 | Need                               | Use Skill                 |
 | ---------------------------------- | ------------------------- |
-| Create custom models               | `swamp-extension`         |
+| Create custom behaviors            | `swamp-extension`         |
 | Create custom vaults               | `swamp-extension`         |
 | Create custom datastores           | `swamp-extension`         |
 | Repository setup and management    | `swamp-repo`              |

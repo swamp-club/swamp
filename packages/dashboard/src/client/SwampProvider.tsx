@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { localSocketProtocols, serverPath } from "./workspace_path.ts";
 import {
   createContext,
   type ReactNode,
@@ -50,6 +51,8 @@ interface SwampContextValue {
   sessionReady: boolean;
   authMode: AuthInfo["mode"] | null;
   verificationBaseUri: string | null;
+  /** True when served by the local dashboard rather than `swamp serve`. */
+  local: boolean;
   login: (token: string) => Promise<void>;
   completeLogin: () => Promise<void>;
   logout: () => void;
@@ -89,7 +92,7 @@ function isDashboardSessionEvent(
 function getWsUrl(): string {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   // Ask serve to send large responses as gzip binary frames.
-  return `${proto}//${location.host}/?compress=gzip`;
+  return `${proto}//${location.host}${serverPath("/")}?compress=gzip`;
 }
 
 const timers = {
@@ -115,6 +118,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   const [verificationBaseUri, setVerificationBaseUri] = useState<string | null>(
     null,
   );
+  const [local, setLocal] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const sessionGenerationRef = useRef(0);
   const sessionSourceIdRef = useRef(crypto.randomUUID());
@@ -132,6 +136,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
   const applyAuthInfo = useCallback((info: AuthInfo) => {
     setAuthMode(info.mode);
     setVerificationBaseUri(info.verificationBaseUri ?? null);
+    setLocal(info.local === true);
   }, []);
 
   const restoreSession = useCallback(async (signal?: AbortSignal) => {
@@ -231,7 +236,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
       protocols: string[] | undefined,
       handlers: SocketHandlers,
     ): WebSocket => {
-      const ws = new WebSocket(getWsUrl(), protocols);
+      const ws = new WebSocket(getWsUrl(), localSocketProtocols() ?? protocols);
       ws.binaryType = "arraybuffer";
       ws.onopen = () => handlers.onOpen();
       // Every frame goes through one chain so a text frame never overtakes an
@@ -391,6 +396,7 @@ export function SwampProvider({ children }: { children: ReactNode }) {
         sessionReady,
         authMode,
         verificationBaseUri,
+        local,
         login,
         completeLogin,
         logout,

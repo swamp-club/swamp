@@ -45,3 +45,36 @@ export function resolveEscape(
   if (hasDetail) return "leave-detail";
   return "none";
 }
+
+/** Why a nav item is off: a short tag and the tooltip that explains it. */
+export interface NavOff {
+  readonly hint: string;
+  readonly description: string;
+}
+
+const AUDIT_OFF: NavOff = { hint: "Off", description: "Audit log is disabled" };
+const SERVE_ONLY_OFF: NavOff = {
+  hint: "Off",
+  description: "Needs swamp serve",
+};
+
+/**
+ * Which operations are off. Activity is off when serve runs without an
+ * audit log; the local dashboard (no serve behind it) also turns off
+ * Schedules and Webhooks, which only a running serve fires.
+ */
+export function operationsOff(
+  options: { auditEnabled: boolean; local: boolean },
+): { schedules?: NavOff; webhooks?: NavOff; activity?: NavOff } {
+  return {
+    ...(options.local
+      ? { schedules: SERVE_ONLY_OFF, webhooks: SERVE_ONLY_OFF }
+      : {}),
+    ...(options.auditEnabled ? {} : { activity: AUDIT_OFF }),
+  };
+}
+
+/** Logout leaves a login; the local dashboard has none. */
+export function showsLogout(local: boolean): boolean {
+  return !local;
+}

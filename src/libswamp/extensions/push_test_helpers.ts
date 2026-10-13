@@ -35,7 +35,18 @@ export function kindDirectorySourcePlan(
 ): SourceArchivePlan {
   return planSourceArchive({
     kinds: [
-      { kind: "models", dir: input.modelsDir, modules: input.allModelFiles },
+      {
+        kind: "models",
+        // A behaviors: manifest's entries resolve from the behaviors dir,
+        // and models-dir files beside them still pack under models/
+        // (swamp-club#3338), as the resolver plans them.
+        dir: input.behaviorsDir ?? input.modelsDir,
+        ...(input.behaviorsDir !== undefined &&
+            input.behaviorsDir !== input.modelsDir
+          ? { extraDirs: [input.modelsDir] }
+          : {}),
+        modules: input.allModelFiles,
+      },
       { kind: "vaults", dir: input.vaultsDir, modules: input.allVaultFiles },
       {
         kind: "datastores",
@@ -55,6 +66,7 @@ export function kindDirectorySourcePlan(
     allowedRoots: [
       input.repoDir,
       input.modelsDir,
+      ...(input.behaviorsDir !== undefined ? [input.behaviorsDir] : []),
       input.vaultsDir,
       input.datastoresDir,
       input.reportsDir,

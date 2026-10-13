@@ -23,7 +23,10 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { extractContentMetadata } from "./extension_content_extractor.ts";
+import {
+  extractContentMetadata,
+  extractModelType,
+} from "./extension_content_extractor.ts";
 
 async function stepsOf(tasks: Record<string, unknown>[]) {
   const tmpDir = await Deno.makeTempDir();
@@ -94,4 +97,17 @@ Deno.test("extractContentMetadata: a mixed-spelling step is read as written, bes
     { taskType: "behavior", modelIdOrName: "b", methodName: "run" },
     { taskType: "", modelIdOrName: "", methodName: "" },
   ]);
+});
+
+Deno.test("extractModelType: a behavior object counts only when it declares methods", () => {
+  assertEquals(
+    extractModelType('export const behavior = { type: "retry" };\n'),
+    null,
+  );
+  assertEquals(
+    extractModelType(
+      'export const behavior = { type: "@acme/x", methods: {} };\n',
+    ),
+    "@acme/x",
+  );
 });

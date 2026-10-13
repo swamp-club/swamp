@@ -20,7 +20,11 @@
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
-import { extractContentMetadata } from "./extension_content_extractor.ts";
+import {
+  extractContentMetadata,
+  extractDatastoreFromSource,
+  extractVaultFromSource,
+} from "./extension_content_extractor.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("extractContentMetadata returns empty for no inputs", async () => {
@@ -2349,4 +2353,96 @@ Deno.test("extractContentMetadata marks a defaulted method argument as optional 
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+function vaultFields(fields: string) {
+  const vault = extractVaultFromSource(
+    `export const vault = {\n  type: "@test/v",\n${fields}\n  createProvider: () => ({}),\n};\n`,
+    "/repo/vaults/v.ts",
+    "/repo/vaults",
+  );
+  return vault && { name: vault.name, description: vault.description };
+}
+
+Deno.test("extractVaultFromSource: reads name and description only at the top level of the definition", () => {
+  assertEquals(
+    vaultFields(
+      `  name: label,\n  defaults: { name: "nested", description: "nested" },`,
+    ),
+    { name: "", description: "" },
+  );
+});
+
+Deno.test("extractVaultFromSource: keeps a quote of the other kind inside a string", () => {
+  assertEquals(
+    vaultFields(`  name: "Bob's Vault",\n  description: 'Says "hello"',`),
+    { name: "Bob's Vault", description: 'Says "hello"' },
+  );
+});
+
+Deno.test("extractVaultFromSource: joins concatenated literals and decodes escapes", () => {
+  assertEquals(
+    vaultFields(
+      String.raw`  name: "Says \"hi\"",` +
+        `\n  description: "Long " + // why it is split\n    'description' /* tail */,`,
+    ),
+    { name: 'Says "hi"', description: "Long description" },
+  );
+});
+
+Deno.test("extractVaultFromSource: a value that is not a constant string is left empty", () => {
+  assertEquals(
+    vaultFields(
+      '  name: `Vault for ${region}`,\n  description: "Prefix " + rest,',
+    ),
+    { name: "", description: "" },
+  );
+});
+
+Deno.test("extractVaultFromSource: ignores comments and type-only suffixes after a string", () => {
+  assertEquals(
+    vaultFields(
+      `  name: "Foo" as const, // display name\n  description: "Desc" satisfies string, // note`,
+    ),
+    { name: "Foo", description: "Desc" },
+  );
+});
+
+Deno.test("extractVaultFromSource: a last entry with no trailing comma and a trailing comment is read", () => {
+  const vault = extractVaultFromSource(
+    `export const vault = {\n  type: "@test/v",\n  createProvider: () => ({}),\n  description: "Desc" // note\n};\n`,
+    "/repo/vaults/v.ts",
+    "/repo/vaults",
+  );
+  assertEquals(vault?.description, "Desc");
+});
+
+Deno.test("extractVaultFromSource: a repeated key takes its last entry", () => {
+  assertEquals(
+    vaultFields(
+      `  name: "First",\n  name: "Last",\n  description: "Kept",\n  description: computed,`,
+    ),
+    { name: "Last", description: "" },
+  );
+});
+
+Deno.test("extractVaultFromSource: a template's CRLF line ending reads as a line feed", () => {
+  assertEquals(
+    vaultFields(
+      '  name: "Plain",\r\n  description: `line one\r\nline two`,',
+    ),
+    { name: "Plain", description: "line one\nline two" },
+  );
+});
+
+Deno.test("extractDatastoreFromSource: reads a constant name and description at the top level", () => {
+  const datastore = extractDatastoreFromSource(
+    `export const datastore = {\n  type: "@test/d",\n  name: "Custom " + "Store",\n  description: label,\n  createProvider: () => ({ name: "provider", description: "nested" }),\n};\n`,
+    "/repo/datastores/d.ts",
+    "/repo/datastores",
+  );
+  assertEquals(
+    datastore && { name: datastore.name, description: datastore.description },
+    { name: "Custom Store", description: "" },
+  );
 });

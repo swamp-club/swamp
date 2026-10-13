@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { formatCreated, taskDetail } from "./start.ts";
+import { formatCreated, pageReadyLine, taskDetail } from "./start.ts";
 
 Deno.test("formatCreated: the local date and time a task was created", () => {
   // Built from local fields, so the test holds in any time zone.
@@ -51,5 +51,20 @@ Deno.test("taskDetail: when the task was created, and how far it got", () => {
       launchedAt: createdAt,
     }),
     "created 2026-10-12 09:30 · launched with Claude Code",
+  );
+});
+
+Deno.test("pageReadyLine: swamp start names itself; swamp dashboard names the repo's dashboard", () => {
+  assertEquals(
+    pageReadyLine(true, false),
+    "Opened swamp start in your browser. If it didn't appear, open:",
+  );
+  assertEquals(
+    pageReadyLine(true, true),
+    "Opened this repo's dashboard in your browser. If it didn't appear, open:",
+  );
+  assertEquals(
+    pageReadyLine(false, true),
+    "Open this page in your browser to continue:",
   );
 });

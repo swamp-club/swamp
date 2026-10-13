@@ -625,7 +625,14 @@ Serve runs three background pollers to fix this:
   "Extension auto-reload via config poller" below. It runs whenever
   managedConfig is active, and without a sync service it checks only the hash.
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
-  access-control grants and groups, then reloads the policy snapshot.
+  access-control grants and groups, then reloads the policy snapshot. It is
+  the one poller that also runs without a sync service: on a v2 filesystem
+  datastore the files are shared but each instance's policy snapshot is not,
+  so it fingerprints those directories and reloads on a change another
+  process made (swamp-club#3371). The other two have nothing to do there: a
+  peer's data and auto-definitions are read straight from the shared files,
+  and the shared-datastore write tracker (swamp-club#2858) keeps each
+  checkout's query catalog current.
 - **RuntimeDataPoller** (`subdirs: ["data", "auto-definitions"]`) refreshes the
   `data/` subtree (runtime behavior output), then invalidates the query catalog
   so the next `data.query` rebuilds from the new local files. It pulls
@@ -5211,6 +5218,29 @@ swamp datastore lock release --force --model type/id # Release one behavior lock
 
 `--force` is required. Release bypasses `acquire()`/`release()` and deletes the
 lock directly, for when a crashed process left a lock that has not expired.
+
+A run may still be working under a behavior lock that was force-released. On
+S3 and GCS, each clone allocates the next data version from its own cache. The
+run that takes the lock next can therefore write the same version, and the old
+holder's push would overwrite it. `acquireModelLocks` reads each per-model lock
+with `inspect()` just after taking it, and again before each push. If the lock
+is then gone, being written, or names a different holder, hostname, pid or nonce
+than it did when taken, the push is refused and the run fails with
+`ModelLockLostError` (`model_lock_lost`), so nothing is pushed
+(swamp-club#3373). The second reading is compared with the first, not with this
+process's identity, because extension locks write their own holder formats
+(some a pid of 0, some a random suffix). The nonce tells apart two holds by one
+process, as in serve; every extension lock keeps its nonce for a whole hold. A
+lock that read nothing when taken is not checked. After a refusal the lost
+models are pulled, so the cache holds the datastore's copy rather than the
+refused versions, which stay marked dirty: a later unlocked push from the same
+command (a workflow's end-of-run push, serve's sync) would otherwise upload
+them over the other run's. A command whose own work succeeded fails with the
+refusal (`runCommandInRootUnit`) rather than logging it as a push warning. A filesystem datastore has no
+push and is unchanged, and v3 fences its own writer. The check and the upload
+are not atomic, and the other run can push after that pull and before the
+command's end-of-run push: inside either window a write can still be lost. Phase 5's model leases, or create-only writes of version keys in the
+datastore extensions, close it.
 
 ### Other maintenance commands
 

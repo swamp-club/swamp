@@ -135,6 +135,7 @@ export const extensionQualityCommand = new Command()
             repoDir,
             manifestDir,
             modelsDir: resolved.modelsDir,
+            behaviorsDir: resolved.behaviorsDir,
             allModelFiles: resolved.allModelFiles,
             modelEntryPoints: resolved.modelEntryPoints,
             vaultsDir: resolved.vaultsDir,

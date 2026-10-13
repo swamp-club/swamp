@@ -54,6 +54,19 @@ export interface ModelUpdated extends DomainEvent {
   readonly modelType: string;
   readonly modelInputId: string;
   readonly modelName: string;
+  /**
+   * The data versions the update wrote, by data name, when the publisher
+   * knows them. Serve on a filesystem datastore matches them against the
+   * versions it sees on disk to tell its own writes from a peer's
+   * (swamp-club#3371).
+   */
+  readonly dataVersions?: readonly DataVersionRef[];
+}
+
+/** One version of a named data item, as it is laid out on disk. */
+export interface DataVersionRef {
+  readonly name: string;
+  readonly version: number;
 }
 
 /**
@@ -226,6 +239,7 @@ export function createModelUpdated(
   modelType: string,
   modelInputId: string,
   modelName: string,
+  dataVersions?: readonly DataVersionRef[],
 ): ModelUpdated {
   return {
     type: "ModelUpdated",
@@ -233,6 +247,7 @@ export function createModelUpdated(
     modelInputId,
     modelName,
     timestamp: new Date(),
+    ...(dataVersions ? { dataVersions } : {}),
   };
 }
 
