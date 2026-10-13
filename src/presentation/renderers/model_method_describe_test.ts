@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
+import type { CommandSurface } from "../command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type { ModelMethodDescribeEvent } from "../../libswamp/models/method_describe.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -104,4 +106,37 @@ Deno.test("createModelMethodDescribeRenderer - factory returns correct type per 
   const jsonRenderer = createModelMethodDescribeRenderer("json");
   assertEquals(typeof logRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
+});
+
+/** The log-mode lines for `testData`, colors stripped. */
+function renderLines(surface?: CommandSurface): string[] {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => lines.push(msg);
+  try {
+    createModelMethodDescribeRenderer("log", surface).handlers().completed({
+      kind: "completed",
+      data: testData,
+    });
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(lines.join("\n")).split("\n");
+}
+
+Deno.test("LogModelMethodDescribeRenderer - the legacy surface keeps its exact text (swamp-club#3331)", () => {
+  assertEquals(renderLines(), [
+    "Model: my-model",
+    "Type: command/shell",
+    "Version: 1.0.0",
+    "",
+    "Method: run - Run the command",
+  ]);
+  assertEquals(renderLines("model"), renderLines());
+});
+
+Deno.test("LogModelMethodDescribeRenderer - the behavior surface labels the behavior", () => {
+  const lines = renderLines("behavior");
+  assertEquals(lines[0], "Behavior: my-model");
+  assertEquals(lines.slice(1), renderLines().slice(1));
 });

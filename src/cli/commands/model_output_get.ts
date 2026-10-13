@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -98,19 +102,27 @@ export async function modelOutputGetAction(
   cliCtx.logger.debug("Model output get command completed");
 }
 
+/** The preferred spelling: `swamp behavior output get`. */
+export const BEHAVIOR_OUTPUT_GET_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior output get",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model output get`. */
 export const MODEL_OUTPUT_GET_SYNTAX: CommandSyntax = {
   invocation: "swamp model output get",
+  surface: "model",
+  preferred: `${BEHAVIOR_OUTPUT_GET_SYNTAX.invocation} abc123`,
 };
 
 export function createModelOutputGetCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("get")
-      .description("Show details of a model output")
+      .description(`Show details of a ${syntax.surface} output`)
       .example("Show output details by ID", `${syntax.invocation} abc123`)
       .example(
-        "Show latest output for a model",
+        `Show latest output for a ${syntax.surface}`,
         `${syntax.invocation} my-server`,
       )
       .arguments("<output_id_or_model_name:string>")
@@ -118,7 +130,9 @@ export function createModelOutputGetCommand(syntax: CommandSyntax) {
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
-  ).action(modelOutputGetAction);
+    syntax,
+  )).action(modelOutputGetAction);
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelOutputGetCommand = createModelOutputGetCommand(

@@ -19,7 +19,12 @@
 
 import { Command } from "@cliffy/command";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
-import { type CommandSyntax, subcommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  subcommandSyntax,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import {
   createModelOutputGetCommand,
   modelOutputGetAction,
@@ -46,9 +51,17 @@ export interface ModelOutputChildren {
   readonly data: ReturnType<typeof createModelOutputDataCommand>;
 }
 
+/** The preferred spelling: `swamp behavior output`. */
+export const BEHAVIOR_OUTPUT_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior output",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model output`. */
 export const MODEL_OUTPUT_SYNTAX: CommandSyntax = {
   invocation: "swamp model output",
+  surface: "model",
+  preferred: `${BEHAVIOR_OUTPUT_SYNTAX.invocation} my-server`,
 };
 
 /**
@@ -60,14 +73,17 @@ export function createModelOutputCommand(
   syntax: CommandSyntax,
   children: Partial<ModelOutputChildren> = {},
 ) {
-  return new Command()
-    .name("output")
-    .description("Manage model outputs")
-    .error(unknownCommandErrorHandler)
-    .example(
-      "Show latest output (shorthand)",
-      `${syntax.invocation} my-server`,
-    )
+  const command = withPreferredExample(
+    new Command()
+      .name("output")
+      .description(`Manage ${syntax.surface} outputs`)
+      .error(unknownCommandErrorHandler)
+      .example(
+        "Show latest output (shorthand)",
+        `${syntax.invocation} my-server`,
+      ),
+    syntax,
+  )
     .arguments("<output_id_or_model_name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -94,6 +110,7 @@ export function createModelOutputCommand(
       children.data ??
         createModelOutputDataCommand(subcommandSyntax(syntax, "data")),
     );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelOutputCommand = createModelOutputCommand(

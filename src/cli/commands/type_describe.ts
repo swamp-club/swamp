@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -55,13 +59,24 @@ type AnyOptions = any;
  */
 export const MODEL_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp type describe",
+  surface: "model",
+  preferred: "swamp behavior type describe aws-ec2",
+};
+
+/** The preferred spelling: `swamp behavior type describe`. */
+export const BEHAVIOR_TYPE_DESCRIBE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior type describe",
+  surface: "behavior",
 };
 
 export function createTypeDescribeCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
-      .description("Describe a model type with schema details")
-      .example("Describe a model type", `${syntax.invocation} aws-ec2`)
+      .description(`Describe a ${syntax.surface} type with schema details`)
+      .example(
+        `Describe a ${syntax.surface} type`,
+        `${syntax.invocation} aws-ec2`,
+      )
       .example(
         "Compact digest for agents",
         `${syntax.invocation} aws-ec2 --compact --json`,
@@ -72,7 +87,8 @@ export function createTypeDescribeCommand(syntax: CommandSyntax) {
         "Output a compact digest (method names, descriptions, argument types, output spec names)",
       )
       .arguments("<type:model_type>"),
-  ).action(
+    syntax,
+  )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (options: AnyOptions, typeArg: string) {
       const cliCtx = createContext(options as GlobalOptions, [
@@ -120,6 +136,7 @@ export function createTypeDescribeCommand(syntax: CommandSyntax) {
       cliCtx.logger.debug("Type describe command completed");
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const typeDescribeCommand = createTypeDescribeCommand(

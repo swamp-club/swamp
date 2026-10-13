@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -54,25 +58,37 @@ import type { ModelEvaluateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior evaluate`. */
+export const BEHAVIOR_EVALUATE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior evaluate",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model evaluate`. */
 export const MODEL_EVALUATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model evaluate",
+  surface: "model",
+  preferred: `${BEHAVIOR_EVALUATE_SYNTAX.invocation} my-server`,
 };
 
 export function createModelEvaluateCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("evaluate")
-      .description("Evaluate expressions in model definitions")
-      .example("Evaluate a model", `${syntax.invocation} my-server`)
-      .example("Evaluate all models", `${syntax.invocation} --all`)
+      .description(`Evaluate expressions in ${syntax.surface} definitions`)
+      .example(`Evaluate a ${syntax.surface}`, `${syntax.invocation} my-server`)
+      .example(
+        `Evaluate all ${syntax.surface}s`,
+        `${syntax.invocation} --all`,
+      )
       .arguments("[model_id_or_name:string]")
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       )
-      .option("--all", "Evaluate all model definitions"),
-  ).action(
+      .option("--all", `Evaluate all ${syntax.surface} definitions`),
+    syntax,
+  )).action(
     async function (options: AnyOptions, modelIdOrName?: string) {
       const cliCtx = createContext(options as GlobalOptions, [
         "model",
@@ -92,7 +108,10 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
             payload: { modelIdOrName },
           },
         );
-        const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
+        const renderer = createModelEvaluateRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
         await consumeStream(
           (async function* () {
             yield {
@@ -128,7 +147,10 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
             undefined,
             repoContext.unifiedDataRepo.fetchForeignContent,
           );
-          const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
+          const renderer = createModelEvaluateRenderer(
+            cliCtx.outputMode,
+            syntax.surface,
+          );
 
           await consumeStream(
             modelEvaluate(ctx, deps, {}),
@@ -184,7 +206,10 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
         undefined,
         repoContext.unifiedDataRepo.fetchForeignContent,
       );
-      const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
+      const renderer = createModelEvaluateRenderer(
+        cliCtx.outputMode,
+        syntax.surface,
+      );
 
       await runCommandInRootUnit(
         repoContext,
@@ -204,6 +229,7 @@ export function createModelEvaluateCommand(syntax: CommandSyntax) {
       );
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelEvaluateCommand = createModelEvaluateCommand(

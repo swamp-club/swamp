@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -44,16 +48,24 @@ import type { ModelOutputLogsResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior output logs`. */
+export const BEHAVIOR_OUTPUT_LOGS_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior output logs",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model output logs`. */
 export const MODEL_OUTPUT_LOGS_SYNTAX: CommandSyntax = {
   invocation: "swamp model output logs",
+  surface: "model",
+  preferred: `${BEHAVIOR_OUTPUT_LOGS_SYNTAX.invocation} abc123`,
 };
 
 export function createModelOutputLogsCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("logs")
-      .description("Show log artifact content for a model output")
+      .description(`Show log artifact content for a ${syntax.surface} output`)
       .example("Show output logs", `${syntax.invocation} abc123`)
       .example(
         "Tail last 100 lines",
@@ -65,7 +77,8 @@ export function createModelOutputLogsCommand(syntax: CommandSyntax) {
         "Repository directory (env: SWAMP_REPO_DIR)",
       )
       .option("--tail <n:number>", "Show only last N lines"),
-  ).action(async function (options: AnyOptions, outputIdArg: string) {
+    syntax,
+  )).action(async function (options: AnyOptions, outputIdArg: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "model",
       "output",
@@ -124,6 +137,7 @@ export function createModelOutputLogsCommand(syntax: CommandSyntax) {
 
     cliCtx.logger.debug("Model output logs command completed");
   });
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelOutputLogsCommand = createModelOutputLogsCommand(

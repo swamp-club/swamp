@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelEditDeps,
@@ -68,17 +72,25 @@ export function requireModelEditContent(
   return requireRemoteEditContent(content, syntax.invocation);
 }
 
+/** The preferred spelling: `swamp behavior edit`. */
+export const BEHAVIOR_EDIT_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior edit",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model edit`. */
 export const MODEL_EDIT_SYNTAX: CommandSyntax = {
   invocation: "swamp model edit",
+  surface: "model",
+  preferred: `${BEHAVIOR_EDIT_SYNTAX.invocation} my-server`,
 };
 
 export function createModelEditCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("edit")
-      .description("Edit a model definition file")
-      .example("Edit a model", `${syntax.invocation} my-server`)
+      .description(`Edit a ${syntax.surface} definition file`)
+      .example(`Edit a ${syntax.surface}`, `${syntax.invocation} my-server`)
       .example("Interactive search", syntax.invocation)
       .example(
         "Update from stdin (required with --server)",
@@ -95,9 +107,10 @@ export function createModelEditCommand(syntax: CommandSyntax) {
       )
       .option(
         "--allow-rename",
-        "Allow a stdin update to change the model's name; refused otherwise",
+        `Allow a stdin update to change the ${syntax.surface}'s name; refused otherwise`,
       ),
-  ).action(
+    syntax,
+  )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (options: AnyOptions, modelIdOrName?: string) {
       const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
@@ -154,7 +167,11 @@ export function createModelEditCommand(syntax: CommandSyntax) {
           findAllGlobal: () => repoContext.definitionRepo.findAllGlobal(),
         };
 
-        const searchRenderer = createModelSearchRenderer(cliCtx.outputMode);
+        const searchRenderer = createModelSearchRenderer(
+          cliCtx.outputMode,
+          undefined,
+          syntax.surface,
+        );
         await consumeStream(
           modelSearch(libCtx, searchDeps, { query: undefined }),
           searchRenderer.handlers(),
@@ -194,6 +211,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
       cliCtx.logger.debug("Model edit command completed");
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelEditCommand = createModelEditCommand(MODEL_EDIT_SYNTAX);

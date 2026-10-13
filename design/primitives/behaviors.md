@@ -34,10 +34,28 @@ model name.
 
 ## Compatibility
 
-Every `swamp model` command keeps working. `swamp behavior run` (alias
-`behaviour`) is the preferred spelling of `swamp model method run` and
-`swamp model @<type> method run`. Both spellings are built by one command
-factory and share one application path (swamp-club#3265).
+Every `swamp model` command keeps working. `swamp behavior` (alias
+`behaviour`) is the preferred spelling of the whole command set
+(swamp-club#3265, swamp-club#3331):
+
+- `swamp behavior run`, for `swamp model method run` and
+  `swamp model @<type> method run`.
+- `swamp behavior create`, `get`, `edit`, `delete`, `validate`, `evaluate`,
+  `search` and `cancel`, for the `swamp model` command of the same name.
+- `swamp behavior describe`, for `swamp model method describe`.
+- `swamp behavior history` and its `get`, `search` and `logs`, for
+  `swamp model method history`.
+- `swamp behavior output` and its `get`, `search`, `logs` and `data`, for
+  `swamp model output`.
+- `swamp behavior type describe` and `type search`, for
+  `swamp model type describe` and `swamp model type search`.
+
+There is no `method` level under `swamp behavior`. Each pair is built by one
+command factory and shares one application path, so the arguments, options,
+JSON output, exit codes, error messages and the serve requests are the same.
+Only the help text and the words in human-readable output differ: the
+behavior spelling says "behavior", and the legacy spelling keeps saying
+"model". Each legacy command's help ends with its preferred spelling.
 
 These names stay `model`, because existing repos, workflows, extensions and
 scripts depend on them:

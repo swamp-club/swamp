@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -45,16 +49,26 @@ import type { ModelMethodDescribeResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior describe`. */
+export const BEHAVIOR_DESCRIBE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior describe",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model method describe`. */
 export const MODEL_METHOD_DESCRIBE_SYNTAX: CommandSyntax = {
   invocation: "swamp model method describe",
+  surface: "model",
+  preferred: `${BEHAVIOR_DESCRIBE_SYNTAX.invocation} my-server getSystemInfo`,
 };
 
 export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
       .name("describe")
-      .description("Describe a method on a model with argument details")
+      .description(
+        `Describe a method on a ${syntax.surface} with argument details`,
+      )
       .example(
         "Describe a method",
         `${syntax.invocation} my-server getSystemInfo`,
@@ -64,7 +78,8 @@ export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
-  ).action(
+    syntax,
+  )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
@@ -92,7 +107,10 @@ export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
             payload: { modelIdOrName, methodName },
           },
         );
-        const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+        const renderer = createModelMethodDescribeRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
         renderer.handlers().completed({
           kind: "completed",
           data: response.data as unknown as ModelMethodDescribeData,
@@ -110,7 +128,10 @@ export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createModelMethodDescribeDeps(repoDir);
 
-      const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+      const renderer = createModelMethodDescribeRenderer(
+        cliCtx.outputMode,
+        syntax.surface,
+      );
       await consumeStream(
         modelMethodDescribe(ctx, deps, modelIdOrName, methodName),
         renderer.handlers(),
@@ -119,6 +140,7 @@ export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
       cliCtx.logger.debug("Method describe command completed");
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelMethodDescribeCommand = createModelMethodDescribeCommand(

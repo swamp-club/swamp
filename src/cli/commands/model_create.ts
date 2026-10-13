@@ -18,7 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { type CommandSyntax, subcommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  subcommandSyntax,
+  withPreferredExample,
+} from "./command_syntax.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
@@ -84,16 +89,27 @@ import type { ModelCreateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+/** The preferred spelling: `swamp behavior create`. */
+export const BEHAVIOR_CREATE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior create",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model create`. */
 export const MODEL_CREATE_SYNTAX: CommandSyntax = {
   invocation: "swamp model create",
+  surface: "model",
+  preferred: `${BEHAVIOR_CREATE_SYNTAX.invocation} aws-ec2 my-server`,
 };
 
 export function createModelCreateCommand(syntax: CommandSyntax) {
-  return withRemoteOptions(
+  const command = withRemoteOptions(withPreferredExample(
     new Command()
-      .description("Create a new model definition")
-      .example("Create a model", `${syntax.invocation} aws-ec2 my-server`)
+      .description(`Create a new ${syntax.surface} definition`)
+      .example(
+        `Create a ${syntax.surface}`,
+        `${syntax.invocation} aws-ec2 my-server`,
+      )
       .example(
         "With global args",
         `${syntax.invocation} aws-ec2 my-server --global-arg region=us-east-1`,
@@ -108,7 +124,8 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
         "Set global argument (key=value, repeatable)",
         { collect: true },
       ),
-  ).action(
+    syntax,
+  )).action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (options: AnyOptions, typeArg: string, name: string) {
       const cliCtx = createContext(options as GlobalOptions, [
@@ -189,6 +206,7 @@ export function createModelCreateCommand(syntax: CommandSyntax) {
       cliCtx.logger.debug("Model create command completed");
     },
   );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelCreateCommand = createModelCreateCommand(MODEL_CREATE_SYNTAX);
@@ -209,7 +227,10 @@ export interface ModelChildren {
 }
 
 /** The legacy spelling: `swamp model`. */
-export const MODEL_SYNTAX: CommandSyntax = { invocation: "swamp model" };
+export const MODEL_SYNTAX: CommandSyntax = {
+  invocation: "swamp model",
+  surface: "model",
+};
 
 /**
  * Builds the `model` group for one CLI surface (swamp-club#3330). Children
@@ -222,9 +243,9 @@ export function createModelCommand(
   children: Partial<ModelChildren> = {},
 ) {
   const sub = (word: string) => subcommandSyntax(syntax, word);
-  return new Command()
+  const command = new Command()
     .name("model")
-    .description("Manage models")
+    .description(`Manage ${syntax.surface}s`)
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction)
     .command(
@@ -262,6 +283,7 @@ export function createModelCommand(
       children.output ?? createModelOutputCommand(sub("output")),
     )
     .command("type", children.type ?? createModelTypeCommand(sub("type")));
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelCommand = createModelCommand(MODEL_SYNTAX, {

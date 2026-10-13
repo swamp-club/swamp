@@ -19,7 +19,13 @@
 
 import { Command } from "@cliffy/command";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
-import { type CommandSyntax, subcommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  subcommandSyntax,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import { surfaceMethodNoun } from "../../presentation/command_surface.ts";
 import {
   createModelMethodHistoryGetCommand,
   modelMethodHistoryGetAction,
@@ -41,9 +47,17 @@ export interface ModelMethodHistoryChildren {
   readonly logs: ReturnType<typeof createModelMethodHistoryLogsCommand>;
 }
 
+/** The preferred spelling: `swamp behavior history`. */
+export const BEHAVIOR_HISTORY_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior history",
+  surface: "behavior",
+};
+
 /** The legacy spelling: `swamp model method history`. */
 export const MODEL_METHOD_HISTORY_SYNTAX: CommandSyntax = {
   invocation: "swamp model method history",
+  surface: "model",
+  preferred: `${BEHAVIOR_HISTORY_SYNTAX.invocation} my-server`,
 };
 
 /**
@@ -55,14 +69,22 @@ export function createModelMethodHistoryCommand(
   syntax: CommandSyntax,
   children: Partial<ModelMethodHistoryChildren> = {},
 ) {
-  return new Command()
-    .name("history")
-    .description("Model method run history commands")
-    .error(unknownCommandErrorHandler)
-    .example(
-      "Show latest run (shorthand)",
-      `${syntax.invocation} my-server`,
-    )
+  const methodNoun = surfaceMethodNoun(syntax.surface);
+  const command = withPreferredExample(
+    new Command()
+      .name("history")
+      .description(
+        `${methodNoun[0].toUpperCase()}${
+          methodNoun.slice(1)
+        } run history commands`,
+      )
+      .error(unknownCommandErrorHandler)
+      .example(
+        "Show latest run (shorthand)",
+        `${syntax.invocation} my-server`,
+      ),
+    syntax,
+  )
     .arguments("<output_id_or_model_name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -86,6 +108,7 @@ export function createModelMethodHistoryCommand(
       children.logs ??
         createModelMethodHistoryLogsCommand(subcommandSyntax(syntax, "logs")),
     );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 export const modelMethodHistoryCommand = createModelMethodHistoryCommand(

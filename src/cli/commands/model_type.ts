@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import { type CommandSyntax, subcommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  recordDefiningModule,
+  subcommandSyntax,
+} from "./command_syntax.ts";
 import {
   createTypeDescribeCommand,
   typeDescribeCommand,
@@ -35,6 +39,13 @@ export interface ModelTypeChildren {
 /** The legacy spelling: `swamp model type`. */
 export const MODEL_TYPE_SYNTAX: CommandSyntax = {
   invocation: "swamp model type",
+  surface: "model",
+};
+
+/** The preferred spelling: `swamp behavior type`. */
+export const BEHAVIOR_TYPE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior type",
+  surface: "behavior",
 };
 
 /**
@@ -47,9 +58,9 @@ export function createModelTypeCommand(
   syntax: CommandSyntax,
   children: Partial<ModelTypeChildren> = {},
 ) {
-  return new Command()
+  const command = new Command()
     .name("type")
-    .description("Inspect model types")
+    .description(`Inspect ${syntax.surface} types`)
     .action(groupCommandAction)
     .command(
       "describe",
@@ -61,6 +72,7 @@ export function createModelTypeCommand(
       children.search ??
         createTypeSearchCommand(subcommandSyntax(syntax, "search")),
     );
+  return recordDefiningModule(command, import.meta.url);
 }
 
 /**

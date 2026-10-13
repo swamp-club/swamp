@@ -23,6 +23,7 @@ import { findClosestMatch } from "../domain/string_distance.ts";
 import { getOutputModeFromArgs } from "./context.ts";
 import { buildErrorJson } from "../presentation/output/error_output.ts";
 import { takeAuthGateWarning } from "../presentation/renderers/auth_gate_warning.ts";
+import { isBooleanFlag } from "./boolean_flags.ts";
 
 /**
  * Extracts the unknown command name from a Cliffy "Unknown command" error message.
@@ -95,21 +96,25 @@ function buildContextSuggestions(
   const suggestions: string[] = [];
   const parentName = cmd.getName();
 
-  // A legacy word under the new group, or the new word under the old one:
-  // `swamp behavior method run p1 ping`, `swamp model run p1 ping`. The
-  // positionals that follow are the model and method the user meant
-  // (swamp-club#3265).
-  if (
-    (parentName === "behavior" && unknownName === "method") ||
-    (parentName === "model" && unknownName === "run")
-  ) {
+  // A legacy word under the new group, or a new word under the old one:
+  // `swamp behavior method run p1 ping`, `swamp model run p1 ping`,
+  // `swamp behavior method describe p1 ping`, `swamp model history p1`. The
+  // positionals that follow are what the user meant to pass to the behavior
+  // form (swamp-club#3265, swamp-club#3331).
+  const hybrid = hybridWord(parentName, unknownName);
+  if (hybrid !== undefined) {
     const trailing = extractPositionalArgs(
       rawArgs,
       `${cmd.getPath()} ${unknownName}`,
       [...pathSpellings(cmd), new Set([unknownName])],
     );
-    const rest = trailing[0] === "run" ? trailing.slice(1) : trailing;
-    suggestions.push(runSuggestionFor(rest[0] ?? "<model>", rest.slice(1)));
+    // After `behavior method`, the next word names the leaf.
+    const leaf = hybrid === "method" ? methodLeaf(trailing[0]) : hybrid;
+    // `run` itself is dropped by the run suggestion, as it always was.
+    const rest = hybrid === "method" && leaf !== "run" && trailing[0] === leaf
+      ? trailing.slice(1)
+      : trailing;
+    suggestions.push(hybridSuggestionFor(leaf, rest));
     return suggestions;
   }
 
@@ -137,16 +142,21 @@ function buildContextSuggestions(
   }
   const runSuggestion = runSuggestionFor(unknownName, afterCommandWords);
 
-  if (parentName === "model") {
+  // `swamp model <name>` and `swamp behavior <name>` both name a behavior the
+  // user wants to act on, so both offer get, run and validate. A misordered
+  // `behavior <name> run …` plainly meant run, so it offers only that.
+  if (
+    parentName === "model" || (parentName === "behavior" && !misorderedRun)
+  ) {
     if (!unknownName.startsWith("@")) {
       suggestions.push(
-        `swamp model get ${unknownName}`,
+        `swamp behavior get ${unknownName}`,
       );
     }
     suggestions.push(runSuggestion);
     if (!unknownName.startsWith("@")) {
       suggestions.push(
-        `swamp model validate ${unknownName}`,
+        `swamp behavior validate ${unknownName}`,
       );
     }
   } else if (parentName === "method" || parentName === "behavior") {
@@ -182,14 +192,16 @@ function buildContextSuggestions(
       `swamp ... history search`,
     );
   } else if (parentName === "output") {
+    // The group as reached: `swamp behavior output` or `swamp model output`.
+    const output = cmd.getPath();
     suggestions.push(
-      `swamp model output get ${unknownName}`,
+      `${output} get ${unknownName}`,
     );
     suggestions.push(
-      `swamp model output search`,
+      `${output} search`,
     );
     suggestions.push(
-      `swamp model output logs ${unknownName}`,
+      `${output} logs ${unknownName}`,
     );
   } else if (parentName === "extension") {
     suggestions.push(
@@ -224,6 +236,53 @@ function buildContextSuggestions(
   return suggestions;
 }
 
+/** The `swamp behavior` leaf a hybrid word stands for. */
+type HybridLeaf = "run" | "describe" | "history";
+
+/**
+ * Recognises a word from one tree typed in the other: `method` under
+ * `behavior` (which has no `method` level), or `run`, `describe` and
+ * `history` under `model` (which has them only under `model method`).
+ * Returns `"method"` for the former, since the leaf is the word after it.
+ */
+function hybridWord(
+  parentName: string,
+  unknownName: string,
+): HybridLeaf | "method" | undefined {
+  if (parentName === "behavior" && unknownName === "method") return "method";
+  if (
+    parentName === "model" &&
+    (unknownName === "run" || unknownName === "describe" ||
+      unknownName === "history")
+  ) {
+    return unknownName;
+  }
+  return undefined;
+}
+
+/** The leaf named after `behavior method`; `run` when it names none. */
+function methodLeaf(word: string | undefined): HybridLeaf {
+  return word === "describe" || word === "history" ? word : "run";
+}
+
+/** The behavior form of a hybrid invocation, filled from the positionals. */
+function hybridSuggestionFor(leaf: HybridLeaf, rest: string[]): string {
+  switch (leaf) {
+    case "run": {
+      const args = rest[0] === "run" ? rest.slice(1) : rest;
+      return runSuggestionFor(args[0] ?? "<model>", args.slice(1));
+    }
+    case "describe":
+      return `swamp behavior describe ${rest[0] ?? "<model>"} ${
+        rest[1] ?? "<method>"
+      }`;
+    case "history":
+      return `swamp behavior history ${
+        rest.length > 0 ? rest.join(" ") : "<model>"
+      }`;
+  }
+}
+
 /**
  * `swamp behavior run <model> <method>`, filled from what the user typed
  * after the model. An `@type` can only be run directly, and that form also
@@ -241,7 +300,8 @@ function runSuggestionFor(model: string, rest: string[]): string {
  * Walks past the command-path segments, then collects non-flag tokens
  * (anything not starting with `-`). Flag *values* (the token after a
  * `--flag <value>` pair) are skipped by consuming the next token when a
- * flag is seen.
+ * flag is seen — unless the flag never takes a value (`--json`, `--log`,
+ * `--skip-checks`; see `BOOLEAN_FLAGS`) or carries its value (`--x=y`).
  */
 export function extractPositionalArgs(
   rawArgs: string[],
@@ -252,8 +312,9 @@ export function extractPositionalArgs(
   let i = 0;
   for (const [index, segment] of pathSegments.entries()) {
     while (i < rawArgs.length && rawArgs[i].startsWith("-")) {
+      const flag = rawArgs[i];
       i++;
-      if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
+      if (takesNextArg(flag, rawArgs[i])) {
         i++;
       }
     }
@@ -271,8 +332,9 @@ export function extractPositionalArgs(
       break;
     }
     if (rawArgs[i].startsWith("-")) {
+      const flag = rawArgs[i];
       i++;
-      if (i < rawArgs.length && !rawArgs[i].startsWith("-")) {
+      if (takesNextArg(flag, rawArgs[i])) {
         i++;
       }
       continue;
@@ -281,6 +343,23 @@ export function extractPositionalArgs(
     i++;
   }
   return positional;
+}
+
+/**
+ * `--version` is boolean only at the root; `data get`, `report get`, `model
+ * output data` and `source fetch` take `--version <n>`. A hint is built under
+ * a group, never the root, so it reads the next token as the value.
+ */
+const VALUE_TAKING_UNDER_GROUPS: ReadonlySet<string> = new Set([
+  "--version",
+  "-V",
+]);
+
+/** Whether the token after `flag` is its value rather than a word. */
+function takesNextArg(flag: string, next: string | undefined): boolean {
+  return next !== undefined && !next.startsWith("-") &&
+    (VALUE_TAKING_UNDER_GROUPS.has(flag) || !isBooleanFlag(flag)) &&
+    !flag.includes("=");
 }
 
 /**
