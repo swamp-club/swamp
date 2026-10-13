@@ -31,8 +31,10 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { getVaultTypes } from "../../domain/vaults/vault_types.ts";
-import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import {
+  ensureAllVaultTypesLoaded,
+  getVaultTypes,
+} from "../../domain/vaults/vault_types.ts";
 import {
   requestServerResponse,
   resolveServerTokenFromOptions,
@@ -77,7 +79,7 @@ export async function vaultTypeSearchAction(
     return;
   }
 
-  await vaultTypeRegistry.ensureLoaded();
+  await ensureAllVaultTypesLoaded();
 
   const deps: VaultTypeSearchDeps = {
     getVaultTypes: () => getVaultTypes(),

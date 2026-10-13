@@ -3001,6 +3001,15 @@ has been fully indexed.
 2. `types()` returns both fully loaded and lazy type names, so commands like
    `model type search` import no bundles.
 
+   `vault type search`, `datastore type search` and `report type search` are
+   the exception: a lazy entry carries no declared name, and its catalog
+   description is empty until the bundle has been imported once, so these
+   commands import every lazy bundle of their kind before listing
+   (`ensureAllVaultTypesLoaded`, `ensureAllDatastoreTypesLoaded`). A repo
+   holds few such extensions, so the memory concern behind lazy model loading
+   does not apply. A bundle that fails to import is logged as a warning and
+   keeps its placeholder entry.
+
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports
    only that bundle, plus any extension bundles targeting the base type.

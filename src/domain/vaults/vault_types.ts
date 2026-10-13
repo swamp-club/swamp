@@ -17,12 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import {
   type VaultTypeInfo,
+  type VaultTypeRegistry,
   vaultTypeRegistry,
 } from "./vault_type_registry.ts";
 
 export type { VaultTypeInfo } from "./vault_type_registry.ts";
+
+const logger = getLogger(["vaults", "types"]);
 
 /**
  * Known renamed vault types and their current names.
@@ -76,6 +80,30 @@ export function getVaultTypes(): VaultTypeInfo[] {
     }));
 
   return [...loaded, ...lazy];
+}
+
+/**
+ * Imports every lazily indexed vault type, so that {@link getVaultTypes}
+ * returns each extension type as it declares itself. A lazy entry carries no
+ * declared name, and its catalog description is empty until the bundle has
+ * been imported once (swamp-club#3365).
+ *
+ * A type whose bundle fails to import keeps its lazy placeholder: a listing
+ * must not fail because one extension is broken.
+ */
+export async function ensureAllVaultTypesLoaded(
+  registry: VaultTypeRegistry = vaultTypeRegistry,
+): Promise<void> {
+  await registry.ensureLoaded();
+  for (const lazy of registry.getAllLazy()) {
+    try {
+      await registry.ensureTypeLoaded(lazy.type);
+    } catch (error) {
+      logger.warn`Failed to load vault type ${lazy.type}: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
 }
 
 /**

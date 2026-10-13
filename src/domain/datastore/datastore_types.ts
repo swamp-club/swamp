@@ -17,12 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import {
   type DatastoreTypeInfo,
+  type DatastoreTypeRegistry,
   datastoreTypeRegistry,
 } from "./datastore_type_registry.ts";
 
 export type { DatastoreTypeInfo } from "./datastore_type_registry.ts";
+
+const logger = getLogger(["swamp", "datastore", "types"]);
 
 /**
  * Built-in datastore type definitions.
@@ -62,6 +66,30 @@ export function getDatastoreTypes(): DatastoreTypeInfo[] {
     }));
 
   return [...loaded, ...lazy];
+}
+
+/**
+ * Imports every lazily indexed datastore type, so that {@link getDatastoreTypes}
+ * returns each extension type as it declares itself. A lazy entry carries no
+ * declared name, and its catalog description is empty until the bundle has
+ * been imported once (swamp-club#3365).
+ *
+ * A type whose bundle fails to import keeps its lazy placeholder: a listing
+ * must not fail because one extension is broken.
+ */
+export async function ensureAllDatastoreTypesLoaded(
+  registry: DatastoreTypeRegistry = datastoreTypeRegistry,
+): Promise<void> {
+  await registry.ensureLoaded();
+  for (const lazy of registry.getAllLazy()) {
+    try {
+      await registry.ensureTypeLoaded(lazy.type);
+    } catch (error) {
+      logger.warn`Failed to load datastore type ${lazy.type}: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
 }
 
 /**

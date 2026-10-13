@@ -1981,6 +1981,47 @@ Deno.test("handleVaultTypeSearch: admits data and vault-only readers, and refuse
   });
 });
 
+Deno.test("handleVaultTypeSearch: lists a lazily indexed extension type under its declared name and description", async () => {
+  const type = `@test/lazy-${crypto.randomUUID().slice(0, 8)}`;
+  vaultTypeRegistry.registerLazy({
+    type,
+    bundlePath: "/repo/.swamp/vault-bundles/lazy.js",
+    sourcePath: "/repo/extensions/vaults/lazy.ts",
+    version: "",
+  });
+  vaultTypeRegistry.setTypeLoader((loaded) => {
+    vaultTypeRegistry.promoteFromLazy({
+      type: loaded,
+      name: "Lazy Vault",
+      description: "A lazily indexed vault",
+      isBuiltIn: false,
+    });
+    return Promise.resolve();
+  });
+  try {
+    await withVaultTableRepo(["prod-db"], async (repo) => {
+      const socket = createMockSocket();
+      await handleVaultTypeSearch(
+        socket,
+        repo.ctx([grantOn("data", "*", ["read"])]),
+        "r",
+        new AbortController(),
+        VAULT_EDITOR,
+      );
+      const frame = JSON.parse(socket.sent[0]) as {
+        payload: { data: { results: Array<Record<string, unknown>> } };
+      };
+      assertEquals(
+        frame.payload.data.results.find((r) => r.type === type),
+        { type, name: "Lazy Vault", description: "A lazily indexed vault" },
+      );
+    });
+  } finally {
+    vaultTypeRegistry.invalidateType(type);
+    vaultTypeRegistry.clearLoadersForTesting();
+  }
+});
+
 Deno.test("handleVaultAuditTrail: an unnamed trail filters per vault for data-only, vault-only and mixed callers", async () => {
   await withVaultTableRepo(["prod-db", "prod-erp", "dev-db"], async (repo) => {
     assertEquals(
