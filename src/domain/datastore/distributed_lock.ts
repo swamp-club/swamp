@@ -61,13 +61,14 @@ export interface LockInfo {
 }
 
 /**
- * True when `current`, a lock read back with `inspect()`, still names the
- * holder `taken` named when this process had just acquired it. A lock that
- * is gone, or that someone is still writing, names nobody. Each backend
- * writes its own holder, hostname and pid (some write a pid of 0 or a
- * holder with a random suffix), so the reading is compared with the
- * backend's own earlier one, never with this process's identity. Two holds
- * by one process cannot be told apart this way (swamp-club#3373).
+ * True when `current`, a lock read back with `inspect()`, is still the hold
+ * `taken` read just after this process acquired it. A lock that is gone, or
+ * that someone is still writing, is nobody's hold. Each backend writes its
+ * own holder, hostname and pid (some write a pid of 0 or a holder with a
+ * random suffix), so the reading is compared with the backend's own earlier
+ * one, never with this process's identity. When both readings carry a
+ * nonce it must match too, which tells apart two holds by one process: every
+ * extension lock keeps its nonce for the whole of a hold (swamp-club#3373).
  */
 export function lockStillNames(
   current: LockInfo | null,
@@ -75,7 +76,9 @@ export function lockStillNames(
 ): boolean {
   return current !== null && current.holderUnknown !== true &&
     current.holder === taken.holder && current.hostname === taken.hostname &&
-    current.pid === taken.pid;
+    current.pid === taken.pid &&
+    (current.nonce === undefined || taken.nonce === undefined ||
+      current.nonce === taken.nonce);
 }
 
 /** The most nonces a lock's {@link LockInfo.skipping} lists. */

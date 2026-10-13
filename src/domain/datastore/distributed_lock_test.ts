@@ -298,3 +298,13 @@ Deno.test("lockStillNames: false for a lock that is gone, being written, or name
   );
   assertEquals(lockStillNames(held({ holder: "kim@host" }), held()), false);
 });
+
+Deno.test("lockStillNames: a new hold by the same process is not the hold that was taken", () => {
+  assertEquals(lockStillNames(held({ nonce: "n2" }), held()), false);
+  // A backend that writes no nonce is compared on holder, hostname and pid.
+  assertEquals(
+    lockStillNames(held({ nonce: undefined }), held({ nonce: undefined })),
+    true,
+  );
+  assertEquals(lockStillNames(held({ nonce: undefined }), held()), true);
+});

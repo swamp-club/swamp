@@ -762,9 +762,9 @@ export class ModelLockLostError extends UserError {
     super(
       `This run lost its lock on ${names} before pushing: the lock was ` +
         `force-released or taken over by another process, which may have ` +
-        `written the same data version. Nothing was pushed, and this run's ` +
-        `data is on this host only. Run the method or step again: it pulls ` +
-        `the other run's data first.`,
+        `written the same data version.\nNothing was pushed, and this ` +
+        `run's data is on this host only. Run the method or workflow ` +
+        `again: it pulls the other run's data first.`,
       "model_lock_lost",
     );
     this.name = "ModelLockLostError";

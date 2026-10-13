@@ -156,7 +156,8 @@ Deno.test("ModelLockLostError: names each model, its current holder, and says no
   assertStringIncludes(err.message, "aws/s3/a2 (now released)");
   assertStringIncludes(err.message, "force-released or taken over");
   assertStringIncludes(err.message, "Nothing was pushed");
-  assertStringIncludes(err.message, "Run the method or step again");
+  assertStringIncludes(err.message, "version.\nNothing was pushed");
+  assertStringIncludes(err.message, "Run the method or workflow again");
 });
 
 Deno.test("isUnpublishedDataError: matches the two push refusals and nothing else", () => {

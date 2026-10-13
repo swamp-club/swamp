@@ -245,7 +245,7 @@ interface Clones {
 async function withClones(
   twoPhaseSync: boolean,
   fn: (clones: Clones) => Promise<void>,
-  options: { blindA?: boolean } = {},
+  options: { blindA?: boolean; bSameProcess?: boolean } = {},
 ): Promise<void> {
   const remote = createInMemoryRemote({
     capabilities: twoPhaseSync ? { twoPhaseSync: true } : {},
@@ -255,7 +255,9 @@ async function withClones(
     createLock: locks.lockFor(PROCESS_A.pid, options.blindA),
   });
   const typeB = registerTestDatastoreType(remote, {
-    createLock: locks.lockFor(PROCESS_A.pid + 1),
+    createLock: locks.lockFor(
+      options.bSameProcess ? PROCESS_A.pid : PROCESS_A.pid + 1,
+    ),
   });
   try {
     await withTempDir(async (dir) => {
@@ -346,6 +348,26 @@ for (const twoPhaseSync of [true, false]) {
       assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"a"}']);
       assertEquals(c.locks.entries.size, 0);
     });
+  });
+
+  Deno.test(`acquireModelLocks: a holder whose lock another run of the same process took refuses to push (twoPhaseSync=${twoPhaseSync})`, async () => {
+    await withClones(twoPhaseSync, async (c) => {
+      const a = await lockAndSave(c.repoA, c.modelId, '{"by":"a"}');
+      const b = await (async () => {
+        c.locks.breakglass(c.modelId);
+        return await lockAndSave(c.repoB, c.modelId, '{"by":"b"}');
+      })();
+      try {
+        const error = await assertRejects(() => a.flush(), ModelLockLostError);
+        assertEquals(error.lost[0].heldBy?.pid, PROCESS_A.pid);
+        assertEquals(remoteBodies(c.remote, c.modelId), []);
+        await b.flush();
+      } finally {
+        await a.close();
+        await b.close();
+      }
+      assertEquals(remoteBodies(c.remote, c.modelId), ['{"by":"b"}']);
+    }, { bSameProcess: true });
   });
 
   Deno.test(`acquireModelLocks: a lock that cannot report its holder is not checked, as before (twoPhaseSync=${twoPhaseSync})`, async () => {

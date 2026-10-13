@@ -3096,6 +3096,8 @@ export async function acquireModelLocks(
     for (const [i, lock] of heldLocks.entries()) {
       const taken = heldLockTaken[i];
       if (taken === undefined) continue;
+      // A read that fails here fails the push, like the upload after it
+      // would: a push that cannot confirm its lock does not go ahead.
       const info = await lock.inspect();
       if (lockStillNames(info, taken)) continue;
       lost.push({

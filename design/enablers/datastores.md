@@ -5093,16 +5093,18 @@ S3 and GCS, each clone allocates the next data version from its own cache. The
 run that takes the lock next can therefore write the same version, and the old
 holder's push would overwrite it. `acquireModelLocks` reads each per-model lock
 with `inspect()` just after taking it, and again before each push. If the lock
-is then gone, being written, or names a different holder, hostname or pid than
-it did when taken, the push is refused and the run fails with
+is then gone, being written, or names a different holder, hostname, pid or nonce
+than it did when taken, the push is refused and the run fails with
 `ModelLockLostError` (`model_lock_lost`), so nothing is pushed
 (swamp-club#3373). The second reading is compared with the first, not with this
 process's identity, because extension locks write their own holder formats
-(some a pid of 0, some a random suffix). A lock that read nothing when taken is
-not checked. A filesystem datastore has no push and is unchanged, and v3 fences
-its own writer. The check and the upload are not atomic, and a takeover by
-another run of the same process passes the check. Phase 5's model leases close
-both gaps.
+(some a pid of 0, some a random suffix). The nonce tells apart two holds by one
+process, as in serve; every extension lock keeps its nonce for a whole hold. A
+lock that read nothing when taken is not checked. A filesystem datastore has no
+push and is unchanged, and v3 fences its own writer. The check and the upload
+are not atomic: a breakglass and a takeover inside that window can still lose a
+write. Phase 5's model leases, or create-only writes of version keys in the
+datastore extensions, close it.
 
 ### Other maintenance commands
 
