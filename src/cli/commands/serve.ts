@@ -6773,6 +6773,7 @@ export const serveCommand = new Command()
         staleTtlMs,
         workflowRunRepo: repoContext.workflowRunRepo,
         markDirty: repoContext.markDirty,
+        outputRepo: repoContext.outputRepo,
       });
       if (remoteReaped > 0) {
         logger
@@ -6850,6 +6851,7 @@ export const serveCommand = new Command()
             staleTtlMs,
             workflowRunRepo: repoContext.workflowRunRepo,
             markDirty: repoContext.markDirty,
+            outputRepo: repoContext.outputRepo,
           });
           if (reaped > 0) {
             logger

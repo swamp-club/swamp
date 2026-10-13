@@ -194,11 +194,11 @@ export function trackerShowsDeadOwner(
 export interface GoneInstanceCheck {
   /** The caller's host and serve instance id, and a pid check for this host. */
   readonly liveness: OwnerLiveness & { readonly instanceId: string };
-  /** The caller's own pid: another instance's row carrying it is dead. */
+  /** The caller's own pid, which says nothing about another instance's row. */
   readonly selfPid: number;
   /** Whether the control-plane store holds a heartbeat for the instance. */
   hasHeartbeat(instanceId: string): boolean;
-  /** How old a row owned on another host must be before it is judged. */
+  /** How old a row must be before it is judged on its age. */
   readonly staleTtlMs: number;
   readonly now: number;
 }
@@ -206,16 +206,20 @@ export interface GoneInstanceCheck {
 /**
  * The serve instances whose `running` tracker rows show they are gone: not
  * the caller, no heartbeat in the control-plane store, and every row either
- * owned on this host by a dead pid (or by the caller's own pid, which a
- * restarted container reuses), or owned on another host with a tracker
- * heartbeat older than the stale TTL. A peer that reaps a crashed instance
- * deletes its heartbeat without seeing its runs, so a missing heartbeat is
- * the only signal left to the instance that restarts on the same tracker
- * (swamp-club#3355). The age wait covers a live instance sharing this
- * tracker from another host, which starts listening before it writes its
- * first heartbeat; a row on this host with a live pid always keeps its
- * instance. As in {@link trackerShowsDeadOwner}, the same hostname is taken
- * to mean the same process table.
+ * owned on this host by a dead pid, or with a tracker heartbeat older than
+ * the stale TTL. A peer that reaps a crashed instance deletes its heartbeat
+ * without seeing its runs, so a missing heartbeat is the only signal left to
+ * the instance that restarts on the same tracker (swamp-club#3355).
+ *
+ * A row is judged on its age when its pid cannot be checked here: it is
+ * owned on another host, or it carries the caller's own pid. A restarted
+ * container reuses its pid, but so does a live sibling container with the
+ * same hostname, and only a row its owner stopped refreshing tells them
+ * apart. The age wait also covers a live instance sharing this tracker that
+ * has started listening but not yet written its first heartbeat. A row on
+ * this host with a live pid always keeps its instance. As in
+ * {@link trackerShowsDeadOwner}, a pid that is not the caller's is checked
+ * against this host's process table.
  */
 export function goneInstanceIds(
   running: readonly ActiveRun[],
@@ -227,8 +231,10 @@ export function goneInstanceIds(
     const id = row.instanceId;
     if (row.status !== "running" || !id || kept.has(id)) continue;
     if (id === check.liveness.instanceId || check.hasHeartbeat(id)) continue;
-    const ownerGone = row.hostname === check.liveness.hostname
-      ? row.pid === check.selfPid || check.liveness.isDead(row.pid)
+    const pidCheckable = row.hostname === check.liveness.hostname &&
+      row.pid !== check.selfPid;
+    const ownerGone = pidCheckable
+      ? check.liveness.isDead(row.pid)
       : check.now - row.heartbeatAt.getTime() > check.staleTtlMs;
     if (ownerGone) {
       gone.add(id);

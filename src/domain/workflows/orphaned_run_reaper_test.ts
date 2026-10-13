@@ -537,9 +537,14 @@ Deno.test("goneInstanceIds: a row on this host with a dead pid and no heartbeat 
   );
 });
 
-Deno.test("goneInstanceIds: a row on this host carrying the caller's own pid marks its instance gone", () => {
+Deno.test("goneInstanceIds: a row carrying the caller's own pid is judged on its age, not its pid", () => {
+  // A live sibling container with the same hostname is pid 1 too.
   assertEquals(
-    [...goneInstanceIds([rowAged(0, { pid: 1 })], goneCheck())],
+    goneInstanceIds([rowAged(GONE_TTL_MS, { pid: 1 })], goneCheck()).size,
+    0,
+  );
+  assertEquals(
+    [...goneInstanceIds([rowAged(GONE_TTL_MS + 1, { pid: 1 })], goneCheck())],
     ["old"],
   );
 });

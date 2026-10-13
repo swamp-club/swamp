@@ -1128,14 +1128,21 @@ the claiming peer finds nothing to interrupt for a run that crashed mid-step,
 and still deletes the heartbeat. Each pass, at boot and in steady state,
 therefore also interrupts the local runs of an instance that has no heartbeat at
 all (`goneInstanceIds`). Such an instance counts as gone when every `running`
-tracker row it left is either owned on this host by a dead pid (or by this
-process's own pid, which a restarted container reuses), or owned on another host
-and older than `--stale-ttl`, or than 60 s (two refreshes of a tracker row) if
-that is longer. The wait covers a live instance that shares the tracker from
-another host and has started listening but not yet written its first heartbeat.
-Nothing is claimed or deleted for such an instance. The pid checks take the same
-hostname to mean the same process table, so two containers that share a tracker
-volume need distinct hostnames.
+tracker row it left is either owned on this host by a dead pid, or has not been
+refreshed for longer than `--stale-ttl` (or 60 s, two refreshes of a tracker
+row, if that is longer). A row is judged on its age when its pid cannot be
+checked: it is owned on another host, or it carries this process's own pid. A
+restarted container reuses its pid, but so does a live sibling container with
+the same hostname, so the pid alone decides nothing; such a run is interrupted
+once the wait has passed, not at boot. The wait also covers a live instance that
+shares the tracker and has started listening but not yet written its first
+heartbeat. Nothing is claimed or deleted for a gone instance. A pid that is not
+this process's own is checked against this host's process table, so containers
+that share a tracker volume should still have distinct hostnames.
+
+For a dead instance's method-run rows, claimed or gone, the pass cancels the
+method run's output record before it settles the row. A row whose output could
+not be cancelled is marked `interrupted` but left unsettled.
 
 When the datastore manages config, a `ConfigPoller` pulls `.swamp/config/` every
 `--datastore-poll-interval` (default 30 s) and checks the extension lockfile. The `AccessDataPoller` pulls grants
