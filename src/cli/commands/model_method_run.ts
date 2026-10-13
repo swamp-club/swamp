@@ -68,8 +68,15 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { modelMethodHistoryCommand } from "./model_method_history.ts";
-import { modelMethodDescribeCommand } from "./model_method_describe.ts";
+import {
+  createModelMethodHistoryCommand,
+  modelMethodHistoryCommand,
+} from "./model_method_history.ts";
+import {
+  createModelMethodDescribeCommand,
+  modelMethodDescribeCommand,
+} from "./model_method_describe.ts";
+import { type CommandSyntax, subcommandSyntax } from "./command_syntax.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
@@ -725,14 +732,70 @@ export const modelMethodRunCommand = createModelMethodRunCommand(
   MODEL_METHOD_RUN_SYNTAX,
 );
 
-export const modelMethodCommand = new Command()
-  .name("method")
-  .description("Execute model methods")
-  .error(unknownCommandErrorHandler)
-  .action(groupCommandAction)
-  .command("run", modelMethodRunCommand)
-  .command("describe", modelMethodDescribeCommand)
-  .command("history", modelMethodHistoryCommand);
+/**
+ * The run syntax of the `run` subcommand of a `method` group reached as
+ * `syntax`. The legacy `swamp model method run` names a direct type before
+ * `method` instead, so its group is built with MODEL_METHOD_RUN_SYNTAX.
+ */
+function methodRunSyntax(syntax: CommandSyntax): RunCommandSyntax {
+  const run = subcommandSyntax(syntax, "run").invocation;
+  return {
+    invocation: (model, method) => `${run} ${model} ${method}`,
+    directInvocation: (type, method, name) =>
+      `${run} ${type} ${method} ${name}`,
+  };
+}
+
+/** The subcommands of `model method`, in registration order. */
+export interface ModelMethodChildren {
+  readonly run: ReturnType<typeof createModelMethodRunCommand>;
+  readonly describe: ReturnType<typeof createModelMethodDescribeCommand>;
+  readonly history: ReturnType<typeof createModelMethodHistoryCommand>;
+}
+
+/** The legacy spelling: `swamp model method`. */
+export const MODEL_METHOD_SYNTAX: CommandSyntax = {
+  invocation: "swamp model method",
+};
+
+/**
+ * Builds the `method` group for one CLI surface. Children not passed are
+ * built fresh from `syntax`; Cliffy reparents a command attached under a
+ * second parent, so two surfaces must never share an instance.
+ */
+export function createModelMethodCommand(
+  syntax: CommandSyntax,
+  children: Partial<ModelMethodChildren> = {},
+) {
+  return new Command()
+    .name("method")
+    .description("Execute model methods")
+    .error(unknownCommandErrorHandler)
+    .action(groupCommandAction)
+    .command(
+      "run",
+      children.run ?? createModelMethodRunCommand(methodRunSyntax(syntax)),
+    )
+    .command(
+      "describe",
+      children.describe ??
+        createModelMethodDescribeCommand(subcommandSyntax(syntax, "describe")),
+    )
+    .command(
+      "history",
+      children.history ??
+        createModelMethodHistoryCommand(subcommandSyntax(syntax, "history")),
+    );
+}
+
+export const modelMethodCommand = createModelMethodCommand(
+  MODEL_METHOD_SYNTAX,
+  {
+    run: modelMethodRunCommand,
+    describe: modelMethodDescribeCommand,
+    history: modelMethodHistoryCommand,
+  },
+);
 
 /**
  * The --server branch: dispatch the method run through a `swamp serve`

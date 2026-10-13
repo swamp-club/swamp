@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import type { Logger } from "@logtape/logtape";
 import { hostname } from "node:os";
 import {
@@ -444,212 +445,233 @@ function liveStops(
   return { live, seconds: longest / 1000 };
 }
 
-export const modelCancelCommand = new Command()
-  .name("cancel")
-  .description("Cancel a running model method run")
-  .example("Cancel a model run", "swamp model cancel my-server")
-  .example(
-    "Cancel with reason",
-    "swamp model cancel my-server --reason 'No longer needed'",
-  )
-  .example("Cancel all running", "swamp model cancel --all")
-  .arguments("[model_id_or_name:model_name]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--all",
-    "Cancel all running model method runs, skipping runs a live swamp serve owns",
-  )
-  .option("--reason <reason:string>", "Reason for cancellation")
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, modelIdOrName?: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["model", "cancel"]);
+/**
+ * The hint for method runs an older swamp started without recording their
+ * model: only cancelling every run reaches them. Names the command as the
+ * user typed it on this surface.
+ */
+export function cancelAllHint(syntax: CommandSyntax): string {
+  return `'${syntax.invocation} --all' stops them, along with every other running method run a swamp serve does not own.`;
+}
 
-    if (!options.all && !modelIdOrName) {
-      throw new UserError(
-        "Provide a model name or ID, or use --all to cancel all running runs",
-      );
-    }
+/** The legacy spelling: `swamp model cancel`. */
+export const MODEL_CANCEL_SYNTAX: CommandSyntax = {
+  invocation: "swamp model cancel",
+};
 
-    const { repoDir, repoContext, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+export function createModelCancelCommand(syntax: CommandSyntax) {
+  return new Command()
+    .name("cancel")
+    .description("Cancel a running model method run")
+    .example("Cancel a model run", `${syntax.invocation} my-server`)
+    .example(
+      "Cancel with reason",
+      `${syntax.invocation} my-server --reason 'No longer needed'`,
+    )
+    .example("Cancel all running", `${syntax.invocation} --all`)
+    .arguments("[model_id_or_name:model_name]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--all",
+      "Cancel all running model method runs, skipping runs a live swamp serve owns",
+    )
+    .option("--reason <reason:string>", "Reason for cancellation")
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
+    .action(async function (options: AnyOptions, modelIdOrName?: string) {
+      const cliCtx = createContext(options as GlobalOptions, [
+        "model",
+        "cancel",
+      ]);
 
-    const reason = options.reason as string | undefined;
-    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-
-    try {
-      runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
-
-      if (options.all) {
-        const runningRows = runTracker.findAllRunning();
-        const { cancellable, serveOwned } = splitServeOwnedRuns(
-          runningRows.filter((r) => r.runKind === "model_method"),
-          runningRows,
+      if (!options.all && !modelIdOrName) {
+        throw new UserError(
+          "Provide a model name or ID, or use --all to cancel all running runs",
         );
-        const skipped = serveOwned.map(skippedFields);
+      }
 
-        if (cancellable.length === 0) {
+      const { repoDir, repoContext, datastoreConfig } =
+        await requireInitializedRepoUnlocked({
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        });
+
+      const reason = options.reason as string | undefined;
+      const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+
+      try {
+        runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
+
+        if (options.all) {
+          const runningRows = runTracker.findAllRunning();
+          const { cancellable, serveOwned } = splitServeOwnedRuns(
+            runningRows.filter((r) => r.runKind === "model_method"),
+            runningRows,
+          );
+          const skipped = serveOwned.map(skippedFields);
+
+          if (cancellable.length === 0) {
+            if (cliCtx.outputMode === "json") {
+              console.log(
+                JSON.stringify({ cancelled: [], finished: [], skipped }),
+              );
+            } else if (serveOwned.length === 0) {
+              cliCtx.logger.info("No running model method runs to cancel.");
+            } else {
+              warnServeOwnedSkipped(cliCtx.logger, serveOwned);
+            }
+            return;
+          }
+
+          // In a root unit of work with no push, so the run saves stage into
+          // it instead of reaching the hook through signalChange's fallback
+          // (swamp-club#3056). Nothing pushes, as before.
+          const outcomes = await runCommandInRootUnit(
+            repoContext,
+            { push: undefined },
+            () =>
+              cancelModelMethodRuns(cancellable, reason, {
+                tracker: runTracker,
+                outputRepo: repoContext.outputRepo,
+                onStopping: (stops) => {
+                  const waiting = liveStops(stops);
+                  if (!waiting || cliCtx.outputMode === "json") return;
+                  const count = cancellable.filter((r) =>
+                    waiting.live.some(({ pid }) => pid === r.pid)
+                  ).length;
+                  cliCtx.logger
+                    .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
+                },
+              }),
+          );
+          const cancelled = outcomes.filter((o) => o.status === "cancelled")
+            .map(({ run }) => methodRunFields(run));
+          const finished = outcomes.filter((o) => o.status !== "cancelled")
+            .map(({ run, status }) => ({ ...methodRunFields(run), status }));
+
           if (cliCtx.outputMode === "json") {
-            console.log(
-              JSON.stringify({ cancelled: [], finished: [], skipped }),
-            );
-          } else if (serveOwned.length === 0) {
-            cliCtx.logger.info("No running model method runs to cancel.");
+            console.log(JSON.stringify({
+              cancelled,
+              finished,
+              skipped,
+              reason: reason ?? null,
+            }));
           } else {
+            if (cancelled.length > 0) {
+              cliCtx.logger
+                .info`Cancelled ${cancelled.length} running model method run(s)`;
+              for (const c of cancelled) {
+                cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
+              }
+            }
+            if (finished.length > 0) {
+              cliCtx.logger
+                .warn`${finished.length} method run(s) finished before the cancel took effect`;
+              for (const f of finished) {
+                cliCtx.logger
+                  .warn`  ${f.type}/${f.method} (${f.id}): ${f.status}`;
+              }
+            }
             warnServeOwnedSkipped(cliCtx.logger, serveOwned);
           }
           return;
         }
 
-        // In a root unit of work with no push, so the run saves stage into
-        // it instead of reaching the hook through signalChange's fallback
-        // (swamp-club#3056). Nothing pushes, as before.
-        const outcomes = await runCommandInRootUnit(
+        // Cancel a specific model's running output
+        const definitionRepo = repoContext.definitionRepo;
+        const resolved = await definitionRepo.findByNameGlobal(modelIdOrName!);
+        if (!resolved) {
+          throw new UserError(
+            `Model '${modelIdOrName}' not found`,
+          );
+        }
+
+        const { definition, type } = resolved;
+
+        const runningRows = runTracker.findAllRunning();
+        const { runs: trackerRuns, unattributed } = await findMethodRunsOfModel(
+          runningRows,
+          { definitionId: definition.id, type },
+          {
+            outputs: repoContext.outputRepo,
+            inspectModelLock: async () =>
+              (await createModelLock(
+                datastoreConfig,
+                type.normalized,
+                definition.id,
+              )).inspect(),
+            logger: cliCtx.logger,
+          },
+        );
+
+        if (trackerRuns.length === 0) {
+          throw new UserError(
+            unattributed.length === 0
+              ? `No running method runs found for model '${definition.name}'`
+              : `No running method runs found for model '${definition.name}'. ` +
+                `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
+                cancelAllHint(syntax),
+          );
+        }
+
+        const { run: latest, skipped } = selectMethodRunToCancel(
+          trackerRuns,
+          runningRows,
+        );
+        if (latest === undefined) {
+          const [{ run, instanceId }] = skipped;
+          throw new UserError(
+            `Method run ${run.id} for model '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
+              `To cancel it: ${SERVE_CANCEL_GUIDANCE}.`,
+          );
+        }
+
+        const [{ status }] = await runCommandInRootUnit(
           repoContext,
           { push: undefined },
           () =>
-            cancelModelMethodRuns(cancellable, reason, {
+            cancelModelMethodRuns([latest], reason, {
               tracker: runTracker,
               outputRepo: repoContext.outputRepo,
               onStopping: (stops) => {
                 const waiting = liveStops(stops);
                 if (!waiting || cliCtx.outputMode === "json") return;
-                const count = cancellable.filter((r) =>
-                  waiting.live.some(({ pid }) => pid === r.pid)
-                ).length;
                 cliCtx.logger
-                  .info`Stopping ${count} method run(s); waiting up to ${waiting.seconds}s for them to stop (cancel again to stop immediately)`;
+                  .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
               },
             }),
         );
-        const cancelled = outcomes.filter((o) => o.status === "cancelled")
-          .map(({ run }) => methodRunFields(run));
-        const finished = outcomes.filter((o) => o.status !== "cancelled")
-          .map(({ run, status }) => ({ ...methodRunFields(run), status }));
 
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
-            cancelled,
-            finished,
-            skipped,
-            reason: reason ?? null,
+            id: latest.id,
+            modelName: definition.name,
+            type: type.normalized,
+            method: latest.methodName ?? "unknown",
+            status,
+            reason: status === "cancelled" ? reason ?? null : null,
+            skipped: skipped.map(skippedFields),
           }));
+        } else if (status === "cancelled") {
+          cliCtx.logger
+            .info`Cancelled method run ${
+            latest.methodName ?? "unknown"
+          } for model ${definition.name} (${latest.id})`;
         } else {
-          if (cancelled.length > 0) {
-            cliCtx.logger
-              .info`Cancelled ${cancelled.length} running model method run(s)`;
-            for (const c of cancelled) {
-              cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
-            }
-          }
-          if (finished.length > 0) {
-            cliCtx.logger
-              .warn`${finished.length} method run(s) finished before the cancel took effect`;
-            for (const f of finished) {
-              cliCtx.logger
-                .warn`  ${f.type}/${f.method} (${f.id}): ${f.status}`;
-            }
-          }
-          warnServeOwnedSkipped(cliCtx.logger, serveOwned);
+          cliCtx.logger
+            .warn`Method run ${
+            latest.methodName ?? "unknown"
+          } for model ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
         }
-        return;
+        if (cliCtx.outputMode !== "json") {
+          warnServeOwnedSkipped(cliCtx.logger, skipped);
+        }
+      } finally {
+        runTracker.close();
       }
+    });
+}
 
-      // Cancel a specific model's running output
-      const definitionRepo = repoContext.definitionRepo;
-      const resolved = await definitionRepo.findByNameGlobal(modelIdOrName!);
-      if (!resolved) {
-        throw new UserError(
-          `Model '${modelIdOrName}' not found`,
-        );
-      }
-
-      const { definition, type } = resolved;
-
-      const runningRows = runTracker.findAllRunning();
-      const { runs: trackerRuns, unattributed } = await findMethodRunsOfModel(
-        runningRows,
-        { definitionId: definition.id, type },
-        {
-          outputs: repoContext.outputRepo,
-          inspectModelLock: async () =>
-            (await createModelLock(
-              datastoreConfig,
-              type.normalized,
-              definition.id,
-            )).inspect(),
-          logger: cliCtx.logger,
-        },
-      );
-
-      if (trackerRuns.length === 0) {
-        throw new UserError(
-          unattributed.length === 0
-            ? `No running method runs found for model '${definition.name}'`
-            : `No running method runs found for model '${definition.name}'. ` +
-              `${unattributed.length} running ${type.normalized} method run(s) were started by an older swamp that did not record which model they belong to; ` +
-              `'swamp model cancel --all' stops them, along with every other running method run a swamp serve does not own.`,
-        );
-      }
-
-      const { run: latest, skipped } = selectMethodRunToCancel(
-        trackerRuns,
-        runningRows,
-      );
-      if (latest === undefined) {
-        const [{ run, instanceId }] = skipped;
-        throw new UserError(
-          `Method run ${run.id} for model '${definition.name}' belongs to swamp serve instance ${instanceId} and cannot be cancelled locally. ` +
-            `To cancel it: ${SERVE_CANCEL_GUIDANCE}.`,
-        );
-      }
-
-      const [{ status }] = await runCommandInRootUnit(
-        repoContext,
-        { push: undefined },
-        () =>
-          cancelModelMethodRuns([latest], reason, {
-            tracker: runTracker,
-            outputRepo: repoContext.outputRepo,
-            onStopping: (stops) => {
-              const waiting = liveStops(stops);
-              if (!waiting || cliCtx.outputMode === "json") return;
-              cliCtx.logger
-                .info`Stopping method run ${latest.id}; waiting up to ${waiting.seconds}s for it to stop (cancel again to stop immediately)`;
-            },
-          }),
-      );
-
-      if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify({
-          id: latest.id,
-          modelName: definition.name,
-          type: type.normalized,
-          method: latest.methodName ?? "unknown",
-          status,
-          reason: status === "cancelled" ? reason ?? null : null,
-          skipped: skipped.map(skippedFields),
-        }));
-      } else if (status === "cancelled") {
-        cliCtx.logger
-          .info`Cancelled method run ${
-          latest.methodName ?? "unknown"
-        } for model ${definition.name} (${latest.id})`;
-      } else {
-        cliCtx.logger
-          .warn`Method run ${
-          latest.methodName ?? "unknown"
-        } for model ${definition.name} (${latest.id}) finished as ${status} before the cancel took effect`;
-      }
-      if (cliCtx.outputMode !== "json") {
-        warnServeOwnedSkipped(cliCtx.logger, skipped);
-      }
-    } finally {
-      runTracker.close();
-    }
-  });
+export const modelCancelCommand = createModelCancelCommand(MODEL_CANCEL_SYNTAX);

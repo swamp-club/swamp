@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import {
   createModelDeleteDeps,
@@ -57,199 +58,212 @@ import { promptConfirmation } from "../prompt_helpers.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelDeleteCommand = withRemoteOptions(
-  new Command()
-    .name("delete")
-    .description("Delete a model and all related artifacts")
-    .example("Delete a model", "swamp model delete my-server")
-    .example("Force delete", "swamp model delete my-server --force")
-    .arguments("<model_id_or_name:model_name>")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option("-y, --yes", "Skip confirmation prompt")
-    .option(
-      "-f, --force",
-      "Skip confirmation and allow deletion when data artifacts exist",
-    ),
-).action(
-  // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  async function (options: AnyOptions, modelIdOrName: string) {
-    const cliCtx = createContext(options as GlobalOptions, ["model", "delete"]);
+/** The legacy spelling: `swamp model delete`. */
+export const MODEL_DELETE_SYNTAX: CommandSyntax = {
+  invocation: "swamp model delete",
+};
 
-    const server = resolveServeUrl(options.server as string | undefined);
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-      const force = !!options.force;
-      const response = await requestServerResponse<ModelDeleteResponse>(
-        { server, token },
-        {
-          type: "model.delete",
-          payload: { modelIdOrName, force },
-        },
-      );
-      const renderer = createModelDeleteRenderer(cliCtx.outputMode);
-      await consumeStream(
-        (async function* () {
-          yield {
-            kind: "completed" as const,
-            data: response.data as unknown as ModelDeleteData,
-          };
-        })(),
-        renderer.handlers(),
-      );
-      return;
-    }
+export function createModelDeleteCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("delete")
+      .description("Delete a model and all related artifacts")
+      .example("Delete a model", `${syntax.invocation} my-server`)
+      .example("Force delete", `${syntax.invocation} my-server --force`)
+      .arguments("<model_id_or_name:model_name>")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option("-y, --yes", "Skip confirmation prompt")
+      .option(
+        "-f, --force",
+        "Skip confirmation and allow deletion when data artifacts exist",
+      ),
+  ).action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
+    async function (options: AnyOptions, modelIdOrName: string) {
+      const cliCtx = createContext(options as GlobalOptions, [
+        "model",
+        "delete",
+      ]);
 
-    cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
-
-    const {
-      repoDir,
-      repoContext,
-      datastoreResolver,
-      datastoreConfig,
-      syncService,
-    } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const preResult = await findDefinitionByIdOrName(
-      repoContext.definitionRepo,
-      modelIdOrName,
-    );
-    if (!preResult) {
-      throw new UserError(`Model not found: ${modelIdOrName}`);
-    }
-
-    const marker = await new RepoMarkerRepository().read(
-      RepoPath.create(repoDir),
-    );
-    const lockResult = await acquireModelLocks(
-      datastoreConfig,
-      [
-        {
-          modelType: preResult.type.normalized,
-          modelId: preResult.definition.id,
-        },
-      ],
-      repoDir,
-      syncService,
-      repoContext.catalogStore,
-    );
-    if (lockResult.synced) repoContext.catalogStore.invalidate();
-
-    let deleted = false;
-    await runCommandInRootUnit(
-      repoContext,
-      {
-        push: lockResult.push,
-        release: lockResult.release,
-        // After a completed delete the push is what publishes it, so a
-        // failure there throws; before that it must not mask the original
-        // error.
-        onCleanupError: (cleanupError) =>
-          reportManagedConfigCleanupError(
-            cleanupError,
-            deleted,
-            marker,
-            (releaseError) => {
-              cliCtx.logger.warn(
-                "Failed to release locks during cleanup: {error}",
-                {
-                  error: releaseError instanceof Error
-                    ? releaseError.message
-                    : String(releaseError),
-                },
-              );
-            },
-          ),
-      },
-      async () => {
-        const ctx = libSwampContextForRepo(repoContext, {
-          logger: cliCtx.logger,
-        });
-        // The context's definition repo resolves auto-definitions in the
-        // datastore, where a configured datastore keeps them.
-        const deps = createModelDeleteDeps(
-          repoDir,
-          datastoreResolver,
-          undefined,
-          repoContext.markDirty,
-          repoContext.definitionRepo,
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        const token = await resolveServerTokenFromOptions(
+          server,
+          options,
         );
         const force = !!options.force;
-
-        // Phase 1: Preview — gather what will be affected (under lock)
-        let preview;
-        try {
-          preview = await modelDeletePreview(ctx, deps, {
-            modelIdOrName,
-            force,
-          });
-        } catch (error) {
-          if ("code" in (error as Record<string, unknown>)) {
-            throw new UserError((error as { message: string }).message);
-          }
-          throw error;
-        }
-
-        // Block if referenced by workflows
-        if (preview.referencingWorkflows.length > 0) {
-          throw new UserError(
-            `Model '${preview.name}' is referenced by workflow(s): ${
-              preview.referencingWorkflows.join(", ")
-            }. ` +
-              `Remove the model from these workflows before deleting.`,
-          );
-        }
-
-        // Block if data artifacts exist and no --force
-        if (preview.dataArtifactCount > 0 && !force) {
-          throw new UserError(
-            `Model '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
-              `Delete the data first, or use --force to delete all.`,
-          );
-        }
-
-        // Phase 2: Prompt (CLI concern)
-        if (cliCtx.outputMode === "log" && !force && !options.yes) {
-          let deleteDetails = "";
-          if (preview.outputCount > 0) {
-            deleteDetails += ` ${preview.outputCount} output(s),`;
-          }
-          if (preview.dataArtifactCount > 0) {
-            deleteDetails += ` ${preview.dataArtifactCount} data artifact(s),`;
-          }
-          if (deleteDetails) {
-            deleteDetails = ` This will also delete:${
-              deleteDetails.slice(0, -1)
-            }.`;
-          }
-
-          const confirmed = await promptConfirmation(
-            `Delete model '${preview.name}' (${preview.id})?${deleteDetails}`,
-          );
-          if (!confirmed) {
-            renderModelDeleteCancelled(cliCtx.outputMode);
-            return;
-          }
-        }
-
-        // Phase 3: Execute mutation
+        const response = await requestServerResponse<ModelDeleteResponse>(
+          { server, token },
+          {
+            type: "model.delete",
+            payload: { modelIdOrName, force },
+          },
+        );
         const renderer = createModelDeleteRenderer(cliCtx.outputMode);
         await consumeStream(
-          modelDelete(ctx, deps, { modelIdOrName, force }),
+          (async function* () {
+            yield {
+              kind: "completed" as const,
+              data: response.data as unknown as ModelDeleteData,
+            };
+          })(),
           renderer.handlers(),
         );
+        return;
+      }
 
-        cliCtx.logger.debug("Model delete command completed");
-        deleted = true;
-      },
-    );
-  },
-);
+      cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
+
+      const {
+        repoDir,
+        repoContext,
+        datastoreResolver,
+        datastoreConfig,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+
+      const preResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        modelIdOrName,
+      );
+      if (!preResult) {
+        throw new UserError(`Model not found: ${modelIdOrName}`);
+      }
+
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          {
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          },
+        ],
+        repoDir,
+        syncService,
+        repoContext.catalogStore,
+      );
+      if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+      let deleted = false;
+      await runCommandInRootUnit(
+        repoContext,
+        {
+          push: lockResult.push,
+          release: lockResult.release,
+          // After a completed delete the push is what publishes it, so a
+          // failure there throws; before that it must not mask the original
+          // error.
+          onCleanupError: (cleanupError) =>
+            reportManagedConfigCleanupError(
+              cleanupError,
+              deleted,
+              marker,
+              (releaseError) => {
+                cliCtx.logger.warn(
+                  "Failed to release locks during cleanup: {error}",
+                  {
+                    error: releaseError instanceof Error
+                      ? releaseError.message
+                      : String(releaseError),
+                  },
+                );
+              },
+            ),
+        },
+        async () => {
+          const ctx = libSwampContextForRepo(repoContext, {
+            logger: cliCtx.logger,
+          });
+          // The context's definition repo resolves auto-definitions in the
+          // datastore, where a configured datastore keeps them.
+          const deps = createModelDeleteDeps(
+            repoDir,
+            datastoreResolver,
+            undefined,
+            repoContext.markDirty,
+            repoContext.definitionRepo,
+          );
+          const force = !!options.force;
+
+          // Phase 1: Preview — gather what will be affected (under lock)
+          let preview;
+          try {
+            preview = await modelDeletePreview(ctx, deps, {
+              modelIdOrName,
+              force,
+            });
+          } catch (error) {
+            if ("code" in (error as Record<string, unknown>)) {
+              throw new UserError((error as { message: string }).message);
+            }
+            throw error;
+          }
+
+          // Block if referenced by workflows
+          if (preview.referencingWorkflows.length > 0) {
+            throw new UserError(
+              `Model '${preview.name}' is referenced by workflow(s): ${
+                preview.referencingWorkflows.join(", ")
+              }. ` +
+                `Remove the model from these workflows before deleting.`,
+            );
+          }
+
+          // Block if data artifacts exist and no --force
+          if (preview.dataArtifactCount > 0 && !force) {
+            throw new UserError(
+              `Model '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
+                `Delete the data first, or use --force to delete all.`,
+            );
+          }
+
+          // Phase 2: Prompt (CLI concern)
+          if (cliCtx.outputMode === "log" && !force && !options.yes) {
+            let deleteDetails = "";
+            if (preview.outputCount > 0) {
+              deleteDetails += ` ${preview.outputCount} output(s),`;
+            }
+            if (preview.dataArtifactCount > 0) {
+              deleteDetails +=
+                ` ${preview.dataArtifactCount} data artifact(s),`;
+            }
+            if (deleteDetails) {
+              deleteDetails = ` This will also delete:${
+                deleteDetails.slice(0, -1)
+              }.`;
+            }
+
+            const confirmed = await promptConfirmation(
+              `Delete model '${preview.name}' (${preview.id})?${deleteDetails}`,
+            );
+            if (!confirmed) {
+              renderModelDeleteCancelled(cliCtx.outputMode);
+              return;
+            }
+          }
+
+          // Phase 3: Execute mutation
+          const renderer = createModelDeleteRenderer(cliCtx.outputMode);
+          await consumeStream(
+            modelDelete(ctx, deps, { modelIdOrName, force }),
+            renderer.handlers(),
+          );
+
+          cliCtx.logger.debug("Model delete command completed");
+          deleted = true;
+        },
+      );
+    },
+  );
+}
+
+export const modelDeleteCommand = createModelDeleteCommand(MODEL_DELETE_SYNTAX);

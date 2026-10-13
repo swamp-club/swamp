@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -168,16 +169,27 @@ export async function modelOutputSearchAction(
   ctx.logger.debug("Model output search command completed");
 }
 
-export const modelOutputSearchCommand = withRemoteOptions(
-  new Command()
-    .name("search")
-    .alias("list")
-    .description("Search for model outputs")
-    .example("Browse all outputs", "swamp model output search")
-    .example("Search by keyword", "swamp model output search deploy")
-    .arguments("[query:string]")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    ),
-).action(modelOutputSearchAction);
+/** The legacy spelling: `swamp model output search`. */
+export const MODEL_OUTPUT_SEARCH_SYNTAX: CommandSyntax = {
+  invocation: "swamp model output search",
+};
+
+export function createModelOutputSearchCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("search")
+      .alias("list")
+      .description("Search for model outputs")
+      .example("Browse all outputs", syntax.invocation)
+      .example("Search by keyword", `${syntax.invocation} deploy`)
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      ),
+  ).action(modelOutputSearchAction);
+}
+
+export const modelOutputSearchCommand = createModelOutputSearchCommand(
+  MODEL_OUTPUT_SEARCH_SYNTAX,
+);

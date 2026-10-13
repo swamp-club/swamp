@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import type { CommandSyntax } from "./command_syntax.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -43,85 +44,95 @@ import type { ModelMethodHistoryLogsResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelMethodHistoryLogsCommand = withRemoteOptions(
-  new Command()
-    .name("logs")
-    .description("Show logs for a model method run")
-    .example("Show run logs", "swamp model method history logs abc123")
-    .example(
-      "Tail last 50 lines",
-      "swamp model method history logs abc123 --tail 50",
-    )
-    .arguments("<output_id_or_model_name:string>")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option("--tail <lines:number>", "Show only the last N lines"),
-).action(async function (options: AnyOptions, outputIdOrModelName: string) {
-  const cliCtx = createContext(options as GlobalOptions, [
-    "model",
-    "method",
-    "history",
-    "logs",
-  ]);
+/** The legacy spelling: `swamp model method history logs`. */
+export const MODEL_METHOD_HISTORY_LOGS_SYNTAX: CommandSyntax = {
+  invocation: "swamp model method history logs",
+};
 
-  const server = resolveServeUrl(options.server as string | undefined);
-  if (server) {
-    const token = await resolveServerTokenFromOptions(
-      server,
-      options,
-    );
-    const response = await requestServerResponse<
-      ModelMethodHistoryLogsResponse
-    >(
-      { server, token },
-      {
-        type: "model.method.history.logs",
-        payload: {
-          outputIdOrModelName,
-          tail: options.tail as number | undefined,
+export function createModelMethodHistoryLogsCommand(syntax: CommandSyntax) {
+  return withRemoteOptions(
+    new Command()
+      .name("logs")
+      .description("Show logs for a model method run")
+      .example("Show run logs", `${syntax.invocation} abc123`)
+      .example(
+        "Tail last 50 lines",
+        `${syntax.invocation} abc123 --tail 50`,
+      )
+      .arguments("<output_id_or_model_name:string>")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option("--tail <lines:number>", "Show only the last N lines"),
+  ).action(async function (options: AnyOptions, outputIdOrModelName: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "model",
+      "method",
+      "history",
+      "logs",
+    ]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerTokenFromOptions(
+        server,
+        options,
+      );
+      const response = await requestServerResponse<
+        ModelMethodHistoryLogsResponse
+      >(
+        { server, token },
+        {
+          type: "model.method.history.logs",
+          payload: {
+            outputIdOrModelName,
+            tail: options.tail as number | undefined,
+          },
         },
+      );
+      const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response
+              .data as unknown as MethodHistoryLogsCompletedData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
+
+    cliCtx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
+
+    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+      {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
       },
     );
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = await createModelMethodHistoryLogsDeps(
+      repoDir,
+      datastoreResolver,
+    );
+
     const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);
     await consumeStream(
-      (async function* () {
-        yield {
-          kind: "completed" as const,
-          data: response
-            .data as unknown as MethodHistoryLogsCompletedData,
-        };
-      })(),
+      modelMethodHistoryLogs(ctx, deps, {
+        outputIdOrModelName,
+        tail: options.tail as number | undefined,
+        repoDir,
+      }),
       renderer.handlers(),
     );
-    return;
-  }
 
-  cliCtx.logger.debug`Getting logs for method run: ${outputIdOrModelName}`;
+    cliCtx.logger.debug("Model method history logs command completed");
+  });
+}
 
-  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-    {
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    },
-  );
-
-  const ctx = createLibSwampContext({ logger: cliCtx.logger });
-  const deps = await createModelMethodHistoryLogsDeps(
-    repoDir,
-    datastoreResolver,
-  );
-
-  const renderer = createModelMethodHistoryLogsRenderer(cliCtx.outputMode);
-  await consumeStream(
-    modelMethodHistoryLogs(ctx, deps, {
-      outputIdOrModelName,
-      tail: options.tail as number | undefined,
-      repoDir,
-    }),
-    renderer.handlers(),
-  );
-
-  cliCtx.logger.debug("Model method history logs command completed");
-});
+export const modelMethodHistoryLogsCommand =
+  createModelMethodHistoryLogsCommand(MODEL_METHOD_HISTORY_LOGS_SYNTAX);
