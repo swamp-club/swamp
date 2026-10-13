@@ -97,7 +97,7 @@ await initializeLogging({});
  * `SWAMP_UPDATE_GOLDEN=1 deno run test src/cli/commands/model_cli_surface_test.ts`.
  */
 const GOLDEN_PATH = fromFileUrl(
-  new URL("./testdata/model_cli_surface.json", import.meta.url),
+  new URL("./test_helpers/model_cli_surface.json", import.meta.url),
 );
 
 interface ModelCliSurface {
