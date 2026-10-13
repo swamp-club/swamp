@@ -444,6 +444,79 @@ Deno.test("WorkerGateway: onRegistered fires once, when the dispatch is already 
   assertEquals(listedAtRegistration, [["d-1"]]);
 });
 
+Deno.test("WorkerGateway: dispatch releases its slot when recording the busy status fails (swamp-club#3294)", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const received: string[] = [];
+  workerChannel.register(WorkerMethod.dispatch, (params) => {
+    received.push((params as DispatchParams).dispatchId);
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+
+  h.failOn.add("set_status");
+  await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-1")),
+    Error,
+    "stubbed failure: set_status",
+  );
+  // The dispatch never reached the worker, and holds no slot.
+  assertEquals(received, []);
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+
+  h.failOn.clear();
+  const result = await h.gateway.dispatch("ci-runner-3", dispatchParams("d-2"));
+  assertEquals(result.status, "success");
+  assertEquals(received, ["d-2"]);
+});
+
+Deno.test("WorkerGateway: a failed busy status releases only its own slot (swamp-club#3294)", async () => {
+  let busyWrites = 0;
+  const h = createHarness({
+    runModelMethod: (input) => {
+      if (
+        input.methodName === "set_status" && input.inputs.status === "busy" &&
+        ++busyWrites === 2
+      ) {
+        return Promise.reject(new Error("datastore offline"));
+      }
+      return Promise.resolve();
+    },
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, {
+    ...enrollParams,
+    resourceLimits: { capacity: 2 },
+  });
+
+  const gate = Promise.withResolvers<void>();
+  workerChannel.register(WorkerMethod.dispatch, async () => {
+    await gate.promise;
+    return { status: "success", outputs: [], logs: [], durationMs: 1 };
+  });
+
+  const first = h.gateway.dispatch("ci-runner-3", dispatchParams("d-1"));
+  await assertRejects(
+    () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
+    Error,
+    "datastore offline",
+  );
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, ["d-1"]);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "busy");
+
+  gate.resolve();
+  await first;
+  assertEquals(h.gateway.worker("ci-runner-3")?.activeDispatchIds, []);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+});
+
 Deno.test("WorkerGateway: dispatch to an unknown worker rejects", async () => {
   const h = createHarness();
   await assertRejects(

@@ -521,28 +521,31 @@ export class WorkerGateway {
     const dispatchStart = performance.now();
     entry.activeDispatchIds.push(params.dispatchId);
     entry.status = "busy";
-    // Kept in the same synchronous turn as the push: the dispatcher drops
-    // its reservation here, and an await in between would count the
-    // dispatch twice.
-    options?.onRegistered?.();
-    await this.#recordTransition(() =>
-      this.#runModelMethod({
-        typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: workerDefinitionName(name),
-        methodName: "set_status",
-        inputs: {
-          status: "busy",
-          activeDispatchIds: [...entry.activeDispatchIds],
-        },
-      })
-    );
-
-    const dispatchCredential = this.#sessions.issueForDispatch(
-      name,
-      params.dispatchId,
-    );
-
+    // The slot is taken from here on, so everything below runs under the
+    // finally that gives it back: a dispatch that fails before it reaches
+    // the worker must not keep the slot (swamp-club#3294).
     try {
+      // Kept in the same synchronous turn as the push: the dispatcher drops
+      // its reservation here, and an await in between would count the
+      // dispatch twice.
+      options?.onRegistered?.();
+      await this.#recordTransition(() =>
+        this.#runModelMethod({
+          typeArg: WORKER_MODEL_TYPE.normalized,
+          definitionName: workerDefinitionName(name),
+          methodName: "set_status",
+          inputs: {
+            status: "busy",
+            activeDispatchIds: [...entry.activeDispatchIds],
+          },
+        })
+      );
+
+      const dispatchCredential = this.#sessions.issueForDispatch(
+        name,
+        params.dispatchId,
+      );
+
       // The worker may have been removed (token revoked or expired) or
       // dropped while the busy status was recorded.
       const channel = entry.channel;
