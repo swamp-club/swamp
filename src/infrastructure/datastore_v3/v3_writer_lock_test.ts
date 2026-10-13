@@ -327,7 +327,7 @@ Deno.test("tryAcquireV3WriterLock: takes the lease without waiting, or resolves 
 Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquire waits for the other writer and takes a higher fence", async () => {
   await withTempDir(async (dir) => {
     // serve's lifetime hold.
-    const lifetime = await acquireV3WriterLock(dir);
+    const lifetime = await acquireV3WriterLock(dir, { retakeLost: true });
     try {
       assertEquals(v3WriterFence(dir), 1);
       const other = await plantV3WriterLease(dir, { pid: Deno.pid });
@@ -358,7 +358,7 @@ Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquir
 
 Deno.test("acquireV3WriterLock: a retake that fails after every other caller released ends the hold", async () => {
   await withTempDir(async (dir) => {
-    const first = await acquireV3WriterLock(dir);
+    const first = await acquireV3WriterLock(dir, { retakeLost: true });
     const other = await plantV3WriterLease(dir, { pid: Deno.pid });
     await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
     try {
@@ -384,7 +384,7 @@ Deno.test("acquireV3WriterLock: a retake that fails after every other caller rel
 
 Deno.test("acquireV3WriterLock: a caller that waits is not refused by an attempt it joined that did not wait", async () => {
   await withTempDir(async (dir) => {
-    const lifetime = await acquireV3WriterLock(dir);
+    const lifetime = await acquireV3WriterLock(dir, { retakeLost: true });
     const other = await plantV3WriterLease(dir, { pid: Deno.pid });
     try {
       await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
@@ -400,6 +400,27 @@ Deno.test("acquireV3WriterLock: a caller that waits is not refused by an attempt
     } finally {
       await other.release();
       await lifetime();
+    }
+  });
+});
+
+Deno.test("acquireV3WriterLock: a one-shot command's lost hold is not taken again, so it fails as a whole", async () => {
+  await withTempDir(async (dir) => {
+    // A CLI write command's hold.
+    const command = await acquireV3WriterLock(dir);
+    const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+    try {
+      await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+      await other.release();
+      // Free again, yet the command does not take it back: every later
+      // commit it tries is refused, as its error says.
+      const joined = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+      assertThrows(() => assertV3WriterCurrent(dir), WriterFencedError);
+      await joined();
+      assertEquals(v3WriterFence(dir), 1);
+    } finally {
+      await other.release();
+      await command();
     }
   });
 });

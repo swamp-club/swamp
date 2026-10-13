@@ -115,15 +115,18 @@ interface Held {
   renewing?: Promise<void>;
   /** A fresh lease being taken for a lost hold, which callers share. */
   retaking?: Promise<void>;
-  /**
-   * How to take a fresh lease once this hold is lost, so a long-lived
-   * process (serve) can write again after another writer has finished.
-   * Undefined for a hold that just ends when it is lost.
-   */
-  retake?: {
+  /** How this hold takes the lease. */
+  take?: {
     readonly ttlMs: number;
     readonly fenceStore?: V3WriterFenceStore;
   };
+  /**
+   * Whether a fresh lease is taken once this hold is lost, so a long-lived
+   * process (serve) writes again after another writer has finished. A
+   * one-shot command's hold just ends: its later commits are refused too,
+   * so it fails as a whole rather than landing part of itself.
+   */
+  retakeLost: boolean;
 }
 
 const held = new Map<string, Held>();
@@ -139,6 +142,11 @@ export interface AcquireV3WriterLockOptions {
    * recorded there, which only tests of the lease itself do.
    */
   readonly fenceStore?: V3WriterFenceStore;
+  /**
+   * Take a fresh lease once this hold is lost (serve's lifetime hold). The
+   * process's first acquire decides; later ones join its hold.
+   */
+  readonly retakeLost?: boolean;
 }
 
 /**
@@ -162,7 +170,8 @@ export async function acquireV3WriterLock(
   if (entry === undefined) {
     const created: Held = {
       refs: 0,
-      retake: {
+      retakeLost: options.retakeLost === true,
+      take: {
         ttlMs: options.ttlMs ?? DEFAULT_LOCK_TTL_MS,
         ...(options.fenceStore !== undefined
           ? { fenceStore: options.fenceStore }
@@ -186,7 +195,7 @@ export async function acquireV3WriterLock(
     // waiting for the other writer like any writer does. Callers share
     // the attempt; one the renewal timer made without waiting may leave
     // the hold lost, so look again after it.
-    while (entry.hold?.lost !== undefined && entry.retake !== undefined) {
+    while (entry.hold?.lost !== undefined && entry.retakeLost) {
       const joined = entry.retaking !== undefined;
       try {
         await (entry.retaking ??= retaking(entry, datastorePath, maxWaitMs));
@@ -243,7 +252,7 @@ async function retakeLease(
   datastorePath: string,
   maxWaitMs: number,
 ): Promise<void> {
-  const retake = entry.retake!;
+  const retake = entry.take!;
   const lost = entry.hold;
   const hold = await takeLease(datastorePath, {
     maxWaitMs,
@@ -296,7 +305,7 @@ export async function tryAcquireV3WriterLock(
   // Renewed like any hold: a recovery that outlasts the TTL must not let
   // another writer take over while it still removes files. It is not taken
   // again once lost: the recovery just stops.
-  const entry: Held = { hold, refs: 1 };
+  const entry: Held = { hold, refs: 1, retakeLost: false };
   startRenewal(entry, datastorePath, ttlMs);
   let released = false;
   return async () => {
@@ -422,7 +431,7 @@ async function takeLease(
 function startRenewal(
   entry: Held,
   datastorePath: string,
-  ttlMs = entry.retake?.ttlMs ?? DEFAULT_LOCK_TTL_MS,
+  ttlMs = entry.take?.ttlMs ?? DEFAULT_LOCK_TTL_MS,
 ): void {
   let reported: WriterLeaseHold | undefined;
   entry.renewal = setInterval(() => {
@@ -439,7 +448,7 @@ function startRenewal(
       }
       // Lost: try once, without waiting, to take a fresh lease, so a
       // long-lived process writes again once the other writer is done.
-      if (entry.retake !== undefined && entry.retaking === undefined) {
+      if (entry.retakeLost && entry.retaking === undefined) {
         try {
           await (entry.retaking = retaking(entry, datastorePath, 0));
         } catch (error) {

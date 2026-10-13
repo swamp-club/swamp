@@ -136,6 +136,10 @@ export function v3DatastoreFor(
 export async function holdV3Writer(
   config: FilesystemDatastoreConfig,
   repoDir: string,
+  options: {
+    /** Take the lease again once it is lost: serve's lifetime hold. */
+    readonly retakeLost?: boolean;
+  } = {},
 ): Promise<void> {
   // Before the handle opens: opening migrates commits.db, which a swamp from
   // before the lease, still writing, could not open again.
@@ -145,6 +149,7 @@ export async function holdV3Writer(
     // Records the lease's fence in commits.db, so a writer that loses the
     // lease later can commit nothing (swamp-club#3359).
     fenceStore: v3DatastoreFor(repoDir, config).commitStore,
+    ...(options.retakeLost === true ? { retakeLost: true } : {}),
   });
   const sidecar = writerCheckoutPath(config.path);
   const checkout = handleKey(repoDir, config);

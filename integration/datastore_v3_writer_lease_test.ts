@@ -348,6 +348,7 @@ Deno.test("v3 writer lease: a long-lived process that lost the lease writes agai
   const lifetime = await acquireV3WriterLock(datastorePath, {
     ttlMs: 60,
     fenceStore: handle.commitStore,
+    retakeLost: true,
   });
   try {
     await commitThrough(handle);

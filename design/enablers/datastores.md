@@ -4117,10 +4117,12 @@ another writer for longer, stop serve.
 Once it loses the lease, the roots in flight on the old fence fail with
 `datastore_v3_writer_fenced`, and its reads keep working. Each renewal then
 tries once, without waiting, to take a fresh lease: when the other writer is
-done, serve takes the next fence and its later writes land under it. A
-process's next `acquireV3WriterLock` does the same, waiting up to the lock
-timeout. Both run where no other lock is held, so taking the lease again never
-waits behind a model lock.
+done, serve takes the next fence and its later writes land under it. Serve's
+next `acquireV3WriterLock` does the same, waiting up to the lock timeout. Both
+run where no other lock is held, so taking the lease again never waits behind
+a model lock. Only serve's lifetime hold does this (`retakeLostV3Lease`): a
+one-shot CLI command that loses the lease keeps refusing its later commits, so
+it fails as a whole, as its error says, rather than landing part of itself.
 
 **Refusals change nothing.** A command v3 refuses must leave the datastore
 byte-identical. `datastore sync` and `datastore migrate-index` open a v3

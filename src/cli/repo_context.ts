@@ -431,6 +431,13 @@ export interface RequireRepoOptions {
   repoDir: string;
   outputMode: OutputMode;
   /**
+   * On a v3 datastore, take the writer lease again once another writer has
+   * taken it over and finished, rather than refusing every later commit.
+   * Serve's lifetime hold sets it; a one-shot command fails as a whole
+   * instead (swamp-club#3359).
+   */
+  retakeLostV3Lease?: boolean;
+  /**
    * Skip the coordinator's implicit pull-at-startup and push-at-flush.
    * The lock is still acquired (so concurrent writers are blocked), but
    * no sync service is registered with the coordinator. Used by the
@@ -1527,7 +1534,9 @@ export async function requireInitializedRepoUnlocked(
   // A v3 datastore takes one writing process at a time; join this process's
   // hold before any model lock (swamp-club#3279).
   if (engine === "v3" && !isCustomDatastoreConfig(datastoreConfig)) {
-    await holdV3Writer(datastoreConfig, repoDir);
+    await holdV3Writer(datastoreConfig, repoDir, {
+      ...(options.retakeLostV3Lease === true ? { retakeLost: true } : {}),
+    });
   }
 
   const repoPath = RepoPath.create(repoDir);
