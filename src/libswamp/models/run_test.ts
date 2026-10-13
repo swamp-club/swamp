@@ -1115,6 +1115,7 @@ Deno.test("modelMethodRun: publishes ModelUpdated when method writes data and ev
   assertEquals(published.length, 1);
   assertEquals(published[0].modelType, "test/model");
   assertEquals(published[0].modelName, "test-model");
+  assertEquals(published[0].dataVersions, [{ name: "grant-main", version: 1 }]);
 });
 
 Deno.test("modelMethodRun: does not publish ModelUpdated when method writes no data", async () => {

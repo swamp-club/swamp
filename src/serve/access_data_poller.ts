@@ -28,6 +28,14 @@ import {
   type SyncGate,
 } from "./sync_gate.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
+import type { EventBus } from "../domain/events/event_bus.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../domain/datastore/datastore_config.ts";
+import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
+import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
+import { FilesystemAccessDataChangeSource } from "./filesystem_access_data_change_source.ts";
 
 const logger = getLogger(["swamp", "serve", "access-data-poller"]);
 
@@ -40,17 +48,31 @@ export const ACCESS_DATA_SUBDIRS: readonly string[] = [
   "data/@swamp/group",
 ];
 
-export interface AccessDataPollerOptions {
-  syncService: DatastoreSyncService;
-  syncGate?: SyncGate;
+interface AccessDataPollerCommonOptions {
   policySnapshotLoader: PolicySnapshotLoader;
   catalogInvalidate: () => void;
   pollIntervalMs?: number;
-  namespace?: string;
 }
 
+/**
+ * Where the poller learns of peers' grant and group changes: a pull from the
+ * sync service, or, on a v2 filesystem datastore with nothing to pull, a
+ * local change source over the shared directories (swamp-club#3371).
+ */
+export type AccessDataPollerOptions =
+  & AccessDataPollerCommonOptions
+  & (
+    | {
+      syncService: DatastoreSyncService;
+      syncGate?: SyncGate;
+      namespace?: string;
+    }
+    | { changeSource: FilesystemAccessDataChangeSource }
+  );
+
 export class AccessDataPoller {
-  readonly #syncService: DatastoreSyncService;
+  readonly #syncService?: DatastoreSyncService;
+  readonly #changeSource?: FilesystemAccessDataChangeSource;
   readonly #syncGate?: SyncGate;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
   readonly #catalogInvalidate: () => void;
@@ -65,13 +87,17 @@ export class AccessDataPoller {
   #needsReload = false;
 
   constructor(options: AccessDataPollerOptions) {
-    this.#syncService = options.syncService;
-    this.#syncGate = options.syncGate;
+    if ("changeSource" in options) {
+      this.#changeSource = options.changeSource;
+    } else {
+      this.#syncService = options.syncService;
+      this.#syncGate = options.syncGate;
+      this.#namespace = options.namespace;
+    }
     this.#policySnapshotLoader = options.policySnapshotLoader;
     this.#catalogInvalidate = options.catalogInvalidate;
     this.#pollIntervalMs = options.pollIntervalMs ??
       DEFAULT_ACCESS_DATA_POLL_INTERVAL_MS;
-    this.#namespace = options.namespace;
     this.#gateTiming = pollerGateTiming(this.#pollIntervalMs);
   }
 
@@ -80,12 +106,18 @@ export class AccessDataPoller {
     if (this.#stopController.signal.aborted) {
       this.#stopController = new AbortController();
     }
+    this.#changeSource?.listen();
     this.#timer = setInterval(() => {
       this.#poll();
     }, this.#pollIntervalMs);
     Deno.unrefTimer(this.#timer);
     const intervalSec = this.#pollIntervalMs / 1000;
-    logger.info`Access data poller started (interval: ${intervalSec}s)`;
+    if (this.#changeSource) {
+      logger
+        .info`Access data poller started (filesystem datastore, interval: ${intervalSec}s)`;
+    } else {
+      logger.info`Access data poller started (interval: ${intervalSec}s)`;
+    }
   }
 
   async stop(): Promise<void> {
@@ -97,6 +129,7 @@ export class AccessDataPoller {
     // poller retrying for a busy gate. A pull already running completes.
     this.#stopController.abort();
     await this.#pendingPull;
+    this.#changeSource?.dispose();
   }
 
   #poll(): void {
@@ -110,25 +143,15 @@ export class AccessDataPoller {
   async #pullAndReloadPolicy(): Promise<void> {
     this.#pulling = true;
     try {
-      const result = await gatedPull(
-        this.#syncGate,
-        "access data poller",
-        (signal) =>
-          this.#syncService.pullChanged({
-            signal,
-            subdirs: [...ACCESS_DATA_SUBDIRS],
-            namespace: this.#namespace,
-          }),
-        {
-          state: this.#gateState,
-          signal: this.#stopController.signal,
-          timing: this.#gateTiming,
-        },
-      );
-      const count = typeof result === "number" ? result : 0;
+      const count = await this.#changedCount();
       if (count > 0) {
-        logger
-          .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
+        if (this.#changeSource) {
+          logger
+            .info`Access data poller: ${count} record(s) changed by another process, reloading policy snapshot`;
+        } else {
+          logger
+            .info`Access data poller: ${count} file(s) updated, reloading policy snapshot`;
+        }
         this.#catalogInvalidate();
         this.#needsReload = true;
       }
@@ -145,4 +168,85 @@ export class AccessDataPoller {
       this.#pulling = false;
     }
   }
+
+  async #changedCount(): Promise<number> {
+    if (this.#changeSource) return await this.#changeSource.detect();
+    const syncService = this.#syncService!;
+    const result = await gatedPull(
+      this.#syncGate,
+      "access data poller",
+      (signal) =>
+        syncService.pullChanged({
+          signal,
+          subdirs: [...ACCESS_DATA_SUBDIRS],
+          namespace: this.#namespace,
+        }),
+      {
+        state: this.#gateState,
+        signal: this.#stopController.signal,
+        timing: this.#gateTiming,
+      },
+    );
+    return typeof result === "number" ? result : 0;
+  }
+}
+
+export interface CreateAccessDataPollerOptions
+  extends AccessDataPollerCommonOptions {
+  syncService?: DatastoreSyncService;
+  syncGate?: SyncGate;
+  namespace?: string;
+  datastoreConfig: DatastoreConfig;
+  /** The engine serve resolved for the datastore; v3 gets no poller. */
+  datastoreEngine: DatastoreEngine;
+  datastoreResolver: DatastorePathResolver;
+  eventBus: EventBus;
+}
+
+/**
+ * The access data poller serve runs, or null when nothing can change access
+ * data behind its back. A sync service pulls peers' changes. A v2
+ * filesystem datastore has none, but its peers share the files, so a local
+ * change source watches them; it is primed here, so call this before the
+ * boot policy load. A v3 datastore allows one writer at a time and gets
+ * none.
+ */
+export async function createAccessDataPoller(
+  options: CreateAccessDataPollerOptions,
+): Promise<AccessDataPoller | null> {
+  const common: AccessDataPollerCommonOptions = {
+    policySnapshotLoader: options.policySnapshotLoader,
+    catalogInvalidate: options.catalogInvalidate,
+    pollIntervalMs: options.pollIntervalMs,
+  };
+  if (options.syncService) {
+    return new AccessDataPoller({
+      ...common,
+      syncService: options.syncService,
+      syncGate: options.syncGate,
+      namespace: options.namespace,
+    });
+  }
+  if (
+    isCustomDatastoreConfig(options.datastoreConfig) ||
+    options.datastoreEngine === "v3"
+  ) {
+    return null;
+  }
+  const changeSource = new FilesystemAccessDataChangeSource({
+    dirs: ACCESS_DATA_SUBDIRS.map((subdir) => {
+      const [root, ...rest] = subdir.split("/");
+      return options.datastoreResolver.resolvePath(root, ...rest);
+    }),
+    eventBus: options.eventBus,
+  });
+  try {
+    await changeSource.prime();
+  } catch (error) {
+    logger
+      .warn`Access data poller could not read the access data directories, reloading on its first cycle: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  return new AccessDataPoller({ ...common, changeSource });
 }
