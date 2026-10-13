@@ -210,7 +210,10 @@ export function createLockProgressWriter(
   };
 }
 import { withSpan } from "../infrastructure/tracing/mod.ts";
-import { ensureSupportedDatastoreFormat } from "../infrastructure/persistence/datastore_format_guard.ts";
+import {
+  datastoreEngineOf,
+  ensureSupportedDatastoreFormat,
+} from "../infrastructure/persistence/datastore_format_guard.ts";
 import type { DatastoreEngine } from "../domain/datastore/datastore_format.ts";
 import {
   holdV3Writer,
@@ -817,6 +820,27 @@ export async function resolveDatastoreForRepo(
   );
 
   return { repoDir: repoPath.value, datastoreConfig, marker, engine };
+}
+
+/**
+ * The engine of the repo's datastore, decided without checking its format
+ * and without reading anything remote: v3 only for a filesystem datastore
+ * whose marker on disk says so. For a command that must choose how to open
+ * the repo before it opens it (swamp-club#3359). Anything it cannot read
+ * answers v2, so the open that follows reports it as it always has.
+ */
+export async function peekRepoDatastoreEngine(
+  repoDir: string,
+): Promise<DatastoreEngine> {
+  try {
+    const repoPath = RepoPath.create(repoDir);
+    const marker = await new RepoMarkerRepository().read(repoPath);
+    return datastoreEngineOf(
+      await resolveDatastoreConfig(marker, undefined, repoPath.value),
+    );
+  } catch {
+    return "v2";
+  }
 }
 
 /**

@@ -4111,9 +4111,18 @@ stops committing, and the next writer's fence refuses anything it still
 tries.
 
 **Serve.** Serve holds the lease from start-up to shutdown and renews it.
-Once it loses the lease, its writes fail with `datastore_v3_writer_fenced`
-and its reads keep working, until it restarts. It never takes the lease back
-on its own: that is the Phase 5 leader's job.
+Once it loses the lease, the roots in flight on the old fence fail with
+`datastore_v3_writer_fenced`, and its reads keep working. Each renewal then
+tries once, without waiting, to take a fresh lease: when the other writer is
+done, serve takes the next fence and its later writes land under it. A
+process's next `acquireV3WriterLock` does the same, waiting up to the lock
+timeout. Both run where no other lock is held, so taking the lease again never
+waits behind a model lock.
+
+**Refusals change nothing.** A command v3 refuses must leave the datastore
+byte-identical. `datastore sync` and `datastore migrate-index` open a v3
+datastore read-only before libswamp refuses them, so they take no lease;
+`integration/datastore_v3_writer_lease_test.ts` checks every refusal.
 
 **Upgrading.** A Phase 3 `commits.db` migrates to schema 4 in place, the
 first time any swamp with the lease opens it. Its unfenced history stays; the

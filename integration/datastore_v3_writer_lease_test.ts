@@ -25,8 +25,16 @@
  */
 
 import "../src/domain/models/models.ts";
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { join } from "@std/path";
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
+import { join, relative, SEPARATOR } from "@std/path";
+import { walk } from "@std/fs";
+import { equal } from "@std/assert/equal";
 import { DatabaseSync } from "node:sqlite";
 import { waitFor } from "@swamp-club/swamp-testing";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
@@ -37,7 +45,10 @@ import {
 } from "../src/domain/datastore_v3/repository_changes.ts";
 import type { CommitLogUnitOfWork } from "../src/domain/datastore_v3/commit_log_unit_of_work.ts";
 import { SqliteCommitStore } from "../src/infrastructure/datastore_v3/sqlite_commit_store.ts";
-import { openV3Datastore } from "../src/infrastructure/datastore_v3/v3_datastore.ts";
+import {
+  initializeV3Datastore,
+  openV3Datastore,
+} from "../src/infrastructure/datastore_v3/v3_datastore.ts";
 import { closeV3Datastores } from "../src/infrastructure/datastore_v3/v3_repo_context.ts";
 import {
   acquireV3WriterLock,
@@ -52,6 +63,8 @@ import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { saveData, saveModel } from "./serve_request_harness.ts";
 import type { RowRepos } from "./usecase_sync_fixtures.ts";
 import { withV3RowRepos } from "./usecase_v3_fixtures.ts";
+import { runCliRejecting, UNSET_ENV } from "./usecase_sync_fixtures.ts";
+import { withMockedEnv } from "../src/infrastructure/persistence/path_test_helpers.ts";
 
 await initializeLogging({});
 
@@ -247,3 +260,155 @@ Deno.test("v3 writer lease: the renewal timer keeps the lease, and notices anoth
     }
   }
 });
+
+/**
+ * Every file and directory under `root`, with each file's digest, size and
+ * modification time, as swamp-uat's storage snapshot takes them: a rewrite
+ * with the same bytes still shows.
+ */
+async function snapshotTree(root: string): Promise<Map<string, string>> {
+  const entries = new Map<string, string>();
+  for await (const entry of walk(root)) {
+    const key = relative(root, entry.path).split(SEPARATOR).join("/");
+    if (entry.isDirectory) {
+      entries.set(`${key}/`, "dir");
+      continue;
+    }
+    const stat = await Deno.lstat(entry.path);
+    const digest = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest("SHA-256", await Deno.readFile(entry.path)),
+      ),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    entries.set(key, `${digest} ${stat.size} ${stat.mtime?.getTime()}`);
+  }
+  return entries;
+}
+
+Deno.test("v3 writer lease: every command v3 refuses leaves the datastore byte-identical", async () => {
+  await withV3RowRepos({}, async (repos, datastorePath) => {
+    await saveThroughA(repos, "seeded");
+    // As a fresh process meets it: no writer in this one.
+    await closeV3Datastores();
+    const elsewhere = join(repos.repoA, "..", "elsewhere");
+    await Deno.mkdir(elsewhere);
+    await withMockedEnv(UNSET_ENV, async () => {
+      const json = ["--repo-dir", repos.repoB, "--json"];
+      const refused = [
+        ["datastore", "namespace", "set", "team"],
+        ["datastore", "namespace", "unset"],
+        ["datastore", "namespace", "migrate", "--confirm"],
+        ["datastore", "sync"],
+        ["datastore", "sync", "--push"],
+        ["datastore", "sync", "--pull"],
+        ["doctor", "datastores", "--repair"],
+        ["doctor", "datastores", "--repair", "--yes"],
+        ["datastore", "catalog", "pull", "--namespaces", "other"],
+        ["datastore", "migrate-index"],
+        ["datastore", "setup", "filesystem", "--path", elsewhere],
+        [
+          "datastore",
+          "setup",
+          "filesystem",
+          "--path",
+          elsewhere,
+          "--format",
+          "3",
+        ],
+      ];
+      const changed: string[] = [];
+      for (const args of refused) {
+        const before = await snapshotTree(datastorePath);
+        const error = await runCliRejecting({ args: [...args, ...json] });
+        // What the process's teardown does after a failed command.
+        await closeV3Datastores();
+        assertInstanceOf(error, Error, args.join(" "));
+        if (!equal(await snapshotTree(datastorePath), before)) {
+          changed.push(`swamp ${args.join(" ")}`);
+        }
+      }
+      assertEquals(changed, [], "refused commands that changed the datastore");
+    });
+  });
+});
+
+Deno.test("v3 writer lease: a long-lived process that lost the lease writes again under a higher fence once the other writer is done", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-v3-lease-retake-" });
+  const datastorePath = join(dir, "datastore");
+  await initializeV3Datastore(datastorePath, "test");
+  // A handle wired to the process's hold as v3DatastoreFor wires it.
+  const handle = openV3Datastore({
+    repoDir: join(dir, "serve"),
+    datastorePath,
+    writerFence: () => v3WriterFence(datastorePath),
+    assertWriterCurrent: () => assertV3WriterCurrent(datastorePath),
+  });
+  // serve's lifetime hold, with a TTL short enough to renew within the test.
+  const lifetime = await acquireV3WriterLock(datastorePath, {
+    ttlMs: 60,
+    fenceStore: handle.commitStore,
+  });
+  try {
+    await commitThrough(handle);
+    assertEquals((await commitFences(datastorePath)).at(-1), 1);
+
+    // serve slept past its expiry; a CLI writer took the lease over.
+    const cli = await plantV3WriterLease(datastorePath, { pid: Deno.pid });
+    const store = SqliteCommitStore.open(join(datastorePath, "commits.db"));
+    try {
+      await store.raiseWriterFence(cli.fence);
+    } finally {
+      await store.close();
+    }
+    await waitFor(() => {
+      try {
+        assertV3WriterCurrent(datastorePath);
+        return false;
+      } catch {
+        return true;
+      }
+    }, "serve's renewal found the higher fence");
+    const refused = await assertRejects(() => commitThrough(handle));
+    assert(fencedRefusal(refused) !== undefined, `not fenced: ${refused}`);
+
+    // The CLI writer finishes; serve's renewal takes a fresh lease.
+    await cli.release();
+    await waitFor(
+      () => (v3WriterFence(datastorePath) ?? 0) > cli.fence,
+      "serve took the lease again",
+    );
+    await commitThrough(handle);
+    assertEquals(
+      (await commitFences(datastorePath)).at(-1),
+      v3WriterFence(datastorePath),
+    );
+  } finally {
+    await lifetime();
+    await handle.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** Commits one auto-definition through `handle`'s engine, in one root. */
+async function commitThrough(
+  handle: ReturnType<typeof openV3Datastore>,
+): Promise<void> {
+  const engine = handle.engineFor(() => Promise.resolve(), () => {
+    throw new Error("no run repository needed");
+  });
+  await engine.runRoot({}, async () => {
+    const unit = engine.openUnit() as unknown as CommitLogUnitOfWork;
+    await unit.stageOps([
+      new AutoDefinitionChanges(crypto.randomUUID()).write(
+        recordKeyOf(["auto-definitions", `${crypto.randomUUID()}.yaml`]),
+        new TextEncoder().encode("x"),
+      ),
+    ]);
+    await unit.commit();
+  });
+}

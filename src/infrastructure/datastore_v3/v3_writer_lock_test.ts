@@ -21,6 +21,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { hostname } from "node:os";
 import { waitFor } from "@swamp-club/swamp-testing";
+import { plantV3WriterLease } from "./v3_writer_lock_test_helpers.ts";
 import { FileLock } from "../persistence/file_lock.ts";
 import { FileSystemControlPlaneStore } from "../persistence/fs_control_plane_store.ts";
 import {
@@ -320,6 +321,38 @@ Deno.test("tryAcquireV3WriterLock: takes the lease without waiting, or resolves 
     } finally {
       await held();
     }
+  });
+});
+
+Deno.test("acquireV3WriterLock: once the process's hold is lost, the next acquire waits for the other writer and takes a higher fence", async () => {
+  await withTempDir(async (dir) => {
+    // serve's lifetime hold.
+    const lifetime = await acquireV3WriterLock(dir);
+    try {
+      assertEquals(v3WriterFence(dir), 1);
+      const other = await plantV3WriterLease(dir, { pid: Deno.pid });
+      await assertRejects(() => checkV3WriterLease(dir), WriterFencedError);
+
+      // While the other writer holds it, a new acquire is refused as busy.
+      await assertRejects(
+        () => acquireV3WriterLock(dir, { maxWaitMs: 0 }),
+        V3WriterBusyError,
+      );
+      assertThrows(() => assertV3WriterCurrent(dir), WriterFencedError);
+
+      // Once it is done, the process takes a fresh lease, and the lifetime
+      // hold carries on under it.
+      await other.release();
+      const next = await acquireV3WriterLock(dir, { maxWaitMs: 0 });
+      assertEquals(v3WriterFence(dir), other.fence + 1);
+      assertV3WriterCurrent(dir);
+      await next();
+      assert(holdsV3WriterLock(dir), "the lifetime hold still holds");
+      assertEquals(v3WriterFence(dir), other.fence + 1);
+    } finally {
+      await lifetime();
+    }
+    assertEquals(await v3WriterLockHandle(dir).inspect(), null);
   });
 });
 
