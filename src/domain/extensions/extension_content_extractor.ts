@@ -44,7 +44,7 @@ import type {
  */
 async function readSourceText(path: string): Promise<string> {
   if ((await Deno.lstat(path)).isSymlink) {
-    throw new Error(`${path} is a symlink`);
+    throw new Error("symlinked source");
   }
   return await Deno.readTextFile(path);
 }

@@ -225,10 +225,11 @@ collectives, the additionalFiles allowlist, safety, dependency trust,
 skills, fmt/lint, upgrade chain, review errors, archive size) is recorded
 instead of thrown, files a check rejected (hidden, symlink, disallowed type,
 oversized, unreadable, disallowed additionalFiles) are left out of the
-archive (never copied into it) and out of every later gate, since fmt, lint
-and review would read a symlink's target and quote it, and the rubric is scored and printed beside
-the failures. Such an archive is never cached or uploaded. A push enforces:
-the first failure throws.
+archive (never copied into it), and the rubric is scored and printed beside
+the failures. Rejected files are also left out of every later gate, since
+fmt, lint and review would read a symlink's target and quote it. Such an
+archive is never cached or uploaded. A push enforces: the first failure
+throws.
 
 The package cache (`.swamp/cache/packages/<hash>/`) records the swamp
 version that wrote each entry and is reused only by that version, because a
@@ -990,9 +991,9 @@ target declares cannot reach the content-collective check, and a symlinked
 
 Push fails when a local module is missing, when its real path leaves the
 repository and the extensions root (through a symlinked directory), or when two
-different files would share an archive path. Data modules are packaged, hashed and safety-scanned, but not
-formatted, linted or reviewed as TypeScript. Pull does not yet install the
-archive-root shared sources (swamp-club#3384).
+different files would share an archive path. Data modules are packaged, hashed
+and safety-scanned, but not formatted, linted or reviewed as TypeScript. Pull
+does not yet install the archive-root shared sources (swamp-club#3384).
 
 ## Per-Subdirectory Extension Identity
 

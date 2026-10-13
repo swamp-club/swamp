@@ -1944,7 +1944,10 @@ Deno.test("extensionPushPrepare: a symlinked quality.yaml is refused unread, quo
       )
     ) as SwampError;
     assertEquals(error.code, "validation_failed");
-    assertStringIncludes(error.message, "Symlinks are not allowed");
+    assertStringIncludes(
+      error.message,
+      "quality.yaml beside the manifest is a symlink",
+    );
     assertEquals(
       `${error.message}${JSON.stringify(error.details)}`.includes("SECRET"),
       false,

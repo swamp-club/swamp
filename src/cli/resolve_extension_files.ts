@@ -1577,6 +1577,11 @@ async function resolveSourceModules(options: {
     const paths = g.modules.map((m) => m.path).filter((p) => !outside.has(p))
       .sort();
     const listed = paths.filter((p) => !ownedElsewhere(k, p));
+    if (options.lenient) {
+      for (const m of symlinked) {
+        options.logger.debug`Skipping symlink ${m.path}`;
+      }
+    }
     const links = options.lenient ? [] : symlinked.filter((m) => {
       if (symlinksListed.has(m.path)) return false;
       symlinksListed.add(m.path);

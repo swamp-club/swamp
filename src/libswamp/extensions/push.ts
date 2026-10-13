@@ -1347,7 +1347,7 @@ export async function extensionPushPrepare(
     archiveBytes = input.cachedArchive!;
   } else {
     const built = await bundleAndArchive(
-      rejectedFiles.size > 0 ? withoutFiles(input, rejectedFiles) : input,
+      gated,
       deps,
       denoPath || await deps.ensureDenoPath(),
       ctx,
@@ -2316,8 +2316,8 @@ export async function readQualitySidecar(
   }
   if (raw === undefined) {
     throw validationFailed(
-      `${QUALITY_SIDECAR_FILENAME} beside the manifest is a symlink. ` +
-        `Symlinks are not allowed in extensions.`,
+      `${QUALITY_SIDECAR_FILENAME} beside the manifest is a symlink. Replace ` +
+        `it with a regular file; symlinks are not allowed in extensions.`,
     );
   }
   const parsed = parseQualitySidecar(raw);

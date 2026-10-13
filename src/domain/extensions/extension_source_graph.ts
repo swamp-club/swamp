@@ -122,7 +122,7 @@ export interface SymlinkFreeGraph {
   /**
    * The symlinks the root reaches without passing through another one, so
    * the safety gate can refuse each by the symlink rule. A symlink the graph
-   * could not load is listed as code.
+   * could not load is listed as code (its kind is unknown).
    */
   symlinked: LocalModule[];
 }
