@@ -658,3 +658,28 @@ Deno.test("rollbackVersions: releases a version that was allocated and never fin
     Deno.errors.NotFound,
   );
 });
+
+Deno.test("advanceLatestMarkers: a version allocated and never finalized gets no latest marker (swamp-club#3255)", async () => {
+  const { repo, catalog } = createRepo();
+  const data = createTestData({ streaming: true });
+
+  const allocated = await repo.allocateVersion(TEST_TYPE, TEST_MODEL_ID, data);
+  await Deno.writeFile(allocated.contentPath, TEST_CONTENT);
+
+  await repo.advanceLatestMarkers([{
+    type: TEST_TYPE,
+    modelId: TEST_MODEL_ID,
+    dataName: data.name,
+    version: allocated.version,
+  }]);
+
+  assertEquals(
+    repo.getLatestVersionSync(TEST_TYPE, TEST_MODEL_ID, data.name),
+    null,
+  );
+  assertEquals(catalog.count(), 0);
+  await assertRejects(
+    () => Deno.stat(allocated.contentPath),
+    Deno.errors.NotFound,
+  );
+});
