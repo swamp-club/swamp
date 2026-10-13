@@ -225,6 +225,12 @@ export interface ExtensionPushPrepareInput {
    * its imports are rewritten there (swamp-club#3376).
    */
   sourcePlan: SourceArchivePlan;
+  /**
+   * Local modules an entry point imports that do not exist. Reported as
+   * compilation errors at the bundle step, where the bundler used to
+   * report them.
+   */
+  missingModules?: MissingLocalModule[];
   dryRun: boolean;
   /**
    * What to do with the registry-side checks (authentication, collective
@@ -569,6 +575,7 @@ import {
   qualitySidecarPath,
   sidecarDirectives,
 } from "../../domain/extensions/extension_quality_sidecar.ts";
+import type { MissingLocalModule } from "../../domain/extensions/extension_source_graph.ts";
 import {
   applySpecifierRewrites,
   type SourceArchiveKind,
@@ -1249,6 +1256,21 @@ export async function extensionPushPrepare(
   ) {
     contentMetadata.acceptances = toContentMetadataAcceptances(
       findings.acceptances,
+    );
+  }
+
+  // 11a. A missing local module fails the push as a compilation error, the
+  // way the bundler reported it before push read the module graph
+  // (swamp-club#3376); models that are never bundled are covered too.
+  if (input.missingModules && input.missingModules.length > 0) {
+    throw validationFailed(
+      "Bundle compilation failed. Fix the errors above and try again.",
+      {
+        compilationErrors: input.missingModules.map((m) => ({
+          file: m.importer ?? m.path,
+          error: m.reason,
+        })),
+      },
     );
   }
 

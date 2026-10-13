@@ -1954,7 +1954,7 @@ Deno.test("resolveExtensionFiles: rejects a dependency-resolved workflow that wo
   });
 });
 
-Deno.test("resolveExtensionFiles: a model a workflow step references has its imports resolved, and a missing one fails", async () => {
+Deno.test("resolveExtensionFiles: a model a workflow step references has its imports resolved, and a missing one is reported", async () => {
   await withTempRepo(async (dir) => {
     await writeWorkflowFixture(dir, "deploy.yaml", "@test/deploy");
     const manifestPath = await writeWorkflowManifest(dir, ["deploy.yaml"]);
@@ -2008,20 +2008,19 @@ Deno.test("resolveExtensionFiles: a model a workflow step references has its imp
       },
     };
 
-    const err = await assertRejects(
-      () =>
-        resolveExtensionFiles({
-          repoDir: dir,
-          manifestPath,
-          repoContext,
-          logger,
-          moduleGraphReader: reader,
-        }),
-      UserError,
-    );
+    const resolved = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext,
+      logger,
+      moduleGraphReader: reader,
+    });
     assertEquals(read.includes(helper), true);
-    assertStringIncludes(err.message, gone);
-    assertStringIncludes(err.message, `imported from ${helper}`);
+    assertEquals(resolved.missingModules, [{
+      path: gone,
+      importer: helper,
+      reason: "Module not found",
+    }]);
   });
 });
 

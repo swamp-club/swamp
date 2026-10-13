@@ -154,6 +154,7 @@ async function pushDryRun(
       binaryFilePaths: resolved.binaryFilePaths,
       dataFilesByKind: resolved.dataFilesByKind,
       sourcePlan: resolved.sourcePlan,
+      missingModules: resolved.missingModules,
       dryRun: true,
       registryChecks: "skip",
     },
@@ -284,7 +285,7 @@ Deno.test("extension push: a paths.base manifest model in a sub-directory keeps 
   });
 });
 
-Deno.test("extension push: a missing local module fails resolution, naming it and its importer", async () => {
+Deno.test("extension push: a missing local module is a compilation error naming it and its importer, as the bundler reported it", async () => {
   await withRepo(async (repo) => {
     const model = join(repo, "extensions", "models", "m.ts");
     await write(model, 'import "../lib/gone.ts";\nexport const m = 1;\n');
@@ -298,26 +299,27 @@ Deno.test("extension push: a missing local module fails resolution, naming it an
         models: ["m.ts"],
       }),
     );
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: repo,
-      outputMode: "log",
-    });
-    const error = await assertRejects(
-      () =>
-        resolveExtensionFiles({
-          repoDir: repo,
-          manifestPath,
-          repoContext,
-          logger,
-          moduleGraphReader: graphReader,
-        }),
-      UserError,
+    let failure: unknown;
+    try {
+      await pushDryRun(repo, manifestPath);
+    } catch (error) {
+      failure = error;
+    }
+    const swampError = failure as {
+      code: string;
+      details: { compilationErrors: Array<{ file: string; error: string }> };
+    };
+    assertEquals(swampError.code, "validation_failed");
+    assertEquals(swampError.details.compilationErrors.length, 1);
+    assertEquals(swampError.details.compilationErrors[0].file, model);
+    assertStringIncludes(
+      swampError.details.compilationErrors[0].error,
+      "gone.ts",
     );
     assertStringIncludes(
-      error.message,
-      join(repo, "extensions", "lib", "gone.ts"),
+      swampError.details.compilationErrors[0].error,
+      "Module not found",
     );
-    assertStringIncludes(error.message, `imported from ${model}`);
   });
 });
 

@@ -157,6 +157,7 @@ export const extensionQualityCommand = new Command()
             binaryFilePaths: resolved.binaryFilePaths,
             dataFilesByKind: resolved.dataFilesByKind,
             sourcePlan: resolved.sourcePlan,
+            missingModules: resolved.missingModules,
             dryRun: true,
             registryChecks: "skip",
             denoConfigPath,

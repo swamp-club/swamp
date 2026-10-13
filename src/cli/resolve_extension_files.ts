@@ -40,6 +40,7 @@ import {
   parseExtensionManifest,
 } from "../domain/extensions/extension_manifest.ts";
 import type {
+  MissingLocalModule,
   ModuleGraphProject,
   ModuleGraphReader,
   SourceModuleGraph,
@@ -138,6 +139,11 @@ export interface ResolvedExtensionFiles {
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   /** Where each local module goes in the archive, and the imports rewritten there. */
   sourcePlan: SourceArchivePlan;
+  /**
+   * Local modules an entry point imports that do not exist. Push and
+   * quality report them as compilation errors, as the bundler would.
+   */
+  missingModules: MissingLocalModule[];
   /** The project deno.json push bundles, formats and lints under. */
   denoConfigPath?: string;
   /** The package.json project push bundles under, when the extension uses bare specifiers. */
@@ -1309,6 +1315,7 @@ export async function resolveExtensionFiles(
     binaryFilePaths,
     dataFilesByKind: sources.dataFilesByKind,
     sourcePlan: sources.plan,
+    missingModules: sources.missing,
     ...(denoConfigPath ? { denoConfigPath } : {}),
     ...(packageJsonDir ? { packageJsonDir } : {}),
   };
@@ -1350,6 +1357,7 @@ interface SourceModuleKindRoots {
 }
 
 interface ResolvedSourceModules {
+  missing: MissingLocalModule[];
   codeFilesByKind: Record<SourceArchiveKind, string[]>;
   dataFilesByKind: Record<SourceArchiveKind, string[]>;
   plan: SourceArchivePlan;
@@ -1407,21 +1415,11 @@ async function resolveSourceModules(options: {
   }
   const graph = mergeSourceGraphs(kindGraphs.map((g) => g.graph));
 
-  if (graph.missing.length > 0 && !options.lenient) {
-    const lines = graph.missing.map((m) =>
-      `  ${m.path}${m.importer ? ` (imported from ${m.importer})` : ""}`
-    );
-    throw markErrorPaths(
-      new UserError(
-        `Local modules not found:\n${lines.join("\n")}\n` +
-          `Every local module an entry point imports must exist, so the ` +
-          `archive's source copy matches its bundle.`,
-      ),
-      graph.missing.flatMap((m) =>
-        m.importer ? [m.path, m.importer] : [m.path]
-      ),
-    );
-  }
+  // A module the graph cannot load is not packaged; push reports it as a
+  // compilation error, as the bundler did before (swamp-club#3376), and
+  // imports of it are left out of the plan.
+  const missingPaths = new Set(graph.missing.map((m) => m.path));
+  graph.edges = graph.edges.filter((e) => !missingPaths.has(e.target));
 
   // Containment on real paths: a symlink anywhere on a module's path must
   // not carry the archive outside the repository and the extensions root.
@@ -1481,7 +1479,12 @@ async function resolveSourceModules(options: {
   }
 
   if (options.lenient) {
-    return { codeFilesByKind, dataFilesByKind, plan: { entries: [] } };
+    return {
+      missing: graph.missing,
+      codeFilesByKind,
+      dataFilesByKind,
+      plan: { entries: [] },
+    };
   }
   const plan = planSourceArchive({
     kinds: planKinds,
@@ -1489,5 +1492,5 @@ async function resolveSourceModules(options: {
     extensionsRoot: resolve(options.extensionsRoot),
     allowedRoots: [resolve(options.repoDir), resolve(options.extensionsRoot)],
   });
-  return { codeFilesByKind, dataFilesByKind, plan };
+  return { missing: graph.missing, codeFilesByKind, dataFilesByKind, plan };
 }
