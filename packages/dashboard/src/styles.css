@@ -4070,7 +4070,9 @@ a.cron-badge:hover {
 }
 
 .start-page .start-primary:hover:not(:disabled),
-.start-page .login-card.start-card button.start-primary[type="submit"]:hover:not(:disabled) {
+.start-page
+  .login-card.start-card
+  button.start-primary[type="submit"]:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
