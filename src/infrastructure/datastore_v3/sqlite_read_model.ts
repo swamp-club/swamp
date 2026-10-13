@@ -966,33 +966,40 @@ async function pathConflict(
 /**
  * True when the file at `path` is what the state says: a regular file with
  * the expected SHA-256, or absent (a directory left at a removed key holds
- * other records). A file the state cannot describe never matches.
+ * other records). A file the state cannot describe, or one that cannot be
+ * read (its permissions changed, say), never matches: the replay that
+ * follows rewrites it, where an error here would refuse every catch-up.
  */
 async function holdsExpected(
   path: string,
   file: UnsyncedFile,
 ): Promise<boolean> {
   if (file.expect === "unknown") return false;
-  let info: Deno.FileInfo;
   try {
-    info = await Deno.lstat(path);
-  } catch (error) {
-    // Under a file, the path cannot exist either.
-    if (
-      error instanceof Deno.errors.NotFound ||
-      error instanceof Deno.errors.NotADirectory
-    ) {
-      return file.expect === "absent";
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(path);
+    } catch (error) {
+      // Under a file, the path cannot exist either.
+      if (
+        error instanceof Deno.errors.NotFound ||
+        error instanceof Deno.errors.NotADirectory
+      ) {
+        return file.expect === "absent";
+      }
+      throw error;
     }
-    throw error;
+    if (file.expect !== "present") return info.isDirectory;
+    if (!info.isFile) return false;
+    const hash = createHash("sha256");
+    // The readable closes the file when it ends or fails.
+    const handle = await Deno.open(path, { read: true });
+    for await (const piece of handle.readable) hash.update(piece);
+    return hash.digest("hex") === file.sha256;
+  } catch (error) {
+    logger.warn`Cannot check ${path} after a restart: ${error}`;
+    return false;
   }
-  if (file.expect !== "present") return info.isDirectory;
-  if (!info.isFile) return false;
-  const hash = createHash("sha256");
-  // The readable closes the file when it ends or fails.
-  const handle = await Deno.open(path, { read: true });
-  for await (const piece of handle.readable) hash.update(piece);
-  return hash.digest("hex") === file.sha256;
 }
 
 /** True when the resolved `path` lies in or at the resolved `dir`. */

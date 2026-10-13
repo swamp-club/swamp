@@ -883,8 +883,13 @@ export class ReadModelState {
         body();
         this.#db.exec("RELEASE state_change");
       } catch (error) {
-        this.#db.exec("ROLLBACK TO state_change");
-        this.#db.exec("RELEASE state_change");
+        try {
+          this.#db.exec("ROLLBACK TO state_change");
+          this.#db.exec("RELEASE state_change");
+        } catch {
+          // SQLite rolled the whole transaction back itself (a full disk,
+          // an I/O error): the savepoint is gone, and the cause is `error`.
+        }
         throw error;
       }
       return;

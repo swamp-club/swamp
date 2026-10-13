@@ -3102,9 +3102,12 @@ leave most of its cache on it. A listed file the state shows present with no
 live record for its owner cannot be checked, so it also resets the state; it
 is logged as such, apart from a file that does not match.
 
-What this does not cover: a disk detached without the OS restarting (a
-removable drive pulled mid-write) can lose page-cache writes within one
-boot, and the read model will not notice. The check runs at the start of an
+What this does not cover: anything that loses page-cache writes without
+ending the boot. A disk detached mid-write, a write-back I/O error (which,
+with no fsync, nobody sees), a filesystem forced to shut down and remounted,
+an NFS server that loses its cache, or a VM restored from a snapshot can all
+lose unsynced files while the boot id stays the same, and the read model
+will not notice. The check runs at the start of an
 exclusive section, so an index read (`liveRecords`, `chunksInUse`) before
 the first catch-up of a new boot is not covered by it. A commit whose apply
 fails is not recorded, so the files it wrote before failing are not listed:

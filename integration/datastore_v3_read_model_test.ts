@@ -569,6 +569,72 @@ Deno.test("read model: a commit whose unsynced keys cannot be recorded is not re
   });
 });
 
+Deno.test({
+  name:
+    "read model: a listed file it cannot read after a reboot is rewritten, not a reason to refuse every catch-up (swamp-club#3337)",
+  // Windows has no mode bits to take read access away.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const clean = await cleanResult();
+    await withV3Env(async (env) => {
+      await appendScenario(env);
+      let boot = "boot-id:1";
+      const open = () =>
+        env.openReadModel({ bootIdentity: () => Promise.resolve(boot) });
+      const first = open();
+      try {
+        await first.catchUp(signal());
+      } finally {
+        await first.close();
+      }
+      const unreadable = join(
+        swampPath(env.repoDir),
+        ...dataKey("b", 1).toString().split("/"),
+      );
+      await Deno.chmod(unreadable, 0o000);
+      boot = "boot-id:2";
+      const reopened = open();
+      try {
+        assertEquals(await reopened.catchUp(signal()), {
+          applied: 5,
+          cursor: 5,
+        });
+      } finally {
+        await reopened.close();
+      }
+      assertEquals(await observe(env), clean);
+    });
+  },
+});
+
+Deno.test("read model: when SQLite rolls a page back itself, the error that caused it is the one reported (swamp-club#3337)", async () => {
+  const clean = await cleanResult();
+  await withV3Env(async (env) => {
+    await appendScenario(env);
+    const readModel = env.openReadModel();
+    // RAISE(ROLLBACK) ends the whole transaction, as a full disk can, so
+    // the savepoint the failing commit ran in is gone.
+    const db = new DatabaseSync(join(env.stateDir, READ_MODEL_STATE_FILE));
+    db.exec(
+      "CREATE TRIGGER end_transaction BEFORE INSERT ON unsynced_keys BEGIN SELECT RAISE(ROLLBACK, 'injected: transaction ended'); END",
+    );
+    try {
+      const error = await assertRejects(
+        () => readModel.catchUp(signal()),
+        ReadModelApplyError,
+      );
+      assertStringIncludes(error.message, "injected: transaction ended");
+      assertEquals(committedCursor(env), 0);
+      db.exec("DROP TRIGGER end_transaction");
+      assertEquals((await readModel.catchUp(signal())).cursor, 5);
+    } finally {
+      db.close();
+      await readModel.close();
+    }
+    assertEquals(await observe(env), clean);
+  });
+});
+
 Deno.test("read model: a reboot that kept every file clears the unsynced list without applying anything again (swamp-club#3337)", async () => {
   const clean = await cleanResult();
   await withV3Env(async (env) => {
