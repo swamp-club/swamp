@@ -946,6 +946,10 @@ export async function handleExtensionPull(
       lockfileRepository: deps.lockfileRepository,
       repoRoot: repoDir,
       localManifestIdentity: readLocalManifestIdentity(repoDir),
+      // An unreadable .swamp-sources.yaml fails the request, as it fails
+      // CLI startup, rather than counting as no mounts: that would prune
+      // the mounted rows (swamp-club#2563). Hot-reload falls back instead
+      // because it has no caller to report to.
       mountedSourceDirs: await resolveMountedSourceDirs(repoDir),
     });
 

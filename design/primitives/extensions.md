@@ -2402,13 +2402,14 @@ fails on a production construction that omits `mountedSourceDirs`.
 
 A kept mounted row can share a `(kind, type)` with a local row or with a row
 under another mount: a cold index types every file it discovers, and older
-binaries left such pairs typed. The loader settles them after each pass with
-the same method, through `ExtensionRepository.settleMountedTypeConflicts`. Before I-Repo-1, `saveAll` settles those conflicts
-(`settleMountedTypeConflicts`) in the loader's registration order: a local row
-beats a mounted one, a row under an earlier `.swamp-sources.yaml` entry beats a
-later one, then the smaller canonical path. The losing mounted row's type is
-cleared, as `resolveOriginConflicts` clears a pulled row's. This runs whenever
-the repository has mount directories, including saves that pass
+binaries left such pairs typed.
+`ExtensionCatalogStore.settleMountedTypeConflicts` settles them in the loader's
+registration order: a local row beats a mounted one, a row under an earlier
+`.swamp-sources.yaml` entry beats a later one, then the smaller canonical path.
+`saveAll` runs it before I-Repo-1, and the loader runs it after each pass
+(through `ExtensionRepository.settleMountedTypeConflicts`). The losing mounted
+row's type is cleared, as `resolveOriginConflicts` clears a pulled row's. This
+runs whenever the repository has mount directories, including saves that pass
 `pruneUnreachable: false`. Pulled rows are left to `resolveOriginConflicts`, and
 conflicts between two local rows still fail I-Repo-1.
 
@@ -2464,8 +2465,8 @@ stale row never crashes a command (swamp-club#2490):
   type outranks any other pulled row. Before swamp-club#2563 the loader ranked
   a mounted row as local and broke the tie by path, so a local override added
   after a mounted source was indexed typeless when the mounted path sorted
-  first. A cold index discovers files in
-  sorted order, so there the smallest path is indexed first and wins. After
+  first. A cold index discovers files in sorted order, so there the smallest
+  path is indexed first and wins. After
   each pass, pulled rows that still share a `(kind, type)`, as an older binary
   could leave them, are settled by insertion order: the earliest row keeps the
   type (`settlePulledTypeConflicts`), which is the row that binary resolved.
@@ -2479,19 +2480,18 @@ stale row never crashes a command (swamp-club#2490):
 - **Typeless-row heal.** A row whose type was cleared for a conflict keeps an
   empty type after the winning row is gone, because its fingerprint still
   matches. The per-kind `bundle_meta` marker
-  `migration_applied:typeless-row-heal-v2:<kind>` is absent after an upgrade
-  and is cleared whenever a row that claims a type is deleted or upserted with
-  a different type. While it is absent, the next warm pass imports the existing
-  bundle of each seen, typeless `Indexed` row, and of each row it wrote
-  typeless in the same pass, to learn its type. It writes the type back only
-  when no row claims it, for at most one row per type: a local row before a
-  source-mounted one before a pulled one, then the smallest path. When every
-  row claiming the type is a source-mounted row the chosen row outranks, the
-  type moves to the chosen row instead. That repairs local overrides an older
-  binary indexed typeless behind a mounted row; the marker moved from `v1` to
-  `v2` so the heal runs once after upgrading (swamp-club#2563). The pass then
-  sets the marker. This
-  writes the catalog only and never the registry, so a pulled row cannot
+  `migration_applied:typeless-row-heal-v2:<kind>` is absent after an upgrade and
+  is cleared whenever a row that claims a type is deleted or upserted with a
+  different type. While it is absent, the next warm pass imports the existing
+  bundle of each seen, typeless `Indexed` row, and of each row it wrote typeless
+  in the same pass, to learn its type. It writes the type back only when no row
+  claims it, for at most one row per type: a local row before a source-mounted
+  one before a pulled one, then the smallest path. When every row claiming the
+  type is a source-mounted row the chosen row outranks, the type moves to the
+  chosen row instead. That repairs local overrides an older binary indexed
+  typeless behind a mounted row; the marker moved from `v1` to `v2` so the heal
+  runs once after upgrading (swamp-club#2563). The pass then sets the marker.
+  This writes the catalog only and never the registry, so a pulled row cannot
   displace a local override. The heal is also skipped, with the marker left
   unset, while the kind has a local row in a failed state whose source still
   exists: a failed row claims no type, so a broken local override would

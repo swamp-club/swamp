@@ -1198,7 +1198,11 @@ export class ExtensionLoader {
       this.logger,
       catalog.settlePulledTypeConflicts(this.repoDir),
     );
-    this.repository?.settleMountedTypeConflicts();
+    const mounted = this.repository?.settleMountedTypeConflicts() ?? [];
+    if (mounted.length > 0) {
+      this.logger
+        .debug`Cleared the type on ${mounted.length} source-mounted catalog row(s) a higher-precedence row also claims`;
+    }
     catalog.resolveOriginConflicts(this.repoDir);
   }
 
