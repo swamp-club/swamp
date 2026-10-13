@@ -21,6 +21,7 @@ import { join, resolve, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import { markErrorPaths } from "../errors.ts";
 import { plainDenoEnv } from "../runtime/deno_plain_env.ts";
+import { isValidManifestLicense } from "../licensing/manifest_license_policy.ts";
 
 /**
  * Client-side scorer for the Swamp Club extension quality rubric.
@@ -367,11 +368,23 @@ export function composeScore(
       "has-license",
       "License declared",
       1,
+      isValidManifestLicense(manifest.license),
+      {
+        remediation: "Declare the license in manifest.yaml as an SPDX " +
+          "expression, e.g. `license: MIT` or `license: MIT OR Apache-2.0`. " +
+          "Only SPDX identifiers count; a `LicenseRef-` or `AdditionRef-` " +
+          "earns nothing.",
+      },
+    ),
+    boolRow(
+      "license-file",
+      "LICENSE file included",
+      1,
       factors.hasLicenseFile,
       {
-        remediation: "Add a LICENSE / LICENSE.md / LICENSE.txt entry to " +
-          "`additionalFiles:` as a bare basename — entries are copied " +
-          "verbatim to `extension/files/<entry>` in the archive, so " +
+        remediation: "Add a non-empty LICENSE / LICENSE.md / LICENSE.txt " +
+          "entry to `additionalFiles:` as a bare basename — entries are " +
+          "copied verbatim to `extension/files/<entry>` in the archive, so " +
           "nested paths won't earn the factor. For per-directory layouts " +
           "(manifest beside LICENSE), opt in with `paths.base: manifest`.",
       },
@@ -754,8 +767,8 @@ async function findLicenseFile(root: string): Promise<boolean> {
   for (const dir of dirs) {
     for (const name of LICENSE_FILENAMES) {
       try {
-        await Deno.stat(join(dir, name));
-        return true;
+        const info = await Deno.stat(join(dir, name));
+        if (info.isFile && info.size > 0) return true;
       } catch {
         // keep looking
       }

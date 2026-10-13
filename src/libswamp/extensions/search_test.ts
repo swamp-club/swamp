@@ -235,3 +235,23 @@ Deno.test("extensionSearch: empty results", async () => {
   assertEquals(completed.data.results.length, 0);
   assertEquals(completed.data.meta.total, 0);
 });
+
+Deno.test("extensionSearch: asks for licensed extensions only when told to", async () => {
+  for (const licensed of [true, false, undefined]) {
+    let captured: Record<string, unknown> | undefined;
+    const deps = makeDeps({
+      searchExtensions: (params) => {
+        captured = params;
+        return Promise.resolve({
+          extensions: [],
+          meta: { total: 0, page: 1, perPage: 10 },
+        });
+      },
+    });
+    await collect<ExtensionSearchEvent>(
+      extensionSearch(createLibSwampContext(), deps, { licensed }),
+    );
+    assertEquals(captured?.licensed, licensed ? true : undefined);
+    assertEquals("licensed" in (captured ?? {}), licensed === true);
+  }
+});

@@ -18,9 +18,9 @@ from the percentage.
 
 | Extension type                  | Ceiling      | Why                                                    |
 | ------------------------------- | ------------ | ------------------------------------------------------ |
-| Third-party, all factors earned | 14/15 = 93%  | `verified-by-swamp` is unearnable without admin review |
-| First-party (`@swamp/*`)        | 15/15 = 100% | First-party namespace auto-earns `verified-by-swamp`   |
-| Admin-curated third-party       | 15/15 = 100% | Admin review endpoint earns the factor                 |
+| Third-party, all factors earned | 15/16 = 93%  | `verified-by-swamp` is unearnable without admin review |
+| First-party (`@swamp/*`)        | 16/16 = 100% | First-party namespace auto-earns `verified-by-swamp`   |
+| Admin-curated third-party       | 16/16 = 100% | Admin review endpoint earns the factor                 |
 
 ## Per-factor reference
 
@@ -118,16 +118,22 @@ restrictive declaration than "universal". This is intentional — an author who
 has tested on multiple platforms is more trusted than one who has tested on
 exactly one.
 
-### `has-license` (1 pt)
+### `has-license` (1 pt) — "License declared"
 
-Earned when **either**:
+Earned when the manifest's `license:` is a valid SPDX license expression, such
+as `MIT`, `Apache-2.0` or `MIT OR Apache-2.0`. The license is optional: leaving
+it out, or declaring a value that is not valid SPDX, only costs this point. Only
+SPDX identifiers count — a `LicenseRef-` or `AdditionRef-` earns nothing, and
+`swamp extension quality` and `push` print a warning for an invalid value. A
+LICENSE file does not earn this factor; it earns `license-file`.
 
-- The extension's `license` field is a non-empty trimmed string (set via PATCH
-  on the extension record), OR
-- The tarball contains a license file at `<root>/*` or `<root>/files/*`
+### `license-file` (1 pt) — "LICENSE file included"
 
-Both lookups are exact at this level — the analyzer does NOT recurse, so a
-nested entry like `additionalFiles: [legal/LICENSE]` lands at
+Earned when the tarball contains a non-empty license file at `<root>/*` or
+`<root>/files/*`.
+
+The lookup is exact at this level — the analyzer does NOT recurse, so a nested
+entry like `additionalFiles: [legal/LICENSE]` lands at
 `<root>/files/legal/LICENSE` and earns zero. Use a bare basename and, if your
 source layout requires it, opt into `paths.base: manifest`.
 
@@ -221,6 +227,7 @@ Manifest:
 manifestVersion: 1
 name: "@mycollective/my-extension"
 version: "2026.04.22.1"
+license: MIT
 description: "One-sentence explanation of what this extension does."
 
 repository: https://github.com/mycollective/my-extension
@@ -249,12 +256,13 @@ Factor results:
 | description         | 1/1    | Non-empty                                    |
 | platforms-one       | 1/1    | 2 platforms listed                           |
 | platforms-two       | 1/1    | 2 platforms listed                           |
-| has-license         | 1/1    | LICENSE file in additionalFiles              |
+| has-license         | 1/1    | `license: MIT` declared                      |
+| license-file        | 1/1    | LICENSE file in additionalFiles              |
 | repository-verified | 2/2    | Public github.com URL                        |
 | dependency-trust    | 2/2    | No deprecated or vulnerable npm deps         |
 | verified-by-swamp   | 0/1    | Third-party, not admin-curated               |
 
-**Total: 14/15 = 93% Grade A.**
+**Total: 15/16 = 93% Grade A.**
 
 ## Ceiling with future provenance
 
@@ -262,9 +270,9 @@ Once `PROVENANCE_IN_RUBRIC` is enabled:
 
 | State                          | Divisor | Third-party ceiling |
 | ------------------------------ | ------- | ------------------- |
-| Flags off (current)            | 15      | 14/15 = 93%         |
-| Provenance on, publish from CI | 16      | 15/16 = 93%         |
-| Provenance on, no CI publish   | 16      | 14/16 = 87%         |
+| Flags off (current)            | 16      | 15/16 = 93%         |
+| Provenance on, publish from CI | 17      | 16/17 = 94%         |
+| Provenance on, no CI publish   | 17      | 15/17 = 88%         |
 
 When the flag flips, extensions not publishing from CI will see a 6% regression.
 Authors who want to stay at 93% will need to switch to publishing via GitHub

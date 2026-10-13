@@ -114,6 +114,7 @@ Add reports to the manifest `reports:` field:
 manifestVersion: 1
 name: "@myorg/reports"
 version: "2026.03.01.1"
+license: MIT
 description: "Cost and compliance reports"
 reports:
   - cost_report.ts

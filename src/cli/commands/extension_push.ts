@@ -744,6 +744,11 @@ export const extensionPushCommand = new Command()
       // 5. Render resolved data
       renderer.renderResolved(prepared.resolvedData);
 
+      // 5a. A declared license that is not valid SPDX warns; it never blocks.
+      if (prepared.licenseWarning) {
+        renderer.renderLicenseWarning(prepared.licenseWarning);
+      }
+
       // 6. Handle dependency trust warnings
       if (prepared.dependencyTrustResult.warnings.length > 0) {
         renderer.renderDependencyTrustWarnings(

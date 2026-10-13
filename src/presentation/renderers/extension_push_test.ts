@@ -47,6 +47,7 @@ function resolved(
     name: "@test/ext",
     version: "2026.09.16.1",
     visibility,
+    license: null,
     description: undefined,
     repository: undefined,
     releaseNotes: undefined,
@@ -111,6 +112,56 @@ for (const visibility of ["public", "private", "default"] as const) {
     });
   }
 }
+
+for (const license of ["MIT", null]) {
+  for (const mode of ["log", "json"] as const) {
+    Deno.test(`extensionPushRenderer: ${mode} preview shows the declared license (${license})`, async () => {
+      const renderer = createExtensionPushRenderer(mode, PATHS);
+      const logs = await capture(() => {
+        renderer.renderResolved({ ...resolved("default"), license });
+        renderer.renderDryRun({ ...dryRunBase });
+      });
+      if (mode === "json") {
+        assertEquals(JSON.parse(logs[0]).resolved.license, license);
+      } else {
+        const expected = license === null
+          ? "License: none declared"
+          : `License: "${license}"`;
+        assertEquals(
+          logs.filter((line) => line.includes(expected)).length,
+          1,
+        );
+      }
+    });
+  }
+}
+
+Deno.test("extensionPushRenderer: a non-SPDX license warning is a log warning and a warnings.license entry", async () => {
+  const warning = {
+    license: "Swampy-1.0",
+    reason: "unknown-license" as const,
+    term: "Swampy-1.0",
+    message:
+      'License "Swampy-1.0" in manifest.yaml is not a valid SPDX expression, so it earns no quality points: "Swampy-1.0" is not on the SPDX License List (https://spdx.org/licenses/).',
+    violations: [],
+  };
+  const log = await capture(() =>
+    createExtensionPushRenderer("log", PATHS).renderLicenseWarning(warning)
+  );
+  assertEquals(
+    log.filter((l) => l.includes("is not a valid SPDX expression")).length,
+    1,
+  );
+  const json = await capture(() => {
+    const renderer = createExtensionPushRenderer("json", PATHS);
+    renderer.renderResolved({ ...resolved("default"), license: "Swampy-1.0" });
+    renderer.renderLicenseWarning(warning);
+    renderer.renderDryRun({ ...dryRunBase });
+  });
+  const doc = JSON.parse(json[0]);
+  assertEquals(doc.status, "dry_run");
+  assertEquals(doc.warnings.license, [warning]);
+});
 
 Deno.test("extensionPushRenderer: JSON success reports applied visibility", async () => {
   const logs: string[] = [];

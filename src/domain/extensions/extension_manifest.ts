@@ -112,6 +112,11 @@ const ExtensionManifestSchemaV1 = z.object({
     message: "Version must be valid CalVer format: YYYY.MM.DD.MICRO",
   }),
   description: z.string().optional(),
+  // Checked against SPDX only by the license gate in quality and push, so
+  // reading an installed extension never depends on the vendored id lists.
+  license: z.string().trim().min(1, {
+    message: "License must be an SPDX expression, e.g. MIT",
+  }).optional(),
   visibility: PublishVisibilitySchema,
   repository: z.string().url().refine(
     // deno-lint-ignore no-control-regex
@@ -169,6 +174,8 @@ export interface ExtensionManifest {
   name: string;
   version: string;
   description: string | undefined;
+  /** Declared SPDX license expression, as written (trimmed). */
+  license?: string;
   visibility?: PublishVisibility;
   repository: string | undefined;
   paths: { base: PathsBase };
@@ -254,6 +261,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     name: result.data.name,
     version: result.data.version,
     description: result.data.description,
+    ...(result.data.license ? { license: result.data.license } : {}),
     ...(result.data.visibility ? { visibility: result.data.visibility } : {}),
     repository: result.data.repository,
     paths: { base: result.data.paths?.base ?? "typedDir" },

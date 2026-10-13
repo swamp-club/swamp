@@ -33,6 +33,7 @@ import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type { ManifestLicenseWarning } from "../../domain/licensing/manifest_license_policy.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import {
@@ -56,6 +57,10 @@ export type ExtensionQualityEvent =
 /** Result of a quality scoring run. */
 export interface ExtensionQualityData {
   score: RubricScore;
+  /** The declared SPDX license expression, or null when none is declared. */
+  license: string | null;
+  /** Set when the declared license is not valid SPDX; it never fails the run. */
+  licenseWarning: ManifestLicenseWarning | undefined;
   cacheHash: string;
   archiveSize: number;
   cacheHit: boolean;
@@ -208,6 +213,8 @@ export async function* extensionQuality(
         kind: "completed",
         data: {
           score,
+          license: input.prepareInput.manifest.license ?? null,
+          licenseWarning: prepared.licenseWarning,
           cacheHash: hash,
           archiveSize: archiveBytes.length,
           cacheHit,

@@ -232,12 +232,13 @@ If an extension doesn't appear after creation, delete stale bundles
 
 ## Quality Scorecard
 
-Swamp Club scores published extensions against a 12-factor rubric. Maximum
-third-party score: **14/15 = 93% (Grade A)**.
+Swamp Club scores published extensions against a 13-factor rubric. Maximum
+third-party score: **15/16 = 93% (Grade A)**.
 
-Key factors: README in `additionalFiles:`, LICENSE file, JSDoc coverage ≥80%,
-explicit return types, manifest `description:`, `repository:` URL on allowlisted
-host, dependency trust (no deprecated or vulnerable npm deps).
+Key factors: README in `additionalFiles:`, an SPDX `license:` and a LICENSE file
+(optional; one point each), JSDoc coverage ≥80%, explicit return types, manifest
+`description:`, `repository:` URL on allowlisted host, dependency trust (no
+deprecated or vulnerable npm deps).
 
 Run `swamp extension quality manifest.yaml --json` for a local self-check.
 Dependency trust is evaluated automatically — npm dependencies are audited

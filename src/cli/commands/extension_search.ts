@@ -98,6 +98,10 @@ export const extensionSearchCommand = withRemoteOptions(
     )
     .option("--per-page <perPage:number>", "Results per page", { default: 20 })
     .option("--page <page:number>", "Page number", { default: 1 })
+    .option(
+      "--licensed",
+      "Only list extensions that declare a license",
+    )
     .example("Browse all extensions", "swamp extension search")
     .example("Search by keyword", "swamp extension search aws")
     .example(
@@ -250,6 +254,7 @@ export const extensionSearchCommand = withRemoteOptions(
         sort: options.sort,
         perPage: options.perPage,
         page: options.page,
+        licensed: options.licensed === true,
       },
     ),
     renderer.handlers(),

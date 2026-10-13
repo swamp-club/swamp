@@ -282,3 +282,34 @@ Deno.test("extensionInfo: carries the latest version's accepted warnings, and le
     );
   }
 });
+
+Deno.test("extensionInfo: the latest version's declared license wins over the extension setting", async () => {
+  const cases: Array<
+    [LatestVersionDetail["license"] | "absent", string | null, string | null]
+  > = [
+    ["Apache-2.0", "MIT", "Apache-2.0"],
+    [null, "MIT", "MIT"],
+    ["absent", "MIT", "MIT"],
+    ["absent", null, null],
+  ];
+  for (const [versionLicense, setting, expected] of cases) {
+    const detail = makeVersionDetail(
+      versionLicense === "absent" ? {} : { license: versionLicense },
+    );
+    const deps = makeDeps({
+      getExtension: () =>
+        Promise.resolve(makeFullExtensionInfo({ license: setting })),
+      getLatestVersionDetail: () => Promise.resolve(detail),
+    });
+    const events = await collect<ExtensionInfoEvent>(
+      extensionInfo(createLibSwampContext(), deps, {
+        extensionName: "@stack72/aws-ec2",
+      }),
+    );
+    const completed = events.at(-1);
+    assertEquals(
+      completed?.kind === "completed" ? completed.data.license : "none",
+      expected,
+    );
+  }
+});

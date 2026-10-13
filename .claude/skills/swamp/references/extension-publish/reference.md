@@ -313,6 +313,9 @@ swamp extension search query --channel beta --channel rc --json
 The lockfile records the channel preference so subsequent `pull` and `outdated`
 checks use it automatically.
 
+`swamp extension search --licensed` lists only extensions that declare a
+license.
+
 ### Channel fields in extension info
 
 `swamp extension info` shows `latestBeta` and `latestRc` fields when prerelease
