@@ -196,6 +196,10 @@ async function lockAndSave(repoDir: string, modelId: string, body: string) {
   return {
     version: saved.version,
     flush: () => lock.flush(written),
+    /** An unlocked push of everything dirty, as `workflow run` ends with. */
+    pushUnlocked: async () => {
+      await ctx.syncService!.pushChanged();
+    },
     close: async () => {
       await flushDatastoreSync();
       ctx.repoContext.catalogStore.close();
@@ -291,6 +295,9 @@ for (const twoPhaseSync of [true, false]) {
         const error = await assertRejects(() => a.flush(), ModelLockLostError);
         assertEquals(error.code, "model_lock_lost");
         assertEquals(error.lost[0].heldBy, undefined);
+        // The refusal pulled B's version over A's, so a later unlocked push
+        // from A (a workflow's end-of-run push) does not overwrite it.
+        await a.pushUnlocked();
       } finally {
         await a.close();
       }

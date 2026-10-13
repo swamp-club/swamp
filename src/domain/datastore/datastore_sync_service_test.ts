@@ -157,6 +157,7 @@ Deno.test("ModelLockLostError: names each model, its current holder, and says no
   assertStringIncludes(err.message, "force-released or taken over");
   assertStringIncludes(err.message, "Nothing was pushed");
   assertStringIncludes(err.message, "version.\nNothing was pushed");
+  assertStringIncludes(err.message, "refreshed from the datastore");
   assertStringIncludes(err.message, "Run the method or workflow again");
 });
 

@@ -2941,6 +2941,24 @@ export async function acquireModelLocks(
     }
   }
 
+  // Pulls one model's data, scoped to it when the extension can.
+  const pullModel = (
+    syncService: DatastoreSyncService,
+    modelType: string,
+    modelId: string,
+  ) => {
+    const ns = isCustomDatastoreConfig(config) ? config.namespace : undefined;
+    if (caps?.scopedSync) {
+      const context: SyncContext = { models: [{ modelType, modelId }] };
+      return syncService.pullChanged({
+        context,
+        ...(ns ? { namespace: ns } : {}),
+      });
+    }
+    if (ns) return syncService.pullChanged({ namespace: ns });
+    return syncService.pullChanged();
+  };
+
   // All or nothing: a call that returns no lock result holds no locks.
   // Without this unwind a throw below leaves every lock taken so far held
   // until the process exits (swamp-club#2901).
@@ -3045,23 +3063,11 @@ export async function acquireModelLocks(
             dim(`Syncing model ${modelType}/${modelId} from datastore...`),
           );
 
-          const ns = isCustomDatastoreConfig(config)
-            ? config.namespace
-            : undefined;
           const syncService = customSyncService;
-          const pulled = await wrapSync(() => {
-            if (caps?.scopedSync) {
-              const context: SyncContext = {
-                models: [{ modelType, modelId }],
-              };
-              return syncService.pullChanged({
-                context,
-                ...(ns ? { namespace: ns } : {}),
-              });
-            }
-            if (ns) return syncService.pullChanged({ namespace: ns });
-            return syncService.pullChanged();
-          }, "pull");
+          const pulled = await wrapSync(
+            () => pullModel(syncService, modelType, modelId),
+            "pull",
+          );
           // 0 means the local cache is unchanged; void means unknown.
           if (pulled !== 0) synced = true;
         } catch (error) {
@@ -3105,7 +3111,24 @@ export async function acquireModelLocks(
         ...(info ? { heldBy: { holder: info.holder, pid: info.pid } } : {}),
       });
     }
-    if (lost.length > 0) throw new ModelLockLostError(lost);
+    if (lost.length === 0) return;
+    // The refused versions stay marked dirty in the cache, and an unlocked
+    // push later in this command (a workflow's end-of-run push, serve's
+    // sync) would upload them over the other run's. Pull the lost models so
+    // the cache holds the datastore's copy, which such a push then leaves
+    // alone. Best effort: the refusal stands whatever the pull does.
+    if (customSyncService) {
+      for (const { modelType, modelId } of lost) {
+        try {
+          await pullModel(customSyncService, modelType, modelId);
+        } catch (error) {
+          logger
+            .debug`Pull after losing the lock on ${modelType}/${modelId} failed: ${error}`;
+        }
+      }
+      catalogStore?.invalidate();
+    }
+    throw new ModelLockLostError(lost);
   };
 
   // `beforePush` runs inside the same wrapped call as the push, so in serve

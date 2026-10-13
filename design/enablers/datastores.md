@@ -5100,10 +5100,15 @@ than it did when taken, the push is refused and the run fails with
 process's identity, because extension locks write their own holder formats
 (some a pid of 0, some a random suffix). The nonce tells apart two holds by one
 process, as in serve; every extension lock keeps its nonce for a whole hold. A
-lock that read nothing when taken is not checked. A filesystem datastore has no
+lock that read nothing when taken is not checked. After a refusal the lost
+models are pulled, so the cache holds the datastore's copy rather than the
+refused versions, which stay marked dirty: a later unlocked push from the same
+command (a workflow's end-of-run push, serve's sync) would otherwise upload
+them over the other run's. A command whose own work succeeded fails with the
+refusal (`runCommandInRootUnit`) rather than logging it as a push warning. A filesystem datastore has no
 push and is unchanged, and v3 fences its own writer. The check and the upload
-are not atomic: a breakglass and a takeover inside that window can still lose a
-write. Phase 5's model leases, or create-only writes of version keys in the
+are not atomic, and the other run can push after that pull and before the
+command's end-of-run push: inside either window a write can still be lost. Phase 5's model leases, or create-only writes of version keys in the
 datastore extensions, close it.
 
 ### Other maintenance commands
