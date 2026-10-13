@@ -644,6 +644,18 @@ export class WorkerGateway {
         }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
       }
+      // A reconnect under verify-on-enroll turns the worker unverified while
+      // the steps placed before it still hold its slots, so its enrollment
+      // probe can be refused for want of one. When the last of those steps
+      // ends, probe again: nothing else would (swamp-club#3388).
+      if (
+        !unverified && currentStatus === "unverified" &&
+        entry.activeDispatchIds.length === 0 &&
+        entry.channel !== null && !entry.channel.closed &&
+        this.#options.verifyWorker
+      ) {
+        this.#startEnrollmentVerify(name);
+      }
     }
   }
 
@@ -855,15 +867,7 @@ export class WorkerGateway {
       });
 
       if (this.#options.verifyOnEnroll && this.#options.verifyWorker) {
-        this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
-          logger.error(
-            "Enrollment verify failed unexpectedly for {worker}: {error}",
-            {
-              worker: workerName,
-              error: e instanceof Error ? e.message : String(e),
-            },
-          );
-        });
+        this.#startEnrollmentVerify(workerName);
       } else {
         const snap = this.#snapshot(entry);
         this.#options.onWorkerEnrolled?.(snap);
@@ -1088,6 +1092,19 @@ export class WorkerGateway {
     }
   }
 
+  /** Run the enrollment probe without holding up the caller. */
+  #startEnrollmentVerify(workerName: string): void {
+    this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+      logger.error(
+        "Enrollment verify failed unexpectedly for {worker}: {error}",
+        {
+          worker: workerName,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      );
+    });
+  }
+
   async #runEnrollmentVerify(workerName: string): Promise<void> {
     const verifyWorker = this.#options.verifyWorker!;
     try {
@@ -1119,6 +1136,7 @@ export class WorkerGateway {
             methodName: "set_status",
             inputs: {
               status: "unverified",
+              activeDispatchIds: [...entry.activeDispatchIds],
               verifyFailureReason: probeResult.failureReason,
             },
           });
@@ -1140,6 +1158,7 @@ export class WorkerGateway {
           methodName: "set_status",
           inputs: {
             status: "unverified",
+            activeDispatchIds: [...entry.activeDispatchIds],
             verifyFailureReason: reason,
           },
         });
