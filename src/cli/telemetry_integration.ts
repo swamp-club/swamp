@@ -166,9 +166,9 @@ const ARG_SCHEMAS: Record<string, readonly ("categorical" | "redact")[]> = {
  * command tree exists, so the `behaviour` alias cannot be canonicalised and
  * gets its own entries. The schema is keyed on two words, so the positions
  * after `behavior <sub>` mirror the positions after the legacy key's second
- * word: `behavior run` / `describe` / `history` take the slots after `model
- * method <word>`, `behavior output` and `create` match `model output` and
- * `model create`, and the rest are all-redact like their unlisted twins.
+ * word: `behavior run` and `describe` take the slots after `model method
+ * <word>`, `create` matches `model create`, and the rest, including the
+ * `history` and `output` shorthands, are all-redact.
  */
 function behaviorArgSchemas(): Record<
   string,
@@ -178,8 +178,10 @@ function behaviorArgSchemas(): Record<
     run: ["redact", "categorical", "redact"], // name or @type, method, name
     create: ["categorical", "redact"], // type, name
     describe: ["redact", "categorical"], // name, method
-    history: ["redact", "categorical"], // sub-subcmd or name, id
-    output: ["categorical", "redact"], // sub-subcmd, id/query
+    // `history <name>` and `output <name>` are shorthands that take a name
+    // first, so neither slot can be categorical without recording it.
+    history: ["redact", "redact"], // sub-subcmd or name, id or name
+    output: ["redact", "redact"], // sub-subcmd or name, id/query
     get: ["redact"],
     edit: ["redact"],
     delete: ["redact"],

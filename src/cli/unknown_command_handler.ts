@@ -345,10 +345,21 @@ export function extractPositionalArgs(
   return positional;
 }
 
+/**
+ * `--version` is boolean only at the root; `data get`, `report get`, `model
+ * output data` and `source fetch` take `--version <n>`. A hint is built under
+ * a group, never the root, so it reads the next token as the value.
+ */
+const VALUE_TAKING_UNDER_GROUPS: ReadonlySet<string> = new Set([
+  "--version",
+  "-V",
+]);
+
 /** Whether the token after `flag` is its value rather than a word. */
 function takesNextArg(flag: string, next: string | undefined): boolean {
   return next !== undefined && !next.startsWith("-") &&
-    !isBooleanFlag(flag) && !flag.includes("=");
+    (VALUE_TAKING_UNDER_GROUPS.has(flag) || !isBooleanFlag(flag)) &&
+    !flag.includes("=");
 }
 
 /**

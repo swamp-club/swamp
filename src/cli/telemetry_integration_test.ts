@@ -630,6 +630,28 @@ Deno.test("extractCommandInfo: --log is a boolean flag and does not swallow the 
   assertEquals(beforeMethod.args, ["run", "<REDACTED>", "train"]);
 });
 
+Deno.test("extractCommandInfo: behavior history and output never record a name, under both spellings (swamp-club#3331)", () => {
+  // Both groups take a name as their shorthand positional, so neither slot
+  // may be categorical. The legacy model schemas record these slots; the
+  // behavior entries do not copy that.
+  const cases: ReadonlyArray<readonly string[]> = [
+    ["history", "my-server"],
+    ["history", "get", "my-server"],
+    ["history", "logs", "my-server"],
+    ["output", "my-server"],
+    ["output", "get", "abc123"],
+  ];
+  for (const words of cases) {
+    for (const group of ["behavior", "behaviour"]) {
+      const info = extractCommandInfo([group, ...words]);
+      assertEquals(info.subcommand, words[0]);
+      for (const arg of info.args) {
+        assertEquals(arg, "<REDACTED>", `${group} ${words.join(" ")}`);
+      }
+    }
+  }
+});
+
 Deno.test("extractCommandInfo: every behavior path is classified like its model twin, under both spellings (swamp-club#3331)", () => {
   const cases: ReadonlyArray<
     readonly [legacy: string[], preferred: string[], args: string[]]
@@ -680,11 +702,6 @@ Deno.test("extractCommandInfo: every behavior path is classified like its model 
       ["<REDACTED>"],
     ],
     [
-      ["model", "output", "get", "abc123"],
-      ["output", "get", "abc123"],
-      ["get", "<REDACTED>"],
-    ],
-    [
       ["model", "type", "describe", "aws-ec2"],
       ["type", "describe", "aws-ec2"],
       ["<REDACTED>", "<REDACTED>"],
@@ -731,9 +748,11 @@ Deno.test("extractCommandInfo: every behavior path is classified like its model 
         .args,
       legacyDescribe.args.slice(1),
     );
+    // The legacy history schema records the id; behavior history redacts it
+    // (see "behavior history and output never record a name").
     assertEquals(
       extractCommandInfo([group, "history", "get", "abc123"]).args,
-      legacyHistory.args.slice(1),
+      ["<REDACTED>", "<REDACTED>"],
     );
   }
 });

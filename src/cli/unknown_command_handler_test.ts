@@ -569,6 +569,16 @@ Deno.test("extractPositionalArgs - skips flags and their values", () => {
   assertEquals(result, ["home", "assistant"]);
 });
 
+Deno.test("extractPositionalArgs - --version under a group takes a value, as on data get", () => {
+  for (const flag of ["--version", "-V"]) {
+    const args = ["data", "frobnicate", flag, "3", "my-server"];
+    assertEquals(extractPositionalArgs(args, "data"), [
+      "frobnicate",
+      "my-server",
+    ], flag);
+  }
+});
+
 Deno.test("extractPositionalArgs - skips flag values between positional args", () => {
   const args = [
     "extension",
