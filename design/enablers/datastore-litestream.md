@@ -41,11 +41,12 @@ and the `_control/` records this layout sits beside.
 4. **`commits.db` keeps SQLite's default checkpointing and never forces a
    checkpoint.** Do not copy `catalog_store.ts`'s `wal_checkpoint(TRUNCATE)`
    pattern.
-5. **One replica path per writer fence.** `<prefix>/_litestream/<fence>/`.
-   Litestream 0.5 has no generations, and a second writer on the same path
-   corrupts the replica. In solo mode the fence that names the path is the one
-   at which the checkout's replication began, not each command's own fence
-   (see [Phase 4A](#what-changes-for-phase-4d-and-4e)).
+5. **One replica path per writer lineage.** `<prefix>/_litestream/<fence>/`,
+   named by the fence at which the lineage's replication began: in solo mode
+   one checkout's run of commands, not each command's own fence (see
+   [Phase 4A](#what-changes-for-phase-4d-and-4e)); in team mode the serve
+   leader's fence. Litestream 0.5 has no generations, and a second writer on
+   the same path corrupts the replica.
 6. **Windows: a supported target, gated on an upstream fix.** Litestream 0.5.16
    and 0.5.17 cannot replicate on Windows (litestream#1542, fixed on main by
    #1548, not yet released). Deno has no AF_UNIX client on Windows, so swamp
@@ -360,8 +361,9 @@ sidecar uploads a snapshot of `commits.db` on every command, and its replica
 grows quadratically: 311 MB for a 4 MB database after a day of 250 commands. It
 never compacts, and it pays new connections and credentials on every command. An
 idle sidecar adds 24–283 ms to a write command. **Waiting for replication is
-acceptable:** a v3 write command that waits is about 2–11 times faster than the
-v2 push it replaces.
+acceptable:** with an idle sidecar, a small v3 write that waits is 2–11 times
+faster than the v2 push it replaces, and every write in the table is faster
+(1.9–14 times).
 
 ### The model
 
@@ -464,7 +466,7 @@ profiles and 1.9 s on far S3.
   an idle sidecar a small write is 2.0–2.3 times faster near (6.4 times with
   SSO) and 7.7–11 times faster far. The wait replaces the push, and it is
   cheaper.
-- **The floor varies between configurations** (546–697 ms for a small write)
+- **The floor varies between configurations** (546–677 ms for a small write)
   because it touches no network: the difference is machine load and run order,
   not the profile. Variants are interleaved inside each configuration, so
   compare them along a row, not down the floor column.

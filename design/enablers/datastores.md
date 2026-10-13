@@ -2406,7 +2406,8 @@ that.
 - The Litestream record puts the replica beside `_control/` at
   `_litestream/<fence>/`, and the writer lease under `_control/writer/`
   carries one fence per datastore. One database matches one fence and one
-  sidecar.
+  sidecar. In solo mode the path's fence is the one at which the checkout's
+  replication lineage began (Phase 4A in `datastore-litestream.md`).
 - Serve handles several namespaces with one connection and one sidecar, not
   one of each per namespace.
 - Failover restores one database.
@@ -4157,9 +4158,13 @@ only while both versions write one datastore.
 **Litestream (Phase 4 D).** `v3WriterFence` gives the hold's fence, which D
 replicates under (`_litestream/<fence>/`), and `checkV3WriterLease` is the
 check a writer runs before it acknowledges a replicated commit. A fence is one
-acquisition: every CLI write command takes a new one, and so would replicate
-to a new path with a full snapshot, while serve keeps one fence for its
-lifetime. D plans for that cost and garbage-collects old fence paths.
+acquisition: every CLI write command takes a new one, while serve keeps one
+fence for its lifetime. Replicating under each command's own fence would give
+every command a new path and a full snapshot, so D keys the path by lineage
+instead: the fence at which the checkout's replication began. A successor from
+the same checkout after a clean release continues the path, a takeover by
+another checkout starts a new one, and D garbage-collects the paths a takeover
+leaves behind (Phase 4A in `datastore-litestream.md`).
 
 **Buckets.** The lease runs over any `ControlPlaneStore` with `putIfAbsent`,
 and its tests run against the in-memory remote's control plane too. Binding
