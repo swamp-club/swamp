@@ -1,15 +1,15 @@
 ---
 audience: maintainer, extension-author
-enables: [models, workflows]
+enables: [behaviors, workflows]
 last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Reports
 
 Reports are analysis functions that run after a method completes, or on demand.
-They turn model and workflow execution context into markdown and JSON, saved as
-data artifacts. Reports work on whatever context they get at runtime, not on
-specific model types, so report logic stays separate from model code.
+They turn behavior and workflow execution context into markdown and JSON, saved
+as data artifacts. Reports work on whatever context they get at runtime, not on
+specific behavior types, so report logic stays separate from behavior code.
 
 ## Report Definition
 
@@ -49,7 +49,7 @@ Each report declares a scope, which sets the shape of the context passed to
 | `model`    | After a method execution (model-level)   | `ModelReportContext`     |
 | `workflow`  | After a full workflow run completes      | `WorkflowReportContext`  |
 
-Reports with `scope: "method"` or `scope: "model"` run against one model
+Reports with `scope: "method"` or `scope: "model"` run against one behavior
 instance and method call. Reports with `scope: "workflow"` run after all
 workflow steps complete and get summary data for every step.
 
@@ -66,10 +66,10 @@ In a workflow, a failed step's report artifacts are recorded on its step run
 exactly as a successful step's are, so run history and
 `swamp data list --workflow --run` reach them. A failed forEach iteration uses
 the same vary-suffixed report names as a successful one. The built-in workflow
-summary lists the data a failed model-method step wrote. Its retrieval hints,
+summary lists the data a failed method step wrote. Its retrieval hints,
 like those of the built-in verification and method summaries, are
 `swamp data query` commands that name the run, job and step (or, for a method
-run, the model and version), so they read exactly the item listed
+run, the behavior and version), so they read exactly the item listed
 (`src/domain/data/data_query_command.ts`).
 
 ## Report Context
@@ -79,33 +79,33 @@ The three context variants share base fields and differ by scope
 
 ### Base Fields (all scopes)
 
-| Field                  | Type                       | Description                              |
-| ---------------------- | -------------------------- | ---------------------------------------- |
-| `repoDir`              | `string`                   | Repository root path                     |
-| `logger`               | `Logger`                   | LogTape logger for report output         |
-| `dataRepository`       | `UnifiedDataRepository`    | Read/query persisted data                |
-| `definitionRepository` | `DefinitionRepository`     | Read model definitions                   |
-| `swampSha?`            | `string`                   | Git commit sha of the swamp repo at execution time |
+| Field                  | Type                    | Description                                        |
+| ---------------------- | ----------------------- | -------------------------------------------------- |
+| `repoDir`              | `string`                | Repository root path                               |
+| `logger`               | `Logger`                | LogTape logger for report output                   |
+| `dataRepository`       | `UnifiedDataRepository` | Read/query persisted data                          |
+| `definitionRepository` | `DefinitionRepository`  | Read behavior definitions                          |
+| `swampSha?`            | `string`                | Git commit sha of the swamp repo at execution time |
 
 ### MethodReportContext / ModelReportContext
 
 Method and model scope contexts have the same core fields. Only method-scope
 contexts also have `extensionFile`.
 
-| Field             | Type                         | Description                                  |
-| ----------------- | ---------------------------- | -------------------------------------------- |
-| `scope`           | `"method"` / `"model"`       | Discriminant                                 |
-| `modelType`       | `ModelType`                  | The model type                               |
-| `modelId`         | `string`                     | Model instance ID                            |
-| `definition`      | `{ id, name, version, tags }`| Definition metadata                          |
-| `globalArgs`      | `Record<string, unknown>`    | Evaluated global arguments                   |
-| `methodArgs`      | `Record<string, unknown>`    | Per-method arguments                         |
-| `methodName`      | `string`                     | Which method was invoked                     |
-| `executionStatus` | `"succeeded"` / `"failed"`   | Method outcome                               |
-| `errorMessage?`   | `string`                     | Error message when execution failed          |
-| `dataHandles`     | `DataHandle[]`               | Data artifacts produced by the method        |
-| `outputSpecs?`    | `OutputSpecInfo[]`           | Output spec schemas from the model type definition |
-| `extensionFile`   | `(relPath: string) => string`| Resolve extension asset path (method-scope only) |
+| Field             | Type                          | Description                                           |
+| ----------------- | ----------------------------- | ----------------------------------------------------- |
+| `scope`           | `"method"` / `"model"`        | Discriminant                                          |
+| `modelType`       | `ModelType`                   | The behavior type                                     |
+| `modelId`         | `string`                      | Behavior instance ID                                  |
+| `definition`      | `{ id, name, version, tags }` | Definition metadata                                   |
+| `globalArgs`      | `Record<string, unknown>`     | Evaluated global arguments                            |
+| `methodArgs`      | `Record<string, unknown>`     | Per-method arguments                                  |
+| `methodName`      | `string`                      | Which method was invoked                              |
+| `executionStatus` | `"succeeded"` / `"failed"`    | Method outcome                                        |
+| `errorMessage?`   | `string`                      | Error message when execution failed                   |
+| `dataHandles`     | `DataHandle[]`                | Data artifacts produced by the method                 |
+| `outputSpecs?`    | `OutputSpecInfo[]`            | Output spec schemas from the behavior type definition |
+| `extensionFile`   | `(relPath: string) => string` | Resolve extension asset path (method-scope only)      |
 
 ### WorkflowReportContext
 
@@ -120,10 +120,10 @@ contexts also have `extensionFile`.
 | `stepExecutions`   | `StepExecution[]`                | Per-step details (job, task, status)          |
 
 Each `stepExecutions` entry has `jobName`, `stepName`, `taskType`, `modelName`,
-`modelType`, `methodName`, `status` (`"succeeded"`, `"failed"` or
-`"skipped"`), `dataHandles`, `methodArgs`, `modelId`, `globalArgs` and an
-optional `errorMessage`. `taskType` is the step's task kind (`model_method`,
-`assert`, `manual_approval`, `workflow`). For non-model tasks, the model fields
+`modelType`, `methodName`, `status` (`"succeeded"`, `"failed"` or `"skipped"`),
+`dataHandles`, `methodArgs`, `modelId`, `globalArgs` and an optional
+`errorMessage`. `taskType` is the step's task kind (`model_method`, `assert`,
+`manual_approval`, `workflow`). For non-behavior tasks, the behavior fields
 (`modelName`, `modelType`, `methodName`, `modelId`) are empty strings, and
 `errorMessage` holds the failure reason if the step failed.
 
@@ -151,7 +151,7 @@ export const report = {
 ### Name Convention
 
 Report names use the `@collective/name` pattern, with optional nested path
-segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`), as models
+segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`), as behaviors
 and other extension types do. When distributed via `extension push`, the
 collective must match the extension's collective.
 
@@ -210,7 +210,7 @@ The CLI sets two hooks on the registry at startup (`src/cli/mod.ts`):
 entries. Any domain service that iterates the registry (chiefly
 `executeReports` in `report_execution_service.ts`) must first call
 `ensureTypeLoaded` for every candidate name, then call `getAll()` and filter.
-Candidates are usually `selection.require` plus the model type's declared
+Candidates are usually `selection.require` plus the behavior type's declared
 report defaults. Skip this and lazy user-extension reports silently vanish on
 the second and later process runs, when the populated catalog leaves only
 eagerly registered builtins in the fully loaded map. Issue #81 fixed this
@@ -232,10 +232,10 @@ Registering a duplicate name throws. The full API is in
 
 Three layers select reports, from broadest to most specific.
 
-### 1. Model-Type Defaults
+### 1. Behavior-Type Defaults
 
-A model type declares default reports in `ModelDefinition.reports: string[]`.
-These are report names, not values, so the model and report bounded contexts
+A behavior type declares default reports in `ModelDefinition.reports: string[]`.
+These are report names, not values, so the behavior and report bounded contexts
 stay separate:
 
 ```typescript
@@ -247,7 +247,7 @@ export const model = {
 ```
 
 Every registered report named in this list is a candidate whenever a method
-runs on this model type.
+runs on this behavior type.
 
 ### 2. Definition YAML Overrides
 
@@ -302,9 +302,9 @@ workflow YAML files.
 
 `filterReports` in `report_execution_service.ts` runs these steps:
 
-1. **Build candidate set**: the union of model-type defaults
+1. **Build candidate set**: the union of behavior-type defaults
    (`ModelDefinition.reports`) and `selection.require` names. Workflow scope has
-   no model-type defaults, so its candidates are `selection.require` only.
+   no behavior-type defaults, so its candidates are `selection.require` only.
 2. **Scope filter**: only reports for the requested scope pass.
 3. **Definition/workflow skip**: `selection.skip` names are removed. Skip
    always wins.
@@ -349,7 +349,7 @@ Key invariants:
   skipped.
 - **Required reports are immune to CLI skip flags.** `--skip-reports` and
   `--skip-report <name>` cannot stop a required report.
-- **Only candidates run.** A report must be in model-type defaults or in
+- **Only candidates run.** A report must be in behavior-type defaults or in
   `require`. Being registered is not enough.
 
 ## Data Persistence
@@ -428,7 +428,7 @@ passed as literal `--input` values or resolved from expressions
 
 Report contexts also include an optional `redactSensitiveArgs` helper for
 custom extension reports that show argument values. It replaces values marked
-`{ sensitive: true }` in the model type's Zod schema with `"***"`.
+`{ sensitive: true }` in the behavior type's Zod schema with `"***"`.
 `buildRedactSensitiveArgs` builds it and attaches it to the context before the
 report runs (`src/domain/reports/report_execution_service.ts`).
 
@@ -440,15 +440,15 @@ redactSensitiveArgs?(
 ```
 
 The helper calls the shared `redactSensitiveValues(schema, data)` primitive
-(`src/domain/models/sensitive_field_extractor.ts`). That walks the model type's
-Zod schema via `extractSensitiveFields`, deep-clones the args, and replaces
-matching values with `"***"`.
+(`src/domain/models/sensitive_field_extractor.ts`). That walks the behavior
+type's Zod schema via `extractSensitiveFields`, deep-clones the args, and
+replaces matching values with `"***"`.
 
 - **Method/model scope**: looks up the schema via `modelRegistry.get(modelType)`
   and returns a redacted clone.
-- **Workflow scope**: returns args unchanged, since there is no single model
+- **Workflow scope**: returns args unchanged, since there is no single behavior
   type to look up.
-- **No model definition found**: returns every value as `"***"` via
+- **No behavior definition found**: returns every value as `"***"` via
   `redactAllValues`. This is the safe default when there is no schema for
   field-level redaction.
 - **No argument schema found**: returns every value as `"***"` via
@@ -458,10 +458,10 @@ Custom extension reports that output argument values should call
 `context.redactSensitiveArgs(args, kind)` so they do not save secrets.
 
 `redactSensitiveValues` is the one redaction primitive for every surface that
-honors the `sensitive: true` flag. `swamp model get` applies it to a model's
+honors the `sensitive: true` flag. `swamp model get` applies it to a behavior's
 global arguments in the libswamp read path before building `ModelGetData`
 (`src/libswamp/models/get.ts`). The log and JSON renderers, and
-`swamp model search` (same read path), therefore show `"***"`. With no model
+`swamp model search` (same read path), therefore show `"***"`. With no behavior
 type, the schema is unknown and `redactAllValues` redacts everything, as in the
 report path.
 
@@ -501,16 +501,16 @@ swamp report get cost-summary --model my-model --json
 swamp report get cost-summary --workflow deploy-pipeline
 ```
 
-| Flag                    | Description                                          |
-| ----------------------- | ---------------------------------------------------- |
-| `--model <name>`        | Scope to a specific model                            |
-| `--workflow <name>`     | Scope to a specific workflow                         |
-| `--version <version>`   | Get specific version number (default: latest)        |
-| `--variant <variant>`   | Select a specific forEach variant                    |
-| `--markdown`            | Plain markdown, not terminal-formatted; conflicts with `--json` |
-| `--json`                | Output in JSON format                                |
-| `--max-width <width>`   | Cap total output width in columns                    |
-| `--max-col-width <width>` | Cap individual table column width in characters   |
+| Flag                      | Description                                                     |
+| ------------------------- | --------------------------------------------------------------- |
+| `--model <name>`          | Scope to a specific behavior                                    |
+| `--workflow <name>`       | Scope to a specific workflow                                    |
+| `--version <version>`     | Get specific version number (default: latest)                   |
+| `--variant <variant>`     | Select a specific forEach variant                               |
+| `--markdown`              | Plain markdown, not terminal-formatted; conflicts with `--json` |
+| `--json`                  | Output in JSON format                                           |
+| `--max-width <width>`     | Cap total output width in columns                               |
+| `--max-col-width <width>` | Cap individual table column width in characters                 |
 
 ### Report Flags on `model method run`
 
@@ -548,7 +548,7 @@ directories:
 2. `reportsDir` in `.swamp.yaml`
 3. Default: `extensions/reports/`
 
-Reports placed next to models in `paths.base: manifest` extensions are also
+Reports placed next to behaviors in `paths.base: manifest` extensions are also
 found. If a manifest such as `extensions/models/myext/manifest.yaml` declares
 `reports:` entries with `paths.base: manifest`, its directory is added as a
 report source directory at startup (`discoverManifestCrossKindDirs` in

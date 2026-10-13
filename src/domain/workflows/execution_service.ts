@@ -3818,6 +3818,11 @@ export class WorkflowExecutionService {
         wfSetupSpan.end();
       }
 
+      // Saved before `started` is yielded, so the event's run id always names
+      // a recorded run: a client that stops listening at `started` (`swamp
+      // workflow run --detach`) can read the run at once (swamp-club#1090).
+      await this.saveRun(workflow.id, run);
+
       yield {
         kind: "started",
         runId: run.id,
@@ -3832,8 +3837,6 @@ export class WorkflowExecutionService {
           dependsOn: job.getDependencyNames(),
         })),
       };
-
-      await this.saveRun(workflow.id, run);
 
       if (this.runTracker) {
         const tracker = this.runTracker;
@@ -5125,11 +5128,15 @@ export class WorkflowExecutionService {
         for (const node of stepNodes) {
           const expanded = expandedStepsMap.get(node.name);
           if (expanded && expanded.length > 0) {
-            // Create nodes for each expanded step
-            for (const exp of expanded) {
+            // Create nodes for each expanded step, grouped under the forEach
+            // step so its iterations run in list order (swamp-club#3318)
+            for (const [index, exp] of expanded.entries()) {
               effectiveNodes.push({
                 name: exp.expandedName,
                 weight: node.weight,
+                group: exp.forEachVar.name !== ""
+                  ? { key: node.name, index }
+                  : undefined,
                 // Map dependencies to all expanded step names
                 dependencies: node.dependencies.flatMap((dep) => {
                   const depExpanded = expandedStepsMap!.get(dep);

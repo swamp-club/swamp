@@ -205,6 +205,12 @@ export class ExtensionLoader {
   private readonly repoDir: string | null;
   /** Symlink-resolved canonical repo root, resolved on first use. */
   private realRepoDir?: string;
+  /**
+   * Both spellings of each mounted directory, as configured and
+   * symlink-resolved, each ending in `/`, in source order. Resolved on
+   * first use.
+   */
+  private mountPrefixes?: readonly (readonly string[])[];
   private readonly datastoreResolver?: DatastorePathResolver;
   private readonly repository?: ExtensionRepository;
   private readonly adapter: KindAdapter;
@@ -931,10 +937,31 @@ export class ExtensionLoader {
     // from a directory walk on macOS) is one contributor, not two that
     // collide with each other.
     const real = realCanonicalPath(canonical);
-    return {
-      sourcePath: real,
-      pulled: this.repoDir !== null && this.isPulledSource(canonical, real),
-    };
+    const pulled = this.repoDir !== null &&
+      this.isPulledSource(canonical, real);
+    const mountIndex = pulled ? -1 : this.mountIndexOf(canonical, real);
+    return mountIndex < 0
+      ? { sourcePath: real, pulled }
+      : { sourcePath: real, pulled, mountIndex };
+  }
+
+  /**
+   * The position of the `.swamp-sources.yaml` mount a source lives under,
+   * matching either spelling of the source against either spelling of the
+   * mount, or -1 when it lives under none (swamp-club#2563).
+   */
+  private mountIndexOf(canonical: string, real: string): number {
+    this.mountPrefixes ??= (this.repository?.mountedSourceDirs ?? []).map(
+      (dir) => {
+        const resolved = realCanonicalPath(dir);
+        return (resolved === dir ? [dir] : [dir, resolved]).map((d) =>
+          d.endsWith("/") ? d : `${d}/`
+        );
+      },
+    );
+    return this.mountPrefixes.findIndex((prefixes) =>
+      prefixes.some((m) => canonical.startsWith(m) || real.startsWith(m))
+    );
   }
 
   /**
@@ -1158,10 +1185,12 @@ export class ExtensionLoader {
   /**
    * Settles every type conflict the loader's own catalog writes can
    * leave: pulled-vs-pulled first, keeping the earliest-indexed row, then
-   * pulled-vs-local, where local wins. In that order a local override
-   * always ends up the only claimant, however many pulled rows were typed
-   * the same (swamp-club#2490). Two different pulled extensions claiming
-   * one type are reported, since that choice is made silently here.
+   * conflicts with source-mounted rows (local beats mounted, an earlier
+   * mount beats a later one, swamp-club#2563), then pulled-vs-local, where
+   * local wins. In that order a local override always ends up the only
+   * claimant, however many pulled rows were typed the same
+   * (swamp-club#2490). Two different pulled extensions claiming one type
+   * are reported, since that choice is made silently here.
    */
   private settleTypeConflicts(catalog: ExtensionCatalogStore): void {
     if (!this.repoDir) return;
@@ -1169,6 +1198,11 @@ export class ExtensionLoader {
       this.logger,
       catalog.settlePulledTypeConflicts(this.repoDir),
     );
+    const mounted = this.repository?.settleMountedTypeConflicts() ?? [];
+    if (mounted.length > 0) {
+      this.logger
+        .debug`Cleared the type on ${mounted.length} source-mounted catalog row(s) a higher-precedence row also claims`;
+    }
     catalog.resolveOriginConflicts(this.repoDir);
   }
 
@@ -1180,9 +1214,11 @@ export class ExtensionLoader {
    * type (this works for wrapped exports, which source-text extraction
    * misses), and the type is written back only when no row claims it,
    * for at most one row per type, chosen by
-   * {@link compareExtensionPrecedence}: a local row before a pulled one,
-   * then the smallest canonical path, the Extension aggregate's I2
-   * tie-break.
+   * {@link compareExtensionPrecedence}: a local row before a
+   * source-mounted one before a pulled one, then the smallest canonical
+   * path, the Extension aggregate's I2 tie-break. The one exception: when
+   * every row claiming the type is a source-mounted row the chosen row
+   * outranks, the type moves to the chosen row (swamp-club#2563).
    *
    * Catalog-only: nothing is registered here, so a pulled row can never
    * take a type from a local override in the registry, and a failure
@@ -1237,7 +1273,20 @@ export class ExtensionLoader {
       // Check and write together, so two processes cannot each restore
       // a different candidate.
       catalog.runInTransaction(() => {
-        if (catalog.findByType(typeNormalized, kind)) return;
+        const holders = catalog.findAllByType(typeNormalized, kind);
+        // A local override that an older binary indexed typeless while a
+        // source-mounted row held its type takes the type back
+        // (swamp-club#2563). Any other holder keeps it.
+        const winnerContributor = this.contributorFor(winner);
+        const displaced = holders.filter((row) => {
+          const holder = this.contributorFor(row.source_path);
+          return holder.mountIndex !== undefined &&
+            compareExtensionPrecedence(winnerContributor, holder) < 0;
+        });
+        if (displaced.length !== holders.length) return;
+        for (const row of displaced) {
+          catalog.setTypeNormalized(row.source_path, "");
+        }
         catalog.setTypeNormalized(winner, typeNormalized);
       });
     }

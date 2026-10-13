@@ -1,10 +1,10 @@
 # Data Concepts
 
-## What is Model Data?
+## What is Behavior Data?
 
-Models produce data when methods execute. Each data item has:
+Behaviors produce data when methods execute. Each data item has:
 
-- **Name**: Unique identifier within the model
+- **Name**: Unique identifier within the behavior
 - **Version**: Auto-incrementing integer (starts at 1)
 - **Lifetime**: How long data persists
 - **Content type**: MIME type of the data
@@ -24,7 +24,7 @@ Standard tags categorize data:
 
 Data lifetime controls automatic expiration:
 
-| Lifetime    | Behavior                                              |
+| Lifetime    | Effect                                                |
 | ----------- | ----------------------------------------------------- |
 | `ephemeral` | Deleted after method invocation or workflow completes |
 | `job`       | Persists only while the creating job runs             |
@@ -37,7 +37,7 @@ Data lifetime controls automatic expiration:
 Each data item can have multiple versions. The GC setting controls version
 retention:
 
-| GC Setting  | Behavior                              |
+| GC Setting  | Effect                                |
 | ----------- | ------------------------------------- |
 | Integer (N) | Keep only the latest N versions       |
 | Duration    | Keep versions newer than the duration |

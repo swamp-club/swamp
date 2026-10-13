@@ -24,8 +24,8 @@ Handler → authorizeOrReject / audited() → AuditEmitter → RingBuffer → [c
    `AccessDecision`, so every allow or deny traces to a grant rule. Denials also
    emit an event.
 2. **audited()** wraps a handler's `Promise<void>`, emitting success on resolve
-   and failure on reject. It re-throws the original error, so handler behavior
-   is unchanged. All 106+ handlers are wrapped.
+   and failure on reject. It re-throws the original error, so handler results
+   are unchanged. All 106+ handlers are wrapped.
 3. **AuditEmitter** appends events synchronously to a **RingBuffer** (capacity
    10,000). On drain, **AuditChainState** adds integrity fields (sequence,
    SHA-256 digest, version) before sinks see them. Sink errors are logged and

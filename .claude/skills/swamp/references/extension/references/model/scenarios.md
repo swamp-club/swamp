@@ -28,7 +28,7 @@ End-to-end scenarios showing how to build custom extension models.
 
 ```
 swamp extension search Stripe → no community extension
-swamp model type search Stripe → no local results
+swamp behavior type search Stripe → no local results
 No existing model → Create extension model
 Need typed input validation → Define Zod schemas
 Store response data for CEL access → Use writeResource
@@ -168,7 +168,7 @@ export const model = {
 **2. Create a model instance**
 
 ```bash
-swamp model create @user/stripe-customer my-customer --json
+swamp behavior create @user/stripe-customer my-customer --json
 ```
 
 **3. Configure with vault for API key**
@@ -224,7 +224,7 @@ globalArguments:
 
 ```
 swamp extension search S3 → no community extension
-swamp model type search S3 → no local results
+swamp behavior type search S3 → no local results
 No existing model → Create extension model
 Full lifecycle management → create, update, delete methods
 Update reads existing state → Use context.readResource
@@ -576,7 +576,7 @@ jobs:
 
 ```
 swamp extension search VPC → no community extension
-swamp model type search VPC → no local results
+swamp behavior type search VPC → no local results
 No existing model → Create extension model
 Discover multiple resources → Factory model pattern
 Each resource needs unique ID → Dynamic instance names
@@ -676,7 +676,7 @@ export const model = {
 **2. Run the scanner**
 
 ```bash
-swamp model create @user/vpc-scanner my-scanner --json
+swamp behavior create @user/vpc-scanner my-scanner --json
 swamp behavior run my-scanner scan
 ```
 
@@ -741,7 +741,7 @@ jobs:
 
 ```
 swamp extension search shell → no community extension
-swamp model type search command/shell → exists locally
+swamp behavior type search command/shell → exists locally
 Want to add methods, not create new type → export const extension
 Cannot change schema → Only add new methods
 ```
@@ -830,7 +830,7 @@ export const extension = {
 **2. Verify extension loaded**
 
 ```bash
-swamp model type describe command/shell --json
+swamp behavior type describe command/shell --json
 # Should show audit and dryRun in methods list
 ```
 
@@ -838,10 +838,10 @@ swamp model type describe command/shell --json
 
 ```bash
 # Create a shell model
-swamp model create command/shell my-script --json
+swamp behavior create command/shell my-script --json
 
 # Configure it
-swamp model edit my-script
+swamp behavior edit my-script
 # Add: methods.execute.arguments.run = "echo 'Hello'"
 
 # Use the new audit method
@@ -898,13 +898,13 @@ swamp extension pull @swamp/digitalocean
 **3. Use the installed model type**
 
 ```bash
-swamp model type search DigitalOcean --json
+swamp behavior type search DigitalOcean --json
 # Now shows @swamp/digitalocean types
 
-swamp model type describe @swamp/digitalocean-droplet --json
+swamp behavior type describe @swamp/digitalocean-droplet --json
 # Review available methods and schema
 
-swamp model create @swamp/digitalocean-droplet my-droplet --json
+swamp behavior create @swamp/digitalocean-droplet my-droplet --json
 ```
 
 ### Expected Agent Behavior

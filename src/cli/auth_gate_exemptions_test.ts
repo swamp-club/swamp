@@ -50,6 +50,12 @@ Deno.test("authGateTiming: bare swamp and the auth path are exempt", () => {
       ["version", "--json"],
       ["update"],
       ["--log", "update"],
+      ["start"],
+      ["start", "--json"],
+      ["start", "status"],
+      ["start", "--no-browser"],
+      ["--json", "start"],
+      ["start", "status", "--workspace", "x"],
     ]
   ) {
     assertEquals(timing(args), "exempt", args.join(" "));
@@ -138,7 +144,9 @@ Deno.test("authGateTiming: every top-level command behind every boolean root opt
   const commands = tree.getCommands(true).map((c) => c.getName())
     // These hold exempt commands; their own tests cover them.
     .filter((name) =>
-      !["auth", "help", "completions", "version", "update"].includes(name)
+      !["auth", "help", "completions", "version", "update", "start"].includes(
+        name,
+      )
     );
   assertEquals(booleanRootOptions.includes("--log"), true);
   for (const option of booleanRootOptions) {

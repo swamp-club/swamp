@@ -5,7 +5,7 @@
 - [Common Errors](#common-errors)
   - ["No such key: resource" in CEL Expressions](#no-such-key-resource-in-cel-expressions)
   - ["No such key: attributes" after data.latest()](#no-such-key-attributes-after-datalatest)
-  - ["No data found for model"](#no-data-found-for-model)
+  - ["No data found for behavior"](#no-data-found-for-behavior)
   - ["Ownership validation failed"](#ownership-validation-failed)
   - ["Version not found"](#version-not-found)
   - ["GC deleted data I needed"](#gc-deleted-data-i-needed)
@@ -22,7 +22,7 @@ resource"
 
 **Causes**:
 
-1. **Model never executed** — the `resource` key only exists after a method
+1. **Behavior never executed** — the `resource` key only exists after a method
    writes data
 
 2. **Wrong spec or instance name** — the path must match exactly what
@@ -103,27 +103,27 @@ plain select:
 data.latest("model", "result").?attributes.?ready.orValue(false)
 ```
 
-### "No data found for model"
+### "No data found for behavior"
 
 **Symptom**: `swamp data list <model>` returns empty or error
 
 **Causes**:
 
-1. Model exists but no method has been run yet
-2. Model was deleted
-3. Wrong model name (typo or case mismatch)
+1. Behavior exists but no method has been run yet
+2. Behavior was deleted
+3. Wrong behavior name (typo or case mismatch)
 
 **Solutions**:
 
 ```bash
-# List all models to verify name
-swamp model search --json
+# List all behaviors to verify name
+swamp behavior search --json
 
 # Run a method to produce data
 swamp behavior run <model-name> <method>
 
-# Check if model input exists
-swamp model get <model-name> --json
+# Check if behavior input exists
+swamp behavior get <model-name> --json
 ```
 
 ### "Ownership validation failed"
@@ -133,9 +133,9 @@ swamp model get <model-name> --json
 
 **Causes**:
 
-1. A different model with the same data name is trying to overwrite data
+1. A different behavior with the same data name is trying to overwrite data
 2. The same name is written under a different owner type (for example `manual`
-   data later written by a model method)
+   data later written by a method)
 3. Manual data manipulation
 
 Ownership is checked on `ownerType` and `ownerRef` only. A legacy
@@ -148,11 +148,11 @@ Ownership is checked on `ownerType` and `ownerRef` only. A legacy
 swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select '{"ownerType": ownerType, "ownerRef": ownerRef}'
 
 # If intentional: delete the old data first
-swamp model delete <old-model-name> --json
+swamp behavior delete <old-model-name> --json
 ```
 
-**Prevention**: Use unique, model-specific data names. Avoid generic names like
-"output" or "state" across multiple models.
+**Prevention**: Use unique, behavior-specific data names. Avoid generic names
+like "output" or "state" across multiple behaviors.
 
 ### "Version not found"
 
@@ -162,7 +162,7 @@ swamp model delete <old-model-name> --json
 
 1. Version number never existed
 2. GC deleted the version
-3. Typo in model or data name
+3. Typo in behavior or data name
 
 **Solutions**:
 
@@ -187,7 +187,7 @@ swamp data query 'modelName == "<model-name>" && name == "<data-name>"' --select
 
 **Solutions**:
 
-1. **Prevent future issues** — adjust model's resource spec:
+1. **Prevent future issues** — adjust behavior's resource spec:
 
 ```typescript
 resources: {
@@ -223,7 +223,7 @@ identical.
 
 **Causes**:
 
-1. A model re-ran and wrote new data to the old name, overwriting the forward
+1. A behavior re-ran and wrote new data to the old name, overwriting the forward
    reference tombstone
 2. The rename chain is too deep (more than 5 levels)
 3. (`data query` only) The predicate names `version` or `isLatest`, or tests the
@@ -252,11 +252,11 @@ a bug report with `swamp issue`.
 
 **Symptom**: `swamp data rename <model> old new` fails with "Model not found"
 
-**Solution**: The first argument must be a valid model ID or name. Check
-available models:
+**Solution**: The first argument must be a valid behavior ID or name. Check
+available behaviors:
 
 ```bash
-swamp model search --json
+swamp behavior search --json
 ```
 
 ## Expression Debugging
@@ -264,7 +264,7 @@ swamp model search --json
 ### Step 1: Verify Data Exists
 
 ```bash
-# Check if model has any data
+# Check if behavior has any data
 swamp data list <model-name> --json
 
 # Get specific data item
@@ -277,21 +277,21 @@ For expression `model.my-vpc.resource.vpc.main.attributes.VpcId`:
 
 | Component | Check Command                                                                                    |
 | --------- | ------------------------------------------------------------------------------------------------ |
-| `my-vpc`  | `swamp model get my-vpc --json`                                                                  |
+| `my-vpc`  | `swamp behavior get my-vpc --json`                                                               |
 | `vpc`     | `swamp data list my-vpc --json` (check specName in tag)                                          |
 | `VpcId`   | `swamp data query 'modelName == "my-vpc" && name == "main"' --select content` (check attributes) |
 
-### Step 3: Validate Model Definition
+### Step 3: Validate Behavior Definition
 
 ```bash
-swamp model validate <model-name> --json
+swamp behavior validate <model-name> --json
 ```
 
 Look for expression validation errors in the output.
 
 ### Step 4: Test Expression in Isolation
 
-Create a test model that uses the expression and run validate:
+Create a test behavior that uses the expression and run validate:
 
 ```yaml
 name: test-expression
@@ -300,7 +300,7 @@ globalArguments:
 ```
 
 ```bash
-swamp model validate test-expression --json
+swamp behavior validate test-expression --json
 ```
 
 ## Data Recovery
@@ -351,7 +351,7 @@ Data is stored in `.swamp/data/`. Structure:
 1. **Check method output** — verify dataHandles were returned:
 
 ```bash
-swamp model output get <model-name> --json
+swamp behavior output get <model-name> --json
 # Look for artifacts in output
 ```
 

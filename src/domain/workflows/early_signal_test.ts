@@ -381,7 +381,13 @@ Deno.test("holdEarlySignal: a step that took the signal on opening is reported a
 });
 
 Deno.test("holdEarlySignal: a signal a step took is not given to the wait a later run opened under the key", async () => {
-  const store = new InMemorySignalWaitStore();
+  // The taker is below the key's highest record by then. It is found by its
+  // slot, never by listing the key records of every workflow.
+  const store = new class extends InMemorySignalWaitStore {
+    override listKeyRecords(): Promise<never> {
+      return Promise.reject(new Error("listed every key record"));
+    }
+  }();
   let taker: WaitKeyClaim | undefined;
   let later: WaitKeyClaim | undefined;
   const arrival = await holdEarlySignal(

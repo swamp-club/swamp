@@ -1,0 +1,628 @@
+## Compatibility
+
+Behavior is the product term for what swamp used to call a model. Use the
+`swamp behavior` spelling (alias `behaviour`). Every legacy `swamp model`
+spelling remains supported and is equivalent (same arguments, flags, JSON
+output, exit codes and audit action):
+
+| Preferred                                         | Legacy                                                                                   |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `swamp behavior run <name> <method>`              | `swamp model method run <name> <method>`                                                 |
+| `swamp behavior run @<type> <method> <n>`         | `swamp model @<type> method run <method> <n>`                                            |
+| `swamp behavior <cmd>`                            | `swamp model <cmd>` (create, get, edit, delete, validate, evaluate, search/list, cancel) |
+| `swamp behavior describe <name> <meth>`           | `swamp model method describe <name> <meth>`                                              |
+| `swamp behavior history [get\|search\|logs]`      | `swamp model method history [get\|search\|logs]`                                         |
+| `swamp behavior output [get\|search\|logs\|data]` | `swamp model output [get\|search\|logs\|data]`                                           |
+| `swamp behavior type describe\|search`            | `swamp model type describe\|search`                                                      |
+
+Stored names keep `model`: the `models/` directory, JSON keys and error codes
+(`modelName`, `model_not_found`), workflow step fields (`modelIdOrName`), and
+the CEL `model.<name>` / `model("<name>")` references.
+
+## Repository Structure
+
+Behavior definitions are stored directly in the `models/` directory, organized
+by type:
+
+```
+models/
+  {normalized-type}/
+    {name}.yaml              # default for new behaviors
+    {uuid}.yaml              # legacy format, still supported
+```
+
+Internal data (evaluated definitions, data artifacts, outputs) lives in
+`.swamp/`:
+
+```
+.swamp/definitions-evaluated/{normalized-type}/{name}.yaml
+.swamp/data/{normalized-type}/{model-id}/{data-name}/{version}/raw
+.swamp/outputs/{normalized-type}/{model-id}/{output-id}.yaml
+```
+
+## Finding Definition Files
+
+Behavior files may be named `{name}.yaml` or `{uuid}.yaml` (legacy). **Never
+guess the filename** — use the CLI to get the actual path:
+
+```bash
+swamp behavior get <name_or_id> --json   # creation path is in `behavior create --json` output
+```
+
+This works for both naming conventions.
+
+## Search for Behavior Types
+
+Find available behavior types in the system.
+
+```bash
+swamp behavior type search --json
+swamp behavior type search "echo" --json
+```
+
+**Output shape:**
+
+```json
+{
+  "query": "",
+  "results": [
+    { "raw": "command/shell", "normalized": "command/shell" }
+  ]
+}
+```
+
+## Describe Behavior Types
+
+Get the methods and argument schemas for a type. Use `--compact` for a minimal
+digest suitable for agent discovery.
+
+```bash
+swamp behavior type describe command/shell --compact --json
+```
+
+**Compact output shape:**
+
+```json
+{
+  "type": { "raw": "command/shell", "normalized": "command/shell" },
+  "version": "2026.02.09.1",
+  "globalArguments": {
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  },
+  "dataOutputSpecs": ["result"],
+  "methods": [
+    {
+      "name": "execute",
+      "description": "Execute a shell command and capture output",
+      "arguments": {
+        "properties": { "cmd": { "type": "string" } },
+        "required": ["cmd"]
+      }
+    }
+  ]
+}
+```
+
+Omit `--compact` for full JSON Schema detail on arguments and data output specs.
+
+**Key fields:**
+
+- `globalArguments` - JSON Schema for input YAML `globalArguments` section
+- `dataOutputSpecs` - Output spec names (compact) or full specs (full mode), at
+  type level
+- `methods` - Available operations with their per-method `arguments` schemas
+
+## Create Definitions
+
+```bash
+swamp behavior create command/shell my-shell --json
+```
+
+Set globalArguments at creation time with `--global-arg` (repeatable):
+
+```bash
+swamp behavior create aws/ec2/vpc my-vpc \
+  --global-arg region=us-east-1 \
+  --global-arg cidrBlock=10.0.0.0/16 \
+  --json
+```
+
+Use `${{ vault.get() }}` expressions for secrets — never resolve a secret and
+pass the literal value (see **swamp-vault** skill for details). Arguments can be
+literal or CEL expressions (bare tokens with `.` are CEL-evaluated):
+
+```bash
+swamp behavior create @user/my-api api-client \
+  --global-arg 'apiKey=${{ vault.get(prod-secrets, API_KEY) }}' \
+  --global-arg endpoint=https://api.example.com \
+  --json
+```
+
+Dot notation creates nested objects:
+
+```bash
+--global-arg config.db.host=localhost --global-arg config.db.port=5432
+# → globalArguments: { config: { db: { host: "localhost", port: "5432" } } }
+```
+
+> **Warning:** Omitting `--global-arg` creates an instance with empty
+> `globalArguments`. There is no inheritance from sibling instances or schema
+> templates. Fields without a `default` in the type's `globalArgumentsSchema`
+> arrive as `undefined` in `context.globalArgs.*`. Re-pass every value your
+> methods read from globalArgs.
+
+**Output shape:**
+
+```json
+{
+  "path": "definitions/command/shell/my-shell.yaml",
+  "type": "command/shell",
+  "name": "my-shell"
+}
+```
+
+After creation, edit the YAML file to set per-method `arguments` in the
+`methods` section.
+
+**Example input file:**
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-shell
+version: 1
+tags: {}
+methods:
+  execute:
+    arguments:
+      run: "echo 'Hello, world!'"
+```
+
+### Definition-Level Check Selection
+
+Definitions can control which pre-flight checks run via the `checks` field:
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-vpc
+version: 1
+tags: {}
+checks:
+  require:
+    - no-cidr-overlap # Must run, immune to --skip-checks CLI flags
+  skip:
+    - slow-api-check # Always skipped
+globalArguments:
+  cidrBlock: "10.0.0.0/16"
+methods:
+  create:
+    arguments: {}
+```
+
+**Precedence rules:**
+
+- `skip` always wins — even over `require` for the same check name
+- `require` makes checks immune to `--skip-checks`, `--skip-check <name>`, and
+  `--skip-check-label <label>` CLI flags (e.g., `--skip-checks` skips
+  non-required checks but required checks still run)
+- `require` checks still respect `appliesTo` method scoping
+- `behavior validate` honors `skip` lists and warns on require/skip overlap;
+  validation errors if a check name doesn't exist on the behavior type
+
+### Behavior Inputs Schema
+
+Behaviors can define an `inputs` schema for runtime parameterization:
+
+```yaml
+id: 550e8400-e29b-41d4-a716-446655440000
+name: my-deploy
+version: 1
+tags: {}
+inputs:
+  properties:
+    environment:
+      type: string
+      enum: ["dev", "staging", "production"]
+      description: Target environment
+    dryRun:
+      type: boolean
+      default: false
+  required: ["environment"]
+globalArguments:
+  target: ${{ inputs.environment }}
+  simulate: ${{ inputs.dryRun }}
+methods:
+  deploy:
+    arguments: {}
+```
+
+Inputs are provided at runtime with `--input` or `--input-file` and referenced
+in globalArguments using `${{ inputs.<name> }}` expressions.
+
+**Factory pattern:** Use inputs to create multiple instances from one behavior
+definition — for **data reuse** (same schema, different parameters) and
+**concurrency** (separate instances hold separate locks, so long-running methods
+on one instance don't block other instances). See
+[references/scenarios.md#scenario-5](references/scenarios.md#scenario-5-factory-pattern-for-behavior-reuse).
+
+## Edit a Definition
+
+**Recommended:** Use `swamp behavior get <name> --json` to get the file path,
+then edit directly with the Edit tool, then validate with
+`swamp behavior validate <name> --json`.
+
+**Alternative methods:**
+
+- Interactive: `swamp behavior edit my-shell` (opens in system editor)
+- Stdin: `cat updated.yaml | swamp behavior edit my-shell --json`
+
+A stdin update whose `name` differs from the behavior being edited is refused.
+Add `--allow-rename` to rename on purpose; a name another behavior holds is
+refused either way.
+
+## Delete a Behavior
+
+Delete a behavior and all related artifacts (data, outputs, logs).
+
+```bash
+swamp behavior delete my-shell --json
+```
+
+**Output shape:**
+
+```json
+{
+  "deleted": {
+    "id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "name": "my-shell",
+    "type": "command/shell",
+    "inputPath": "models/command/shell/my-shell.yaml"
+  },
+  "resourceDeleted": false,
+  "outputsDeleted": 0,
+  "evaluatedInputDeleted": false,
+  "dataDeleted": false
+}
+```
+
+## Validate Behaviors
+
+Validate a behavior definition against its type schema. Use `--label` to run
+only checks with a specific label, and `--method` to simulate validation for a
+specific method context.
+
+```bash
+swamp behavior validate my-shell --json
+swamp behavior validate --json                          # Validate all behaviors
+swamp behavior validate my-shell --label policy --json  # Only checks with label "policy"
+swamp behavior validate my-shell --method create --json # Validate for a specific method
+```
+
+**Output shape (single):**
+
+```json
+{
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "modelName": "my-shell",
+  "type": "command/shell",
+  "validations": [
+    { "name": "Definition schema", "passed": true },
+    { "name": "Global arguments", "passed": true },
+    { "name": "Expression paths", "passed": true }
+  ],
+  "warnings": [
+    {
+      "name": "Environment variables detected",
+      "message": "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+      "envVars": [
+        { "path": "globalArguments.baseUrl", "envVar": "JENKINS_BASE_URL" }
+      ]
+    },
+    {
+      "name": "Template syntax passed through",
+      "message": "This text is not a swamp expression and is passed to the method unchanged. ...",
+      "templates": [
+        { "path": "globalArguments.message", "text": "{{host.name}}" }
+      ]
+    }
+  ],
+  "passed": true
+}
+```
+
+A failed `Expression paths` item also carries `expressionErrors`, one entry per
+failed expression. Read these rather than parsing `error`, which is the same
+content as text. `remedy` is the fix shared by every error of the same form, so
+several entries can carry the same one.
+
+```json
+{
+  "name": "Expression paths",
+  "passed": false,
+  "error": "- {{self.name}}\n  Expression uses {{...}} instead of ${{...}} at \"globalArguments.message\"\n  ...",
+  "expressionErrors": [
+    {
+      "expression": "{{self.name}}",
+      "error": "Expression uses {{...}} instead of ${{...}} at \"globalArguments.message\"",
+      "suggestion": "Add \"$\" prefix: ${{...}}.",
+      "remedy": "If this is another service's template syntax, build it with CEL string concatenation, ..."
+    }
+  ]
+}
+```
+
+**Output shape (all):**
+
+```json
+{
+  "models": [
+    { "modelId": "...", "modelName": "my-shell", "validations": [...], "warnings": [...], "passed": true }
+  ],
+  "totalPassed": 5,
+  "totalFailed": 1,
+  "totalWarnings": 1,
+  "passed": false
+}
+```
+
+### IMPORTANT: Handling Validation Warnings
+
+**When `warnings` contains "Environment variables detected", STOP and ask the
+user before proceeding.** This means the behavior's results depend on env vars
+that may differ between machines or environments.
+
+- **Tell the user** which fields use which env vars and ask if this is
+  intentional.
+- **Suggest alternatives:** separate behaviors per environment (e.g.,
+  `prod-jenkins` and `dev-jenkins` with hardcoded values), or `vault.get()` for
+  sensitive values.
+- **Never silently run a method** on a behavior with env var warnings without
+  user confirmation — the data artifacts will be stored under the behavior name
+  and may contain results from an unintended environment.
+
+**"Template syntax passed through" does not need a stop.** It lists `{{ ... }}`
+or `${ ... }` text that is not a swamp expression (Datadog `{{host.name}}`,
+shell `${HOME}`), and `${{ ... }}` text that references nothing swamp provides
+(GitHub Actions `${{ github.sha }}`), which the method receives unchanged.
+Mention it to the user. Only if a listed value was meant as a swamp expression,
+rewrite it as `${{ ... }}`. A `{{ ... }}` on a swamp root (`self`, `model`,
+`env`, `inputs`, ...) fails `Expression paths` instead; the error names the
+remedies. To keep such text literal, pass it through with `literal()`
+(`${{ literal('{{env.name}}') }}`), or have the behavior type declare the field
+with `.meta({ foreignTemplate: true })`.
+
+## Expression Language
+
+Behavior inputs support CEL expressions using `${{ <expression> }}` syntax.
+Reference types, data versioning functions, and examples are in
+[references/expressions.md](references/expressions.md).
+
+## Evaluate Definitions
+
+Evaluate expressions and write results to `inputs-evaluated/`.
+
+```bash
+swamp behavior evaluate my-subnet --json
+swamp behavior evaluate --all --json
+```
+
+**Output shape:**
+
+```json
+{
+  "evaluatedInputs": [
+    {
+      "name": "my-subnet",
+      "type": "aws/subnet",
+      "path": "inputs-evaluated/aws/subnet/my-subnet.yaml"
+    }
+  ]
+}
+```
+
+## Run Methods
+
+Execute a method on a behavior input.
+
+```bash
+swamp behavior run my-shell execute
+swamp behavior run my-deploy create --input environment=prod
+swamp behavior run my-deploy create --input environment=prod --input replicas=3
+swamp behavior run my-deploy create --input config.timeout=30  # dot notation for nesting
+swamp behavior run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
+swamp behavior run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
+swamp behavior run my-deploy create --input-file inputs.yaml
+echo '{"environment": "prod"}' | swamp behavior run my-deploy create --stdin
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp behavior run my-deploy create --stdin  # NDJSON: one run per line
+swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp behavior run my-deploy create --stdin
+swamp behavior run my-deploy create --last-evaluated
+swamp behavior run my-deploy create --skip-checks
+swamp behavior run my-deploy create --skip-check valid-region
+swamp behavior run my-deploy create --skip-check-label live
+```
+
+**Inputs are evaluated.** `--input`, `--input-file`, and `--stdin` values are
+treated as operator-written: any `${{ vault.get(...) }}` or `${{ env.X }}` in
+them resolves and reaches the method in plaintext. For text you did not write
+(issue bodies, tickets, scraped pages), add `--literal-inputs`: values reach the
+method verbatim, `@` is not read as a file path, and a value routed to a global
+argument that holds `${{` is refused rather than stored. The flag covers every
+input in the call, vault references included, so pass secrets through the
+definition instead; it cannot be combined with `--last-evaluated`. See the vault
+reference, "Trust Boundary: Which Inputs Are Evaluated".
+
+```bash
+swamp behavior run github-pr update-body --literal-inputs --input-file body.json
+```
+
+**Data versioning:** Running a method multiple times creates new data versions
+(v1, v2, ...), never overwrites. Each run's artifacts are preserved. Use
+`swamp data query 'modelName == "<model>" && name == "<data>" && version == <N>' --select content`
+to access a specific version, or see the **swamp-data** skill for version
+history and cleanup.
+
+Pre-flight checks run automatically before mutating methods (`create`, `update`,
+`delete`, `action`). Read-only methods (`sync`, `get`, etc.) do not trigger
+checks.
+
+**Environment variable warnings** are emitted before execution if the behavior
+definition uses `${{ env.* }}` expressions. When you see these warnings in the
+output, **pause and confirm with the user** that the current environment
+variables are correct for the intended target. See
+[Handling Validation Warnings](#important-handling-validation-warnings) above.
+
+**Options:**
+
+| Flag                         | Description                                     |
+| ---------------------------- | ----------------------------------------------- |
+| `--input <value>`            | Input values (key=value repeatable, or JSON)    |
+| `--input-file <f>`           | Input values from YAML file                     |
+| `--last-evaluated`           | Use previously evaluated behavior (skip eval)   |
+| `--skip-checks`              | Skip all pre-flight checks                      |
+| `--skip-check <name>`        | Skip a specific check by name (repeatable)      |
+| `--skip-check-label <label>` | Skip all checks with a given label (repeatable) |
+
+**Output shape:**
+
+```json
+{
+  "outputId": "d1e2f3a4-b5c6-4d7e-f8a9-b0c1d2e3f4a5",
+  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "modelName": "my-shell",
+  "method": "execute",
+  "status": "succeeded",
+  "duration": 150,
+  "artifacts": {
+    "resource": ".swamp/data/command/shell/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/result/1/raw"
+  }
+}
+```
+
+## Behavior Outputs
+
+Use `swamp behavior output search`, `output get`, `output logs`, and
+`output data` to inspect method execution results. See
+[references/outputs.md](references/outputs.md) for commands and output shapes.
+
+### Inspecting Factory Method Results
+
+When a factory method produces multiple data artifacts, use `swamp data query`
+(from the **swamp-data** skill) to explore them:
+
+```bash
+# List all artifacts from a behavior
+swamp data query 'modelName == "my-scanner"' --select '{"name": name, "version": version}'
+
+# Filter by spec name and extract fields
+swamp data query 'modelName == "my-scanner" && specName == "result"' \
+    --select '{"host": attributes.hostname, "status": attributes.status}'
+```
+
+For single-output inspection, `swamp behavior output get <name> --json` is
+sufficient. For browsing N artifacts, `data query` with `--select` is the
+primary pattern.
+
+## Run Tracking
+
+swamp tracks in-flight runs — both method executions and workflow runs — in a
+local SQLite database (`.swamp/run_tracker.db`). Every execution registers with
+the tracker, heartbeats every 30s, and completes on success/failure. Stale runs
+(heartbeat >90s old with a dead process) are automatically reaped on next
+invocation.
+
+The central command is `swamp run`:
+
+| Question                                    | Command                         |
+| ------------------------------------------- | ------------------------------- |
+| What's running right now?                   | `swamp run history --active`    |
+| What ran recently (last 24h)?               | `swamp run history`             |
+| Full history of tracked runs                | `swamp run history --all`       |
+| Structured output for scripting             | `swamp run history --json`      |
+| Are there stuck/orphaned runs?              | `swamp run doctor`              |
+| Fix stuck runs automatically                | `swamp run doctor --fix`        |
+| Cancel a specific behavior's running method | `swamp behavior cancel <name>`  |
+| Cancel all running methods                  | `swamp behavior cancel --all`   |
+| What completed runs exist (YAML outputs)?   | `swamp behavior output search`  |
+| Execution history with duration/status      | `swamp behavior history search` |
+
+See `swamp help run history` for the full schema.
+
+## Workflow Example
+
+**Design check — before creating a behavior, ask the user:**
+
+1. Will this behavior have **multiple methods** that might run at the same time
+   (e.g., a long-running build AND an SSH session)?
+2. Will any method be **long-running** (builds, deployments, large data
+   transfers)?
+
+If yes to either: each independent concern should be a **separate behavior
+instance**. Swamp holds an exclusive per-behavior lock for the entire duration
+of a method execution — a 20-minute build locks out every other method on that
+behavior. Use the factory pattern to split concerns into separate instances so
+they can run concurrently. See
+[references/scenarios.md#scenario-5](references/scenarios.md#scenario-5-factory-pattern-for-behavior-reuse).
+
+**Steps:**
+
+1. **Search community extensions** first:
+   `swamp extension search <query> --json` — prefer `@swamp/*` official
+   extensions. If a match exists, install with `swamp extension pull <package>`
+   instead of building from scratch
+2. **Search local types**: `swamp behavior type search "shell" --json`
+3. **Describe** to understand the schema:
+   `swamp behavior type describe command/shell --compact --json`
+4. **Create** an input file:
+   `swamp behavior create command/shell my-shell --json`
+5. **Edit** the YAML file to set `methods.execute.arguments.run`
+6. **Validate** the behavior: `swamp behavior validate my-shell --json`
+7. **Check warnings** — if the validation output has non-empty `warnings`, stop
+   and ask the user before proceeding (see
+   [Handling Validation Warnings](#important-handling-validation-warnings))
+8. **Run** the method: `swamp behavior run my-shell execute`
+9. **View** the output: `swamp behavior output get my-shell --json`
+
+## Data Ownership
+
+Data is owned by the creating behavior — see
+[references/data-ownership.md](references/data-ownership.md) for rules and
+validation.
+
+## Choosing the Right Approach
+
+| Task                                                  | Approach                               |
+| ----------------------------------------------------- | -------------------------------------- |
+| New API/service integration                           | Extension behavior (`swamp-extension`) |
+| Existing behavior missing a method                    | Extend it (`swamp-extension`)          |
+| Reusable data pipeline (reports, analysis, summaries) | Report extension (`swamp-report`)      |
+| Ad-hoc debugging or one-off data inspection           | Inline processing is fine              |
+
+## When to Use Other Skills
+
+| Need                               | Use Skill               |
+| ---------------------------------- | ----------------------- |
+| Create/run workflows               | `swamp-workflow`        |
+| Manage secrets                     | `swamp-vault`           |
+| Repository structure               | `swamp-repo`            |
+| Manage data lifecycle              | `swamp-data`            |
+| Explore/query method results       | `swamp-data`            |
+| Create custom TypeScript behaviors | `swamp-extension`       |
+| Create reports for behaviors       | `swamp-report`          |
+| Understand swamp internals         | `swamp-troubleshooting` |
+
+## References
+
+- **Outputs**: See [references/outputs.md](references/outputs.md) for output
+  search, get, logs, and data commands with output shapes
+- **Examples**: See [references/examples.md](references/examples.md) for
+  complete behavior workflows and CEL expression reference
+- **Troubleshooting**: See
+  [references/troubleshooting.md](references/troubleshooting.md) for common
+  errors and fixes
+- **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
+  end-to-end scenarios (shell commands, chained lookups, runtime inputs)
+- **Data chaining**: See
+  [references/data-chaining.md](references/data-chaining.md) for command/shell
+  behavior examples and chaining patterns
+- **Remote execution / worker placement**: See
+  [../workflow/references/remote-execution.md](../workflow/references/remote-execution.md)

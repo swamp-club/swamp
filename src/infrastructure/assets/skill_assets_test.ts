@@ -135,17 +135,17 @@ Deno.test("SkillAssets.copySkillsTo rejects path traversal attempts", async () =
   });
 });
 
-Deno.test("SkillAssets.copySkillsTo copies model guide and references", async () => {
+Deno.test("SkillAssets.copySkillsTo copies behavior guide and references", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    const guidePath = join(dir, "swamp", "references", "model", "guide.md");
+    const guidePath = join(dir, "swamp", "references", "behavior", "guide.md");
     const examplesPath = join(
       dir,
       "swamp",
       "references",
-      "model",
+      "behavior",
       "references",
       "examples.md",
     );
@@ -153,7 +153,7 @@ Deno.test("SkillAssets.copySkillsTo copies model guide and references", async ()
       dir,
       "swamp",
       "references",
-      "model",
+      "behavior",
       "references",
       "scenarios.md",
     );

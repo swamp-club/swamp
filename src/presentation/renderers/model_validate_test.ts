@@ -23,6 +23,7 @@ import { consumeStream } from "../../libswamp/stream.ts";
 import type { ModelValidateEvent } from "../../libswamp/models/validate.ts";
 import { createModelValidateRenderer } from "./model_validate.ts";
 import { UserError } from "../../domain/errors.ts";
+import type { CommandSurface } from "../command_surface.ts";
 
 async function* toStream(
   events: ModelValidateEvent[],
@@ -322,4 +323,65 @@ Deno.test("JsonModelValidateRenderer - includes the entries of a failed Expressi
   } finally {
     console.log = originalLog;
   }
+});
+
+// --- Surfaces (swamp-club#3331) ---
+
+async function renderAllLines(surface?: CommandSurface): Promise<string[]> {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => lines.push(msg);
+  try {
+    const renderer = createModelValidateRenderer("log", surface);
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: {
+          models: [{
+            modelId: "def-1",
+            modelName: "my-model",
+            type: "aws/ec2",
+            validations: [{ name: "schema", passed: true }],
+            warnings: [],
+            passed: true,
+          }],
+          totalPassed: 1,
+          totalFailed: 0,
+          totalWarnings: 0,
+          passed: true,
+        },
+      }]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(lines.join("\n")).split("\n");
+}
+
+Deno.test("LogModelValidateRenderer - validate all keeps its exact legacy text", async () => {
+  assertEquals(await renderAllLines(), [
+    "Validating all models...",
+    "",
+    "my-model (aws/ec2)",
+    "  \u2713 schema",
+    "Result: PASSED",
+    "",
+    "Summary: 1/1 models passed",
+    "Overall: PASSED",
+  ]);
+  assertEquals(await renderAllLines("model"), await renderAllLines());
+});
+
+Deno.test("LogModelValidateRenderer - validate all on the behavior surface says behaviors", async () => {
+  assertEquals(await renderAllLines("behavior"), [
+    "Validating all behaviors...",
+    "",
+    "my-model (aws/ec2)",
+    "  \u2713 schema",
+    "Result: PASSED",
+    "",
+    "Summary: 1/1 behaviors passed",
+    "Overall: PASSED",
+  ]);
 });

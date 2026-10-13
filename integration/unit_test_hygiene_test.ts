@@ -196,6 +196,9 @@ const PINNED_SUBPROCESS_SOCKET_TESTS: readonly string[] = [
   "src/infrastructure/process/process_kill_test.ts",
   // Spawns a deno child to deliver real OS signals to shutdown handlers.
   "src/infrastructure/process/shutdown_handlers_test.ts",
+  // HTTP adapter test: probing a port-0 localhost server is the behaviour
+  // under test.
+  "src/infrastructure/process/start_instance_probe_test.ts",
   // Runtime adapter test: spawning deno is the behaviour under test.
   "src/infrastructure/runtime/embedded_deno_runtime_test.ts",
   // Runs `openssl` to mint throwaway certificates for TLS validation.

@@ -201,7 +201,7 @@ Keys are mapped to 1Password `op://` URIs:
 | `item/section/field`    | `op://vault/item/section/field` |
 | `op://vault/item/field` | Passed through directly         |
 
-### Write Behavior
+### Writes
 
 - If the item exists, the field is updated via `op item edit`
 - If the item does not exist, a new Secure Note is created via `op item create`

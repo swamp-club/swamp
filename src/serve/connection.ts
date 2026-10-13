@@ -109,6 +109,7 @@ import {
   handleWorkflowResume,
   handleWorkflowRun,
   handleWorkflowRunSearch,
+  handleWorkflowRunSummary,
   handleWorkflowSchema,
   handleWorkflowSearch,
   handleWorkflowSignal,
@@ -700,6 +701,10 @@ const ModelOutputSearchRequestSchema = z.object({
   id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
+    model: z.string().optional(),
+    since: z.string().optional(),
+    until: z.string().optional(),
+    limit: z.number().int().nonnegative().optional(),
   }).optional(),
 });
 
@@ -790,12 +795,32 @@ const WorkflowRunSearchRequestSchema = z.object({
   payload: z.object({
     query: z.string().optional(),
     since: z.string().optional(),
+    until: z.string().max(64).optional(),
     status: z.string().optional(),
     workflow: z.string().optional(),
+    workflows: z.array(z.string().max(1024)).max(1_000).optional(),
+    triggerSource: z.string().max(256).optional(),
+    statuses: z.array(z.string().max(64)).max(32).optional(),
+    triggerSources: z.array(z.string().max(256)).max(32).optional(),
     tags: z.record(z.string(), z.string()).optional(),
     inputs: z.record(z.string(), z.string()).optional(),
     limit: z.number().int().positive().max(10_000).optional(),
     offset: z.number().int().nonnegative().optional(),
+  }).optional(),
+});
+
+const WorkflowRunSummaryRequestSchema = z.object({
+  type: z.literal("workflow.run.summary"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    since: z.string().max(64).optional(),
+    until: z.string().max(64).optional(),
+    workflows: z.array(z.string().max(1024)).max(1_000).optional(),
+    triggerSource: z.string().max(256).optional(),
+    triggerSources: z.array(z.string().max(256)).max(32).optional(),
+    // Any finite number; the handler clamps it to 0..100.
+    recentLimit: z.number().finite().optional(),
+    timeline: z.boolean().optional(),
   }).optional(),
 });
 
@@ -1473,6 +1498,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowHistoryLogsRequestSchema,
   WorkflowHistorySearchRequestSchema,
   WorkflowRunSearchRequestSchema,
+  WorkflowRunSummaryRequestSchema,
   WorkflowSchemaRequestSchema,
   WorkflowApprovalsRequestSchema,
   WorkflowApproveRequestSchema,
@@ -3037,6 +3063,19 @@ export function handleMessage(
           request.payload,
         ),
         auditOpts("data", "workflow", request.payload?.query ?? "*"),
+      );
+      break;
+    case "workflow.run.summary":
+      task = audited(
+        handleWorkflowRunSummary(
+          socket,
+          ctx,
+          request.id,
+          controller,
+          principal,
+          request.payload,
+        ),
+        auditOpts("data", "workflow", "*"),
       );
       break;
     case "workflow.schema":

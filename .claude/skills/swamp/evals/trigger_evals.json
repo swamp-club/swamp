@@ -2,17 +2,17 @@
   {
     "query": "Search for model types that handle payments",
     "should_trigger": true,
-    "note": "model domain — type search"
+    "note": "behavior domain — type search"
   },
   {
     "query": "Run the validate method on the payment-processor model with amount=100",
     "should_trigger": true,
-    "note": "model domain — method execution"
+    "note": "behavior domain — method execution"
   },
   {
     "query": "How do I create an input for the validate method?",
     "should_trigger": true,
-    "note": "model domain — create input"
+    "note": "behavior domain — create input"
   },
   {
     "query": "How do I define a workflow in YAML that orchestrates multiple models?",
@@ -222,16 +222,41 @@
   {
     "query": "Run swamp behavior run my-server deploy with env=prod",
     "should_trigger": true,
-    "note": "model domain — behavior run (preferred method-run spelling)"
+    "note": "behavior domain — behavior run (preferred method-run spelling)"
   },
   {
     "query": "What flags does swamp behaviour run accept?",
     "should_trigger": true,
-    "note": "model domain — behaviour alias spelling"
+    "note": "behavior domain — behaviour alias spelling"
   },
   {
     "query": "Use swamp behavior run @swamp/aws/ec2/vpc create my-vpc to make a VPC",
     "should_trigger": true,
-    "note": "model domain — direct-type behavior run"
+    "note": "behavior domain — direct-type behavior run"
+  },
+  {
+    "query": "Create a behavior with swamp behavior create command/shell disk-check",
+    "should_trigger": true,
+    "note": "behavior domain — preferred create spelling"
+  },
+  {
+    "query": "Use swamp behavior type search to find a behavior type for Stripe",
+    "should_trigger": true,
+    "note": "behavior domain — preferred type search spelling"
+  },
+  {
+    "query": "Show the history of my last runs with swamp behavior history search",
+    "should_trigger": true,
+    "note": "behavior domain — preferred history spelling"
+  },
+  {
+    "query": "Run swamp model method run my-server deploy with env=prod",
+    "should_trigger": true,
+    "note": "behavior domain — legacy method-run spelling still routes"
+  },
+  {
+    "query": "What does swamp model output get return?",
+    "should_trigger": true,
+    "note": "behavior domain — legacy output spelling still routes"
   }
 ]

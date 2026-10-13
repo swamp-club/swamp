@@ -1,7 +1,7 @@
 # Direct Type Execution in Workflows
 
-The default way to call model methods from workflows. Use `modelType` +
-`modelName` to drive inputs dynamically without managing definition YAML files.
+The default way to call methods from workflows. Use `modelType` + `modelName` to
+drive inputs dynamically without managing definition YAML files.
 
 ## Syntax
 
@@ -22,8 +22,9 @@ task:
   rejects YAML with both.
 - `modelType` requires `modelName` to name the auto-created definition.
 - Auto-created definitions are stored in `.swamp/auto-definitions/` and exist
-  for data ownership boundaries. They are not visible in `swamp model search` or
-  `swamp model list` (by design). Use `swamp model get <name>` to inspect them.
+  for data ownership boundaries. They are not visible in `swamp behavior search`
+  or `swamp behavior list` (by design). Use `swamp behavior get <name>` to
+  inspect them.
 - Inputs are routed between global args and method args using the type's schemas
   (method args take precedence on ambiguous keys).
 - An optional `globalArgs` field passes global arguments explicitly, bypassing
@@ -76,6 +77,6 @@ all iterations, or a template `modelName` for per-iteration definitions.
 Use `modelIdOrName` only when the definition needs persistent, managed
 configuration:
 
-- CEL expressions in global arguments (vault refs, cross-model data refs)
+- CEL expressions in global arguments (vault refs, cross-behavior data refs)
 - Version-controlled definition files committed to the repo
 - A shared definition referenced across multiple workflows

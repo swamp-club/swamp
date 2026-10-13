@@ -78,6 +78,7 @@ import { serveCommand } from "./commands/serve.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
 import { questCommand } from "./commands/quest.ts";
+import { startCommand } from "./commands/start.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -243,6 +244,7 @@ import {
 import {
   collectDirsForKind,
   expandSourcePaths,
+  flattenSourceKindDirs,
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
@@ -381,6 +383,8 @@ const NON_REPO_COMMANDS = new Set([
   "telemetry",
   "issue",
   "quest",
+  // Manages its own home workspace by path; never runs a model.
+  "start",
 ]);
 
 /**
@@ -544,6 +548,7 @@ export async function configureStartupExtensions(
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
   const sourceWebhooksDirs = collectDirsForKind(resolvedSources, "webhooks");
+  const mountedSourceDirs = flattenSourceKindDirs(resolvedSources);
 
   const resolveAbsoluteKindDir = (
     resolveDir: (m: RepoMarkerData | null) => string,
@@ -608,6 +613,7 @@ export async function configureStartupExtensions(
         ),
         repoRoot: repoDir,
         localManifestIdentity,
+        mountedSourceDirs,
       });
       datastoreTypeRegistry.setLoader(() =>
         loadUserDatastores(
@@ -678,6 +684,7 @@ export async function configureStartupExtensions(
               lockfileRepository,
               repoRoot: repoDir,
               localManifestIdentity,
+              mountedSourceDirs,
             }),
           }),
         );
@@ -1004,6 +1011,7 @@ export function configureExtensionAutoResolver(
   outputMode: "log" | "json",
   identity: ClientIdentity = {},
   managedLockfilePath?: string,
+  mountedSourceDirs: readonly string[] = [],
 ): void {
   const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length === 0 || !marker) {
@@ -1055,6 +1063,7 @@ export function configureExtensionAutoResolver(
             {},
           ),
           repoRoot: repoDir,
+          mountedSourceDirs,
         }),
       }),
       output: createAutoResolveOutputAdapter(outputMode),
@@ -2026,7 +2035,8 @@ export function registerCommands(cli: AnyCommand): void {
     .command("serve", serveCommand)
     .command("agent", agentCommand)
     .command("worker", workerCommand)
-    .command("quest", questCommand);
+    .command("quest", questCommand)
+    .command("start", startCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
@@ -2587,6 +2597,7 @@ async function runInvocation(
       getOutputModeFromArgs(args),
       autoResolverIdentity,
       resolveAutoResolverLockfilePath(repoDir, marker),
+      flattenSourceKindDirs(resolvedSources),
     );
   }
 

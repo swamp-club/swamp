@@ -6,13 +6,13 @@ last-verified: 2026-10-08 @ 03ca42ca
 
 # Datastores
 
-A datastore is where swamp keeps runtime data: versioned model data, workflow
+A datastore is where swamp keeps runtime data: versioned behavior data, workflow
 runs, method outputs, encrypted secrets and cached bundles. Audit logs,
 telemetry and run logs stay with the checkout that wrote them, whatever the
 datastore (see "v3 stream directories").
 
-Source-of-truth files (model definitions, workflow definitions, vault configs)
-are never in the datastore. They live in the repo's top-level
+Source-of-truth files (behavior definitions, workflow definitions, vault
+configs) are never in the datastore. They live in the repo's top-level
 `models/`, `workflows/` and `vaults/` directories, tracked in git.
 
 ## Backends
@@ -141,9 +141,9 @@ config is validated against the extension's optional `configSchema` Zod schema.
 
 ### Config Value Interpolation
 
-String values in the datastore `config` can use `${{ }}` expressions, as model
-and workflow definitions do. They are resolved before the extension's schema
-validation and `createProvider()` factory see the config.
+String values in the datastore `config` can use `${{ }}` expressions, as
+behavior and workflow definitions do. They are resolved before the extension's
+schema validation and `createProvider()` factory see the config.
 
 Two namespaces are supported.
 
@@ -178,8 +178,8 @@ datastore:
 
 **Limitations:**
 
-- Only `env.*` and `vault.get()` work. The full CEL context (model references,
-  data lookups) does not exist this early in startup.
+- Only `env.*` and `vault.get()` work. The full CEL context (behavior
+  references, data lookups) does not exist this early in startup.
 - Extension vault bundles load straight from the `.swamp/vault-bundles/` cache
   during early boot, bypassing the extension loader. Install an extension vault
   before referencing it here.
@@ -262,7 +262,7 @@ remote. Other push errors are still downgraded to warnings, as before, so a
 brief S3 failure does not kill a run. Managed-config writes are the exception:
 any failed push exits non-zero (see "Where mutations write").
 
-**Setup timeout behavior.** In `datastore setup extension`, a push or pull
+**Setup timeouts.** In `datastore setup extension`, a push or pull
 timeout is recoverable. The datastore type is still written to `.swamp.yaml`,
 and the user resumes with `swamp datastore sync --push --timeout <big>`. Hard
 failures (auth, network, config) still block writing the type. Otherwise a slow
@@ -338,6 +338,20 @@ namespaced one. Each `DEFAULT_DATASTORE_SUBDIRS` directory found at
 `Deno.rename()`. The catalog is then invalidated so backfill rebuilds it from
 the new paths.
 
+Migration never treats the catalog as datastore content (swamp-club#3316). On a
+repo-local datastore `{base}/data/` is also where the catalog lives, so that
+directory is merged entry by entry rather than renamed whole, and `_catalog.db`
+and its SQLite sidecars (`CATALOG_FILE_NAMES` in
+`src/domain/datastore/datastore_config.ts`) stay where they are. They are not
+moved, not compared in the collision check below, and not counted as data by
+the reverse check. A directory holding only the catalog is nothing to move, so
+the command is safe to re-run: after a complete migration it reports nothing to
+migrate, and after one that stopped part-way it moves the directories the
+earlier run did not reach. A confirmed run in either direction also deletes any
+stale catalog copy from `{base}/{namespace}/data/`, which earlier versions left
+there by moving the catalog along with the data. It never deletes from the
+directory holding the live catalog.
+
 If a file exists at both the root and namespace paths, forward migration
 compares them byte by byte. Identical copies (e.g. left by a buggy pull that
 wrote namespace-stripped files to the cache root) are resolved by deleting the
@@ -365,12 +379,12 @@ Two things are not namespaced:
 
 #### Orphaned data reclamation (`swamp data prune`)
 
-**Orphaned data** is stored data whose model definition no longer exists in its
-namespace: the definition was deleted, or the model instance moved to another
-namespace and left its old data behind.
+**Orphaned data** is stored data whose behavior definition no longer exists in
+its namespace: the definition was deleted, or the behavior instance moved to
+another namespace and left its old data behind.
 
 `swamp data delete` and `swamp data gc` both fail on it. The on-disk layout and
-the catalog `DELETE` predicate are keyed by model type
+the catalog `DELETE` predicate are keyed by behavior type
 (`{typeDir}/{modelId}/...` and `type_normalized`), and the type normally comes
 from the definition. So `delete` throws `Model not found`, and `gc` only applies
 each item's frozen `lifetime`/`garbageCollection` policy, never collecting
@@ -381,10 +395,11 @@ cost of every write.
 groups by `(type, modelId)`, and checks whether each group's definition still
 exists. The check uses the definition repository's `findById`, which searches
 both `models/` and `.swamp/auto-definitions/`, like `swamp model get`. So
-auto-definition-backed models (auto-created model-run/workflow models, installed
-`@swamp/*` models) count as live and are never pruned. Groups with no live
-definition are removed by the definition-free `delete(type, modelId, dataName)`,
-which deletes all versions on disk and their catalog rows.
+auto-definition-backed behaviors (ones auto-created by a direct run or a
+workflow, and installed `@swamp/*` behaviors) count as live and are never
+pruned. Groups with
+no live definition are removed by the definition-free `delete(type, modelId,
+dataName)`, which deletes all versions on disk and their catalog rows.
 
 Reclamation is irreversible and based on inference: a definition can be briefly
 absent during a branch switch or migration. So prune runs only when invoked,
@@ -394,11 +409,12 @@ lock-free read-only path. Otherwise it takes the global datastore lock (via
 
 Two neighbouring concepts differ:
 
-- **`swamp data gc`** applies the retention policy a model declared (lifetime
-  and version cap). `prune` removes data whose model is gone. `gc` stays safe
+- **`swamp data gc`** applies the retention policy a behavior declared (lifetime
+  and version cap). `prune` removes data whose behavior is gone. `gc` stays safe
   to run unattended; `prune` keeps the inferential deletion behind its own verb.
 - **"Orphan recovery"** in `data_access_service.ts` does the opposite: at read
-  time it keeps data reachable across a model's UUID change. It never deletes.
+  time it keeps data reachable across a behavior's UUID change. It never
+  deletes.
 
 ## Remote Datastore Sync
 
@@ -538,7 +554,7 @@ namespace:
 A refusal is a `UserError` with that code in `--json` output and exit code 1,
 and says nothing was changed. A garbled marker is refused because treating it
 as format 2 is the unsafe direction. A failed read passes because blocking
-offline or degraded use would change behaviour for every v2 datastore, and the
+offline or degraded use would change how every v2 datastore works, and the
 command meets the same outage itself. The remote read is bounded by
 `DATASTORE_FORMAT_READ_TIMEOUT_MS` (3 s) through a provider's datastore-wide
 store, and by `DATASTORE_FORMAT_FALLBACK_READ_TIMEOUT_MS` (4 s) on the
@@ -611,8 +627,8 @@ Serve runs three background pollers to fix this:
 - **AccessDataPoller** (`subdirs: ["data/swamp/grant", ...]`) refreshes
   access-control grants and groups, then reloads the policy snapshot.
 - **RuntimeDataPoller** (`subdirs: ["data", "auto-definitions"]`) refreshes the
-  `data/` subtree (runtime model output), then invalidates the query catalog so
-  the next `data.query` rebuilds from the new local files. It pulls
+  `data/` subtree (runtime behavior output), then invalidates the query catalog
+  so the next `data.query` rebuilds from the new local files. It pulls
   `auto-definitions/` in the same pull, because a definition a peer creates
   while serve is running is looked up in the local cache: token authentication
   resolves a server token's definition by name on every connection, and worker
@@ -693,7 +709,7 @@ to `{namespace}/` in the remote. Extensions without it still receive the field
 but should ignore it and sync everything, as in solo mode.
 
 When `scopedSync` is `true`, swamp core passes `pullChanged()` and
-`pushChanged()` a `SyncContext` listing the models being worked on:
+`pushChanged()` a `SyncContext` listing the behaviors being worked on:
 
 ```typescript
 interface SyncContext {
@@ -711,12 +727,13 @@ extension gets `pullChanged()` / `pushChanged()` with no arguments, as today.
 **Graceful degradation.** If `capabilities()` throws, core falls back to full
 sync. The try/catch wraps only the `capabilities()` call, not pull/push.
 
-**Per-model loop behavior.** `acquireModelLocks` calls `pullChanged()` once per
-model as it takes each lock. With `scopedSync`, each call's context holds only
-the model whose lock was taken, so the extension pulls one model per call.
+**Per-behavior loop.** `acquireModelLocks` calls `pullChanged()` once
+per behavior as it takes each lock. With `scopedSync`, each call's context holds
+only the behavior whose lock was taken, so the extension pulls one behavior per
+call.
 
-**Push path.** The flush function calls `pushChanged()` once (not per model)
-under the global lock. With `scopedSync`, the context holds all models,
+**Push path.** The flush function calls `pushChanged()` once (not per behavior)
+under the global lock. With `scopedSync`, the context holds all behaviors,
 deduplicated. With `twoPhaseSync`, the push splits into `preparePush` (outside
 the global lock) and `commitPush` (under it); see "Two-Phase Sync" below.
 
@@ -728,12 +745,12 @@ never be skipped or moved.
 
 A pull that resolves to `0` changed nothing in the local cache, so the catalog
 is still accurate. Skipping the invalidation then avoids a full catalog
-backfill, which on a large repo would otherwise run while the per-model lock is
-held (swamp-club#2553). That makes the `pullChanged` return value part of the
-sync contract: the number of local cache files written or removed, `0` only
-when nothing changed, and `void` when unknown (treated as changed). The S3 and
-GCS extensions return the downloaded count, and neither removes local files
-during a pull.
+backfill, which on a large repo would otherwise run while the per-behavior lock
+is held (swamp-club#2553). That makes the `pullChanged` return value part of the
+sync contract: the number of local cache files written or removed, `0` only when
+nothing changed, and `void` when unknown (treated as changed). The S3 and GCS
+extensions return the downloaded count, and neither removes local files during a
+pull.
 
 **Catalog freshness.** An invalidated catalog keeps its rows, because a full
 backfill is additive (swamp-club#1581), so three rules keep reads current:
@@ -776,19 +793,19 @@ without syncing each other's data.
 2. **Coordinator → extension.** The coordinator passes `{ signal, namespace }`
    to `pullChanged()` on pull and to `pushChanged()` on push (flush). The
    namespace field is included only when non-empty; solo-mode calls omit it.
-3. **Per-model path.** `acquireModelLocks` reads `datastoreConfig.namespace` and
-   passes it with the `SyncContext` (model list). With `namespacedSync`
+3. **Per-behavior path.** `acquireModelLocks` reads `datastoreConfig.namespace`
+   and passes it with the `SyncContext` (behavior list). With `namespacedSync`
    advertised, both are passed. With only a namespace (no `scopedSync`), the
    extension gets `{ namespace }` alone.
 
 #### Per-namespace index partitioning
 
-> **Extension behaviour.** This section describes the `@swamp/s3-datastore`
+> **Extension design.** This section describes the `@swamp/s3-datastore`
 > extension's index design; none of it is implemented in this repo.
 
 > **See also:** The [shard-first index](#shard-first-index) design extends
-> partitioning beyond per-namespace to per-model shards covering all datastore
-> subdirectories and removes the monolithic index.
+> partitioning beyond per-namespace to per-behavior shards covering all
+> datastore subdirectories and removes the monolithic index.
 
 Extensions advertising `namespacedSync: true` partition their remote index per
 namespace:
@@ -835,6 +852,11 @@ It lives at `{namespace}/.namespace.json` in the remote (extension backends) or
   its first commit (swamp-club#3301). `createNamespaceListDeps` builds the
   listing for the CLI and serve alike.
 
+A manifest that is not valid JSON, lacks string `namespace` and `repoId`
+fields, or has a `registeredAt` that is not a string, is never skipped: namespace commands refuse with an error naming the
+file (swamp-club#3319). Skipping it would let `datastore setup` treat a
+namespace whose owner cannot be read as unclaimed.
+
 For extension datastores, `DatastoreProvider.registerNamespace()` and
 `DatastoreProvider.listNamespaces()` manage manifests through the remote API
 (S3 PUT/GET, or GCS). After the remote write, swamp core also writes the
@@ -849,7 +871,7 @@ that conflict detection is unavailable and only updates `.swamp.yaml`.
 
 > **Next step:** `commitPush` still reads, merges and writes the full monolithic
 > index. The [shard-first index](#shard-first-index) design removes it:
-> `commitPush` touches only the affected per-model partition shard(s), so
+> `commitPush` touches only the affected per-behavior partition shard(s), so
 > lock-hold time scales with the write size, not the total index.
 
 When an extension advertises `twoPhaseSync: true`, swamp core splits the push
@@ -870,7 +892,7 @@ Two-phase (twoPhaseSync: true):
   release global lock
 ```
 
-This helps when many per-model writers in one namespace run at once. Without
+This helps when many per-behavior writers in one namespace run at once. Without
 it, each writer holds the global lock for a full push, so all writes queue. With
 it, the slow file I/O (`preparePush`) overlaps across writers and only the fast
 index merge (`commitPush`) is serialized.
@@ -897,12 +919,12 @@ Core provides these, so extensions need no concurrency control of their own:
 
 1. **Global lock on `commitPush`.** The index read-modify-write is always
    serialized; two `commitPush` calls never overlap.
-2. **Per-model locks across both phases**, held from before `preparePush` to
+2. **Per-behavior locks across both phases**, held from before `preparePush` to
    after `commitPush`. The symmetric drain in structural commands waits for
    them, so a concurrent delete or GC cannot interfere.
-3. **Additive merge.** Per-model locks keep concurrent writers on separate file
-   paths, so their manifests never conflict. `commitPush` merges into whatever
-   the index currently holds.
+3. **Additive merge.** Per-behavior locks keep concurrent writers on separate
+   file paths, so their manifests never conflict. `commitPush` merges into
+   whatever the index currently holds.
 4. **Catalog export before upload.** `.catalog-export.json` is written before
    `preparePush`, so it is uploaded with the files. It is a full snapshot of the
    local catalog, so a concurrent overwrite still gives a correct (more
@@ -916,7 +938,7 @@ Extensions that do not advertise `twoPhaseSync`, or lack
 
 ### Shard-First Index
 
-> **Extension behaviour.** This section describes the `@swamp/s3-datastore`
+> **Extension design.** This section describes the `@swamp/s3-datastore`
 > extension's index design and is not implemented in this repo. Core's only
 > part is the optional `migrateMonolithToShards?()` method on
 > `DatastoreSyncService`, its `MigrateIndexResult`, and the
@@ -927,7 +949,7 @@ whole monolithic `.datastore-index.json` under the lock. On a busy namespace
 with a large index, this can take so long that few concurrent writers fit in
 the 60-second lock timeout.
 
-Shard-first splits the index into per-model shard files under `_index/`, and
+Shard-first splits the index into per-behavior shard files under `_index/`, and
 `commitPush` reads and writes only the shard(s) it touches. The monolith is no
 longer the source of truth during `commitPush`. Lock-hold time depends on the
 write size (typically KB), not the index size (possibly hundreds of MB).
@@ -938,9 +960,9 @@ Each datastore subdirectory has a partition key strategy:
 
 | Subdirectory              | Partition key pattern                      | Granularity  |
 |---------------------------|--------------------------------------------|--------------|
-| `data/`                   | `data--{type}--{modelId}`                  | Per model    |
-| `outputs/`                | `outputs--{type}--{modelId}`               | Per model    |
-| `definitions-evaluated/`  | `definitions-evaluated--{type}--{modelId}` | Per model    |
+| `data/`                   | `data--{type}--{modelId}`                  | Per behavior |
+| `outputs/`                | `outputs--{type}--{modelId}`               | Per behavior |
+| `definitions-evaluated/`  | `definitions-evaluated--{type}--{modelId}` | Per behavior |
 | `workflows-evaluated/`    | `workflows-evaluated--{workflowId}`        | Per workflow |
 | `workflow-runs/`          | `workflow-runs--{workflowId}`              | Per workflow |
 | `auto-definitions/`       | `auto-definitions`                         | Single shard |
@@ -949,9 +971,9 @@ Each datastore subdirectory has a partition key strategy:
 | `logs/`                   | `logs`                                     | Single shard |
 | `files/`                  | `files`                                    | Single shard |
 
-Model-scoped subdirectories (`data/`, `outputs/`, `definitions-evaluated/`) get
-a shard per model. Low-cardinality ones (`audit/`, `telemetry/`, etc.) get one
-shard each, since they are small and rarely written concurrently.
+Behavior-scoped subdirectories (`data/`, `outputs/`, `definitions-evaluated/`)
+get a shard per behavior. Low-cardinality ones (`audit/`, `telemetry/`, etc.)
+get one shard each, since they are small and rarely written concurrently.
 
 Each shard is `_index/{partitionKey}.json`. A `_meta.json` file lists all
 partition keys and a monotonic `commitSeq` counter:
@@ -998,9 +1020,9 @@ partition keys.
 
 #### Pull path
 
-**Scoped pull** (`pullChanged` with `context.models`): read the relevant model
-shard(s) from `_index/`. With `_meta.json` at version 2, no monolith fallback is
-needed.
+**Scoped pull** (`pullChanged` with `context.models`): read the relevant
+behavior shard(s) from `_index/`. With `_meta.json` at version 2, no monolith
+fallback is needed.
 
 **Unscoped pull** (`pullChanged` without context): read `_meta.json` for all
 partition keys, fetch every shard in parallel, and merge into the in-memory
@@ -1030,7 +1052,7 @@ Rules:
    hashes with a streaming hasher (`node:crypto.createHash`), not by reading
    whole files with `Deno.readFile`.
 
-These rules are convention only; the interface cannot express memory behavior.
+These rules are convention only; the interface cannot express memory use.
 The conformance suite in `packages/testing/` documents the expectation.
 
 #### Shard cleanup
@@ -1080,7 +1102,7 @@ Edge cases:
   version that supports shard-first indexing.
 - **Empty datastore**: recovers from the `_index/` listing if shards exist.
 
-**Pre-migration behavior:** When `_meta.json` is missing or `version: 1`,
+**Before migration:** When `_meta.json` is missing or `version: 1`,
 `commitPush` and `pullChanged` use the monolithic path, as before shard-first.
 An info-level log says migration is available via
 `swamp datastore migrate-index`. Upgrading the extension alone causes no
@@ -1305,7 +1327,7 @@ each see their own unit, and a promise started inside a scope keeps it after the
 scope returns. A write that lands after its unit committed is rejected. No
 production code opens a scope yet (pinned empty in
 `integration/datastore_write_seams_rules_test.ts`): the flush paths still push,
-and behaviour is unchanged. Phase 2 opens scopes from use cases.
+and nothing else changes. Phase 2 opens scopes from use cases.
 
 **End of Phase 1 (swamp-club#2996).** Every hooked datastore-tier repository
 stages typed changes through `signalChange`. Two rules in
@@ -1382,7 +1404,7 @@ operation inside a unit of work:
   runs its write section in `runCommandInRootUnit`
   (`src/cli/command_root_unit.ts`), whose flush is the push the command made
   before, at the same point:
-  - Model-lock commands split `ModelLockResult.flush()` into `push()` and
+  - Behavior-lock commands split `ModelLockResult.flush()` into `push()` and
     `release()`. `push` is the root's flush, and `release` runs after the root
     has ended, so the locks are released after the push, as before. `flush()`
     is still push-then-release for per-step locks inside a workflow run, its
@@ -1416,7 +1438,7 @@ operation inside a unit of work:
   `cancelLocatedRunAndPush` (`src/serve/suspended_run_cancel.ts`) does the same.
   `executeWorkflowWithLocks` (`src/serve/deps.ts`) runs each workflow run from
   the `workflow.run` handler, webhooks and the scheduler in a root whose flush
-  is the post-run push under the gate's shared mode. Each step's model lock
+  is the post-run push under the gate's shared mode. Each step's behavior lock
   still pushes on its own when the step releases it. A run's root stays open for
   the whole run, so every change its steps stage is held in the root's
   `staged()` list until the run ends. Each entry is a path, so this costs little
@@ -1428,13 +1450,13 @@ operation inside a unit of work:
   mark was staged (`pushWhen: "completed"`), because a legacy root also flushes
   on abandon.
 - **Serve success-only, method run and resume roots (swamp-club#3035).** The
-  handlers that push only after a successful reply (model, vault and workflow
+  handlers that push only after a successful reply (behavior, vault and workflow
   create, edit and delete, and `vault.migrate`) run their work in a root whose
   flush pushes only once that reply was sent. A root always commits there,
   because those handlers answer their own failures, so the flush checks the
   reply rather than the outcome. `model.method.run` runs the run in a root
   whose flush is its push under the gate's shared mode, once the run completed
-  (a use case that reports an error still completes). A run that took model
+  (a use case that reports an error still completes). A run that took behavior
   locks pushes them as the root's flush instead, on every outcome, and releases
   them after the root (swamp-club#3055). `workflow.resume` and the detached
   resume (`startDetachedResume`, `src/serve/resume_launcher.ts`) push on every
@@ -1449,7 +1471,7 @@ operation inside a unit of work:
     takes `pushWhen: "always" | "completed"`, the one "push only on success"
     option; the CLI's root, `stageWritesThenPush` and the serve method-run
     handlers use it instead of their own flags.
-  - Serve `model.method.run` makes the model lock's push its root's flush on
+  - Serve `model.method.run` makes the behavior lock's push its root's flush on
     every outcome and releases the lock after the root. The reply, telemetry,
     cancel or run deregistration and stream terminal keep their place: before
     a lock's push, and around the no-lock push as before.
@@ -1459,12 +1481,12 @@ operation inside a unit of work:
     `runInCoordinatorRoot` (`src/cli/coordinator_root.ts`), whose flush is
     the global lock's coordinator push (`pushGlobalLockAtEnd`). As at
     teardown, a push timeout is thrown after a completed command and dropped
-    after a failed one. `workflow evaluate` with dynamic model references
+    after a failed one. `workflow evaluate` with dynamic behavior references
     gives that push to the root it already opens, since a second root would
     nest. The teardown stays as a safety net and finds nothing left to flush.
-  - Per-step model locks inside a workflow run keep `ModelLockResult.flush()`
+  - Per-step behavior locks inside a workflow run keep `ModelLockResult.flush()`
     (push, then release): the step's lock owns its push and release, and Phase
-    3 replaces model locks with leases.
+    3 replaces behavior locks with leases.
   - The push functions live in `src/infrastructure/persistence/push_paths.ts`
     (`pushNamespace`, `pushNamespaceCounted`, `pushModelLockScope`,
     `pushGlobalLockAtEnd`); commands
@@ -1504,7 +1526,7 @@ operation inside a unit of work:
     grant commit (their writes, before the root `stageWritesThenPush` already
     opens for the push), serve boot reconciliation and its continuous tick,
     the OAuth collective refresh's token
-    updates and revokes, `model.validate` (whose model checks receive the
+    updates and revokes, `model.validate` (whose behavior checks receive the
     hooked repositories), `run.doctor`'s fix, worker data-plane writes and
     capability deletes, and the CLI's
     `workflow cancel`, `workflow recover`, `model cancel` and `run doctor`.
@@ -1588,18 +1610,18 @@ The pending record, the replay of an earlier unpublished change, the CLI's
 the transaction's own and did not change. swamp-club#2865 has the reasoning.
 
 **Serve handler obligation.** Serve code never calls a bare `markDirty()`.
-Mutations that go through repositories with per-path `markDirty` wired (model,
-workflow, data, output, definition and vault config repos) rely on the
-repositories' signals. This covers the mutation handlers, the OAuth server-token
-mint in `device_auth_handler.ts`, and `access.reload`, which reconciles grant
-files through the definition and data repos. `vault.create`, `vault.edit` and
-`vault.migrate` write through serve's shared vault config repository
-(swamp-club#2995). `vault.migrate` removes the old config through it too, so the
-scoped push deletes the remote copy. Otherwise the config poller would bring it
-back as a second config with the same name. The per-path signals are enough,
-and they drive the extension's scoped walk, which detects deletions by absence
-on disk (rule 2). A bare `markDirty()` sets `bulkInvalidated` in the extension
-and overrides the per-path signal. That has two costs:
+Mutations that go through repositories with per-path `markDirty` wired
+(behavior, workflow, data, output, definition and vault config repos) rely on
+the repositories' signals. This covers the mutation handlers, the OAuth
+server-token mint in `device_auth_handler.ts`, and `access.reload`, which
+reconciles grant files through the definition and data repos. `vault.create`,
+`vault.edit` and `vault.migrate` write through serve's shared vault config
+repository (swamp-club#2995). `vault.migrate` removes the old config through it
+too, so the scoped push deletes the remote copy. Otherwise the config poller
+would bring it back as a second config with the same name. The per-path signals
+are enough, and they drive the extension's scoped walk, which detects deletions
+by absence on disk (rule 2). A bare `markDirty()` sets `bulkInvalidated` in the
+extension and overrides the per-path signal. That has two costs:
 
 - **Dropped deletions.** The full walk skips deletion detection unless the
   per-path set overflowed, so remote deletions are silently lost
@@ -1627,7 +1649,7 @@ because the extension resets the whole dirty set when a push completes.
 swamp-club#2421 tracks the proper fix: repositories that mark after the write,
 and extensions that clear only the marks a push handled.
 
-**Data versions written under a model lock (swamp-club#3146).** Concurrent
+**Data versions written under a behavior lock (swamp-club#3146).** Concurrent
 runs of one serve process share its sync service, so another run's push can
 clear the marks of a version a step just wrote, and a pull (another run's
 step-start pull, or the poller) can put the remote's older `latest` marker back
@@ -1648,17 +1670,17 @@ publishes what the work under it wrote and checks it landed:
   version directory and marker are staged again, after the write, so a commit
   that cleared the earlier marks cannot drop them. A version deleted, garbage
   collected or rolled back on purpose is skipped.
-- After the push, while the model lock is still held, the push reads the
-  version's `metadata.yaml` and the `latest` marker back with `fetchContent`.
-  If either is missing or behind it repeats, up to `PUBLISH_ATTEMPTS` rounds,
-  then fails with `UnpublishedDataVersionError`. A step or method run that
-  already failed keeps its own error and logs this one; a serve method run,
-  which answers its client before it pushes, logs it. A read that fails or
-  times out leaves the push unverified, with a warning, rather than failing
-  work whose push succeeded. The reads run eight at a time. A namespaced datastore
-  whose root data is still migrating pushes nothing on the first round and
-  converges on the next, because each round marks again. A sync service
-  without `fetchContent` gets one unverified round.
+- After the push, while the behavior lock is still held, the push reads the
+  version's `metadata.yaml` and the `latest` marker back with `fetchContent`. If
+  either is missing or behind it repeats, up to `PUBLISH_ATTEMPTS` rounds, then
+  fails with `UnpublishedDataVersionError`. A step or method run that already
+  failed keeps its own error and logs this one; a serve method run, which
+  answers its client before it pushes, logs it. A read that fails or times out
+  leaves the push unverified, with a warning, rather than failing work whose
+  push succeeded. The reads run eight at a time. A namespaced datastore whose
+  root data is still migrating pushes nothing on the first round and converges
+  on the next, because each round marks again. A sync service without
+  `fetchContent` gets one unverified round.
 
 What stays exposed until the S3/GCS extensions clear only the marks a push
 handled and stop overwriting paths with a pending mark:
@@ -1770,20 +1792,20 @@ The gate has two modes:
     held behind a large first reap;
   - each poller's pull (`gatedPull`).
 - **Shared**, held by every run push and step-start pull (`withSharedSyncGate`):
-  each step's model-lock pull and flush push (serve passes `acquireModelLocks` a
-  `wrapSync` hook, normally through `createStepLockHook`), and the post-run and
-  post-resume pushes of `workflow.run`, `workflow.resume`, `model.method.run`,
-  scheduled, webhook and auto-resumed runs. Shared holders exclude poller pulls
-  and handler mutations but not each other, so fan-out workflows keep their
-  parallel uploads. The `wrapSync` hook covers only the sync calls, never the
-  model-lock wait.
+  each step's behavior-lock pull and flush push (serve passes
+  `acquireModelLocks` a `wrapSync` hook, normally through `createStepLockHook`),
+  and the post-run and post-resume pushes of `workflow.run`, `workflow.resume`,
+  `model.method.run`, scheduled, webhook and auto-resumed runs. Shared holders
+  exclude poller pulls and handler mutations but not each other, so fan-out
+  workflows keep their parallel uploads. The `wrapSync` hook covers only the
+  sync calls, never the behavior-lock wait.
 - **Run lanes** inside the shared mode (`RunSyncLanes`, swamp-club#3146): run
   pulls and run pushes exclude each other, first come first served, while
   holders of one lane run together. Without them a step-start pull that read
   the remote's older `latest` marker before another run's push committed wrote
   it over the local marker after that push had verified it, and the next upload
   of the marker published the older version again. A lane wait degrades like
-  the gate after `GATE_WAIT_TIMEOUT_MS`. A model lock's last publish attempt
+  the gate after `GATE_WAIT_TIMEOUT_MS`. A behavior lock's last publish attempt
   runs alone: `wrapSync` is called with `push-alone` and serve takes the
   exclusive mode (`withRunSyncGate`), so a run whose earlier attempts other
   pushes undid still publishes under heavy fan-out.
@@ -1803,10 +1825,10 @@ Six properties of the gate are easy to misread:
   itself until `GATE_WAIT_TIMEOUT_MS`. A second fitness rule forbids a
   dispatch-gated handler from taking the shared mode or building a step-lock
   hook. `workflow.approve` launches auto-resume detached and never awaits it.
-- **Lock order: model lock before gate, never the reverse.** A run step holds
-  its model lock while it waits for the gate. That is safe only because no gate
-  holder ever waits on a model lock: no dispatch-gated handler takes one, and
-  libswamp takes no datastore locks. Keep it that way.
+- **Lock order: behavior lock before gate, never the reverse.** A run step holds
+  its behavior lock while it waits for the gate. That is safe only because no
+  gate holder ever waits on a behavior lock: no dispatch-gated handler takes
+  one, and libswamp takes no datastore locks. Keep it that way.
 - **Handlers wait for run pushes.** Exclusive handler mutations also wait for
   run pushes already in flight, so a long upload can delay an admin mutation.
 - **What is still not covered.** An overlapping poll can still restore data a
@@ -1825,7 +1847,7 @@ Six properties of the gate are easy to misread:
   so the handler runs and then reports `cancelled` from its own abort check. A
   handler mutation or run push waiting longer than `GATE_WAIT_TIMEOUT_MS`
   proceeds without the gate and logs a warning, so a stuck holder falls back to
-  pre-gate behaviour instead of stalling the server. A poller never falls back:
+  the pre-gate path instead of stalling the server. A poller never falls back:
   it skips the cycle, so the pull side of the race never runs ungated. Runs wait
   on a poller only during its escalated cycle, and only for as long as the
   pushes already ahead of it (at most `GATE_WAIT_TIMEOUT_MS`).
@@ -1885,9 +1907,9 @@ stores. A fitness rule rejects partition-key literals anywhere else.
 
 | Aggregate | Partition key | Contention |
 |---|---|---|
-| `Model`: data names and versions, outputs, the evaluated definition. Grants, groups, server tokens, enrollment tokens and workers are models of their `swamp/*` types. | `model--{type}--{modelId}` | Real: a lease (Phase 5) |
+| `Model`: data names and versions, outputs, the evaluated definition. Grants, groups, server tokens, enrollment tokens and workers are behaviors of their `swamp/*` types. | `model--{type}--{modelId}` | Real: a lease (Phase 5) |
 | `WorkflowRun`, with its jobs and steps | `run--{workflowId}--{runId}` | None: each run gets a new id |
-| `Definition`: a model, workflow or vault under managed config, with its evaluated workflow | `config--{model\|workflow\|vault}--{name}` | Real: optimistic concurrency (`expect`) |
+| `Definition`: a behavior, workflow or vault under managed config, with its evaluated workflow | `config--{model\|workflow\|vault}--{name}` | Real: optimistic concurrency (`expect`) |
 | The managed-config extension lockfile | `config--lockfile--upstream_extensions` | Real: optimistic concurrency (`expect`) |
 | `AutoDefinition` | `definition--{id}` | None: each gets a new id |
 
@@ -2017,7 +2039,7 @@ these.
    the order of decision 7, and keeps the unit open. Later changes to the
    same partitions go into later commits.
 7. **No atomicity across partitions.** Each partition commits on its own. A
-   workflow run that writes several models commits the data partitions
+   workflow run that writes several behaviors commits the data partitions
    first and the run record last, so a run record never names data that has
    not landed. A refused data partition holds the run record back until the
    run is saved again with the steps that wrote it failed ("Run records and
@@ -2025,10 +2047,10 @@ these.
 
 **Decisions found while building the model.**
 
-- **Key encoding.** The type and name segments are percent-encoded, keeping
-  `@`: `model--swamp%2Fgrant--<id>`. Ids are lowercased, so one aggregate
-  never splits into two partitions by letter case. A normalized model type keeps `/` and
-  `@`, and a definition name may hold `/` (scoped `@collective/name`) or
+- **Key encoding.** The type and name segments are percent-encoded, keeping `@`:
+  `model--swamp%2Fgrant--<id>`. Ids are lowercased, so one aggregate never
+  splits into two partitions by letter case. A normalized behavior type keeps
+  `/` and `@`, and a definition name may hold `/` (scoped `@collective/name`) or
   `--`, so flattening `/` to `-` would give `a-b/c` and `a/b-c` one key.
   `partitionOf` takes a `ModelType` and uses its normalized form, so every
   spelling of a type gives one key. `@swamp/grant` and `swamp/grant` are
@@ -2088,15 +2110,15 @@ these.
   enforced yet:
   - **Key to aggregate.** A put's or tombstone's record key must fall under
     the projected paths of its intent's aggregate. Otherwise a principal
-    allowed to save data on one model could write any other aggregate's
+    allowed to save data on one behavior could write any other aggregate's
     file, such as a grant's. Since swamp-club#3256 the binding also covers
     ownership: the read model keeps a file whose newest live put is
     another partition's (a same-key rename), so a principal who could put
     at another aggregate's key could also stop that aggregate's tombstone
     from removing the file in every checkout.
-  - **Definition kind and model type.** A managed-config definition intent
-    names its kind and name, not its model type
-    (`config--model--{name}`), so same-named definitions of two model
+  - **Definition kind and behavior type.** A managed-config definition intent
+    names its kind and name, not its behavior type
+    (`config--model--{name}`), so same-named definitions of two behavior
     types share one partition. Their record keys differ by type directory,
     so the records never collide, but serve cannot tell the two apart when
     it authorises an intent. The binding must take the type from the key or
@@ -2589,7 +2611,7 @@ when they run on v3, for every write they make. It is the first of three
 repository staging groups; definition, workflow and evaluated staging, and
 run and vault config staging, add builders to the same route. It is dormant:
 nothing reaches it until a hook requires a unit, which only a commit-log root
-marks. v2 behaviour does not change: the builders never run on v2.
+marks. Nothing changes on v2: the builders never run there.
 
 **The shared route: two calls.** The issue sketched one pre-write call with a
 lazy builder, `signalChange(markDirty, pathChange, () => typedChanges)`. The
@@ -2625,7 +2647,7 @@ the route, and the repositories' builders.
 
 **The change factory.** `ModelChanges` (`src/domain/datastore_v3/
 repository_changes.ts`) builds every typed change from what a repository
-already has: model type and id, data name, version, output file. It derives
+already has: behavior type and id, data name, version, output file. It derives
 the partition with `partitionOf` and builds intents with `createIntent` and
 `modelRef`; record keys come from segments in today's layout, never from an
 OS path. After a write, the repository reads back what it wrote (on v3 only,
@@ -2748,8 +2770,8 @@ lookup found outside its type directory keeps its real key.
 | Definition or workflow `save` that renames | Batch 1: `definition.rename-to` put in the new name's partition, always expecting the key absent. Batch 2: `definition.rename-from` tombstones, expecting present, of the keys the save removed in the old name's partition, and of the target key itself when both names are stored at the same uuid path |
 | Definition `save` into or out of auto-definitions | `auto-definition.save` put (no precondition) of the written file, `auto-definition.delete` tombstones of removed auto-definition files, and `definition.delete` tombstones (expecting present) of removed managed-config files |
 | Definition or workflow `delete` | Per partition, `definition.delete` or `auto-definition.delete` tombstones of the files it removed, without a precondition. A removed file whose name is unknown stages nothing |
-| Evaluated definition `save`, `delete` | `evaluated-definition.save` put and `.delete` tombstones in the model's partition, without a precondition |
-| Evaluated definition `clearAll` | Per file, read before the removal, an `evaluated-definition.delete` tombstone in the model its raw `type` and `id` name |
+| Evaluated definition `save`, `delete` | `evaluated-definition.save` put and `.delete` tombstones in the behavior's partition, without a precondition |
+| Evaluated definition `clearAll` | Per file, read before the removal, an `evaluated-definition.delete` tombstone in the behavior its raw `type` and `id` name |
 | Evaluated workflow `save` | `evaluated-workflow.save` put in the workflow name's partition, and tombstones of removed files of that name; then, as later batches, tombstones of removed files, or of a same-key target, that declared another name, in that name's partition |
 | Evaluated workflow `delete`, `clear` | `evaluated-workflow.delete` tombstones in the partition of each file's declared name; `clear` also tombstones run snapshots |
 | `saveForRun`, `deleteForRun` | `run-snapshot.save` put and `.delete` tombstone in `run--{workflowId}--{runId}` |
@@ -2809,7 +2831,7 @@ directories. On v3 each lists its files first and stages one tombstone per
 file, finding each partition from the raw YAML fields (and a legacy file
 name's uuid), never a schema parse, so a file another swamp version wrote
 is still found. A file that names no valid aggregate (a missing or
-non-UUID id, an invalid model type), or a run directory that is not a
+non-UUID id, an invalid behavior type), or a run directory that is not a
 UUID, stages nothing: no repository ever put it, and run GC must not abort
 on a stray directory. Neither `clearAll` nor `clear` has a production
 caller.
@@ -2923,7 +2945,7 @@ dormant: nothing in production opens it, and
 
 **Ubiquitous language.**
 
-- **Read model**: the local files, catalog and index that model code, CEL
+- **Read model**: the local files, catalog and index that behavior code, CEL
   `.path` and queries read. It is a cache of the commits, rebuilt from them.
 - **Cursor**: how far this checkout has caught up with the store-wide change
   feed (`changesSince`).
@@ -2978,7 +3000,7 @@ It lives in the checkout instead, for two reasons:
 `CatalogStore`, unchanged, so it has the schema and query API data query
 already uses, and no v2 code changes. Switching data query to it is the
 opt-in's job. Rows are built from a version's metadata field for field as the
-v2 repository's `catalogUpsert` builds them, with the model type and id from
+v2 repository's `catalogUpsert` builds them, with the behavior type and id from
 the partition key. One difference: v3 keeps a version's tags in key order
 (`dataVersionOp`), so the `tags` JSON can list keys in a different order than
 v2 wrote them, with the same meaning.
@@ -3015,23 +3037,85 @@ fixed order:
 
 1. **Files.** A put is written under the namespace's cache root: inline
    bytes, or streamed from `ChunkStore.read`. The content goes to a temp file
-   that is fsynced and renamed into place, and the directory is fsynced,
-   along with the parent of every directory the write created (except on
-   Windows, which cannot sync a directory). A tombstone removes the
-   file, ignores one already gone, and removes empty directories up to the
-   root. A directory at a tombstoned key (a name directory) is removed only
-   when empty. Every path passes `assertContainedPath` and `assertSafePath`.
+   that is renamed into place, so a reader sees the old file or the new one.
+   It is not synced: see "Durability across reboots" below. A tombstone
+   removes the file, ignores one already gone, and removes empty directories
+   up to the root. A directory at a tombstoned key (a name directory) is
+   removed only when empty. Every path passes `assertContainedPath` and the
+   symlink check `assertSafePath` makes; within one exclusive section a
+   directory's real path and whether it is a directory are looked up once
+   (`PathCache`), and forgotten whenever the read model removes anything.
 2. **Catalog.** The projection's actions.
 3. **State.** One transaction holds the index changes, the live versions, the
-   ownership of each file the commit wrote or removed, the partition's
-   applied seq and, from `catchUp`, the cursor. Neither the cursor nor an
-   applied seq moves back.
+   ownership of each file the commit wrote or removed, the keys it wrote or
+   removed without a sync, the partition's applied seq and, from `catchUp`,
+   the cursor. Neither the cursor nor an applied seq moves back.
+
+Commits are applied a page at a time (`pageSize`, 500 by default): each
+commit's state transaction is a savepoint in one transaction for the page,
+which commits after the page's files are written. An apply error at commit k
+keeps the commits before it, and the error is rethrown.
 
 Each effect is idempotent, so a crash anywhere is repaired by catching up
 again from the unchanged cursor. The index and the cursor are never ahead of
 the files. Calls queue in the process, and an exclusive OS lock on
 `read_model.lock` serializes processes, so a slow catch-up cannot rewrite a
 file a faster one has removed.
+
+**Durability across reboots (swamp-club#3337).** The read model must never
+trust a commit's files while a crash, power loss included, could have lost
+them: a checkout would then believe it is current with a missing or empty
+file, and never repair it. Syncing every file as it was written held that,
+but on macOS `FsFile.sync()` is `F_FULLFSYNC`, a full drive-cache flush: a
+fresh checkout of 1,000 items took 26 s against v2's 1.1 s. Syncing a page's
+files and directories together at one barrier brought that to 5.6 s, still
+about 5x v2, since a 1,000-item clone has some 3,000 files and 2,000 new
+directories to sync and the flushes only partly coalesce.
+
+So the catch-up does not sync files at all. A written file can be lost only
+to an OS crash or a power loss, and either one ends the boot: until then the
+page cache holds what was written, whatever happens to the process. The
+state records each key a catch-up wrote or removed (`unsynced_keys`) and the
+boot it ran in (`unsynced_boot`, from `boot_identity.ts`). On the first
+exclusive section in a
+later boot, every listed file is checked against the state: a present file
+must be a regular file with the live record's SHA-256, an absent one must be
+gone (a directory left at a removed name is fine). If all match, they
+survived the reboot and are on disk, and the list is cleared. If one does
+not, the state is reset and the catch-up applies every commit again, which
+rewrites and removes every file.
+
+The boot must be named by the kernel, never by the clock: the boot time
+(now less the uptime) shifts when the clock steps within one boot, which
+would look like a reboot, and the check would read the files back from the
+page cache, pass, and stop watching them. So the identity is
+`/proc/sys/kernel/random/boot_id` on Linux and the `kern.bootsessionuuid`
+sysctl on macOS, read once per process. Where neither is available
+(Windows), or it cannot be read, the catch-up syncs its files at each
+page's barrier instead and lists nothing; a list left by an earlier boot is
+then not trusted, and every commit is applied again, synced.
+
+The cost moves to the first open after a reboot: it hashes every file
+written since the list was last cleared, holding the read model's lock. The
+list is bounded by the checkout's keys, but a long-running `serve` can
+leave most of its cache on it. A listed file the state shows present with no
+live record for its owner cannot be checked, so it also resets the state; it
+is logged as such, apart from a file that does not match.
+
+What this does not cover: anything that loses page-cache writes without
+ending the boot. A disk detached mid-write, a write-back I/O error (which,
+with no fsync, nobody sees), a filesystem forced to shut down and remounted,
+an NFS server that loses its cache, or a VM restored from a snapshot can all
+lose unsynced files while the boot id stays the same, and the read model
+will not notice. The check runs at the start of an
+exclusive section, so an index read (`liveRecords`, `chunksInUse`) before
+the first catch-up of a new boot is not covered by it. A commit whose apply
+fails is not recorded, so the files it wrote before failing are not listed:
+until its retry rewrites them, a reboot can leave one torn. `commits.db` keeps
+`synchronous=FULL` and stays the source of truth. The compacted-base load
+and recovery's sweep still sync their files at a barrier
+(`DurableWriteBatch`): they are rare. `F_BARRIERFSYNC`, which Deno does not
+expose, stays out of scope.
 
 **Keys two partitions write (swamp-club#3256).** A same-key definition
 rename (two names that are not filename-safe, both stored at the
@@ -3518,7 +3602,7 @@ swamp-club#3278 answers where `audit/`, `telemetry/`, `logs/` and `files/`
 live on v3. swamp-club#3233 recorded them as synced, append-only streams with
 no v3 home. A trace of every writer and reader in `src/` shows that none of
 them is written through the datastore on any backend, so the answer is that
-they stay repo-local, on v3 as on v2. No v2 behaviour changes.
+they stay repo-local, on v3 as on v2. Nothing changes on v2.
 
 **Ubiquitous language.**
 
@@ -3670,7 +3754,7 @@ paths as v2. `integration/datastore_write_seams_rules_test.ts` pins every read
 of the engine.
 
 **Where records live.** A v3 datastore path holds only the marker,
-`commits.db`, `_blobs/` and `_control/` (and the v2 global and per-model lock
+`commits.db`, `_blobs/` and `_control/` (and the v2 global and per-behavior lock
 files, which still order processes). Each checkout materialises records in
 its own `.swamp/` (solo) or `.swamp/<namespace>`: `DefaultDatastorePathResolver`
 on a v3 engine resolves every datastore directory there. The writer's
@@ -3739,12 +3823,13 @@ model, catalog), catches the read model up whenever a context opens, and
   publishes too. It abandons on a throw or a stop before any outcome. This
   changes decision 5's ending of #3257, which abandoned on a reported
   `error`, so a failed run's records reach the commit log as v2 publishes
-  them. A use case that reaches an outcome its stream reports through no
-  event calls `markOutcomeReported()`, which the v3 unit counts as one: a
-  method run cancelled by its signal saves its `cancelled` record and ends
-  without an event, so its record and the outputs it wrote commit
-  (swamp-club#3299). The stream is unchanged, so v2 and the CLI's and serve's
-  output are too. Every root settles refusals with `reconcileRefusedRuns`;
+  them. A use case that reaches an outcome before its stream reports it
+  calls `markOutcomeReported()`, which the v3 unit counts as one: a method
+  run cancelled by its signal saves its `cancelled` record and marks the
+  outcome, so its record and the outputs it wrote commit (swamp-club#3299).
+  It then yields a `cancelled` event, so the CLI and serve report the
+  cancellation and the command exits 1 (swamp-club#3317). Every root settles
+  refusals with `reconcileRefusedRuns`;
   only a root holding a run record has anything to reconcile.
 - The managed extension lockfile is committed as a typed `lockfile.write` put
   in `config--lockfile--upstream_extensions` at its transaction root's
@@ -3763,7 +3848,7 @@ A namespace is chosen by running `namespace set` before `setup filesystem
 --format 3`, which needs no `--skip-migration` (swamp-club#3301).
 `datastore config migrate` has a v3 form of its own (below).
 
-**Managed config on v3** (swamp-club#3300). With managedConfig on, model
+**Managed config on v3** (swamp-club#3300). With managedConfig on, behavior
 definitions, workflows and vault configs are read from the config tier, so a
 repo that turns it on must commit the config it already has, or that config
 disappears from view (the default vault `repo init` writes among it).
@@ -3985,13 +4070,13 @@ record the caller may not read is never fetched; a `select` that reads no
 `attributes` fetches nothing) and `getLatestRecord`, which serves a
 namespace-prefixed `data.latest()`.
 
-The path fetched is built from the foreign row's namespace, model type, model
-id, data name and version. Those fields are the other namespace's to write, so
-a row is fetched only when each is a plain path segment: one holding `..`, a
-separator or nothing at all could name an object outside that namespace's data
-tree, and is left with empty attributes. A `select` that reads `content`
-rather than `attributes` still sees no bytes for a foreign record, and a
-predicate over a foreign record's `attributes` is matched before hydration,
+The path fetched is built from the foreign row's namespace, behavior type,
+behavior id, data name and version. Those fields are the other namespace's to
+write, so a row is fetched only when each is a plain path segment: one holding
+`..`, a separator or nothing at all could name an object outside that
+namespace's data tree, and is left with empty attributes. A `select` that reads
+`content` rather than `attributes` still sees no bytes for a foreign record, and
+a predicate over a foreign record's `attributes` is matched before hydration,
 against empty attributes.
 
 A fetched body is cached in memory by the service, up to a fixed number of
@@ -4062,11 +4147,11 @@ content download waits until needed.
    the catalog backfill walker (which uses `readdir`) finds the version
    directories. Files outside `data/` (outputs, workflow-runs,
    definitions-evaluated) have no metadata/raw split and are downloaded fully.
-2. **Model runs / workflow runs**: `acquireModelLocks` does a scoped pull via
+2. **Behavior runs / workflow runs**: `acquireModelLocks` does a scoped pull via
    `pullChanged({ context })`. It reads the partition file, sees `raw` missing
-   locally, and downloads it. That pull covers only the step's own model, and
+   locally, and downloads it. That pull covers only the step's own behavior, and
    only a method that takes a lock (a read-only method run takes none), so it
-   is not what makes another model's data readable; see "Expression reads"
+   is not what makes another behavior's data readable; see "Expression reads"
    below.
 3. **`data get` and `data query` (read-only, no sync)**: every read of a
    content file goes through the repository's content-ensuring step (below),
@@ -4109,41 +4194,41 @@ size), and a download only for a missing or short `raw`.
 Limits: a size check catches growth only, so a reused version number whose new
 content is the same size or larger is not detected. And if a metadata-only pull
 overwrote an unpushed local `metadata.yaml` for a version number that collided
-across hosts (model locks prevent this), the size check would replace the
+across hosts (behavior locks prevent this), the size check would replace the
 unpushed `raw` too.
 
 #### Expression reads
 
-The model map's `model.<name>.resource` and `model.<name>.file` and
+The behavior map's `model.<name>.resource` and `model.<name>.file` and
 `file.contents()` read the cache synchronously, so they cannot download
 (swamp-club#3179). Before an expression is evaluated, the data namespace's
 `prepare(expression)` makes their content local:
 
-- `analyzeExpression()` reports, as `syncDataReads`, which models the
+- `analyzeExpression()` reports, as `syncDataReads`, which behaviors the
   expression reads through those readers (by name or definition id, dot or
   bracket, through `cel.bind` aliases) and which of `resource` and `file` it
   reads. `model.<name>.execution` (run outputs) is not lazily hydrated and is
   left out.
 - For each, the latest text resources (other content types are never read) or
   the files of the specs read are ensured, each read once per context.
-- If the model's maps were already loaded empty by an earlier synchronous
+- If the behavior's maps were already loaded empty by an earlier synchronous
   read, the items whose content changed are updated in place. Records a step
   merged in during the run were written locally, so they are never changed.
 - A download error fails the evaluation, as it fails `data get`.
 
 `CelEvaluator.evaluateAsync()` calls `prepare` before every expression. The
 synchronous passes call it first too: the available-expression pass at step
-execution (`execution_service.ts`) and `workflow evaluate`'s evaluation loop
-and forEach expansion (`libswamp/workflows/evaluate.ts`).
+execution (`execution_service.ts`) and `workflow evaluate`'s evaluation loop and
+forEach expansion (`libswamp/workflows/evaluate.ts`).
 `createWorkflowEvaluateDeps()` takes the repository context's hook, so `swamp
 workflow evaluate` and serve's evaluate handler never save an empty value into
 the evaluated workflow. `prepare` also resolves the definitions behind the
-model names an expression passes to the data accessors (swamp-club#3029); in a
-light context, which has no model map, that is all it does.
+behavior names an expression passes to the data accessors (swamp-club#3029); in
+a light context, which has no behavior map, that is all it does.
 
-Not covered: a model named by a computed key (`model[self.name]`), and data
-the model map finds by orphan recovery (`findAllGlobalSync`, data under other
-coordinates tagged with the model's name).
+Not covered: a behavior named by a computed key (`model[self.name]`), and data
+the behavior map finds by orphan recovery (`findAllGlobalSync`, data under other
+coordinates tagged with the behavior's name).
 
 #### `HydrateFileHook` contract
 
@@ -4185,7 +4270,7 @@ Its callers:
   predicates, `select` projections and results. A body shorter than the row's
   size that the repository has not accepted is reported as missing and not
   parsed, so the async query downloads it (swamp-club#3178).
-- `model_resolver.ts` (`dataToRecord`): runs after `prepare` (the model map)
+- `model_resolver.ts` (`dataToRecord`): runs after `prepare` (the behavior map)
   or `ensureContentLocal()` (`data.latest()`).
 - `data_query_service.ts` (`projectedContent`): the `querySync()` projection
   path, which cannot download.
@@ -4229,7 +4314,7 @@ query that needs its body, where before it matched as empty.
 
 `querySync()`, behind CEL `data.query()` in a synchronous context, cannot
 download. The `model_resolver.ts` path relies on `prepare` (see "Expression
-reads"), not on the scoped pull, which covers only the step's own model.
+reads"), not on the scoped pull, which covers only the step's own behavior.
 
 `DataQueryService.getLatestRecord()`, the lookup behind `data.latest()`, checks
 that a catalog row still has content before trusting it while the catalog is
@@ -4265,7 +4350,7 @@ version, owner, etc.) work.
 
 ### Index
 
-> **Extension behaviour.** This and the next three sections describe the
+> **Extension design.** This and the next three sections describe the
 > `@swamp/s3-datastore` extension; none of it is implemented in this repo.
 
 A metadata index (`.datastore-index.json`) tracks every file in the S3 bucket.
@@ -4275,7 +4360,7 @@ during rapid command sequences.
 
 ### Change Detection
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 
 Changes are detected by comparing `stat.size` and `stat.mtime`:
 
@@ -4290,15 +4375,15 @@ is unchanged.
 
 ### Transfer Concurrency
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 
 Pull and push transfer files concurrently in bounded batches. Overlapping S3
 round trips speeds up syncs with many files; the limit avoids overloading the
 network or hitting S3 rate limits.
 
-### Offline Behavior
+### Offline Operation
 
-> **Extension behaviour** (`@swamp/s3-datastore`), not implemented in this repo.
+> **Extension design** (`@swamp/s3-datastore`), not implemented in this repo.
 > Core's own contribution is the sync timeout above and the diagnostics in
 > `src/infrastructure/persistence/sync_error_diagnostic.ts`.
 
@@ -4329,7 +4414,7 @@ interface DistributedLock {
 `false` if the holder changed. That shrinks the TOCTOU window to the gap between
 the final read and the delete. It is the breakglass primitive behind
 `swamp datastore lock release --force`, and `acquireModelLocks` uses it to
-clear stale global locks seen while taking per-model locks (see "Lock
+clear stale global locks seen while taking per-behavior locks (see "Lock
 Lifecycle" below).
 
 Lock metadata (`LockInfo`) is stored as JSON:
@@ -4347,7 +4432,7 @@ Lock metadata (`LockInfo`) is stored as JSON:
 
 ### Extension Locks
 
-> **Extension behaviour.** The S3 mechanism below is the
+> **Extension design.** The S3 mechanism below is the
 > `@swamp/s3-datastore` extension's design, not implemented in this repo.
 
 Extension datastores supply their own `DistributedLock` via
@@ -4363,20 +4448,21 @@ A background heartbeat rewrites it with a fresh timestamp. Stale locks (where
 `acquiredAt + ttlMs < now`) are removed and the acquire retried.
 
 A new lockfile exists before its content is written, and a heartbeat that
-rewrites the lockfile in place (an older swamp's, or the Windows fallback when
-a rename is refused; otherwise the file is replaced whole, see "Hand-offs and
+rewrites the lockfile in place (an older swamp's, or the Windows fallback when a
+rename is refused; otherwise the file is replaced whole, see "Hand-offs and
 re-keying") leaves it briefly empty, so a reader can find a held lock's file
-empty or partial. A lockfile that exists but cannot be read therefore counts as held
-until its mtime is older than the TTL. `readLockFileState` in `file_lock.ts`
-is the one definition of that rule: the acquire path backs off, `inspect()`
-returns a placeholder `LockInfo` with an unknown holder and no nonce, marked
-`holderUnknown`, and the structural drain (`waitForPerModelLocks`) counts the
-lock as held. `swamp datastore lock release` does not call `forceRelease` on a
-`holderUnknown` lock: it reports that the lock is being written and to retry.
-`swamp datastore lock status` shows a global lock in that state as locked
-without a PID or hostname; its per-model scan (`scanModelLocks`) still skips an
-unreadable per-model lock file. Reading such a file as no lock would let a
-writer and a structural command run at the same time (swamp-club#3148).
+empty or partial. A lockfile that exists but cannot be read therefore counts as
+held until its mtime is older than the TTL. `readLockFileState` in
+`file_lock.ts` is the one definition of that rule: the acquire path backs off,
+`inspect()` returns a placeholder `LockInfo` with an unknown holder and no
+nonce, marked `holderUnknown`, and the structural drain (`waitForPerModelLocks`)
+counts the lock as held. `swamp datastore lock release` does not call
+`forceRelease` on a `holderUnknown` lock: it reports that the lock is being
+written and to retry. `swamp datastore lock status` shows a global lock in that
+state as locked without a PID or hostname; its per-behavior scan
+(`scanModelLocks`) still skips an unreadable per-behavior lock file. Reading
+such a file as no lock would let a writer and a structural command run at the
+same time (swamp-club#3148).
 
 With a `namespace` set, `datastoreGlobalLockOptions` returns
 `{ lockKey: ".datastore.lock", namespace }`. `FileLock` and the remote lock
@@ -4386,17 +4472,18 @@ a shared datastore then never contend on structural commands, and IAM
 credentials scoped to the namespace prefix can reach the lock. Only the lock
 path changes; the lifecycle below is the same.
 
-Per-model lock keys are namespaced too: `{namespace}/data/{type}/{modelId}/.lock`
-with a namespace, `data/{type}/{modelId}/.lock` without. The `modelLockKey()`
-helper in `lock.ts` builds the key; `createModelLock` and `acquireModelLocks`
-read `config.namespace` to pass it through. `parseModelLockKey` is unchanged:
-callers strip the namespace from filesystem-relative paths with
-`stripNamespacePrefix()` before parsing.
+Per-behavior lock keys are namespaced too:
+`{namespace}/data/{type}/{modelId}/.lock` with a namespace,
+`data/{type}/{modelId}/.lock` without. The `modelLockKey()` helper in `lock.ts`
+builds the key; `createModelLock` and `acquireModelLocks` read
+`config.namespace` to pass it through. `parseModelLockKey` is unchanged: callers
+strip the namespace from filesystem-relative paths with `stripNamespacePrefix()`
+before parsing.
 
 A workflow run's claim is a lock of its own:
 `{namespace}/workflow-run-claims/{runId}/.lock`, built by `workflowRunLockKey()`
 in `lock.ts` and created by `createWorkflowRunLock` in `repo_context.ts`. It
-uses the per-model lock's retry settings, since it is held only for one load,
+uses the per-behavior lock's retry settings, since it is held only for one load,
 decision and save of the run record (a resume's take-over also restores the
 run's sensitive values under it, which can read a vault). The file is named
 `.lock`, the one name sync never transfers. The key is outside `data/`, so
@@ -4410,14 +4497,14 @@ The writers of one server token share a lock as well:
 (`src/infrastructure/persistence/server_token_lock.ts`). The key holds a
 digest of the token name rather than the name, because the name arrives from a
 client before any definition has validated it. Like the run claim it uses the
-per-model retry settings, is named `.lock`, and sits outside `data/`. It is
-taken before a per-model lock, never after. See "Tokens" in
+per-behavior retry settings, is named `.lock`, and sits outside `data/`. It is
+taken before a per-behavior lock, never after. See "Tokens" in
 `design/primitives/serve.md` for what takes it.
 
-### Lock Timeout and Retry Behavior
+### Lock Timeouts and Retries
 
 The default lock timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`). That is
-enough for most workloads, because per-step locking gives each model method step
+enough for most workloads, because per-step locking gives each method step
 a fresh timeout.
 
 `SWAMP_LOCK_TIMEOUT_MS` overrides it (`LOCK_TIMEOUT_ENV_VAR` in
@@ -4429,7 +4516,7 @@ a fresh timeout.
 
 Invalid env values (non-numeric, zero, negative) are silently ignored.
 
-Every lock creation site gets the resolved timeout: per-model locks
+Every lock creation site gets the resolved timeout: per-behavior locks
 (`createModelLock`), global datastore locks (`createDatastoreLock`), and inline
 locks in `requireInitializedRepo` and the flush paths. Custom providers receive
 `maxWaitMs` in `LockOptions`; honouring it is up to them.
@@ -4454,17 +4541,17 @@ starts at `retryIntervalMs` (default 1 second), doubles per attempt up to
 jitter. Each sleep is clamped to the cap and to the remaining budget, so the loop
 never overshoots `maxWaitMs`.
 
-Per-model locks (`createModelLock`) start at 25 ms and cap at 250 ms. A workflow
-step holds its model's lock for the whole method run, so concurrent steps
-against one instance — `forEach` iterations, for example — queue on it. Under
-the 1 second start a waiter slept through a release that came milliseconds
+Per-behavior locks (`createModelLock`) start at 25 ms and cap at 250 ms. A
+workflow step holds its behavior's lock for the whole method run, so concurrent
+steps against one instance — `forEach` iterations, for example — queue on it.
+Under the 1 second start a waiter slept through a release that came milliseconds
 later. Under the 8 second cap the tail of a queue slept for seconds after each
 release, so a 13-wide `forEach` of 0.2 s methods took 14 s instead of about 3 s
 (swamp-club#2870). The cap keeps every waiter within a quarter second of the
 holder letting go. The auto-definition create lock (`createAutoDefinitionLock`
 in `direct_execution.ts`) starts at 25 ms for the same reason, so forEach
-iterations that race to create one direct-type definition do not stall; it
-keeps the default cap.
+iterations that race to create one direct-type definition do not stall; it keeps
+the default cap.
 
 **Contention logging.** A lock taken after one or more retries logs the retry
 count and total wait at info level:
@@ -4482,9 +4569,9 @@ valid Windows path.
 (`slow_lock_advice.ts`) from the lock's scope. Each caller of the sync
 coordinator passes that scope as `slowLockScope`:
 
-- **Per-model lock.** The key already holds the model type and id, so a
+- **Per-behavior lock.** The key already holds the behavior type and id, so a
   namespace cannot help. The warning names the cause, concurrent runs (workflow
-  steps, separate commands, serve) taking turns on one model instance's lock.
+  steps, separate commands, serve) taking turns on one behavior instance's lock.
 - **Global lock.** The warning suggests `swamp datastore namespace set` only
   when no namespace is set and another repo can reach the datastore
   (`isShareableDatastore`). Extension datastores always count as shareable.
@@ -4503,7 +4590,7 @@ manages the lock lifecycle:
   metadataOnly?, namespace?, slowLockScope? })`: take the lock, pull if S3.
 - `flushDatastoreSync()`: push if S3, release the lock.
 
-Per-model commands (`model method run`) take only per-model locks, via
+Per-behavior commands (`model method run`) take only per-behavior locks, via
 `acquireModelLocks`. They do not take the global lock, but `inspect()` it to
 wait out any running structural command. That `inspect()` must target the
 same namespaced global-lock key the structural command takes
@@ -4515,27 +4602,27 @@ lock on every pass and recurse forever.
 
 Workflow commands (`workflow run`, `workflow resume`) and serve-hosted workflow
 runs do not lock up front. A `StepLockHook` callback injected into the
-workflow engine takes per-model locks per step. Each model method step takes its
+workflow engine takes per-behavior locks per step. Each method step takes its
 lock before running and releases it in a finally block afterwards. This avoids
-deadlock when a model method starts a subprocess `swamp model method run` on a
-model the parent workflow would otherwise hold.
+deadlock when a method starts a subprocess `swamp model method run` on a
+behavior the parent workflow would otherwise hold.
 
 A run that lent its locks to a shell command or a dispatch takes them back
 when that hop ends, before it writes: it re-keys each lock and waits for a
 structural command still working under the old nonce (see "Hand-offs and
 re-keying" under "Parent-Process Lock Awareness"). This is the one place a
-lock holder waits on the global lock while holding a per-model lock.
+lock holder waits on the global lock while holding a per-behavior lock.
 
-Parallel steps on different models lock independently. Parallel steps on the
-same model serialize at the lock, which is correct since concurrent writes to
-one model are unsafe. The coordinator gives each acquisition a unique key (with
-a random ID suffix), so parallel steps on the same model do not overwrite each
-other's entries.
+Parallel steps on different behaviors lock independently. Parallel steps on the
+same behavior serialize at the lock, which is correct since concurrent writes to
+one behavior are unsafe. The coordinator gives each acquisition a unique key
+(with a random ID suffix), so parallel steps on the same behavior do not
+overwrite each other's entries.
 
-Because per-model lock keys are namespace-scoped, `waitForPerModelLocks` uses
+Because per-behavior lock keys are namespace-scoped, `waitForPerModelLocks` uses
 `stripNamespacePrefix` to match locks in the repo's namespace. The walk starts
 at the datastore root and sees other namespaces' locks, but the prefix check
-filters them out, so only this namespace's per-model locks are drained.
+filters them out, so only this namespace's per-behavior locks are drained.
 
 #### Symmetric Drain (structural commands)
 
@@ -4543,20 +4630,20 @@ Structural commands (`requireInitializedRepo`) take the global lock with a
 **symmetric drain**: `waitForPerModelLocks` runs once before and once after
 acquiring it.
 
-1. **First drain (pre-acquire).** Wait for per-model locks visible at command
+1. **First drain (pre-acquire).** Wait for per-behavior locks visible at command
    start to be released. A writer past its own TOCTOU recheck (in
    `acquireModelLocks`) is committed to writing and must be allowed to finish.
 2. **Acquire global lock.** From here, any writer that runs `inspect()` on the
    global lock sees it held and backs off.
-3. **Second drain (post-acquire).** Wait for per-model locks that slipped past
-   the first drain: writers that inspected the global lock between the first
-   drain and the acquire, saw it free, and took a per-model lock.
+3. **Second drain (post-acquire).** Wait for per-behavior locks that slipped
+   past the first drain: writers that inspected the global lock between the
+   first drain and the acquire, saw it free, and took a per-behavior lock.
 
 The second drain closes the TOCTOU window on the other side. Without it, a
 writer can:
 
 1. Inspect global → not held (deleter has not yet acquired)
-2. Take per-model lock
+2. Take per-behavior lock
 3. Pass its TOCTOU recheck → not held (deleter still has not acquired)
 4. Begin writing a new version directory
 
@@ -4570,9 +4657,9 @@ locks it skips, and ends only on a scan that confirms the recorded list, so a
 holder that takes one of them back waits for this command ("Hand-offs and
 re-keying").
 
-The second drain sees the writer's per-model lock and waits until the writer
+The second drain sees the writer's per-behavior lock and waits until the writer
 commits or releases on its own recheck before structural work starts. The
-writer's recheck runs right after it takes the per-model lock, before any
+writer's recheck runs right after it takes the per-behavior lock, before any
 data I/O, so no window remains for it to write unseen by the second drain.
 
 > **Maintainer note.** Both drain calls are required. The two sites cite each
@@ -4586,7 +4673,7 @@ distributed) datastores rely on their own `DistributedLock` semantics instead.
 #### Parent-Process Lock Awareness
 
 A workflow shell step can run a nested `swamp` command (e.g.
-`swamp extension push`) while the step's own per-model lock is held. If the
+`swamp extension push`) while the step's own per-behavior lock is held. If the
 child's drain waited on that lock it would deadlock: the parent waits on the
 child, the child on the parent's lock.
 
@@ -4599,18 +4686,18 @@ clears the first two from its own env:
   most 64, the newest kept). If no chain was inherited, it is seeded from an
   inherited `SWAMP_LOCK_HOLDER_PID`.
 - `SWAMP_LOCK_HOLDER_PID`, which older binaries read alone: the swamp's own
-  pid from the first time it takes a per-model lock (`acquireModelLocks`).
+  pid from the first time it takes a per-behavior lock (`acquireModelLocks`).
   Until then it keeps the value it inherited, so through a swamp that takes
   no locks (e.g. a read-only `model method run`) it still names the real lock
   holder.
 - `SWAMP_LOCK_HOLDER_TOKENS`, set per spawn and never written to a swamp's
   own process env (a dispatch runner is started with one, below):
-  comma-separated `<pid>:<nonce>+<nonce>` entries naming the per-model locks
+  comma-separated `<pid>:<nonce>+<nonce>` entries naming the per-behavior locks
   held for the run that started the child. A nonce is the one each lock file
   already records, and a listed nonce is what the child skips on. The pid
   says which swamp above the child an entry speaks for; a lock handed over a
   worker dispatch or a `--server` request (below) is listed under the pid
-  that handed it on, which need not be its holder. The shell model
+  that handed it on, which need not be its holder. The shell behavior
   adds `LockHolderMarker.childLockEnv()` to the child's env: the inherited
   entries plus one for its own pid. That entry lists the locks held by the
   `runHolding` scope (an `AsyncLocalStorage` scope) the spawn runs in, and is
@@ -4618,7 +4705,7 @@ clears the first two from its own env:
   workflow step's method (`execution_service.ts`, from `StepLockHook`'s
   `heldLockIds`; a hook that leaves them out runs the step outside any scope,
   so its children fall back to the pid match rather than wait on the step's
-  own lock), and a CLI or `swamp serve` model method run
+  own lock), and a CLI or `swamp serve` method run
   (`runUnderModelLocks`, `src/cli/repo_context.ts`). Scopes nest, so
   `runModel()` and other in-process nesting carry the outer run's locks.
   `integration/model_lock_scope_rules_test.ts` pins the model-run sites.
@@ -4660,6 +4747,16 @@ whoever knows it can have a nested structural swamp skip that lock.
 - A nonce stops working when its lock is released, since every acquisition
   writes a new one, and when the hop it was lent to ends, since the holder
   then re-keys the lock (see "Hand-offs and re-keying" below).
+
+A detached request (`swamp workflow run --server --detach`, swamp-club#1090)
+sends no list. Forwarding says the requested run stays under the step that holds
+the locks, and a detached run outlives that step: with the list, a nested swamp
+under it could skip a lock its step is still writing under. Without it the
+detached run waits on that lock like any other run, until the step that
+requested it ends. A step that detaches a run needing the step's own behavior
+and then keeps working makes that run wait, and it fails with a lock timeout if
+the step outlasts the wait; nothing is attached to see that except the run's
+record.
 
 Locally this gives a client no more than it has, since a shell method's
 explicit env already overrides `SWAMP_LOCK_HOLDER_TOKENS` for its child. What
@@ -4732,7 +4829,7 @@ dispatch runner's env (`buildRunnerEnvironment`,
 hostname is the worker's own, the pid also goes at the front of the runner's
 `SWAMP_LOCK_ANCESTOR_PIDS`, which is what an older swamp under the runner
 matches on; a pid from another host means nothing there and is left out. The
-runner and the shell model then hand both down as they would an inherited
+runner and the shell behavior then hand both down as they would an inherited
 chain. The pid is never added without its tokens entry, so the nested swamp
 skips the locks held for the dispatched step's run and waits on every other
 lock the orchestrator holds. The field arrives over the network: the dispatch
@@ -4755,7 +4852,7 @@ and a run requested over `--server` is meant to outlive a dropped socket so
 its client can reattach. So the holder acts on its own lock instead.
 
 A **hand-off** is the period a run lends its locks to one hop. The shell
-model begins one for its command (`LockHolderMarker.beginChildHandOff`) and
+behavior begins one for its command (`LockHolderMarker.beginChildHandOff`) and
 the dispatcher one for each dispatch attempt (`beginLockHandOff` on
 `RemoteStepRequest`, bound to the run's scope by `MethodExecutionService`).
 The hop is given the lock list through the hand-off and no other way
@@ -4785,19 +4882,19 @@ Ending a hand-off **reclaims** the locks (`reclaimModelLocks`,
    writing.
 
 A hop the cancel stopped does not wait in the reclaim (swamp-club#3157). The
-shell model, when its command was killed by the cancel, and the dispatcher, when
-its attempt failed, end the hand-off with the run's abort signal. The locks are
-re-keyed as always, and if a structural command is still working once the signal
-has aborted, the reclaim rejects with an `AbortError` instead of polling on to
-the timeout. The step then writes nothing to the model and stays cancelled: the
-shell model throws before its writes, and a cancelled dispatch logs the failed
-reclaim and keeps its cancellation. A hop that finished before the cancel has a
-result to write, so its hand-off ends with no signal and waits in full. A
-cancelled run with no structural command at work reclaims as usual, and a global
-lock file caught mid-write is read again rather than taken for a command at
-work. The signal reaches only the reclaim of the scope the hand-off was begun
-in. A scope around it is another run's, which may not be cancelled and may still
-write, so its reclaim waits in full.
+shell behavior, when its command was killed by the cancel, and the dispatcher,
+when its attempt failed, end the hand-off with the run's abort signal. The locks
+are re-keyed as always, and if a structural command is still working once the
+signal has aborted, the reclaim rejects with an `AbortError` instead of polling
+on to the timeout. The step then writes nothing to the behavior and stays
+cancelled: the shell behavior throws before its writes, and a cancelled dispatch
+logs the failed reclaim and keeps its cancellation. A hop that finished before
+the cancel has a result to write, so its hand-off ends with no signal and waits
+in full. A cancelled run with no structural command at work reclaims as usual,
+and a global lock file caught mid-write is read again rather than taken for a
+command at work. The signal reaches only the reclaim of the scope the hand-off
+was begun in. A scope around it is another run's, which may not be cancelled and
+may still write, so its reclaim waits in full.
 
 Two orderings make this sound. The drain publishes its list and then scans
 again, ending only on a scan that matches what is already published; the
@@ -4985,7 +5082,7 @@ Two CLI commands inspect and force-release stuck locks:
 ```bash
 swamp datastore lock status                          # Show who holds the lock
 swamp datastore lock release --force                 # Delete the global lock directly
-swamp datastore lock release --force --model type/id # Release one per-model lock
+swamp datastore lock release --force --model type/id # Release one behavior lock
 ```
 
 `--force` is required. Release bypasses `acquire()`/`release()` and deletes the
@@ -5354,7 +5451,7 @@ exclude patterns.
 
 ## Managed Config Deployment Architecture
 
-With `managedConfig: true` in `.swamp.yaml`, model definitions, workflow
+With `managedConfig: true` in `.swamp.yaml`, behavior definitions, workflow
 definitions, vault configs, the extension lockfile and pulled extension sources
 live in the datastore's `config/` tier instead of the repo's top-level
 directories. This allows stateless pod deployments, with the datastore (e.g.
@@ -5371,13 +5468,13 @@ lockfile:
 
 | Mutation type | Config-tier path | CLI push | Serve push |
 |---------------|-----------------|----------|------------|
-| Model definition create/edit | `config/models/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
-| Model definition delete | `config/models/` | Per-model lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-model lock flush |
+| Behavior definition create/edit | `config/models/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
+| Behavior definition delete | `config/models/` | Per-behavior lock push as its root unit's flush, through `reportManagedConfigCleanupError` | Via per-behavior lock flush |
 | Workflow definition create/edit | `config/workflows/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` |
 | Vault config create/migrate | `config/vaults/` | `runManagedConfigMutation` (bare mark staged through the root, root pushes) | `ctx.syncService.pushChanged` after marking the config file (and, for migrate, the old one) |
 | Extension pull/install/rm/update | `config/upstream_extensions.json` (sources stay in the repo's pulled root until swamp-club#2612) | Managed lockfile transaction: fetch, change and publish exactly the lockfile at its root's checkpoint under the global lock; none when the datastore-extension exemption records into the in-repo lockfile | Managed lockfile transaction, inside the handler's exclusive sync gate, publishing at the checkpoint of the root it opens for each run; a failed publish is logged and left pending |
 | Search install, `repo upgrade`, `doctor extensions --repair` | `config/upstream_extensions.json` | Managed lockfile transaction | — |
-| Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-model lock flush |
+| Auto-definitions (direct type execution) | `.swamp/auto-definitions/` (datastore subdir, not config tier) | Via flush coordinator | Via per-behavior lock flush |
 
 A CLI config write whose push fails, or times out, exits non-zero with
 `ManagedConfigUnpublishedError` (code `managed_config_unpublished`). A deferred
@@ -5613,7 +5710,7 @@ the reload runs is picked up on the next poll.
 
 So a peer's `extension pull`, `update`, `rm` or version pin now reloads serve,
 and so does a CLI extension write on the same host, or a handler's own write.
-Only a lockfile change triggers it. Definition-only changes (model, vault or
+Only a lockfile change triggers it. Definition-only changes (behavior, vault or
 workflow YAML edits) invalidate catalogs without reloading the registries.
 
 The reloader reports `ok`, `failed` or `busy`. `busy` means another reload was

@@ -67,5 +67,25 @@
     "query": "Initialize a swamp repo",
     "should_trigger": false,
     "note": "Repo init -> swamp skill"
+  },
+  {
+    "query": "I just installed swamp, walk me through creating my first behavior",
+    "should_trigger": true,
+    "note": "onboarding — first behavior"
+  },
+  {
+    "query": "New to swamp — how do I get started with my first model?",
+    "should_trigger": true,
+    "note": "onboarding — legacy model wording still routes"
+  },
+  {
+    "query": "Run swamp behavior create command/shell my-check for me",
+    "should_trigger": false,
+    "note": "Behavior command -> swamp skill"
+  },
+  {
+    "query": "Run swamp model validate my-check",
+    "should_trigger": false,
+    "note": "Legacy model command -> swamp skill"
   }
 ]

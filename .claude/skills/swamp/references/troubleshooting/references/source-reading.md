@@ -21,7 +21,8 @@ Reach for source reading when:
 - Tiers 1–3 ran clean but the symptom persists.
 - The question is conceptual ("how does extension push work?", "what does init
   create and why?") and `swamp <command> --help` doesn't go deep enough.
-- A behavior contradicts the docs and the truth needs to come from the code.
+- What swamp does contradicts the docs and the truth needs to come from the
+  code.
 
 Skip Tier 4 if a doctor command, error message, or trace already names the
 problem — fetching source is wasted work in that case.
@@ -127,7 +128,7 @@ workaround or fix. If it's a bug, summarize for an issue report.
 | Question                                            | Read first                                              |
 | --------------------------------------------------- | ------------------------------------------------------- |
 | "What does `<command>` do?"                         | `src/cli/commands/<command>.ts`                         |
-| Model loading / catalog issues                      | `src/domain/models/`, `src/cli/mod.ts`                  |
+| Behavior loading / catalog issues                   | `src/domain/models/`, `src/cli/mod.ts`                  |
 | Workflow execution / DAG                            | `src/domain/workflows/`                                 |
 | Vault expressions / secrets                         | `src/domain/vaults/`                                    |
 | Data persistence, atomic writes, garbage collection | `src/infrastructure/persistence/`                       |
@@ -140,7 +141,7 @@ workaround or fix. If it's a bug, summarize for an issue report.
 
 - By default, `swamp source fetch` downloads source matching the running CLI
   version. This is almost always what you want — it guarantees the code on disk
-  matches the binary's behavior.
+  matches the binary.
 - Use `--version main` to read unreleased code (e.g. when investigating a fix
   that has merged but not shipped).
 - Use `--version <tag>` to read a specific release (e.g. when reproducing a bug

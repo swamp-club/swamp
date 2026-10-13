@@ -99,7 +99,7 @@ After cloning and configuring credentials, verify everything works:
 ```bash
 swamp doctor datastores    # check datastore connectivity
 swamp doctor vaults        # check vault access
-swamp model search         # list available models
+swamp behavior search         # list available behaviors
 ```
 
 ---

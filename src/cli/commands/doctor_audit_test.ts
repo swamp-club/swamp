@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { NoToolConfiguredError } from "../../domain/audit/doctor/check.ts";
+import { VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 
 // Import models barrel to trigger self-registration
 import "../../domain/models/models.ts";
@@ -76,6 +77,36 @@ Deno.test(
       () => resolveTargetTool(undefined, undefined),
       NoToolConfiguredError,
     );
+  },
+);
+
+Deno.test("doctorAuditCommand: --tool help lists every built-in tool", async () => {
+  const { doctorAuditCommand } = await import("./doctor_audit.ts");
+  const description = doctorAuditCommand.getOption("tool")?.description ?? "";
+  for (const tool of VALID_AI_TOOLS) {
+    assertEquals(
+      description.includes(tool),
+      true,
+      `--tool help should list ${tool}: ${description}`,
+    );
+  }
+});
+
+Deno.test(
+  "resolveTargetTool: the no-tool error lists every auditable tool",
+  async () => {
+    const { resolveTargetTool } = await import("./doctor_audit.ts");
+    const err = assertThrows(
+      () => resolveTargetTool(undefined, undefined),
+      NoToolConfiguredError,
+    );
+    for (const tool of VALID_AI_TOOLS.filter((t) => t !== "none")) {
+      assertEquals(
+        err.message.includes(tool),
+        true,
+        `NoToolConfiguredError should list ${tool}: ${err.message}`,
+      );
+    }
   },
 );
 

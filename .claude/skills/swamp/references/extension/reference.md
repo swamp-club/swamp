@@ -154,7 +154,7 @@ All extension types follow the same lifecycle:
 1. **Confirm nothing covers it** — search built-in and community first.
 2. **Author the extension file** — use the Quick Start above;
    `~/.swamp/deno/deno check`.
-3. **Verify registration** — `swamp model type search --json` (models) or
+3. **Verify registration** — `swamp behavior type search --json` (models) or
    `swamp vault status --json` / `swamp datastore status --json`.
 4. **Adversarial review** — see
    [Adversarial Review Gate](#adversarial-review-gate) below.

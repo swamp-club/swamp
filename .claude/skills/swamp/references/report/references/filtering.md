@@ -1,14 +1,14 @@
 # Report Filtering Semantics and Precedence
 
-Reports are selected from three sources (model-type defaults, definition YAML,
-workflow YAML) and filtered by CLI flags. This file documents how those layers
-combine.
+Reports are selected from three sources (behavior-type defaults, definition
+YAML, workflow YAML) and filtered by CLI flags. This file documents how those
+layers combine.
 
 ## Filtering Semantics
 
-For **method/model scope** reports, the candidate set is:
+For **`method`/`model` scope** reports, the candidate set is:
 
-- Model-type defaults (`ModelDefinition.reports`)
+- Behavior-type defaults (`ModelDefinition.reports`)
 - Plus definition YAML `require`
 - Minus definition YAML `skip` (always wins)
 - Minus CLI skip flags (unless report is in `require`)
@@ -16,7 +16,7 @@ For **method/model scope** reports, the candidate set is:
 
 For **workflow scope** reports, the candidate set is:
 
-- Workflow YAML `require` (no model-type defaults apply)
+- Workflow YAML `require` (no behavior-type defaults apply)
 - Minus workflow YAML `skip`
 - Minus CLI skip flags (unless in `require`)
 - Narrowed by CLI inclusion flags

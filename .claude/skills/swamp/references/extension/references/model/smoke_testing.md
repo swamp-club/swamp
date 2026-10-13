@@ -9,7 +9,8 @@ bugs, or API validation quirks that only surface with real HTTP calls.
 ### Phase 0: Pre-flight
 
 1. Read the extension model source to understand the API surface
-2. `swamp model get <name> --json` to see configured methods and resource specs
+2. `swamp behavior get <name> --json` to see configured methods and resource
+   specs
 3. Clear the **specific** bundle cache for the model under test:
    ```bash
    rm .swamp/bundles/<model-filename>.js

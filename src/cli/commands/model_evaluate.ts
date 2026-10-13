@@ -19,6 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import {
+  type CommandSyntax,
+  recordDefiningModule,
+  withPreferredExample,
+} from "./command_syntax.ts";
+import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
@@ -53,145 +58,180 @@ import type { ModelEvaluateResponse } from "../../serve/protocol.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelEvaluateCommand = withRemoteOptions(
-  new Command()
-    .name("evaluate")
-    .description("Evaluate expressions in model definitions")
-    .example("Evaluate a model", "swamp model evaluate my-server")
-    .example("Evaluate all models", "swamp model evaluate --all")
-    .arguments("[model_id_or_name:string]")
-    .option(
-      "--repo-dir <dir:string>",
-      "Repository directory (env: SWAMP_REPO_DIR)",
-    )
-    .option("--all", "Evaluate all model definitions"),
-).action(
-  async function (options: AnyOptions, modelIdOrName?: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "model",
-      "evaluate",
-    ]);
+/** The preferred spelling: `swamp behavior evaluate`. */
+export const BEHAVIOR_EVALUATE_SYNTAX: CommandSyntax = {
+  invocation: "swamp behavior evaluate",
+  surface: "behavior",
+};
 
-    const server = resolveServeUrl(options.server as string | undefined);
-    if (server) {
-      const token = await resolveServerTokenFromOptions(
-        server,
-        options,
-      );
-      const response = await requestServerResponse<ModelEvaluateResponse>(
-        { server, token },
-        {
-          type: "model.evaluate",
-          payload: { modelIdOrName },
-        },
-      );
-      const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
-      await consumeStream(
-        (async function* () {
-          yield {
-            kind: "completed" as const,
-            data: response
-              .data as unknown as
-                | ModelEvaluateItemData
-                | ModelEvaluateAllData,
-          };
-        })(),
-        renderer.handlers(),
-      );
-      return;
-    }
+/** The legacy spelling: `swamp model evaluate`. */
+export const MODEL_EVALUATE_SYNTAX: CommandSyntax = {
+  invocation: "swamp model evaluate",
+  surface: "model",
+  preferred: `${BEHAVIOR_EVALUATE_SYNTAX.invocation} my-server`,
+};
 
-    // If --all flag or no argument, evaluate all definitions (global lock)
-    if (options.all || !modelIdOrName) {
-      const { repoDir, repoContext, datastoreResolver } =
-        await requireInitializedRepo({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
+export function createModelEvaluateCommand(syntax: CommandSyntax) {
+  const command = withRemoteOptions(withPreferredExample(
+    new Command()
+      .name("evaluate")
+      .description(`Evaluate expressions in ${syntax.surface} definitions`)
+      .example(`Evaluate a ${syntax.surface}`, `${syntax.invocation} my-server`)
+      .example(
+        `Evaluate all ${syntax.surface}s`,
+        `${syntax.invocation} --all`,
+      )
+      .arguments("[model_id_or_name:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .option("--all", `Evaluate all ${syntax.surface} definitions`),
+    syntax,
+  )).action(
+    async function (options: AnyOptions, modelIdOrName?: string) {
+      const cliCtx = createContext(options as GlobalOptions, [
+        "model",
+        "evaluate",
+      ]);
+
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        const token = await resolveServerTokenFromOptions(
+          server,
+          options,
+        );
+        const response = await requestServerResponse<ModelEvaluateResponse>(
+          { server, token },
+          {
+            type: "model.evaluate",
+            payload: { modelIdOrName },
+          },
+        );
+        const renderer = createModelEvaluateRenderer(
+          cliCtx.outputMode,
+          syntax.surface,
+        );
+        await consumeStream(
+          (async function* () {
+            yield {
+              kind: "completed" as const,
+              data: response
+                .data as unknown as
+                  | ModelEvaluateItemData
+                  | ModelEvaluateAllData,
+            };
+          })(),
+          renderer.handlers(),
+        );
+        return;
+      }
+
+      // If --all flag or no argument, evaluate all definitions (global lock)
+      if (options.all || !modelIdOrName) {
+        const { repoDir, repoContext, datastoreResolver } =
+          await requireInitializedRepo({
+            repoDir: resolveRepoDir(options.repoDir),
+            outputMode: cliCtx.outputMode,
+          });
+
+        // Pushes and releases the global lock when the command ends, as the
+        // teardown flush did (swamp-club#3055).
+        await runInCoordinatorRoot(repoContext, async () => {
+          const ctx = createLibSwampContext({ logger: cliCtx.logger });
+          const deps = createModelEvaluateDeps(
+            repoDir,
+            datastoreResolver,
+            undefined,
+            undefined,
+            undefined,
+            repoContext.unifiedDataRepo.fetchForeignContent,
+          );
+          const renderer = createModelEvaluateRenderer(
+            cliCtx.outputMode,
+            syntax.surface,
+          );
+
+          await consumeStream(
+            modelEvaluate(ctx, deps, {}),
+            renderer.handlers(),
+          );
         });
+        return;
+      }
 
-      // Pushes and releases the global lock when the command ends, as the
-      // teardown flush did (swamp-club#3055).
-      await runInCoordinatorRoot(repoContext, async () => {
-        const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createModelEvaluateDeps(
-          repoDir,
-          datastoreResolver,
-          undefined,
-          undefined,
-          undefined,
-          repoContext.unifiedDataRepo.fetchForeignContent,
-        );
-        const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
-
-        await consumeStream(
-          modelEvaluate(ctx, deps, {}),
-          renderer.handlers(),
-        );
+      // Single model evaluation — use per-model lock
+      const {
+        repoDir,
+        repoContext,
+        datastoreConfig,
+        datastoreResolver,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
       });
-      return;
-    }
 
-    // Single model evaluation — use per-model lock
-    const {
-      repoDir,
-      repoContext,
-      datastoreConfig,
-      datastoreResolver,
-      syncService,
-    } = await requireInitializedRepoUnlocked({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+      // Pre-lookup for lock target
+      const lookupResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        modelIdOrName,
+      );
+      if (!lookupResult) {
+        throw new UserError(`Model not found: ${modelIdOrName}`);
+      }
 
-    // Pre-lookup for lock target
-    const lookupResult = await findDefinitionByIdOrName(
-      repoContext.definitionRepo,
-      modelIdOrName,
-    );
-    if (!lookupResult) {
-      throw new UserError(`Model not found: ${modelIdOrName}`);
-    }
+      const { definition, type } = lookupResult;
 
-    const { definition, type } = lookupResult;
+      // Acquire per-model lock (for S3, also pulls model-scoped files)
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          { modelType: type.normalized, modelId: definition.id },
+        ],
+        repoDir,
+        syncService,
+        repoContext.catalogStore,
+      );
+      if (lockResult.synced) repoContext.catalogStore.invalidate();
 
-    // Acquire per-model lock (for S3, also pulls model-scoped files)
-    const lockResult = await acquireModelLocks(
-      datastoreConfig,
-      [
-        { modelType: type.normalized, modelId: definition.id },
-      ],
-      repoDir,
-      syncService,
-      repoContext.catalogStore,
-    );
-    if (lockResult.synced) repoContext.catalogStore.invalidate();
+      const ctx = libSwampContextForRepo(repoContext, {
+        logger: cliCtx.logger,
+      });
+      const deps = createModelEvaluateDeps(
+        repoDir,
+        datastoreResolver,
+        undefined,
+        undefined,
+        undefined,
+        repoContext.unifiedDataRepo.fetchForeignContent,
+      );
+      const renderer = createModelEvaluateRenderer(
+        cliCtx.outputMode,
+        syntax.surface,
+      );
 
-    const ctx = libSwampContextForRepo(repoContext, { logger: cliCtx.logger });
-    const deps = createModelEvaluateDeps(
-      repoDir,
-      datastoreResolver,
-      undefined,
-      undefined,
-      undefined,
-      repoContext.unifiedDataRepo.fetchForeignContent,
-    );
-    const renderer = createModelEvaluateRenderer(cliCtx.outputMode);
-
-    await runCommandInRootUnit(
-      repoContext,
-      {
-        push: lockResult.push,
-        release: lockResult.release,
-        onCleanupError: (error) => {
-          throw error;
+      await runCommandInRootUnit(
+        repoContext,
+        {
+          push: lockResult.push,
+          release: lockResult.release,
+          onCleanupError: (error) => {
+            throw error;
+          },
         },
-      },
-      async () => {
-        await consumeStream(
-          modelEvaluate(ctx, deps, { modelIdOrName }),
-          renderer.handlers(),
-        );
-      },
-    );
-  },
+        async () => {
+          await consumeStream(
+            modelEvaluate(ctx, deps, { modelIdOrName }),
+            renderer.handlers(),
+          );
+        },
+      );
+    },
+  );
+  return recordDefiningModule(command, import.meta.url);
+}
+
+export const modelEvaluateCommand = createModelEvaluateCommand(
+  MODEL_EVALUATE_SYNTAX,
 );

@@ -307,12 +307,12 @@ collectives are not trusted automatically — run
 
 ```bash
 # Verify model loads
-swamp model type search --json
+swamp behavior type search --json
 
 # Check model schema
-swamp model type describe @myorg/my-model --json
+swamp behavior type describe @myorg/my-model --json
 
 # Test the model
-swamp model create @myorg/my-model test --set fieldName="test" --json
+swamp behavior create @myorg/my-model test --global-arg fieldName="test" --json
 swamp behavior run test methodName
 ```

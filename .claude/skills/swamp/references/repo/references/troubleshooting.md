@@ -135,7 +135,7 @@ host/runner that is no longer running, the lock is orphaned.
    The `--force` flag is required. Bypasses `release()` and deletes the lock
    directly. Use when a crashed process left a lock that hasn't expired yet.
 
-3. **Force-release a specific per-model lock**:
+3. **Force-release a specific per-behavior lock**:
 
    ```bash
    swamp datastore lock release --force --model <type>/<id>
@@ -169,7 +169,7 @@ swamp repo init --force --json
 **Step 3: Verify**
 
 ```bash
-swamp model search --json
+swamp behavior search --json
 swamp workflow search --json
 ```
 
@@ -191,13 +191,13 @@ ls -la models/
 swamp repo init --force --json
 ```
 
-**Step 3: Recreate models from source (if you have backups)**
+**Step 3: Recreate behaviors from source (if you have backups)**
 
-If you have the model definition YAML files backed up:
+If you have the behavior definition YAML files backed up:
 
 ```bash
-# For each model definition
-swamp model create <type> <name> --json
+# For each behavior definition
+swamp behavior create <type> <name> --json
 # Then edit to restore the configuration
 ```
 
@@ -207,10 +207,10 @@ swamp model create <type> <name> --json
 
 Edit conflicting files in `.swamp/` to pick the correct version.
 
-**Step 2: Validate all models**
+**Step 2: Validate all behaviors**
 
 ```bash
-swamp model validate --json
+swamp behavior validate --json
 ```
 
 ### Fix Permissions Issues
@@ -249,7 +249,7 @@ swamp repo init --json
 cp -r extensions.backup/* extensions/
 ```
 
-**Note**: This loses all model data and workflow history. Only use as last
+**Note**: This loses all behavior data and workflow history. Only use as last
 resort.
 
 ## Lock Internals

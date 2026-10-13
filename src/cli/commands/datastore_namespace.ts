@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { ensureDir, walk } from "@std/fs";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -49,6 +49,7 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
+  catalogDbPath,
   createCatalogStore,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import {
@@ -68,8 +69,10 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { UserError } from "../../domain/errors.ts";
 import {
   compareFiles,
+  dirContents,
   findFileCollisions,
   mergeDirInto,
+  removeCatalogFiles,
 } from "../../infrastructure/persistence/directory_merge.ts";
 import type { DatastoreEngine } from "../../domain/datastore/datastore_format.ts";
 
@@ -391,6 +394,7 @@ function buildMigrateDeps(
       }
       return false;
     },
+    dirContents: (path: string) => dirContents(path),
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
@@ -401,6 +405,8 @@ function buildMigrateDeps(
     mergeDirInto: (source: string, destination: string) =>
       mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),
+    removeOrphanedCatalogFiles: (namespaceDataDir: string) =>
+      removeCatalogFiles(namespaceDataDir, dirname(catalogDbPath(repoDir))),
     invalidateCatalog: () => {
       catalogStore = createCatalogStore(repoDir);
       try {

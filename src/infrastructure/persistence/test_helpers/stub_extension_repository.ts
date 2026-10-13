@@ -56,6 +56,8 @@ import type { UpstreamExtensionsMap } from "../upstream_extensions.ts";
  *   fictitious source paths; tests of the prune pass their own.
  * @param activePulledRoot The repo's active pulled root. Defaults to
  *   unknown, which skips the inactive-root prune.
+ * @param mountedSourceDirs Directories `.swamp-sources.yaml` mounts.
+ *   Defaults to none.
  */
 export function makeStubRepository(args: {
   dbPath: string;
@@ -64,6 +66,7 @@ export function makeStubRepository(args: {
   localManifestIdentity?: LocalManifestIdentity | null;
   sourceExists?: (sourcePath: string) => boolean;
   activePulledRoot?: () => string | undefined;
+  mountedSourceDirs?: readonly string[];
 }): { repository: ExtensionRepository; catalog: ExtensionCatalogStore } {
   const catalog = new ExtensionCatalogStore(args.dbPath);
   const lockfileRepository = new LockfileRepository(
@@ -77,6 +80,7 @@ export function makeStubRepository(args: {
     localManifestIdentity: args.localManifestIdentity,
     sourceExists: args.sourceExists ?? (() => true),
     activePulledRoot: args.activePulledRoot ?? (() => undefined),
+    mountedSourceDirs: args.mountedSourceDirs ?? [],
   });
   return { repository, catalog };
 }

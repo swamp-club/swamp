@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { stripAnsiCode } from "@std/fmt/colors";
+import type { CommandSurface } from "../command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import type {
   ModelGetEvent,
@@ -222,12 +224,15 @@ const staleData = {
   staleness: "stranded" as StalenessState,
 };
 
-async function renderLog(data: typeof testData | typeof staleData) {
+async function renderLog(
+  data: typeof testData | typeof staleData,
+  surface?: CommandSurface,
+) {
   const lines: string[] = [];
   const originalLog = console.log;
   console.log = (msg: string) => lines.push(msg);
   try {
-    const renderer = createModelGetRenderer("log");
+    const renderer = createModelGetRenderer("log", surface);
     await consumeStream(
       toStream([{ kind: "completed", data }] as ModelGetEvent[]),
       renderer.handlers(),
@@ -296,4 +301,53 @@ Deno.test("JsonModelGetRenderer - carries typeVersion, currentTypeVersion and st
   } finally {
     console.log = originalLog;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Surfaces (swamp-club#3331): `swamp model get` keeps its exact text, which
+// swamp-uat asserts; `swamp behavior get` says behavior.
+// ---------------------------------------------------------------------------
+
+/** The stale-type warning lines of a rendering, colors stripped. */
+async function warningLines(
+  staleness: StalenessState,
+  surface?: CommandSurface,
+): Promise<string[]> {
+  const output = stripAnsiCode(
+    await renderLog({ ...staleData, staleness }, surface),
+  );
+  return output.split("\n").filter((line) =>
+    line.startsWith("  This") || line.startsWith("  so ")
+  );
+}
+
+Deno.test("LogModelGetRenderer - legacy stale-type warnings keep their exact text", async () => {
+  assertEquals(await warningLines("upgradable"), [
+    "  This instance is behind its model type. The next method run will migrate it.",
+  ]);
+  assertEquals(await warningLines("stranded"), [
+    "  This instance is behind its model type and no upgrade entry covers the gap,",
+    "  so nothing will migrate it. The extension must ship a version upgrade.",
+  ]);
+  assertEquals(
+    await renderLog(staleData, "model"),
+    await renderLog(staleData),
+  );
+});
+
+Deno.test("LogModelGetRenderer - the behavior surface names the behavior type", async () => {
+  assertEquals(await warningLines("upgradable", "behavior"), [
+    "  This instance is behind its behavior type. The next method run will migrate it.",
+  ]);
+  assertEquals(await warningLines("stranded", "behavior"), [
+    "  This instance is behind its behavior type and no upgrade entry covers the gap,",
+    "  so nothing will migrate it. The extension must ship a version upgrade.",
+  ]);
+  // Everything but the warning is the same on both surfaces.
+  const withoutWarning = (text: string) =>
+    text.split("\n").filter((line) => !line.includes("behind its"));
+  assertEquals(
+    withoutWarning(await renderLog(staleData, "behavior")),
+    withoutWarning(await renderLog(staleData)),
+  );
 });

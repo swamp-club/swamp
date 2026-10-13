@@ -3057,6 +3057,69 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
   });
 });
 
+// --- forEach iterations run in list order (swamp-club#3318) ---
+
+/** Runs one forEach step over `items` one at a time; returns its step order. */
+async function forEachRunOrder(
+  stepName: string,
+  items: unknown[],
+): Promise<string[]> {
+  let order: string[] = [];
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = Workflow.create({
+      name: "foreach-list-order",
+      jobs: [
+        Job.create({
+          name: "main",
+          steps: [
+            Step.create({
+              name: stepName,
+              task: StepTask.model("test-model", "run"),
+              forEach: { item: "op", in: "${{ inputs.ops }}" },
+              concurrency: 1,
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+    const run = await service.execute(workflow.name, {
+      inputs: { ops: items },
+    });
+    assertEquals(run.status, "succeeded");
+    order = executor.executedSteps.map((s) => s.split("/")[1]);
+  });
+  return order;
+}
+
+Deno.test("execute: forEach iterations run in list order past ten items", async () => {
+  const items = Array.from({ length: 12 }, (_, i) => ({ id: i }));
+  assertEquals(
+    await forEachRunOrder("operate", items),
+    items.map((_, i) => `operate-${i}`),
+  );
+});
+
+Deno.test("execute: named forEach iterations run in list order, not name order", async () => {
+  assertEquals(
+    await forEachRunOrder("deploy-${{ self.op }}", ["prod", "dev", "staging"]),
+    ["deploy-prod", "deploy-dev", "deploy-staging"],
+  );
+});
+
 // --- suspended event of a forEach-expanded approval gate (swamp-club#3217) ---
 
 /** A workflow whose one step is an approval gate, expanded per env or not. */
@@ -20203,4 +20266,68 @@ Deno.test("DefaultStepExecutor: a step that succeeded fails when its versions ca
   const { error } = await runStepUnderLockHook(() => lock.hook, "execute");
 
   assertEquals(error, UNPUBLISHED);
+});
+
+Deno.test("run: the run is recorded by the time started is yielded (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    let recordedAtStarted: string | undefined;
+    let startedRunId: string | undefined;
+    for await (const event of service.run(workflow.name)) {
+      if (event.kind === "started") {
+        startedRunId = event.runId;
+        const recorded = await runRepo.findById(
+          workflow.id,
+          event.runId as WorkflowRunId,
+        );
+        recordedAtStarted = recorded?.id;
+      }
+    }
+
+    assertEquals(typeof startedRunId, "string");
+    assertEquals(recordedAtStarted, startedRunId);
+  });
+});
+
+Deno.test("run: a first save that fails yields no started event (swamp-club#1090)", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new SpyWorkflowRunRepository();
+    runRepo.allowSaves = 0;
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      new MockStepExecutor(),
+      undefined,
+      new CatalogStore(join(tempDir, "_catalog.db")),
+    );
+
+    const kinds: string[] = [];
+    await assertRejects(
+      async () => {
+        for await (const event of service.run(workflow.name)) {
+          kinds.push(event.kind);
+        }
+      },
+      Error,
+      "datastore unavailable",
+    );
+
+    assertEquals(kinds.includes("started"), false);
+  });
 });

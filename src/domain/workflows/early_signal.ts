@@ -39,6 +39,7 @@ import { earlySlots, SignalWait } from "./signal_wait.ts";
 import type { PayloadValidation } from "./signal_wait.ts";
 import type { AcceptedWaitOutcome } from "./signal_wait_records.ts";
 import {
+  claimsReadingSlot,
   findKeyHolder,
   type HighestKeyRecord,
   WAIT_KEY_CLAIM_ATTEMPTS,
@@ -224,8 +225,10 @@ export type EarlyArrival =
  * The claim whose wait took `stored`, if one did: a claim that reads the
  * signal's slot (its own generation, or the one below for a claim created
  * over a release) and whose outcome is this signal's receipt. It is looked
- * for among every claim of the key, not only the highest, because the key
- * may have been claimed again since.
+ * for among the claims that read the slot, not only the key's highest
+ * record, because the key may have been claimed again since. Those are two
+ * records of this key at most ({@link claimsReadingSlot}), so the key
+ * records of other workflows are never listed (swamp-club#3308).
  *
  * A signal sent under an idempotency key has a second way to have landed
  * there: another copy of it, from the same sender under the same key, was
@@ -233,14 +236,13 @@ export type EarlyArrival =
  * other copy's receipt, and is returned as it is.
  */
 async function findTakerOf(
-  store: Pick<WaitKeyRecords, "listKeyRecords" | "findOutcome">,
+  store: Pick<WaitKeyRecords, "findKeyRecord" | "findOutcome">,
   stored: PendingSignal,
 ): Promise<{ claim: WaitKeyClaim; outcome: AcceptedWaitOutcome } | undefined> {
   let copy: { claim: WaitKeyClaim; outcome: AcceptedWaitOutcome } | undefined;
-  for (const record of await store.listKeyRecords()) {
+  for (const record of (await claimsReadingSlot(store, stored)).claims) {
     if (
-      record.kind !== "claim" || record.workflowId !== stored.workflowId ||
-      record.key !== stored.key || record.early === undefined ||
+      record.early === undefined ||
       !earlySlots(record.early).includes(stored.slot)
     ) continue;
     const outcome = await store.findOutcome(record.waitId);
@@ -271,7 +273,7 @@ export async function holdEarlySignal(
   store:
     & Pick<
       WaitKeyRecords,
-      "highestKeyRecord" | "findKeyRecord" | "findOutcome" | "listKeyRecords"
+      "highestKeyRecord" | "findKeyRecord" | "findOutcome"
     >
     & Pick<
       PendingSignalRecords,

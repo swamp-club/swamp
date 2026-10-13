@@ -316,10 +316,10 @@ To review a specific plan version:
 swamp behavior run @swamp/issue-lifecycle review issue-<N> --input version=<V>
 ```
 
-To see all model data:
+To see all behavior data:
 
 ```
-swamp model output search issue-<N> --json
+swamp behavior output search issue-<N> --json
 ```
 
 ## Resuming a Session

@@ -31,7 +31,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import { createAuditDoctorRenderer } from "../../presentation/renderers/audit_doctor.ts";
-import { parseAiToolOrThrow } from "../ai_tool_parser.ts";
+import { parseAiToolOrThrow, VALID_AI_TOOLS } from "../ai_tool_parser.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -55,7 +55,9 @@ export function resolveTargetTool(
   const overrideTool = flagTool ? parseAiToolOrThrow(flagTool) : undefined;
   const resolved = overrideTool ?? markerTool;
   if (!resolved) {
-    throw new NoToolConfiguredError();
+    throw new NoToolConfiguredError(
+      VALID_AI_TOOLS.filter((tool) => tool !== "none"),
+    );
   }
   return resolved;
 }
@@ -175,7 +177,7 @@ export const doctorAuditCommand = withRemoteOptions(
     .example("Machine-readable output for CI", "swamp doctor audit --json")
     .option(
       "--tool <tool:string>",
-      "Override the tool from .swamp.yaml (claude | cursor | kiro | opencode | codex | copilot | none)",
+      `Override the tool from .swamp.yaml (${VALID_AI_TOOLS.join(" | ")})`,
     )
     .option(
       "--repo-dir <dir:string>",

@@ -28,6 +28,11 @@
 export interface ExtensionContributor {
   readonly sourcePath: string;
   readonly pulled: boolean;
+  /**
+   * For a source mounted through `.swamp-sources.yaml`, the position of its
+   * mounted directory in source order. Absent for local and pulled sources.
+   */
+  readonly mountIndex?: number;
 }
 
 /**
@@ -54,17 +59,22 @@ export function isPulledExtensionPath(
 
 /**
  * Orders two contributors for collision resolution. Negative means `a`
- * wins. Non-pulled (local and source-mounted) outranks pulled — the same
- * `local > pulled` rule the catalog applies to primary types — and within
- * a tier the lexicographically smaller canonical path wins, matching the
- * Extension aggregate's I2 tie-break. A total order, so the winner of any
- * set of contributors does not depend on the order they attach in.
+ * wins. The tiers are `local > source-mounted > pulled`, the same order
+ * the catalog applies to primary types and the order the loader registers
+ * directories in (swamp-club#2563). Between two mounted sources the earlier
+ * `.swamp-sources.yaml` entry wins. Within a tier the lexicographically
+ * smaller canonical path wins, matching the Extension aggregate's I2
+ * tie-break. A total order, so the winner of any set of contributors does
+ * not depend on the order they attach in.
  */
 export function compareExtensionPrecedence(
   a: ExtensionContributor,
   b: ExtensionContributor,
 ): number {
   if (a.pulled !== b.pulled) return a.pulled ? 1 : -1;
+  const aMount = a.mountIndex ?? -1;
+  const bMount = b.mountIndex ?? -1;
+  if (aMount !== bMount) return aMount - bMount;
   if (a.sourcePath < b.sourcePath) return -1;
   if (a.sourcePath > b.sourcePath) return 1;
   return 0;
@@ -72,5 +82,6 @@ export function compareExtensionPrecedence(
 
 /** Short human label for a contributor's tier, used in collision warnings. */
 export function contributorTier(c: ExtensionContributor): string {
-  return c.pulled ? "pulled" : "local";
+  if (c.pulled) return "pulled";
+  return c.mountIndex === undefined ? "local" : "source-mounted";
 }

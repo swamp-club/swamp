@@ -32,7 +32,14 @@ import { resolveTelemetryInvocation } from "./telemetry_invocation.ts";
  *     agents read), `completions` (shell rc files run it at every shell
  *     start), `version` (as `--version` is) and `update` (a blocked user, or
  *     a CI host after a signing-key rotation, must be able to install the
- *     release that fixes it).
+ *     release that fixes it);
+ *   - `start`, the first command a new user runs. It signs the user in
+ *     itself, as the first thing its page asks for, and refuses every
+ *     workspace-changing operation (repo init and upgrade, importing a repo,
+ *     enrolling agents, launching an agent) until they are signed in, so a
+ *     new user's first screen is never the gate's "requires a
+ *     swamp-club.com account" block. Its workspaces may be imported repos
+ *     anywhere on disk, not only folders Swamp created.
  * `worker connect` is `enrollment`: gated, except that a worker without a
  * credential may instead pass on the serve that enrolls it
  * (design/surfaces/auth-gate.md, "Remote workers"). Everything else is
@@ -51,12 +58,16 @@ const EXEMPT_AUTH_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "whoami",
 ]);
 
-/** Top-level commands that touch no swamp feature, with their subcommands. */
+/**
+ * Top-level commands exempt from the gate, with their subcommands: those
+ * that touch no swamp feature, and `start`, which signs the user in itself.
+ */
 const UNGATED_COMMANDS: ReadonlySet<string> = new Set([
   "help",
   "completions",
   "version",
   "update",
+  "start",
 ]);
 
 const HELP_OR_VERSION_FLAGS: ReadonlySet<string> = new Set([

@@ -116,12 +116,11 @@ export async function sweepContinuations(
 }
 
 /**
- * Removes the pending signals nothing will take (swamp-club#3212), with the
- * continuation pass: a signal by key is held through serve, so serve is
- * where they gather, and nothing else here runs the wait-record sweep. It
- * reads key records and never a run record, so it is safe on every
- * datastore. Never throws: a pass that fails is logged, and the next one
- * tries again.
+ * Removes the pending signals nothing will take (swamp-club#3212): a signal
+ * by key is held through serve, so serve is where they gather, and nothing
+ * else here runs the wait-record sweep. It reads key records and never a run
+ * record, so it is safe on every datastore. Never throws: a sweep that fails
+ * is logged, and the next one tries again.
  */
 export async function sweepHeldSignals(
   ctx: Pick<ConnectionContext, "repoContext">,
@@ -137,6 +136,39 @@ export async function sweepHeldSignals(
     });
     return 0;
   }
+}
+
+/**
+ * How often serve sweeps pending signals. A lapse stays as the highest
+ * record of its slot until the slot is claimed, so every sweep reads each
+ * such slot again, for good. Nothing waits on the sweep being prompt: a
+ * signal lapses a day after its age limit, and whoever stores a signal over
+ * another removes the one below. So it runs far less often than the
+ * continuation pass it rides on (swamp-club#3308).
+ */
+export const HELD_SIGNAL_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * A {@link sweepHeldSignals} that runs on the first call and then no more
+ * often than every `intervalMs`, for calling with each continuation pass.
+ * A call that is not due reads nothing and returns 0. The time of the last
+ * sweep is kept here, in this process: every instance keeps its own. A call
+ * timed before the last sweep means the clock was set back, and sweeps: the
+ * schedule must not stand still until the clock has caught up.
+ */
+export function heldSignalSweeper(
+  intervalMs: number = HELD_SIGNAL_SWEEP_INTERVAL_MS,
+): (
+  ctx: Pick<ConnectionContext, "repoContext">,
+  now?: Date,
+) => Promise<number> {
+  let last: number | undefined;
+  return async (ctx, now = new Date()) => {
+    const since = last === undefined ? intervalMs : now.getTime() - last;
+    if (since >= 0 && since < intervalMs) return 0;
+    last = now.getTime();
+    return await sweepHeldSignals(ctx, now);
+  };
 }
 
 export interface ContinuationSweepDeps {

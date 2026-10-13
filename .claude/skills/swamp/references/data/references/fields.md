@@ -9,9 +9,9 @@
 | `version`           | int              | Version number of this record                                                       |
 | `isLatest`          | bool             | `true` for the newest version of each item                                          |
 | `createdAt`         | string           | ISO-8601 timestamp                                                                  |
-| `modelName`         | string           | Owning model's name when the data was written (not updated by a model rename)       |
-| `modelId`           | string           | Owning model id (definition id; workflow id for workflow-scope data)                |
-| `modelType`         | string           | Owning model type (normalized)                                                      |
+| `modelName`         | string           | Owning behavior's name when the data was written (not updated by a behavior rename) |
+| `modelId`           | string           | Owning behavior id (definition id; workflow id for workflow-scope data)             |
+| `modelType`         | string           | Owning behavior type (normalized)                                                   |
 | `specName`          | string           | Output spec name (e.g. `classification`)                                            |
 | `dataType`          | string           | `"resource"` or `"file"`                                                            |
 | `contentType`       | string           | MIME type (e.g., `"application/json"`)                                              |
@@ -68,21 +68,21 @@ swamp data query 'modelName == "<model>" && name == "<name>"' \
   | jq -r '.results[0].content' | base64 -d > out.bin
 ```
 
-## `model()` — match by model, as `data get` resolves it
+## `model()` — match by behavior, as `data get` resolves it
 
-`model("<name or definition id>")` is true for data stored under that model's
+`model("<name or definition id>")` is true for data stored under that behavior's
 current definition. It resolves the argument the way `data get <model>` does
-(name first, then exact definition id), so it still matches after a model
+(name first, then exact definition id), so it still matches after a behavior
 rename, for data with no `modelName` tag, and never matches data left by a
-deleted model whose name was reused. `modelName == "<m>"` compares the tag
+deleted behavior whose name was reused. `modelName == "<m>"` compares the tag
 written with the data, so it can differ in each of those cases.
 
-- The argument must be a non-empty string literal; up to 32 distinct models per
-  predicate.
-- An unknown model is an error (`Model not found`), as in `data get`. Over
-  `--server`, a model you may not read fails the same way.
+- The argument must be a non-empty string literal; up to 32 distinct behaviors
+  per predicate.
+- An unknown behavior is an error (`Model not found`), as in `data get`. Over
+  `--server`, a behavior you may not read fails the same way.
 - Predicates only, not `--select`. It is resolved by `swamp data query` and
-  serve's `data.query`; CEL `data.query()` in models and workflows rejects it
+  serve's `data.query`; CEL `data.query()` in behaviors and workflows rejects it
   (use `modelId` and `modelType` there).
 - It matches the definition's data in every namespace the catalog holds, not
   only this repository's.

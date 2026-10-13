@@ -42,6 +42,51 @@ export const SUPERSEDED_SKILLS: readonly string[] = [
   "swamp-issue",
 ];
 
+/**
+ * Paths inside a bundled skill that newer swamp versions no longer ship,
+ * relative to a skills dir and written with `/`. Installing skills writes each
+ * bundled file in place and never deletes, so a moved folder would otherwise
+ * stay installed next to its replacement.
+ */
+export const SUPERSEDED_SKILL_PATHS: readonly string[] = [
+  // Moved to swamp/references/behavior (swamp-club#3332).
+  "swamp/references/model",
+];
+
+/**
+ * Removes one {@link SUPERSEDED_SKILL_PATHS} entry from `skillsDir`. Every
+ * component below `skillsDir` must be a real directory: a symlink anywhere on
+ * the path, the last component included, leaves the path in place, so the
+ * delete never follows a link out of the skills dir.
+ */
+async function removeSupersededSkillPath(
+  skillsDir: string,
+  relativePath: string,
+): Promise<void> {
+  let current = skillsDir;
+  for (const segment of relativePath.split("/")) {
+    current = join(current, segment);
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(current);
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) return;
+      throw e;
+    }
+    if (info.isSymlink || !info.isDirectory) {
+      logger
+        .debug`Leaving superseded skill path ${relativePath} in ${skillsDir}: ${current} is not a plain directory`;
+      return;
+    }
+  }
+  try {
+    await Deno.remove(current, { recursive: true });
+    logger.info`Removed superseded skill path ${relativePath}`;
+  } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+  }
+}
+
 async function removeSupersededSkill(
   skillsDir: string,
   name: string,
@@ -59,6 +104,9 @@ export async function removeSupersededSkills(
 ): Promise<void> {
   for (const name of SUPERSEDED_SKILLS) {
     await removeSupersededSkill(skillsDir, name);
+  }
+  for (const path of SUPERSEDED_SKILL_PATHS) {
+    await removeSupersededSkillPath(skillsDir, path);
   }
 }
 
@@ -139,8 +187,8 @@ export async function resolveSupersededSkillDirs(
 }
 
 /**
- * Removes superseded skills from the repo-local skills dirs that resolve
- * inside the repo. Deletes go through the resolved path, and a failure on one
+ * Removes superseded skills and skill paths from the repo-local skills dirs
+ * that resolve inside the repo. Deletes go through the resolved path, and a failure on one
  * entry is logged without stopping the rest.
  */
 export async function removeSupersededLocalSkills(
@@ -164,6 +212,16 @@ export async function removeSupersededLocalSkills(
         await removeSupersededSkill(dir, name);
       } catch (err) {
         logger.warn`Could not remove superseded skill ${name} from ${dir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+    }
+    for (const path of SUPERSEDED_SKILL_PATHS) {
+      try {
+        await removeSupersededSkillPath(dir, path);
+      } catch (err) {
+        logger
+          .warn`Could not remove superseded skill path ${path} from ${dir}: ${
           err instanceof Error ? err.message : String(err)
         }`;
       }

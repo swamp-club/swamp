@@ -298,7 +298,7 @@ or `supportsRefreshHooks: false`.
 
 ## Vault Expressions
 
-Access secrets in model inputs and workflows using CEL expressions:
+Access secrets in behavior inputs and workflows using CEL expressions:
 
 ```yaml
 attributes:
@@ -319,15 +319,15 @@ fresh vault read. A step that writes to a vault makes the new value available to
 all subsequent steps (e.g., token-refresh-then-use patterns).
 
 **Never resolve a secret and pass the literal value.** This freezes the secret
-at model creation time and prevents rotation or in-workflow refresh:
+at behavior creation time and prevents rotation or in-workflow refresh:
 
 ```bash
 # WRONG — frozen at creation time
 TOKEN=$(swamp vault read-secret my-vault AUTH_TOKEN --force)
-swamp model create ... --global-arg "token=$TOKEN"
+swamp behavior create ... --global-arg "token=$TOKEN"
 
 # RIGHT — resolved fresh per-step
-swamp model create ... --global-arg 'token=${{ vault.get(my-vault, AUTH_TOKEN) }}'
+swamp behavior create ... --global-arg 'token=${{ vault.get(my-vault, AUTH_TOKEN) }}'
 ```
 
 The same applies to workflow inputs. `swamp workflow run --input` and
@@ -359,12 +359,12 @@ as operator-written and **evaluated**: a `${{ vault.get(...) }}` or
 `${{ env.X }}` inside them resolves and reaches the method in plaintext (vault
 values are redacted in stored output; env values are not). Pass untrusted text —
 issue bodies, tickets, scraped pages — with `--literal-inputs`, or route it
-through a workflow input or model data. All three are inert: left literal, with
-a warning, even when the text matches an expression the author wrote.
+through a workflow input or behavior data. All three are inert: left literal,
+with a warning, even when the text matches an expression the author wrote.
 
 | Source                                   | Expressions     |
 | ---------------------------------------- | --------------- |
-| Model definitions, workflow YAML         | evaluated       |
+| Behavior definitions, workflow YAML      | evaluated       |
 | `swamp behavior run --input`             | evaluated       |
 | `swamp behavior run --literal-inputs`    | inert (literal) |
 | `swamp workflow run/resume --input`      | inert (literal) |
@@ -374,7 +374,7 @@ a warning, even when the text matches an expression the author wrote.
 ## Using Vaults in Workflows
 
 For detailed workflow integration including the `swamp/lets-get-sensitive`
-model, see the **swamp-workflow** skill.
+behavior, see the **swamp-workflow** skill.
 
 **Quick syntax reference:**
 
@@ -389,7 +389,7 @@ devToken: ${{ vault.get(dev-secrets, auth-token) }}
 
 ## Automatic Sensitive Field Storage
 
-Model output schemas can mark fields as sensitive. When a method executes,
+Behavior output schemas can mark fields as sensitive. When a method executes,
 sensitive values are stored in a vault and replaced with vault references before
 persistence — no manual `vault put` needed.
 
@@ -428,14 +428,14 @@ Use separate vaults for dev/staging/prod to enforce environment separation.
 
 ## When to Use Other Skills
 
-| Need                       | Use Skill               |
-| -------------------------- | ----------------------- |
-| Vault usage in workflows   | `swamp-workflow`        |
-| Create/run models          | `swamp-model`           |
-| Create custom model types  | `swamp-extension`       |
-| Repository structure       | `swamp-repo`            |
-| Manage model data          | `swamp-data`            |
-| Understand swamp internals | `swamp-troubleshooting` |
+| Need                         | Use Skill               |
+| ---------------------------- | ----------------------- |
+| Vault usage in workflows     | `swamp-workflow`        |
+| Create/run behaviors         | `swamp-model`           |
+| Create custom behavior types | `swamp-extension`       |
+| Repository structure         | `swamp-repo`            |
+| Manage behavior data         | `swamp-data`            |
+| Understand swamp internals   | `swamp-troubleshooting` |
 
 ## References
 

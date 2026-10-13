@@ -93,7 +93,10 @@ import {
   type WorkflowRunEvent,
   type WorkflowTelemetrySink,
 } from "../../libswamp/workflows/run.ts";
-import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  renderWorkflowRunAccepted,
+} from "../../presentation/renderers/workflow_run.ts";
 import { JUnitWorkflowRunRenderer } from "../../presentation/renderers/workflow_run_junit.ts";
 import { resolveCliInitiatedBy } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
@@ -115,7 +118,7 @@ type AnyOptions = any;
 export const workflowRunCommand = new Command()
   .name("run")
   .description(
-    "Execute a workflow. Blocks until the run completes, suspends (manual approval), fails, or is cancelled. There is no async/detached mode.",
+    "Execute a workflow. Blocks until the run completes, suspends (manual approval), fails, or is cancelled. With --server, --detach returns the run ID as soon as the server has started the run.",
   )
   .example("Run a workflow", "swamp workflow run deploy-pipeline")
   .example(
@@ -134,6 +137,10 @@ export const workflowRunCommand = new Command()
   .example(
     "Pipe inputs from stdin",
     'echo \'{"env":"prod"}\' | swamp workflow run deploy-pipeline --stdin',
+  )
+  .example(
+    "Start a run on a server and return its ID without waiting",
+    "swamp workflow run deploy-pipeline --server ws://localhost:9090 --detach --json",
   )
   .example(
     "Batch run via NDJSON from stdin",
@@ -220,6 +227,11 @@ export const workflowRunCommand = new Command()
     "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement (env: SWAMP_SERVE_URL).",
   )
   .option(
+    "--detach",
+    "Return the run ID once the server has started the run, and leave it running there; requires --server. Follow it with 'swamp workflow history get <run-id>'.",
+    { default: false },
+  )
+  .option(
     "--token <token:string>",
     "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
   )
@@ -271,6 +283,23 @@ export const workflowRunCommand = new Command()
     const server = resolveServeUrl(
       options.server as string | undefined,
     );
+    if (options.detach) {
+      if (!server) {
+        throw new UserError(
+          "--detach requires --server (or SWAMP_SERVE_URL): a local run has no server to keep it going after this command returns.",
+        );
+      }
+      if (options.junit) {
+        throw new UserError(
+          "--detach cannot be combined with --junit: a detached run returns before it has any results to report.",
+        );
+      }
+      if (options.timeout) {
+        throw new UserError(
+          "--detach cannot be combined with --timeout: the deadline is enforced by this command, which returns as soon as the run starts. Limit the run on the server with 'swamp serve --max-run-duration'.",
+        );
+      }
+    }
     if (server) {
       if (failOnSeverity) {
         throw new UserError(
@@ -785,11 +814,15 @@ async function runWorkflowViaServer(
           verbose: ctx.verbosity === "verbose",
           commandTarget,
         });
+      const detach = options.detach as boolean;
+      const handlers = renderer.handlers();
+      let accepted: { runId: string; workflowName: string } | undefined;
       await consumeStream(
         runWorkflowOverServer({
           server: options.server as string,
           token,
           signal: abort.signal,
+          detach,
           payload: {
             workflowIdOrName,
             inputs: inputSets[i],
@@ -817,11 +850,35 @@ async function runWorkflowViaServer(
             noSupersede: options.supersede === false || undefined,
           },
         }) as AsyncIterable<WorkflowRunEvent>,
-        renderer.handlers(),
+        detach
+          ? {
+            ...handlers,
+            started: (event) => {
+              if (event.parentRunId === undefined) {
+                accepted = {
+                  runId: event.runId,
+                  workflowName: event.workflowName,
+                };
+              }
+              return handlers.started(event);
+            },
+          }
+          : handlers,
       );
       if (renderer.workflowFailed()) {
         Deno.exitCode = 1;
         return;
+      }
+      if (detach) {
+        // A detached stream ends at the run's own started event. A refusal
+        // throws before this; a stream that just ends has started nothing.
+        if (!accepted) {
+          throw new UserError(
+            "The server ended the request before the run started, so no run ID was returned. Check for a run with: swamp workflow history get " +
+              `${workflowIdOrName}${commandTarget}`,
+          );
+        }
+        renderWorkflowRunAccepted(accepted, ctx.outputMode, commandTarget);
       }
     }
   } finally {

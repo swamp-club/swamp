@@ -127,7 +127,7 @@ Deno.test("datastoreSetupFilesystem: completes with migration", async () => {
   assertEquals(completed.data.bytesCopied, 1024);
   assertEquals(completed.data.directoriesMigrated, ["data", "outputs"]);
   assertEquals(completed.data.errors, []);
-  assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
+  assertPathEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
   assertEquals(completed.data.destinationPath, "/tmp/datastore");
   assertEquals(completed.data.sourceKept, undefined);
 });
@@ -256,7 +256,7 @@ Deno.test("datastoreSetupFilesystem: falls back to .swamp/ when outgoing cache p
     datastoreSetupFilesystem(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(
+  assertPathEquals(
     capturedSourceDir,
     "/tmp/repo/.swamp",
     "migrateData should fall back to .swamp/ when cache path does not exist",
@@ -288,7 +288,7 @@ Deno.test("datastoreSetupFilesystem: uses .swamp/ when no outgoing cache path pr
     datastoreSetupFilesystem(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(
+  assertPathEquals(
     capturedSourceDir,
     "/tmp/repo/.swamp",
     "migrateData should use .swamp/ when no outgoing cache path is set",
@@ -418,7 +418,7 @@ Deno.test("datastoreSetupExtension: completes with valid config", async () => {
   assertEquals(completed.data.type, "test-ext-setup");
   assertEquals(completed.data.directoriesMigrated, ["data", "outputs"]);
   assertEquals(completed.data.bytesCopied, 1024);
-  assertEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
+  assertPathEquals(completed.data.sourcePath, "/tmp/repo/.swamp");
   assertEquals(completed.data.destinationPath, "/tmp/repo/.custom-cache");
 });
 

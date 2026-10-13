@@ -21,7 +21,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { getLogger, type Logger } from "@logtape/logtape";
-import { canonicalizePath } from "./canonicalize_path.ts";
+import { canonicalizePath, realCanonicalPath } from "./canonicalize_path.ts";
 import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { isPulledExtensionPath } from "../../domain/extensions/extension_precedence.ts";
 import { CATALOG_FAILURE_STATES } from "../../domain/extensions/bundle_freshness.ts";
@@ -86,7 +86,10 @@ const NO_EXPORT_KEY_PREFIX = "no-export:";
  * a type is deleted, since that row may have been the reason another row
  * lost its type.
  */
-const TYPELESS_ROW_HEAL_KEY_PREFIX = "migration_applied:typeless-row-heal-v1:";
+// v2 (swamp-club#2563): reruns the heal once on upgrade so a local
+// override that an older binary indexed typeless behind a mounted row's
+// type takes it back.
+const TYPELESS_ROW_HEAL_KEY_PREFIX = "migration_applied:typeless-row-heal-v2:";
 
 /**
  * Bundle layout version stored in `bundle_meta`. Bumped whenever the
@@ -136,6 +139,16 @@ export interface PulledTypeConflict {
   readonly winnerName?: string;
   /** The loser's extension name, when derivable. */
   readonly loserName?: string;
+}
+
+/**
+ * Reported when {@link ExtensionCatalogStore.settleMountedTypeConflicts}
+ * clears the type on a source-mounted row because a local row, or a row
+ * under an earlier mount, claims the same `(kind, type)`.
+ */
+export interface MountedTypeConflict {
+  readonly winner: ExtensionTypeRow;
+  readonly loser: ExtensionTypeRow;
 }
 
 /** Conflicts already reported this process, by kind, type and names. */
@@ -1602,20 +1615,37 @@ export class ExtensionCatalogStore {
    * Designed to run inside a transaction before I-Repo-1 so stale rows
    * from prior container sessions (bind-mounted at a different path)
    * don't block catalog writes.
+   *
+   * `mounted` keeps the rows of sources mounted from outside the repo
+   * through `.swamp-sources.yaml` (swamp-club#2563): a row under one of
+   * `mounted.dirs` (canonical) whose source file still exists. Keeping
+   * every out-of-root row whose source exists would be wrong: a copied
+   * repo's rows for the original location would survive, and
+   * {@link resolveOriginConflicts} treats them as local.
    */
   pruneUnreachableSources(
     canonicalRepoRoot: string,
     protectedPaths?: ReadonlySet<string>,
+    mounted?: {
+      dirs: readonly string[];
+      sourceExists: (sourcePath: string) => boolean;
+    },
   ): string[] {
-    const prefix = canonicalRepoRoot.endsWith("/")
-      ? canonicalRepoRoot
-      : canonicalRepoRoot + "/";
+    const prefix = withTrailingSlash(canonicalRepoRoot);
+    const mountPrefixes = (mounted?.dirs ?? []).map(withTrailingSlash);
     const rows = this.findAll();
     const pruned: string[] = [];
     for (const row of rows) {
       if ((row.state ?? "Indexed") === "Tombstoned") continue;
       const canonical = canonicalizePath(row.source_path);
       if (protectedPaths?.has(canonical)) continue;
+      if (
+        mounted !== undefined &&
+        mountPrefixes.some((m) => canonical.startsWith(m)) &&
+        mounted.sourceExists(row.source_path)
+      ) {
+        continue;
+      }
       if (!canonical.startsWith(prefix)) {
         this.removeBySourcePath(row.source_path);
         pruned.push(row.source_path);
@@ -1696,6 +1726,102 @@ export class ExtensionCatalogStore {
       }
     }
 
+    return conflicts;
+  }
+
+  /**
+   * Settles type conflicts that involve rows of sources mounted through
+   * `.swamp-sources.yaml`, the `local > source-mounted` part of the
+   * precedence {@link resolveOriginConflicts} applies to pulled rows
+   * (swamp-club#2563). Among non-Tombstoned, non-extension rows sharing
+   * a `(kind, type_normalized)`, a local row (in the repo root, not
+   * pulled, not under a mount) beats a mounted one, a row under an earlier
+   * entry of `mountedDirs` beats one under a later entry, and the smaller
+   * canonical path breaks a tie. That is the loader's registration order:
+   * local directories first, then sources in `.swamp-sources.yaml` order,
+   * skipping a type already registered. Each mounted row that loses has
+   * its type cleared. Pulled rows are left to resolveOriginConflicts, and
+   * conflicts between local rows to I-Repo-1.
+   *
+   * @param mountedDirs Canonical mounted directories, in source order.
+   */
+  settleMountedTypeConflicts(
+    canonicalRepoRoot: string,
+    mountedDirs: readonly string[],
+  ): MountedTypeConflict[] {
+    if (mountedDirs.length === 0) return [];
+
+    const groups = new Map<string, ExtensionTypeRow[]>();
+    for (const row of this.findAll()) {
+      if ((row.state ?? "Indexed") === "Tombstoned") continue;
+      if (row.type_normalized.length === 0) continue;
+      if (row.kind === "extension") continue;
+      const key = `${row.kind}::${row.type_normalized}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = [];
+        groups.set(key, group);
+      }
+      group.push(row);
+    }
+
+    // A path is matched in both spellings, as stored and symlink-resolved,
+    // against both spellings of each root: rows written from a directory
+    // walk and rows written from configuration can disagree (`/tmp` and
+    // `/private/tmp` on macOS). Resolved only for conflicting rows.
+    const spellings = (p: string): string[] => {
+      const real = realCanonicalPath(p);
+      return real === p ? [p] : [p, real];
+    };
+    const rootPrefixes = spellings(canonicalRepoRoot).map(withTrailingSlash);
+    const mountPrefixes = mountedDirs.map((d) =>
+      spellings(d).map(withTrailingSlash)
+    );
+    // -1 for a local row, the mount's index for a mounted row, undefined
+    // for a pulled row or one outside both. Pulled is checked first, as the
+    // loader's contributorFor does.
+    const rankOf = (canonical: string): number | undefined => {
+      const forms = spellings(canonical);
+      const pulled = spellings(canonicalRepoRoot).some((root) =>
+        forms.some((f) => isPulledExtensionPath(f, root))
+      );
+      if (pulled) return undefined;
+      const mount = mountPrefixes.findIndex((prefixes) =>
+        prefixes.some((m) => forms.some((f) => f.startsWith(m)))
+      );
+      if (mount >= 0) return mount;
+      const inRoot = rootPrefixes.some((r) =>
+        forms.some((f) => f.startsWith(r))
+      );
+      return inRoot ? -1 : undefined;
+    };
+
+    const conflicts: MountedTypeConflict[] = [];
+    for (const rows of groups.values()) {
+      if (rows.length < 2) continue;
+      const ranked: {
+        row: ExtensionTypeRow;
+        canonical: string;
+        rank: number;
+      }[] = [];
+      for (const row of rows) {
+        const canonical = canonicalizePath(row.source_path);
+        const rank = rankOf(canonical);
+        if (rank !== undefined) ranked.push({ row, canonical, rank });
+      }
+      if (ranked.length < 2 || ranked.every((g) => g.rank === -1)) continue;
+      const winner = ranked.reduce((best, g) =>
+        g.rank < best.rank ||
+          (g.rank === best.rank && g.canonical < best.canonical)
+          ? g
+          : best
+      );
+      for (const g of ranked) {
+        if (g === winner || g.rank === -1) continue;
+        this.clearTypeNormalized(g.row.source_path);
+        conflicts.push({ winner: winner.row, loser: g.row });
+      }
+    }
     return conflicts;
   }
 
@@ -1989,6 +2115,10 @@ function noExportKey(kind: string, sourcePath: string): string {
 
 function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
+}
+
+function withTrailingSlash(dir: string): string {
+  return dir.endsWith("/") ? dir : `${dir}/`;
 }
 
 /**

@@ -26,6 +26,7 @@ import {
   removeSupersededLocalSkills,
   removeSupersededSkills,
   resolveSupersededSkillDirs,
+  SUPERSEDED_SKILL_PATHS,
   SUPERSEDED_SKILLS,
   supersededSkillDirs,
 } from "./superseded_skills.ts";
@@ -258,5 +259,110 @@ Deno.test("removeSupersededLocalSkills: a skills dir that cannot be resolved is 
     await removeSupersededLocalSkills(tempDir, ["claude", "codex"]);
 
     assertEquals(await detectSupersededSkills(sharedDir), []);
+  });
+});
+
+/** Seeds an installed swamp skill holding the pre-#3332 model reference folder. */
+async function seedOldSwampSkill(skillsDir: string): Promise<void> {
+  const refs = join(skillsDir, "swamp", "references");
+  await Deno.mkdir(join(refs, "model", "references"), { recursive: true });
+  await Deno.writeTextFile(join(refs, "model", "guide.md"), "old");
+  await Deno.writeTextFile(
+    join(refs, "model", "references", "examples.md"),
+    "old",
+  );
+  await Deno.mkdir(join(refs, "behavior"), { recursive: true });
+  await Deno.writeTextFile(join(refs, "behavior", "guide.md"), "new");
+  await Deno.mkdir(join(refs, "extension", "references", "model"), {
+    recursive: true,
+  });
+  await Deno.writeTextFile(
+    join(refs, "extension", "references", "model", "api.md"),
+    "keep",
+  );
+  await Deno.writeTextFile(join(skillsDir, "swamp", "SKILL.md"), "keep");
+}
+
+Deno.test("SUPERSEDED_SKILL_PATHS: lists the moved swamp model reference folder", () => {
+  assertEquals(SUPERSEDED_SKILL_PATHS, ["swamp/references/model"]);
+});
+
+Deno.test("removeSupersededSkills: removes the superseded skill path and keeps its siblings", async () => {
+  await withTempDir(async (tempDir) => {
+    await seedOldSwampSkill(tempDir);
+
+    await removeSupersededSkills(tempDir);
+
+    const refs = join(tempDir, "swamp", "references");
+    assertEquals(await exists(join(refs, "model")), false);
+    assertEquals(await exists(join(refs, "behavior", "guide.md")), true);
+    assertEquals(
+      await exists(join(refs, "extension", "references", "model", "api.md")),
+      true,
+    );
+    assertEquals(await exists(join(tempDir, "swamp", "SKILL.md")), true);
+  });
+});
+
+Deno.test("removeSupersededSkills: leaves a symlinked superseded path and its target alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const target = join(tempDir, "target");
+    await Deno.mkdir(target);
+    await Deno.writeTextFile(join(target, "keep.txt"), "keep");
+    const skillsDir = join(tempDir, "skills");
+    const refs = join(skillsDir, "swamp", "references");
+    await Deno.mkdir(refs, { recursive: true });
+    await Deno.symlink(target, join(refs, "model"), { type: "dir" });
+
+    await removeSupersededSkills(skillsDir);
+
+    assertEquals(await exists(join(refs, "model")), true);
+    assertEquals(await exists(join(target, "keep.txt")), true);
+  });
+});
+
+Deno.test("removeSupersededSkills: does not follow a symlinked parent of the superseded path", async () => {
+  await withTempDir(async (tempDir) => {
+    const target = join(tempDir, "target");
+    await Deno.mkdir(join(target, "model"), { recursive: true });
+    await Deno.writeTextFile(join(target, "model", "keep.txt"), "keep");
+    const skillsDir = join(tempDir, "skills");
+    await Deno.mkdir(join(skillsDir, "swamp"), { recursive: true });
+    await Deno.symlink(target, join(skillsDir, "swamp", "references"), {
+      type: "dir",
+    });
+
+    await removeSupersededSkills(skillsDir);
+
+    assertEquals(await exists(join(target, "model", "keep.txt")), true);
+  });
+});
+
+Deno.test("removeSupersededSkills: leaves a file at the superseded path alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const refs = join(tempDir, "swamp", "references");
+    await Deno.mkdir(refs, { recursive: true });
+    await Deno.writeTextFile(join(refs, "model"), "a file, not the old folder");
+
+    await removeSupersededSkills(tempDir);
+
+    assertEquals(await exists(join(refs, "model")), true);
+  });
+});
+
+Deno.test("removeSupersededLocalSkills: removes the superseded skill path from a repo-local skills dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const skillsDir = join(tempDir, ".claude", "skills");
+    await seedOldSwampSkill(skillsDir);
+
+    await removeSupersededLocalSkills(tempDir, ["claude"]);
+
+    const refs = join(skillsDir, "swamp", "references");
+    assertEquals(await exists(join(refs, "model")), false);
+    assertEquals(await exists(join(refs, "behavior", "guide.md")), true);
+    assertEquals(
+      await exists(join(refs, "extension", "references", "model", "api.md")),
+      true,
+    );
   });
 });

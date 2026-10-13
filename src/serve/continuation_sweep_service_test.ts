@@ -22,6 +22,7 @@ import { waitFor } from "@swamp-club/swamp-testing";
 import {
   ContinuationSweepService,
   decideContinuationSweepStart,
+  heldSignalSweeper,
   sweepContinuations,
   sweepHeldSignals,
 } from "./continuation_sweep_service.ts";
@@ -217,6 +218,79 @@ Deno.test("sweepHeldSignals: a datastore that holds no waits, and a sweep that f
     }
   }();
   assertEquals(await sweepHeldSignals(waitsCtx(failing)), 0);
+});
+
+Deno.test("heldSignalSweeper: sweeps on the first call, then only once the interval has passed", async () => {
+  let sweeps = 0;
+  const store = new class extends InMemorySignalWaitStore {
+    override listPendingAddresses() {
+      sweeps++;
+      return super.listPendingAddresses();
+    }
+  }();
+  const ctx = waitsCtx(store);
+  const boot = new Date("2026-01-01T00:00:00.000Z");
+  const at = (ms: number) => new Date(boot.getTime() + ms);
+  const sweep = heldSignalSweeper(600_000);
+
+  await sweep(ctx, boot);
+  assertEquals(sweeps, 1);
+  // Continuation passes inside the interval read nothing.
+  await sweep(ctx, at(30_000));
+  await sweep(ctx, at(599_999));
+  assertEquals(sweeps, 1);
+  await sweep(ctx, at(600_000));
+  assertEquals(sweeps, 2);
+  // The interval runs from the last sweep, not from boot.
+  await sweep(ctx, at(1_199_999));
+  assertEquals(sweeps, 2);
+  await sweep(ctx, at(1_200_000));
+  assertEquals(sweeps, 3);
+  // Another sweeper keeps its own time.
+  await heldSignalSweeper(600_000)(ctx, at(1_200_001));
+  assertEquals(sweeps, 4);
+});
+
+Deno.test("heldSignalSweeper: a clock set back sweeps, and the interval runs from that sweep", async () => {
+  let sweeps = 0;
+  const store = new class extends InMemorySignalWaitStore {
+    override listPendingAddresses() {
+      sweeps++;
+      return super.listPendingAddresses();
+    }
+  }();
+  const ctx = waitsCtx(store);
+  const boot = new Date("2026-01-01T12:00:00.000Z");
+  const at = (ms: number) => new Date(boot.getTime() + ms);
+  const sweep = heldSignalSweeper(600_000);
+
+  await sweep(ctx, boot);
+  // Six hours earlier: without this the next sweep would be six hours away.
+  await sweep(ctx, at(-21_600_000));
+  assertEquals(sweeps, 2);
+  await sweep(ctx, at(-21_600_000 + 599_999));
+  assertEquals(sweeps, 2);
+  await sweep(ctx, at(-21_600_000 + 600_000));
+  assertEquals(sweeps, 3);
+});
+
+Deno.test("heldSignalSweeper: a sweep that fails is not retried before the interval has passed", async () => {
+  let attempts = 0;
+  const failing = new class extends InMemorySignalWaitStore {
+    override listPendingAddresses(): Promise<never> {
+      attempts++;
+      return Promise.reject(new Error("listing failed"));
+    }
+  }();
+  const ctx = waitsCtx(failing);
+  const boot = new Date("2026-01-01T00:00:00.000Z");
+  const sweep = heldSignalSweeper(600_000);
+
+  assertEquals(await sweep(ctx, boot), 0);
+  assertEquals(await sweep(ctx, new Date(boot.getTime() + 30_000)), 0);
+  assertEquals(attempts, 1);
+  assertEquals(await sweep(ctx, new Date(boot.getTime() + 600_000)), 0);
+  assertEquals(attempts, 2);
 });
 
 Deno.test("ContinuationSweepService: the first pass is the boot pass, and later ones are not", async () => {

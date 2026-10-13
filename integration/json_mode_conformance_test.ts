@@ -53,6 +53,7 @@ import { Command } from "@cliffy/command";
 // Import models barrel to trigger self-registration
 import "../src/domain/models/models.ts";
 import { initializeLogging } from "../src/infrastructure/logging/logger.ts";
+import { definingModuleOf } from "../src/cli/commands/command_syntax.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -123,7 +124,10 @@ interface LeafCommand {
   command: AnyCommand;
   /** Source text of the leaf's action handler, or "" when it has none. */
   actionSource: string;
-  /** Absolute path of the module that exports this command, when known. */
+  /**
+   * Absolute path of the module that defines this command, when known: the
+   * module whose factory built it, else the module that exports it.
+   */
   definingFile: string | undefined;
 }
 
@@ -290,6 +294,24 @@ async function readTopLevelRegistrations(): Promise<
   return registrations;
 }
 
+/**
+ * The defining module of `command`. A command built by a factory records the
+ * factory's module (src/cli/commands/command_syntax.ts); that is preferred,
+ * because the `swamp behavior` leaves are built by the same factories as
+ * their `swamp model` twins and mounted only inside the behavior tree, so no
+ * module exports them (swamp-club#3331). Other commands fall back to the
+ * module that exports them.
+ */
+function definingFileOf(
+  command: AnyCommand,
+  fileOfCommand: Map<unknown, string>,
+): string | undefined {
+  const recorded = definingModuleOf(command);
+  return recorded === undefined
+    ? fileOfCommand.get(command)
+    : fromFileUrl(recorded);
+}
+
 let cachedTree: CliTree | undefined;
 
 /**
@@ -344,7 +366,7 @@ async function buildCliTree(): Promise<CliTree> {
       path: path.join(" "),
       command,
       actionSource: typeof handler === "function" ? handler.toString() : "",
-      definingFile: fileOfCommand.get(command),
+      definingFile: definingFileOf(command, fileOfCommand),
     });
   };
 
@@ -479,4 +501,26 @@ Deno.test("cli command tree: the JSON-mode exemption list has no stale entries",
       "plumbing — remove them from EXEMPT_COMMAND_PATHS:\n" +
       unnecessary.map((p) => `  swamp ${p}`).join("\n"),
   );
+});
+
+Deno.test("cli command tree: every swamp behavior leaf traces to the module of its swamp model twin", async () => {
+  const { leaves } = await buildCliTree();
+  const byPath = new Map(leaves.map((leaf) => [leaf.path, leaf]));
+  const behaviorLeaves = leaves.filter((leaf) =>
+    leaf.path.startsWith("behavior ")
+  );
+  assert(
+    behaviorLeaves.length >= 19,
+    `expected the full behavior tree, found ${behaviorLeaves.length} leaves`,
+  );
+  for (const leaf of behaviorLeaves) {
+    const [, word, ...rest] = leaf.path.split(" ");
+    const twinPath = ["run", "describe", "history"].includes(word)
+      ? ["model", "method", word, ...rest].join(" ")
+      : ["model", word, ...rest].join(" ");
+    const twin = byPath.get(twinPath);
+    assert(twin !== undefined, `${leaf.path}: no twin at ${twinPath}`);
+    assert(leaf.definingFile !== undefined, `${leaf.path}: unmapped`);
+    assertEquals(leaf.definingFile, twin.definingFile, leaf.path);
+  }
 });

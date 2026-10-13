@@ -24,6 +24,7 @@ import {
   earliestReceipt,
   type EarlyWaitRef,
   encodePendingRecord,
+  isReceivedForWait,
   pendingAddressFromKey,
   pendingOutcome,
   type PendingRecord,
@@ -156,6 +157,31 @@ Deno.test("pendingOutcome: a pending signal applies exactly when it was received
       const { ref, pending, applies } = scenario(s);
       assertEquals(pendingOutcome(pending, ref) !== undefined, applies);
     }),
+  );
+});
+
+Deno.test("isReceivedForWait: a signal the claim's facts refuse is never taken by the wait, whatever its name, schema or payload (property)", () => {
+  fc.assert(
+    fc.property(
+      settlingArb,
+      fc.integer({ min: 1, max: 3 }),
+      fc.option(fc.string({ minLength: 1 }), { nil: undefined }),
+      payloadArb,
+      (s, slot, authorizedFor, payload) => {
+        const { ref, pending } = scenario(s);
+        const signal = {
+          ...pending,
+          slot,
+          payload,
+          ...(authorizedFor !== undefined ? { authorizedFor } : {}),
+        };
+        // What the claim keeps of the wait.
+        const claim = { early: ref.early, deadline: ref.deadline };
+        if (!isReceivedForWait(signal, claim)) {
+          assertEquals(pendingOutcome(signal, ref), undefined);
+        }
+      },
+    ),
   );
 });
 

@@ -1,12 +1,12 @@
 ---
 audience: maintainer
-enables: [workflows, models]
+enables: [workflows, behaviors]
 last-verified: 2026-08-28 @ 3d5955a9
 ---
 
 # Run Tracker
 
-A local SQLite subsystem that tracks in-flight model method and workflow runs.
+A local SQLite subsystem that tracks in-flight method and workflow runs.
 
 ## Problem
 
@@ -64,14 +64,14 @@ CREATE TABLE pending_runs (             -- queued webhook/cron fires
 
 (`src/infrastructure/persistence/run_tracker_store.ts`.) A method-run row
 records the definition it executes in `definition_id`, and
-`swamp model cancel <model>` selects a model's runs by it, never by
+`swamp model cancel <model>` selects a behavior's runs by it, never by
 `model_type` alone. A row an older swamp registered has none, and is
 attributed from what its run left behind (`findMethodRunsOfModel`,
 `src/cli/commands/model_cancel.ts`): its method-run record, which a workflow
 step saves while it runs and which carries the definition id; failing that,
-the model's own lock, which a mutating direct run holds, when the row's
+the behavior's own lock, which a mutating direct run holds, when the row's
 process holds it and runs no other method. A row neither places (a direct run
-of a method that does not mutate takes no lock) is no model's, and only
+of a method that does not mutate takes no lock) is no behavior's, and only
 `swamp model cancel --all` stops it. The
 `run_tracker_meta` table holds the schema version. Terminal rows older than 7
 days are purged at startup, except a workflow or method row reaped
@@ -189,7 +189,7 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
    `settleDeadOwnerRun` for the steps of the run it interrupts, and by the
    serve boot reaper, with the same rules: a local row, `running` or
    `interrupted`, with a dead pid, and an output still `running` under that
-   pid, found by the row's id, model type and method (one read per type and
+   pid, found by the row's id, behavior type and method (one read per type and
    method, `OutputRepository.findByIds`). The row is marked `interrupted`,
    the output saved with the owner-exited error, and only then the row
    settled; a row whose output is missing or finished is settled too, and a
@@ -231,9 +231,9 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 
 ### Coverage
 
-- **CLI `model method run`** and **`swamp serve` model method runs** both go
+- **CLI `model method run`** and **`swamp serve` method runs** both go
   through `modelMethodRun()` in `run.ts`, which registers with the tracker.
-- **Workflow-triggered model method runs** register via
+- **Workflow-triggered method runs** register via
   `DefaultStepExecutor.executeModelMethod()` in `execution_service.ts`.
 - A method run that serve executes (a workflow step or a direct method run)
   records serve's instance id in `instance_id`, as serve's workflow rows do, so
@@ -248,7 +248,7 @@ to settle it keeps it forever. `swamp run gc` removes older records on demand:
 
 ### CLI Commands
 
-- `swamp run history`: runs from the last 24h, model methods and workflows
+- `swamp run history`: runs from the last 24h, methods and workflows
 - `swamp run history --active`: running only
 - `swamp run history --all`: full tracked history
 - `swamp run doctor`: diagnose stale or orphaned runs

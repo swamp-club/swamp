@@ -154,7 +154,7 @@ jobs:
         task: ... # inherits workflow labels — dispatched to a worker
 ```
 
-Built-in control-plane models (`swamp/*` — server tokens, enrollment tokens,
+Built-in control-plane behaviors (`swamp/*` — server tokens, enrollment tokens,
 workers, step leases) are exempt: they always run on the orchestrator regardless
 of remote-only mode.
 

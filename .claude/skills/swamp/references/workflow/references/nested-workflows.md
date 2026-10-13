@@ -205,7 +205,7 @@ the step targets `lab-capability-ssh`. The resolved target appears in
 
 ## Data Access in Sub-Workflows
 
-Sub-workflow model instances can access data produced by the parent workflow
+Sub-workflow behavior instances can access data produced by the parent workflow
 using either `model.*` or `data.latest()` expressions. Both work for
 cross-workflow data access since `type: "resource"` is preserved on
 workflow-produced data.
@@ -234,10 +234,11 @@ jobs:
           workflowIdOrName: tag-networking
 ```
 
-The `tag-networking` sub-workflow's model instances can reference the VPC data:
+The `tag-networking` sub-workflow's behavior instances can reference the VPC
+data:
 
 ```yaml
-# tag-vpc model instance (used by tag-networking workflow)
+# tag-vpc behavior instance (used by tag-networking workflow)
 name: tag-vpc
 attributes:
   region: us-east-1

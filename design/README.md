@@ -6,11 +6,11 @@ agents work with:
 
 | Primitive      | What it is                                                |
 | -------------- | --------------------------------------------------------- |
-| **Models**     | A type plus a definition; running a method produces data  |
+| **Behaviors**  | A type plus a definition; running a method produces data  |
 | **Data**       | Versioned, immutable, queryable artifacts of method runs  |
 | **Workflows**  | A DAG of method steps with inputs, triggers and approvals |
 | **Vaults**     | Secrets resolved at run time, never frozen into YAML      |
-| **Extensions** | Packaged, published model types, vaults, datastores…      |
+| **Extensions** | Packaged, published behavior types, vaults, datastores…   |
 | **Serve**      | A long-running swamp that others run primitives through   |
 
 A subsystem gets a doc under `enablers/` only if it answers "what does this do
@@ -44,7 +44,7 @@ last-verified: 2026-08-28 @ 4bde205b # date and commit someone checked it
 ```
 
 `last-verified` means a person spot-checked the doc against the code at that
-commit. A PR that changes a subsystem's behaviour should bump the date on its
+commit. A PR that changes what a subsystem does should bump the date on its
 doc.
 
 ## Writing style
@@ -65,7 +65,7 @@ Write in plain English:
 
 | Doc                                      | Notes                                                                        |
 | ---------------------------------------- | ---------------------------------------------------------------------------- |
-| [models](./primitives/models.md)         |                                                                              |
+| [behaviors](./primitives/behaviors.md)   |                                                                              |
 | [workflows](./primitives/workflows.md)   |                                                                              |
 | [vaults](./primitives/vaults.md)         | AWS SM, Azure KV and 1Password are extensions, not built-ins                 |
 | [extensions](./primitives/extensions.md) | To be split into authoring (author-facing) and lifecycle (maintainer-facing) |
@@ -74,19 +74,19 @@ Write in plain English:
 
 ### Enablers
 
-| Doc                                                        | Enables           | Notes                                                                |
-| ---------------------------------------------------------- | ----------------- | -------------------------------------------------------------------- |
-| [expressions](./enablers/expressions.md)                   | models, workflows | CEL surface                                                          |
-| [inputs](./enablers/inputs.md)                             | models, workflows |                                                                      |
-| [data-query](./enablers/data-query.md)                     | data              | `data query`, catalog                                                |
-| [datastores](./enablers/datastores.md)                     | data              | To be split: operator view / sync contract / locking                 |
-| [datastore-litestream](./enablers/datastore-litestream.md) | data              | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
-| [remote-execution](./enablers/remote-execution.md)         | serve             | Workers, leases, runners, data plane; serve protocol to be extracted |
-| [reports](./enablers/reports.md)                           | models, workflows |                                                                      |
-| [run-tracker](./enablers/run-tracker.md)                   | workflows, models | To fold into a workflow-execution doc                                |
-| [doctor-secrets](./enablers/doctor-secrets.md)             | models            | To fold into models.md operations section                            |
-| [doctor-vaults](./enablers/doctor-vaults.md)               | vaults            | To fold into vaults.md operations section                            |
-| [access-control](./enablers/access-control.md)             | serve             | Principals, grants, subjects, evaluation model, can-i                |
+| Doc                                                        | Enables              | Notes                                                                |
+| ---------------------------------------------------------- | -------------------- | -------------------------------------------------------------------- |
+| [expressions](./enablers/expressions.md)                   | behaviors, workflows | CEL surface                                                          |
+| [inputs](./enablers/inputs.md)                             | behaviors, workflows |                                                                      |
+| [data-query](./enablers/data-query.md)                     | data                 | `data query`, catalog                                                |
+| [datastores](./enablers/datastores.md)                     | data                 | To be split: operator view / sync contract / locking                 |
+| [datastore-litestream](./enablers/datastore-litestream.md) | data                 | v3 `commits.db` replication: sidecar, outbox sync rule, fences       |
+| [remote-execution](./enablers/remote-execution.md)         | serve                | Workers, leases, runners, data plane; serve protocol to be extracted |
+| [reports](./enablers/reports.md)                           | behaviors, workflows |                                                                      |
+| [run-tracker](./enablers/run-tracker.md)                   | workflows, behaviors | To fold into a workflow-execution doc                                |
+| [doctor-secrets](./enablers/doctor-secrets.md)             | behaviors            | To fold into behaviors.md operations section                         |
+| [doctor-vaults](./enablers/doctor-vaults.md)               | vaults               | To fold into vaults.md operations section                            |
+| [access-control](./enablers/access-control.md)             | serve                | Principals, grants, subjects, evaluation model, can-i                |
 
 ### Surfaces
 
@@ -98,11 +98,12 @@ Write in plain English:
 | [audit](./surfaces/audit.md)                     | Hook command log; to fold into agent-interface.md |
 | [audit-doctor](./surfaces/audit-doctor.md)       | To fold into agent-interface.md                   |
 | [auth-gate](./surfaces/auth-gate.md)             | Account requirement, signed proofs, fail-open     |
+| [start](./surfaces/start.md)                     | Get started: workspaces, tasks, launching agents  |
 
 ## Reading order for a new engineer
 
 1. [architecture.md](./architecture.md)
-2. `primitives/`, in the order architecture.md covers them: models → data →
+2. `primitives/`, in the order architecture.md covers them: behaviors → data →
    workflows → vaults → extensions → serve
 3. [contributing/libswamp.md](../contributing/libswamp.md), the pattern every
    command follows; then `src/cli/commands/data_get.ts` as the example

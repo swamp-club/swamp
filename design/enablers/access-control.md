@@ -40,7 +40,7 @@ service principal, recorded as the run's `initiatedBy`:
 | `service:webhook`   | Verified webhook deliveries            |
 
 Service principals exist only in-process. Every token mint path (local CLI,
-`access.token.mint`, the `swamp/server-token` model) refuses a service
+`access.token.mint`, the `swamp/server-token` behavior) refuses a service
 principal, and a stored token naming one is refused at authentication with
 `401 invalid-principal`, so no caller can act as the scheduler or the webhook
 receiver. `--admins` rejects a service principal. A grant or group can still
@@ -65,9 +65,9 @@ Implementation: `src/domain/access/principal.ts`.
 Server tokens use the `<name>.<secret>` format. To authenticate an HTTP or
 WebSocket request, serve resolves only a `swamp/server-token` definition and
 reads its `token-main` lifecycle resource and vault secret. It applies the same
-lifecycle check and timing-safe comparison as the model's `redeem` method, but
-read-only: it does not write `lastUsedAt`, run a model method, or create a model
-run. Calling `redeem` directly still updates usage.
+lifecycle check and timing-safe comparison as the behavior's `redeem` method,
+but read-only: it does not write `lastUsedAt`, run a method, or create a
+behavior run. Calling `redeem` directly still updates usage.
 
 The record also names the secret it was minted with, as a SHA-256
 `secretFingerprint`. A credential that matches the vault secret but not that
@@ -106,8 +106,8 @@ A grant targets a _subject_, not a principal. There are four subject kinds:
 
 ### Local groups
 
-Local groups are `swamp/group` model instances, each with a name and a list of
-principal members. The `PolicySnapshot` indexes groups by principal, so
+Local groups are `swamp/group` behavior instances, each with a name and a list
+of principal members. The `PolicySnapshot` indexes groups by principal, so
 resolving subjects is a single map lookup.
 
 ### Subject resolution
@@ -126,7 +126,7 @@ Implementation: `src/domain/access/subject.ts`,
 ## Grants
 
 A grant allows or denies an action on a resource for a subject. Grants are
-stored as `swamp/grant` model instances with state `active` or `revoked`.
+stored as `swamp/grant` behavior instances with state `active` or `revoked`.
 
 ### Schema
 
@@ -138,7 +138,7 @@ stored as `swamp/grant` model instances with state `active` or `revoked`.
 | `actions`   | `Action[]`            | One or more of `run`, `read`, `write`, `admin` |
 | `resource`  | string                | Resource selector (`workflow:@acme/*`)         |
 | `condition` | string (optional)     | CEL over resource fields and principal context |
-| `methods`   | string[] (optional)   | Limit to these model methods (omit for all)    |
+| `methods`   | string[] (optional)   | Limit to these methods (omit for all)          |
 | `state`     | `active` \| `revoked` | Only `active` grants are evaluated             |
 | `source`    | string                | Where the grant came from (see below)          |
 
@@ -226,9 +226,9 @@ single-subject entries as one `subjects` entry changes no grants on reload. A
 `subjects` list keeps membership in the reviewed file; a `group:` subject keeps
 it in the datastore, managed with `swamp access group`.
 
-The `GrantFileReconciler` syncs file grants into model data, creating, updating
-or revoking them as files change. The `file:<filename>` source separates them
-from method-created grants during reconciliation.
+The `GrantFileReconciler` syncs file grants into behavior data, creating,
+updating or revoking them as files change. The `file:<filename>` source
+separates them from method-created grants during reconciliation.
 
 The source of a `--grants-dir` or `--grants-file` grant does not depend on
 where the file is mounted. Serve instances that share a datastore can mount
@@ -258,7 +258,7 @@ grant or `--admins` grant. An entry removed from a file, or an admin removed
 from `--admins`, has every copy revoked.
 
 For a file grant still in its file, reconcile keeps the active copy with the
-lowest model id and revokes the others. The order does not depend on local
+lowest behavior id and revokes the others. The order does not depend on local
 state, so no peer ever revokes the lowest active copy it can see, and at least
 one copy stays active while peers sync. Admin grants for admins still in
 `--admins` are left as they are, duplicates included: their definitions share a
@@ -287,13 +287,13 @@ Implementation: `src/domain/access/grant_file.ts`,
 
 A resource selector has the form `<kind>:<pattern>`:
 
-| Kind       | What it gates                        |
-| ---------- | ------------------------------------ |
-| `workflow` | `workflow.run`, `workflow.status`    |
-| `model`    | `model.method.run`, `model.create`   |
-| `data`     | `data.get`, `data.query`             |
-| `access`   | Grant and group management, and the records the control plane stores as model data (see [Control-plane records](#control-plane-records)) |
-| `vault`    | `vault.*` requests, and vault operations during serve runs (see [Vaults](#vaults)) |
+| Kind       | What it gates                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workflow` | `workflow.run`, `workflow.status`                                                                                                           |
+| `model`    | `model.method.run`, `model.create`                                                                                                          |
+| `data`     | `data.get`, `data.query`                                                                                                                    |
+| `access`   | Grant and group management, and the records the control plane stores as behavior data (see [Control-plane records](#control-plane-records)) |
+| `vault`    | `vault.*` requests, and vault operations during serve runs (see [Vaults](#vaults))                                                          |
 
 Patterns support a trailing `*` wildcard:
 
@@ -301,14 +301,14 @@ Patterns support a trailing `*` wildcard:
 - `@acme/deploy` matches only `@acme/deploy` (exact)
 - `*` matches everything
 
-#### Model resource dual-identity matching
+#### Behavior resource dual-identity matching
 
 For `model` resources, grants match **both** the instance name and the extension
 type. A grant on `model:@xero/segment/*` matches any instance whose type is
 under `@xero/segment/`, such as `segment-test-audiences` with type
 `@xero/segment/audience`. The name is checked first. If it does not match, the
-type from the model's definition is checked as a fallback. This holds on every
-evaluation path: `decide()`, `explain()`, and `filterByResources` for
+type from the behavior's definition is checked as a fallback. This holds on
+every evaluation path: `decide()`, `explain()`, and `filterByResources` for
 collection operations.
 
 #### Type spellings
@@ -323,7 +323,7 @@ how it matches depends on the grant's effect (swamp-club#3130):
   `aws/ec2/...` types, and for a pattern written as a type path (with a `/`
   or `::`) a leading `@` is ignored on either side, as
   `restricted-model-types` compares types. A pattern without one (`a*`,
-  `prod-*`, `web.prod`) may be written for model names, so it keeps its `@`
+  `prod-*`, `web.prod`) may be written for behavior names, so it keeps its `@`
   as written and never reaches `@` types; it still folds case and
   separators, so `deny model:web.prod` also covers the type `web/prod`. The
   same holds for an `access:` deny on a control-plane record
@@ -337,7 +337,7 @@ how it matches depends on the grant's effect (swamp-club#3130):
   grants, so a misspelled allow matches no type, as before.
 
 Every non-canonical spelling is reported with the canonical one, except that a
-finding never tells an admin to respell a pattern that may name model names
+finding never tells an admin to respell a pattern that may name behavior names
 (that would drop them); it says what the grant matches instead: as a warning
 when a grant is created (the selector may also name instance names, so it is
 never refused), once per grant when serve loads its policy, and by `swamp serve
@@ -357,15 +357,15 @@ Implementation: `src/domain/access/resource_selector.ts`,
 
 #### Requests by id match the resource's name
 
-Selectors match names, never ids. A request may name a model or workflow by
+Selectors match names, never ids. A request may name a behavior or workflow by
 name or by UUID, so serve resolves it first and authorizes the resource it
 resolves to: its canonical name and full fields (`modelType` and tags for a
-model, `ns` and tags for its data, tags for a workflow). A request by the UUID
-of `prod-db` is therefore denied by `deny model:prod-*` just as a request by
-name is. The operation then acts on exactly that resource: it is handed the
-resolved id and the authorized name, and accepts only a resource with both.
-Ids alone are not enough — a resource may be named with another's UUID, and a
-copied file keeps its id — so neither can redirect the action.
+behavior, `ns` and tags for its data, tags for a workflow). A request by the
+UUID of `prod-db` is therefore denied by `deny model:prod-*` just as a request
+by name is. The operation then acts on exactly that resource: it is handed the
+resolved id and the authorized name, and accepts only a resource with both. Ids
+alone are not enough — a resource may be named with another's UUID, and a copied
+file keeps its id — so neither can redirect the action.
 
 - A string that matches nothing is authorized as sent. The operation then
   reports its usual not-found, and can only ever act on a resource whose id is
@@ -380,20 +380,20 @@ copied file keeps its id — so neither can redirect the action.
   when a cancel or attach arrives, so a rename during the run cannot redirect
   the check. Webhook-triggered runs do the same. Records from older instances,
   which carry only a name, resolve that name.
-- A model is reported with the type its definition file declares, whether it
+- A behavior is reported with the type its definition file declares, whether it
   is found by name or by id, so authorization and execution always see the
   same type.
 
 Reads of a method output or a workflow run (`model.output.get`, `.data`,
 `.logs`, `model.method.history.get` and `.logs`, `workflow.history.get` and
 `.logs`) take an output or run id prefix — 3+ hex characters, matched across
-every model or workflow before any name — or a model or workflow name or id,
-which reads its latest output or run. Serve resolves the argument to the
+every behavior or workflow before any name — or a behavior or workflow name or
+id, which reads its latest output or run. Serve resolves the argument to the
 output or run the read will return, authorizes its owners, and hands the read
-that same resolved output or run, so nothing is looked up again after the
-check (swamp-club#2673):
+that same resolved output or run, so nothing is looked up again after the check
+(swamp-club#2673):
 
-- An output is authorized on every definition declaring its model id. Ids
+- An output is authorized on every definition declaring its behavior id. Ids
   are not unique, and a copied definition shares the original's outputs and
   data, so a deny on any of them refuses the read. Definitions of
   unregistered types and auto-definitions count.
@@ -402,12 +402,12 @@ check (swamp-club#2673):
   was renamed, or only a copy sharing its id remains — the workflow now
   found by that id is authorized too. A run's recorded name identifies its
   workflow exactly, unlike an output, whose data every copy shares.
-- A read by model or workflow name authorizes that model or workflow and the
-  owners of the latest output or run it returns.
-- An output whose model was deleted is authorized on its model id; a run
+- A read by behavior or workflow name authorizes that behavior or workflow and
+  the owners of the latest output or run it returns.
+- An output whose behavior was deleted is authorized on its behavior id; a run
   whose workflow was deleted, on its recorded workflow name (without tags).
 - A prefix matching several outputs or runs is authorized on the owners of
-  each match, looked up once per model or recorded workflow. The ambiguity
+  each match, looked up once per behavior or recorded workflow. The ambiguity
   error lists only the matches whose owners the caller may all read. Each
   distinct owner is decided and audited once, however many matches share
   it, so the audit log grows with the owners involved, not with the size of
@@ -416,7 +416,7 @@ check (swamp-club#2673):
   Without enforcement, serve lists every match, as the CLI does.
 - A prefix matching nothing is authorized as sent.
 - `model.output.data` and `model.output.logs` return data artifact content, so
-  they also need a `data` read on the owning models, as `data.get` does
+  they also need a `data` read on the owning behaviors, as `data.get` does
   (swamp-club#2739). The other five return output or run metadata or the run
   log file and need only the `model` or `workflow` read.
 
@@ -433,9 +433,9 @@ itself, such as workflow-scope report output, is named by its workflow — in
 the workflow's name and tags.
 
 The response audit event of a request authorized this way records the name the
-request resolved to, not the id the client sent (a request by a model's UUID is
-audited under the model's name); a string that matched nothing is recorded as
-sent. A workflow-scoped `data.get` is audited under the names of the item's
+request resolved to, not the id the client sent (a request by a behavior's UUID
+is audited under the behavior's name); a string that matched nothing is recorded
+as sent. A workflow-scoped `data.get` is audited under the names of the item's
 owners, joined with ", " when there are several. The resolved name replaces the
 sent identifier only when the event audits the same kind of resource: a
 `run.attach`, audited as the run, keeps the run id. Denials already carry the
@@ -445,14 +445,14 @@ Direct type execution (`model.method.run` with a type and a definition name)
 acts on the definition `definitionName` names, which a request may set apart
 from `modelIdOrName`. That definition is authorized too, by its canonical name
 and fields (or, before it exists, by the name to be created with the named
-type), after the requested model and the type; it is the one locked, recorded
+type), after the requested behavior and the type; it is the one locked, recorded
 for cancel and attach, and audited. The run is handed that definition's id and
 fails if the name resolves to anything else by then (renamed in, or deleted).
 The exception is a name no definition had at the check: if a concurrent run
 created it since, the run adopts it when the caller may run that definition,
 judged the same way (swamp-club#2672). Because
 a direct run can rewrite an existing definition's global arguments, it takes
-that definition's model lock whatever the method's kind. Vaults are
+that definition's behavior lock whatever the method's kind. Vaults are
 authorized by name as described in [Vaults](#vaults).
 
 Implementation: `src/serve/handlers/resource_resolution.ts`. Guards:
@@ -462,29 +462,29 @@ type that names a resource, and
 
 ### Actions
 
-| Action    | Typical operations                                     |
-| --------- | ------------------------------------------------------ |
-| `run`     | Execute a workflow or model method (implies `approve` and `signal`) |
-| `read`    | Query data, view definitions, list resources           |
-| `write`   | Create or update models, definitions, data             |
-| `approve` | Approve or reject a workflow manual-approval gate      |
-| `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else |
-| `admin`   | Manage grants, groups, tokens, restricted models (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored; see below), and any operation on a control-plane record |
+| Action    | Typical operations                                                                                                                                                                          |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`     | Execute a workflow or method (implies `approve` and `signal`)                                                                                                                               |
+| `read`    | Query data, view definitions, list resources                                                                                                                                                |
+| `write`   | Create or update behaviors, definitions, data                                                                                                                                               |
+| `approve` | Approve or reject a workflow manual-approval gate                                                                                                                                           |
+| `signal`  | Deliver a signal to a `wait_for_signal` step of a workflow, and nothing else                                                                                                                |
+| `admin`   | Manage grants, groups, tokens, restricted behaviors (`--restricted-model-types`, matched in any spelling: a leading `@` is ignored; see below), and any operation on a control-plane record |
 
 **Renaming through an edit**: `model.edit` and `workflow.edit` refuse content
 whose `name` differs from the stored one unless the request sets
-`allowRename`, and refuse a name another model or workflow holds even then
+`allowRename`, and refuse a name another behavior or workflow holds even then
 (swamp-club#3302). `allowRename` states the client's intent and grants
 nothing: the edited name is still authorized as below.
 
-**Restricted model types**: a model whose stored type is listed in
+**Restricted behavior types**: a behavior whose stored type is listed in
 `--restricted-model-types` needs `admin` on `access:*` to be created, run,
 edited (including a rename or retag) or deleted, by id or by name, for its
 data to be deleted or renamed, and for a workflow step that runs it to be
 added or changed (swamp-club#3129, swamp-club#3131). Reading it stays open to
 `read`. `data.gc`, `data.prune` and `run.gc` are unchanged: they apply
-retention across the repository rather than acting on one model. Data a
-restricted model's arguments read from other models is not covered
+retention across the repository rather than acting on one behavior. Data a
+restricted behavior's arguments read from other behaviors is not covered
 (swamp-club#3171).
 
 **`run` implies `approve`**: a grant with `actions: [run]` also passes `approve`
@@ -643,12 +643,13 @@ Implementation: `src/domain/access/grant_based_access_decision_service.ts`,
 ## PolicySnapshot lifecycle
 
 The `PolicySnapshot` is the in-memory aggregate of all active grants and groups.
-It loads at serve startup and is rebuilt when grant or group model data changes.
+It loads at serve startup and is rebuilt when grant or group behavior data
+changes.
 
 1. **Initial load**: `PolicySnapshotLoader.load()` reads every `swamp/grant` and
    `swamp/group` data record from the repository.
 2. **Auto-rebuild**: the loader subscribes to `ModelCreated`, `ModelUpdated`,
-   `DefinitionCreated` and `DefinitionUpdated`. When a grant or group model
+   `DefinitionCreated` and `DefinitionUpdated`. When a grant or group behavior
    changes, it rebuilds after a 500 ms debounce.
 3. **Remote datastore**: with a remote datastore, an `AccessDataPoller` pulls
    `data/swamp/grant` and `data/swamp/group` every `--datastore-poll-interval`
@@ -674,26 +675,28 @@ operations (`model.search`, `workflow.search`, `data.search`, `data.query`, and
 their history, output and approval variants) return many results and cannot
 name one up front.
 
-These handlers run the query, then keep only the items the caller may read.
-Each item is judged on the resources that own it now, looked up by id rather
-than by the name recorded when it was written, with every resource field
-present (`CanonicalResources`): a model item on its definition, an output or
-method run on every model declaring its model id (a copy shares its outputs and
-data) together with the method it ran, a data item on every owning model — or,
-for workflow-scope data, its workflow — and a run or approval on its workflow.
-An item with several owners is kept only when all of them are allowed. With
-`model:@acme/*`, `model search` shows only matching models. With `model:*` it
-shows everything. With no `read` grant for the kind, the request is refused.
+These handlers run the query, then keep only the items the caller may read. Each
+item is judged on the resources that own it now, looked up by id rather than by
+the name recorded when it was written, with every resource field present
+(`CanonicalResources`): a behavior item on its definition, an output or method
+run on every behavior declaring its behavior id (a copy shares its outputs and
+data) together with the method it ran, a data item on every owning behavior —
+or, for workflow-scope data, its workflow — and a run or approval on its
+workflow. An item with several owners is kept only when all of them are allowed.
+With `model:@acme/*`, `model search` shows only matching behaviors. With
+`model:*` it shows everything. With no `read` grant for the kind, the request is
+refused.
 
 A `*` resource name never matches a name-scoped deny, so no request over many
 resources is authorized as `*` (swamp-club#2675):
 
 - `model.validate`, `workflow.validate` and `workflow.evaluate` without a name
-  run only over the models or workflows the caller may read. A workflow file
+  run only over the behaviors or workflows the caller may read. A workflow file
   that fails to parse is judged on the name it declares with no tags, since its
-  tags cannot be read, so a tag-conditioned deny does not hide it. `model.evaluate`
-  without a name evaluates every model, since evaluation orders them all in one
-  dependency graph, but saves and returns only the readable ones.
+  tags cannot be read, so a tag-conditioned deny does not hide it.
+  `model.evaluate` without a name evaluates every behavior, since evaluation
+  orders them all in one dependency graph, but saves and returns only the
+  readable ones.
 - `data.query` drops unreadable records inside the query, before the limit,
   `limited` and any `select` projection are computed.
 - Reports are data: `report.get` and `report.search` cover only reports whose
@@ -711,10 +714,10 @@ resources is authorized as `*` (swamp-club#2675):
   the refusal names the grant and says when it is conditional.
 
 `access.can-i` and `access.check` explain a decision the way a request would
-make it: a concrete model, data or workflow name is resolved to the resource it
-names with all of its fields; a pattern with a wildcard names no single resource
-and is explained as a check on the kind, where conditions on resource fields
-decide nothing.
+make it: a concrete behavior, data or workflow name is resolved to the resource
+it names with all of its fields; a pattern with a wildcard names no single
+resource and is explained as a check on the kind, where conditions on resource
+fields decide nothing.
 
 Endpoints that return only type definitions or schemas (`model.type.search`,
 `model.type.describe`, `workflow.schema`, `report.type.search`,
@@ -731,7 +734,7 @@ request type, and the `*` rule in
 
 ## Control-plane records
 
-The control plane stores its own records as model data beside user models:
+The control plane stores its own records as behavior data beside user behaviors:
 `swamp/grant`, `swamp/group` and `swamp/server-token` for access control, and
 `swamp/enrollment-token`, `swamp/worker`, `swamp/step-lease`,
 `swamp/pending-dispatch` and `swamp/fleet-probe` for the worker fleet
@@ -739,21 +742,21 @@ The control plane stores its own records as model data beside user models:
 policy itself, a token record names its principal, expiry and the vault key
 holding its secret, and a group record lists its members (swamp-club#2756).
 
-- **Owned by the access kind.** Serve authorizes any model or data resource of
-  a control-plane type as the access resource named by its normalized type,
-  `access:swamp/grant` for example, not as `model:<name>` or `data:<name>`.
-  The resource name is the type, so selectors match it; its fields are the
-  record's own (`name`, `modelType`, `tags` of its model), so a condition
-  naming one grant or token still decides on that record.
-  `modelAccessResource` and `CanonicalResources` make that mapping, so it
-  holds on every path that goes through them: `data.get`, `data.list`,
-  `data.versions`, `data.delete`, `data.rename`, `data.search`, `data.query`,
-  reports, workflow-history step data, `model.get`, `model.edit` (before and
-  after the edit), `model.output.*` and
-  `model.method.history.*`. An owner no longer found is judged on its recorded
-  type — a data item's or output's owner, and the model of a run whose cancel or
-  attach arrives after its definition was deleted (the run records its model
-  type) — and method run and create gate every control-plane type as admin.
+- **Owned by the access kind.** Serve authorizes any behavior or data resource
+  of a control-plane type as the access resource named by its normalized type,
+  `access:swamp/grant` for example, not as `model:<name>` or `data:<name>`. The
+  resource name is the type, so selectors match it; its fields are the record's
+  own (`name`, `modelType`, `tags` of its behavior), so a condition naming one
+  grant or token still decides on that record. `modelAccessResource` and
+  `CanonicalResources` make that mapping, so it holds on every path that goes
+  through them: `data.get`, `data.list`, `data.versions`, `data.delete`,
+  `data.rename`, `data.search`, `data.query`, reports, workflow-history step
+  data, `model.get`, `model.edit` (before and after the edit), `model.output.*`
+  and `model.method.history.*`. An owner no longer found is judged on its
+  recorded type — a data item's or output's owner, and the behavior of a run
+  whose cancel or attach arrives after its definition was deleted (the run
+  records its behavior type) — and method run and create gate every
+  control-plane type as admin.
 - **Decided as admin.** The decision service decides every action on a
   control-plane record as `admin`, whatever the request asked for
   (`isControlPlaneRecordResource`). So `read`, `write` or `run` on `data:*` or
@@ -779,7 +782,7 @@ holding its secret, and a group record lists its members (swamp-club#2756).
   fallback skip them. `workers.connected()` keeps its own read of worker
   state. This holds wherever expressions are evaluated, locally too.
 - **Existence is not hidden.** A caller asking `data.get` for a control-plane
-  model's name is refused, where a name that matches nothing reports not
+  behavior's name is refused, where a name that matches nothing reports not
   found, so the caller learns that the name exists. Name and tag denies behave
   the same way, and control-plane names cannot be listed without admin.
 
@@ -795,7 +798,7 @@ Implementation: `src/domain/models/control_plane_types.ts`,
 `src/domain/data/data_query_service.ts` (`excludeModelTypes`),
 `src/domain/expressions/model_resolver.ts`. Guard:
 `integration/control_plane_types_rules_test.ts` fails when a built-in
-`swamp/*` model type is missing from the list.
+`swamp/*` behavior type is missing from the list.
 
 ## Vaults
 
@@ -987,11 +990,11 @@ reflected.
 
 ### Compatibility
 
-- **Behaviour change: data denies on vaults.** A deny on `data:vault` or
+- **Changed: data denies on vaults.** A deny on `data:vault` or
   `data:<vault name>` now refuses every request on the vault, whichever name
   the request was checked under before. Move vault denies to `vault:<name>`;
   a `data` deny has no effect on runs.
-- **Behaviour change: reserved vaults.** Serve runs can no longer read
+- **Changed: reserved vaults.** Serve runs can no longer read
   reserved vaults, except for principals with `admin` on `access:*`.
 - **Upgrade first.** Write vault grants, or workflows that set `vaults:`, only
   once every serve replica on the datastore runs a release that supports them.
@@ -1007,7 +1010,7 @@ reflected.
 ## Workflow execution context
 
 On a `workflow.run` request, the handler checks that the principal has `run` on
-`workflow:<name>`. If so, the workflow runs, including every model method call
+`workflow:<name>`. If so, the workflow runs, including every method call
 in its steps, with no further checks. The workflow is the unit of authorization:
 the caller may run all of it or none of it.
 
@@ -1015,42 +1018,42 @@ Vault operations are the exception: once the policy holds a vault grant, each
 one in the run is judged against the triggering principal by the run-time rule
 in [Vaults](#vaults).
 
-The reason is that the operator who wrote the workflow chose which models it
-calls, and a `run` grant delegates that choice. Per-model grants would force
-operators to grant `run` on every model a workflow touches, which leads to
+The reason is that the operator who wrote the workflow chose which behaviors it
+calls, and a `run` grant delegates that choice. Per-behavior grants would force
+operators to grant `run` on every behavior a workflow touches, which leads to
 overly broad grants.
 
-**Direct model method calls through serve** (`model.method.run`) are authorized
-on their own against `model:<name>`. The workflow exemption covers only model
+**Direct method calls through serve** (`model.method.run`) are authorized
+on their own against `model:<name>`. The workflow exemption covers only behavior
 calls the workflow engine makes internally.
 
 Because a run delegates to whoever wrote the workflow, the writer is held to
-what the workflow runs. A served `workflow.edit` that adds a step needs `run`
-on the step's model (with the type, and `admin` for a restricted or
-control-plane type, as a direct run needs) or on its nested workflow. A guard
-or assert that calls `model.method("<model>", "<method>")` runs that method, so
-it is held to the same check; `model` used any other way (aliased with
-`cel.bind`, wrapped in `dyn()`) may run any model and needs `admin`. A model target computed by an expression can
-resolve to any model, restricted and control-plane ones included, which the
-engine does not gate, so it needs `admin`; a computed nested workflow needs
-`run` on every workflow. Steps already stored are not re-checked, and neither
-is a run, so users running a workflow an admin wrote are unaffected. The
-exception is a stored step the edit changes — its inputs, method or
-`dependsOn`, or its name or job — that runs a restricted or control-plane
-model, or a model it computes: what the step holds is what that model runs
-with, so the change needs `admin` (swamp-club#3131). Removing a step, a retag,
-or a change to the workflow's input defaults or a job's `dependsOn` does not,
-since a caller with `run` on the workflow already chooses its inputs. An edit
-that changes the workflow's inputs or a step's `forEach` re-checks stored
-computed targets that read `inputs` or `self`, since those are what can
-retarget them; a retag or any other edit does not. Such a target placed in a
-step that did not hold it is checked there, since that step's `forEach` may
-differ.
+what the workflow runs. A served `workflow.edit` that adds a step needs `run` on
+the step's behavior (with the type, and `admin` for a restricted or
+control-plane type, as a direct run needs) or on its nested workflow. A guard or
+assert that calls `model.method("<model>", "<method>")` runs that method, so it
+is held to the same check; `model` used any other way (aliased with `cel.bind`,
+wrapped in `dyn()`) may run any behavior and needs `admin`. A behavior target
+computed by an expression can resolve to any behavior, restricted and
+control-plane ones included, which the engine does not gate, so it needs
+`admin`; a computed nested workflow needs `run` on every workflow. Steps already
+stored are not re-checked, and neither is a run, so users running a workflow an
+admin wrote are unaffected. The exception is a stored step the edit changes —
+its inputs, method or `dependsOn`, or its name or job — that runs a restricted
+or control-plane behavior, or a behavior it computes: what the step holds is
+what that behavior runs with, so the change needs `admin` (swamp-club#3131).
+Removing a step, a retag, or a change to the workflow's input defaults or a
+job's `dependsOn` does not, since a caller with `run` on the workflow already
+chooses its inputs. An edit that changes the workflow's inputs or a step's
+`forEach` re-checks stored computed targets that read `inputs` or `self`, since
+those are what can retarget them; a retag or any other edit does not. Such a
+target placed in a step that did not hold it is checked there, since that step's
+`forEach` may differ.
 
 ## Expression references
 
-Expressions can read beyond the model they belong to: other models' data
-(`data.*`, `model.<name>.resource`, `file.contents`), other models'
+Expressions can read beyond the behavior they belong to: other behaviors' data
+(`data.*`, `model.<name>.resource`, `file.contents`), other behaviors'
 definitions (`model.<name>.input`), and the process environment (`env`). Over
 serve they are evaluated in the server process, so serve authorizes expression
 text against the principal who supplies it, when they supply it
@@ -1066,52 +1069,51 @@ from the AST evaluation parses) and
 | `model.method.run` inputs          | every expression in the inputs                               |
 | runs, evaluate, validate           | nothing: stored content is the author's                      |
 
-- **Data.** A reference to a named model needs `read` on the data it can
+- **Data.** A reference to a named behavior needs `read` on the data it can
   return: every current owner of records stored under that name, and every
   definition with that name or id; deny wins. A name nothing owns yet needs
   `read` on all data, since it will read whatever is stored under it later.
-- **What an edit puts somewhere new.** An edit is checked for every
-  expression whose text is new, every stored expression it moves or copies to
-  a path where it was not, and every expression in a workflow step whose
-  target it changed, since where an expression sits decides where its value
-  goes. An expression left in place, under an unchanged step, is not
-  re-checked. Steps are identified by job and step name, so adding, removing
-  or reordering other steps does not count as moving them. A reference whose model
-  is computed, a cross-model accessor (`data.query`, `data.findByTag`), the
-  `model` map used whole or with a computed key, a `ns:` or `*:` prefix, more
-  than 32 named models, or text the analyzer cannot parse needs `read` on all
-  data, so any data deny refuses it. A target computed from `self` counts too:
+- **What an edit puts somewhere new.** An edit is checked for every expression
+  whose text is new, every stored expression it moves or copies to a path where
+  it was not, and every expression in a workflow step whose target it changed,
+  since where an expression sits decides where its value goes. An expression
+  left in place, under an unchanged step, is not re-checked. Steps are
+  identified by job and step name, so adding, removing or reordering other steps
+  does not count as moving them. A reference whose behavior is computed, a
+  cross-behavior accessor (`data.query`, `data.findByTag`), the `model` map used
+  whole or with a computed key, a `ns:` or `*:` prefix, more than 32 named
+  behaviors, or text the analyzer cannot parse needs `read` on all data, so any
+  data deny refuses it. A target computed from `self` counts too:
   `data.latest(self.name, ...)` is judged as reading any data. A definition
   lookup that fails refuses the reference.
 - **Definitions.** `model.<name>.input` and `.definition` need `read` on the
-  model.
+  behavior.
 - **env.** Reading the server's environment is an author's capability: a
-  writer holds `write` on the model, so env is allowed on the write paths. In
-  run inputs it needs `write` on the model run; a run-only caller is refused
+  writer holds `write` on the behavior, so env is allowed on the write paths. In
+  run inputs it needs `write` on the behavior run; a run-only caller is refused
   and told to reference env in the definition. `evaluate` and `validate` never
   resolve env, which is resolved only when a method runs.
 - **Vault secrets.** A `vault.get(...)` expression is not checked when it is
   saved: the analyzer records no vault reference, so
-  `authorizeExpressionReferences` never sees one (swamp-club#3086). It is
-  judged when a serve run resolves it, by the run-time rule in
-  [Vaults](#vaults), against the vault grants of the principal that triggered
-  the run. This is the expression function, not the `vault.get` serve request,
-  which the request rule decides. While the policy holds no vault grant the
-  run-time rule is inert and the expression stays an author's capability: a
-  writer, holding `write` on the model or workflow, may use any vault secret in
-  what they author. Unlike env, a `vault.get(...)` expression is also allowed
-  in model method run inputs to any caller, since run-only callers such as CI
-  tokens pass secrets that way; the value reaches the method and is masked in
-  output. So without vault grants, `write` on workflows or models, and `run` on
-  a model whose method can surface its inputs, include access to the repo's
-  vault secrets. To bound a principal, grant it `vault:<name>`: once it holds
-  any vault allow its runs reach only the vaults it is granted. Reserved vaults
-  are never readable by a serve run, except to principals with `admin` on
-  `access:*`. Workflow run inputs are inert and never resolve a
-  `vault.get(...)` expression.
+  `authorizeExpressionReferences` never sees one (swamp-club#3086). It is judged
+  when a serve run resolves it, by the run-time rule in [Vaults](#vaults),
+  against the vault grants of the principal that triggered the run. This is the
+  expression function, not the `vault.get` serve request, which the request rule
+  decides. While the policy holds no vault grant the run-time rule is inert and
+  the expression stays an author's capability: a writer, holding `write` on the
+  behavior or workflow, may use any vault secret in what they author. Unlike
+  env, a `vault.get(...)` expression is also allowed in method run inputs to any
+  caller, since run-only callers such as CI tokens pass secrets that way; the
+  value reaches the method and is masked in output. So without vault grants,
+  `write` on workflows or behaviors, and `run` on a behavior whose method can
+  surface its inputs, include access to the repo's vault secrets. To bound a
+  principal, grant it `vault:<name>`: once it holds any vault allow its runs
+  reach only the vaults it is granted. Reserved vaults are never readable by a
+  serve run, except to principals with `admin` on `access:*`. Workflow run
+  inputs are inert and never resolve a `vault.get(...)` expression.
 - **Retargeting.** A stored expression that reads data through a target
   computed from `self` or `inputs` is re-checked when an edit could point it
-  elsewhere: a model edit that changes its name, version, tags, global
+  elsewhere: a behavior edit that changes its name, version, tags, global
   arguments or inputs (expression text included, since global-argument
   expressions are evaluated before `self.globalArguments` is read), a workflow
   edit that changes its inputs or a step's `forEach`, or an edit that places
@@ -1125,19 +1127,19 @@ from the AST evaluation parses) and
 
 What this does not cover, by design:
 
-- An author's computed target lets runners choose the model:
-  `data.latest(inputs.target, ...)` in a stored definition reads whatever model
-  a run passes as a plain input, and a target taken from another model's data
-  (or from `steps.*` or `run.*`) follows whoever writes that data. That is the
-  author's choice; avoid caller-controlled targets where the runner should not
-  pick the model.
-- Global arguments a run can override are the runner's choice. A workflow
-  step's `globalArgs`, and a direct-type run's inputs, replace a model's
-  global arguments for that run, and a direct run also saves them to the
-  definition. Both need only `run`. A stored reference computed from
-  `self.globalArguments` therefore reads whatever model the runner names, like
-  one computed from `inputs`. Don't compute a data target from a global
-  argument when runners shouldn't choose the model.
+- An author's computed target lets runners choose the behavior:
+  `data.latest(inputs.target, ...)` in a stored definition reads whatever
+  behavior a run passes as a plain input, and a target taken from another
+  behavior's data (or from `steps.*` or `run.*`) follows whoever writes that
+  data. That is the author's choice; avoid caller-controlled targets where the
+  runner should not pick the behavior.
+- Global arguments a run can override are the runner's choice. A workflow step's
+  `globalArgs`, and a direct-type run's inputs, replace a behavior's global
+  arguments for that run, and a direct run also saves them to the definition.
+  Both need only `run`. A stored reference computed from `self.globalArguments`
+  therefore reads whatever behavior the runner names, like one computed from
+  `inputs`. Don't compute a data target from a global argument when runners
+  shouldn't choose the behavior.
 - The check runs when text is saved. Expressions stored before this check
   existed are not re-checked.
 - Vault secrets: a `vault.get(...)` expression is not checked when saved; a
@@ -1156,7 +1158,7 @@ server. It has two modes.
 swamp access can-i --action run --on workflow:@acme/deploy --server wss://swamp.acme.internal:9090
 ```
 
-For method-scoped grants, add `--method` to test one model method:
+For method-scoped grants, add `--method` to test one method:
 
 ```
 swamp access can-i --action run --on model:@acme/my-model --method read --server wss://swamp.acme.internal:9090
@@ -1185,15 +1187,15 @@ Implementation: `src/cli/commands/access_can_i.ts`,
 
 `swamp access check` explains whether a subject can perform an action on a
 resource. With `--server` the server explains it. Without `--server` it is
-explained locally against the repo's grants. Both explain a concrete model,
-data or workflow name as a request would judge it: the name is resolved from
-the repo to the resource it names, with its stored type and tags, so
-`deny write --on model:command/shell` denies a write to a `command/shell` model
-under any name, and a condition on `tags` reads the resource's own tags. A name
-that matches nothing is a resource with no tags. A wildcard pattern or an
-`access:` resource is a check on the kind. Locally and on the server the
-resource is built by one function, so the two give the same answer for the same
-repo (swamp-club#3224).
+explained locally against the repo's grants. Both explain a concrete behavior,
+data or workflow name as a request would judge it: the name is resolved from the
+repo to the resource it names, with its stored type and tags, so `deny write
+--on model:command/shell` denies a write to a `command/shell` behavior under any
+name, and a condition on `tags` reads the resource's own tags. A name that
+matches nothing is a resource with no tags. A wildcard pattern or an `access:`
+resource is a check on the kind. Locally and on the server the resource is built
+by one function, so the two give the same answer for the same repo
+(swamp-club#3224).
 
 `--field key=value` (local only) overrides a resolved field, to simulate a
 resource that does not exist yet or a future tag; a `tags.<key>` field replaces

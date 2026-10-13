@@ -2,7 +2,7 @@
 
 Namespaces partition a shared remote datastore so multiple repos can use the
 same bucket/prefix without colliding. Each repo owns a namespace slug; all
-runtime data (model data, outputs, workflow runs) is written under
+runtime data (behavior data, outputs, workflow runs) is written under
 `{namespace}/` instead of at the root.
 
 ## Why Namespaces Matter
@@ -110,7 +110,7 @@ swamp datastore catalog pull --namespaces infra,platform --json
 ```
 
 This fetches `.catalog-export.json` from each foreign namespace and imports it
-into the local catalog. After pulling, `data.query` can reference models from
+into the local catalog. After pulling, `data.query` can reference behaviors from
 those namespaces.
 
 Foreign content (the actual data attributes) is fetched on demand when a CEL

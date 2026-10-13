@@ -1,0 +1,152 @@
+/* The run a row is about, among its workflow's recent runs */
+
+.exec-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.exec-toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.exec-updating {
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.exec-local-note {
+  margin: 0;
+  padding: 8px 16px 0;
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.exec-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.exec-refresh:hover:not(:disabled),
+.executions-page .empty-state .btn-sm:hover {
+  color: var(--text-1);
+  border-color: var(--text-3);
+}
+.executions-page .btn-sm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Indeterminate bar while a new page or filter loads */
+.exec-progress {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: var(--accent-subtle);
+}
+.exec-progress::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: var(--accent);
+  animation: exec-progress 1.1s ease-in-out infinite;
+}
+@keyframes exec-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+.exec-table {
+  transition: opacity 0.15s ease;
+}
+.exec-table.is-stale {
+  opacity: 0.55;
+}
+
+.exec-row {
+  cursor: pointer;
+}
+.exec-table td a.exec-run-link {
+  font-size: 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+.exec-workflow {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exec-table td a.exec-workflow-link {
+  font-weight: 500;
+  color: var(--text-1);
+  text-decoration: none;
+}
+.exec-table td a.exec-run-link:hover,
+.exec-table td a.exec-workflow-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.exec-run-link:focus-visible,
+.exec-workflow-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.exec-history {
+  width: 150px;
+  min-width: 120px;
+}
+.exec-history .run-history {
+  width: 140px;
+}
+.exec-num {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.exec-muted {
+  color: var(--text-3);
+}
+.exec-time {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+@media (max-width: 768px) {
+  .exec-toolbar {
+    padding: 10px;
+  }
+  .exec-time .exec-muted {
+    display: none;
+  }
+  .exec-workflow {
+    max-width: 180px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .exec-progress::after {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+  .exec-table {
+    transition: none;
+  }
+}
+
+.exec-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

@@ -24,6 +24,7 @@ import { getLogger } from "@logtape/logtape";
 import { expandEnvVars } from "./env_path.ts";
 import { swampSourcesPath } from "./paths.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { resolveGitMainWorktreeRoot } from "./git_worktree.ts";
 import {
   detectKindFromSource,
   EXTENSION_KINDS,
@@ -340,6 +341,7 @@ export interface SourceResolutionWarning {
 
 export async function resolveSourceExtensionDirs(
   expandedSources: SwampSource[],
+  options?: { quiet?: boolean },
 ): Promise<SourceResolutionResult> {
   const results: ResolvedSourceDirs[] = [];
   const warnings: SourceResolutionWarning[] = [];
@@ -353,13 +355,17 @@ export async function resolveSourceExtensionDirs(
     try {
       const stat = await Deno.stat(sourceDir);
       if (!stat.isDirectory) {
-        logger.warn`Source path is not a directory: ${sourceDir}`;
+        if (!options?.quiet) {
+          logger.warn`Source path is not a directory: ${sourceDir}`;
+        }
         warnings.push({ sourcePath: sourceDir, reason: "not_a_directory" });
         results.push(resolved);
         continue;
       }
     } catch {
-      logger.warn`Source path does not exist: ${sourceDir}`;
+      if (!options?.quiet) {
+        logger.warn`Source path does not exist: ${sourceDir}`;
+      }
       warnings.push({ sourcePath: sourceDir, reason: "not_found" });
       results.push(resolved);
       continue;
@@ -389,6 +395,59 @@ export async function resolveSourceExtensionDirs(
   }
 
   return { resolved: results, warnings };
+}
+
+/**
+ * Flattens resolved sources into their per-kind extension directories,
+ * in source order and then kind order. The order matters: the loader
+ * registers sources in `.swamp-sources.yaml` order and skips a type that
+ * is already registered, so an earlier directory wins a type conflict.
+ */
+export function flattenSourceKindDirs(
+  resolved: readonly ResolvedSourceDirs[],
+): string[] {
+  const dirs: string[] = [];
+  for (const source of resolved) {
+    for (
+      const dir of [
+        source.modelsDir,
+        source.vaultsDir,
+        source.datastoresDir,
+        source.reportsDir,
+        source.webhooksDir,
+        source.workflowsDir,
+      ]
+    ) {
+      if (dir !== undefined && !dirs.includes(dir)) dirs.push(dir);
+    }
+  }
+  return dirs;
+}
+
+/**
+ * Resolves the extension directories `.swamp-sources.yaml` mounts into
+ * the repo, the same way CLI startup does: relative paths resolve
+ * against the git main working tree, globs expand, and the `only`
+ * filter applies. Returns an empty list when the file does not exist.
+ *
+ * `ExtensionRepository` keeps catalog rows under these directories when
+ * it prunes rows whose source is outside the repo root
+ * (swamp-club#2563). Missing sources are not reported again here; CLI
+ * startup already warns about them.
+ *
+ * @throws UserError if `.swamp-sources.yaml` exists but is invalid.
+ */
+export async function resolveMountedSourceDirs(
+  repoDir: string,
+): Promise<string[]> {
+  const config = await readSwampSources(repoDir);
+  if (!config) return [];
+  const sourceBaseDir = await resolveGitMainWorktreeRoot(repoDir);
+  const expanded = await expandSourcePaths(config, repoDir, sourceBaseDir);
+  const { resolved } = await resolveSourceExtensionDirs(expanded, {
+    quiet: true,
+  });
+  return flattenSourceKindDirs(resolved);
 }
 
 /**
