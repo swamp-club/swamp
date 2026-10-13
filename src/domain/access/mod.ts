@@ -58,9 +58,23 @@ export {
   type GrantFileEntry,
   type GrantFileError,
   type GrantFileParseResult,
+  type GrantFileSubject,
+  type ParsedGrantFileEntry,
   parseGrantFile,
   readGrantFiles,
+  USERNAME_SUBJECT_PREFIX,
 } from "./grant_file.ts";
+
+export {
+  type GrantUsernameResolution,
+  type GrantUsernameResolver,
+  type ParsedGrantSource,
+  type ResolvedGrantSource,
+  resolveGrantFileUsernames,
+  unresolvableUsernames,
+  type UsernameLookup,
+  type UsernameResolutionRequest,
+} from "./grant_username_resolution.ts";
 
 export { GrantsDirectoryPoller } from "./grants_directory_poller.ts";
 

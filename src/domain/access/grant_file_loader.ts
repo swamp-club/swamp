@@ -34,6 +34,12 @@ import {
   resolveExternalGrantsFile,
 } from "./grant_file.ts";
 import type { ConditionTypeLiteralReader } from "./grant_spelling.ts";
+import {
+  grantFileUsernames,
+  type GrantUsernameResolver,
+  type ParsedGrantSource,
+  resolveGrantFileUsernames,
+} from "./grant_username_resolution.ts";
 import { grantsDirSourceName } from "./grant_source.ts";
 
 /** One grant file outside the repository grants/ directory. */
@@ -233,6 +239,23 @@ export async function readServeGrantFiles(
 }
 
 /**
+ * Every `username:` subject the loaded grant files name (swamp-club#3123),
+ * deduplicated, from files that parsed, whatever else they hold.
+ */
+export function serveGrantFileUsernames(files: ServeGrantFiles): string[] {
+  const results: GrantFileParseResult[] = [...files.repo.values()];
+  if (files.grantsFile?.status === "loaded" && files.grantsFile.file.result) {
+    results.push(files.grantsFile.file.result);
+  }
+  if (files.grantsDir?.status === "loaded") {
+    for (const file of files.grantsDir.files) {
+      if (file.result) results.push(file.result);
+    }
+  }
+  return grantFileUsernames(results.flatMap((result) => result.entries));
+}
+
+/**
  * Why a grant file was reported: it fails to load (`invalid`), cannot be
  * read (`unreadable`), is absent where the check ran (`missing-source`), or
  * spells a type no type is stored as (`spelling`).
@@ -372,4 +395,55 @@ export function checkServeGrantFiles(files: ServeGrantFiles): GrantFileCheck {
       ? grantsDir.files.filter((file) => file.readError === undefined).length
       : 0);
   return { filesChecked, errors, warnings };
+}
+
+/**
+ * Resolves the `username:` subjects of the loaded grant files and reports
+ * each one that does not resolve as an `invalid` issue, as serve startup
+ * would refuse it (swamp-club#3123). Files are named as
+ * {@link checkServeGrantFiles} names them.
+ */
+export async function checkServeGrantFileUsernames(
+  files: ServeGrantFiles,
+  resolver: GrantUsernameResolver,
+): Promise<GrantFileCheckIssue[]> {
+  const sources = new Map<string, ParsedGrantSource>();
+  for (const [name, result] of files.repo) {
+    sources.set(`repo:${name}`, {
+      filename: repoGrantFileName(name),
+      entries: result.entries,
+    });
+  }
+  if (files.grantsFile?.status === "loaded" && files.grantsFile.file.result) {
+    sources.set("grants-file", {
+      filename: files.grantsFile.path,
+      entries: files.grantsFile.file.result.entries,
+    });
+  }
+  if (files.grantsDir?.status === "loaded") {
+    for (const file of files.grantsDir.files) {
+      if (!file.result) continue;
+      sources.set(`grants-dir:${file.name}`, {
+        filename: file.path,
+        entries: file.result.entries,
+      });
+    }
+  }
+  if (
+    grantFileUsernames([...sources.values()].flatMap((s) => s.entries))
+      .length === 0
+  ) {
+    return [];
+  }
+  // Not complete: a check must never make a resolver forget anything.
+  const resolution = await resolveGrantFileUsernames(sources, resolver, {
+    complete: false,
+  });
+  return [...resolution.sources.values()].flatMap((source) =>
+    source.errors.map((e) => ({
+      reason: "invalid" as const,
+      file: e.filename,
+      message: e.message,
+    }))
+  );
 }

@@ -50,6 +50,7 @@ import type { MergedServeOptions } from "../src/serve/serve_config.ts";
 import type { ServeAuthConfig } from "../src/domain/access/serve_auth_config.ts";
 import type { Principal } from "../src/domain/access/principal.ts";
 import { parseGrantFile } from "../src/domain/access/grant_file.ts";
+import { principalEntries } from "../src/domain/access/grant_file_test_helpers.ts";
 import {
   createFileGrantStore,
   reconcileAllFileGrants,
@@ -148,7 +149,7 @@ async function suspendAtGate(
   );
   assertEquals(parsed.errors, []);
   await reconcileAllFileGrants(
-    new Map([[grantsFile, parsed.entries]]),
+    new Map([[grantsFile, principalEntries(parsed.entries)]]),
     createFileGrantStore(
       repoContext.definitionRepo,
       new YamlDefinitionRepository(

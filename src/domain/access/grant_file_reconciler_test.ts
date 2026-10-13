@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import { type GrantFileEntry, parseGrantFile } from "./grant_file.ts";
+import { principalEntries } from "./grant_file_test_helpers.ts";
 import {
   type FileGrantStore,
   reconcileAllFileGrants,
@@ -894,14 +895,14 @@ grants:
 
   const store = createMockStore();
   const first = await reconcileAllFileGrants(
-    new Map([["team.yaml", repeated.entries]]),
+    new Map([["team.yaml", principalEntries(repeated.entries)]]),
     store,
   );
   assertEquals(first.totalCreated, 6);
   store.written.clear();
 
   const second = await reconcileAllFileGrants(
-    new Map([["team.yaml", combined.entries]]),
+    new Map([["team.yaml", principalEntries(combined.entries)]]),
     store,
   );
   assertEquals(second.totalCreated, 0);

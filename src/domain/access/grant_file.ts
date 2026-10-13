@@ -85,6 +85,29 @@ const GrantFileRawSchema = z.object({
   grants: z.array(GrantFileEntryRawSchema).min(1),
 });
 
+/**
+ * The prefix of a grant-file subject that names an OAuth user by username
+ * (swamp-club#3123). It exists only in grant files: serve resolves the name
+ * to its OAuth subject and pins it, and the stored grant names `user:<sub>`.
+ */
+export const USERNAME_SUBJECT_PREFIX = "username:";
+
+const MAX_USERNAME_LENGTH = 255;
+
+/** A grant-file subject naming an OAuth user by username, not yet resolved. */
+export interface UsernameSubject {
+  kind: "username";
+  name: string;
+}
+
+/** A subject as written in a grant file. */
+export type GrantFileSubject = Subject | UsernameSubject;
+
+/**
+ * A grant-file entry whose subject is a principal subject. Only these are
+ * reconciled into stored grants; an entry that names a username becomes one
+ * once the name is resolved (see grant_username_resolution.ts).
+ */
 export interface GrantFileEntry {
   subject: Subject;
   effect: Effect;
@@ -92,6 +115,11 @@ export interface GrantFileEntry {
   resource: ResourceSelector;
   condition?: string;
   methods?: string[];
+}
+
+/** A grant-file entry as parsed, which may still name a username. */
+export interface ParsedGrantFileEntry extends Omit<GrantFileEntry, "subject"> {
+  subject: GrantFileSubject;
 }
 
 export interface GrantFileError {
@@ -115,7 +143,7 @@ export interface GrantFileWarning {
 }
 
 export interface GrantFileParseResult {
-  entries: GrantFileEntry[];
+  entries: ParsedGrantFileEntry[];
   errors: GrantFileError[];
   warnings: GrantFileWarning[];
 }
@@ -127,12 +155,36 @@ export interface ConditionValidator {
   };
 }
 
-export function entryIdentityKey(entry: GrantFileEntry): string {
+export function entryIdentityKey(entry: ParsedGrantFileEntry): string {
   const subject = `${entry.subject.kind}:${entry.subject.name}`;
   const actions = [...entry.actions].sort().join(",");
   const resource = `${entry.resource.kind}:${entry.resource.pattern}`;
   const condition = entry.condition?.trim() ?? "";
   return `${subject}|${entry.effect}|${actions}|${resource}|${condition}`;
+}
+
+/**
+ * Parses one grant-file subject. `username:<name>` is accepted here and
+ * nowhere else: it is not a subject kind, so the grants API and stored
+ * grants never carry it.
+ */
+export function parseGrantFileSubject(value: string): GrantFileSubject {
+  if (!value.startsWith(USERNAME_SUBJECT_PREFIX)) return parseSubject(value);
+  const name = value.slice(USERNAME_SUBJECT_PREFIX.length);
+  if (name.length === 0) {
+    throw new Error(`Invalid subject "${value}": username cannot be empty`);
+  }
+  if (name.length > MAX_USERNAME_LENGTH) {
+    throw new Error(
+      `Invalid subject "${value}": username is longer than ${MAX_USERNAME_LENGTH} characters`,
+    );
+  }
+  if (/[\s:]/.test(name)) {
+    throw new Error(
+      `Invalid subject "${value}": a username cannot contain whitespace or ":"`,
+    );
+  }
+  return { kind: "username", name };
 }
 
 export function parseGrantFile(
@@ -141,7 +193,7 @@ export function parseGrantFile(
   validateCondition?: ConditionValidator,
   readTypeLiterals?: ConditionTypeLiteralReader,
 ): GrantFileParseResult {
-  const entries: GrantFileEntry[] = [];
+  const entries: ParsedGrantFileEntry[] = [];
   const errors: GrantFileError[] = [];
   const warnings: GrantFileWarning[] = [];
 
@@ -192,10 +244,10 @@ export function parseGrantFile(
       if (hasDuplicate) continue;
     }
 
-    const subjects: Subject[] = [];
+    const subjects: GrantFileSubject[] = [];
     for (const subjectStr of subjectStrings) {
       try {
-        subjects.push(parseSubject(subjectStr));
+        subjects.push(parseGrantFileSubject(subjectStr));
       } catch (e) {
         errors.push({
           filename,
@@ -271,7 +323,7 @@ export function parseGrantFile(
       // subjects loop, so a bad resource reports one error however many
       // subjects the entry lists.
       for (const subject of subjects) {
-        const entry: GrantFileEntry = {
+        const entry: ParsedGrantFileEntry = {
           subject,
           effect: raw.effect,
           actions: raw.actions,

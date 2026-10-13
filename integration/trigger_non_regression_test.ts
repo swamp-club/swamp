@@ -37,6 +37,7 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { parseGrantFile } from "../src/domain/access/grant_file.ts";
+import { principalEntries } from "../src/domain/access/grant_file_test_helpers.ts";
 import {
   createFileGrantStore,
   reconcileAllFileGrants,
@@ -167,7 +168,7 @@ async function harness(repoDir: string, scenario: Scenario, name: string) {
     );
     assertEquals(parsed.errors, []);
     await reconcileAllFileGrants(
-      new Map([[grantsFile, parsed.entries]]),
+      new Map([[grantsFile, principalEntries(parsed.entries)]]),
       createFileGrantStore(
         repoContext.definitionRepo,
         new YamlDefinitionRepository(

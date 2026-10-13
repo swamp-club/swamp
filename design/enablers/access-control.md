@@ -104,6 +104,9 @@ A grant targets a _subject_, not a principal. There are four subject kinds:
 | `idp-group` | `idp-group:<name>` | The principal's IdP group claims include the group |
 | `service`   | `service:<name>`   | The principal is the built-in `service:<name>`     |
 
+In OAuth mode a grant file can also write `username:<name>`, which serve
+resolves to `user:<sub>`; see [Usernames in grant files](#usernames-in-grant-files).
+
 ### Local groups
 
 Local groups are `swamp/group` behavior instances, each with a name and a list
@@ -225,6 +228,74 @@ applied. Because the expanded grants are identical, rewriting repeated
 single-subject entries as one `subjects` entry changes no grants on reload. A
 `subjects` list keeps membership in the reviewed file; a `group:` subject keeps
 it in the datastore, managed with `swamp access group`.
+
+#### Usernames in grant files
+
+In OAuth mode a grant file can name a user by username instead of by OAuth
+subject (`sub`), with `username:<name>`:
+
+```yaml
+grants:
+  - subjects: [username:alice, username:bob]
+    effect: allow
+    actions: [read, run]
+    resource: workflow:*
+```
+
+`username:` is not a subject kind. It exists only in grant files: serve resolves
+the name to its `sub` and stores an ordinary `user:<sub>` grant, so matching
+stays on the `sub` and the grants API never accepts `username:`. `user:<x>`
+keeps meaning the principal id `<x>`; a value is a username only when it is
+written as `username:`. With `--auth-mode token` a user principal already is
+its username, so write `user:<name>`; any mode other than `oauth` rejects a file
+that names `username:`. Names are looked up with the provider's
+`/api/auth/resolve-user` endpoint.
+
+A username can be renamed, and after an account is deleted its name can be
+registered by someone else. A grant matched on the name at request time would
+then apply to a different person, so a name is resolved once and pinned, in the
+`oauth-resolved-grant-usernames` key of the `_token-secrets` vault (apart from
+the admin and allowed-user resolutions):
+
+- A pinned name is never looked up again. A grant follows the account, not the
+  name: after a rename the grant still applies to the account, and whoever
+  registers a freed name inherits neither its allows nor its denies. Changing
+  the file to the account's new name changes no grant, since both resolve to
+  the same `sub`.
+- A name the provider reports as not found is recorded with the time it was
+  first seen missing and is never looked up again, so a typo cannot be claimed
+  by whoever registers it later. Its file is rejected until the name is removed
+  or changed. A file with a name that does not resolve is rejected whole, as
+  with any invalid subject, so a deny is never silently dropped.
+- Any other lookup failure (provider unreachable) records nothing; the name is
+  looked up again when the grant file changes, on `swamp access reload`, or
+  when serve restarts.
+- A record is forgotten only when no grant file names it and every grant source
+  loaded, so a file held back for an error keeps the pins of its names. To
+  re-point a name, or to retry one first seen missing, remove it from every
+  file, reload, then add it back.
+- A `username:` entry and a `user:` entry, or two usernames, that resolve to the
+  same grant are a duplicate and reject the file.
+
+Serve startup looks new names up with the token it uses for new admin names:
+the collective API key (`SWAMP_API_KEY` or `--club-api-key-file`), else a
+device grant, which a serve run by a process manager cannot complete. A name a
+startup records as missing stays recorded even though startup refuses. While
+serve runs, the auto-reload and `swamp access reload` look new names up only
+with the collective API key. Without one, a file naming a new username is held
+back with its stored grants unchanged until serve restarts; the auto-reload
+tries it again only when the file changes. One load looks up at most 200 new
+names, four at a time, within 60 seconds; past the cap the files naming them
+are rejected. Pinned names need no provider, so an outage never touches them.
+Peer instances share the vault: each load reads the pins again, so a name a
+peer pinned is not looked up a second time, and each write merges with what a
+peer stored since, keeping the peer's record for a name both recorded.
+
+`swamp access grant list` shows the username beside the `sub`, and audit
+records name an actor resolved this way by username;
+`swamp access can-i` reports the matching grant as `user:<sub>`.
+`swamp serve check-config` looks every name up afresh and cannot read the pins,
+so a name serve recorded as missing can show as resolved there.
 
 The `GrantFileReconciler` syncs file grants into behavior data, creating,
 updating or revoking them as files change. The `file:<filename>` source

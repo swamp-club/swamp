@@ -31,6 +31,12 @@ import {
   readGrantFiles,
 } from "./grant_file.ts";
 import {
+  type GrantUsernameResolver,
+  type ParsedGrantSource,
+  resolveGrantFileUsernames,
+  unresolvableUsernames,
+} from "./grant_username_resolution.ts";
+import {
   type FileGrantStore,
   reconcileAllFileGrants,
 } from "./grant_file_reconciler.ts";
@@ -53,6 +59,13 @@ export interface GrantsDirectoryPollerOptions {
   policySnapshotLoader: PolicySnapshotLoader;
   pollIntervalMs?: number;
   /**
+   * Resolves `username:` subjects (swamp-club#3123). Without one, a file
+   * that names a username is held back.
+   */
+  usernameResolver?: GrantUsernameResolver;
+  /** Called with the subs each reload resolved, mapped to their usernames. */
+  onUsernamesResolved?: (usernamesBySub: Record<string, string>) => void;
+  /**
    * Runs each reconcile (store writes and snapshot reload) as one unit.
    * Serve passes a wrapper that holds the sync gate and pushes the writes
    * to the datastore; without one the unit runs as is.
@@ -68,6 +81,10 @@ export class GrantsDirectoryPoller {
   readonly #fileGrantStore: FileGrantStore;
   readonly #policySnapshotLoader: PolicySnapshotLoader;
   readonly #pollIntervalMs: number;
+  readonly #usernameResolver: GrantUsernameResolver;
+  readonly #onUsernamesResolved:
+    | ((usernamesBySub: Record<string, string>) => void)
+    | undefined;
   readonly #commitReconcile: (
     reconcile: () => Promise<void>,
   ) => Promise<void>;
@@ -84,6 +101,9 @@ export class GrantsDirectoryPoller {
     this.#fileGrantStore = options.fileGrantStore;
     this.#policySnapshotLoader = options.policySnapshotLoader;
     this.#pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.#usernameResolver = options.usernameResolver ??
+      unresolvableUsernames("username subjects are not resolved here");
+    this.#onUsernamesResolved = options.onUsernamesResolved;
     this.#commitReconcile = options.commitReconcile ??
       ((reconcile) => reconcile());
   }
@@ -130,7 +150,7 @@ export class GrantsDirectoryPoller {
       // file would fail open (swamp-club#2823). Where startup accepts the
       // input - a deleted or emptied file, no repository grants/ directory -
       // its grants are revoked, as they always have been.
-      const validEntries = new Map<string, GrantFileEntry[]>();
+      const parsed = new Map<string, ParsedGrantSource>();
       const unavailable = new Set<string>();
       let externalDirUnavailable = false;
 
@@ -144,7 +164,7 @@ export class GrantsDirectoryPoller {
           unavailable.add(filename);
           continue;
         }
-        validEntries.set(filename, result.entries);
+        parsed.set(filename, { filename, entries: result.entries });
       }
 
       if (this.#externalGrantsFile) {
@@ -162,7 +182,10 @@ export class GrantsDirectoryPoller {
             this.#logUnavailable(load.path, load.file.result.errors);
             unavailable.add(GRANTS_FILE_SOURCE_NAME);
           } else {
-            validEntries.set(GRANTS_FILE_SOURCE_NAME, load.file.result.entries);
+            parsed.set(GRANTS_FILE_SOURCE_NAME, {
+              filename: load.path,
+              entries: load.file.result.entries,
+            });
           }
         }
       }
@@ -195,10 +218,31 @@ export class GrantsDirectoryPoller {
               unavailable.add(file.sourceName);
               continue;
             }
-            validEntries.set(file.sourceName, file.result.entries);
+            parsed.set(file.sourceName, {
+              filename: file.path,
+              entries: file.result.entries,
+            });
           }
         }
       }
+
+      // Resolved after every source is read, so a pin is forgotten only when
+      // no source is held back for a read or parse error.
+      const resolution = await resolveGrantFileUsernames(
+        parsed,
+        this.#usernameResolver,
+        { complete: unavailable.size === 0 && !externalDirUnavailable },
+      );
+      const validEntries = new Map<string, GrantFileEntry[]>();
+      for (const [source, resolved] of resolution.sources) {
+        if (resolved.errors.length > 0) {
+          this.#logUnavailable(parsed.get(source)!.filename, resolved.errors);
+          unavailable.add(source);
+          continue;
+        }
+        validEntries.set(source, resolved.entries);
+      }
+      this.#onUsernamesResolved?.(resolution.usernamesBySub);
 
       const isSourceUnavailable = (filename: string) =>
         unavailable.has(filename) ||

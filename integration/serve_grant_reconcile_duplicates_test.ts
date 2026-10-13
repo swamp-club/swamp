@@ -30,6 +30,7 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { parseGrantFile } from "../src/domain/access/grant_file.ts";
+import { principalEntries } from "../src/domain/access/grant_file_test_helpers.ts";
 import {
   type FileGrantStore,
   reconcileAllFileGrants,
@@ -126,7 +127,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
 function teamEntries(yaml: string) {
   const parsed = parseGrantFile("team.yaml", yaml, validateGrantCondition);
   assertEquals(parsed.errors, []);
-  return new Map([["team.yaml", parsed.entries]]);
+  return new Map([["team.yaml", principalEntries(parsed.entries)]]);
 }
 
 /** A peer that has not pulled this instance's grants sees none of them. */

@@ -23,6 +23,7 @@
 
 import { gzipSync } from "node:zlib";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
+import type { GrantUsernameResolver } from "../../domain/access/grant_username_resolution.ts";
 import { repoUnitOfWorkFactory } from "../../infrastructure/persistence/repo_unit_of_work.ts";
 import {
   createLibSwampContext,
@@ -327,6 +328,11 @@ export interface ConnectionContext {
   ) => Promise<number>;
   /** Inverted resolvedAdmins map: OAuth sub → username. Populated at startup in OAuth mode. */
   resolvedUserNames?: Record<string, string>;
+  /**
+   * Resolves grant-file `username:` subjects on access.reload. Outside OAuth
+   * mode it rejects every name; absent, so does access.reload.
+   */
+  grantUsernameResolver?: GrantUsernameResolver;
   /** Resolved serve options — used by serve.config endpoint. */
   serveOptions?: MergedServeOptions;
   /** Health collector — used by cluster.instances to enrich the local instance. */

@@ -36,6 +36,7 @@ import {
   reconcileAllFileGrants,
 } from "../src/domain/access/grant_file_reconciler.ts";
 import type { GrantFileEntry } from "../src/domain/access/grant_file.ts";
+import { principalEntries } from "../src/domain/access/grant_file_test_helpers.ts";
 import { PolicySnapshotLoader } from "../src/domain/access/policy_snapshot_loader.ts";
 import {
   readConditionTypeLiterals,
@@ -101,7 +102,9 @@ Deno.test("grant files with misspelled types: denies match in any spelling, allo
 
     const repoContext = createRepositoryContext({ repoDir });
     const entries = new Map<string, GrantFileEntry[]>();
-    for (const [name, result] of files.repo) entries.set(name, result.entries);
+    for (const [name, result] of files.repo) {
+      entries.set(name, principalEntries(result.entries));
+    }
     await reconcileAllFileGrants(
       entries,
       createFileGrantStore(
