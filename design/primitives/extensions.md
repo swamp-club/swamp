@@ -3007,8 +3007,9 @@ has been fully indexed.
    commands import every lazy bundle of their kind before listing
    (`ensureAllVaultTypesLoaded`, `ensureAllDatastoreTypesLoaded`). A repo
    holds few such extensions, so the memory concern behind lazy model loading
-   does not apply. A bundle that fails to import is logged as a warning and
-   keeps its placeholder entry.
+   does not apply. For vault and datastore types, a bundle that fails to
+   import is logged as a warning and keeps its placeholder entry; report type
+   search has no such guard, so a broken report bundle fails that command.
 
 3. When a specific type is needed (e.g. `model get`, `model create`),
    `ensureTypeLoaded(type)` looks up its bundle path in the catalog and imports

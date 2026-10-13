@@ -75,7 +75,8 @@ export function getDatastoreTypes(): DatastoreTypeInfo[] {
  * been imported once (swamp-club#3365).
  *
  * A type whose bundle fails to import keeps its lazy placeholder: a listing
- * must not fail because one extension is broken.
+ * must not fail because one extension is broken. That includes a transient
+ * catalog lock error, which a command that needs the type would raise.
  */
 export async function ensureAllDatastoreTypesLoaded(
   registry: DatastoreTypeRegistry = datastoreTypeRegistry,
