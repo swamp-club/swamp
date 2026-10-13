@@ -39,6 +39,11 @@ export const REDACTED = "<REDACTED>";
  * here or in {@link REDACTED_ARGUMENTS}.
  */
 export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
+  // The `swamp behavior …` spellings of model_id_or_name, model_or_type and
+  // output_id_or_model_name (swamp-club#3409): the same values, classified
+  // the same way.
+  "behavior_id_or_name",
+  "behavior_or_type",
   "collective",
   "data_name",
   "definition_name",
@@ -53,6 +58,7 @@ export const SENT_ARGUMENTS: ReadonlySet<string> = new Set([
   "number",
   "old_name",
   "output_id",
+  "output_id_or_behavior_name",
   "output_id_or_model_name",
   "query",
   "report_name",

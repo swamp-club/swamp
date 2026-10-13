@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  definitionArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -73,7 +74,11 @@ export function createModelMethodDescribeCommand(syntax: CommandSyntax) {
         "Describe a method",
         `${syntax.invocation} my-server getSystemInfo`,
       )
-      .arguments("<model_id_or_name:model_name> <method_name:string>")
+      .arguments(
+        `<${
+          definitionArgument(syntax.surface)
+        }:model_name> <method_name:string>`,
+      )
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

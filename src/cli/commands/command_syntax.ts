@@ -55,6 +55,32 @@ export function subcommandSyntax(
   };
 }
 
+/**
+ * The name of the positional argument that names a definition on `surface`:
+ * `model_id_or_name` or `behavior_id_or_name`. Argument names show in
+ * `--help` and `swamp help`, so they follow the spelling (swamp-club#3409);
+ * the legacy name is unchanged.
+ */
+export function definitionArgument(surface: CommandSurface): string {
+  return `${surface}_id_or_name`;
+}
+
+/**
+ * The name of the run target argument on `surface`: `model_or_type` or
+ * `behavior_or_type`.
+ */
+export function runTargetArgument(surface: CommandSurface): string {
+  return `${surface}_or_type`;
+}
+
+/**
+ * The name of the argument that takes an output id or a definition name on
+ * `surface`: `output_id_or_model_name` or `output_id_or_behavior_name`.
+ */
+export function outputArgument(surface: CommandSurface): string {
+  return `output_id_or_${surface}_name`;
+}
+
 /** The `--help` example title for a legacy command's preferred spelling. */
 export const PREFERRED_SPELLING_EXAMPLE = "Preferred spelling";
 

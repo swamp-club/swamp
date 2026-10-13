@@ -18,8 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { ValidationWarning } from "../domain/models/validation_service.ts";
 import {
   DEFAULT_COMMAND_SURFACE,
+  envVarWarningMessage,
   surfaceMethodNoun,
   surfaceNoun,
   surfaceNounCapitalized,
@@ -42,4 +44,23 @@ Deno.test("command surface: nouns for the behavior surface follow the glossary",
   assertEquals(surfaceNounPlural("behavior"), "behaviors");
   assertEquals(surfaceNounCapitalized("behavior"), "Behavior");
   assertEquals(surfaceMethodNoun("behavior"), "method");
+});
+
+/** The env-var warning text the application layer produces today. */
+const ENV_VAR_WARNING = ValidationWarning.envVarUsage([]).message;
+
+Deno.test("envVarWarningMessage: the model surface keeps the message verbatim", () => {
+  assertEquals(envVarWarningMessage("model", ENV_VAR_WARNING), ENV_VAR_WARNING);
+});
+
+Deno.test("envVarWarningMessage: the behavior surface swaps the noun in the real warning text", () => {
+  assertEquals(
+    envVarWarningMessage("behavior", ENV_VAR_WARNING),
+    "Data stored under this behavior will vary depending on these environment variables at runtime. Consider using separate behaviors per environment, or vault.get() for sensitive values.",
+  );
+});
+
+Deno.test("envVarWarningMessage: a message without the model phrases is unchanged", () => {
+  const other = "Something else entirely about vault.get().";
+  assertEquals(envVarWarningMessage("behavior", other), other);
 });

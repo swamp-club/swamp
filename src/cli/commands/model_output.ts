@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 import {
   type CommandSyntax,
+  outputArgument,
   recordDefiningModule,
   subcommandSyntax,
   withPreferredExample,
@@ -84,7 +85,7 @@ export function createModelOutputCommand(
       ),
     syntax,
   )
-    .arguments("<output_id_or_model_name:string>")
+    .arguments(`<${outputArgument(syntax.surface)}:string>`)
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",

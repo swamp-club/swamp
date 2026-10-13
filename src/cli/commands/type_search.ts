@@ -151,12 +151,12 @@ export async function typeSearchAction(
 }
 
 /**
- * The legacy text of the `swamp model type search` help examples, which have
- * always read `swamp type search`. Kept verbatim so the legacy surface does not
- * change; a factory built from another syntax renders that syntax instead.
+ * The legacy spelling: `swamp model type search`. Its help examples once read
+ * `swamp type search`, a spelling that never ran; they now name the command a
+ * user actually types (swamp-club#3409).
  */
 export const MODEL_TYPE_SEARCH_SYNTAX: CommandSyntax = {
-  invocation: "swamp type search",
+  invocation: "swamp model type search",
   surface: "model",
   preferred: "swamp behavior type search aws",
 };

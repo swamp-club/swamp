@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  definitionArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -96,7 +97,7 @@ export function createModelEditCommand(syntax: CommandSyntax) {
         "Update from stdin (required with --server)",
         `cat my-server.yaml | ${syntax.invocation} my-server`,
       )
-      .arguments("[model_id_or_name:model_name]")
+      .arguments(`[${definitionArgument(syntax.surface)}:model_name]`)
       .example(
         "Rename from stdin",
         `cat renamed.yaml | ${syntax.invocation} my-server --allow-rename`,

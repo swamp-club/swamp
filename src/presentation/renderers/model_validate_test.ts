@@ -24,6 +24,7 @@ import type { ModelValidateEvent } from "../../libswamp/models/validate.ts";
 import { createModelValidateRenderer } from "./model_validate.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { CommandSurface } from "../command_surface.ts";
+import { ValidationWarning } from "../../domain/models/validation_service.ts";
 
 async function* toStream(
   events: ModelValidateEvent[],
@@ -384,4 +385,58 @@ Deno.test("LogModelValidateRenderer - validate all on the behavior surface says 
     "Summary: 1/1 behaviors passed",
     "Overall: PASSED",
   ]);
+});
+
+async function renderEnvVarWarning(surface?: CommandSurface): Promise<string> {
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => lines.push(msg);
+  try {
+    const warning = ValidationWarning.envVarUsage([
+      { path: "globalArguments.region", envVar: "AWS_REGION" },
+    ]);
+    const renderer = createModelValidateRenderer("log", surface);
+    await consumeStream(
+      toStream([{
+        kind: "completed",
+        data: {
+          modelId: "def-1",
+          modelName: "my-model",
+          type: "aws/ec2",
+          validations: [{ name: "schema", passed: true }],
+          warnings: [{
+            name: warning.name,
+            message: warning.message,
+            envVars: warning.details,
+          }],
+          passed: true,
+        },
+      }]),
+      renderer.handlers(),
+    );
+  } finally {
+    console.log = originalLog;
+  }
+  return stripAnsiCode(lines.join("\n"));
+}
+
+Deno.test("LogModelValidateRenderer - the legacy env-var warning keeps its exact text", async () => {
+  const output = await renderEnvVarWarning();
+  assertStringIncludes(
+    output,
+    "Data stored under this model will vary depending on these environment variables at runtime. Consider using separate models per environment, or vault.get() for sensitive values.",
+  );
+  assertEquals(await renderEnvVarWarning("model"), output);
+});
+
+Deno.test("LogModelValidateRenderer - the behavior surface words the env-var warning for behaviors (swamp-club#3409)", async () => {
+  const output = await renderEnvVarWarning("behavior");
+  assertStringIncludes(output, "Environment variables detected");
+  assertStringIncludes(output, "globalArguments.region uses AWS_REGION");
+  assertStringIncludes(
+    output,
+    "Data stored under this behavior will vary depending on these environment variables at runtime. Consider using separate behaviors per environment, or vault.get() for sensitive values.",
+  );
+  assertEquals(output.includes("this model"), false);
+  assertEquals(output.includes("separate models"), false);
 });

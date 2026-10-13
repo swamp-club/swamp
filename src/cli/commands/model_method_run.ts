@@ -80,6 +80,7 @@ import {
   type CommandSyntax,
   PREFERRED_SPELLING_EXAMPLE,
   recordDefiningModule,
+  runTargetArgument,
   subcommandSyntax,
 } from "./command_syntax.ts";
 import type { CommandSurface } from "../../presentation/command_surface.ts";
@@ -211,6 +212,7 @@ function examples(
  * under a second parent, so the two surfaces must never share one.
  */
 export function createModelMethodRunCommand(syntax: RunCommandSyntax) {
+  const target = runTargetArgument(syntax.surface);
   const command = new Command().name("run");
   for (const [title, example] of examples(syntax)) {
     command.example(title, example);
@@ -243,7 +245,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
 The lock wait defaults to 60 seconds. Set the SWAMP_LOCK_TIMEOUT_MS environment variable (milliseconds) to wait longer.`,
     )
     .arguments(
-      "<model_or_type:model_name> <method_name:string> [definition_name:string]",
+      `<${target}:model_name> <method_name:string> [definition_name:string]`,
     )
     .option(
       "--repo-dir <dir:string>",

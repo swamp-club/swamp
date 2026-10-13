@@ -41,6 +41,7 @@ import {
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
+  envVarWarningMessage,
   surfaceNoun,
 } from "../command_surface.ts";
 
@@ -116,7 +117,7 @@ class ConsoleModelMethodRunRenderer implements ModelMethodRunRenderer {
         for (const detail of e.envVars) {
           writeContentLine(`${detail.path} uses ${detail.envVar}`);
         }
-        writeContentLine(e.message);
+        writeContentLine(envVarWarningMessage(this.surface, e.message));
       },
       evaluating_expressions: () => {},
       executing: (e) => {

@@ -35,7 +35,10 @@ import {
 } from "../completion_types.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { type AnyCommand, buildCliSchema } from "../cli_schema.ts";
-import type { CommandSyntax } from "./command_syntax.ts";
+import {
+  type CommandSyntax,
+  PREFERRED_SPELLING_EXAMPLE,
+} from "./command_syntax.ts";
 import {
   createModelCommand,
   createModelCreateCommand,
@@ -169,7 +172,7 @@ function surfaceRoot(model: AnyCommand): AnyCommand {
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(
       "--log",
-      "Show model and workflow run logs in terminal output",
+      "Show behavior and workflow run logs in terminal output",
     )
     .globalOption(
       "--log-level <level:string>",
@@ -262,9 +265,9 @@ function allCommands(command: AnyCommand, into: AnyCommand[] = []) {
 /**
  * A `model` tree built entirely from factories, each leaf from its legacy
  * syntax constant. A syntax derived with `subcommandSyntax` has no preferred
- * spelling (that is a per-command example, swamp-club#3331), and the run and
- * type leaves have legacy text no derivation reproduces (`swamp model @type
- * method run …`, `swamp type …`), so every leaf is passed in.
+ * spelling (that is a per-command example, swamp-club#3331), and the run
+ * leaf has legacy text no derivation reproduces (`swamp model @type method
+ * run …`), so every leaf is passed in.
  */
 function freshLegacyModelCommand(): AnyCommand {
   return createModelCommand(MODEL_SYNTAX, {
@@ -407,6 +410,24 @@ Deno.test("model command factories: examples name the given syntax", () => {
       assertStringIncludes(description, syntax.invocation, path);
       assert(!description.includes("swamp model"), `${path}: ${description}`);
       assert(!description.includes("swamp type"), `${path}: ${description}`);
+    }
+  }
+});
+
+Deno.test("model type commands: legacy examples name swamp model type", () => {
+  const typeGroup = (modelCommand as unknown as AnyCommand).getCommand(
+    "type",
+  ) as AnyCommand;
+  for (const word of ["describe", "search"]) {
+    const examples = (typeGroup.getCommand(word) as AnyCommand)
+      .getExamples() as { name: string; description: string }[];
+    assert(examples.length > 0, word);
+    for (const { name, description } of examples) {
+      if (name === PREFERRED_SPELLING_EXAMPLE) continue;
+      assert(
+        description.startsWith(`swamp model type ${word}`),
+        `${word}: ${description}`,
+      );
     }
   }
 });

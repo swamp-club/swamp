@@ -2078,8 +2078,8 @@ export function registerCommands(cli: AnyCommand): void {
   cli
     .command("access", accessCommand)
     .command("version", versionCommand)
-    .command("model", modelCommand)
     .command("behavior", behaviorCommand)
+    .command("model", modelCommand)
     .command("init", repoInitCommand)
     .command("repo", repoCommand)
     .command("workflow", workflowCommand)
@@ -2208,7 +2208,7 @@ export function createRootCommand(colorEnabled: boolean): AnyCommand {
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(
       "--log",
-      "Show model and workflow run logs in terminal output",
+      "Show behavior and workflow run logs in terminal output",
     )
     .globalOption(
       "--log-level <level:string>",

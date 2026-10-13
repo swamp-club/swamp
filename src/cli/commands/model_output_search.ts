@@ -23,6 +23,10 @@ import {
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
+import {
+  type CommandSurface,
+  DEFAULT_COMMAND_SURFACE,
+} from "../../presentation/command_surface.ts";
 import { consumeStream } from "../../libswamp/stream.ts";
 import { createLibSwampContext } from "../../libswamp/context.ts";
 import {
@@ -36,7 +40,10 @@ import {
   type ModelOutputSearchDeps,
   type ModelOutputSearchItem,
 } from "../../libswamp/models/output_search.ts";
-import { createModelOutputSearchRenderer } from "../../presentation/renderers/model_output_search.tsx";
+import {
+  createModelOutputSearchRenderer,
+  outputSearchPickerLabels,
+} from "../../presentation/renderers/model_output_search.tsx";
 import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
 import {
   createContext,
@@ -88,7 +95,9 @@ async function createOutputFetchPreview(
 export async function modelOutputSearchAction(
   options: AnyOptions,
   query?: string,
+  surface: CommandSurface = DEFAULT_COMMAND_SURFACE,
 ): Promise<void> {
+  const labels = outputSearchPickerLabels(surface, "output");
   const ctx = createContext(options as GlobalOptions, [
     "model",
     "output",
@@ -110,6 +119,8 @@ export async function modelOutputSearchAction(
     );
     const renderer = createModelOutputSearchRenderer(
       interactiveOutputMode(ctx),
+      undefined,
+      labels,
     );
     await consumeStream(
       (async function* () {
@@ -149,6 +160,7 @@ export async function modelOutputSearchAction(
   const renderer = createModelOutputSearchRenderer(
     effectiveMode,
     fetchPreview,
+    labels,
   );
   await consumeStream(
     modelOutputSearch(libCtx, deps, { query }),
@@ -200,7 +212,9 @@ export function createModelOutputSearchCommand(syntax: CommandSyntax) {
         "Repository directory (env: SWAMP_REPO_DIR)",
       ),
     syntax,
-  )).action(modelOutputSearchAction);
+  )).action((options: AnyOptions, query?: string) =>
+    modelOutputSearchAction(options, query, syntax.surface)
+  );
   return recordDefiningModule(command, import.meta.url);
 }
 

@@ -39,6 +39,7 @@ import { formatAvailableKeys } from "../../domain/expressions/schema_path_valida
 import {
   type CommandSurface,
   DEFAULT_COMMAND_SURFACE,
+  envVarWarningMessage,
   surfaceNounPlural,
 } from "../command_surface.ts";
 
@@ -90,6 +91,7 @@ function formatExpressionErrorLines(
 
 function formatWarningLines(
   warnings: ModelValidationWarningData[],
+  surface: CommandSurface,
 ): string[] {
   const lines: string[] = [];
   for (const w of warnings) {
@@ -104,7 +106,11 @@ function formatWarningLines(
         lines.push(`    ${detail.path} passes ${bold(detail.text)}`);
       }
     }
-    lines.push(`    ${yellow(arrow)} ${w.message}`);
+    // Only the env-var warning's text names the definition kind.
+    const message = w.envVars
+      ? envVarWarningMessage(surface, w.message)
+      : w.message;
+    lines.push(`    ${yellow(arrow)} ${message}`);
   }
   return lines;
 }
@@ -154,7 +160,7 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
     );
     lines.push(...formatValidationLines(data.validations));
     if (data.warnings.length > 0) {
-      lines.push(...formatWarningLines(data.warnings));
+      lines.push(...formatWarningLines(data.warnings, this.surface));
     }
 
     const passedCount = data.validations.filter((v) => v.passed).length;
@@ -184,7 +190,7 @@ class LogModelValidateRenderer implements ModelValidateRenderer {
       );
       lines.push(...formatValidationLines(model.validations));
       if (model.warnings.length > 0) {
-        lines.push(...formatWarningLines(model.warnings));
+        lines.push(...formatWarningLines(model.warnings, this.surface));
       }
       lines.push(formatResult(model.passed, "Result"));
     }

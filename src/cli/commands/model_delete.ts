@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  definitionArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -82,7 +83,7 @@ export function createModelDeleteCommand(syntax: CommandSyntax) {
       .description(`Delete a ${syntax.surface} and all related artifacts`)
       .example(`Delete a ${syntax.surface}`, `${syntax.invocation} my-server`)
       .example("Force delete", `${syntax.invocation} my-server --force`)
-      .arguments("<model_id_or_name:model_name>")
+      .arguments(`<${definitionArgument(syntax.surface)}:model_name>`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",

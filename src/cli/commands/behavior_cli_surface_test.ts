@@ -74,7 +74,7 @@ function surfaceRoot(behavior: AnyCommand): AnyCommand {
     .globalOption("--json", "Output in JSON format (non-interactive)")
     .globalOption(
       "--log",
-      "Show model and workflow run logs in terminal output",
+      "Show behavior and workflow run logs in terminal output",
     )
     .globalOption(
       "--log-level <level:string>",
@@ -150,4 +150,14 @@ Deno.test("behavior CLI surface: matches the golden file", async () => {
     assertEquals(actual.help[path], expected.help[path], path);
   }
   assertEquals(actual.completions, expected.completions);
+});
+
+Deno.test("behavior CLI surface: only the zsh completion script offers the behaviour alias", () => {
+  // Cliffy 1.0.1's bash and fish generators ignore command aliases; see
+  // src/cli/commands/completion.ts. A Cliffy upgrade that changes this
+  // should update that note and design/primitives/behaviors.md.
+  const { completions } = captureSurface();
+  assertEquals(completions.zsh.includes("behavior|behaviour"), true);
+  assertEquals(completions.bash.includes("behaviour"), false);
+  assertEquals(completions.fish.includes("behaviour"), false);
 });

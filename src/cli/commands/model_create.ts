@@ -245,7 +245,11 @@ export function createModelCommand(
   const sub = (word: string) => subcommandSyntax(syntax, word);
   const command = new Command()
     .name("model")
-    .description(`Manage ${syntax.surface}s`)
+    .description(
+      syntax.surface === "model"
+        ? "Manage models (legacy spelling of 'behavior')"
+        : `Manage ${syntax.surface}s`,
+    )
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction)
     .command(

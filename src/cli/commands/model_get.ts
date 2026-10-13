@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   type CommandSyntax,
+  definitionArgument,
   recordDefiningModule,
   withPreferredExample,
 } from "./command_syntax.ts";
@@ -74,7 +75,7 @@ export function createModelGetCommand(syntax: CommandSyntax) {
         `${syntax.invocation} my-server`,
       )
       .example("JSON output", `${syntax.invocation} my-server --json`)
-      .arguments("<model_id_or_name:model_name>")
+      .arguments(`<${definitionArgument(syntax.surface)}:model_name>`)
       .option(
         "--repo-dir <dir:string>",
         "Repository directory (env: SWAMP_REPO_DIR)",
