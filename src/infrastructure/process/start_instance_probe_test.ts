@@ -21,6 +21,9 @@ import { assertEquals } from "@std/assert";
 import {
   probeStartServer,
   START_PING_TOKEN_HEADER,
+  START_PROBE_TIMEOUT_MS,
+  startProbeTimeoutMs,
+  WINDOWS_START_PROBE_TIMEOUT_MS,
 } from "./start_instance_probe.ts";
 import type { StartServerRecord } from "../persistence/start_server_record.ts";
 
@@ -120,4 +123,12 @@ Deno.test("probeStartServer: on Windows the ping alone decides", async () => {
       );
     },
   );
+});
+
+Deno.test("startProbeTimeoutMs: Windows waits out its retries on a refused connect", () => {
+  assertEquals(startProbeTimeoutMs("windows"), WINDOWS_START_PROBE_TIMEOUT_MS);
+  assertEquals(startProbeTimeoutMs("linux"), START_PROBE_TIMEOUT_MS);
+  assertEquals(startProbeTimeoutMs("darwin"), START_PROBE_TIMEOUT_MS);
+  // Windows takes about two seconds to report a refused loopback connect.
+  assertEquals(WINDOWS_START_PROBE_TIMEOUT_MS > 2_000, true);
 });

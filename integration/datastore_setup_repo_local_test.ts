@@ -188,6 +188,9 @@ Deno.test("datastore setup: the audit trail, telemetry spool and run logs stay r
     assertEquals(own.vaultAudit, 1);
     assert(own.log?.includes("step s wrote"), "the run wrote its log");
 
+    // Setup deletes the catalog, which Windows refuses while it is open.
+    before.catalogStore.close();
+
     // Setup moves the checkout's data to the new datastore.
     const events: DatastoreSetupEvent[] = [];
     for await (

@@ -27,7 +27,7 @@
 
 import { assertEquals } from "@std/assert";
 import { ensureDir, exists } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { createLibSwampContext } from "../src/libswamp/context.ts";
 import {
   datastoreNamespaceMigrate,
@@ -513,6 +513,7 @@ async function withRepoLocalDatastore(
       ) => Promise<NamespaceMigrateEvent[]>;
     },
   ) => Promise<void>,
+  renameDir?: (source: string, destination: string) => Promise<void>,
 ): Promise<void> {
   await withTempDir(async (root) => {
     const repoDir = join(root, "repo");
@@ -531,13 +532,16 @@ async function withRepoLocalDatastore(
           `${name} must exist for the test to exercise the catalog paths`,
         );
       }
-      const deps = buildDeps(
-        dsPath,
-        namespace,
-        catalogStore,
-        DEFAULT_DATASTORE_SUBDIRS,
-        liveCatalogDir,
-      );
+      const deps = {
+        ...buildDeps(
+          dsPath,
+          namespace,
+          catalogStore,
+          DEFAULT_DATASTORE_SUBDIRS,
+          liveCatalogDir,
+        ),
+        ...(renameDir ? { renameDir } : {}),
+      };
       const ctx = createLibSwampContext({});
       await fn({
         dsPath,
@@ -616,13 +620,17 @@ Deno.test("namespace migrate: a second forward migration has nothing to move", a
 });
 
 Deno.test("namespace migrate: a re-run completes a migration that stopped part-way", async () => {
+  // The first run's rename of `outputs` fails. Refusing it here rather than
+  // with a file in the way keeps the test portable: Windows renames a
+  // directory over a file.
+  let refuseOutputs = true;
+  const renameDir = (source: string, destination: string) =>
+    refuseOutputs && basename(destination) === "outputs"
+      ? Promise.reject(new Error("rename refused"))
+      : Deno.rename(source, destination);
   await withRepoLocalDatastore(async ({ dsPath, namespace, migrate }) => {
     await seed(join(dsPath, "data"));
     await seed(join(dsPath, "outputs"));
-    // A plain file where `outputs` has to go makes that rename fail.
-    const obstacle = join(dsPath, namespace, "outputs");
-    await ensureDir(join(dsPath, namespace));
-    await Deno.writeTextFile(obstacle, "");
 
     const first = await migrate({ confirm: true, reverse: false });
     const failure = first.at(-1);
@@ -630,7 +638,7 @@ Deno.test("namespace migrate: a re-run completes a migration that stopped part-w
     assertEquals(failure.succeededDirectories, ["data"]);
     assertEquals(failure.failedDirectory, "outputs");
 
-    await Deno.remove(obstacle);
+    refuseOutputs = false;
 
     assertEquals(
       migrated(await migrate({ confirm: true, reverse: false })),
@@ -639,7 +647,7 @@ Deno.test("namespace migrate: a re-run completes a migration that stopped part-w
     assertEquals(await seeded(join(dsPath, namespace, "data")), true);
     assertEquals(await seeded(join(dsPath, namespace, "outputs")), true);
     assertEquals(await exists(join(dsPath, "outputs")), false);
-  });
+  }, renameDir);
 });
 
 Deno.test("namespace migrate: reverses while the catalog and its sidecars are in place", async () => {
