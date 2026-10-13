@@ -694,6 +694,43 @@ Deno.test("startChooseHarness: refuses a harness whose binary is not on PATH", a
   });
 });
 
+Deno.test("startChooseHarness: remembers the agent picked, so the next new task in any workspace starts with it", async () => {
+  await withTempDir(async (dir) => {
+    const f = makeFakes(dir);
+    f.onPath["cursor-agent"] = ["/usr/local/bin/cursor-agent"];
+    const ws = join(dir, "ws");
+    const first = await newTask(f, ws, "t");
+    assertEquals(
+      (await status(startStatus(ctx, f.deps, { workspacePath: ws })))
+        .lastAgent,
+      undefined,
+    );
+    await status(
+      startChooseHarness(ctx, f.deps, {
+        workspacePath: ws,
+        taskId: first,
+        harness: "cursor",
+      }),
+    );
+    // A refused pick changes nothing.
+    const second = await newTask(f, ws, "t2");
+    await collect(
+      startChooseHarness(ctx, f.deps, {
+        workspacePath: ws,
+        taskId: second,
+        harness: "codex",
+      }),
+    );
+    const other = join(dir, "other");
+    const fresh = await status(
+      startSaveTask(ctx, f.deps, { workspacePath: other, text: "t3" }),
+    );
+    assertEquals(fresh.screen, "agent");
+    assertEquals(fresh.harness, undefined);
+    assertEquals(fresh.lastAgent, "cursor");
+  });
+});
+
 Deno.test("startBack: from the task step answers with a transition error", async () => {
   await withTempDir(async (dir) => {
     const f = makeFakes(dir);
@@ -1150,6 +1187,14 @@ Deno.test("startListWorkspaces: lists workspace repos newest first with their ta
       "beta",
       new Date("2026-01-01T00:00:00.000Z"),
     );
+    // Made before the first registry write (picking an agent), as folders
+    // from before the registry are: adoption only runs once.
+    const gamma = await makeWorkspace(
+      f,
+      "gamma",
+      new Date("2026-02-01T00:00:00.000Z"),
+    );
+    f.running.add(gamma);
     f.deps = { ...f.deps, now: () => new Date("2026-03-01T00:00:00.000Z") };
     const taskId = await newTask(f, beta, "list my pods");
     await status(
@@ -1159,12 +1204,6 @@ Deno.test("startListWorkspaces: lists workspace repos newest first with their ta
         harness: "claude",
       }),
     );
-    const gamma = await makeWorkspace(
-      f,
-      "gamma",
-      new Date("2026-02-01T00:00:00.000Z"),
-    );
-    f.running.add(gamma);
 
     const { workspaces } = await startListWorkspaces(ctx, f.deps);
     assertEquals(workspaces.map((w) => w.name), ["beta", "gamma", "alpha"]);

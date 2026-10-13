@@ -36,18 +36,38 @@ export interface WorkspaceEntry {
 /**
  * Every workspace Swamp knows about on this machine. Names and paths are
  * unique; registering the same name at the same path again changes nothing.
+ * It also remembers the agent the user last picked for a task, so the next
+ * task, in any workspace, starts with that agent selected.
  */
 export class WorkspaceRegistry {
-  private constructor(private entries: WorkspaceEntry[]) {}
+  private constructor(
+    private entries: WorkspaceEntry[],
+    private agent: string | undefined,
+  ) {}
 
   static empty(): WorkspaceRegistry {
-    return new WorkspaceRegistry([]);
+    return new WorkspaceRegistry([], undefined);
   }
 
-  static fromEntries(entries: readonly WorkspaceEntry[]): WorkspaceRegistry {
-    const registry = WorkspaceRegistry.empty();
+  static fromEntries(
+    entries: readonly WorkspaceEntry[],
+    lastAgent?: string,
+  ): WorkspaceRegistry {
+    const registry = new WorkspaceRegistry([], lastAgent);
     for (const entry of entries) registry.register(entry);
     return registry;
+  }
+
+  /** The agent (a harness id) the user last picked for a task, if any. */
+  lastAgent(): string | undefined {
+    return this.agent;
+  }
+
+  /** Remembers the agent picked for a task; true when that changed it. */
+  rememberAgent(id: string): boolean {
+    if (this.agent === id) return false;
+    this.agent = id;
+    return true;
   }
 
   list(): WorkspaceEntry[] {

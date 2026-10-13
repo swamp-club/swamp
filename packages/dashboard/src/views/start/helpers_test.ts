@@ -30,6 +30,7 @@ import {
   firstLine,
   importNameFromPath,
   importProblem,
+  initialAgentPick,
   isHttpsUrl,
   isValidWorkspaceName,
   joinNames,
@@ -807,4 +808,15 @@ Deno.test("FIRST_TASK_IDEAS: at least 20 distinct ideas, each picked by some dra
   assertEquals(pickFirstTaskIdea(0), FIRST_TASK_IDEAS[0]);
   assertEquals(pickFirstTaskIdea(0.9999999), FIRST_TASK_IDEAS.at(-1));
   assertEquals(pickFirstTaskIdea(1), FIRST_TASK_IDEAS.at(-1));
+});
+
+Deno.test("initialAgentPick: keeps the pick, else the task's agent, else the last picked, else the first", () => {
+  const ids = ["claude", "codex", "opencode"];
+  assertEquals(initialAgentPick(ids, "opencode", "codex", "codex"), "opencode");
+  assertEquals(initialAgentPick(ids, null, "codex", "opencode"), "codex");
+  assertEquals(initialAgentPick(ids, null, undefined, "opencode"), "opencode");
+  assertEquals(initialAgentPick(ids, null, undefined, undefined), "claude");
+  // An agent that can't launch here any more is passed over.
+  assertEquals(initialAgentPick(ids, "cursor", "amp", "pi"), "claude");
+  assertEquals(initialAgentPick([], null, undefined, "codex"), null);
 });

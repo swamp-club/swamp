@@ -52,6 +52,7 @@ import {
   firstLine,
   importNameFromPath,
   importProblem,
+  initialAgentPick,
   isHttpsUrl,
   isLaunchable,
   isValidWorkspaceName,
@@ -287,27 +288,62 @@ function StartSession({ token }: { token: string }) {
   );
 }
 
+/** What the header's wordmark does while a workspace is open. */
+interface HeaderHome {
+  go: () => void;
+  disabled: boolean;
+}
+
 /**
- * Where a screen's status chips (signed in, workspace, back to workspaces)
- * render: the page header. Null until the header has mounted.
+ * Where a screen's header parts render: the breadcrumb (all workspaces,
+ * this workspace) beside the wordmark, and the signed-in chip on the
+ * other side. `setHome` makes the wordmark lead back to all workspaces.
+ * The slots are null until the header has mounted.
  */
-const HeaderSlot = createContext<HTMLElement | null>(null);
+const HeaderSlot = createContext<{
+  crumbs: HTMLElement | null;
+  side: HTMLElement | null;
+  setHome: (home: HeaderHome | null) => void;
+}>({ crumbs: null, side: null, setHome: () => {} });
 
 function StartFrame({ children }: { children: ReactNode }) {
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  const [crumbs, setCrumbs] = useState<HTMLElement | null>(null);
+  const [side, setSide] = useState<HTMLElement | null>(null);
+  const [home, setHome] = useState<HeaderHome | null>(null);
+  const brand = (
+    <>
+      <Logo size="sm" />
+      <span className="start-brand-name">Swamp</span>
+    </>
+  );
   return (
     <div className="login-page start-page">
       <header className="start-header">
         <div className="start-header-inner">
-          <div className="start-brand">
-            <Logo size="sm" />
-            <span className="start-brand-name">Swamp</span>
+          <div className="start-header-left">
+            {home
+              ? (
+                <button
+                  type="button"
+                  className="start-brand start-brand-link"
+                  onClick={home.go}
+                  disabled={home.disabled}
+                  aria-label="Swamp: all workspaces"
+                  title="All workspaces"
+                >
+                  {brand}
+                </button>
+              )
+              : <div className="start-brand">{brand}</div>}
+            <div className="start-header-crumbs" ref={setCrumbs} />
           </div>
-          <div className="start-header-slot" ref={setSlot} />
+          <div className="start-header-slot" ref={setSide} />
         </div>
       </header>
       <div className="start-container">
-        <HeaderSlot.Provider value={slot}>{children}</HeaderSlot.Provider>
+        <HeaderSlot.Provider value={{ crumbs, side, setHome }}>
+          {children}
+        </HeaderSlot.Provider>
       </div>
     </div>
   );
@@ -568,10 +604,11 @@ function describeSwitchError(err: unknown): string {
 }
 
 /**
- * The signed-in and workspace chips at the top of every screen. Once a
- * workspace is chosen, its chip carries "Switch", the one way back to the
- * workspace list from any screen. Screens that can't leave (sign-in,
- * blocked) pass no client, so no Switch shows.
+ * The header parts of every screen: the breadcrumb beside the wordmark
+ * (All workspaces / this workspace) and the signed-in chip. Once a
+ * workspace is chosen, the wordmark and "All workspaces" lead back to the
+ * workspace list, and the workspace's name to its tasks. Screens that can't
+ * leave (sign-in, blocked) pass no client, so nothing there is a link.
  */
 function StatusChips(
   {
@@ -595,12 +632,12 @@ function StatusChips(
     describeSwitchError,
   );
   const [confirming, setConfirming] = useState(false);
-  const slot = useContext(HeaderSlot);
+  const header = useContext(HeaderSlot);
   const signedIn = status.signedIn === "signed_in" && status.username;
-  if (!signedIn && !status.workspaceName) return null;
-  const canSwitch = client !== undefined && onStatus !== undefined;
-  // From a task's steps back to the workspace's task list; hidden while
-  // unsaved text would be lost (leaving asks first).
+  const canSwitch = client !== undefined && onStatus !== undefined &&
+    status.workspaceName !== null;
+  // From a task's steps back to the workspace's task list; not while unsaved
+  // text would be lost (leaving the workspace asks first).
   const showTasksLink = status.screen !== "home" && !confirmSwitch &&
     (status.tasks?.length ?? 0) > 0;
   const leave = () => {
@@ -608,58 +645,81 @@ function StatusChips(
     if (!client) return;
     void run(() => client.request<StartStatus>("start.workspace.leave"));
   };
-  const chips = (
+  const requestLeave = () => (confirmSwitch ? setConfirming(true) : leave());
+  const showTasks = () => {
+    if (client) {
+      void run(() => client.request<StartStatus>("start.tasks.show"));
+    }
+  };
+
+  // The wordmark leads back to all workspaces, as the breadcrumb does.
+  const requestLeaveRef = useRef(requestLeave);
+  requestLeaveRef.current = requestLeave;
+  const homeDisabled = disabled || switching || confirming;
+  const { setHome } = header;
+  useEffect(() => {
+    if (!canSwitch) return;
+    setHome({ go: () => requestLeaveRef.current(), disabled: homeDisabled });
+    return () => setHome(null);
+  }, [canSwitch, homeDisabled, setHome]);
+
+  if (!signedIn && !status.workspaceName) return null;
+  const crumbs = status.workspaceName && (
+    <nav className="start-crumbs" aria-label="Breadcrumb">
+      <ol>
+        <li>
+          {canSwitch
+            ? (
+              <button
+                type="button"
+                className="start-crumb-link"
+                onClick={requestLeave}
+                disabled={homeDisabled}
+              >
+                {switching ? "Switching…" : "All workspaces"}
+              </button>
+            )
+            : <span>All workspaces</span>}
+        </li>
+        <li>
+          {canSwitch && showTasksLink
+            ? (
+              <button
+                type="button"
+                className="start-crumb-link start-crumb-workspace"
+                onClick={showTasks}
+                disabled={disabled || switching}
+                aria-label={`${status.workspaceName}: back to this workspace's tasks`}
+                title="Back to this workspace's tasks"
+              >
+                {status.workspaceName}
+              </button>
+            )
+            : (
+              <span
+                className="start-crumb-workspace"
+                title={status.workspacePath ?? undefined}
+                aria-current={status.screen === "home" ? "page" : undefined}
+              >
+                {status.workspaceName}
+              </span>
+            )}
+        </li>
+      </ol>
+    </nav>
+  );
+  const chips = signedIn && (
     <div className="start-chips">
-      {status.workspaceName && (
-        <div className="start-workspace-chip">
-          {canSwitch && (
-            <button
-              type="button"
-              className="start-chip-action"
-              onClick={() => (confirmSwitch ? setConfirming(true) : leave())}
-              disabled={disabled || switching || confirming}
-              title="Back to your workspaces"
-            >
-              {switching ? "Switching…" : "← All workspaces"}
-            </button>
-          )}
-          {canSwitch && showTasksLink && (
-            <button
-              type="button"
-              className="start-chip-action"
-              onClick={() => {
-                if (client) {
-                  void run(() =>
-                    client.request<StartStatus>("start.tasks.show")
-                  );
-                }
-              }}
-              disabled={disabled || switching}
-              title="Back to this workspace's tasks"
-            >
-              Tasks
-            </button>
-          )}
-          <span
-            className="start-chip start-chip-quiet"
-            title={status.workspacePath ?? undefined}
-          >
-            <span className="sr-only">Workspace:</span>
-            {status.workspaceName}
-          </span>
-        </div>
-      )}
-      {signedIn && (
-        <div className="start-chip start-chip-user">
-          <span className="start-chip-dot" aria-hidden="true" />
-          Signed in as {status.username}
-        </div>
-      )}
+      <div className="start-chip start-chip-user">
+        <span className="start-chip-dot" aria-hidden="true" />
+        Signed in as {status.username}
+      </div>
     </div>
   );
   return (
     <>
-      {slot ? createPortal(chips, slot) : chips}
+      {header.crumbs ? createPortal(crumbs, header.crumbs) : crumbs}
+      {header.side ? createPortal(chips, header.side) : chips}
       {confirming && (
         <div
           className="start-warning start-confirm"
@@ -1776,19 +1836,15 @@ function AgentScreen({ status, client, onStatus }: ScreenProps) {
     }
   }, [selected]);
 
-  // Keep the pick while it can still launch; else the task's agent, else
-  // the first that can.
   const taskHarnessId = status.harness?.id;
+  const lastAgent = status.lastAgent;
   useEffect(() => {
     if (harnesses === null) return;
-    setSelected((prev) => {
-      const launchable = harnesses.filter(isLaunchable);
-      const keep = [prev, taskHarnessId].find((id) =>
-        launchable.some((h) => h.id === id)
-      );
-      return keep ?? launchable[0]?.id ?? null;
-    });
-  }, [harnesses, taskHarnessId]);
+    const launchable = harnesses.filter(isLaunchable).map((h) => h.id);
+    setSelected((prev) =>
+      initialAgentPick(launchable, prev, taskHarnessId, lastAgent)
+    );
+  }, [harnesses, taskHarnessId, lastAgent]);
 
   const back = () => void run(() => client.request<StartStatus>("start.back"));
   const { available, unavailable } = splitHarnesses(harnesses ?? []);

@@ -118,7 +118,15 @@ was launched in the workspace before continues its own conversation where it
 can (`--continue`, `resume --last`); one that wasn't opens a fresh session.
 
 The agent screen lists every harness swamp supports (the `--tool` values),
-marking which are on PATH; only a found, launchable one can be chosen.
+marking which are on PATH; only a found, launchable one can be chosen. It
+selects the task's own agent, else the agent last picked for any task (the
+registry's `lastAgent`, written when an agent is chosen), else the first that
+can launch.
+
+The header reads left to right: the wordmark, then a breadcrumb of
+"All workspaces / <workspace>". Inside a workspace the wordmark and "All
+workspaces" go back to the workspace list (asking first when unsaved task text
+would be lost), and the workspace's name goes to its task list.
 `swamp start status` prints the same checklist and every workspace's state.
 
 Swamp hosts no model: it never interprets the task. The agent, guided by the

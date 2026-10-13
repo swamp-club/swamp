@@ -716,6 +716,23 @@ export function isLaunchable(harness: StartHarness): boolean {
 }
 
 /**
+ * The agent the agent screen selects: the user's current pick while it can
+ * still launch, else the task's own agent, else the agent last picked for a
+ * task (in any workspace), else the first that can launch.
+ */
+export function initialAgentPick(
+  launchable: readonly string[],
+  current: string | null,
+  taskAgent: string | undefined,
+  lastAgent: string | undefined,
+): string | null {
+  const keep = [current, taskAgent, lastAgent].find((id) =>
+    id != null && launchable.includes(id)
+  );
+  return keep ?? launchable[0] ?? null;
+}
+
+/**
  * The agents the home screen offers: configured for the workspace and
  * launchable here, the task's own agent first. The task's agent is listed
  * even when it can't be launched, so the screen can show it as unavailable

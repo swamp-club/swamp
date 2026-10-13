@@ -104,6 +104,8 @@ export interface StartStatus {
    * the workspace. Until then opening an agent asks for that confirmation.
    */
   trusted: boolean;
+  /** The agent last picked for a task, in any workspace. */
+  lastAgent?: string;
   /**
    * True when the server can show this machine's folder chooser for an
    * import (not over SSH or without a display).

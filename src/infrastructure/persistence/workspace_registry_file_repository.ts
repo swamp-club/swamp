@@ -40,6 +40,9 @@ const RegistryFileSchema = z.object({
     createdAt: z.string(),
     trustedAt: z.string().optional(),
   })),
+  // A preference: a value that can't be used is dropped, never a reason to
+  // call the whole workspace list unreadable.
+  lastAgent: z.string().min(1).optional().catch(undefined),
 });
 
 /**
@@ -97,7 +100,10 @@ export class WorkspaceRegistryFileRepository
     const twice = () => unreadable("it lists a workspace name or folder twice");
     let registry: WorkspaceRegistry;
     try {
-      registry = WorkspaceRegistry.fromEntries(parsed.data.workspaces);
+      registry = WorkspaceRegistry.fromEntries(
+        parsed.data.workspaces,
+        parsed.data.lastAgent,
+      );
     } catch (error) {
       if (error instanceof UserError) throw twice();
       throw error;
@@ -119,10 +125,15 @@ export class WorkspaceRegistryFileRepository
       // An unreadable file throws here, before anything is written.
       const registry = (await this.load()) ?? WorkspaceRegistry.empty();
       const result = change(registry);
+      const lastAgent = registry.lastAgent();
       await atomicWriteTextFile(
         this.path,
         JSON.stringify(
-          { schemaVersion: SCHEMA_VERSION, workspaces: registry.list() },
+          {
+            schemaVersion: SCHEMA_VERSION,
+            workspaces: registry.list(),
+            ...(lastAgent !== undefined ? { lastAgent } : {}),
+          },
           null,
           2,
         ) + "\n",
